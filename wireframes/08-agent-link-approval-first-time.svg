@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>08 — Agent-link approval page, first-time user (device flow)</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz/a/7GHK-PMQR</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- step indicator -->
+  <line x1="472" y1="136" x2="624" y2="136" stroke="#000" stroke-width="1.5"/>
+  <line x1="656" y1="136" x2="808" y2="136" stroke="#000" stroke-width="1.5"/>
+  <circle cx="456" cy="136" r="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="456" y="136" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">✓</text>
+  <circle cx="640" cy="136" r="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="640" y="136" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">✓</text>
+  <circle cx="824" cy="136" r="16" fill="#000"/>
+  <text x="824" y="136" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+  <text x="456" y="176" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">Passkey</text>
+  <text x="640" y="176" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">Email</text>
+  <text x="824" y="176" font-size="12" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Approve</text>
+  <circle cx="344" cy="136" r="8" fill="#000"/>
+  <text x="344" y="136" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- consent card -->
+  <rect x="384" y="216" width="512" height="456" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+
+  <!-- agent row -->
+  <rect x="416" y="248" width="48" height="48" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="440" y="272" font-size="28" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">🤖</text>
+  <text x="480" y="264" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">"Agent B" on Bob's-MacBook</text>
+  <text x="480" y="288" font-size="12" fill="#666" stroke="none" dominant-baseline="central">wants to access:</text>
+  <circle cx="344" cy="272" r="8" fill="#000"/>
+  <text x="344" y="272" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- access summary -->
+  <rect x="408" y="320" width="464" height="136" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="432" y="352" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">📄 README.md</text>
+  <text x="592" y="352" font-size="12" fill="#666" stroke="none" dominant-baseline="central">shared by Adam Turing ✓</text>
+  <text x="432" y="392" font-size="12" fill="#000" stroke="none" dominant-baseline="central"><tspan fill="#666">Access:</tspan> read-only · this document only</text>
+  <text x="432" y="424" font-size="12" fill="#000" stroke="none" dominant-baseline="central"><tspan fill="#666">Duration:</tspan> 7 days · renewable</text>
+  <circle cx="344" cy="392" r="8" fill="#000"/>
+  <text x="344" y="392" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- code match -->
+  <rect x="408" y="480" width="464" height="64" fill="#e6e6e6"/>
+  <text x="432" y="512" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Code shown by your agent</text>
+  <text x="656" y="512" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">7GHK-PMQR</text>
+  <text x="792" y="512" font-size="12" fill="#000" stroke="none" dominant-baseline="central">✓ matches</text>
+  <circle cx="344" cy="512" r="8" fill="#000"/>
+  <text x="344" y="512" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+
+  <!-- actions -->
+  <rect x="408" y="576" width="272" height="48" rx="8" fill="#000"/>
+  <text x="544" y="600" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">Approve access</text>
+  <rect x="696" y="576" width="176" height="48" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="784" y="600" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Deny</text>
+  <circle cx="344" cy="600" r="8" fill="#000"/>
+  <text x="344" y="600" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">5</text>
+</svg>

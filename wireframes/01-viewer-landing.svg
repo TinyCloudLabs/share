@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>01 — Viewer landing (share.tinycloud.xyz bare front door)</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- hero -->
+  <text x="640" y="216" font-size="28" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Verifiable sharing for humans and agents</text>
+  <text x="640" y="256" font-size="14" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">Open a link someone sent you — or share something from your own space.</text>
+  <circle cx="312" cy="216" r="8" fill="#000"/>
+  <text x="312" y="216" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- paste-a-link input -->
+  <rect x="336" y="304" width="480" height="48" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="360" y="328" font-size="14" fill="#666" stroke="none" dominant-baseline="central">Paste a share link — https://share.tinycloud.xyz/s/…#k=…</text>
+  <rect x="832" y="304" width="112" height="48" rx="8" fill="#000"/>
+  <text x="888" y="328" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">Open</text>
+  <circle cx="304" cy="328" r="8" fill="#000"/>
+  <text x="304" y="328" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- feature blurbs -->
+  <rect x="176" y="432" width="288" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="200" y="464" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">End-to-end verifiable</text>
+  <text x="200" y="496" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Sender and recipient are both</text>
+  <text x="200" y="512" font-size="12" fill="#666" stroke="none" dominant-baseline="central">cryptographically verified.</text>
+
+  <rect x="496" y="432" width="288" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="520" y="464" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Works with your agent</text>
+  <text x="520" y="496" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Paste a link into any agent —</text>
+  <text x="520" y="512" font-size="12" fill="#666" stroke="none" dominant-baseline="central">it knows what to do.</text>
+
+  <rect x="816" y="432" width="288" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="840" y="464" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Nothing stored unencrypted</text>
+  <text x="840" y="496" font-size="12" fill="#666" stroke="none" dominant-baseline="central">The registry only ever</text>
+  <text x="840" y="512" font-size="12" fill="#666" stroke="none" dominant-baseline="central">sees ciphertext.</text>
+
+  <circle cx="144" cy="488" r="8" fill="#000"/>
+  <text x="144" y="488" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- footer -->
+  <line x1="176" y1="696" x2="1104" y2="696" stroke="#000" stroke-width="1.5"/>
+  <text x="640" y="728" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central"><tspan fill="#666">Share something yourself → </tspan><tspan font-weight="600">Get started</tspan></text>
+  <line x1="696" y1="744" x2="784" y2="744" stroke="#000" stroke-width="1.5"/>
+  <circle cx="456" cy="728" r="8" fill="#000"/>
+  <text x="456" y="728" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>

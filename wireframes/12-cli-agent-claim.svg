@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="ui-monospace, monospace">
+  <title>12 — CLI: agent claims a share (device flow)</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- terminal frame -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="640" y="32" font-size="14" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">Agent B — terminal</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- session -->
+  <text x="48" y="104" font-size="14" fill="#000" stroke="none" dominant-baseline="central">$ npx @tinycloud/cli share claim "https://share.tinycloud.xyz/s/bafygxk3…#k=…"</text>
+
+  <text x="48" y="152" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  ✓ Envelope verified — README.md, from Adam Turing (adam@example.com ✓)</text>
+  <text x="48" y="184" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  Addressed to: b•••@gmail.com</text>
+  <circle cx="1216" cy="152" r="8" fill="#000"/>
+  <text x="1216" y="152" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">1</text>
+
+  <text x="48" y="232" font-size="14" fill="#666" stroke="none" dominant-baseline="central">  This agent needs the recipient to verify their identity and approve access.</text>
+
+  <text x="48" y="280" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  → Ask the user to open:  https://share.tinycloud.xyz/a/7GHK-PMQR</text>
+  <text x="48" y="312" font-size="14" fill="#666" stroke="none" dominant-baseline="central">    (code: 7GHK-PMQR · expires in 15 min)</text>
+  <circle cx="1216" cy="280" r="8" fill="#000"/>
+  <text x="1216" y="280" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">2</text>
+
+  <text x="48" y="360" font-size="14" fill="#666" stroke="none" dominant-baseline="central">  Waiting for approval… ⠋</text>
+  <circle cx="1216" cy="360" r="8" fill="#000"/>
+  <text x="1216" y="360" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">3</text>
+
+  <text x="48" y="408" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  ✓ Approved — bob@gmail.com authorized this agent (read-only · 7 days, renewable)</text>
+  <text x="48" y="440" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  ✓ Derived agent session active — linked to Bob's claim</text>
+  <circle cx="1216" cy="408" r="8" fill="#000"/>
+  <text x="1216" y="408" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">4</text>
+
+  <text x="48" y="488" font-size="14" fill="#666" stroke="none" dominant-baseline="central">  Fetching shares/9f3k…/README.md …</text>
+  <text x="48" y="520" font-size="14" fill="#000" stroke="none" dominant-baseline="central">  ✓ README.md (8 KB) — content verified</text>
+  <circle cx="1216" cy="520" r="8" fill="#000"/>
+  <text x="1216" y="520" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central" font-family="system-ui, -apple-system, sans-serif">5</text>
+
+  <text x="48" y="568" font-size="14" fill="#000" stroke="none" dominant-baseline="central">$</text>
+  <rect x="72" y="560" width="8" height="16" fill="#000"/>
+</svg>

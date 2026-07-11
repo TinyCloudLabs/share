@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>03 — Combined ceremony: OpenKey passkey + email OTP (two modal states)</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz/s/bafygxk3…#k=…</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- dimmed claim page behind -->
+  <rect x="8" y="56" width="1264" height="736" fill="#e6e6e6"/>
+  <rect x="384" y="112" width="512" height="488" rx="8" fill="#fff" stroke="#666" stroke-width="1.5"/>
+  <circle cx="440" cy="176" r="24" fill="#e6e6e6" stroke="#666" stroke-width="1.5"/>
+  <text x="480" y="168" font-size="14" fill="#666" stroke="none" dominant-baseline="central">Adam Turing ✓</text>
+  <text x="480" y="192" font-size="12" fill="#666" stroke="none" dominant-baseline="central">adam@example.com · verified sender</text>
+  <circle cx="104" cy="128" r="8" fill="#000"/>
+  <text x="104" y="128" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- modal A: OpenKey passkey -->
+  <rect x="248" y="248" width="336" height="320" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="280" y="288" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">OpenKey</text>
+  <text x="280" y="320" font-size="14" fill="#000" stroke="none" dominant-baseline="central">Create your key</text>
+  <circle cx="392" cy="360" r="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="408" y="352" width="48" height="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="440" y="360" width="8" height="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="280" y="416" width="272" height="48" rx="8" fill="#000"/>
+  <text x="416" y="440" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">🔑 Continue with passkey</text>
+  <text x="416" y="496" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">One Face ID. No password.</text>
+  <circle cx="224" cy="288" r="8" fill="#000"/>
+  <text x="224" y="288" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- arrow between states -->
+  <line x1="600" y1="408" x2="664" y2="408" stroke="#000" stroke-width="1.5"/>
+  <polygon points="664,400 680,408 664,416" fill="#000"/>
+
+  <!-- modal B: email OTP -->
+  <rect x="696" y="248" width="336" height="320" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="728" y="288" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Confirm your email</text>
+  <text x="728" y="328" font-size="14" fill="#000" stroke="none" dominant-baseline="central">We emailed a code to</text>
+  <text x="728" y="352" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">bob@gmail.com</text>
+
+  <rect x="744" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="784" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="824" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="864" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="904" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="944" y="384" width="32" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="760" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+  <text x="800" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">8</text>
+  <text x="840" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+  <text x="880" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">9</text>
+  <text x="920" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+  <text x="960" y="408" font-size="20" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">7</text>
+
+  <text x="864" y="464" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">Resend code</text>
+  <line x1="824" y1="472" x2="904" y2="472" stroke="#666" stroke-width="1.5"/>
+  <text x="864" y="528" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">✓ Verified — opening doc…</text>
+
+  <circle cx="1056" cy="408" r="8" fill="#000"/>
+  <text x="1056" y="408" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+  <circle cx="1056" cy="528" r="8" fill="#000"/>
+  <text x="1056" y="528" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>
