@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="system-ui, -apple-system, sans-serif">
+  <title>14 — Combinatorial flow map: sender paths → link → recipient branches → viewer modes</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto-start-reverse">
+      <path d="M0 0L8 4L0 8Z" fill="#000"/>
+    </marker>
+  </defs>
+  <rect width="1600" height="1000" fill="#fff"/>
+
+  <!-- column labels -->
+  <text x="48" y="48" font-size="12" fill="#666" stroke="none" dominant-baseline="central">SENDER</text>
+  <text x="352" y="48" font-size="12" fill="#666" stroke="none" dominant-baseline="central">LINK HANDOFF</text>
+  <text x="928" y="48" font-size="12" fill="#666" stroke="none" dominant-baseline="central">RECIPIENT BRANCHES</text>
+  <text x="1312" y="48" font-size="12" fill="#666" stroke="none" dominant-baseline="central">VIEWER / OUTCOME</text>
+
+  <!-- sender nodes -->
+  <rect x="48" y="200" width="224" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="64" y="232" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Known sender</text>
+  <text x="64" y="256" font-size="12" fill="#666" stroke="none" dominant-baseline="central">chat share, one confirm</text>
+  <rect x="224" y="224" width="32" height="16" fill="#e6e6e6"/>
+  <text x="240" y="232" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">10</text>
+
+  <rect x="48" y="400" width="224" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="64" y="432" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">First-time sender</text>
+  <text x="64" y="456" font-size="12" fill="#666" stroke="none" dominant-baseline="central">signup at account.tinycloud.xyz</text>
+  <rect x="224" y="424" width="32" height="16" fill="#e6e6e6"/>
+  <text x="240" y="432" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">11</text>
+  <circle cx="24" cy="240" r="8" fill="#000"/>
+  <text x="24" y="240" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- link node -->
+  <rect x="352" y="288" width="224" height="96" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="368" y="320" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Share link</text>
+  <text x="368" y="344" font-size="12" fill="#666" stroke="none" dominant-baseline="central">s/&lt;cid&gt;#k=… fragment key</text>
+  <text x="368" y="368" font-size="12" fill="#666" stroke="none" dominant-baseline="central">encrypted envelope in registry</text>
+  <text x="352" y="408" font-size="12" fill="#666" stroke="none" dominant-baseline="central">sent over Adam's own channel</text>
+  <circle cx="328" cy="336" r="8" fill="#000"/>
+  <text x="328" y="336" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- viewer front door entry -->
+  <rect x="352" y="560" width="224" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="368" y="592" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Viewer front door</text>
+  <text x="368" y="616" font-size="12" fill="#666" stroke="none" dominant-baseline="central">bare landing · paste a link</text>
+  <rect x="528" y="584" width="32" height="16" fill="#e6e6e6"/>
+  <text x="544" y="592" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">01</text>
+
+  <!-- branch node -->
+  <rect x="656" y="304" width="176" height="64" rx="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="744" y="336" font-size="14" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Who opens it?</text>
+  <circle cx="632" cy="336" r="8" fill="#000"/>
+  <text x="632" y="336" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- recipient branches -->
+  <rect x="928" y="88" width="256" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="944" y="120" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Human · first time</text>
+  <text x="944" y="144" font-size="12" fill="#666" stroke="none" dominant-baseline="central">landing → passkey + OTP ≈30s</text>
+  <rect x="1096" y="112" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1112" y="120" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">02</text>
+  <rect x="1136" y="112" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1152" y="120" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">03</text>
+  <circle cx="904" cy="128" r="8" fill="#000"/>
+  <text x="904" y="128" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+
+  <rect x="928" y="224" width="256" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="944" y="256" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Human · returning</text>
+  <text x="944" y="280" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Face ID unlock ≈2s</text>
+  <rect x="1136" y="248" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1152" y="256" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">07</text>
+
+  <rect x="928" y="392" width="256" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="944" y="424" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Agent · user first time</text>
+  <text x="944" y="448" font-size="12" fill="#666" stroke="none" dominant-baseline="central">CLI claim → full-ceremony approve</text>
+  <rect x="1096" y="416" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1112" y="424" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">12</text>
+  <rect x="1136" y="416" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1152" y="424" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">08</text>
+  <circle cx="904" cy="432" r="8" fill="#000"/>
+  <text x="904" y="432" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">5</text>
+
+  <rect x="928" y="528" width="256" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="944" y="560" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Agent · user returning</text>
+  <text x="944" y="584" font-size="12" fill="#666" stroke="none" dominant-baseline="central">CLI claim → Face ID + approve</text>
+  <rect x="1096" y="552" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1112" y="560" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">12</text>
+  <rect x="1136" y="552" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1152" y="560" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">09</text>
+
+  <!-- notifications node -->
+  <rect x="928" y="712" width="256" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="944" y="744" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Sender notifications</text>
+  <text x="944" y="768" font-size="12" fill="#666" stroke="none" dominant-baseline="central">→ Adam's phone · claim history</text>
+  <rect x="1136" y="736" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1152" y="744" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">13</text>
+  <circle cx="904" cy="752" r="8" fill="#000"/>
+  <text x="904" y="752" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">6</text>
+
+  <!-- viewer mode nodes -->
+  <rect x="1312" y="128" width="240" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1328" y="160" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">File viewer</text>
+  <text x="1328" y="184" font-size="12" fill="#666" stroke="none" dominant-baseline="central">read-only render</text>
+  <rect x="1504" y="152" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1520" y="160" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">04</text>
+  <circle cx="1576" cy="168" r="8" fill="#000"/>
+  <text x="1576" y="168" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">7</text>
+
+  <rect x="1312" y="272" width="240" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1328" y="304" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Folder viewer</text>
+  <text x="1328" y="328" font-size="12" fill="#666" stroke="none" dominant-baseline="central">list + preview pane</text>
+  <rect x="1504" y="296" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1520" y="304" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">05</text>
+
+  <rect x="1312" y="416" width="240" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1328" y="448" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Editor</text>
+  <text x="1328" y="472" font-size="12" fill="#666" stroke="none" dominant-baseline="central">write delegation</text>
+  <rect x="1504" y="440" width="32" height="16" fill="#e6e6e6"/>
+  <text x="1520" y="448" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">06</text>
+
+  <rect x="1312" y="560" width="240" height="80" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1328" y="592" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Agent works with content</text>
+  <text x="1328" y="616" font-size="12" fill="#666" stroke="none" dominant-baseline="central">in-context · derived session</text>
+
+  <!-- arrows: sender → link -->
+  <line x1="272" y1="240" x2="352" y2="320" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="272" y1="440" x2="352" y2="352" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- link → branch -->
+  <line x1="576" y1="336" x2="656" y2="336" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- front door → branch (pasted link) -->
+  <line x1="576" y1="600" x2="728" y2="368" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+
+  <!-- branch → recipient paths -->
+  <line x1="832" y1="336" x2="928" y2="128" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="832" y1="336" x2="928" y2="264" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="832" y1="336" x2="928" y2="432" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="832" y1="336" x2="928" y2="568" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- human paths → viewer modes via connector -->
+  <line x1="1184" y1="128" x2="1272" y2="168" stroke="#000" stroke-width="1.5"/>
+  <line x1="1184" y1="264" x2="1272" y2="288" stroke="#000" stroke-width="1.5"/>
+  <line x1="1272" y1="168" x2="1272" y2="456" stroke="#000" stroke-width="1.5"/>
+  <line x1="1272" y1="168" x2="1312" y2="168" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="1272" y1="312" x2="1312" y2="312" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="1272" y1="456" x2="1312" y2="456" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="1424" y="96" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">mode depends on the delegation</text>
+
+  <!-- agent paths → agent outcome -->
+  <line x1="1184" y1="432" x2="1312" y2="584" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+  <line x1="1184" y1="568" x2="1312" y2="600" stroke="#000" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- footer hint bridge: viewer → agent path -->
+  <path d="M1352 208 L1288 256 L1288 384 L1192 424" fill="none" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+  <text x="1264" y="344" font-size="12" fill="#666" stroke="none" text-anchor="end" dominant-baseline="central">footer hint: paste the link</text>
+  <text x="1264" y="360" font-size="12" fill="#666" stroke="none" text-anchor="end" dominant-baseline="central">into your agent</text>
+
+  <!-- claims → notifications -->
+  <line x1="1056" y1="608" x2="1056" y2="712" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+  <text x="1072" y="664" font-size="12" fill="#666" stroke="none" dominant-baseline="central">first claim / agent grant</text>
+</svg>

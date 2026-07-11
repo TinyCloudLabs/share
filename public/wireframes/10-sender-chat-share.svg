@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>10 — Sender chat: Adam ⇄ Agent A share flow</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- chat frame -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="640" y="32" font-size="14" font-weight="600" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Adam ⇄ Agent A</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- Adam message 1 -->
+  <rect x="856" y="80" width="384" height="48" rx="16" fill="#000"/>
+  <text x="880" y="104" font-size="14" fill="#fff" stroke="none" dominant-baseline="central">I wrote up the README — share it with Bob.</text>
+
+  <!-- Agent confirm bubble -->
+  <rect x="40" y="152" width="520" height="176" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="64" y="184" font-size="14" fill="#000" stroke="none" dominant-baseline="central">I'll share README.md via TinyCloud.</text>
+  <text x="64" y="216" font-size="14" fill="#000" stroke="none" dominant-baseline="central"><tspan fill="#666">Recipient:</tspan> bob@gmail.com <tspan fill="#666">(from your contacts)</tspan></text>
+  <text x="64" y="248" font-size="14" fill="#000" stroke="none" dominant-baseline="central"><tspan fill="#666">Access:</tspan> read-only · expires in 30 days</text>
+  <text x="64" y="288" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Is that the right Bob?</text>
+  <circle cx="584" cy="216" r="8" fill="#000"/>
+  <text x="584" y="216" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- quick replies -->
+  <rect x="64" y="344" width="128" height="48" rx="8" fill="#000"/>
+  <text x="128" y="368" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">Yes, share</text>
+  <rect x="208" y="344" width="112" height="48" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="264" y="368" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Change…</text>
+  <circle cx="352" cy="368" r="8" fill="#000"/>
+  <text x="352" y="368" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- Adam message 2 -->
+  <rect x="1144" y="424" width="96" height="48" rx="16" fill="#000"/>
+  <text x="1192" y="448" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">yes</text>
+
+  <!-- Agent result bubble -->
+  <rect x="40" y="504" width="600" height="184" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="64" y="536" font-size="14" fill="#000" stroke="none" dominant-baseline="central">✅ Shared. Send Bob this link:</text>
+  <rect x="64" y="560" width="552" height="32" fill="#e6e6e6"/>
+  <text x="80" y="576" font-size="12" fill="#000" stroke="none" dominant-baseline="central" font-family="ui-monospace, monospace">https://share.tinycloud.xyz/s/bafygxk3…#k=q8Zt…</text>
+  <text x="64" y="616" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Only someone who verifies bob@gmail.com can open it.</text>
+  <text x="64" y="640" font-size="12" fill="#666" stroke="none" dominant-baseline="central">I'll tell you when Bob (or any new device) claims it.</text>
+  <text x="64" y="664" font-size="12" fill="#666" stroke="none" dominant-baseline="central">You can revoke it anytime — just say "revoke Bob's share".</text>
+  <circle cx="640" cy="576" r="8" fill="#000"/>
+  <text x="640" y="576" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+  <circle cx="664" cy="640" r="8" fill="#000"/>
+  <text x="664" y="640" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+
+  <!-- input bar -->
+  <line x1="8" y1="728" x2="1272" y2="728" stroke="#000" stroke-width="1.5"/>
+  <rect x="32" y="744" width="1120" height="32" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="56" y="760" font-size="14" fill="#666" stroke="none" dominant-baseline="central">Message Agent A…</text>
+  <rect x="1168" y="744" width="64" height="32" rx="8" fill="#000"/>
+  <text x="1200" y="760" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">Send</text>
+</svg>

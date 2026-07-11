@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>06 — Viewer, edit mode (write delegation)</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz/s/bafygxk3…</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- viewer top bar -->
+  <rect x="32" y="72" width="24" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="88" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">README.md</text>
+  <text x="200" y="88" font-size="14" fill="#666" stroke="none" dominant-baseline="central">· shared by Adam Turing ✓</text>
+  <rect x="400" y="72" width="96" height="32" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="448" y="88" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">can edit</text>
+  <text x="512" y="88" font-size="12" fill="#666" stroke="none" dominant-baseline="central">editing as bob@gmail.com</text>
+  <text x="696" y="88" font-size="12" fill="#666" stroke="none" dominant-baseline="central">saved · v12</text>
+  <rect x="1144" y="72" width="96" height="32" rx="8" fill="#000"/>
+  <text x="1192" y="88" font-size="14" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">Save</text>
+  <circle cx="1112" cy="88" r="8" fill="#000"/>
+  <text x="1112" y="88" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+  <line x1="8" y1="120" x2="1272" y2="120" stroke="#000" stroke-width="1.5"/>
+
+  <!-- conflict info strip -->
+  <rect x="8" y="120" width="1264" height="48" fill="#e6e6e6"/>
+  <text x="32" y="144" font-size="12" fill="#000" stroke="none" dominant-baseline="central">ⓘ Adam updated this file 2 min ago — <tspan font-weight="600">refresh to see latest</tspan></text>
+  <text x="1240" y="144" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">✕</text>
+  <circle cx="1192" cy="144" r="8" fill="#000"/>
+  <text x="1192" y="144" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+  <line x1="8" y1="168" x2="1272" y2="168" stroke="#000" stroke-width="1.5"/>
+
+  <!-- pane headers -->
+  <text x="32" y="192" font-size="12" fill="#666" stroke="none" dominant-baseline="central">EDIT · markdown</text>
+  <text x="672" y="192" font-size="12" fill="#666" stroke="none" dominant-baseline="central">PREVIEW</text>
+  <line x1="8" y1="208" x2="1272" y2="208" stroke="#000" stroke-width="1.5"/>
+  <line x1="640" y1="168" x2="640" y2="792" stroke="#000" stroke-width="1.5"/>
+
+  <!-- edit pane (monospace) -->
+  <g font-family="ui-monospace, monospace" font-size="12" fill="#000">
+    <text x="32" y="240" stroke="none" dominant-baseline="central"># Project Phoenix</text>
+    <text x="32" y="272" stroke="none" dominant-baseline="central">Phoenix is a small tool that turns</text>
+    <text x="32" y="296" stroke="none" dominant-baseline="central">meeting notes into action items.</text>
+    <text x="32" y="328" stroke="none" dominant-baseline="central">## Architecture</text>
+    <text x="32" y="360" stroke="none" dominant-baseline="central">```mermaid</text>
+    <text x="32" y="384" stroke="none" dominant-baseline="central">sequenceDiagram</text>
+    <text x="32" y="408" stroke="none" dominant-baseline="central">  Client-&gt;&gt;Node: claim</text>
+    <text x="32" y="432" stroke="none" dominant-baseline="central">  Node--&gt;&gt;Client: session</text>
+    <text x="32" y="456" stroke="none" dominant-baseline="central">```</text>
+    <text x="32" y="488" stroke="none" dominant-baseline="central">## Next steps</text>
+    <text x="32" y="512" stroke="none" dominant-baseline="central">- [ ] ship the claim protocol</text>
+    <text x="32" y="536" stroke="none" dominant-baseline="central">- [ ] wire the agent device flow</text>
+  </g>
+  <rect x="264" y="528" width="8" height="16" fill="#000"/>
+  <circle cx="608" cy="240" r="8" fill="#000"/>
+  <text x="608" y="240" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- preview pane -->
+  <text x="672" y="248" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Project Phoenix</text>
+  <rect x="672" y="288" width="512" height="8" fill="#e6e6e6"/>
+  <rect x="672" y="304" width="456" height="8" fill="#e6e6e6"/>
+  <text x="672" y="344" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Architecture</text>
+  <rect x="672" y="376" width="512" height="144" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="704" y="400" width="96" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="752" y="424" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Client</text>
+  <rect x="1056" y="400" width="96" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1104" y="424" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Node</text>
+  <line x1="800" y1="424" x2="1040" y2="424" stroke="#000" stroke-width="1.5"/>
+  <polygon points="1040,416 1056,424 1040,432" fill="#000"/>
+  <text x="688" y="488" font-size="12" fill="#666" stroke="none" dominant-baseline="central">mermaid: sequence</text>
+  <text x="672" y="552" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Next steps</text>
+  <rect x="672" y="576" width="16" height="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="704" y="584" font-size="12" fill="#000" stroke="none" dominant-baseline="central">ship the claim protocol</text>
+  <rect x="672" y="608" width="16" height="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="704" y="616" font-size="12" fill="#000" stroke="none" dominant-baseline="central">wire the agent device flow</text>
+  <circle cx="1240" cy="248" r="8" fill="#000"/>
+  <text x="1240" y="248" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>

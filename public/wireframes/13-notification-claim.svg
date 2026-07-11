@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812" font-family="system-ui, -apple-system, sans-serif">
+  <title>13 — Adam's phone: claim notifications + share-manage sheet (mobile)</title>
+  <rect width="375" height="812" fill="#fff"/>
+
+  <!-- phone frame -->
+  <rect x="8" y="8" width="360" height="800" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="32" y="32" font-size="12" fill="#000" stroke="none" dominant-baseline="central">9:41</text>
+  <rect x="312" y="24" width="32" height="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+
+  <!-- notification 1 -->
+  <rect x="24" y="64" width="328" height="96" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="40" y="80" width="32" height="32" rx="8" fill="#e6e6e6" stroke="#000" stroke-width="1.5"/>
+  <text x="56" y="96" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">TC</text>
+  <text x="88" y="88" font-size="12" fill="#666" stroke="none" dominant-baseline="central">TINYCLOUD · now</text>
+  <text x="88" y="112" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Bob opened your share</text>
+  <text x="88" y="136" font-size="12" fill="#666" stroke="none" dominant-baseline="central">README.md · new device: Bob's MacBook</text>
+  <circle cx="336" cy="80" r="8" fill="#000"/>
+  <text x="336" y="80" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- notification 2 -->
+  <rect x="24" y="176" width="328" height="96" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="40" y="192" width="32" height="32" rx="8" fill="#e6e6e6" stroke="#000" stroke-width="1.5"/>
+  <text x="56" y="208" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">TC</text>
+  <text x="88" y="200" font-size="12" fill="#666" stroke="none" dominant-baseline="central">TINYCLOUD · 2m ago</text>
+  <text x="88" y="224" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Bob authorized agent "Agent B"</text>
+  <text x="88" y="248" font-size="12" fill="#666" stroke="none" dominant-baseline="central">read-only · 7 days · under Bob's claim</text>
+  <circle cx="336" cy="192" r="8" fill="#000"/>
+  <text x="336" y="192" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- share-manage sheet -->
+  <rect x="8" y="320" width="360" height="488" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="152" y="336" width="64" height="8" fill="#e6e6e6"/>
+  <text x="32" y="384" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">README.md — share activity</text>
+  <text x="32" y="408" font-size="12" fill="#666" stroke="none" dominant-baseline="central">read-only · expires Aug 9 · link active</text>
+  <line x1="24" y1="432" x2="352" y2="432" stroke="#000" stroke-width="1.5"/>
+
+  <!-- claim history rows -->
+  <text x="48" y="480" font-size="20" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">💻</text>
+  <text x="80" y="472" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Bob's MacBook</text>
+  <text x="80" y="496" font-size="12" fill="#666" stroke="none" dominant-baseline="central">claimed Jul 11 · 9:02 AM</text>
+  <rect x="272" y="464" width="64" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="304" y="480" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Revoke</text>
+  <line x1="24" y1="520" x2="352" y2="520" stroke="#000" stroke-width="1.5"/>
+  <circle cx="16" cy="480" r="8" fill="#000"/>
+  <text x="16" y="480" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <text x="48" y="560" font-size="20" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">📱</text>
+  <text x="80" y="552" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Bob's iPhone</text>
+  <text x="80" y="576" font-size="12" fill="#666" stroke="none" dominant-baseline="central">claimed Jul 11 · 9:14 AM</text>
+  <rect x="272" y="544" width="64" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="304" y="560" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Revoke</text>
+  <line x1="24" y1="600" x2="352" y2="600" stroke="#000" stroke-width="1.5"/>
+
+  <text x="48" y="640" font-size="20" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">🤖</text>
+  <text x="80" y="632" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">"Agent B" via Bob</text>
+  <text x="80" y="656" font-size="12" fill="#666" stroke="none" dominant-baseline="central">read-only · 7 days · renewable</text>
+  <rect x="272" y="624" width="64" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="304" y="640" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Revoke</text>
+  <line x1="24" y1="688" x2="352" y2="688" stroke="#000" stroke-width="1.5"/>
+
+  <!-- revoke all -->
+  <rect x="32" y="712" width="304" height="48" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="184" y="736" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Revoke entire share…</text>
+  <circle cx="16" cy="736" r="8" fill="#000"/>
+  <text x="16" y="736" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>

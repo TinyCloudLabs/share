@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>04 — Read-only viewer, single file</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz/s/bafygxk3…</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- viewer top bar -->
+  <rect x="32" y="72" width="24" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="88" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">README.md</text>
+  <text x="200" y="88" font-size="14" fill="#666" stroke="none" dominant-baseline="central">· shared by Adam Turing ✓</text>
+  <rect x="400" y="72" width="96" height="32" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="448" y="88" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">read-only</text>
+  <text x="520" y="88" font-size="12" fill="#666" stroke="none" dominant-baseline="central">expires Aug 9</text>
+  <text x="1088" y="88" font-size="12" fill="#666" stroke="none" text-anchor="end" dominant-baseline="central">Signed in as bob@gmail.com</text>
+  <rect x="1112" y="72" width="128" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1176" y="88" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Download</text>
+  <line x1="8" y1="120" x2="1272" y2="120" stroke="#000" stroke-width="1.5"/>
+  <circle cx="1256" cy="88" r="8" fill="#000"/>
+  <text x="1256" y="88" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- rendered markdown -->
+  <text x="320" y="176" font-size="28" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Project Phoenix</text>
+  <rect x="320" y="216" width="640" height="8" fill="#e6e6e6"/>
+  <rect x="320" y="232" width="608" height="8" fill="#e6e6e6"/>
+  <rect x="320" y="248" width="624" height="8" fill="#e6e6e6"/>
+  <rect x="320" y="264" width="440" height="8" fill="#e6e6e6"/>
+
+  <!-- mermaid figure -->
+  <rect x="320" y="296" width="640" height="208" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="368" y="320" width="96" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="416" y="336" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Client</text>
+  <rect x="592" y="320" width="96" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="640" y="336" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Node</text>
+  <rect x="816" y="320" width="96" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="864" y="336" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Registry</text>
+  <line x1="416" y1="352" x2="416" y2="456" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <line x1="640" y1="352" x2="640" y2="456" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <line x1="864" y1="352" x2="864" y2="456" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <line x1="416" y1="384" x2="624" y2="384" stroke="#000" stroke-width="1.5"/>
+  <polygon points="624,376 640,384 624,392" fill="#000"/>
+  <text x="528" y="368" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">claim</text>
+  <line x1="640" y1="416" x2="848" y2="416" stroke="#000" stroke-width="1.5"/>
+  <polygon points="848,408 864,416 848,424" fill="#000"/>
+  <text x="752" y="400" font-size="12" fill="#666" stroke="none" text-anchor="middle" dominant-baseline="central">fetch</text>
+  <line x1="640" y1="440" x2="432" y2="440" stroke="#000" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <polygon points="432,432 416,440 432,448" fill="#000"/>
+  <text x="336" y="480" font-size="12" fill="#666" stroke="none" dominant-baseline="central">mermaid: sequence</text>
+  <circle cx="288" cy="320" r="8" fill="#000"/>
+  <text x="288" y="320" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- more body -->
+  <rect x="320" y="528" width="640" height="8" fill="#e6e6e6"/>
+  <rect x="320" y="544" width="576" height="8" fill="#e6e6e6"/>
+
+  <!-- code block -->
+  <rect x="320" y="576" width="640" height="96" fill="#e6e6e6" stroke="#000" stroke-width="1.5"/>
+  <text x="344" y="608" font-size="12" fill="#666" stroke="none" dominant-baseline="central" font-family="ui-monospace, monospace">$ npx phoenix init</text>
+  <text x="344" y="640" font-size="12" fill="#666" stroke="none" dominant-baseline="central" font-family="ui-monospace, monospace">$ phoenix run --watch</text>
+  <circle cx="288" cy="624" r="8" fill="#000"/>
+  <text x="288" y="624" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <!-- footer hint card -->
+  <rect x="320" y="696" width="640" height="72" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="344" y="720" font-size="14" fill="#000" stroke="none" dominant-baseline="central">💡 Want your agent to work with this doc?</text>
+  <text x="344" y="744" font-size="12" fill="#666" stroke="none" dominant-baseline="central">Paste the link into your agent — it'll know what to do.</text>
+  <circle cx="288" cy="728" r="8" fill="#000"/>
+  <text x="288" y="728" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>

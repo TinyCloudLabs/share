@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="system-ui, -apple-system, sans-serif">
+  <title>05 — Viewer, folder mode with preview pane</title>
+  <rect width="1280" height="800" fill="#fff"/>
+
+  <!-- browser chrome -->
+  <rect x="8" y="8" width="1264" height="784" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="56" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <circle cx="80" cy="32" r="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="112" y="16" width="800" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="128" y="32" font-size="14" fill="#666" stroke="none" dominant-baseline="central">https://share.tinycloud.xyz/s/bafyq2v8…</text>
+  <line x1="8" y1="56" x2="1272" y2="56" stroke="#000" stroke-width="1.5"/>
+
+  <!-- viewer top bar -->
+  <rect x="32" y="72" width="16" height="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="32" y="80" width="32" height="24" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="80" y="88" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">project-docs/</text>
+  <text x="232" y="88" font-size="14" fill="#666" stroke="none" dominant-baseline="central">· 4 items · shared by Adam Turing ✓</text>
+  <rect x="496" y="72" width="96" height="32" rx="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="544" y="88" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">read-only</text>
+  <text x="616" y="88" font-size="12" fill="#666" stroke="none" dominant-baseline="central">expires Aug 9</text>
+  <text x="1088" y="88" font-size="12" fill="#666" stroke="none" text-anchor="end" dominant-baseline="central">Signed in as bob@gmail.com</text>
+  <rect x="1112" y="72" width="128" height="32" rx="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="1176" y="88" font-size="14" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Download all</text>
+  <line x1="8" y1="120" x2="1272" y2="120" stroke="#000" stroke-width="1.5"/>
+  <circle cx="1256" cy="88" r="8" fill="#000"/>
+  <text x="1256" y="88" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">1</text>
+
+  <!-- breadcrumb bar -->
+  <text x="32" y="136" font-size="12" fill="#000" stroke="none" dominant-baseline="central"><tspan fill="#666">project-docs</tspan><tspan fill="#666"> / </tspan><tspan font-weight="600">README.md</tspan></text>
+  <line x1="8" y1="152" x2="1272" y2="152" stroke="#000" stroke-width="1.5"/>
+  <circle cx="248" cy="136" r="8" fill="#000"/>
+  <text x="248" y="136" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">2</text>
+
+  <!-- file list pane -->
+  <rect x="8" y="152" width="480" height="64" fill="#e6e6e6"/>
+  <rect x="32" y="168" width="24" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="176" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">README.md</text>
+  <text x="72" y="200" font-size="12" fill="#666" stroke="none" dominant-baseline="central">8 KB · markdown</text>
+  <polyline points="448,176 456,184 448,192" fill="none" stroke="#000" stroke-width="1.5"/>
+  <line x1="8" y1="216" x2="488" y2="216" stroke="#000" stroke-width="1.5"/>
+
+  <rect x="32" y="232" width="24" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="240" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">architecture.md</text>
+  <text x="72" y="264" font-size="12" fill="#666" stroke="none" dominant-baseline="central">24 KB · markdown</text>
+  <polyline points="448,240 456,248 448,256" fill="none" stroke="#000" stroke-width="1.5"/>
+  <line x1="8" y1="280" x2="488" y2="280" stroke="#000" stroke-width="1.5"/>
+  <circle cx="248" cy="248" r="8" fill="#000"/>
+  <text x="248" y="248" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">3</text>
+
+  <rect x="32" y="296" width="24" height="32" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="304" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">diagrams.mmd</text>
+  <text x="72" y="328" font-size="12" fill="#666" stroke="none" dominant-baseline="central">4 KB · mermaid</text>
+  <polyline points="448,304 456,312 448,320" fill="none" stroke="#000" stroke-width="1.5"/>
+  <line x1="8" y1="344" x2="488" y2="344" stroke="#000" stroke-width="1.5"/>
+
+  <rect x="32" y="360" width="16" height="8" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="32" y="368" width="24" height="16" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="72" y="368" font-size="14" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">notes/</text>
+  <text x="72" y="392" font-size="12" fill="#666" stroke="none" dominant-baseline="central">folder · 2 items</text>
+  <polyline points="448,368 456,376 448,384" fill="none" stroke="#000" stroke-width="1.5"/>
+  <line x1="8" y1="408" x2="488" y2="408" stroke="#000" stroke-width="1.5"/>
+
+  <line x1="488" y1="152" x2="488" y2="792" stroke="#000" stroke-width="1.5"/>
+
+  <!-- preview pane -->
+  <text x="520" y="192" font-size="12" fill="#666" stroke="none" dominant-baseline="central">PREVIEW — README.md</text>
+  <text x="520" y="232" font-size="20" font-weight="600" fill="#000" stroke="none" dominant-baseline="central">Project Phoenix</text>
+  <rect x="520" y="264" width="560" height="8" fill="#e6e6e6"/>
+  <rect x="520" y="280" width="528" height="8" fill="#e6e6e6"/>
+  <rect x="520" y="296" width="416" height="8" fill="#e6e6e6"/>
+
+  <rect x="520" y="328" width="560" height="160" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <rect x="552" y="360" width="112" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="608" y="384" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Client</text>
+  <rect x="936" y="360" width="112" height="48" fill="#fff" stroke="#000" stroke-width="1.5"/>
+  <text x="992" y="384" font-size="12" fill="#000" stroke="none" text-anchor="middle" dominant-baseline="central">Node</text>
+  <line x1="664" y1="384" x2="920" y2="384" stroke="#000" stroke-width="1.5"/>
+  <polygon points="920,376 936,384 920,392" fill="#000"/>
+  <text x="536" y="456" font-size="12" fill="#666" stroke="none" dominant-baseline="central">mermaid: sequence</text>
+
+  <rect x="520" y="520" width="560" height="8" fill="#e6e6e6"/>
+  <rect x="520" y="536" width="488" height="8" fill="#e6e6e6"/>
+  <circle cx="1248" cy="232" r="8" fill="#000"/>
+  <text x="1248" y="232" font-size="12" fill="#fff" stroke="none" text-anchor="middle" dominant-baseline="central">4</text>
+</svg>
