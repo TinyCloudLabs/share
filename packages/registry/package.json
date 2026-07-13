@@ -1,0 +1,26 @@
+{
+  "name": "@tinycloud/share-registry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Share-registry client (browser+node, trustless: local CID re-verification) and a local dev registry server that mirrors kubo's trustless gateway response shape.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dev-server": "./src/dev-server.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev-server": "tsx src/dev-server-cli.ts"
+  },
+  "dependencies": {
+    "@tinycloud/share-envelope": "*",
+    "multiformats": "^13.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
