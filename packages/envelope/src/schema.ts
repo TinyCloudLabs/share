@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { fromBase64Url } from "./bytes.js";
+import { isCanonicalRawCid } from "./cid.js";
 
 /**
  * ShareEnvelope schema per sharing-ux-blueprint.md §2.1, with the signed
@@ -112,12 +113,54 @@ export const authorizationTargetSchema = z.discriminatedUnion("kind", [
   recipientDidTargetSchema,
 ]);
 
+/**
+ * THE canonical resource-path grammar — the ONE grammar shared by schema
+ * validation here and capability coverage in bearer-delegation.ts (which
+ * previously compared raw concatenated strings, so `shares/s/../victim.md`
+ * aliased into a `shares/s/*` grant). A canonical path is "/"-joined
+ * segments where every segment is non-empty (no `//`, no leading/trailing
+ * slash) and none is `.` or `..`, and the whole string contains no
+ * backslash, no ASCII control characters, and no percent-encoded
+ * separator/dot aliases (%2f, %5c, %2e in any casing). Fail closed: anything
+ * outside this grammar is rejected before any comparison happens.
+ */
+export function isCanonicalResourcePath(value: string): boolean {
+  if (value.length === 0) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(value)) return false;
+  if (/%2f|%5c|%2e/i.test(value)) return false;
+  return value
+    .split("/")
+    .every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+/** ONE canonical path segment: canonical-path rules, and no separator at all. */
+export function isCanonicalPathSegment(value: string): boolean {
+  return isCanonicalResourcePath(value) && !value.includes("/");
+}
+
 export const resourceSelectorSchema = z
   .object({
     kind: z.union([z.literal("exact"), z.literal("prefix")]),
     path: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((selector, ctx) => {
+    // Prefix selectors may carry ONE trailing "/" (folder convention);
+    // the body must be canonical either way.
+    const body =
+      selector.kind === "prefix" && selector.path.endsWith("/")
+        ? selector.path.slice(0, -1)
+        : selector.path;
+    if (!isCanonicalResourcePath(body)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["path"],
+        message:
+          "expected a canonical resource path (non-empty segments, no . or .. segments, no //, no backslash, no %2f/%5c/%2e, no control chars)",
+      });
+    }
+  });
 
 export const targetSchema = z
   .object({
@@ -125,7 +168,10 @@ export const targetSchema = z
       message: "expected a canonical https origin (https://host[:port], nothing else)",
     }),
     nodeAudience: z.string().min(1),
-    spaceId: z.string().min(1),
+    spaceId: z.string().refine(isCanonicalPathSegment, {
+      message:
+        "expected a single canonical path segment (spaceId joins the resource URI; separators/traversal would alias grants)",
+    }),
     resource: resourceSelectorSchema,
   })
   .strict();
@@ -140,6 +186,39 @@ export const displaySchema = z
      * capabilities always win.
      */
     mode: z.union([z.literal("document"), z.literal("source"), z.literal("folder")]).optional(),
+  })
+  .strict();
+
+/**
+ * BEARER-SLICE content pointer (stage 4). The shared file's bytes are sealed
+ * as their OWN AEAD blob (same `seal` machinery as the envelope) and put in
+ * the registry; this field points at it:
+ *
+ * - `cid`  — CIDv1/raw/sha2-256 of the sealed content blob. The viewer
+ *   re-verifies fetched bytes against it (trustless), so a lying registry
+ *   cannot substitute content.
+ * - `key`  — the content blob's own 32-byte AES-256-GCM key, base64url. It
+ *   rides INSIDE the sealed envelope (confidential to link holders) and is
+ *   signature-covered like every other field (a tampered pointer fails the
+ *   envelope signature before any fetch). Carrying a distinct key — rather
+ *   than reusing the fragment key — preserves the viewer's key-hygiene
+ *   contract: the fragment key is still dead (zeroed) the moment the
+ *   envelope is decrypted.
+ *
+ * This is a bearer-slice mechanism: possession of the link IS the read
+ * authority, so the content is fetched straight from the registry. In the
+ * policy / recipient-DID slices this field is absent and the viewer instead
+ * performs a capability-gated read from the node named in `target` — the
+ * node, not the registry, is the enforcement boundary there.
+ */
+export const contentPointerSchema = z
+  .object({
+    cid: z.string().refine(isCanonicalRawCid, {
+      message: "expected a canonical CIDv1 raw sha2-256 base32 CID",
+    }),
+    key: z.string().refine((value) => decodeBase64UrlOrNull(value)?.length === 32, {
+      message: "expected base64url decoding to exactly 32 bytes",
+    }),
   })
   .strict();
 
@@ -167,6 +246,8 @@ export const unsignedShareEnvelopeSchema = z
     display: displaySchema,
     /** ISO 8601 UTC datetime. Advisory here; enforcement is the delegation's. */
     expiry: z.string().datetime(),
+    /** Bearer-slice sealed-content pointer (see contentPointerSchema). */
+    content: contentPointerSchema.optional(),
   })
   .strict();
 
@@ -175,6 +256,7 @@ export const shareEnvelopeSchema = unsignedShareEnvelopeSchema
   .strict();
 
 export type SessionJwk = z.infer<typeof sessionJwkSchema>;
+export type ContentPointer = z.infer<typeof contentPointerSchema>;
 export type PolicyTarget = z.infer<typeof policyTargetSchema>;
 export type BearerKeyTarget = z.infer<typeof bearerKeyTargetSchema>;
 export type RecipientDidTarget = z.infer<typeof recipientDidTargetSchema>;

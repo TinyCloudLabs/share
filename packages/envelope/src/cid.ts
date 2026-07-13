@@ -13,6 +13,26 @@ export async function computeCid(bytes: Uint8Array): Promise<string> {
 }
 
 /**
+ * Is `cidString` a canonical CIDv1/raw/sha2-256 lowercase-base32 CID *string*
+ * (no bytes check — see `verifyCid` for that)? Used by the envelope schema's
+ * `content.cid` pointer so a non-canonical or non-raw CID never gets signed.
+ */
+export function isCanonicalRawCid(cidString: string): boolean {
+  let cid: CID;
+  try {
+    cid = CID.parse(cidString);
+  } catch {
+    return false;
+  }
+  return (
+    cid.version === 1 &&
+    cid.code === raw.code &&
+    cid.multihash.code === sha256.code &&
+    cid.toString() === cidString
+  );
+}
+
+/**
  * Verify that `cidString` is the canonical CIDv1/raw/sha2-256 base32 CID of `bytes`.
  * Returns false for any mismatch: wrong hash, wrong version/codec, or a
  * non-canonical string form of the right CID.

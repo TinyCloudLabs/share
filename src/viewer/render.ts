@@ -20,31 +20,34 @@
  *     → Trusted Types policy → innerHTML     (the sanitized string is
  *       wrapped by the named policy below where Trusted Types exist)
  *
- * Mermaid blocks (```mermaid) are then upgraded: diagram SOURCE TEXT only is
- * handed to a bundled, version-pinned mermaid with securityLevel:"strict",
- * and the returned SVG is sanitized AGAIN (DOMPurify svg profile, script/
- * foreignObject forbidden, remote refs and url()-styles stripped) before
- * being placed in an isolated element. Any failure — including a render
- * that exceeds the timeout — leaves the sanitized source visible as plain
- * code; fail closed.
+ * Mermaid blocks (```mermaid) are then upgraded through the STAGE-4
+ * OPAQUE-ORIGIN SANDBOX (viewer spec §3.2-3.3 — the stage-3 boxed TODO here,
+ * now RESOLVED): diagram SOURCE TEXT only is posted into an iframe with
+ * `sandbox="allow-scripts"` (no `allow-same-origin` — opaque origin) whose
+ * own CSP forbids all network (`default-src 'none'; script-src
+ * 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:`), where a
+ * bundled, version-pinned mermaid runs with securityLevel:"strict". The
+ * frame never receives the fragment key, session key, envelope, or any other
+ * document content — see mermaid-sandbox.ts / mermaid-frame.ts. The SVG that
+ * comes back over the narrow postMessage protocol is UNTRUSTED: it is
+ * sanitized AGAIN here (DOMPurify svg profile, script/foreignObject
+ * forbidden, remote refs and url()-styles stripped) and its element count is
+ * bounded (MAX_SVG_NODES). Any failure — render error, node-count breach, or
+ * a timeout (which DESTROYS the frame: real cancellation, the stage-3
+ * abandon-only gap) — leaves the sanitized source visible as plain code;
+ * fail closed.
  *
- * ============================================================================
- * TODO(stage-4 HARD PREREQUISITE — viewer spec §3.2-3.3): opaque-origin
- * sandbox iframe for mermaid (and the final document preview).
- *
- * Before stage 4 renders REAL FILE BYTES fetched from the node, mermaid MUST
- * be moved out of this privileged document into an opaque-origin iframe
- * (`sandbox="allow-scripts"` WITHOUT `allow-same-origin`, CSP
- * `default-src 'none'`) returning SVG over a narrow postMessage protocol,
- * and the final document must render in a scriptless sandboxed preview
- * iframe. This is NOT optional hardening: mermaid has a repeated XSS
- * advisory history, in-document double-sanitization is a mitigation for the
- * stage-3 placeholder only, and a sandbox is also the only real answer to
- * mermaid DoS (a synchronous main-thread hang cannot be aborted from this
- * document — the timeout below abandons, it cannot kill). Do not ship
- * stage-4 node-read content through this pipeline without the sandbox.
- * Do not remove this TODO until the sandbox exists.
- * ============================================================================
+ * FINAL BOUNDARY (spec §3.3, closing the last stage-4 gap): the assembled
+ * document — sanitized markdown HTML with the sanitized mermaid SVGs
+ * substituted in — is staged on a DETACHED element (never attached to the
+ * privileged document, which holds the fragment key and content key),
+ * bounded by a TOTAL node-count cap (MAX_PREVIEW_NODES; breach throws
+ * ContentTooLargeError → the caller shows a "content too large" state), and
+ * then shipped as ONE sanitized HTML string into the SCRIPTLESS preview
+ * iframe (preview-frame.ts: sandbox="" — opaque origin AND parser-level
+ * script blocking, own strict CSP, no message channel). The privileged
+ * document keeps only the chrome; the content the user reads lives entirely
+ * inside that frame.
  */
 import DOMPurify from "dompurify";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -53,6 +56,12 @@ import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
+
+import { createPreviewFrame } from "./preview-frame.js";
+import { setSanitizedInnerHtml, TRUSTED_TYPES_POLICY_NAME } from "./trusted-html.js";
+
+/** Re-exported so existing importers/tests keep one entry point. */
+export { TRUSTED_TYPES_POLICY_NAME };
 
 /**
  * DoS containment (spec §3.4): bound source size and diagram count.
@@ -64,62 +73,51 @@ export const MAX_MARKDOWN_BYTES = 1 * 1024 * 1024;
 export const MAX_MERMAID_BLOCKS = 12;
 export const MAX_MERMAID_SOURCE_CHARS = 20_000;
 /**
- * Per-diagram render budget. NOTE: Promise.race can only ABANDON an async
- * render — a synchronous main-thread hang is uninterruptible from here.
- * True cancellation (and a node-count bound) arrives with the stage-4
- * opaque-origin sandbox iframe (see the HARD PREREQUISITE TODO above),
- * where the whole frame can be torn down.
+ * Per-diagram render budget. A timeout DESTROYS the sandbox frame (real
+ * cancellation — a hung render dies with its frame) and every remaining
+ * diagram in the document stays as sanitized source; fail closed.
  */
 export const MERMAID_RENDER_TIMEOUT_MS = 5_000;
-
-// --------------------------------------------------------------- Trusted Types
-
 /**
- * Named Trusted Types policy (viewer spec §2 "Strict CSP + Trusted Types").
- * The policy wraps strings that have ALREADY been through the full
- * sanitization pipeline — sanitize first, then wrap; the policy itself adds
- * no sanitization and must never be handed raw input. Its name is pinned in
- * the viewer CSP (`trusted-types` directive in viewer.html). Feature-
- * detected so the pipeline still works where Trusted Types are unsupported.
+ * DoS containment (spec §3.4): maximum element count of a single sanitized
+ * diagram SVG. Counted on the final sanitized markup in a DETACHED host
+ * before it joins the assembled document; a breach leaves the source visible
+ * instead. Generous for legitimate diagrams (hundreds of nodes), hostile to
+ * element bombs.
  */
-export const TRUSTED_TYPES_POLICY_NAME = "share-viewer-html";
-
-interface SanitizedHtmlPolicy {
-  createHTML(input: string): unknown;
-}
-interface TrustedTypesFactory {
-  createPolicy(
-    name: string,
-    rules: { createHTML(input: string): string },
-  ): SanitizedHtmlPolicy;
-}
-
-let sanitizedHtmlPolicy: SanitizedHtmlPolicy | null | undefined;
-
-function trustedHtmlPolicy(): SanitizedHtmlPolicy | null {
-  if (sanitizedHtmlPolicy === undefined) {
-    const trustedTypes = (globalThis as { trustedTypes?: TrustedTypesFactory })
-      .trustedTypes;
-    sanitizedHtmlPolicy =
-      trustedTypes !== undefined
-        ? trustedTypes.createPolicy(TRUSTED_TYPES_POLICY_NAME, {
-            createHTML: (input) => input,
-          })
-        : null;
-  }
-  return sanitizedHtmlPolicy;
-}
-
+export const MAX_SVG_NODES = 5_000;
 /**
- * THE innerHTML sink for the viewer: every innerHTML assignment routes
- * through here, and only already-sanitized strings may be passed. Under
- * Trusted Types enforcement the assignment carries the named policy's
- * TrustedHTML; elsewhere it degrades to the plain (sanitized) string.
+ * DoS containment (spec §3.4): maximum TOTAL element count of the final
+ * assembled document (markdown HTML + substituted mermaid SVGs), measured on
+ * the detached staging element before anything ships to the preview frame —
+ * the whole-document bound the per-diagram MAX_SVG_NODES cap doesn't give
+ * (12 diagrams × 5k nodes alone could reach 60k). A breach throws
+ * ContentTooLargeError and NOTHING renders; fail closed. Generous for
+ * legitimate documents (tens of thousands of elements), hostile to node
+ * bombs assembled from many small pieces.
  */
-function setSanitizedInnerHtml(element: HTMLElement, sanitizedHtml: string): void {
-  const policy = trustedHtmlPolicy();
-  element.innerHTML =
-    policy !== null ? (policy.createHTML(sanitizedHtml) as string) : sanitizedHtml;
+export const MAX_PREVIEW_NODES = 50_000;
+
+/** Timeout marker so callers can distinguish "hung" from "failed". */
+export class TimeoutError extends Error {}
+
+/** Node-count-cap marker so callers can show a "content too large" state. */
+export class ContentTooLargeError extends Error {}
+
+/** What renderMarkdownInto needs from the mermaid sandbox (mermaid-sandbox.ts). */
+export interface MermaidSandboxLike {
+  render(source: string): Promise<string>;
+  destroy(): void;
+}
+export type MermaidSandboxFactory = (doc: Document) => MermaidSandboxLike;
+
+export interface RenderMarkdownOptions {
+  /** Sandbox factory override (tests inject a shimmed frame). */
+  mermaidSandbox?: MermaidSandboxFactory;
+  /** Per-diagram timeout override (tests only). */
+  mermaidTimeoutMs?: number;
+  /** Total node-count budget override (tests only). */
+  previewNodeBudget?: number;
 }
 
 // ------------------------------------------------- remote-resource stripping
@@ -260,9 +258,9 @@ export function sanitizeSvg(svg: string): string {
 }
 
 /**
- * Abandon `promise` if it hasn't settled within `ms`. NOTE this cannot
- * cancel the underlying work (see MERMAID_RENDER_TIMEOUT_MS) — it only
- * unblocks the pipeline and lets the caller fail closed.
+ * Reject with a TimeoutError if `promise` hasn't settled within `ms`. The
+ * race itself only ABANDONS the work — cancellation is the caller's job (the
+ * mermaid path destroys the sandbox frame when it sees a TimeoutError).
  */
 export async function withTimeout<T>(
   promise: Promise<T>,
@@ -275,7 +273,7 @@ export async function withTimeout<T>(
       promise,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          () => reject(new TimeoutError(`${label} timed out after ${ms}ms`)),
           ms,
         );
       }),
@@ -287,15 +285,28 @@ export async function withTimeout<T>(
 
 /**
  * Render markdown into `container`. This is THE content entry point: stage 4
- * feeds node-read file bytes through this same function (BEHIND the sandbox
- * iframe demanded by the TODO above); stage-3 tests feed it hostile
- * payloads. `display.mode === "source"` (a narrowing-only hint, viewer spec
- * §1) renders the raw text in a <pre> instead of as a document.
+ * feeds decrypted share-content bytes through it (present.ts), and the test
+ * suites feed it hostile payloads. `display.mode === "source"` (a
+ * narrowing-only hint, viewer spec §1) renders the raw text in a <pre>
+ * instead of as a document — textContent assignment parses nothing and is
+ * inert, so source mode needs no frame.
+ *
+ * Document mode (spec §3.3): the sanitized HTML is staged on a DETACHED
+ * element in the privileged document's realm — never attached to its DOM —
+ * where the mermaid blocks are upgraded and the TOTAL node count is bounded.
+ * Only then is the assembled document serialized and shipped into the
+ * scriptless preview iframe (preview-frame.ts), which is the single child
+ * the container ever receives. Nothing but that one sanitized HTML string
+ * crosses the boundary. Throws (container untouched — fail closed):
+ *  - RangeError            when the markdown exceeds MAX_MARKDOWN_BYTES;
+ *  - ContentTooLargeError  when the assembled document exceeds the node
+ *                          budget (MAX_PREVIEW_NODES).
  */
 export async function renderMarkdownInto(
   container: HTMLElement,
   markdown: string,
   mode: "document" | "source" = "document",
+  options: RenderMarkdownOptions = {},
 ): Promise<void> {
   if (mode === "source") {
     container.replaceChildren();
@@ -305,53 +316,86 @@ export async function renderMarkdownInto(
     container.append(pre);
     return;
   }
-  setSanitizedInnerHtml(container, await markdownToSanitizedHtml(markdown));
-  await upgradeMermaidBlocks(container);
+  const doc = container.ownerDocument;
+  const staging = doc.createElement("div"); // DETACHED — never joins the DOM
+  setSanitizedInnerHtml(staging, await markdownToSanitizedHtml(markdown));
+  await upgradeMermaidBlocks(staging, options);
+
+  const budget = options.previewNodeBudget ?? MAX_PREVIEW_NODES;
+  const nodeCount = staging.querySelectorAll("*").length;
+  if (nodeCount > budget) {
+    throw new ContentTooLargeError(
+      `rendered document too large to display: ${nodeCount} nodes > ${budget}`,
+    );
+  }
+  container.replaceChildren(createPreviewFrame(doc, staging.innerHTML));
 }
 
 /**
- * Replace ```mermaid code blocks with rendered, re-sanitized SVG. Mermaid is
- * imported lazily (bundled by Vite — never a CDN script tag) so documents
- * without diagrams pay nothing. Every per-block failure — including a
- * timed-out render — falls back to the already-sanitized source text.
+ * Replace ```mermaid code blocks with sandbox-rendered, re-sanitized,
+ * node-count-bounded SVG (spec §3.2-3.3). The sandbox module is imported
+ * lazily so documents without diagrams pay nothing. Fail-closed ladder:
+ *  - sandbox unavailable            → all sources stay as sanitized code;
+ *  - a render errors                → that block stays, the rest proceed;
+ *  - a render TIMES OUT             → the frame is DESTROYED (kills the hung
+ *    render) and all remaining blocks stay as sanitized source;
+ *  - sanitized SVG exceeds MAX_SVG_NODES → that block stays as source.
+ * The sanitized-SVG node count is measured on a DETACHED host element; only
+ * hosts that pass the bound ever join the (itself detached) staging tree,
+ * whose TOTAL node count renderMarkdownInto bounds again before anything
+ * ships to the preview frame.
  */
-async function upgradeMermaidBlocks(container: HTMLElement): Promise<void> {
+async function upgradeMermaidBlocks(
+  container: HTMLElement,
+  options: RenderMarkdownOptions,
+): Promise<void> {
   const blocks = Array.from(
     container.querySelectorAll<HTMLElement>("pre > code.language-mermaid"),
   ).slice(0, MAX_MERMAID_BLOCKS);
   if (blocks.length === 0) return;
+  const timeoutMs = options.mermaidTimeoutMs ?? MERMAID_RENDER_TIMEOUT_MS;
 
-  let mermaid: typeof import("mermaid").default;
+  let sandbox: MermaidSandboxLike;
   try {
-    mermaid = (await import("mermaid")).default;
-    mermaid.initialize({
-      startOnLoad: false,
-      // Strict mode INSIDE our sanitization, not instead of it (§3.2).
-      securityLevel: "strict",
-      theme: "neutral",
-    });
+    const factory =
+      options.mermaidSandbox ??
+      (await import("./mermaid-sandbox.js")).createMermaidSandbox;
+    sandbox = factory(container.ownerDocument);
   } catch {
-    return; // mermaid unavailable → sources stay as sanitized code blocks
+    return; // sandbox unavailable → sources stay as sanitized code blocks
   }
 
-  for (const [index, code] of blocks.entries()) {
-    // Diagram SOURCE TEXT only crosses into mermaid — never document HTML,
-    // never keys or session state.
-    const source = code.textContent ?? "";
-    if (source.length > MAX_MERMAID_SOURCE_CHARS) continue;
-    try {
-      const { svg } = await withTimeout(
-        mermaid.render(`share-viewer-mermaid-${index}`, source),
-        MERMAID_RENDER_TIMEOUT_MS,
-        "mermaid render",
-      );
-      const clean = sanitizeSvg(svg);
-      const host = container.ownerDocument.createElement("div");
-      host.className = "viewer-mermaid";
-      setSanitizedInnerHtml(host, clean);
-      code.parentElement?.replaceWith(host);
-    } catch {
-      // Fail closed: leave the sanitized source visible as plain code.
+  try {
+    for (const code of blocks) {
+      // Diagram SOURCE TEXT only crosses into the sandbox — never document
+      // HTML, never keys or session state (mermaid-sandbox.ts module doc).
+      const source = code.textContent ?? "";
+      if (source.length > MAX_MERMAID_SOURCE_CHARS) continue;
+      try {
+        const svg = await withTimeout(
+          sandbox.render(source),
+          timeoutMs,
+          "mermaid render",
+        );
+        const clean = sanitizeSvg(svg);
+        // Node-count bound, measured DETACHED: the host joins the document
+        // only if the sanitized markup is within budget.
+        const host = container.ownerDocument.createElement("div");
+        host.className = "viewer-mermaid";
+        setSanitizedInnerHtml(host, clean);
+        if (host.querySelectorAll("*").length > MAX_SVG_NODES) continue;
+        code.parentElement?.replaceWith(host);
+      } catch (error) {
+        if (error instanceof TimeoutError) {
+          // The frame may be wedged — kill it and stop upgrading. Remaining
+          // diagrams stay as sanitized source; fail closed.
+          sandbox.destroy();
+          return;
+        }
+        // Per-block render failure: leave the sanitized source visible.
+      }
     }
+  } finally {
+    sandbox.destroy();
   }
 }

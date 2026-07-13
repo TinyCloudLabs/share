@@ -20,13 +20,24 @@
  *      signer is the envelope's OWN signerDid — see the long note below
  *   7. resource selector                   → only { kind: "exact" } in this
  *      slice (single-file viewer); prefix/folder is a later stage
- *   8. checkBearerDelegation               → the embedded delegation must be
- *      a decodable token whose delegatee IS the embedded session key's
- *      did:key and whose capabilities cover the signed target with read
- *      (viewer spec §1: mode derives from EFFECTIVE capabilities; a garbage
- *      delegation must never reach a "grants read access" UI)
- *   9. expiry                              → advisory here (enforcement is
- *      the delegation's, at the node), but the viewer still fails closed
+ *   8. expiry                              → fail closed on a dead share
+ *      before any capability claim is evaluated
+ *   9. checkBearerDelegation               → the embedded delegation must be
+ *      a decodable token, EdDSA-signed by its own iss (verified), unexpired
+ *      (exp required, nbf honored), whose delegatee IS the embedded session
+ *      key's did:key and whose capabilities cover the signed target with
+ *      read on canonical segment boundaries (viewer spec §1: mode derives
+ *      from EFFECTIVE capabilities; a garbage delegation must never reach a
+ *      "grants read access" UI)
+ *  10. content (stage 4, bearer only)      → if the SIGNED envelope carries a
+ *      `content` pointer, fetch that sealed blob from the registry (CID
+ *      re-verified), decrypt it with the pointer's own key, and return the
+ *      text for rendering. This direct registry fetch is a BEARER-SLICE
+ *      mechanism — possession of the link is the read authority. In the
+ *      policy/recipient-DID slices this step is replaced by a
+ *      capability-gated read from the node named in `target`, and envelopes
+ *      carry no content pointer. Fail closed: CID mismatch, AEAD failure,
+ *      or non-UTF-8 plaintext all block rendering entirely.
  *
  * The fragment key exists only as an argument through steps 1-3 and is
  * zeroed on EVERY return path out of this function — success and each error
@@ -35,6 +46,7 @@
  * before this pipeline runs).
  */
 import {
+  fromBase64Url,
   open,
   parseShareUrl,
   shareEnvelopeSchema,
@@ -59,9 +71,11 @@ export type ResolveResult =
   /**
    * Verified bearer single-file share. `senderVerified` is ALWAYS false in
    * bearer mode — see the note in `resolveShare` — and the UI must render
-   * the sender as "unverified", never with a checkmark.
+   * the sender as "unverified", never with a checkmark. `content` is the
+   * decrypted, CID-verified file text when the signed envelope carries a
+   * content pointer (stage 4); absent for pointer-less envelopes.
    */
-  | { state: "ok"; envelope: ShareEnvelope; senderVerified: false }
+  | { state: "ok"; envelope: ShareEnvelope; senderVerified: false; content?: string }
   /** The URL is not a well-formed /s/<cid>#k= share link. */
   | { state: "invalid-link"; detail: string }
   /** Registry unreachable / blob missing (deleted, expired, never existed). */
@@ -83,6 +97,14 @@ export type ResolveResult =
   | { state: "capability-invalid"; detail: string }
   /** Envelope expiry is in the past. */
   | { state: "expired"; envelope: ShareEnvelope }
+  /** Signed content pointer present, but the registry couldn't serve the blob. */
+  | { state: "content-fetch-failed"; detail: string }
+  /**
+   * Signed content pointer present, but the fetched bytes failed
+   * verification: CID mismatch, AEAD (wrong key / tampering), or
+   * non-UTF-8 plaintext. Nothing may be rendered.
+   */
+  | { state: "content-integrity-failed" }
   /** Valid envelope, but not a bearer + exact-path share (later stages). */
   | { state: "unsupported"; reason: UnsupportedReason; envelope: ShareEnvelope };
 
@@ -194,26 +216,66 @@ export async function resolveShare(
       return { state: "unsupported", reason: "prefix-resource", envelope };
     }
 
-    // 8. Effective-capability binding (viewer spec §1). The envelope
-    //    signature only proves the envelope wasn't altered; it says nothing
-    //    about whether the embedded delegation can authorize the embedded
-    //    key. Structurally decode the delegation and require (a) delegatee
-    //    == the session key's did:key and (b) a read capability covering
-    //    the signed target. Cryptographic chain verification stays the
-    //    node's job at read time (stage 4) — see delegation.ts.
-    const capability = checkBearerDelegation(envelope);
-    if (!capability.ok) {
-      return { state: "capability-invalid", detail: capability.detail };
-    }
-
-    // 9. Expiry — advisory metadata (the delegation is the enforcement),
-    //    but the viewer fails closed rather than presenting a dead share.
+    // 8. Expiry — checked BEFORE the delegation binding so a dead share
+    //    reports "expired", not a capability failure (create aligns the
+    //    delegation exp to always cover the envelope expiry, so anything
+    //    past the envelope expiry is dead on both clocks).
     const now = options.now?.() ?? Date.now();
     if (Date.parse(envelope.expiry) <= now) {
       return { state: "expired", envelope };
     }
 
-    return { state: "ok", envelope, senderVerified: false };
+    // 9. Effective-capability binding (viewer spec §1). The envelope
+    //    signature only proves the envelope wasn't altered; it says nothing
+    //    about whether the embedded delegation can authorize the embedded
+    //    key. Decode AND verify the delegation (EdDSA signature against its
+    //    own iss, required exp / optional nbf) and require (a) delegatee
+    //    == the session key's did:key and (b) a read capability covering
+    //    the signed target on canonical segment boundaries. Full CHAIN
+    //    verification against owner roots stays the node's job at read time
+    //    in later slices — see delegation.ts.
+    const capability = checkBearerDelegation(envelope, { now: () => now });
+    if (!capability.ok) {
+      return { state: "capability-invalid", detail: capability.detail };
+    }
+
+    // 10. Content (stage 4, bearer slice): fetch + verify + decrypt the
+    //     sealed content blob the SIGNED pointer names. Runs only after
+    //     every check above passed. Direct registry fetch is the bearer
+    //     semantics (possession of the link is the authority); later slices
+    //     do a node capability-gated read here instead.
+    if (envelope.content === undefined) {
+      return { state: "ok", envelope, senderVerified: false };
+    }
+    let contentBlob: Uint8Array;
+    try {
+      contentBlob = await fetchBlob(options.registryBaseUrl, envelope.content.cid, {
+        ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
+      });
+    } catch (error) {
+      // A CID mismatch is an integrity failure (lying registry), not an
+      // availability failure — surface it as such and render NOTHING.
+      if (error instanceof CidMismatchError) {
+        return { state: "content-integrity-failed" };
+      }
+      if (error instanceof RegistryHttpError) {
+        return {
+          state: "content-fetch-failed",
+          detail: `registry returned ${error.status}`,
+        };
+      }
+      return { state: "content-fetch-failed", detail: message(error) };
+    }
+    const contentKey = fromBase64Url(envelope.content.key); // schema-validated 32 bytes
+    try {
+      const contentBytes = await open(contentBlob, contentKey);
+      const content = new TextDecoder("utf-8", { fatal: true }).decode(contentBytes);
+      return { state: "ok", envelope, senderVerified: false, content };
+    } catch {
+      return { state: "content-integrity-failed" };
+    } finally {
+      contentKey.fill(0);
+    }
   } finally {
     // Memory-only key hygiene: the fragment key is dead after decryption.
     key32.fill(0);

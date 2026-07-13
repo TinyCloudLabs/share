@@ -1,4 +1,16 @@
-export { computeCid, verifyCid } from "./cid.js";
+export { computeCid, isCanonicalRawCid, verifyCid } from "./cid.js";
+export {
+  BEARER_READ_ABILITY,
+  READ_ABILITIES,
+  bearerResourceUri,
+  checkBearerDelegation,
+  mintBearerDelegation,
+  requiredResourceUri,
+  resourceUriCovers,
+  type CheckBearerDelegationOptions,
+  type DelegationCheckResult,
+  type MintBearerDelegationOptions,
+} from "./bearer-delegation.js";
 export {
   ENVELOPE_AAD_LABEL,
   SEALED_BLOB_VERSION,
@@ -14,8 +26,11 @@ export { canonicalize } from "./jcs.js";
 export {
   authorizationTargetSchema,
   bearerKeyTargetSchema,
+  contentPointerSchema,
   displaySchema,
   isCanonicalHttpsOrigin,
+  isCanonicalPathSegment,
+  isCanonicalResourcePath,
   policyTargetSchema,
   recipientDidTargetSchema,
   resourceSelectorSchema,
@@ -26,6 +41,7 @@ export {
   unsignedShareEnvelopeSchema,
   type AuthorizationTarget,
   type BearerKeyTarget,
+  type ContentPointer,
   type EnvelopeSignature,
   type PolicyTarget,
   type RecipientDidTarget,

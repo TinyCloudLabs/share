@@ -11,8 +11,9 @@
 import "./viewer.css";
 
 import { REGISTRY_BASE_URL } from "./config.js";
+import { presentShare } from "./present.js";
 import { resolveShare } from "./resolve.js";
-import { renderResolving, renderViewerState } from "./ui.js";
+import { renderResolving } from "./ui.js";
 import { hrefForParse, scrubKeyFragment } from "./url.js";
 
 async function boot(): Promise<void> {
@@ -27,7 +28,7 @@ async function boot(): Promise<void> {
   const result = await resolveShare(href, {
     registryBaseUrl: REGISTRY_BASE_URL,
   });
-  renderViewerState(root, result);
+  await presentShare(root, result);
 }
 
 void boot();

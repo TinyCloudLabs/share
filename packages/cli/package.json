@@ -1,0 +1,29 @@
+{
+  "name": "@tinycloud/share-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bearer-share create CLI: seals file content + envelope, uploads both to the share registry, prints the /s/<cid>#k= link.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "tinycloud-share": "./bin/tinycloud-share.mjs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.2",
+    "@tinycloud/share-envelope": "*",
+    "@tinycloud/share-registry": "*",
+    "tsx": "^4.19.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

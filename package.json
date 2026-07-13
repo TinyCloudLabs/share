@@ -26,6 +26,7 @@
     "unified": "11.0.5"
   },
   "devDependencies": {
+    "@tinycloud/share-cli": "*",
     "@types/node": "^20.19.0",
     "jsdom": "^26.1.0",
     "typescript": "^5.8.3",

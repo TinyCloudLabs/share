@@ -5,8 +5,10 @@
  *
  * All chrome is built with createElement/textContent — envelope-derived
  * strings (senderName, filename, paths) are ATTACKER-CONTROLLED and must
- * never travel through innerHTML. The only innerHTML sinks in the viewer
- * are the two sanitized outputs in render.ts.
+ * never travel through innerHTML. The only TrustedHTML sinks in the viewer
+ * are render.ts's sanitized outputs (detached staging innerHTML) and the
+ * scriptless preview frame's srcdoc (preview-frame.ts), all routed through
+ * trusted-html.ts.
  *
  * Fail-closed invariant: the document content container exists ONLY in the
  * "ok" state. Every other state renders a message and nothing else, so no
@@ -92,10 +94,14 @@ const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: strin
 
 /**
  * Render the verified bearer single-file share. Returns the content
- * container so the caller (stage 4's node read; tests today) can feed file
- * bytes through render.ts's sanitization pipeline.
+ * container so the caller (present.ts) can feed the decrypted file text
+ * through render.ts's sanitization pipeline.
  */
-function renderOk(root: HTMLElement, envelope: ShareEnvelope): HTMLElement {
+function renderOk(
+  root: HTMLElement,
+  envelope: ShareEnvelope,
+  hasContent: boolean,
+): HTMLElement {
   root.replaceChildren();
   const doc = root.ownerDocument;
 
@@ -127,35 +133,38 @@ function renderOk(root: HTMLElement, envelope: ShareEnvelope): HTMLElement {
     ),
   );
 
-  // Content area. Stage 3 has no node-read client, so the envelope alone
-  // cannot yield file bytes — render a placeholder from the signed display
-  // metadata. Stage 4 replaces the placeholder by streaming the fetched
-  // file through renderMarkdownInto(content, …).
+  // Content area. When the resolve step recovered file text (stage 4:
+  // verified, CID-checked, decrypted `content`), the container starts EMPTY
+  // and the caller (present.ts) streams the text through render.ts's
+  // sanitization pipeline. For pointer-less envelopes there are no bytes to
+  // show — render an honest placeholder from the signed display metadata.
   //
   // HONESTY CONTRACT for this copy: this build verified, client-side, that
   // the envelope is signed and intact and that its embedded delegation is
   // BOUND to this link's key and NAMES read access to the target. Whether
-  // the delegation chain actually authorizes the read is the node's
-  // decision at fetch time (stage 4) — so the copy says "carries … naming
-  // read access", never "grants read access".
+  // a delegation chain actually authorizes a node read is the node's
+  // decision at fetch time (the policy/recipient-DID slices) — so the copy
+  // says "carries … naming read access", never "grants read access".
   const content = el(doc, "main", "viewer-content");
-  const placeholder = el(doc, "div", "viewer-placeholder");
-  placeholder.append(
-    el(doc, "h2", "viewer-placeholder-title", "Share link checks passed"),
-    el(
-      doc,
-      "p",
-      "viewer-placeholder-detail",
-      `This link is intact and carries a delegation bound to its embedded key, naming read access to ${envelope.target.resource.path} on ${envelope.target.origin}.`,
-    ),
-    el(
-      doc,
-      "p",
-      "viewer-placeholder-detail",
-      "Content preview is coming in stage 4: the file is fetched from the node with the embedded session key, and the node independently verifies the delegation chain before serving it. This build checks and displays the share link itself.",
-    ),
-  );
-  content.append(placeholder);
+  if (!hasContent) {
+    const placeholder = el(doc, "div", "viewer-placeholder");
+    placeholder.append(
+      el(doc, "h2", "viewer-placeholder-title", "Share link checks passed"),
+      el(
+        doc,
+        "p",
+        "viewer-placeholder-detail",
+        `This link is intact and carries a delegation bound to its embedded key, naming read access to ${envelope.target.resource.path} on ${envelope.target.origin}.`,
+      ),
+      el(
+        doc,
+        "p",
+        "viewer-placeholder-detail",
+        "It doesn't include an embedded file preview, though — it was created without a content attachment. Ask the sender for a fresh link.",
+      ),
+    );
+    content.append(placeholder);
+  }
   root.append(content);
 
   // Footer: expiry + the agent-path bridge hint (blueprint §5
@@ -190,7 +199,7 @@ export function renderViewerState(
 ): HTMLElement | null {
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope);
+      return renderOk(root, result.envelope, result.content !== undefined);
     case "invalid-link":
       renderErrorState(
         root,
@@ -245,6 +254,20 @@ export function renderViewerState(
         root,
         "This share has expired",
         `It expired on ${formatExpiry(result.envelope.expiry)}. Ask the sender for a fresh link.`,
+      );
+      return null;
+    case "content-fetch-failed":
+      renderErrorState(
+        root,
+        "Couldn't fetch the shared file",
+        "The share link verified, but the registry didn't return the file's encrypted bytes — they may have been deleted or expired, or the registry is unreachable. Ask the sender for a fresh link.",
+      );
+      return null;
+    case "content-integrity-failed":
+      renderErrorState(
+        root,
+        "The shared file failed its integrity check",
+        "The registry returned bytes for this file that don't match the fingerprint signed into the share, or they couldn't be decrypted. Refusing to show anything.",
       );
       return null;
     case "unsupported": {

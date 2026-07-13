@@ -1,0 +1,9 @@
+# Static-host HTTP headers (Cloudflare Pages format). REQUIRED in production:
+# the mermaid sandbox document may only ever be framed by our own origin, and
+# frame-ancestors cannot be expressed in a <meta> CSP — it must arrive as an
+# HTTP header. Keep in sync with MERMAID_SANDBOX_HTTP_HEADERS in
+# src/viewer/mermaid-frame.ts (the Vite dev/preview middleware sends the same
+# headers). Hosts that do not read _headers need equivalent configuration.
+/mermaid-sandbox.html
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN

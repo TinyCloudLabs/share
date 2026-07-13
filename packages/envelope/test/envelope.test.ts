@@ -227,6 +227,73 @@ describe("envelope schema (strict zod)", () => {
     }
   });
 
+  it("enforces the canonical resource-path grammar at schema level (fail closed)", () => {
+    const base = makeUnsignedEnvelope();
+    const withPath = (kind: "exact" | "prefix", path: string): unknown => ({
+      ...base,
+      target: { ...base.target, resource: { kind, path } },
+    });
+    // traversal aliases, empty segments, encoded separators, backslash,
+    // control chars: rejected before any signing or comparison can happen
+    const hostilePaths = [
+      "shares/share-1/../victim.md",
+      "../victim.md",
+      "shares//share-1/f.md",
+      "/shares/share-1/f.md",
+      "shares/share-1/",
+      "shares/./f.md",
+      "shares/share-1/f%2e%2e.md",
+      "shares/share-1%2fescape.md",
+      "shares/share-1%5c.md",
+      "shares\\share-1\\f.md",
+      "shares/share-1/f\u0000.md",
+      "shares/share-1/f\t.md",
+      ".",
+      "..",
+    ];
+    for (const path of hostilePaths) {
+      expect(
+        unsignedShareEnvelopeSchema.safeParse(withPath("exact", path)).success,
+        `exact path ${JSON.stringify(path)} must be rejected`,
+      ).toBe(false);
+    }
+    // canonical paths parse; prefix selectors may carry ONE trailing slash
+    expect(
+      unsignedShareEnvelopeSchema.safeParse(withPath("exact", "shares/s-1/f.md")).success,
+    ).toBe(true);
+    expect(
+      unsignedShareEnvelopeSchema.safeParse(withPath("prefix", "shares/s-1/")).success,
+    ).toBe(true);
+    expect(
+      unsignedShareEnvelopeSchema.safeParse(withPath("prefix", "shares/s-1")).success,
+    ).toBe(true);
+    expect(
+      unsignedShareEnvelopeSchema.safeParse(withPath("prefix", "shares/s-1//")).success,
+    ).toBe(false);
+    expect(
+      unsignedShareEnvelopeSchema.safeParse(withPath("prefix", "shares/../")).success,
+    ).toBe(false);
+  });
+
+  it("requires spaceId to be a single canonical path segment (it joins the resource URI)", () => {
+    const base = makeUnsignedEnvelope();
+    for (const spaceId of ["space/../other", "a/b", "..", ".", "sp%2fid", "sp\\id", ""]) {
+      expect(
+        unsignedShareEnvelopeSchema.safeParse({
+          ...base,
+          target: { ...base.target, spaceId },
+        }).success,
+        `spaceId ${JSON.stringify(spaceId)} must be rejected`,
+      ).toBe(false);
+    }
+    expect(
+      unsignedShareEnvelopeSchema.safeParse({
+        ...base,
+        target: { ...base.target, spaceId: "space-abc" },
+      }).success,
+    ).toBe(true);
+  });
+
   it("signed schema requires a well-formed signature", () => {
     const signed = signEnvelope(makeUnsignedEnvelope(), TEST_PRIV_KEY);
     expect(shareEnvelopeSchema.safeParse(signed).success).toBe(true);
