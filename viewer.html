@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Strict CSP for the VIEWER route (viewer spec §2). This meta tag is the
+  in-document baseline; production must additionally serve these as HTTP
+  headers (meta CSP cannot express frame-ancestors) with connect-src set to
+  the deployment's registry/node allowlist. Notes:
+  - script-src 'self': every executable is bundled by Vite — no CDN scripts.
+  - connect-src: 'self' + the default dev registry (src/viewer/config.ts);
+    keep in sync with VITE_SHARE_REGISTRY_URL.
+  - style-src allows 'unsafe-inline' because mermaid's strict mode injects
+    theme <style> elements; styles are not the guarded execution vector.
+  - In `vite dev`, HMR websockets are not in connect-src — the viewer page
+    needs a manual reload during development. Deliberate: dev convenience
+    never loosens the shipped policy.
+  - Trusted Types are enforced (require-trusted-types-for 'script'): the
+    only allowed policies are the viewer's own sanitized-HTML wrapper
+    (share-viewer-html, see render.ts) and DOMPurify's internal policy
+    ('dompurify'; 'allow-duplicates' because mermaid bundles its own
+    DOMPurify instance that registers the same name). Where a browser lacks
+    Trusted Types the directives are ignored and the sanitized-string path
+    still applies. If mermaid's internal DOM writes violate enforcement,
+    its render throws and the diagram falls back to sanitized source text —
+    fail closed, never fail open.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:8787 http://localhost:8787; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
+<!-- The URL fragment is the decryption key: never leak the URL anywhere. -->
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>TinyCloud Share</title>
+</head>
+<body>
+<div id="viewer"></div>
+<script type="module" src="/src/viewer/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,108 @@
+/* Viewer styles — simple and clean per the stage-3 brief; matches the
+   spec site's palette without importing its stylesheet. */
+:root {
+  --bg: #fcfcfb;
+  --bg-raised: #ffffff;
+  --ink: #131312;
+  --ink-soft: #4b4b48;
+  --ink-faint: #8a8a85;
+  --line: #dcdcd7;
+  --accent: #cc3d1a;
+  --accent-soft: rgba(204, 61, 26, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101010;
+    --bg-raised: #171716;
+    --ink: #eceae5;
+    --ink-soft: #b3b1aa;
+    --ink-faint: #7a7871;
+    --line: #2e2e2b;
+    --accent: #ff6a3d;
+    --accent-soft: rgba(255, 106, 61, 0.1);
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+#viewer {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2rem 1.2rem 4rem;
+}
+
+.viewer-state { padding: 4rem 0; text-align: center; }
+.viewer-state-title { font-size: 1.4rem; margin: 0 0 0.6rem; }
+.viewer-state-detail { color: var(--ink-soft); max-width: 46ch; margin: 0 auto; }
+.viewer-error .viewer-state-title { color: var(--accent); }
+
+.viewer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.95rem;
+}
+.viewer-filename { font-weight: 650; }
+.viewer-sender { color: var(--ink-soft); }
+.viewer-mode {
+  margin-left: auto;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.6rem;
+}
+.viewer-bearer-note { font-size: 0.8rem; color: var(--ink-faint); margin: 0.6rem 0 0; }
+
+.viewer-content { padding: 1.6rem 0; }
+.viewer-content pre {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  overflow-x: auto;
+}
+.viewer-content code { font-family: ui-monospace, Menlo, monospace; font-size: 0.86em; }
+.viewer-content table { border-collapse: collapse; }
+.viewer-content th, .viewer-content td { border: 1px solid var(--line); padding: 0.4rem 0.7rem; }
+.viewer-content img { max-width: 100%; }
+.viewer-mermaid { margin: 1rem 0; overflow-x: auto; }
+.viewer-mermaid svg { max-width: 100%; height: auto; }
+
+.viewer-placeholder {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  padding: 1.6rem 1.4rem;
+}
+.viewer-placeholder-title { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.viewer-placeholder-detail { color: var(--ink-soft); margin: 0.4rem 0; overflow-wrap: anywhere; }
+
+.viewer-footer {
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.viewer-agent-hint {
+  margin-top: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  padding: 0.7rem 1rem;
+}
+.viewer-agent-hint-text { margin: 0; }
+.viewer-source { white-space: pre-wrap; }

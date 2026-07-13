@@ -9,12 +9,27 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "vitest run --config vitest.viewer.config.ts",
+    "typecheck": "tsc --noEmit",
     "sync:wireframes": "cp wireframes/*.svg public/wireframes/"
   },
   "dependencies": {
-    "mermaid": "^11.0.0"
+    "@tinycloud/share-envelope": "*",
+    "@tinycloud/share-registry": "*",
+    "dompurify": "3.4.12",
+    "mermaid": "11.16.0",
+    "rehype-sanitize": "6.0.0",
+    "rehype-stringify": "10.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "unified": "11.0.5"
   },
   "devDependencies": {
-    "vite": "^6.0.0"
+    "@types/node": "^20.19.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.2.4"
   }
 }
