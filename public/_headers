@@ -1,4 +1,5 @@
-# Static-host HTTP headers (Cloudflare Pages format). REQUIRED in production:
+# Static-host HTTP headers (Cloudflare Pages format). Vite replaces the
+# deployment placeholders below during every production build. REQUIRED:
 # the mermaid sandbox document may only ever be framed by our own origin, and
 # frame-ancestors cannot be expressed in a <meta> CSP — it must arrive as an
 # HTTP header. Keep in sync with MERMAID_SANDBOX_HTTP_HEADERS in
@@ -7,3 +8,9 @@
 /mermaid-sandbox.html
   Content-Security-Policy: frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
+/viewer.html
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' __TINYCLOUD_REGISTRY_CONNECT_SRC__ __TINYCLOUD_NODE_CONNECT_SRC__; font-src 'self'; frame-src 'self' __TINYCLOUD_OPENKEY_FRAME_SRC__; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'
+  Referrer-Policy: no-referrer
+/s/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' __TINYCLOUD_REGISTRY_CONNECT_SRC__ __TINYCLOUD_NODE_CONNECT_SRC__; font-src 'self'; frame-src 'self' __TINYCLOUD_OPENKEY_FRAME_SRC__; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'
+  Referrer-Policy: no-referrer

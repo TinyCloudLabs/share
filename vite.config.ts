@@ -1,13 +1,21 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import {
   defineConfig,
+  loadEnv,
   type Plugin,
   type PreviewServer,
   type ViteDevServer,
 } from "vite";
+
+import {
+  parseAllowedNodeOrigins,
+  parseOpenKeyOrigin,
+  parseRegistryOrigin,
+  replaceViewerDeploymentCspSources,
+} from "./src/viewer/deployment-config.ts";
 
 import {
   MERMAID_SANDBOX_HTTP_HEADERS,
@@ -98,15 +106,58 @@ function mermaidSandboxHtml(): Plugin {
   };
 }
 
-export default defineConfig({
-  base: "/",
-  plugins: [shareRouteRewrite(), mermaidSandboxHtml()],
-  build: {
-    rollupOptions: {
-      input: {
-        main: fileURLToPath(new URL("index.html", import.meta.url)),
-        viewer: fileURLToPath(new URL("viewer.html", import.meta.url)),
+function viewerDeploymentCsp(
+  nodeOrigins: readonly string[],
+  openKeyOrigin: string,
+  registryOrigin: string,
+): Plugin {
+  const replaceSources = (text: string): string =>
+    replaceViewerDeploymentCspSources(text, {
+      registryOrigin,
+      nodeOrigins,
+      openKeyOrigin,
+    });
+  return {
+    name: "viewer-deployment-csp",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html, context) {
+        if (!context.filename.endsWith("viewer.html")) return html;
+        return replaceSources(html);
       },
     },
-  },
+    writeBundle(outputOptions) {
+      const outputDirectory = outputOptions.dir ?? "dist";
+      const headersPath = fileURLToPath(new URL(`${outputDirectory}/_headers`, `file://${process.cwd()}/`));
+      if (existsSync(headersPath)) {
+        writeFileSync(headersPath, replaceSources(readFileSync(headersPath, "utf8")));
+      }
+    },
+  };
+}
+
+export default defineConfig(({ command, mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  const nodeOrigins = parseAllowedNodeOrigins(env.VITE_SHARE_ALLOWED_NODE_ORIGINS);
+  const openKeyOrigin = parseOpenKeyOrigin(env.VITE_SHARE_OPENKEY_ORIGIN);
+  const registryOrigin = parseRegistryOrigin(
+    env.VITE_SHARE_REGISTRY_URL,
+    command === "build",
+  );
+  return {
+    base: "/",
+    plugins: [
+      shareRouteRewrite(),
+      mermaidSandboxHtml(),
+      viewerDeploymentCsp(nodeOrigins, openKeyOrigin, registryOrigin),
+    ],
+    build: {
+      rollupOptions: {
+        input: {
+          main: fileURLToPath(new URL("index.html", import.meta.url)),
+          viewer: fileURLToPath(new URL("viewer.html", import.meta.url)),
+        },
+      },
+    },
+  };
 });

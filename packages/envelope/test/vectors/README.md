@@ -6,6 +6,16 @@ planned Rust verifier) MUST reproduce every derived field byte-for-byte from
 the inputs. Do not regenerate these values casually: a change here is a
 breaking wire-format change.
 
+`recipient-did-v2.json` is the corresponding Stage-0A contract for direct DID
+sharing. It freezes the domain-separated bytes and Ed25519 signature (whose
+signed projection includes `signerDid` and `algorithm`), a genuine current-SDK
+Cacao -> UCAN transport chain with both CID preimage rules, the atomic native
+authority result, and the reject catalog. The recorded native result is the
+output contract for the future SDK seam; individual unsigned parsed claims are
+never treated as authority. `test/native-fixture/run.mjs` independently checks
+the complete fixture with native TinyCloud Rust code at the exact pinned node
+commit, while `test/recipient-did-v2.test.ts` executes every reject entry.
+
 ## Inputs (chosen, deterministic)
 
 - `ed25519SeedHex` — 32-byte ed25519 seed (`0x07` × 32; the test key).

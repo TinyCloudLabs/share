@@ -5,4 +5,13 @@ import { register } from "tsx/esm/api";
 
 register();
 const { main } = await import("../src/cli.ts");
-process.exitCode = await main(process.argv.slice(2));
+const {
+  RECIPIENT_DID_ALLOWED_NODE_ORIGINS,
+  RECIPIENT_DID_SENDER_ADAPTER,
+} = await import("../src/sdk-adapter.ts");
+process.exitCode = await main(process.argv.slice(2), {
+  allowedNodeOrigins: RECIPIENT_DID_ALLOWED_NODE_ORIGINS,
+  ...(RECIPIENT_DID_SENDER_ADAPTER !== undefined
+    ? { recipientDidAdapter: RECIPIENT_DID_SENDER_ADAPTER }
+    : {}),
+});

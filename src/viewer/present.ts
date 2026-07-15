@@ -22,8 +22,9 @@ export async function presentShare(
   root: HTMLElement,
   result: ResolveResult,
   options: RenderMarkdownOptions = {},
+  actions: { onSelectRecipientAccount?: () => void } = {},
 ): Promise<HTMLElement | null> {
-  const container = renderViewerState(root, result);
+  const container = renderViewerState(root, result, actions);
   if (container === null || result.state !== "ok" || result.content === undefined) {
     return container;
   }

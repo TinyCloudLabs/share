@@ -10,28 +10,26 @@
  * - Dev builds fall back to the local dev registry
  *   (`npm run -w @tinycloud/share-registry dev-server -- --port 8787`).
  *
- * NOTE: the CSP `connect-src` in viewer.html must list this origin. In
- * production the CSP is served as headers with the deployment allowlist
- * (viewer spec §2) — keep the two in sync.
+ * Vite consumes the same deployment parsers to generate viewer.html and the
+ * production `_headers` CSP, so runtime routing and browser policy cannot
+ * silently drift.
  */
+import {
+  parseAllowedNodeOrigins,
+  parseOpenKeyOrigin,
+  parseRegistryOrigin,
+} from "./deployment-config.js";
 
 export interface ViewerBuildEnv {
   readonly PROD: boolean;
   readonly VITE_SHARE_REGISTRY_URL?: string | undefined;
+  readonly VITE_SHARE_ALLOWED_NODE_ORIGINS?: string | undefined;
+  readonly VITE_SHARE_OPENKEY_ORIGIN?: string | undefined;
 }
-
-const DEV_REGISTRY_URL = "http://127.0.0.1:8787";
 
 /** Pure resolver so both build flavors are unit-testable. Fails closed. */
 export function resolveRegistryBaseUrl(env: ViewerBuildEnv): string {
-  const configured = env.VITE_SHARE_REGISTRY_URL;
-  if (configured !== undefined && configured.length > 0) return configured;
-  if (env.PROD) {
-    throw new Error(
-      "VITE_SHARE_REGISTRY_URL is required in production builds — refusing to fall back to a loopback registry",
-    );
-  }
-  return DEV_REGISTRY_URL;
+  return parseRegistryOrigin(env.VITE_SHARE_REGISTRY_URL, env.PROD);
 }
 
 export const REGISTRY_BASE_URL: string = resolveRegistryBaseUrl({
@@ -40,3 +38,11 @@ export const REGISTRY_BASE_URL: string = resolveRegistryBaseUrl({
     | string
     | undefined,
 });
+
+export const ALLOWED_NODE_ORIGINS: readonly string[] = parseAllowedNodeOrigins(
+  import.meta.env.VITE_SHARE_ALLOWED_NODE_ORIGINS as string | undefined,
+);
+
+export const OPENKEY_ORIGIN: string = parseOpenKeyOrigin(
+  import.meta.env.VITE_SHARE_OPENKEY_ORIGIN as string | undefined,
+);
