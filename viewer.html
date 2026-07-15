@@ -8,17 +8,16 @@
   headers (meta CSP cannot express frame-ancestors) with connect-src set to
   the deployment's registry/node allowlist. Notes:
   - script-src 'self': every executable is bundled by Vite — no CDN scripts.
-  - connect-src: 'self' + the default dev registry (src/viewer/config.ts);
-    keep in sync with VITE_SHARE_REGISTRY_URL.
+  - connect-src: registry + exact static node origins; frame-src: OpenKey.
+    Vite generates both this meta policy and public/_headers from the same
+    deployment values used by src/viewer/config.ts/sdk-adapter.ts.
   - style-src allows 'unsafe-inline' because mermaid's strict mode injects
     theme <style> elements; styles are not the guarded execution vector.
   - In `vite dev`, HMR websockets are not in connect-src — the viewer page
     needs a manual reload during development. Deliberate: dev convenience
     never loosens the shipped policy.
-  - frame-src 'self': the only FETCHED frame the viewer embeds is the
-    mermaid sandbox document (/mermaid-sandbox.html, served from this origin
-    and embedded with sandbox="allow-scripts" — opaque origin, own strict
-    CSP; see src/viewer/mermaid-frame.ts). The scriptless preview frame
+  - frame-src permits 'self' for the mermaid sandbox and the single configured
+    OpenKey origin for account selection. The scriptless preview frame
     (src/viewer/preview-frame.ts) is srcdoc-delivered — no fetch, so
     frame-src never consults it.
   - LOAD-BEARING for the preview frame: srcdoc documents INHERIT this CSP.
@@ -37,7 +36,7 @@
     its render throws and the diagram falls back to sanitized source text —
     fail closed, never fail open.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:8787 http://localhost:8787; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' __TINYCLOUD_REGISTRY_CONNECT_SRC__ __TINYCLOUD_NODE_CONNECT_SRC__; font-src 'self'; frame-src 'self' __TINYCLOUD_OPENKEY_FRAME_SRC__; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
 <!-- The URL fragment is the decryption key: never leak the URL anywhere. -->
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">

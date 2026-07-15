@@ -7,26 +7,24 @@ import * as digest from "multiformats/hashes/digest";
 import { z } from "zod";
 
 import { fromBase64Url, utf8Bytes } from "./bytes.js";
+import {
+  canonicalNodeAudienceForOrigin,
+  isCanonicalDeploymentNodeAudience,
+} from "./deployment-origin.js";
 import { didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey } from "./didkey.js";
 import { canonicalize } from "./jcs.js";
 import { displaySchema, isCanonicalHttpsOrigin, isCanonicalResourcePath } from "./schema.js";
+
+export {
+  canonicalNodeAudienceForOrigin,
+  isCanonicalDeploymentNodeAudience,
+} from "./deployment-origin.js";
 
 export const RECIPIENT_DID_V2_SIGNATURE_DOMAIN = "xyz.tinycloud.share/envelope/v2\0";
 export const TINYCLOUD_DELEGATION_CID_MULTIHASH = 0x1e;
 const ED25519_VERIFY_OPTS = { zip215: false } as const;
 const MAINNET_PKH_RE = /^did:pkh:eip155:1:(0x[0-9a-fA-F]{40})$/;
 const MAINNET_SPACE_RE = /^tinycloud:pkh:eip155:1:(0x[0-9a-fA-F]{40}):([A-Za-z0-9_-]+)$/;
-const DNS_HOSTNAME_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-
-function isIpv4Literal(hostname: string): boolean {
-  const octets = hostname.split(".");
-  return octets.length === 4 && octets.every((octet) =>
-    /^\d{1,3}$/.test(octet) && Number(octet) <= 255);
-}
-
-function isCanonicalDeploymentDnsHostname(hostname: string): boolean {
-  return DNS_HOSTNAME_RE.test(hostname) && !isIpv4Literal(hostname);
-}
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -65,21 +63,6 @@ export function ownerDidFromCanonicalSpaceId(spaceId: string): string | null {
 
 export function isCanonicalMainnetSpaceId(spaceId: string): boolean {
   return ownerDidFromCanonicalSpaceId(spaceId) !== null;
-}
-
-/** Stage-0A deployment rule: default-port HTTPS host maps exactly to `did:web:<host>`. */
-export function canonicalNodeAudienceForOrigin(origin: string): string | null {
-  if (!isCanonicalHttpsOrigin(origin)) return null;
-  const url = new URL(origin);
-  if (url.port !== "" || !isCanonicalDeploymentDnsHostname(url.hostname)) {
-    return null;
-  }
-  return `did:web:${url.hostname}`;
-}
-
-export function isCanonicalDeploymentNodeAudience(value: string): boolean {
-  const prefix = "did:web:";
-  return value.startsWith(prefix) && isCanonicalDeploymentDnsHostname(value.slice(prefix.length));
 }
 
 /** Strict canonical Ed25519 did:key, including multicodec, length, and point decoding. */
@@ -340,7 +323,18 @@ export interface VerifyRecipientDidEnvelopeV2Options {
     now: Date,
   ): Promise<NativeVerifiedRecipientBundleV2>;
   now?: Date;
+  /** Test/diagnostic hook for the security-critical verification order. */
+  onStage?: (stage: RecipientDidEnvelopeV2VerificationStage) => void;
 }
+
+export type RecipientDidEnvelopeV2VerificationStage =
+  | "schema"
+  | "artifact-structure"
+  | "envelope-signature"
+  | "native-authority"
+  | "static-routing"
+  | "authority-binding"
+  | "time";
 
 export type RecipientDidEnvelopeV2RejectCode =
   | "schema" | "origin-not-allowed" | "artifact-cid-mismatch" | "delegation-invalid"
@@ -361,9 +355,7 @@ export async function verifyRecipientDidEnvelopeV2(
   const parsed = recipientDidEnvelopeV2Schema.safeParse(input);
   if (!parsed.success) return { ok: false, code: "schema" };
   const envelope = parsed.data;
-  if (!options.allowedOrigins.includes(envelope.target.origin)) {
-    return { ok: false, code: "origin-not-allowed" };
-  }
+  options.onStage?.("schema");
   const artifacts: DelegationArtifactV2[] = [
     envelope.delegation.grant,
     ...envelope.delegation.issuerProofs,
@@ -371,14 +363,30 @@ export async function verifyRecipientDidEnvelopeV2(
   if (artifacts.some((artifact) => computeDelegationArtifactCid(artifact) !== artifact.cid)) {
     return { ok: false, code: "artifact-cid-mismatch" };
   }
+  options.onStage?.("artifact-structure");
+  if (!verifyRecipientDidEnvelopeV2Signature(envelope)) {
+    return { ok: false, code: "signature" };
+  }
+  options.onStage?.("envelope-signature");
   const now = options.now ?? new Date();
   let authority: NativeVerifiedRecipientBundleV2;
   try {
+    options.onStage?.("native-authority");
     authority = nativeVerifiedRecipientBundleV2Schema.parse(
       await options.verifyDelegationBundle(envelope.delegation, now),
     );
   } catch {
     return { ok: false, code: "delegation-invalid" };
+  }
+  options.onStage?.("static-routing");
+  if (!options.allowedOrigins.includes(envelope.target.origin)) {
+    return { ok: false, code: "origin-not-allowed" };
+  }
+  if (
+    envelope.delegation.routing.origin !== envelope.target.origin ||
+    envelope.delegation.routing.nodeAudience !== envelope.target.nodeAudience
+  ) {
+    return { ok: false, code: "target-mismatch" };
   }
   const proofCids = envelope.delegation.issuerProofs.map((proof) => proof.cid);
   const spaceOwner = ownerDidFromCanonicalSpaceId(envelope.target.spaceId);
@@ -391,15 +399,10 @@ export async function verifyRecipientDidEnvelopeV2(
   ) {
     return { ok: false, code: "authority-mismatch" };
   }
-  if (!verifyRecipientDidEnvelopeV2Signature(envelope)) {
-    return { ok: false, code: "signature" };
-  }
   if (authority.recipientDid !== envelope.authorizationTarget.did) {
     return { ok: false, code: "recipient-mismatch" };
   }
   if (
-    envelope.delegation.routing.origin !== envelope.target.origin ||
-    envelope.delegation.routing.nodeAudience !== envelope.target.nodeAudience ||
     authority.scope.spaceId !== envelope.target.spaceId ||
     authority.scope.resource.kind !== envelope.target.resource.kind ||
     authority.scope.resource.path !== envelope.target.resource.path ||
@@ -407,11 +410,13 @@ export async function verifyRecipientDidEnvelopeV2(
   ) {
     return { ok: false, code: "target-mismatch" };
   }
+  options.onStage?.("authority-binding");
   if (authority.expiry !== envelope.expiry) return { ok: false, code: "expiry-mismatch" };
   const nowMs = now.getTime();
   if (authority.notBefore !== undefined && new Date(authority.notBefore).getTime() > nowMs) {
     return { ok: false, code: "delegation-invalid" };
   }
   if (new Date(envelope.expiry).getTime() <= nowMs) return { ok: false, code: "expired" };
+  options.onStage?.("time");
   return { ok: true, envelope, ownerDid: authority.ownerDid };
 }

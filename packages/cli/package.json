@@ -2,7 +2,7 @@
   "name": "@tinycloud/share-cli",
   "version": "0.1.0",
   "private": true,
-  "description": "Bearer-share create CLI: seals file content + envelope, uploads both to the share registry, prints the /s/<cid>#k= link.",
+  "description": "TinyCloud share CLI for bearer links and recipient-addressed encrypted envelopes.",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

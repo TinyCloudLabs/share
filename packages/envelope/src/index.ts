@@ -102,6 +102,7 @@ export {
   type RecipientDidEnvelopeV2RejectCode,
   type RecipientDidEnvelopeV2SigningPayload,
   type RecipientDidEnvelopeV2Verification,
+  type RecipientDidEnvelopeV2VerificationStage,
   type UcanDelegationArtifactV2,
   type UnsignedRecipientDidEnvelopeV2,
   type VerifyRecipientDidEnvelopeV2Options,

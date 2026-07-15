@@ -15,6 +15,10 @@ import { parseArgs } from "node:util";
 
 import { createBearerShare } from "./create.js";
 import { parseDuration } from "./duration.js";
+import {
+  createRecipientDidShare,
+  type RecipientDidSenderAdapter,
+} from "./recipient-did.js";
 
 const DEFAULT_REGISTRY_URL = "http://127.0.0.1:8787";
 
@@ -34,9 +38,25 @@ Options:
   --space <id>             Space id in the signed target (default "bearer")
   --viewer-origin <url>    Origin the printed link uses
                            (default https://share.tinycloud.xyz)
+  --recipient-did <did>    Address the share to one canonical chain-1 account
+  --node-audience <did>    Exact did:web audience (required with --recipient-did)
+
+Recipient-DID shares also require --origin and --space. They copy the file to
+TinyCloud and put only the encrypted envelope in the registry. This source
+package accepts a fixed-purpose SDK adapter; until that SDK lane is linked,
+the standalone binary fails closed instead of exposing a raw signing key.
 `;
 
-export async function main(argv: readonly string[]): Promise<number> {
+export interface CliDependencies {
+  recipientDidAdapter?: RecipientDidSenderAdapter;
+  allowedNodeOrigins?: readonly string[];
+  fetchFn?: typeof globalThis.fetch;
+}
+
+export async function main(
+  argv: readonly string[],
+  dependencies: CliDependencies = {},
+): Promise<number> {
   let parsed: ReturnType<typeof parseArgs>;
   try {
     parsed = parseArgs({
@@ -49,6 +69,8 @@ export async function main(argv: readonly string[]): Promise<number> {
         origin: { type: "string" },
         space: { type: "string" },
         "viewer-origin": { type: "string" },
+        "recipient-did": { type: "string" },
+        "node-audience": { type: "string" },
         help: { type: "boolean", short: "h" },
       },
     });
@@ -72,7 +94,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     );
     const absolutePath = resolve(filePath);
     const content = new Uint8Array(await readFile(absolutePath));
-    const result = await createBearerShare({
+    const common = {
       content,
       filename: basename(absolutePath),
       registryBaseUrl:
@@ -80,17 +102,60 @@ export async function main(argv: readonly string[]): Promise<number> {
           ? parsed.values.registry
           : DEFAULT_REGISTRY_URL,
       expiresAt: new Date(Date.now() + expiresMs),
+      ...(dependencies.fetchFn !== undefined ? { fetchFn: dependencies.fetchFn } : {}),
       ...(typeof parsed.values["sender-name"] === "string"
         ? { senderName: parsed.values["sender-name"] }
         : {}),
+      ...(typeof parsed.values["viewer-origin"] === "string"
+        ? { viewerOrigin: parsed.values["viewer-origin"] }
+        : {}),
+    };
+    if (typeof parsed.values["recipient-did"] === "string") {
+      if (dependencies.recipientDidAdapter === undefined) {
+        throw new Error(
+          "recipient-DID sharing is unavailable until the fixed-purpose TinyCloud SDK adapter is linked",
+        );
+      }
+      if (
+        typeof parsed.values.origin !== "string" ||
+        typeof parsed.values.space !== "string" ||
+        typeof parsed.values["node-audience"] !== "string"
+      ) {
+        throw new Error(
+          "--recipient-did requires --origin, --node-audience, and --space",
+        );
+      }
+      const result = await createRecipientDidShare({
+        ...common,
+        recipientDid: parsed.values["recipient-did"],
+        origin: parsed.values.origin,
+        nodeAudience: parsed.values["node-audience"],
+        spaceId: parsed.values.space,
+        adapter: dependencies.recipientDidAdapter,
+        allowedOrigins: dependencies.allowedNodeOrigins ?? [],
+      });
+      process.stdout.write(
+        [
+          "Recipient share created. Only the addressed account can open it:",
+          "",
+          `  ${result.url}`,
+          "",
+          `  envelope CID:      ${result.envelopeCid}`,
+          `  expires:           ${result.expiry}`,
+          `  registry retains:  until ${result.registryDeleteAfter}`,
+          "",
+        ].join("\n"),
+      );
+      return 0;
+    }
+
+    const result = await createBearerShare({
+      ...common,
       ...(typeof parsed.values.origin === "string"
         ? { origin: parsed.values.origin }
         : {}),
       ...(typeof parsed.values.space === "string"
         ? { spaceId: parsed.values.space }
-        : {}),
-      ...(typeof parsed.values["viewer-origin"] === "string"
-        ? { viewerOrigin: parsed.values["viewer-origin"] }
         : {}),
     });
     process.stdout.write(

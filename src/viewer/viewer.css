@@ -5,10 +5,12 @@
   --bg-raised: #ffffff;
   --ink: #131312;
   --ink-soft: #4b4b48;
-  --ink-faint: #8a8a85;
+  --ink-faint: #696965;
   --line: #dcdcd7;
   --accent: #cc3d1a;
+  --accent-contrast: #ffffff;
   --accent-soft: rgba(204, 61, 26, 0.08);
+  --focus-ring: #131312;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -16,10 +18,12 @@
     --bg-raised: #171716;
     --ink: #eceae5;
     --ink-soft: #b3b1aa;
-    --ink-faint: #7a7871;
+    --ink-faint: #85837c;
     --line: #2e2e2b;
     --accent: #ff6a3d;
+    --accent-contrast: #101010;
     --accent-soft: rgba(255, 106, 61, 0.1);
+    --focus-ring: #eceae5;
   }
 }
 
@@ -42,6 +46,47 @@ body {
 .viewer-state-title { font-size: 1.4rem; margin: 0 0 0.6rem; }
 .viewer-state-detail { color: var(--ink-soft); max-width: 46ch; margin: 0 auto; }
 .viewer-error .viewer-state-title { color: var(--accent); }
+.viewer-state[role="status"]::before {
+  content: "";
+  display: block;
+  width: 2rem;
+  height: 2rem;
+  margin: 0 auto 1rem;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: viewer-spin 800ms linear infinite;
+}
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+
+.viewer-primary-action {
+  margin-top: 1.25rem;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font: inherit;
+  font-weight: 650;
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+}
+.viewer-primary-action:hover { filter: brightness(0.92); }
+.viewer-primary-action:active { transform: translateY(1px); }
+.viewer-primary-action:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+.viewer-primary-action:disabled { opacity: 0.55; cursor: not-allowed; }
+.viewer-share-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 1rem;
+  max-width: 30rem;
+  margin: 1.25rem auto 0;
+  text-align: left;
+}
+.viewer-share-fact-label { color: var(--ink-soft); }
+.viewer-share-fact-value { margin: 0; overflow-wrap: anywhere; }
 
 .viewer-bar {
   display: flex;
@@ -66,6 +111,12 @@ body {
   padding: 0.05rem 0.6rem;
 }
 .viewer-bearer-note { font-size: 0.8rem; color: var(--ink-faint); margin: 0.6rem 0 0; }
+.viewer-addressed-note { font-size: 0.8rem; color: var(--ink-soft); margin: 0.6rem 0 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .viewer-state[role="status"]::before { animation: none; }
+  .viewer-primary-action:active { transform: none; }
+}
 
 .viewer-content { padding: 1.6rem 0; }
 /* The scriptless preview frame (preview-frame.ts) can't self-report its

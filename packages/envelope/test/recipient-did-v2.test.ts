@@ -224,6 +224,67 @@ describe("recipient-DID v2 genuine current-SDK fixture", () => {
       ownerDid: fixtureAuthority.ownerDid,
     });
   });
+
+  it("runs structural checks, signature, native authority, routing, bindings, and time in order", async () => {
+    const stages: string[] = [];
+    const result = await verifyRecipientDidEnvelopeV2(fixtureEnvelope, {
+      allowedOrigins: [fixtureEnvelope.target.origin],
+      now: NOW,
+      onStage: (stage) => stages.push(stage),
+      verifyDelegationBundle: exactNativeSeam(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(stages).toEqual([
+      "schema",
+      "artifact-structure",
+      "envelope-signature",
+      "native-authority",
+      "static-routing",
+      "authority-binding",
+      "time",
+    ]);
+  });
+
+  it("rejects an invalid envelope signature before native authority", async () => {
+    const stages: string[] = [];
+    let nativeCalls = 0;
+    const result = await verifyRecipientDidEnvelopeV2({
+      ...fixtureEnvelope,
+      display: { ...fixtureEnvelope.display, filename: "tampered.md" },
+    }, {
+      allowedOrigins: [fixtureEnvelope.target.origin],
+      now: NOW,
+      onStage: (stage) => stages.push(stage),
+      verifyDelegationBundle: async () => {
+        nativeCalls += 1;
+        return fixtureAuthority;
+      },
+    });
+
+    expect(result).toEqual({ ok: false, code: "signature" });
+    expect(nativeCalls).toBe(0);
+    expect(stages).toEqual(["schema", "artifact-structure"]);
+  });
+
+  it("checks the static deployment allowlist only after native authority", async () => {
+    const stages: string[] = [];
+    const result = await verifyRecipientDidEnvelopeV2(fixtureEnvelope, {
+      allowedOrigins: [],
+      now: NOW,
+      onStage: (stage) => stages.push(stage),
+      verifyDelegationBundle: exactNativeSeam(),
+    });
+
+    expect(result).toEqual({ ok: false, code: "origin-not-allowed" });
+    expect(stages).toEqual([
+      "schema",
+      "artifact-structure",
+      "envelope-signature",
+      "native-authority",
+      "static-routing",
+    ]);
+  });
 });
 
 describe("authority, ordering, and scope rejection", () => {

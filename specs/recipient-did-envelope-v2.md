@@ -181,13 +181,17 @@ redirects use error mode, and unsigned discovery cannot replace either value.
 The only permitted order is:
 
 1. registry envelope fetch, CID verification, decryption and fragment scrub;
-2. strict schema, artifact CID, atomic native authority, envelope signature,
-   owner/recipient/route/scope/time verification;
-3. OpenKey account selection and canonical recipient DID equality;
-4. target-node request to the exact signed origin.
+2. strict schema and artifact CID verification;
+3. envelope signature verification;
+4. atomic native authority verification;
+5. static signed route allowlisting and owner/recipient/route/scope/time
+   binding verification;
+6. OpenKey account selection and canonical recipient DID equality;
+7. target-node request to the exact signed origin.
 
-No OpenKey or target-node access occurs before step 2; no target-node access
-occurs before step 3. Recipient content is never fetched directly from the
+No invalid envelope signature reaches the native authority boundary. No
+OpenKey or target-node access occurs before step 5; no target-node access
+occurs before step 6. Recipient content is never fetched directly from the
 registry.
 
 Stage 0A performs no OpenKey or node I/O; it only returns a verified result.
@@ -197,13 +201,15 @@ would recreate the confused-deputy and credential-exfiltration boundary this
 contract closes. Integration tests MUST assert zero OpenKey and target-node
 calls for every checked-in reject vector.
 
-Residual Stage 1 work is deliberately not claimed by this contract: the actual
-viewer/SDK adapter still needs tests for network call order, deployment-derived
-CSP, OpenKey account equality, redirect error mode, and exact target-origin
-requests. A future fixture MUST also add a genuine intermediate session UCAN
-between the Cacao and recipient grant so the multi-hop native adapter path is
-exercised cryptographically; the Stage 0A schema and atomic result already
-define its required root-to-leaf ordering.
+The Stage 1 harness now covers network call order, deployment-derived CSP,
+OpenKey account equality, redirect error mode, exact target-origin requests,
+and an opaque one-shot continuation that retains neither the fragment href nor
+key. Production SDK/native/OpenKey/node adapters and their genuine end-to-end
+test remain upstream integration work; fail-closed undefined adapters are not
+claimed as that integration. A future fixture MUST also add a genuine
+intermediate session UCAN between the Cacao and recipient grant so the
+multi-hop native adapter path is exercised cryptographically; the Stage 0A
+schema and atomic result already define its required root-to-leaf ordering.
 
 ## Golden vectors
 
