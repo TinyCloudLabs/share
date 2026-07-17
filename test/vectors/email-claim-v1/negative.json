@@ -771,8 +771,95 @@
       "target": "inviteAuthorization.documentName",
       "mutation": "reject-over-200-utf8-bytes",
       "mutationData": {
-        "operation": "replace",
-        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀"
+        "operation": "replace-and-resign",
+        "candidateArtifactByKind": {
+          "kv": {
+            "name": "inviteAuthorization",
+            "domain": "xyz.tinycloud.share/invite-authorization/v1\u0000",
+            "signerDid": "did:web:node.example",
+            "message": {
+              "type": "TinyCloudShareInviteAuthorization",
+              "version": 1,
+              "jti": "AQIDBAUGBwgJCgsMDQ4PEA",
+              "senderDid": "did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7",
+              "shareCid": "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4",
+              "shareId": "share-kv-001",
+              "policyCid": "bafkreiaqkcd56bhbn3zwcx7r5xdkle2nukcrhkvwwrcg4qqehk6q5hlwi4",
+              "recipientEmail": "Alice+Notes@example.com",
+              "targetOrigin": "https://node.example",
+              "nodeAudience": "did:web:node.example",
+              "returnOrigin": "https://share.tinycloud.xyz",
+              "documentName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀",
+              "senderTrust": "verified",
+              "contentSource": {
+                "kind": "kv",
+                "space": "did:pkh:eip155:1:0x1111111111111111111111111111111111111111",
+                "path": "documents/plan.md",
+                "action": "tinycloud.kv/get"
+              },
+              "contentSourceDigest": "B-O75gHmIx2CyOm9cOdHJivP-kupRtNWcUPXuZbEnZ4",
+              "shareExpiresAt": "2026-07-23T12:00:00.000Z",
+              "issuedAt": "2026-07-16T12:00:00.000Z",
+              "expiresAt": "2026-07-16T12:05:00.000Z",
+              "reportAbuseToken": "4OHi4-Tl5ufo6err7O3u7w"
+            },
+            "jcs": "{\"contentSource\":{\"action\":\"tinycloud.kv/get\",\"kind\":\"kv\",\"path\":\"documents/plan.md\",\"space\":\"did:pkh:eip155:1:0x1111111111111111111111111111111111111111\"},\"contentSourceDigest\":\"B-O75gHmIx2CyOm9cOdHJivP-kupRtNWcUPXuZbEnZ4\",\"documentName\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀\",\"expiresAt\":\"2026-07-16T12:05:00.000Z\",\"issuedAt\":\"2026-07-16T12:00:00.000Z\",\"jti\":\"AQIDBAUGBwgJCgsMDQ4PEA\",\"nodeAudience\":\"did:web:node.example\",\"policyCid\":\"bafkreiaqkcd56bhbn3zwcx7r5xdkle2nukcrhkvwwrcg4qqehk6q5hlwi4\",\"recipientEmail\":\"Alice+Notes@example.com\",\"reportAbuseToken\":\"4OHi4-Tl5ufo6err7O3u7w\",\"returnOrigin\":\"https://share.tinycloud.xyz\",\"senderDid\":\"did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7\",\"senderTrust\":\"verified\",\"shareCid\":\"bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4\",\"shareExpiresAt\":\"2026-07-23T12:00:00.000Z\",\"shareId\":\"share-kv-001\",\"targetOrigin\":\"https://node.example\",\"type\":\"TinyCloudShareInviteAuthorization\",\"version\":1}",
+            "messageDigest": "wZyuLLAVR0inKQvrEsb-TiKeJRjTa9NeDzIAOrIQ_Mk",
+            "signedBytesDigest": "68P8Ne-Pdnazw0eumZ3TKg6Q-y9ua5UyvuZKRufKTKc",
+            "signatureDigest": "AmVBfbTH2Ew1-oO_CspyPTig6C62TQwVVUd45TJUzb4",
+            "signature": {
+              "alg": "EdDSA",
+              "kid": "did:web:node.example#invitation-key-1",
+              "value": "EJFUeSC3pJ8nhKKfGjr2uk-aZIFrRClwzzjljZGjQSv0k0laoxmPb4HOV4w_NqMBYiCxyzPTw5GXDyiemeSVDg"
+            }
+          },
+          "sql": {
+            "name": "inviteAuthorization",
+            "domain": "xyz.tinycloud.share/invite-authorization/v1\u0000",
+            "signerDid": "did:web:node.example",
+            "message": {
+              "type": "TinyCloudShareInviteAuthorization",
+              "version": 1,
+              "jti": "AgMEBQYHCAkKCwwNDg8QEQ",
+              "senderDid": "did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7",
+              "shareCid": "bafkreif2kris7mo5etetu5jleg2noejza34ptwmpjhdm5jernutik6baqu",
+              "shareId": "share-sql-001",
+              "policyCid": "bafkreic6xkbiqtsv2wotzor7vjy6ri73ix5ntuwz4likrm3zhmxlpaajmq",
+              "recipientEmail": "Alice+Notes@example.com",
+              "targetOrigin": "https://node.example",
+              "nodeAudience": "did:web:node.example",
+              "returnOrigin": "https://share.tinycloud.xyz",
+              "documentName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀",
+              "senderTrust": "verified",
+              "contentSource": {
+                "kind": "sql",
+                "space": "did:pkh:eip155:1:0x1111111111111111111111111111111111111111",
+                "database": "documents",
+                "path": "shared/plan",
+                "statement": "shared_document_by_id",
+                "arguments": {
+                  "document_id": 123
+                },
+                "argumentsDigest": "Wvt9ycf107Id2Qe58i0BnWykVBsdjhyS03P2psS0bSg",
+                "action": "tinycloud.sql/read"
+              },
+              "contentSourceDigest": "OmF5ZcmUhf6D3372Toi6tvaibZ7kpamg4oFe89d_xwU",
+              "shareExpiresAt": "2026-07-23T12:00:00.000Z",
+              "issuedAt": "2026-07-16T12:00:00.000Z",
+              "expiresAt": "2026-07-16T12:05:00.000Z",
+              "reportAbuseToken": "4OHi4-Tl5ufo6err7O3u7w"
+            },
+            "jcs": "{\"contentSource\":{\"action\":\"tinycloud.sql/read\",\"arguments\":{\"document_id\":123},\"argumentsDigest\":\"Wvt9ycf107Id2Qe58i0BnWykVBsdjhyS03P2psS0bSg\",\"database\":\"documents\",\"kind\":\"sql\",\"path\":\"shared/plan\",\"space\":\"did:pkh:eip155:1:0x1111111111111111111111111111111111111111\",\"statement\":\"shared_document_by_id\"},\"contentSourceDigest\":\"OmF5ZcmUhf6D3372Toi6tvaibZ7kpamg4oFe89d_xwU\",\"documentName\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa😀\",\"expiresAt\":\"2026-07-16T12:05:00.000Z\",\"issuedAt\":\"2026-07-16T12:00:00.000Z\",\"jti\":\"AgMEBQYHCAkKCwwNDg8QEQ\",\"nodeAudience\":\"did:web:node.example\",\"policyCid\":\"bafkreic6xkbiqtsv2wotzor7vjy6ri73ix5ntuwz4likrm3zhmxlpaajmq\",\"recipientEmail\":\"Alice+Notes@example.com\",\"reportAbuseToken\":\"4OHi4-Tl5ufo6err7O3u7w\",\"returnOrigin\":\"https://share.tinycloud.xyz\",\"senderDid\":\"did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7\",\"senderTrust\":\"verified\",\"shareCid\":\"bafkreif2kris7mo5etetu5jleg2noejza34ptwmpjhdm5jernutik6baqu\",\"shareExpiresAt\":\"2026-07-23T12:00:00.000Z\",\"shareId\":\"share-sql-001\",\"targetOrigin\":\"https://node.example\",\"type\":\"TinyCloudShareInviteAuthorization\",\"version\":1}",
+            "messageDigest": "Ju6oRnuUkRgsjCU2m_1-ipuGgQZb-2Ks6zbD7f6Yeg0",
+            "signedBytesDigest": "lmECfYRugrsQfoCT9x2nrXlP3BdzZlrd7xTZsptKIdw",
+            "signatureDigest": "X3SvnEo25blBgwjb1g7aOhq6dSs3NZqNknyTejjT498",
+            "signature": {
+              "alg": "EdDSA",
+              "kid": "did:web:node.example#invitation-key-1",
+              "value": "OvwNYqACzFIHJBPZSZnEC4wEHhRi5cYuVpBNoiAohYR6UP-E7BFVCMAgeHDK1qPbirCTlB4rXEZO-JzS1NAiAw"
+            }
+          }
+        }
       },
       "appliesTo": [
         "kv",

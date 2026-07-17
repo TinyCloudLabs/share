@@ -1265,6 +1265,16 @@ fn verify_artifact(
     domains: &Map<String, Value>,
     enrollment: &Value,
 ) -> Result<()> {
+    verify_artifact_with_schema(artifact, artifact_name, domains, enrollment, true)
+}
+
+fn verify_artifact_with_schema(
+    artifact: &Value,
+    artifact_name: &str,
+    domains: &Map<String, Value>,
+    enrollment: &Value,
+    validate_schema: bool,
+) -> Result<()> {
     let artifact_object = exact_object(
         artifact,
         &[
@@ -1301,7 +1311,9 @@ fn verify_artifact(
         .and_then(|source| source.get("kind"))
         .and_then(Value::as_str)
         .unwrap_or("kv");
-    validate_message_schema(artifact_name, message, expected_kind)?;
+    if validate_schema {
+        validate_message_schema(artifact_name, message, expected_kind)?;
+    }
     let canonical = jcs(message)?;
     assert_ok(canonical == text(artifact, "jcs")?, "JCS mismatch")?;
     let signed = [domain.as_bytes(), canonical.as_bytes()].concat();
@@ -2427,9 +2439,18 @@ fn validate_holder_signature_boundary(
 fn validate_document_name_boundary(
     scenario: &Value,
     kind: &str,
+    domains: &Map<String, Value>,
 ) -> std::result::Result<(), NegativeRejection> {
-    let authorization = artifact_message(scenario, "inviteAuthorization")
+    let artifact = artifact_named(scenario, "inviteAuthorization")
         .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let enrollment = scenario
+        .get("enrollment")
+        .ok_or_else(|| rejection(RejectionStage::ContractValidation, "enrollment"))?;
+    verify_artifact_with_schema(artifact, "inviteAuthorization", domains, enrollment, false)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let authorization = artifact
+        .get("message")
+        .ok_or_else(|| rejection(RejectionStage::ContractValidation, "authorization message"))?;
     let document_name = text(authorization, "documentName")
         .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
     if document_name.is_empty()
@@ -3801,8 +3822,27 @@ fn apply_negative_mutation(
                 .insert("shareUrl".into(), value.ok_or("share URL")?);
         }
         "inviteAuthorization.documentName" => {
-            artifact_message_mut(scenario, "inviteAuthorization")?
-                .insert("documentName".into(), value.ok_or("document name")?);
+            let candidates = map_object(mutation, "candidateArtifactByKind")?;
+            let candidate = candidates
+                .get(kind)
+                .cloned()
+                .ok_or("document-name candidate artifact")?;
+            let message = candidate
+                .get("message")
+                .cloned()
+                .ok_or("document-name candidate message")?;
+            let artifacts = scenario
+                .get_mut("artifacts")
+                .and_then(Value::as_array_mut)
+                .ok_or("artifacts")?;
+            let index = artifacts
+                .iter()
+                .position(|artifact| {
+                    artifact.get("name").and_then(Value::as_str) == Some("inviteAuthorization")
+                })
+                .ok_or("inviteAuthorization artifact")?;
+            artifacts[index] = candidate;
+            scenario["authorization"] = message;
         }
         "inviteAuthorization.recipientEmail" => {
             artifact_message_mut(scenario, "inviteAuthorization")?
@@ -4604,7 +4644,9 @@ fn validate_negative_candidate(
                 .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
             validate_scanner_fragment_boundary(url, scenario)
         }
-        "inviteAuthorization.documentName" => validate_document_name_boundary(scenario, kind),
+        "inviteAuthorization.documentName" => {
+            validate_document_name_boundary(scenario, kind, domains)
+        }
         "holderBinding.holderDid" if mutation.contains_key("candidateArtifact") => {
             validate_cross_artifact_holder_boundary(scenario, domains)
         }
