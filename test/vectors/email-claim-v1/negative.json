@@ -595,6 +595,25 @@
       "rejectionStage": "share-url-query"
     },
     {
+      "id": "share-url-query-missing-fragment",
+      "kind": "share-url",
+      "target": "createInvitationRequest.shareUrl",
+      "mutation": "reject-query-before-missing-fragment",
+      "mutationData": {
+        "operation": "replace",
+        "valueByKind": {
+          "kv": "https://share.tinycloud.xyz/s/bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4?x=1",
+          "sql": "https://share.tinycloud.xyz/s/bafkreif2kris7mo5etetu5jleg2noejza34ptwmpjhdm5jernutik6baqu?x=1"
+        }
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "rejectionStage": "share-url-query"
+    },
+    {
       "id": "share-url-duplicate-k",
       "kind": "share-url",
       "target": "createInvitationRequest.shareUrl",
@@ -1480,7 +1499,117 @@
               "signature": "VphnFJsyIcA--xsc895CQwET7-IRnk2eUTTEED43ogDMxfFqricI3IGScmmVAfSoQldYgm4W3Xkf6tPQ422VCA"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+          "sql": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
         }
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "rejectionStage": "credential-time"
+    },
+    {
+      "id": "credential-expiry-boundary-resigned",
+      "kind": "credential",
+      "target": "credential.claims.exp",
+      "mutation": "re-sign-expiry-at-evaluation-minus-skew",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "credentialByKind": {
+          "kv": {
+            "format": "vc+sd-jwt",
+            "credential": "eyJhbGciOiJFZERTQSJ9.eyJfc2QiOlsiVzFqajRkMDFGQm9YcGgtNlFLUUdONXRmWDBHTmYxbWhCajFwcEIxcm5NbyJdLCJfc2RfYWxnIjoic2hhLTI1NiIsImV4cCI6MTc4NDIwMzIwMCwiaWF0IjoxNzg0MjAzMjAwLCJpc3MiOiJkaWQ6d2ViOmlzc3Vlci5jcmVkZW50aWFscy5vcmciLCJqdGkiOiJ1cm46dXVpZDprdi1jcmVkZW50aWFsLTAwMSIsIm5iZiI6MTc4NDIwMzIwMCwic3ViIjoiZGlkOmtleTp6Nk1rdHd1cGRtTFhWVnFUekN3NGk0NnI0dUd5b3NHWFJuUjNYak40WnE3b01Nc3ciLCJ0aW55Y2xvdWRfc2hhcmUiOnsibm9kZV9hdWRpZW5jZSI6ImRpZDp3ZWI6bm9kZS5leGFtcGxlIiwicG9saWN5X2NpZCI6ImJhZmtyZWlhcWtjZDU2YmhibjN6d2N4N3I1eGRrbGUybnVrY3Joa3Z3d3JjZzRxcWVoazZxNWhsd2k0Iiwic2hhcmVfY2lkIjoiYmFma3JlaWVraHRneHBiNXhoeWtkNnB5dGFscGttZzUydHJyeXJvcjJncml0dDdyNTZqdjJ0NzVmbDQiLCJzaGFyZV9pZCI6InNoYXJlLWt2LTAwMSJ9LCJ2Y3QiOiJvcGVuY3JlZGVudGlhbHMuZW1haWwvdjEifQ.G155G3vI2xW6t_jeT6EuF3FP841o7HewPBo-YnvQXD_6nA3uR6cT6XKmay9zIPCMY5juE1lF3aZ8N95IvMZTBQ~WyJNREV5TXpRMU5qYzRPVG83UEQwLVB3IiwiZW1haWwiLCJBbGljZStOb3Rlc0BleGFtcGxlLmNvbSJd~",
+            "holderDid": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw",
+            "expiresAt": "2026-07-23T12:00:00.000Z",
+            "issuerDid": "did:web:issuer.credentials.org",
+            "vct": "opencredentials.email/v1",
+            "claims": {
+              "iss": "did:web:issuer.credentials.org",
+              "sub": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw",
+              "iat": 1784203200,
+              "nbf": 1784203200,
+              "exp": 1784203200,
+              "jti": "urn:uuid:kv-credential-001",
+              "vct": "opencredentials.email/v1",
+              "tinycloud_share": {
+                "share_cid": "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4",
+                "share_id": "share-kv-001",
+                "policy_cid": "bafkreiaqkcd56bhbn3zwcx7r5xdkle2nukcrhkvwwrcg4qqehk6q5hlwi4",
+                "node_audience": "did:web:node.example"
+              },
+              "_sd_alg": "sha-256",
+              "_sd": [
+                "W1jj4d01FBoXph-6QKQGN5tfX0GNf1mhBj1ppB1rnMo"
+              ]
+            },
+            "disclosures": [
+              {
+                "path": "/email",
+                "salt": "MDEyMzQ1Njc4OTo7PD0-Pw",
+                "encoded": "WyJNREV5TXpRMU5qYzRPVG83UEQwLVB3IiwiZW1haWwiLCJBbGljZStOb3Rlc0BleGFtcGxlLmNvbSJd",
+                "digest": "W1jj4d01FBoXph-6QKQGN5tfX0GNf1mhBj1ppB1rnMo",
+                "value": "Alice+Notes@example.com"
+              }
+            ],
+            "credentialDigest": "h8PyT39i6m0chLqx9BZgKYAwhU_AQF94OK0pL80fhdE",
+            "issuerJws": {
+              "signingInput": "eyJhbGciOiJFZERTQSJ9.eyJfc2QiOlsiVzFqajRkMDFGQm9YcGgtNlFLUUdONXRmWDBHTmYxbWhCajFwcEIxcm5NbyJdLCJfc2RfYWxnIjoic2hhLTI1NiIsImV4cCI6MTc4NDIwMzIwMCwiaWF0IjoxNzg0MjAzMjAwLCJpc3MiOiJkaWQ6d2ViOmlzc3Vlci5jcmVkZW50aWFscy5vcmciLCJqdGkiOiJ1cm46dXVpZDprdi1jcmVkZW50aWFsLTAwMSIsIm5iZiI6MTc4NDIwMzIwMCwic3ViIjoiZGlkOmtleTp6Nk1rdHd1cGRtTFhWVnFUekN3NGk0NnI0dUd5b3NHWFJuUjNYak40WnE3b01Nc3ciLCJ0aW55Y2xvdWRfc2hhcmUiOnsibm9kZV9hdWRpZW5jZSI6ImRpZDp3ZWI6bm9kZS5leGFtcGxlIiwicG9saWN5X2NpZCI6ImJhZmtyZWlhcWtjZDU2YmhibjN6d2N4N3I1eGRrbGUybnVrY3Joa3Z3d3JjZzRxcWVoazZxNWhsd2k0Iiwic2hhcmVfY2lkIjoiYmFma3JlaWVraHRneHBiNXhoeWtkNnB5dGFscGttZzUydHJyeXJvcjJncml0dDdyNTZqdjJ0NzVmbDQiLCJzaGFyZV9pZCI6InNoYXJlLWt2LTAwMSJ9LCJ2Y3QiOiJvcGVuY3JlZGVudGlhbHMuZW1haWwvdjEifQ",
+              "signingInputDigest": "yu_60qxJLPwjW5qUo26NsluFnUwexAo0n1E0AfKpOW0",
+              "signature": "G155G3vI2xW6t_jeT6EuF3FP841o7HewPBo-YnvQXD_6nA3uR6cT6XKmay9zIPCMY5juE1lF3aZ8N95IvMZTBQ"
+            }
+          },
+          "sql": {
+            "format": "vc+sd-jwt",
+            "credential": "eyJhbGciOiJFZERTQSJ9.eyJfc2QiOlsiUlJmODBmcXRCU1Z5MDhURDd2ZmQ5NnN1NEFKY3oyYnFGR0pDdGZoQkZjQSJdLCJfc2RfYWxnIjoic2hhLTI1NiIsImV4cCI6MTc4NDIwMzIwMCwiaWF0IjoxNzg0MjAzMjAwLCJpc3MiOiJkaWQ6d2ViOmlzc3Vlci5jcmVkZW50aWFscy5vcmciLCJqdGkiOiJ1cm46dXVpZDpzcWwtY3JlZGVudGlhbC0wMDEiLCJuYmYiOjE3ODQyMDMyMDAsInN1YiI6ImRpZDprZXk6ejZNa3R3dXBkbUxYVlZxVHpDdzRpNDZyNHVHeW9zR1hSblIzWGpONFpxN29NTXN3IiwidGlueWNsb3VkX3NoYXJlIjp7Im5vZGVfYXVkaWVuY2UiOiJkaWQ6d2ViOm5vZGUuZXhhbXBsZSIsInBvbGljeV9jaWQiOiJiYWZrcmVpYzZ4a2JpcXRzdjJ3b3R6b3I3dmp5NnJpNzNpeDVudHV3ejRsaWtybTN6aG14bHBhYWptcSIsInNoYXJlX2NpZCI6ImJhZmtyZWlmMmtyaXM3bW81ZXRldHU1amxlZzJub2VqemEzNHB0d21wamhkbTVqZXJudXRpazZiYXF1Iiwic2hhcmVfaWQiOiJzaGFyZS1zcWwtMDAxIn0sInZjdCI6Im9wZW5jcmVkZW50aWFscy5lbWFpbC92MSJ9.qXQPERvttsQzCS8ShEE1a60k4-E-jLaw5O19TlOAIaAwjmFdQMVvgbGytYgMTsws4FxA0N-aqODoDsIWOc_qAQ~WyJRRUZDUTBSRlJrZElTVXBMVEUxT1R3IiwiZW1haWwiLCJBbGljZStOb3Rlc0BleGFtcGxlLmNvbSJd~",
+            "holderDid": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw",
+            "expiresAt": "2026-07-23T12:00:00.000Z",
+            "issuerDid": "did:web:issuer.credentials.org",
+            "vct": "opencredentials.email/v1",
+            "claims": {
+              "iss": "did:web:issuer.credentials.org",
+              "sub": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw",
+              "iat": 1784203200,
+              "nbf": 1784203200,
+              "exp": 1784203200,
+              "jti": "urn:uuid:sql-credential-001",
+              "vct": "opencredentials.email/v1",
+              "tinycloud_share": {
+                "share_cid": "bafkreif2kris7mo5etetu5jleg2noejza34ptwmpjhdm5jernutik6baqu",
+                "share_id": "share-sql-001",
+                "policy_cid": "bafkreic6xkbiqtsv2wotzor7vjy6ri73ix5ntuwz4likrm3zhmxlpaajmq",
+                "node_audience": "did:web:node.example"
+              },
+              "_sd_alg": "sha-256",
+              "_sd": [
+                "RRf80fqtBSVy08TD7vfd96su4AJcz2bqFGJCtfhBFcA"
+              ]
+            },
+            "disclosures": [
+              {
+                "path": "/email",
+                "salt": "QEFCQ0RFRkdISUpLTE1OTw",
+                "encoded": "WyJRRUZDUTBSRlJrZElTVXBMVEUxT1R3IiwiZW1haWwiLCJBbGljZStOb3Rlc0BleGFtcGxlLmNvbSJd",
+                "digest": "RRf80fqtBSVy08TD7vfd96su4AJcz2bqFGJCtfhBFcA",
+                "value": "Alice+Notes@example.com"
+              }
+            ],
+            "credentialDigest": "OpjJP7oKz7-33LYwkjg7mx2d75k13OO0Aix1_zsj9lI",
+            "issuerJws": {
+              "signingInput": "eyJhbGciOiJFZERTQSJ9.eyJfc2QiOlsiUlJmODBmcXRCU1Z5MDhURDd2ZmQ5NnN1NEFKY3oyYnFGR0pDdGZoQkZjQSJdLCJfc2RfYWxnIjoic2hhLTI1NiIsImV4cCI6MTc4NDIwMzIwMCwiaWF0IjoxNzg0MjAzMjAwLCJpc3MiOiJkaWQ6d2ViOmlzc3Vlci5jcmVkZW50aWFscy5vcmciLCJqdGkiOiJ1cm46dXVpZDpzcWwtY3JlZGVudGlhbC0wMDEiLCJuYmYiOjE3ODQyMDMyMDAsInN1YiI6ImRpZDprZXk6ejZNa3R3dXBkbUxYVlZxVHpDdzRpNDZyNHVHeW9zR1hSblIzWGpONFpxN29NTXN3IiwidGlueWNsb3VkX3NoYXJlIjp7Im5vZGVfYXVkaWVuY2UiOiJkaWQ6d2ViOm5vZGUuZXhhbXBsZSIsInBvbGljeV9jaWQiOiJiYWZrcmVpYzZ4a2JpcXRzdjJ3b3R6b3I3dmp5NnJpNzNpeDVudHV3ejRsaWtybTN6aG14bHBhYWptcSIsInNoYXJlX2NpZCI6ImJhZmtyZWlmMmtyaXM3bW81ZXRldHU1amxlZzJub2VqemEzNHB0d21wamhkbTVqZXJudXRpazZiYXF1Iiwic2hhcmVfaWQiOiJzaGFyZS1zcWwtMDAxIn0sInZjdCI6Im9wZW5jcmVkZW50aWFscy5lbWFpbC92MSJ9",
+              "signingInputDigest": "jYEd0VXErv0ex6sjxhQAtN3NirTTQV0GMh_gTq66Uc8",
+              "signature": "qXQPERvttsQzCS8ShEE1a60k4-E-jLaw5O19TlOAIaAwjmFdQMVvgbGytYgMTsws4FxA0N-aqODoDsIWOc_qAQ"
+            }
+          }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+          "sql": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
+        },
+        "expEquation": "evaluationTime - clockSkewSeconds"
       },
       "appliesTo": [
         "kv",
@@ -1581,6 +1710,10 @@
               "signature": "P2Rdf_oin-kj9Z9bGo8_vJMGgpts_k7UqWNSVSdNIjf6ixtXP1QRtsWVy1AWM1HcxeDUvL_NM24gy_7Un3ktCg"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "11l5O7wTooGagnx2rbb7qKSa7gB_SfLQmS2ZuCWtLEg",
+          "sql": "11l5O7wTooGagnx2rbb7qKSa7gB_SfLQmS2ZuCWtLEg"
         }
       },
       "appliesTo": [
@@ -1682,6 +1815,10 @@
               "signature": "nOFjYcT9NLp9eVPdgmI0FF3FQho47SAV82NXhnCb7Mxk85ctSQOBTl15oSl47ImripmQ5EMn7ZQa3Ao1xbn1Bw"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "11l5O7wTooGagnx2rbb7qKSa7gB_SfLQmS2ZuCWtLEg",
+          "sql": "11l5O7wTooGagnx2rbb7qKSa7gB_SfLQmS2ZuCWtLEg"
         }
       },
       "appliesTo": [
@@ -1783,6 +1920,10 @@
               "signature": "eEkYot4XgF57PKIxR47M09Crkrczm8yf7kcINCZPzh58QW23tB43ZdFmMY2piEOmiqDXctO-QymQTEciKGVVBw"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+          "sql": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
         }
       },
       "appliesTo": [
@@ -1884,6 +2025,10 @@
               "signature": "dsUaSftW2rdXUQ1RlUsJwm7_JTHrLp5N_Lm4HUgVf2LrMUd3EIG9CYSMzER9KBiYvTvNXdsHM7DmUv6mkX54Cg"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+          "sql": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
         }
       },
       "appliesTo": [
@@ -1985,6 +2130,10 @@
               "signature": "yIAcY5v7qYBHMGc4XLlEhj_sY6ZnSz_pvvyjQv0l668kbk9HuSDjTnxrpHwsmOZBsNYaqfHvNz7Zyk9cTuEkBQ"
             }
           }
+        },
+        "candidateSigningPublicKeyByKind": {
+          "kv": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+          "sql": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
         }
       },
       "appliesTo": [

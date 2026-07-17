@@ -466,7 +466,11 @@
           "operands": {
             "redemptionId": "redemption-001",
             "attempts": 20,
-            "result": "same-result"
+            "result": "same-result",
+            "cachedOutcome": {
+              "status": "issued",
+              "result": "same-result"
+            }
           }
         }
       ],

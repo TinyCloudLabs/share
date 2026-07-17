@@ -102,6 +102,12 @@ struct NegativeRejection {
     detail: String,
 }
 
+#[derive(Debug)]
+struct CommandRejection {
+    name: String,
+    detail: String,
+}
+
 const CONTRACT_VERSION: &str = "tinycloud.share-email-claim/v1";
 
 fn exact_object<'a>(
@@ -1917,6 +1923,10 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
         &[],
         "SD-JWT claims",
     )?;
+    // Authenticate the complete signed payload before evaluating any holder,
+    // time, issuer, or scope semantics.  A re-signed candidate therefore
+    // cannot use a semantic failure to mask an invalid signature.
+    verify_sd_jwt_signature_prerequisites(credential, claims, issuer_key)?;
     const_string(
         map_value(claims, "vct", "SD-JWT claims")?,
         "opencredentials.email/v1",
@@ -2103,11 +2113,290 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
         "SD-JWT nbf is not active",
     )?;
     assert_ok(exp > evaluation_time - clock_skew, "SD-JWT expired")?;
-    let signature = Signature::from_slice(&signature_bytes).map_err(|e| e.to_string())?;
-    issuer_key
-        .verify_strict(signing_input.as_bytes(), &signature)
-        .map_err(|e| format!("SD-JWT issuer signature: {e}"))?;
     Ok(())
+}
+
+fn validate_credential_semantic_boundaries(
+    scenario: &Value,
+) -> std::result::Result<(), NegativeRejection> {
+    let credential = object(scenario, "credential")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let claims = map_object(credential, "claims")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+
+    if map_text(credential, "vct")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        != "opencredentials.email/v1"
+        || map_text(claims, "vct")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            != "opencredentials.email/v1"
+    {
+        return Err(rejection(
+            RejectionStage::CredentialVct,
+            "credential VCT is not the trusted email profile",
+        ));
+    }
+
+    let trusted_issuer = "did:web:issuer.credentials.org";
+    if map_text(credential, "issuerDid")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        != trusted_issuer
+        || map_text(claims, "iss")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            != trusted_issuer
+    {
+        return Err(rejection(
+            RejectionStage::IssuerTrust,
+            "credential issuer is not trusted",
+        ));
+    }
+
+    let credential_holder = map_text(credential, "holderDid")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    did_key_bytes(credential_holder)
+        .map_err(|detail| rejection(RejectionStage::CredentialHolder, detail))?;
+    let claim_holder = map_text(claims, "sub")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let binding_holder = text(
+        artifact_message(scenario, "holderBinding")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?,
+        "holderDid",
+    )
+    .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    if credential_holder != claim_holder || credential_holder != binding_holder {
+        return Err(rejection(
+            RejectionStage::CredentialHolder,
+            "credential holder does not match its subject and binding",
+        ));
+    }
+
+    let scope = map_object(claims, "tinycloud_share")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let scope_matches = map_text(scope, "share_cid")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        == text(scenario, "shareCid")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        && map_text(scope, "share_id")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            == text(scenario, "shareId")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        && map_text(scope, "policy_cid")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            == text(scenario, "policyCid")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    if !scope_matches {
+        return Err(rejection(
+            RejectionStage::CredentialScope,
+            "credential scope does not match the share",
+        ));
+    }
+
+    let authorization = object(scenario, "authorization")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let share_expiry = valid_time(
+        &Value::String(
+            map_text(authorization, "shareExpiresAt")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+                .into(),
+        ),
+        "share expiry",
+    )
+    .map_err(|detail| rejection(RejectionStage::CredentialTime, detail))?;
+    let credential_expiry = valid_time(
+        &Value::String(
+            map_text(credential, "expiresAt")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+                .into(),
+        ),
+        "credential expiry",
+    )
+    .map_err(|detail| rejection(RejectionStage::CredentialTime, detail))?;
+    let iat = claims
+        .get("iat")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| rejection(RejectionStage::CredentialTime, "SD-JWT iat"))?;
+    let nbf = claims
+        .get("nbf")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| rejection(RejectionStage::CredentialTime, "SD-JWT nbf"))?;
+    let exp = claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| rejection(RejectionStage::CredentialTime, "SD-JWT exp"))?;
+    let evaluation_time = valid_time(
+        scenario
+            .get("evaluationTime")
+            .ok_or_else(|| rejection(RejectionStage::ContractValidation, "evaluation time"))?,
+        "evaluation time",
+    )
+    .map_err(|detail| rejection(RejectionStage::CredentialTime, detail))?;
+    let clock_skew = scenario
+        .get("clockSkewSeconds")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| rejection(RejectionStage::ContractValidation, "clock skew"))?;
+    let issued_at = valid_time(
+        &Value::String(
+            map_text(authorization, "issuedAt")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+                .into(),
+        ),
+        "authorization issuedAt",
+    )
+    .map_err(|detail| rejection(RejectionStage::CredentialTime, detail))?;
+    if credential_expiry != share_expiry
+        || map_text(credential, "expiresAt")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            != map_text(authorization, "shareExpiresAt")
+                .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        || iat > nbf
+        || nbf >= exp
+        || exp != share_expiry
+        || iat != issued_at
+        || nbf != issued_at
+        || iat > evaluation_time + clock_skew
+        || nbf > evaluation_time + clock_skew
+        || exp <= evaluation_time - clock_skew
+    {
+        return Err(rejection(
+            RejectionStage::CredentialTime,
+            "credential time boundary failed",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_credential_candidate_signature(
+    credential: &Map<String, Value>,
+    claims: &Map<String, Value>,
+    test_keys: &Value,
+    mutation: &Map<String, Value>,
+    kind: &str,
+    issuer_key: &VerifyingKey,
+) -> Result<bool> {
+    // Prefer the candidate's declared public key.  This lets an alternate
+    // test key authenticate the payload before issuer-key trust is evaluated.
+    // The seed fallback keeps older checked-in vectors verifiable while they
+    // migrate to the explicit public-key declaration.
+    let candidates = if let Some(encoded) = mutation
+        .get("candidateSigningPublicKeyByKind")
+        .and_then(Value::as_object)
+        .and_then(|keys| keys.get(kind))
+    {
+        let raw = b64_string(encoded, Some(32), "candidate signing public key")?;
+        vec![
+            VerifyingKey::from_bytes(&raw.try_into().map_err(|_| "candidate signing key length")?)
+                .map_err(|error| error.to_string())?,
+        ]
+    } else {
+        [
+            "issuerSeedHex",
+            "senderSeedHex",
+            "holderSeedHex",
+            "nodeSeedHex",
+        ]
+        .into_iter()
+        .map(|name| seed_verifying_key(test_keys, name))
+        .collect::<Result<Vec<_>>>()?
+    };
+    for candidate in candidates {
+        if verify_sd_jwt_signature_prerequisites(credential, claims, &candidate).is_ok() {
+            return Ok(candidate.to_bytes() == issuer_key.to_bytes());
+        }
+    }
+    Err("credential signature does not verify under a declared test signing key".into())
+}
+
+fn validate_credential_candidate(
+    scenario: &Value,
+    test_keys: &Value,
+    mutation: &Map<String, Value>,
+    kind: &str,
+    issuer_key: &VerifyingKey,
+) -> std::result::Result<(), NegativeRejection> {
+    let credential = object(scenario, "credential")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let claims = map_object(credential, "claims")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let candidate_uses_trusted_key = match verify_credential_candidate_signature(
+        credential, claims, test_keys, mutation, kind, issuer_key,
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            return Err(rejection(
+                RejectionStage::IssuerKey,
+                "credential signature is not authentic under its declared key",
+            ));
+        }
+    };
+    validate_credential_semantic_boundaries(scenario)?;
+    if !candidate_uses_trusted_key {
+        return Err(rejection(
+            RejectionStage::IssuerKey,
+            "credential signature is not under the trusted issuer key",
+        ));
+    }
+    validate_sd_jwt(scenario, issuer_key)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))
+}
+
+fn validate_enrollment_boundary(scenario: &Value) -> std::result::Result<(), NegativeRejection> {
+    let enrollment = object(scenario, "enrollment")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    if map_text(enrollment, "targetOrigin")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        != "https://node.example"
+        || map_text(enrollment, "nodeAudience")
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+            != "did:web:node.example"
+    {
+        return Err(rejection(
+            RejectionStage::NodeAuthority,
+            "enrollment authority binding failed",
+        ));
+    }
+    if enrollment.get("enabled") != Some(&Value::Bool(true)) {
+        return Err(rejection(
+            RejectionStage::NodeEnrollment,
+            "node enrollment is disabled",
+        ));
+    }
+    if enrollment.get("keyVersion") != Some(&Value::from(1)) {
+        return Err(rejection(
+            RejectionStage::NodeKeyRetirement,
+            "node enrollment key version is retired",
+        ));
+    }
+    if map_text(enrollment, "invitationKid")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?
+        != "did:web:node.example#invitation-key-1"
+    {
+        return Err(rejection(
+            RejectionStage::NodeKeyRotation,
+            "node enrollment key ID does not match its version",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_holder_signature_boundary(
+    scenario: &Value,
+    domains: &Map<String, Value>,
+) -> std::result::Result<(), NegativeRejection> {
+    let artifact = artifact_named(scenario, "holderBinding")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let signature = object(artifact, "signature")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let bytes = b64_map(signature, "value")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    assert_canonical_ed25519_s(&bytes)
+        .map_err(|detail| rejection(RejectionStage::SignatureEncoding, detail))?;
+    let enrollment = scenario
+        .get("enrollment")
+        .ok_or_else(|| rejection(RejectionStage::ContractValidation, "enrollment"))?;
+    verify_signature_core(artifact, "holderBinding", enrollment)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    verify_artifact(artifact, "holderBinding", domains, enrollment)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))
 }
 
 fn artifact_named<'a>(scenario: &'a Value, name: &str) -> Result<&'a Value> {
@@ -3115,18 +3404,22 @@ fn validate_share_url_boundary(
             "share URL origin mismatch",
         ));
     }
-    let Some((path, fragment)) = path_and_fragment.split_once('#') else {
-        return Err(rejection(
-            RejectionStage::ShareUrlFragment,
-            "share URL fragment missing",
-        ));
-    };
-    if path.contains('?') {
+    let fragment_start = path_and_fragment.find('#');
+    let path_end = fragment_start.unwrap_or(path_and_fragment.len());
+    if path_and_fragment[..path_end].contains('?') {
         return Err(rejection(
             RejectionStage::ShareUrlQuery,
             "share URL query is forbidden",
         ));
     }
+    let Some(fragment_start) = fragment_start else {
+        return Err(rejection(
+            RejectionStage::ShareUrlFragment,
+            "share URL fragment missing",
+        ));
+    };
+    let path = &path_and_fragment[..fragment_start];
+    let fragment = &path_and_fragment[fragment_start + 1..];
     if path != format!("s/{cid}") {
         return Err(rejection(
             RejectionStage::ShareUrlPath,
@@ -3269,6 +3562,7 @@ fn known_native_id(id: &str) -> bool {
             | "envelope-origin-mismatch"
             | "share-url-userinfo"
             | "share-url-query"
+            | "share-url-query-missing-fragment"
             | "share-url-duplicate-k"
             | "share-url-unknown-fragment"
             | "share-url-noncanonical-k"
@@ -3314,6 +3608,7 @@ fn known_native_id(id: &str) -> bool {
             | "credential-legacy-email-path"
             | "credential-unsupported-status"
             | "credential-expired-resigned"
+            | "credential-expiry-boundary-resigned"
             | "credential-issuer-did-resigned"
             | "credential-issuer-key-resigned"
             | "credential-vct-resigned"
@@ -4166,14 +4461,7 @@ fn validate_mutated_candidate_inner(
         "credential.claims._sd_alg" | "credential.disclosures[0].encoded" => {
             validate_sd_jwt(scenario, issuer_key)
         }
-        target if target.starts_with("credential.") => {
-            let credential = object(scenario, "credential")?;
-            let claims = map_object(credential, "claims")?;
-            if mutation.get("credential").is_some() {
-                verify_sd_jwt_signature_prerequisites(credential, claims, issuer_key)?;
-            }
-            validate_sd_jwt(scenario, issuer_key)
-        }
+        target if target.starts_with("credential.") => validate_sd_jwt(scenario, issuer_key),
         target if target.starts_with("enrollment.") => {
             let enrollment = object(scenario, "enrollment")?;
             assert_ok(
@@ -4201,46 +4489,18 @@ fn validate_mutated_candidate_inner(
     }
 }
 
-fn rejection_stage_for_validator(scenario: &Value, row: &Value) -> RejectionStage {
-    let target = text(row, "target").unwrap_or_default();
-    let mutation = row.get("mutationData").and_then(Value::as_object);
-    match target {
-        "inviteAuthorization.documentName" => RejectionStage::DocumentNameBytes,
-        "holderBinding.holderDid"
-            if mutation.is_some_and(|data| data.contains_key("candidateArtifact")) =>
-        {
-            RejectionStage::CrossArtifactHolder
-        }
-        "holderBinding.signature.value"
-            if scenario
-                .get("credential")
-                .is_some_and(|_| text(row, "id").ok() == Some("noncanonical-ed25519-s")) =>
-        {
-            RejectionStage::SignatureEncoding
-        }
-        "credential.claims.exp" => RejectionStage::CredentialTime,
-        "credential.claims.iss" => RejectionStage::IssuerTrust,
-        "credential.issuerJws.signature" => RejectionStage::IssuerKey,
-        "credential.vct" => RejectionStage::CredentialVct,
-        "credential.holderDid" => RejectionStage::CredentialHolder,
-        "credential.claims.tinycloud_share.share_id" => RejectionStage::CredentialScope,
-        "enrollment.enabled" => RejectionStage::NodeEnrollment,
-        "enrollment.targetOrigin" | "enrollment.nodeAudience" => RejectionStage::NodeAuthority,
-        "enrollment.keyVersion" => RejectionStage::NodeKeyRetirement,
-        "enrollment.invitationKid" => RejectionStage::NodeKeyRotation,
-        _ => RejectionStage::ContractValidation,
-    }
-}
-
 fn validate_negative_candidate(
     scenario: &Value,
     states: &Value,
     row: &Value,
     kind: &str,
     domains: &Map<String, Value>,
+    test_keys: &Value,
     issuer_key: &VerifyingKey,
 ) -> std::result::Result<(), NegativeRejection> {
     let target = text(row, "target")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let mutation = object(row, "mutationData")
         .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
     match target {
         "createInvitationRequest.shareUrl" => {
@@ -4260,8 +4520,23 @@ fn validate_negative_candidate(
                 .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
             validate_scanner_fragment_boundary(url, scenario)
         }
+        "inviteAuthorization.documentName" => {
+            validate_mutated_candidate_inner(scenario, states, row, kind, domains, issuer_key)
+                .map_err(|detail| rejection(RejectionStage::DocumentNameBytes, detail))
+        }
+        "holderBinding.holderDid" if mutation.contains_key("candidateArtifact") => {
+            validate_mutated_candidate_inner(scenario, states, row, kind, domains, issuer_key)
+                .map_err(|detail| rejection(RejectionStage::CrossArtifactHolder, detail))
+        }
+        "holderBinding.signature.value" => validate_holder_signature_boundary(scenario, domains),
+        target
+            if target.starts_with("credential.") && mutation.contains_key("credentialByKind") =>
+        {
+            validate_credential_candidate(scenario, test_keys, mutation, kind, issuer_key)
+        }
+        target if target.starts_with("enrollment.") => validate_enrollment_boundary(scenario),
         _ => validate_mutated_candidate_inner(scenario, states, row, kind, domains, issuer_key)
-            .map_err(|detail| rejection(rejection_stage_for_validator(scenario, row), detail)),
+            .map_err(|detail| rejection(RejectionStage::ContractValidation, detail)),
     }
 }
 
@@ -4270,6 +4545,7 @@ fn validate_negative_native(
     negative: &Value,
     states: &Value,
     domains: &Map<String, Value>,
+    test_keys: &Value,
     issuer_key: &VerifyingKey,
 ) -> Result<()> {
     let rows = array(negative, "cases")?;
@@ -4342,6 +4618,7 @@ fn validate_negative_native(
                 row,
                 kind,
                 domains,
+                test_keys,
                 issuer_key,
             ) {
                 assert_ok(
@@ -4539,306 +4816,372 @@ fn reduce_operation_commands(
         )?;
         let name = map_text(command, "name")?;
         let operands = map_object(command, "operands")?;
-        let invitation = durable.get("invitation").and_then(Value::as_str);
-        match name {
-            "create_invitation" => {
-                assert_ok(operation == "transaction", "create operation")?;
-                let version = operand_u64(operands, "version")?;
-                let claim_material = operand_text(operands, "claimMaterial")?;
-                assert_ok(
-                    invitation == Some("ABSENT")
-                        && durable.get("outbox") == Some(&Value::Null)
-                        && durable.get("claimMaterial")
-                            == Some(&Value::String(claim_material.into())),
-                    "create precondition",
-                )?;
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("PENDING_DELIVERY", version)),
-                );
-                durable.insert(
-                    "outbox".into(),
-                    Value::String(operand_text(operands, "outboxKey")?.into()),
-                );
-            }
-            "provider_accept" => {
-                assert_ok(operation == "transaction", "provider accept operation")?;
-                let version = operand_u64(operands, "version")?;
-                let expected = versioned_state("PENDING_DELIVERY", version);
-                assert_ok(
-                    invitation == Some(expected.as_str())
-                        && durable.get("providerAccepted") == Some(&Value::Bool(false)),
-                    "provider accept precondition",
-                )?;
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("ACTIVE", version)),
-                );
-                durable.insert("providerAccepted".into(), Value::Bool(true));
-                durable.insert(
-                    "claimMaterial".into(),
-                    Value::String(operand_text(operands, "claimMaterialAfter")?.into()),
-                );
-            }
-            "invalidate_old_version" => {
-                assert_ok(operation == "reject", "invalidation operation")?;
-                let version = operand_u64(operands, "version")?;
-                assert_ok(
-                    operand_text(operands, "onlyAfter")? == "provider_acceptance"
-                        && durable.get("activeVersion") == Some(&version.into())
-                        && durable
-                            .get("pendingVersion")
+        let mut scratch = durable.clone();
+        std::mem::swap(&mut durable, &mut scratch);
+        let invitation = durable
+            .get("invitation")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let command_result: Result<()> = (|| {
+            match name {
+                "create_invitation" => {
+                    assert_ok(operation == "transaction", "create operation")?;
+                    let version = operand_u64(operands, "version")?;
+                    let claim_material = operand_text(operands, "claimMaterial")?;
+                    assert_ok(
+                        invitation.as_deref() == Some("ABSENT")
+                            && durable.get("outbox") == Some(&Value::Null)
+                            && durable.get("claimMaterial")
+                                == Some(&Value::String(claim_material.into())),
+                        "create precondition",
+                    )?;
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("PENDING_DELIVERY", version)),
+                    );
+                    durable.insert(
+                        "outbox".into(),
+                        Value::String(operand_text(operands, "outboxKey")?.into()),
+                    );
+                }
+                "provider_accept" => {
+                    assert_ok(operation == "transaction", "provider accept operation")?;
+                    let version = operand_u64(operands, "version")?;
+                    let expected = versioned_state("PENDING_DELIVERY", version);
+                    assert_ok(
+                        invitation.as_deref() == Some(expected.as_str())
+                            && durable.get("providerAccepted") == Some(&Value::Bool(false)),
+                        "provider accept precondition",
+                    )?;
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("ACTIVE", version)),
+                    );
+                    durable.insert("providerAccepted".into(), Value::Bool(true));
+                    durable.insert(
+                        "claimMaterial".into(),
+                        Value::String(operand_text(operands, "claimMaterialAfter")?.into()),
+                    );
+                }
+                "invalidate_old_version" => {
+                    assert_ok(operation == "reject", "invalidation operation")?;
+                    let version = operand_u64(operands, "version")?;
+                    assert_ok(
+                        operand_text(operands, "onlyAfter")? == "provider_acceptance"
+                            && durable.get("activeVersion") == Some(&version.into())
+                            && durable
+                                .get("pendingVersion")
+                                .and_then(Value::as_u64)
+                                .is_some_and(|pending| pending > version)
+                            && durable.get("oldSecret") == Some(&Value::String("present".into())),
+                        "premature invalidation precondition",
+                    )?;
+                    durable.insert("oldSecret".into(), Value::String("retired".into()));
+                    return Err("command rejected: premature invalidation".into());
+                }
+                "prepare_resend" => {
+                    assert_ok(operation == "transaction", "resend operation")?;
+                    let from_version = operand_u64(operands, "fromVersion")?;
+                    let to_version = operand_u64(operands, "toVersion")?;
+                    let expected = versioned_state("ACTIVE", from_version);
+                    assert_ok(
+                        invitation.as_deref() == Some(expected.as_str())
+                            && durable.get("activeVersion") == Some(&from_version.into())
+                            && durable.get("pendingVersion") == Some(&Value::Null),
+                        "resend precondition",
+                    )?;
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("PENDING_DELIVERY", to_version)),
+                    );
+                    durable.insert("pendingVersion".into(), to_version.into());
+                    durable.insert(
+                        "replacementMaterial".into(),
+                        Value::String(operand_text(operands, "replacementMaterial")?.into()),
+                    );
+                }
+                "provider_reject" => {
+                    assert_ok(operation == "transaction", "provider reject operation")?;
+                    let pending_version = operand_u64(operands, "pendingVersion")?;
+                    let restore_version = operand_u64(operands, "restoreVersion")?;
+                    let expected = versioned_state("PENDING_DELIVERY", pending_version);
+                    assert_ok(
+                        invitation.as_deref() == Some(expected.as_str())
+                            && durable.get("activeVersion") == Some(&restore_version.into())
+                            && durable.get("replacementMaterial")
+                                == Some(&Value::String("encrypted".into())),
+                        "provider failure precondition",
+                    )?;
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("ACTIVE", restore_version)),
+                    );
+                    durable.insert("pendingVersion".into(), Value::Null);
+                    durable.insert(
+                        "replacementMaterial".into(),
+                        Value::String(operand_text(operands, "replacementMaterialAfter")?.into()),
+                    );
+                }
+                "provider_accept_then_crash" => {
+                    assert_ok(operation == "crash", "provider crash operation")?;
+                    let version = operand_u64(operands, "version")?;
+                    assert_ok(
+                        !operand_text(operands, "idempotencyKey")?.is_empty()
+                            && invitation.as_deref()
+                                == Some(versioned_state("PENDING_DELIVERY", version).as_str())
+                            && durable.get("pendingVersion") == Some(&version.into())
+                            && durable.get("providerAccepted") == Some(&Value::Bool(false)),
+                        "provider crash precondition",
+                    )?;
+                    durable.insert("providerAccepted".into(), Value::Bool(true));
+                    durable.insert("crashObserved".into(), Value::Bool(true));
+                }
+                "reconcile_provider_acceptance" => {
+                    assert_ok(operation == "retry", "provider retry operation")?;
+                    let version = operand_u64(operands, "version")?;
+                    let retire_version = operand_u64(operands, "retireVersion")?;
+                    assert_ok(
+                        !operand_text(operands, "idempotencyKey")?.is_empty()
+                            && invitation.as_deref()
+                                == Some(versioned_state("PENDING_DELIVERY", version).as_str())
+                            && durable.get("providerAccepted") == Some(&Value::Bool(true))
+                            && durable.get("crashObserved") == Some(&Value::Bool(true))
+                            && durable.get("activeVersion") == Some(&retire_version.into()),
+                        "provider retry precondition",
+                    )?;
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("ACTIVE", version)),
+                    );
+                    durable.insert("activeVersion".into(), version.into());
+                    durable.insert("pendingVersion".into(), Value::Null);
+                    durable.insert("oldSecret".into(), Value::String("retired".into()));
+                    durable.insert(
+                        "providerSendCount".into(),
+                        operand_u64(operands, "sendCount")?.into(),
+                    );
+                    durable.remove("providerAccepted");
+                    durable.remove("crashObserved");
+                }
+                "resolve_issuance" => {
+                    assert_ok(operation == "transaction", "issuance resolution operation")?;
+                    let redemption_id = operand_text(operands, "redemptionId")?;
+                    let state = invitation.ok_or("issuance state")?;
+                    let state_body = state
+                        .strip_prefix("REDEEMING(v")
+                        .and_then(|value| value.strip_suffix(')'))
+                        .ok_or("issuance state")?;
+                    let (version, state_redemption) =
+                        state_body.split_once(',').ok_or("issuance state")?;
+                    assert_ok(
+                        state_redemption == redemption_id
+                            && durable.get("seed") == Some(&Value::String("encrypted".into()))
+                            && durable.get("result") == Some(&Value::Null)
+                            && durable.get("consumed") == Some(&Value::Bool(false)),
+                        "issuance precondition",
+                    )?;
+                    let outcome = operand_text(operands, "outcome")?;
+                    let invitation = match outcome {
+                        "success" => versioned_state(
+                            "CONSUMED",
+                            version.parse::<u64>().map_err(|error| error.to_string())?,
+                        ),
+                        "failure" => "TERMINAL_ERROR".into(),
+                        _ => return Err(format!("unknown issuance outcome {outcome}")),
+                    };
+                    durable.insert("invitation".into(), Value::String(invitation));
+                    durable.insert(
+                        "seed".into(),
+                        Value::String(operand_text(operands, "seedAfter")?.into()),
+                    );
+                    durable.insert(
+                        "result".into(),
+                        Value::String(operand_text(operands, "result")?.into()),
+                    );
+                    durable.insert("consumed".into(), Value::Bool(true));
+                }
+                "atomic_write" => {
+                    assert_ok(operation == "reject", "atomic write operation")?;
+                    assert_ok(
+                        operand_bool(operands, "requireAtomic")?,
+                        "atomic write requirement",
+                    )?;
+                    expect_string_array(
+                        operands.get("writes").ok_or("partial-write writes")?,
+                        &["result", "consumed"],
+                        "partial-write writes",
+                    )?;
+                    assert_ok(
+                        invitation.is_some_and(|state| state.starts_with("REDEEMING(v"))
+                            && durable.get("seed") == Some(&Value::String("encrypted".into())),
+                        "partial-write precondition",
+                    )?;
+                    durable.insert("result".into(), Value::String("partial".into()));
+                    durable.insert("consumed".into(), Value::Bool(true));
+                    return Err("command rejected: partial atomic write".into());
+                }
+                "cleanup_seed" => {
+                    assert_ok(operation == "reject", "cleanup operation")?;
+                    assert_ok(
+                        operand_text(operands, "pendingSeedAction")? == "refuse"
+                            && operand_bool(operands, "requiresDurableCompletion")?,
+                        "cleanup requirement",
+                    )?;
+                    assert_ok(
+                        invitation.is_some_and(|state| state.starts_with("REDEEMING(v"))
+                            && durable.get("seed") == Some(&Value::String("encrypted".into())),
+                        "pending cleanup precondition",
+                    )?;
+                    durable.insert("seed".into(), Value::String("deleted".into()));
+                    return Err("command rejected: pending seed cleanup".into());
+                }
+                "redeem_if_active" => {
+                    let redemption_id = operand_text(operands, "redemptionId")?;
+                    let result = operand_text(operands, "result")?;
+                    let state = invitation.ok_or("redemption state")?;
+                    if state.starts_with("ACTIVE(v") {
+                        assert_ok(operation == "transaction", "redemption operation")?;
+                        let version = parse_versioned_state(&state, "ACTIVE(v")?;
+                        let attempts = operand_u64(operands, "attempts")?;
+                        assert_ok(
+                            attempts >= 2
+                                && durable.get("redemptionId")
+                                    == Some(&Value::String(redemption_id.into()))
+                                && durable.get("issuanceCount") == Some(&Value::from(0)),
+                            "CAS precondition",
+                        )?;
+                        let mut issuance_count = durable
+                            .get("issuanceCount")
                             .and_then(Value::as_u64)
-                            .is_some_and(|pending| pending > version)
-                        && durable.get("oldSecret") == Some(&Value::String("present".into())),
-                    "premature invalidation precondition",
-                )?;
-            }
-            "prepare_resend" => {
-                assert_ok(operation == "transaction", "resend operation")?;
-                let from_version = operand_u64(operands, "fromVersion")?;
-                let to_version = operand_u64(operands, "toVersion")?;
-                let expected = versioned_state("ACTIVE", from_version);
-                assert_ok(
-                    invitation == Some(expected.as_str())
-                        && durable.get("activeVersion") == Some(&from_version.into())
-                        && durable.get("pendingVersion") == Some(&Value::Null),
-                    "resend precondition",
-                )?;
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("PENDING_DELIVERY", to_version)),
-                );
-                durable.insert("pendingVersion".into(), to_version.into());
-                durable.insert(
-                    "replacementMaterial".into(),
-                    Value::String(operand_text(operands, "replacementMaterial")?.into()),
-                );
-            }
-            "provider_reject" => {
-                assert_ok(operation == "transaction", "provider reject operation")?;
-                let pending_version = operand_u64(operands, "pendingVersion")?;
-                let restore_version = operand_u64(operands, "restoreVersion")?;
-                let expected = versioned_state("PENDING_DELIVERY", pending_version);
-                assert_ok(
-                    invitation == Some(expected.as_str())
-                        && durable.get("activeVersion") == Some(&restore_version.into())
-                        && durable.get("replacementMaterial")
-                            == Some(&Value::String("encrypted".into())),
-                    "provider failure precondition",
-                )?;
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("ACTIVE", restore_version)),
-                );
-                durable.insert("pendingVersion".into(), Value::Null);
-                durable.insert(
-                    "replacementMaterial".into(),
-                    Value::String(operand_text(operands, "replacementMaterialAfter")?.into()),
-                );
-            }
-            "provider_accept_then_crash" => {
-                assert_ok(operation == "crash", "provider crash operation")?;
-                let version = operand_u64(operands, "version")?;
-                assert_ok(
-                    !operand_text(operands, "idempotencyKey")?.is_empty()
-                        && invitation
-                            == Some(versioned_state("PENDING_DELIVERY", version).as_str())
-                        && durable.get("pendingVersion") == Some(&version.into())
-                        && durable.get("providerAccepted") == Some(&Value::Bool(false)),
-                    "provider crash precondition",
-                )?;
-                durable.insert("providerAccepted".into(), Value::Bool(true));
-                durable.insert("crashObserved".into(), Value::Bool(true));
-            }
-            "reconcile_provider_acceptance" => {
-                assert_ok(operation == "retry", "provider retry operation")?;
-                let version = operand_u64(operands, "version")?;
-                let retire_version = operand_u64(operands, "retireVersion")?;
-                assert_ok(
-                    !operand_text(operands, "idempotencyKey")?.is_empty()
-                        && invitation
-                            == Some(versioned_state("PENDING_DELIVERY", version).as_str())
-                        && durable.get("providerAccepted") == Some(&Value::Bool(true))
-                        && durable.get("crashObserved") == Some(&Value::Bool(true))
-                        && durable.get("activeVersion") == Some(&retire_version.into()),
-                    "provider retry precondition",
-                )?;
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("ACTIVE", version)),
-                );
-                durable.insert("activeVersion".into(), version.into());
-                durable.insert("pendingVersion".into(), Value::Null);
-                durable.insert("oldSecret".into(), Value::String("retired".into()));
-                durable.insert(
-                    "providerSendCount".into(),
-                    operand_u64(operands, "sendCount")?.into(),
-                );
-                durable.remove("providerAccepted");
-                durable.remove("crashObserved");
-            }
-            "resolve_issuance" => {
-                assert_ok(operation == "transaction", "issuance resolution operation")?;
-                let redemption_id = operand_text(operands, "redemptionId")?;
-                let state = invitation.ok_or("issuance state")?;
-                let state_body = state
-                    .strip_prefix("REDEEMING(v")
-                    .and_then(|value| value.strip_suffix(')'))
-                    .ok_or("issuance state")?;
-                let (version, state_redemption) =
-                    state_body.split_once(',').ok_or("issuance state")?;
-                assert_ok(
-                    state_redemption == redemption_id
-                        && durable.get("seed") == Some(&Value::String("encrypted".into()))
-                        && durable.get("result") == Some(&Value::Null)
-                        && durable.get("consumed") == Some(&Value::Bool(false)),
-                    "issuance precondition",
-                )?;
-                let outcome = operand_text(operands, "outcome")?;
-                let invitation = match outcome {
-                    "success" => versioned_state(
-                        "CONSUMED",
-                        version.parse::<u64>().map_err(|error| error.to_string())?,
-                    ),
-                    "failure" => "TERMINAL_ERROR".into(),
-                    _ => return Err(format!("unknown issuance outcome {outcome}")),
-                };
-                durable.insert("invitation".into(), Value::String(invitation));
-                durable.insert(
-                    "seed".into(),
-                    Value::String(operand_text(operands, "seedAfter")?.into()),
-                );
-                durable.insert(
-                    "result".into(),
-                    Value::String(operand_text(operands, "result")?.into()),
-                );
-                durable.insert("consumed".into(), Value::Bool(true));
-            }
-            "atomic_write" => {
-                assert_ok(operation == "reject", "atomic write operation")?;
-                assert_ok(
-                    operand_bool(operands, "requireAtomic")?,
-                    "atomic write requirement",
-                )?;
-                expect_string_array(
-                    operands.get("writes").ok_or("partial-write writes")?,
-                    &["result", "consumed"],
-                    "partial-write writes",
-                )?;
-                assert_ok(
-                    invitation.is_some_and(|state| state.starts_with("REDEEMING(v"))
-                        && durable.get("seed") == Some(&Value::String("encrypted".into())),
-                    "partial-write precondition",
-                )?;
-            }
-            "cleanup_seed" => {
-                assert_ok(operation == "reject", "cleanup operation")?;
-                assert_ok(
-                    operand_text(operands, "pendingSeedAction")? == "refuse"
-                        && operand_bool(operands, "requiresDurableCompletion")?,
-                    "cleanup requirement",
-                )?;
-                assert_ok(
-                    invitation.is_some_and(|state| state.starts_with("REDEEMING(v"))
-                        && durable.get("seed") == Some(&Value::String("encrypted".into())),
-                    "pending cleanup precondition",
-                )?;
-            }
-            "redeem_if_active" => {
-                let redemption_id = operand_text(operands, "redemptionId")?;
-                let result = operand_text(operands, "result")?;
-                let state = invitation.ok_or("redemption state")?;
-                if state.starts_with("ACTIVE(v") {
-                    assert_ok(operation == "transaction", "redemption operation")?;
-                    let version = parse_versioned_state(state, "ACTIVE(v")?;
-                    let attempts = operand_u64(operands, "attempts")?;
-                    assert_ok(
-                        attempts == 20
-                            && durable.get("redemptionId")
-                                == Some(&Value::String(redemption_id.into()))
-                            && durable.get("issuanceCount") == Some(&Value::from(0)),
-                        "CAS precondition",
-                    )?;
-                    let mut issuance_count = 0;
-                    let mut stored_result = None;
-                    for _ in 0..attempts {
-                        if issuance_count == 0 {
-                            issuance_count = 1;
-                            stored_result = Some(result.to_owned());
-                            durable.insert(
-                                "invitation".into(),
-                                Value::String(versioned_state("CONSUMED", version)),
-                            );
-                        } else {
-                            assert_ok(stored_result.as_deref() == Some(result), "CAS idempotency")?;
+                            .ok_or("CAS issuance count")?;
+                        let mut cached_result = durable
+                            .get("result")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        for attempt in 0..attempts {
+                            if issuance_count == 0 {
+                                issuance_count += 1;
+                                cached_result = Some(result.to_owned());
+                                durable.insert(
+                                    "invitation".into(),
+                                    Value::String(versioned_state("CONSUMED", version)),
+                                );
+                            } else {
+                                assert_ok(
+                                    cached_result.as_deref() == Some(result),
+                                    &format!("CAS idempotency attempt {attempt}"),
+                                )?;
+                            }
                         }
+                        assert_ok(issuance_count == 1, "CAS issued more than once")?;
+                        assert_ok(cached_result.as_deref() == Some(result), "CAS result cache")?;
+                        durable.insert("issuanceCount".into(), issuance_count.into());
+                        durable.insert("result".into(), Value::String(result.into()));
+                    } else {
+                        assert_ok(
+                            operation == "reject"
+                                && durable.get("redemptionId")
+                                    != Some(&Value::String(redemption_id.into()))
+                                && durable.get("issuanceCount") == Some(&Value::from(1)),
+                            "different redemption precondition",
+                        )?;
+                        durable.insert("redemptionId".into(), Value::String(redemption_id.into()));
+                        durable.insert("result".into(), Value::String(result.into()));
+                        let attempted_count = durable
+                            .get("issuanceCount")
+                            .and_then(Value::as_u64)
+                            .ok_or("different redemption issuance count")?
+                            + 1;
+                        durable.insert("issuanceCount".into(), attempted_count.into());
+                        return Err("command rejected: different redemption".into());
                     }
-                    durable.insert("issuanceCount".into(), issuance_count.into());
-                    durable.insert("result".into(), Value::String(result.into()));
-                } else {
+                }
+                "wrong_otp_attempts" => {
+                    assert_ok(operation == "transaction", "OTP operation")?;
+                    let state = invitation.ok_or("OTP invitation state")?;
+                    let version = parse_versioned_state(&state, "ACTIVE(v")?;
+                    let attempts = operand_u64(operands, "attempts")?;
+                    let lock_at = operand_u64(operands, "lockAt")?;
+                    let invalid_magic = operand_u64(operands, "invalidMagicAttempts")?;
+                    let current_invalid = durable
+                        .get("invalidMagicOtpAttempts")
+                        .and_then(Value::as_u64)
+                        .ok_or("invalid magic attempts")?;
+                    assert_ok(current_invalid == invalid_magic, "OTP precondition")?;
+                    let mut otp_attempts = durable
+                        .get("otpAttempts")
+                        .and_then(Value::as_u64)
+                        .ok_or("OTP attempts")?;
+                    for _ in 0..attempts {
+                        otp_attempts += 1;
+                    }
+                    assert_ok(otp_attempts >= lock_at, "OTP lock threshold")?;
+                    durable.insert("otpAttempts".into(), otp_attempts.into());
+                    durable.insert(
+                        "invitation".into(),
+                        Value::String(versioned_state("LOCKED", version)),
+                    );
+                }
+                "consume_nonce" => {
+                    assert_ok(operation == "reject", "nonce operation")?;
+                    let required_state = operand_text(operands, "requiredState")?;
                     assert_ok(
-                        operation == "reject"
-                            && durable.get("redemptionId")
-                                != Some(&Value::String(redemption_id.into()))
-                            && durable.get("issuanceCount") == Some(&Value::from(1)),
-                        "different redemption precondition",
+                        durable.get("nonce") != Some(&Value::String(required_state.into())),
+                        "nonce replay precondition",
+                    )?;
+                    durable.insert("nonceReplayAttempted".into(), Value::Bool(true));
+                    return Err("command rejected: nonce replay".into());
+                }
+                "reserve_jti" => {
+                    assert_ok(operation == "reject", "JTI operation")?;
+                    let jti = operand_text(operands, "jti")?;
+                    let digest = operand_text(operands, "digest")?;
+                    assert_ok(
+                        durable.get("jti") == Some(&Value::String(jti.into()))
+                            && durable.get("digest") != Some(&Value::String(digest.into())),
+                        "JTI replay precondition",
+                    )?;
+                    durable.insert("digest".into(), Value::String(digest.into()));
+                    return Err("command rejected: JTI replay".into());
+                }
+                "scanner_get" => {
+                    assert_ok(
+                        operation == "read-only"
+                            && operand_text(operands, "method")? == "GET"
+                            && !operand_bool(operands, "mutate")?,
+                        "scanner GET precondition",
                     )?;
                 }
+                _ => return Err(format!("unknown operation command {name}")),
             }
-            "wrong_otp_attempts" => {
-                assert_ok(operation == "transaction", "OTP operation")?;
-                let state = invitation.ok_or("OTP invitation state")?;
-                let version = parse_versioned_state(state, "ACTIVE(v")?;
-                let attempts = operand_u64(operands, "attempts")?;
-                let lock_at = operand_u64(operands, "lockAt")?;
-                let invalid_magic = operand_u64(operands, "invalidMagicAttempts")?;
-                let current_invalid = durable
-                    .get("invalidMagicOtpAttempts")
-                    .and_then(Value::as_u64)
-                    .ok_or("invalid magic attempts")?;
-                assert_ok(current_invalid == invalid_magic, "OTP precondition")?;
-                let mut otp_attempts = durable
-                    .get("otpAttempts")
-                    .and_then(Value::as_u64)
-                    .ok_or("OTP attempts")?;
-                for _ in 0..attempts {
-                    otp_attempts += 1;
-                }
-                assert_ok(otp_attempts >= lock_at, "OTP lock threshold")?;
-                durable.insert("otpAttempts".into(), otp_attempts.into());
-                durable.insert(
-                    "invitation".into(),
-                    Value::String(versioned_state("LOCKED", version)),
-                );
-            }
-            "consume_nonce" => {
-                assert_ok(operation == "reject", "nonce operation")?;
-                let required_state = operand_text(operands, "requiredState")?;
-                assert_ok(
-                    durable.get("nonce") != Some(&Value::String(required_state.into())),
-                    "nonce replay precondition",
-                )?;
-            }
-            "reserve_jti" => {
-                assert_ok(operation == "reject", "JTI operation")?;
-                let jti = operand_text(operands, "jti")?;
-                let digest = operand_text(operands, "digest")?;
-                assert_ok(
-                    durable.get("jti") == Some(&Value::String(jti.into()))
-                        && durable.get("digest") != Some(&Value::String(digest.into())),
-                    "JTI replay precondition",
-                )?;
-            }
-            "scanner_get" => {
-                assert_ok(
-                    operation == "read-only"
-                        && operand_text(operands, "method")? == "GET"
-                        && !operand_bool(operands, "mutate")?,
-                    "scanner GET precondition",
-                )?;
-            }
-            _ => return Err(format!("unknown operation command {name}")),
+            Ok(())
+        })();
+        if operation == "reject" {
+            let detail = match command_result {
+                Ok(()) => return Err(format!("rejected command accepted: {name}")),
+                Err(detail) => detail,
+            };
+            assert_ok(
+                detail.starts_with("command rejected:"),
+                "command did not produce a typed rejection",
+            )?;
+            let command_rejection = CommandRejection {
+                name: name.into(),
+                detail,
+            };
+            assert_ok(
+                !command_rejection.name.is_empty() && !command_rejection.detail.is_empty(),
+                "untyped command rejection",
+            )?;
+            assert_ok(
+                durable != scratch,
+                "rejected command did not attempt a mutation",
+            )?;
+            let rolled_back = scratch.clone();
+            durable = scratch;
+            assert_ok(durable == rolled_back, "rejected command rollback")?;
+        } else {
+            command_result.map_err(|detail| format!("command {name}: {detail}"))?;
         }
     }
     Ok(durable)
@@ -5075,7 +5418,14 @@ fn verify(root: &Path) -> Result<()> {
     validate_issuer_trust(&domains, &issuer_key)?;
     validate_negative(&negative)?;
     validate_states(&states)?;
-    validate_negative_native(&positive, &negative, &states, domains_map, &issuer_key)?;
+    validate_negative_native(
+        &positive,
+        &negative,
+        &states,
+        domains_map,
+        &domains,
+        &issuer_key,
+    )?;
     for scenario in array(&positive, "scenarios")? {
         exact_object(
             scenario,

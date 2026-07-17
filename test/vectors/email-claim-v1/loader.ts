@@ -18,6 +18,17 @@ class StageError extends Error {
   }
 }
 
+class StateCommandRejection extends StageError {
+  readonly commandName: string;
+  readonly attemptedState: Obj;
+  constructor(commandName: string, attemptedState: Obj, message: string) {
+    super("contract-validation", message);
+    this.name = "StateCommandRejection";
+    this.commandName = commandName;
+    this.attemptedState = clone(attemptedState);
+  }
+}
+
 export interface FixtureManifest {
   manifestVersion: 1;
   contractVersion: "tinycloud.share-email-claim/v1";
@@ -130,63 +141,84 @@ function crossEquations(scenario: Obj): void {
   for (const value of Object.values(record(scenario.preimages, "preimages"))) { const body = record(value, "preimage").body; check(record(body, "preimage.body")); for (const nested of [record(body, "preimage.body").authorization, record(body, "preimage.body").binding, record(body, "preimage.body").challenge, record(body, "preimage.body").presentation, record(body, "preimage.body").session, record(body, "preimage.body").invocation]) if (nested) check(record(nested, "nested preimage")); }
 }
 
-function reduceDurableRows(preRows: Obj, id: string, operation: string, row: Obj): Obj {
+function reduceDurableRows(preRows: Obj, label: string, row: Obj): Obj {
   const machine = clone(preRows);
-  const commands = list(row.commands, `${id}.commands`); assert(commands.length === 1, `${id}: exactly one command`); const command = record(commands[0], `${id}.command`); const commandName = string(command.name, `${id}.command.name`); const operands = command.operands === undefined ? {} : record(command.operands, `${id}.command.operands`);
+  const commands = list(row.commands, `${label}.commands`); assert(commands.length === 1, `${label}: exactly one command`); const command = record(commands[0], `${label}.command`); const commandName = string(command.name, `${label}.command.name`); const operands = command.operands === undefined ? {} : record(command.operands, `${label}.command.operands`);
   const argument = (name: string): unknown => operands[name];
   const attempts = Number(argument("attempts"));
-  const fail = (message: string): never => { throw new StageError("contract-validation", `${id}: ${message}`); };
-  switch (id) {
-    case "create-persist-outbox":
-      assert(operation === "transaction" && commandName === "create_invitation" && argument("version") === 1 && argument("outboxKey") === "invite:create:auth-kv-001" && machine.invitation === "ABSENT" && machine.outbox === null && machine.claimMaterial === "encrypted", `${id}: precondition`);
+  const fail = (message: string): never => { throw new StateCommandRejection(commandName, machine, `${label}: ${message}`); };
+  switch (commandName) {
+    case "create_invitation":
+      assert(argument("version") === 1 && argument("outboxKey") === "invite:create:auth-kv-001" && machine.invitation === "ABSENT" && machine.outbox === null && machine.claimMaterial === "encrypted", `${label}: precondition`);
       machine.invitation = `PENDING_DELIVERY(v${String(argument("version"))})`; machine.outbox = argument("outboxKey"); break;
-    case "provider-accept-v1":
-      assert(operation === "transaction" && commandName === "provider_accept" && argument("version") === 1 && argument("claimMaterialAfter") === "deleted" && machine.invitation === "PENDING_DELIVERY(v1)" && machine.providerAccepted === false && machine.claimMaterial === "encrypted", `${id}: precondition`);
+    case "provider_accept":
+      assert(argument("version") === 1 && argument("claimMaterialAfter") === "deleted" && machine.invitation === "PENDING_DELIVERY(v1)" && machine.providerAccepted === false && machine.claimMaterial === "encrypted", `${label}: precondition`);
       machine.invitation = `ACTIVE(v${String(argument("version"))})`; machine.providerAccepted = true; machine.claimMaterial = argument("claimMaterialAfter"); break;
-    case "premature-resend-invalidation":
-      assert(operation === "reject" && commandName === "invalidate_old_version" && argument("version") === 1 && argument("onlyAfter") === "provider_acceptance" && machine.invitation === "PENDING_DELIVERY(v2)" && machine.activeVersion === 1 && machine.pendingVersion === 2, `${id}: precondition`);
+    case "invalidate_old_version":
+      assert(argument("version") === 1 && argument("onlyAfter") === "provider_acceptance" && machine.invitation === "PENDING_DELIVERY(v2)" && machine.activeVersion === 1 && machine.pendingVersion === 2, `${label}: precondition`);
+      machine.oldSecret = "retired";
       fail("invalidation before provider acceptance");
-    case "resend-persist-v2":
-      assert(operation === "transaction" && commandName === "prepare_resend" && argument("fromVersion") === 1 && argument("toVersion") === 2 && argument("replacementMaterial") === "encrypted" && machine.invitation === "ACTIVE(v1)" && machine.activeVersion === 1 && machine.pendingVersion === null, `${id}: precondition`);
+    case "prepare_resend":
+      assert(argument("fromVersion") === 1 && argument("toVersion") === 2 && argument("replacementMaterial") === "encrypted" && machine.invitation === "ACTIVE(v1)" && machine.activeVersion === 1 && machine.pendingVersion === null, `${label}: precondition`);
       machine.invitation = `PENDING_DELIVERY(v${String(argument("toVersion"))})`; machine.pendingVersion = argument("toVersion"); machine.replacementMaterial = argument("replacementMaterial"); break;
-    case "provider-failure-recovery":
-      assert(operation === "transaction" && commandName === "provider_reject" && argument("pendingVersion") === 2 && argument("restoreVersion") === 1 && argument("replacementMaterialAfter") === "discarded" && machine.invitation === "PENDING_DELIVERY(v2)" && machine.activeVersion === 1 && machine.pendingVersion === 2, `${id}: precondition`);
+    case "provider_reject":
+      assert(argument("pendingVersion") === 2 && argument("restoreVersion") === 1 && argument("replacementMaterialAfter") === "discarded" && machine.invitation === "PENDING_DELIVERY(v2)" && machine.activeVersion === 1 && machine.pendingVersion === 2, `${label}: precondition`);
       machine.invitation = `ACTIVE(v${String(argument("restoreVersion"))})`; machine.pendingVersion = null; machine.replacementMaterial = argument("replacementMaterialAfter"); break;
-    case "provider-accept-crash":
-      assert(operation === "crash" && commandName === "provider_accept_then_crash" && argument("version") === 2 && argument("idempotencyKey") === "invite:resend:invitation-001:v2" && argument("sendCount") === 1 && machine.invitation === "PENDING_DELIVERY(v2)" && machine.providerAccepted === false, `${id}: precondition`);
+    case "provider_accept_then_crash":
+      assert(argument("version") === 2 && argument("idempotencyKey") === "invite:resend:invitation-001:v2" && argument("sendCount") === 1 && machine.invitation === "PENDING_DELIVERY(v2)" && machine.providerAccepted === false, `${label}: precondition`);
       machine.providerAccepted = true; machine.crashObserved = true; break;
-    case "provider-accept-retry":
-      assert(operation === "retry" && commandName === "reconcile_provider_acceptance" && argument("version") === 2 && argument("idempotencyKey") === "invite:resend:invitation-001:v2" && argument("sendCount") === 1 && argument("retireVersion") === 1 && machine.providerAccepted === true && machine.crashObserved === true, `${id}: precondition`);
+    case "reconcile_provider_acceptance":
+      assert(argument("version") === 2 && argument("idempotencyKey") === "invite:resend:invitation-001:v2" && argument("sendCount") === 1 && argument("retireVersion") === 1 && machine.providerAccepted === true && machine.crashObserved === true, `${label}: precondition`);
       machine.invitation = `ACTIVE(v${String(argument("version"))})`; machine.activeVersion = argument("version"); machine.pendingVersion = null; machine.oldSecret = "retired"; machine.providerSendCount = argument("sendCount"); delete machine.providerAccepted; delete machine.crashObserved; break;
-    case "atomic-issuance-success":
-      assert(operation === "transaction" && commandName === "resolve_issuance" && argument("redemptionId") === "redemption-001" && argument("outcome") === "success" && argument("result") === "persisted" && argument("seedAfter") === "deleted" && machine.invitation === "REDEEMING(v1,redemption-001)" && machine.seed === "encrypted" && machine.result === null && machine.consumed === false, `${id}: precondition`);
-      machine.invitation = "CONSUMED(v1)"; machine.seed = argument("seedAfter"); machine.result = argument("result"); machine.consumed = true; break;
-    case "atomic-issuance-failure":
-      assert(operation === "transaction" && commandName === "resolve_issuance" && argument("redemptionId") === "redemption-002" && argument("outcome") === "failure" && argument("result") === "terminal-error" && argument("seedAfter") === "deleted" && machine.invitation === "REDEEMING(v1,redemption-002)" && machine.seed === "encrypted" && machine.result === null && machine.consumed === false, `${id}: precondition`);
-      machine.invitation = "TERMINAL_ERROR"; machine.seed = argument("seedAfter"); machine.result = argument("result"); machine.consumed = true; break;
-    case "atomic-partial-write-rejected":
-      assert(operation === "reject" && commandName === "atomic_write" && jcs(argument("writes")) === jcs(["result", "consumed"]) && argument("requireAtomic") === true, `${id}: precondition`); fail("partial write");
-    case "cleanup-pending-seed-refused":
-      assert(operation === "reject" && commandName === "cleanup_seed" && argument("pendingSeedAction") === "refuse" && argument("requiresDurableCompletion") === true && machine.seed === "encrypted", `${id}: precondition`); fail("pending seed cleanup");
-    case "same-redemption-contenders": {
-      const redemptionId = string(machine.redemptionId, `${id}.redemptionId`); assert(operation === "transaction" && commandName === "redeem_if_active" && attempts === 20 && argument("redemptionId") === redemptionId && argument("result") === "same-result" && machine.invitation === "ACTIVE(v1)" && machine.issuanceCount === 0, `${id}: race precondition`); let winner = false;
-      for (let attempt = 0; attempt < attempts; attempt++) { if (!winner && machine.invitation === "ACTIVE(v1)" && machine.issuanceCount === 0) { winner = true; machine.invitation = "CONSUMED(v1)"; machine.issuanceCount = 1; machine.result = argument("result"); } else assert(machine.redemptionId === redemptionId, `${id}: same redemption idempotency`); }
+    case "resolve_issuance": {
+      const redemptionId = string(argument("redemptionId"), `${label}.redemptionId`); const outcome = string(argument("outcome"), `${label}.outcome`); const result = string(argument("result"), `${label}.result`);
+      assert((outcome === "success" && result === "persisted") || (outcome === "failure" && result === "terminal-error"), `${label}: issuance outcome`);
+      assert(argument("seedAfter") === "deleted" && machine.invitation === `REDEEMING(v1,${redemptionId})` && machine.seed === "encrypted" && machine.result === null && machine.consumed === false, `${label}: precondition`);
+      if (outcome === "success") machine.invitation = "CONSUMED(v1)"; else machine.invitation = "TERMINAL_ERROR";
+      machine.seed = argument("seedAfter"); machine.result = result; machine.consumed = true; break;
+    }
+    case "atomic_write":
+      assert(jcs(argument("writes")) === jcs(["result", "consumed"]) && argument("requireAtomic") === true, `${label}: precondition`); machine.result = "partial"; machine.consumed = true; fail("partial write");
+    case "cleanup_seed":
+      assert(argument("pendingSeedAction") === "refuse" && argument("requiresDurableCompletion") === true && machine.seed === "encrypted", `${label}: precondition`); machine.seed = "deleted"; fail("pending seed cleanup");
+    case "redeem_if_active": {
+      const redemptionId = string(argument("redemptionId"), `${label}.redemptionId`); const result = string(argument("result"), `${label}.result`); assert(Number.isSafeInteger(attempts) && attempts > 0, `${label}: attempts`);
+      const sameRedemption = machine.redemptionId === redemptionId && result === "same-result" && machine.invitation === "ACTIVE(v1)" && machine.issuanceCount === 0;
+      if (!sameRedemption) { machine.redemptionId = redemptionId; machine.result = result; machine.issuanceCount = Number(machine.issuanceCount) + 1; fail("different redemption"); }
+      let cachedOutcome: Obj | undefined; const attemptOutcomes: Obj[] = [];
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        if (machine.invitation === "ACTIVE(v1)" && machine.issuanceCount === 0) { machine.invitation = "CONSUMED(v1)"; machine.issuanceCount = 1; machine.result = result; }
+        const outcome = { status: "issued", result: string(machine.result, `${label}.cachedResult`) };
+        attemptOutcomes.push(outcome);
+        if (cachedOutcome === undefined) cachedOutcome = clone(outcome);
+        else assert(jcs(outcome) === jcs(cachedOutcome), `${label}: CAS cached outcome changed at attempt ${attempt + 1}`);
+      }
+      const finalOutcome = cachedOutcome ?? fail("missing CAS outcome");
+      if (argument("cachedOutcome") !== undefined) assert(jcs(finalOutcome) === jcs(argument("cachedOutcome")), `${label}: cached outcome mismatch`);
+      if (argument("cachedResult") !== undefined) assert(finalOutcome.result === argument("cachedResult"), `${label}: cached result mismatch`);
+      if (argument("attemptOutcomes") !== undefined) assert(jcs(attemptOutcomes) === jcs(argument("attemptOutcomes")), `${label}: CAS attempt outcomes mismatch`);
       break;
     }
-    case "different-redemption-rejected":
-      assert(operation === "reject" && commandName === "redeem_if_active" && argument("redemptionId") === "redemption-002" && argument("attempts") === 1 && argument("result") === "different-result" && machine.invitation === "CONSUMED(v1)" && machine.issuanceCount === 1, `${id}: precondition`); fail("different redemption");
-    case "otp-wrong-vs-invalid-magic": {
-      const lockAt = Number(argument("lockAt")); assert(operation === "transaction" && commandName === "wrong_otp_attempts" && attempts === lockAt && argument("invalidMagicAttempts") === 0 && machine.invitation === "ACTIVE(v1)" && machine.otpAttempts === 0 && machine.invalidMagicOtpAttempts === 0, `${id}: OTP precondition`);
-      for (let attempt = 0; attempt < attempts; attempt++) machine.otpAttempts = Number(machine.otpAttempts) + 1;
-      machine.invitation = Number(machine.otpAttempts) >= lockAt ? "LOCKED(v1)" : "ACTIVE(v1)"; break;
+    case "wrong_otp_attempts": {
+      const lockAt = Number(argument("lockAt")); assert(Number.isSafeInteger(attempts) && attempts === lockAt && argument("invalidMagicAttempts") === 0 && machine.invitation === "ACTIVE(v1)" && machine.otpAttempts === 0 && machine.invalidMagicOtpAttempts === 0, `${label}: OTP precondition`);
+      let cachedOutcome: string | undefined; const attemptOutcomes: string[] = [];
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        machine.otpAttempts = Number(machine.otpAttempts) + 1;
+        const outcome = Number(machine.otpAttempts) >= lockAt ? "LOCKED" : "ACTIVE";
+        attemptOutcomes.push(outcome);
+        if (cachedOutcome === undefined) cachedOutcome = outcome; else assert(outcome === cachedOutcome || attempt === attempts - 1, `${label}: OTP cached outcome changed at attempt ${attempt + 1}`);
+      }
+      machine.invitation = Number(machine.otpAttempts) >= lockAt ? "LOCKED(v1)" : "ACTIVE(v1)";
+      if (argument("attemptOutcomes") !== undefined) assert(jcs(attemptOutcomes) === jcs(argument("attemptOutcomes")), `${label}: OTP attempt outcomes mismatch`);
+      break;
     }
-    case "nonce-replay-rejected":
-      assert(operation === "reject" && commandName === "consume_nonce" && argument("requiredState") === "VERIFYING" && machine.nonce === "CONSUMED", `${id}: precondition`); fail("nonce replay");
-    case "jti-replay-rejected":
-      assert(operation === "reject" && commandName === "reserve_jti" && argument("jti") === "authorization-jti-001" && argument("digest") === "digest-b" && machine.jti === "authorization-jti-001" && machine.digest === "digest-a", `${id}: precondition`); fail("JTI replay");
-    case "scanner-get-no-mutation":
-      assert(operation === "read-only" && commandName === "scanner_get" && argument("method") === "GET" && argument("mutate") === false, `${id}: scanner operation`); return machine;
-    default: fail("unknown operation program row");
+    case "consume_nonce":
+      assert(argument("requiredState") === "VERIFYING" && machine.nonce === "CONSUMED", `${label}: precondition`); machine.nonceReplayAttempted = true; fail("nonce replay");
+    case "reserve_jti":
+      assert(argument("jti") === "authorization-jti-001" && argument("digest") === "digest-b" && machine.jti === "authorization-jti-001" && machine.digest === "digest-a", `${label}: precondition`); machine.digest = argument("digest"); fail("JTI replay");
+    case "scanner_get":
+      assert(argument("method") === "GET" && argument("mutate") === false, `${label}: scanner operation`); return machine;
+    default: fail("unknown serialized command");
   }
   return machine;
 }
@@ -197,8 +229,18 @@ function validateOperationProgram(states: Obj): void {
     const row = record(rowValue, "operation program row"); const id = string(row.id, "operation id"); const operation = string(row.operation, `${id}.operation`); const pre = record(row.pre, `${id}.pre`); const expected = record(row.expected, `${id}.expected`);
     assert(row.commands !== undefined && row.attempted === undefined && row.post === undefined, `${id}: pre/commands/expected operation`); assert(Object.keys(pre).length === 1 && Object.hasOwn(pre, "durableRows") && Object.keys(expected).length === 1 && Object.hasOwn(expected, "durableRows"), `${id}: durable row envelope`);
     const beforeRows = record(pre.durableRows, `${id}.pre.durableRows`);
-    if (operation === "reject") { expectReject(id, () => reduceDurableRows(beforeRows, id, operation, row)); assert(jcs(pre) === jcs(expected), `${id}: rollback changed durable rows`); continue; }
-    const derived = reduceDurableRows(beforeRows, id, operation, row); assert(jcs(derived) === jcs(expected.durableRows), `${id}: derived post-state`);
+    const beforeSnapshot = jcs(beforeRows);
+    if (operation === "reject") {
+      let rejection: unknown;
+      try { reduceDurableRows(beforeRows, id, row); } catch (error) { rejection = error; }
+      if (!(rejection instanceof StateCommandRejection)) throw new Error(`${id}: expected typed command rejection`);
+      assert(rejection.commandName === string(record(list(row.commands, `${id}.commands`)[0], `${id}.command`).name, `${id}.command.name`), `${id}: rejected command name`);
+      assert(jcs(rejection.attemptedState) !== beforeSnapshot, `${id}: rejected command did not attempt a mutation`);
+      assert(jcs(beforeRows) === beforeSnapshot, `${id}: rejected scratch state escaped`);
+      assert(jcs(beforeRows) === jcs(expected.durableRows), `${id}: rollback changed durable rows`); continue;
+    }
+    assert(operation === "transaction" || operation === "crash" || operation === "retry" || operation === "read-only", `${id}: operation vocabulary`);
+    const derived = reduceDurableRows(beforeRows, id, row); if (operation === "read-only") assert(jcs(derived) === beforeSnapshot, `${id}: read-only state changed`); assert(jcs(derived) === jcs(expected.durableRows), `${id}: derived post-state`);
   }
 }
 
@@ -264,6 +306,25 @@ function rawPublicKeyFromDid(did: string, label: string): ReturnType<typeof crea
 function rawPublicKey(value: unknown, label: string): ReturnType<typeof createPublicKey> {
   const keyBytes = validateFixedB64(value, 32, label); return createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), keyBytes]), format: "der", type: "spki" });
 }
+function publicKeyFromSeed(seed: string, label: string): ReturnType<typeof createPublicKey> {
+  assert(/^[0-9a-f]{64}$/u.test(seed), `${label}: seed`); const prefix = Buffer.from("302e020100300506032b657004220420", "hex");
+  return createPublicKey(createPrivateKey({ key: Buffer.concat([prefix, Buffer.from(seed, "hex")]), format: "der", type: "pkcs8" }));
+}
+function candidateIssuerKeys(credential: Obj, domains: Obj, label: string): ReturnType<typeof createPublicKey>[] {
+  const keys: ReturnType<typeof createPublicKey>[] = []; const add = (value: unknown, keyLabel: string): void => {
+    if (typeof value === "string") { keys.push(value.startsWith("did:key:") ? rawPublicKeyFromDid(value, keyLabel) : rawPublicKey(value, keyLabel)); return; }
+    const declared = record(value, keyLabel); const publicKey = declared.publicKey ?? declared.key ?? declared.value; assert(publicKey !== undefined, `${keyLabel}: public key`); add(publicKey, `${keyLabel}.publicKey`);
+  };
+  const issuerJws = record(credential.issuerJws, `${label}.issuerJws`);
+  const declared = [credential.signingKey, credential.issuerKey, credential.issuerSigningKey, credential.issuerPublicKey, credential.signingPublicKey, issuerJws.key, issuerJws.signingKey, issuerJws.publicKey, issuerJws.verificationKey].find((value) => value !== undefined);
+  if (declared !== undefined) { add(declared, `${label}.candidateSigningKey`); return keys; }
+  // Legacy test vectors predate an explicit candidate-key field. Their test-key
+  // registry is the declaration for the alternate signing key; trust is still
+  // checked separately below against the frozen issuer registry key.
+  const testKeys = record(domains.testKeys, `${label}.testKeys`);
+  for (const name of ["senderSeedHex", "issuerSeedHex"]) if (testKeys[name] !== undefined) keys.push(publicKeyFromSeed(string(testKeys[name], `${label}.testKeys.${name}`), `${label}.testKeys.${name}`));
+  return keys;
+}
 function expectedKid(did: string): string { return `${did}#${did.startsWith("did:key:") ? did.slice("did:key:".length) : "invitation-key-1"}`; }
 function base32Decode(value: string): Uint8Array {
   assert(/^[a-z2-7]+$/.test(value), "CID base32"); const alphabet = "abcdefghijklmnopqrstuvwxyz234567"; let bits = 0; let buffer = 0; const output: number[] = [];
@@ -315,15 +376,17 @@ function validateCredentialProfile(credential: Obj, scenario: Obj, label: string
   assert(credential.format === "vc+sd-jwt", `${label}: credential format`); assert(utf8(string(credential.credential, `${label}.credential`)).length <= Number(record(domains.limits, `${label}.limits`).credentialBytes), `${label}: credential byte limit`);
   const trust = record(domains.issuerTrust, `${label}.issuerTrust`); const trustedIssuerDid = string(trust.issuerDid, `${label}.issuerTrust.issuerDid`); const trustedVct = string(trust.vct, `${label}.issuerTrust.vct`); const trustedKid = string(trust.kid, `${label}.issuerTrust.kid`); const trustEnabled = trust.enabled === undefined ? true : trust.enabled; const trustedKey = rawPublicKey(trust.publicKey, `${label}.issuerTrust.publicKey`);
   const issuerDid = string(credential.issuerDid, `${label}.issuerDid`); const claims = record(credential.claims, `${label}.claims`); const claimKeys = ["iss", "sub", "iat", "nbf", "exp", "jti", "vct", "tinycloud_share", "_sd_alg", "_sd"]; assert(Object.keys(claims).length === claimKeys.length && Object.keys(claims).every((key) => claimKeys.includes(key)), `${label}: strict claim shape`);
-  stagedAssert(trustEnabled === true && issuerDid === trustedIssuerDid && claims.iss === trustedIssuerDid, "issuer-trust", `${label}: issuer trust`);
   const holderDid = validateDidKey(credential.holderDid, `${label}.holderDid`); assert(claims._sd_alg === "sha-256", `${label}: claim binding`);
   const holderBinding = (list(scenario.artifacts, `${label}.artifacts`) as Obj[]).find((artifact) => artifact.name === "holderBinding");
   const share = record(claims.tinycloud_share, `${label}.tinycloud_share`); const shareKeys = ["share_cid", "share_id", "policy_cid", "node_audience"]; assert(Object.keys(share).length === shareKeys.length && Object.keys(share).every((key) => shareKeys.includes(key)), `${label}: strict share claim shape`);
   const sd = list(claims._sd, `${label}._sd`); assert(sd.length === 1, `${label}: SD-JWT digest count`); const disclosures = list(credential.disclosures, `${label}.disclosures`); assert(disclosures.length === 1, `${label}: disclosure count`); const disclosure = record(disclosures[0], `${label}.disclosure`); assert(disclosure.path === "/email" && canonicalEmail(disclosure.value) === scenario.canonicalEmail, `${label}: email disclosure`); const encoded = string(disclosure.encoded, `${label}.encoded`); const disclosureText = new TextDecoder("utf-8", { fatal: true }).decode(strictB64(encoded)); const tuple = JSON.parse(disclosureText) as unknown[]; assert(jcs(tuple) === disclosureText && tuple.length === 3 && tuple[0] === disclosure.salt && tuple[1] === "email" && tuple[2] === scenario.canonicalEmail && disclosure.salt === scenario.sdJwtSalt && disclosure.digest === digest(utf8(encoded)) && sd[0] === disclosure.digest, `${label}: disclosure digest`);
   const compact = string(credential.credential, `${label}.credential`); const compactParts = compact.split("~"); const jwtText = string(compactParts[0], `${label}.jwt`); assert(compactParts.length === 3 && compactParts[1] === encoded && compactParts[2] === "", `${label}: SD-JWT compact form`); const jwtParts = jwtText.split("."); const headerSegment = string(jwtParts[0], `${label}.headerSegment`); const payloadSegment = string(jwtParts[1], `${label}.payloadSegment`); const signatureSegment = string(jwtParts[2], `${label}.signatureSegment`); assert(jwtParts.length === 3 && jwtParts.every((part) => part.length > 0), `${label}: SD-JWT JWT segments`); const headerText = new TextDecoder("utf-8", { fatal: true }).decode(strictB64(headerSegment)); const header = record(JSON.parse(headerText) as unknown, `${label}.header`); assert(jcs(header) === headerText && Object.keys(header).length === 1 && header.alg === "EdDSA", `${label}: exact issuer header`); const payloadText = new TextDecoder("utf-8", { fatal: true }).decode(strictB64(payloadSegment)); const payload = record(JSON.parse(payloadText) as unknown, `${label}.payload`); assert(jcs(payload) === payloadText && payloadText === jcs(claims) && b64(utf8(payloadText)) === payloadSegment, `${label}: signed payload/detached claims equality`);
-  const issuerJws = record(credential.issuerJws, `${label}.issuerJws`); const signingInput = `${headerSegment}.${payloadSegment}`; const issuerSignature = validateEd25519Signature(signatureSegment, `${label}.issuerSignature`); assert(issuerJws.signingInput === signingInput && issuerJws.signature === signatureSegment && issuerJws.signingInputDigest === digest(utf8(signingInput)) && issuerJws.signature === b64(issuerSignature) && credential.credentialDigest === digest(utf8(compact)), `${label}: issuer preimages`); stagedAssert(trustEnabled === true && trustedKid.startsWith(`${trustedIssuerDid}#`) && verify(null, utf8(signingInput), trustedKey, issuerSignature), "issuer-key", `${label}: trusted issuer signature verification`);
+  const issuerJws = record(credential.issuerJws, `${label}.issuerJws`); const signingInput = `${headerSegment}.${payloadSegment}`; const issuerSignature = validateEd25519Signature(signatureSegment, `${label}.issuerSignature`); assert(issuerJws.signingInput === signingInput && issuerJws.signature === signatureSegment && issuerJws.signingInputDigest === digest(utf8(signingInput)) && issuerJws.signature === b64(issuerSignature) && credential.credentialDigest === digest(utf8(compact)), `${label}: issuer preimages`);
+  const candidateKeys = candidateIssuerKeys(credential, domains, label); stagedAssert(candidateKeys.some((key) => verify(null, utf8(signingInput), key, issuerSignature)), "issuer-key", `${label}: candidate issuer signature authenticity`);
+  stagedAssert(trustEnabled === true && issuerDid === trustedIssuerDid && claims.iss === trustedIssuerDid, "issuer-trust", `${label}: issuer trust`);
+  stagedAssert(trustedKid.startsWith(`${trustedIssuerDid}#`) && verify(null, utf8(signingInput), trustedKey, issuerSignature), "issuer-key", `${label}: trusted issuer signature verification`);
   stagedAssert(credential.vct === trustedVct && claims.vct === trustedVct, "credential-vct", `${label}: credential VCT`); stagedAssert(claims.sub === holderDid, "credential-holder", `${label}: claim holder equation`); stagedAssert(holderBinding !== undefined && holderDid === holderBinding.signerDid, "credential-holder", `${label}: holder equation`); stagedAssert(share.share_cid === scenario.shareCid && share.share_id === scenario.shareId && share.policy_cid === scenario.policyCid && share.node_audience === record(scenario.authorization, "authorization").nodeAudience, "credential-scope", `${label}: share claim binding`);
-  const evaluationTime = Date.parse(string(scenario.evaluationTime, `${label}.evaluationTime`)); const skewSeconds = Number(scenario.clockSkewSeconds); assert(Number.isSafeInteger(evaluationTime) && Number.isSafeInteger(skewSeconds) && skewSeconds >= 0, `${label}: evaluation clock`); const iat = Number(claims.iat); const nbf = Number(claims.nbf); const exp = Number(claims.exp); stagedAssert(iat <= evaluationTime / 1000 + skewSeconds && nbf <= evaluationTime / 1000 + skewSeconds && nbf >= iat && exp + skewSeconds >= evaluationTime / 1000, "credential-time", `${label}: credential time evaluation`); stagedAssert(credential.vct === trustedVct, "credential-vct", `${label}: credential VCT`); assert(exp * 1000 === Date.parse(string(credential.expiresAt, `${label}.expiresAt`)) && credential.expiresAt === record(scenario.policy, "policy").expiresAt, `${label}: credential/share expiry`);
+  const evaluationTime = Date.parse(string(scenario.evaluationTime, `${label}.evaluationTime`)); const skewSeconds = Number(scenario.clockSkewSeconds); assert(Number.isSafeInteger(evaluationTime) && Number.isSafeInteger(skewSeconds) && skewSeconds >= 0, `${label}: evaluation clock`); const iat = Number(claims.iat); const nbf = Number(claims.nbf); const exp = Number(claims.exp); stagedAssert(iat <= evaluationTime / 1000 + skewSeconds && nbf <= evaluationTime / 1000 + skewSeconds && nbf >= iat && exp + skewSeconds > evaluationTime / 1000, "credential-time", `${label}: credential time evaluation`); stagedAssert(credential.vct === trustedVct, "credential-vct", `${label}: credential VCT`); assert(exp * 1000 === Date.parse(string(credential.expiresAt, `${label}.expiresAt`)) && credential.expiresAt === record(scenario.policy, "policy").expiresAt, `${label}: credential/share expiry`);
 }
 function validateReadBody(body: Obj, scenario: Obj, label: string, domains?: Obj): void { const required = ["sessionId", "contentSource", "contentSourceDigest", "action", "resource", "requestBodyDigest", "invocation", "proof"]; assert(Object.keys(body).every((key) => required.includes(key)) && required.every((key) => Object.hasOwn(body, key)), `${label}: strict read shape`); validateSource(record(body.contentSource, `${label}.contentSource`), scenario, `${label}.contentSource`, domains); assert(body.contentSourceDigest === scenario.sourceDigest && body.action === record(scenario.source, "source").action && body.resource === record(scenario.source, "source").path, `${label}: source binding`); validateProof(body.proof, `${label}.proof`); }
 function validateRedeemBody(body: Obj, scenario: Obj, label: string): void { const keys = ["version", "redemptionId", "invitationId", "method", "mailboxProof", "binding", "holderProof"]; assert(Object.keys(body).length === keys.length && keys.every((key) => Object.hasOwn(body, key)), `${label}: strict redeem shape`); assert(body.version === "tinycloud.share-email-claim/v1", `${label}: version`); validateFixedB64(body.redemptionId, 16, `${label}.redemptionId`); validateFixedB64(body.invitationId, 16, `${label}.invitationId`); if (body.method === "magic") validateFixedB64(body.mailboxProof, 32, `${label}.mailboxProof`); else if (body.method === "otp") assert(typeof body.mailboxProof === "string" && /^[0-9]{6}$/.test(body.mailboxProof), `${label}: OTP shape`); else throw new StageError("contract-validation", `${label}: method`); const binding = record(body.binding, `${label}.binding`); const holderDid = validateDidKey(binding.holderDid, `${label}.binding.holderDid`); assert(binding.shareId === scenario.shareId && binding.shareCid === scenario.shareCid && binding.policyCid === scenario.policyCid, `${label}: binding equations`); validateProof(body.holderProof, `${label}.holderProof`, `${holderDid}#${holderDid.slice("did:key:".length)}`); }
@@ -448,7 +511,7 @@ function executeNegative(row: Obj, scenario: Obj, domains: Obj, states: Obj, sch
     case "envelope-policy-target-missing-kind": case "envelope-policy-target-missing-bytes": expectReject(id, () => { const target = { ...record(record(scenario.envelope, "envelope").authorizationTarget, "authorizationTarget") }; delete target[id.endsWith("kind") ? "kind" : "policyBytes"]; validateEnvelopeTarget(target, id); }); break;
     case "envelope-policy-target-mismatch": expectReject(id, () => { const mutationTarget = { ...record(record(scenario.envelope, "envelope").authorizationTarget, "authorizationTarget"), policyCid: data.policyCid, policyBytes: data.policyBytes }; validateEnvelopeTarget(mutationTarget, id); }); break;
     case "envelope-origin-mismatch": expectReject(id, () => { const envelope = clone(record(scenario.envelope, "envelope")); const target = record(envelope.target, "target"); target.origin = data.value; crossEquations({ ...scenario, envelope }); }); break;
-    case "share-url-userinfo": case "share-url-query": case "share-url-duplicate-k": case "share-url-unknown-fragment": case "share-url-noncanonical-k": case "share-url-wrong-origin": case "share-url-wrong-path": case "share-url-http-scheme": case "share-url-explicit-port": case "share-url-percent-encoded-fragment": expectReject(id, () => validateShareUrl(mutationValue, scenario, id)); break;
+    case "share-url-userinfo": case "share-url-query": case "share-url-query-missing-fragment": case "share-url-duplicate-k": case "share-url-unknown-fragment": case "share-url-noncanonical-k": case "share-url-wrong-origin": case "share-url-wrong-path": case "share-url-http-scheme": case "share-url-explicit-port": case "share-url-percent-encoded-fragment": expectReject(id, () => validateShareUrl(mutationValue, scenario, id)); break;
     case "document-name-over-200-utf8": expectStageReject(row, () => { const documentName = string(data.value, `${id}.value`); if (utf8(documentName).length > 200) throw new StageError("document-name-bytes", `${id}: documentName byte boundary`); const authorization = { ...record(scenario.authorization, "authorization"), documentName }; fixedStageBoundary("contract-validation", () => validateContractSchema(authorization, "inviteAuthorization", schemas, id)); }); break;
     case "authorization-recipient-email-mismatch": expectReject(id, () => { const altered = replaceArtifact(scenario, "inviteAuthorization", "recipientEmail", data.value, domains); validateArtifactEncoding(record((list(altered.artifacts, "artifacts") as Obj[]).find((item) => item.name === "inviteAuthorization"), "altered authorization"), domains, scenario); crossEquations(altered); }); break;
     case "redeem-redemption-id-mismatch": case "redeem-invitation-id-mismatch": expectReject(id, () => { const altered = replaceArtifact(scenario, "holderBinding", id.includes("redemption") ? "redemptionId" : "invitationId", data.value, domains); const binding = record((list(altered.artifacts, "artifacts") as Obj[]).find((item) => item.name === "holderBinding"), "altered holder binding"); validateArtifactEncoding(binding, domains, scenario); crossEquations(altered); }); break;
@@ -476,7 +539,7 @@ function executeNegative(row: Obj, scenario: Obj, domains: Obj, states: Obj, sch
     case "credential-sub-mismatch": expectReject(id, () => { const credential = clone(record(scenario.credential, "credential")); const claims = record(credential.claims, "credential.claims"); claims.sub = data.value; validateCredentialProfile(credential, scenario, id, domains); }); break;
     case "credential-legacy-email-path": expectReject(id, () => { const credential = clone(record(scenario.credential, "credential")); const disclosure = record(list(credential.disclosures, "credential.disclosures")[0], "credential.disclosure"); disclosure.path = data.value; validateCredentialProfile(credential, scenario, id, domains); }); break;
     case "credential-unsupported-status": expectReject(id, () => { const credential = clone(record(scenario.credential, "credential")); const claims = record(credential.claims, "credential.claims"); claims.status = data.value; validateCredentialProfile(credential, scenario, id, domains); }); break;
-    case "credential-expired-resigned": case "credential-issuer-did-resigned": case "credential-issuer-key-resigned": case "credential-vct-resigned": case "credential-holder-resigned": case "credential-scope-resigned": expectReject(id, () => { const candidates = record(data.credentialByKind, `${id}.credentialByKind`); validateCredentialProfile(record(candidates[string(scenario.kind, `${id}.kind`)], `${id}.credential`), scenario, id, domains); }); break;
+    case "credential-expired-resigned": case "credential-expiry-boundary-resigned": case "credential-issuer-did-resigned": case "credential-issuer-key-resigned": case "credential-vct-resigned": case "credential-holder-resigned": case "credential-scope-resigned": expectReject(id, () => { const candidates = record(data.credentialByKind, `${id}.credentialByKind`); const candidate = record(candidates[string(scenario.kind, `${id}.kind`)], `${id}.credential`); const candidateKeys = data.candidateSigningPublicKeyByKind === undefined ? undefined : record(data.candidateSigningPublicKeyByKind, `${id}.candidateSigningPublicKeyByKind`); const candidateKey = candidateKeys?.[string(scenario.kind, `${id}.kind`)]; if (candidateKey !== undefined) candidate.issuerSigningKey = candidateKey; validateCredentialProfile(candidate, scenario, id, domains); }); break;
     case "different-holder-valid-signature": expectReject(id, () => { const candidate = record(data.candidateArtifact, `${id}.candidateArtifact`); validateSignedArtifact(candidate, scenario, domains, schemas); const altered = clone(scenario); const alteredArtifacts = list(altered.artifacts, `${id}.artifacts`) as Obj[]; const index = alteredArtifacts.findIndex((item) => item.name === "holderBinding"); assert(index >= 0, `${id}: holder binding artifact`); alteredArtifacts[index] = candidate; try { crossEquations(altered); } catch (error) { throw new StageError("cross-artifact-holder", `${id}: holder artifact is not bound to the other artifacts`, error); } throw new StageError("cross-artifact-holder", `${id}: holder artifact unexpectedly matched`); }); break;
     case "policy-challenge-replay": expectReject(id, () => validateTransition(states, string(data.from, id), string(data.to, id))); break;
     case "session-token-only": expectReject(id, () => { const name = scenario.kind === "sql" ? "sqlReadRequest" : "kvReadRequest"; const body = clone(record(record(record(scenario.preimages, "preimages")[name], name).body, `${name}.body`)); delete body.proof; validateReadBody(body, scenario, id, domains); }); break;

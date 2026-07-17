@@ -128,11 +128,12 @@ function validateCredential(scenario, schemas, domains) {
   const disclosure = c.disclosures[0]; const encoded = strictB64(disclosure.encoded); const parsed = JSON.parse(new TextDecoder().decode(encoded)); equal(parsed, [scenario.sdJwtSalt, "email", scenario.canonicalEmail], `${scenario.kind}: disclosure value`); assert(disclosure.salt === scenario.sdJwtSalt && disclosure.digest === digest(utf8(disclosure.encoded)) && c.claims._sd[0] === disclosure.digest, `${scenario.kind}: disclosure digest`); assert(c.disclosures.length === 1 && disclosure.path === "/email", `${scenario.kind}: sole disclosure`);
   const parts = c.credential.split("~"); assert(parts.length === 3 && parts[1] === disclosure.encoded && parts[2] === "", `${scenario.kind}: SD-JWT serialization`); const jwtParts = parts[0].split("."); assert(jwtParts.length === 3 && jwtParts.every((part) => part.length > 0), `${scenario.kind}: SD-JWT JWT segments`); const [header, payload, sig] = jwtParts; assert(c.issuerJws.signingInput === `${header}.${payload}`, `${scenario.kind}: issuer input`); const headerBytes = strictB64(header); equal(JSON.parse(new TextDecoder().decode(headerBytes)), { alg: "EdDSA" }, `${scenario.kind}: issuer header`); const payloadBytes = strictB64(payload); const signedClaims = JSON.parse(new TextDecoder().decode(payloadBytes)); equal(signedClaims, c.claims, `${scenario.kind}: signed payload differs from detached claims`); assert(c.issuerJws.signature === sig, `${scenario.kind}: issuer signature binding`); assert(c.issuerJws.signingInputDigest === digest(utf8(c.issuerJws.signingInput)) && c.credentialDigest === digest(utf8(c.credential)), `${scenario.kind}: credential digest`); const signature = strictB64(sig); strictSignature(signature); assert(verify(null, Buffer.from(c.issuerJws.signingInput), spki(sizedB64(trust.publicKey, 32)), Buffer.from(signature)), `${scenario.kind}: issuer signature`);
 }
-function validateResignedCredentialPrerequisites(candidate, scenario, schemas, restore = {}) {
+function validateResignedCredentialPrerequisites(candidate, scenario, schemas, domains, candidateSigningPublicKey, restore = {}) {
   const schemaCandidate = clone(candidate); for (const [path, value] of Object.entries(restore)) { const parts = path.split("."); if (parts.length === 1) schemaCandidate[parts[0]] = value; else schemaCandidate[parts[0]][parts[1]] = value; }
   checkSchema(schemas, "credential", schemaCandidate);
   const parts = candidate.credential.split("~"); assert(parts.length === 3 && parts[2] === "", "SD-JWT compact shape"); const jwtParts = parts[0].split("."); assert(jwtParts.length === 3 && jwtParts.every((part) => part.length > 0), "SD-JWT JWT segments");
-  const [header, payload, signature] = jwtParts; equal(JSON.parse(new TextDecoder().decode(strictB64(header))), { alg: "EdDSA" }, "SD-JWT header"); equal(JSON.parse(new TextDecoder().decode(strictB64(payload))), candidate.claims, "SD-JWT payload binding"); assert(candidate.issuerJws.signingInput === `${header}.${payload}` && candidate.issuerJws.signature === signature && candidate.issuerJws.signingInputDigest === digest(utf8(candidate.issuerJws.signingInput)) && candidate.credentialDigest === digest(utf8(candidate.credential)), "SD-JWT detached binding"); strictSignature(strictB64(signature)); assert(candidate.claims.sub === candidate.holderDid, `${scenario.kind}: resigned holder prerequisite`);
+  const [header, payload, signature] = jwtParts; equal(JSON.parse(new TextDecoder().decode(strictB64(header))), { alg: "EdDSA" }, "SD-JWT header"); equal(JSON.parse(new TextDecoder().decode(strictB64(payload))), candidate.claims, "SD-JWT payload binding"); assert(candidate.issuerJws.signingInput === `${header}.${payload}` && candidate.issuerJws.signature === signature && candidate.issuerJws.signingInputDigest === digest(utf8(candidate.issuerJws.signingInput)) && candidate.credentialDigest === digest(utf8(candidate.credential)), "SD-JWT detached binding"); strictSignature(strictB64(signature));
+  assert(typeof candidateSigningPublicKey === "string", `${scenario.kind}: candidate signing key declaration`); assert(verify(null, Buffer.from(candidate.issuerJws.signingInput), spki(sizedB64(candidateSigningPublicKey, 32)), Buffer.from(strictB64(signature))), `${scenario.kind}: candidate issuer JWS authenticity`);
 }
 function validateResignedCredentialSemantics(candidate, scenario, domains) {
   const trust = domains.issuerTrust;
@@ -280,32 +281,71 @@ function assertAtomicTerminal(record, label) {
   if (result || consumed) assert(seedDeleted && (record.atomicConsumedAndResult === true || record.atomicTerminalAndSeedDeletion === true), `${label}: result/CONSUMED/seed deletion is not atomic`);
   else assert(seedDeleted, `${label}: terminal seed was not deleted`);
 }
-function reduceCommand(rows, command, operation) {
-  const state = rows; const { name, operands } = command;
-  switch (name) {
-    case "create_invitation": assert(state.invitation === "ABSENT" && operands.version === 1, "create precondition"); state.invitation = `PENDING_DELIVERY(v${operands.version})`; state.outbox = operands.outboxKey; state.claimMaterial = operands.claimMaterial; break;
-    case "provider_accept": assert(state.invitation === `PENDING_DELIVERY(v${operands.version})` && state.claimMaterial === "encrypted", "provider accept precondition"); state.invitation = `ACTIVE(v${operands.version})`; state.providerAccepted = true; state.claimMaterial = operands.claimMaterialAfter; break;
-    case "invalidate_old_version": assert(operation === "reject" && state.pendingVersion !== undefined && operands.onlyAfter === "provider_acceptance", "premature invalidation must reject"); break;
-    case "prepare_resend": assert(state.invitation === `ACTIVE(v${operands.fromVersion})` && state.pendingVersion === null, "resend precondition"); state.invitation = `PENDING_DELIVERY(v${operands.toVersion})`; state.pendingVersion = operands.toVersion; state.replacementMaterial = operands.replacementMaterial; break;
-    case "provider_reject": assert(state.invitation === `PENDING_DELIVERY(v${operands.pendingVersion})`, "provider failure precondition"); state.invitation = `ACTIVE(v${operands.restoreVersion})`; state.pendingVersion = null; state.replacementMaterial = operands.replacementMaterialAfter; break;
-    case "provider_accept_then_crash": assert(state.invitation === "PENDING_DELIVERY(v2)" && state.providerAccepted === false, "provider crash precondition"); state.providerAccepted = true; state.crashObserved = true; break;
-    case "reconcile_provider_acceptance": assert(state.providerAccepted === true && state.crashObserved === true, "provider retry precondition"); state.invitation = `ACTIVE(v${operands.version})`; state.activeVersion = operands.version; state.pendingVersion = null; delete state.providerAccepted; delete state.crashObserved; state.oldSecret = "retired"; state.providerSendCount = operands.sendCount; break;
-    case "resolve_issuance": assert(state.seed === "encrypted" && state.result === null && state.consumed === false, "issuance precondition"); state.invitation = operands.outcome === "success" ? "CONSUMED(v1)" : "TERMINAL_ERROR"; state.seed = operands.seedAfter; state.result = operands.result; state.consumed = true; break;
-    case "atomic_write": assert(operation === "reject" && operands.requireAtomic === true && operands.writes.includes("result") && operands.writes.includes("consumed"), "partial write must reject"); break;
-    case "cleanup_seed": assert(operation === "reject" && state.seed === "encrypted" && operands.pendingSeedAction === "refuse", "pending seed cleanup must reject"); break;
-    case "redeem_if_active": if (state.invitation === "ACTIVE(v1)" && state.redemptionId === operands.redemptionId) { assert(operands.attempts === 20, "CAS contender count"); state.invitation = "CONSUMED(v1)"; state.issuanceCount += 1; state.result = operands.result; } else { assert(operation === "reject" && state.redemptionId !== operands.redemptionId, "different redemption must reject"); } break;
-    case "wrong_otp_attempts": assert(state.invitation === "ACTIVE(v1)" && operands.attempts === operands.lockAt && operands.invalidMagicAttempts === 0, "OTP precondition"); state.otpAttempts += operands.attempts; state.invalidMagicOtpAttempts = operands.invalidMagicAttempts; state.invitation = `LOCKED(v1)`; break;
-    case "consume_nonce": assert(operation === "reject" && state.nonce !== operands.requiredState, "nonce replay must reject"); break;
-    case "reserve_jti": assert(operation === "reject" && state.jti === operands.jti && state.digest !== operands.digest, "JTI replay must reject"); break;
-    case "scanner_get": assert(operation === "read-only" && operands.method === "GET" && operands.mutate === false, "scanner GET must be read-only"); break;
-    default: throw new Error(`unknown state command ${name}`);
-  }
-  return state;
+class StateCommandRejection extends Error {
+  constructor(commandName, message) { super(message); this.name = "StateCommandRejection"; this.commandName = commandName; }
+}
+function rejectCommand(command, message) { throw new StateCommandRejection(command.name, message); }
+
+const commandReducers = {
+  create_invitation(state, operands) { assert(state.invitation === "ABSENT" && operands.version === 1, "create precondition"); state.invitation = `PENDING_DELIVERY(v${operands.version})`; state.outbox = operands.outboxKey; state.claimMaterial = operands.claimMaterial; return { status: "pending", version: operands.version }; },
+  provider_accept(state, operands) { assert(state.invitation === `PENDING_DELIVERY(v${operands.version})` && state.claimMaterial === "encrypted", "provider accept precondition"); state.invitation = `ACTIVE(v${operands.version})`; state.providerAccepted = true; state.claimMaterial = operands.claimMaterialAfter; return { status: "active", version: operands.version }; },
+  invalidate_old_version(state, operands, command) { assert(operands.onlyAfter === "provider_acceptance", "invalidation rule"); if (state.pendingVersion !== undefined && state.pendingVersion !== null) { state.oldSecret = "retired"; rejectCommand(command, "old version remains active while resend is pending"); } assert(state.invitation === `ACTIVE(v${operands.version})`, "invalidation precondition"); state.oldSecret = "retired"; return { status: "invalidated", version: operands.version }; },
+  prepare_resend(state, operands) { assert(state.invitation === `ACTIVE(v${operands.fromVersion})` && state.pendingVersion === null, "resend precondition"); state.invitation = `PENDING_DELIVERY(v${operands.toVersion})`; state.pendingVersion = operands.toVersion; state.replacementMaterial = operands.replacementMaterial; return { status: "pending", version: operands.toVersion }; },
+  provider_reject(state, operands) { assert(state.invitation === `PENDING_DELIVERY(v${operands.pendingVersion})`, "provider failure precondition"); state.invitation = `ACTIVE(v${operands.restoreVersion})`; state.pendingVersion = null; state.replacementMaterial = operands.replacementMaterialAfter; return { status: "active", version: operands.restoreVersion }; },
+  provider_accept_then_crash(state, operands) { assert(state.invitation === "PENDING_DELIVERY(v2)" && state.providerAccepted === false, "provider crash precondition"); state.providerAccepted = true; state.crashObserved = true; return { status: "provider-accepted", sendCount: operands.sendCount }; },
+  reconcile_provider_acceptance(state, operands) { assert(state.providerAccepted === true && state.crashObserved === true, "provider retry precondition"); state.invitation = `ACTIVE(v${operands.version})`; state.activeVersion = operands.version; state.pendingVersion = null; delete state.providerAccepted; delete state.crashObserved; state.oldSecret = "retired"; state.providerSendCount = operands.sendCount; return { status: "active", version: operands.version, sendCount: operands.sendCount }; },
+  resolve_issuance(state, operands) { assert(state.seed === "encrypted" && state.result === null && state.consumed === false, "issuance precondition"); state.invitation = operands.outcome === "success" ? "CONSUMED(v1)" : "TERMINAL_ERROR"; state.seed = operands.seedAfter; state.result = operands.result; state.consumed = true; return { status: operands.outcome, result: operands.result }; },
+  atomic_write(state, operands, command) { assert(operands.requireAtomic === true && operands.writes.includes("result") && operands.writes.includes("consumed"), "atomic write precondition"); state.result = "partial"; state.consumed = true; rejectCommand(command, "result and CONSUMED must be committed atomically"); },
+  cleanup_seed(state, operands, command) { assert(state.seed === "encrypted" && operands.pendingSeedAction === "refuse" && operands.requiresDurableCompletion === true, "seed cleanup precondition"); state.seed = "deleted"; rejectCommand(command, "pending seed cleanup requires durable completion"); },
+  redeem_if_active(state, operands, command) {
+    assert(Number.isInteger(operands.attempts) && operands.attempts >= 1, "CAS contender count");
+    const outcomes = [];
+    for (let contender = 0; contender < operands.attempts; contender++) {
+      if (state.invitation === "ACTIVE(v1)" && state.redemptionId === operands.redemptionId) {
+        state.invitation = "CONSUMED(v1)"; state.issuanceCount += 1; state.result = operands.result;
+        outcomes.push({ status: "issued", result: state.result });
+      } else if (state.invitation === "CONSUMED(v1)" && state.redemptionId === operands.redemptionId && state.result !== undefined) {
+        const cachedOutcome = { status: "issued", result: state.result }; outcomes.push(cachedOutcome);
+      } else {
+        state.redemptionId = operands.redemptionId; state.issuanceCount += 1; state.result = operands.result;
+        rejectCommand(command, "CAS redemption belongs to another or already-unresolved redemption");
+      }
+    }
+    assert(outcomes.length === operands.attempts, "all CAS contenders executed");
+    for (const outcome of outcomes) equal(outcome, outcomes[0], "CAS loser outcome changed");
+    const expectedCachedOutcome = operands.cachedOutcome ?? { status: "issued", result: operands.result }; assert(outcomes.every((outcome) => jcs(outcome) === jcs(expectedCachedOutcome)), "CAS loser outcome is not byte-identical");
+    return { status: "cas-complete", contenders: operands.attempts, cachedOutcome: outcomes[0] };
+  },
+  wrong_otp_attempts(state, operands) { assert(state.invitation === "ACTIVE(v1)" && operands.attempts === operands.lockAt && operands.invalidMagicAttempts === 0, "OTP precondition"); state.otpAttempts += operands.attempts; state.invalidMagicOtpAttempts = operands.invalidMagicAttempts; state.invitation = "LOCKED(v1)"; return { status: "locked", attempts: operands.attempts }; },
+  consume_nonce(state, operands, command) { if (state.nonce !== operands.requiredState) { state.nonceReplayAttempted = true; rejectCommand(command, "nonce replay"); } state.nonce = "CONSUMED"; return { status: "consumed" }; },
+  reserve_jti(state, operands, command) { if (state.jti === operands.jti && state.digest !== operands.digest) { state.digest = operands.digest; rejectCommand(command, "JTI replay with a different digest"); } assert(state.jti === undefined && state.digest === undefined, "JTI reservation precondition"); state.jti = operands.jti; state.digest = operands.digest; return { status: "reserved", jti: operands.jti }; },
+  scanner_get(state, operands) { assert(operands.method === "GET" && operands.mutate === false, "scanner GET must be read-only"); return { status: "inspected" }; }
+};
+function reduceCommand(rows, command) {
+  const reducer = commandReducers[command.name]; assert(typeof reducer === "function", `unknown state command ${command.name}`); return { state: rows, outcome: reducer(rows, command.operands, command) };
 }
 function executeOperationProgram(states, schemas) {
   const program = states.operationProgram; assert(Array.isArray(program) && program.length === 17, "operation program missing");
   schemaError(schemas, schemas.schemas.operationProgram, program, "operationProgram");
-  const ids = new Set(); for (const row of program) { assert(row.id && !ids.has(row.id), `duplicate operation ${row.id}`); ids.add(row.id); assert(row.commands.length > 0 && !Object.hasOwn(row, "post"), `${row.id}: command program required`); const derived = { durableRows: row.commands.reduce((rows, command) => reduceCommand(rows, command, row.operation), clone(row.pre.durableRows)) }; equal(derived, row.expected, `${row.id}: derived state differs from expected`); if (row.operation === "reject" || row.operation === "read-only") equal(row.pre, row.expected, `${row.id}: non-mutating operation changed state`); }
+  const ids = new Set(); for (const row of program) {
+    assert(row.id && !ids.has(row.id), `duplicate operation ${row.id}`); ids.add(row.id); assert(row.commands.length > 0 && !Object.hasOwn(row, "post"), `${row.id}: command program required`);
+    const before = clone(row.pre.durableRows); const scratch = clone(before); const outcomes = [];
+    for (const command of row.commands) {
+      if (row.operation === "reject") {
+        let rejection; let attempted;
+        try { reduceCommand(scratch, command); } catch (error) { rejection = error; }
+        assert(rejection instanceof StateCommandRejection && rejection.commandName === command.name, `${row.id}: rejected command was not typed`);
+        attempted = clone(scratch); assert(jcs(attempted) !== jcs(before), `${row.id}: rejected command did not attempt a mutation`);
+        for (const key of Object.keys(scratch)) delete scratch[key]; Object.assign(scratch, clone(before));
+        equal(scratch, before, `${row.id}: rejected command did not roll back`);
+      } else {
+        const reduction = reduceCommand(scratch, command); if (reduction.outcome !== undefined) outcomes.push(reduction.outcome);
+      }
+    }
+    const derived = { durableRows: scratch }; equal(derived, row.expected, `${row.id}: derived state differs from expected`);
+    if (row.operation === "reject" || row.operation === "read-only") equal(row.pre, row.expected, `${row.id}: non-mutating operation changed state`);
+    if (row.operation === "transaction" && row.id === "same-redemption-contenders") assert(outcomes.length === 1 && outcomes[0].contenders === 20 && jcs(outcomes[0].cachedOutcome) === jcs(row.commands[0].operands.cachedOutcome), `${row.id}: CAS outcome proof`);
+  }
   assert(ids.size === 17, `operation program coverage ${ids.size}/17`);
 }
 function validateStates(states, schemas) {
@@ -339,7 +379,7 @@ function dispatchNegative(scenario, negative, schemas, domains, states) {
       case "envelope-policy-target-missing-bytes": run(row, () => { const altered = clone(scenario.envelope); delete altered.authorizationTarget.policyBytes; checkSchema(schemas, "envelopeSigned", altered); }); break;
       case "envelope-policy-target-mismatch": run(row, () => { const altered = clone(scenario.envelope); altered.authorizationTarget.policyCid = rawCid(utf8("other policy")); altered.authorizationTarget.policyBytes = b64(utf8(jcs({ ...scenario.policy, recipientEmail: "Other@example.com" }))); delete altered.signature; const sig = sign(null, Buffer.concat([utf8(domains.domains.envelope), utf8(jcs(altered))]), privateKey(domains.testKeys.senderSeedHex)); altered.signature = { ...scenario.envelope.signature, value: b64(sig) }; assertEnvelopeBindings({ ...scenario, envelope: altered }, schemas, domains); }); break;
       case "envelope-origin-mismatch": run(row, () => { const altered = clone(scenario.envelope); altered.target.origin = row.mutationData.value; delete altered.signature; const sig = sign(null, Buffer.concat([utf8(domains.domains.envelope), utf8(jcs(altered))]), privateKey(domains.testKeys.senderSeedHex)); altered.signature = { ...scenario.envelope.signature, value: b64(sig) }; assertEnvelopeBindings({ ...scenario, envelope: altered }, schemas, domains); }); break;
-      case "share-url-userinfo": case "share-url-query": case "share-url-duplicate-k": case "share-url-unknown-fragment": case "share-url-noncanonical-k": case "share-url-wrong-origin": case "share-url-wrong-path": case "share-url-http-scheme": case "share-url-explicit-port": case "share-url-percent-encoded-fragment": run(row, () => { const body = { ...scenario.preimages.createInvitationRequest.body, shareUrl: mutationValue }; parseShareUrl(body.shareUrl); checkSchema(schemas, "createInvitationRequest", body); }); break;
+      case "share-url-userinfo": case "share-url-query": case "share-url-query-missing-fragment": case "share-url-duplicate-k": case "share-url-unknown-fragment": case "share-url-noncanonical-k": case "share-url-wrong-origin": case "share-url-wrong-path": case "share-url-http-scheme": case "share-url-explicit-port": case "share-url-percent-encoded-fragment": run(row, () => { const body = { ...scenario.preimages.createInvitationRequest.body, shareUrl: mutationValue }; parseShareUrl(body.shareUrl); checkSchema(schemas, "createInvitationRequest", body); }); break;
       case "document-name-over-200-utf8": run(row, () => validateDocumentName(schemas, scenario.authorization, row.mutationData.value, domains)); break;
       case "authorization-recipient-email-mismatch": run(row, () => { const artifact = scenario.artifacts.find((a) => a.name === "inviteAuthorization"); const altered = resignScenarioArtifact(scenario, "inviteAuthorization", { ...artifact.message, recipientEmail: row.mutationData.value }, domains.testKeys.nodeSeedHex, artifact.signerDid, artifact.signature.kid, domains); assertCrossArtifactEquations(altered); }); break;
       case "redeem-redemption-id-mismatch": case "redeem-invitation-id-mismatch": run(row, () => { const artifact = scenario.artifacts.find((a) => a.name === "holderBinding"); const field = row.id === "redeem-redemption-id-mismatch" ? "redemptionId" : "invitationId"; const altered = resignScenarioArtifact(scenario, "holderBinding", { ...artifact.message, [field]: row.mutationData.value }, domains.testKeys.holderSeedHex, artifact.signerDid, artifact.signature.kid, domains); assertCrossArtifactEquations(altered); }); break;
@@ -367,9 +407,11 @@ function dispatchNegative(scenario, negative, schemas, domains, states) {
       case "credential-sub-mismatch": run(row, () => { const c = clone(scenario); c.credential.claims.sub = scenario.artifacts[0].signerDid; validateCredential(c, schemas, domains); }); break;
       case "credential-legacy-email-path": run(row, () => { const c = clone(scenario); c.credential.disclosures[0].path = "/email/address"; validateCredential(c, schemas, domains); }); break;
       case "credential-unsupported-status": run(row, () => { const c = clone(scenario); c.credential.claims.status = { list: "unsupported" }; validateCredential(c, schemas, domains); }); break;
-      case "credential-expired-resigned": case "credential-issuer-did-resigned": case "credential-issuer-key-resigned": case "credential-vct-resigned": case "credential-holder-resigned": case "credential-scope-resigned": run(row, () => {
+      case "credential-expired-resigned": case "credential-expiry-boundary-resigned": case "credential-issuer-did-resigned": case "credential-issuer-key-resigned": case "credential-vct-resigned": case "credential-holder-resigned": case "credential-scope-resigned": run(row, () => {
         const candidate = row.mutationData.credentialByKind[scenario.kind]; const restore = row.id === "credential-vct-resigned" ? { vct: scenario.credential.vct, "claims.vct": scenario.credential.claims.vct } : {};
-        validateResignedCredentialPrerequisites(candidate, scenario, schemas, restore);
+        const candidateSigningPublicKey = row.mutationData.candidateSigningPublicKeyByKind?.[scenario.kind];
+        if (row.id === "credential-expiry-boundary-resigned") assert(candidate.claims.exp === Date.parse(scenario.evaluationTime) / 1000 - scenario.clockSkewSeconds, `${scenario.kind}: expiry boundary equation`);
+        validateResignedCredentialPrerequisites(candidate, scenario, schemas, domains, candidateSigningPublicKey, restore);
         validateResignedCredentialSemantics(candidate, scenario, domains);
       }); break;
       case "different-holder-valid-signature": run(row, () => { const candidate = row.mutationData.candidateArtifact; checkSchema(schemas, "holderBinding", candidate.message); verifyArtifact(candidate, candidate.signerDid, candidate.signerDid === scenario.artifacts[0].signerDid ? domains.testKeys.senderSeedHex : domains.testKeys.holderSeedHex, domains, scenario.enrollment); assert(candidate.message.holderDid !== scenario.credential.holderDid, "alternate holder was not changed"); rejectAt("cross-artifact-holder", "cross-artifact holder mismatch"); }); break;
