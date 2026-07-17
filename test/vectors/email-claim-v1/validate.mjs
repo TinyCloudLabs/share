@@ -244,6 +244,14 @@ function expectReject(rowOrName, fn, fallbackStage = "contract-validation") {
   }
   throw new Error(`${name}: expected reject`);
 }
+function expectExactStageReject(row, fn) {
+  try { fn(); } catch (error) {
+    if (!(error instanceof RejectionStageError)) throw new Error(`${row.id}: validator did not produce RejectionStageError: ${error.message}`);
+    if (error.rejectionStage !== row.rejectionStage) throw new Error(`${row.id}: expected ${row.rejectionStage}, got ${error.rejectionStage}`);
+    return error;
+  }
+  throw new Error(`${row.id}: expected reject at ${row.rejectionStage}`);
+}
 function resignScenarioArtifact(scenario, name, message, seedHex, signerDid, keyId, domains) {
   const altered = clone(scenario); const index = altered.artifacts.findIndex((artifact) => artifact.name === name); assert(index >= 0, `missing artifact ${name}`); altered.artifacts[index] = mutateAndResign(altered.artifacts[index], message, seedHex, signerDid, keyId, domains); if (name === "inviteAuthorization") altered.authorization = message; return altered;
 }
@@ -365,7 +373,7 @@ function validateCapabilities(domains, schemas) { const witness = domains.capabi
 function dispatchNegative(scenario, negative, schemas, domains, states) {
   const applicable = negative.cases.filter((row) => Array.isArray(row.appliesTo) && row.appliesTo.includes(scenario.kind));
   const seen = new Set();
-  const run = (row, fn) => { const schemaRow = clone(row); delete schemaRow.input; schemaError(schemas, schemas.$defs.negativeCase, schemaRow, `negative.${row.id}`); assert(row.expected === "reject" && typeof row.rejectionStage === "string" && row.rejectionStage.length > 0 && !seen.has(row.id), `invalid or duplicate negative row ${row.id}`); expectReject(row, fn); seen.add(row.id); };
+  const run = (row, fn) => { const schemaRow = clone(row); delete schemaRow.input; schemaError(schemas, schemas.$defs.negativeCase, schemaRow, `negative.${row.id}`); assert(row.expected === "reject" && typeof row.rejectionStage === "string" && row.rejectionStage.length > 0 && !seen.has(row.id), `invalid or duplicate negative row ${row.id}`); expectExactStageReject(row, fn); seen.add(row.id); };
   for (const row of applicable) {
     const mutationValue = row.mutationData.valueByKind?.[scenario.kind] ?? row.mutationData.value;
     switch (row.id) {

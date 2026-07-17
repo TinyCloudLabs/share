@@ -108,6 +108,31 @@ struct CommandRejection {
     detail: String,
 }
 
+#[derive(Debug)]
+enum CommandExecutionError {
+    Rejected(CommandRejection),
+    Invalid(String),
+}
+
+impl From<String> for CommandExecutionError {
+    fn from(detail: String) -> Self {
+        Self::Invalid(detail)
+    }
+}
+
+impl From<&str> for CommandExecutionError {
+    fn from(detail: &str) -> Self {
+        Self::Invalid(detail.into())
+    }
+}
+
+fn reject_command(name: &str, detail: &str) -> CommandExecutionError {
+    CommandExecutionError::Rejected(CommandRejection {
+        name: name.into(),
+        detail: detail.into(),
+    })
+}
+
 const CONTRACT_VERSION: &str = "tinycloud.share-email-claim/v1";
 
 fn exact_object<'a>(
@@ -2399,6 +2424,65 @@ fn validate_holder_signature_boundary(
         .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))
 }
 
+fn validate_document_name_boundary(
+    scenario: &Value,
+    kind: &str,
+) -> std::result::Result<(), NegativeRejection> {
+    let authorization = artifact_message(scenario, "inviteAuthorization")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let document_name = text(authorization, "documentName")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    if document_name.is_empty()
+        || document_name.len() > 200
+        || document_name
+            .bytes()
+            .any(|byte| byte <= 0x1f || byte == 0x7f)
+    {
+        return Err(rejection(
+            RejectionStage::DocumentNameBytes,
+            "document name byte boundary",
+        ));
+    }
+    validate_message_schema("inviteAuthorization", authorization, kind)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))
+}
+
+fn validate_cross_artifact_holder_boundary(
+    scenario: &Value,
+    domains: &Map<String, Value>,
+) -> std::result::Result<(), NegativeRejection> {
+    let artifact = artifact_named(scenario, "holderBinding")
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let holder = text(
+        artifact
+            .get("message")
+            .ok_or_else(|| rejection(RejectionStage::ContractValidation, "holder message"))?,
+        "holderDid",
+    )
+    .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let raw = did_key_bytes(holder)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    let key = VerifyingKey::from_bytes(&raw)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail.to_string()))?;
+    if key.is_weak() {
+        return Err(rejection(
+            RejectionStage::ContractValidation,
+            "weak holder key",
+        ));
+    }
+    let enrollment = scenario
+        .get("enrollment")
+        .ok_or_else(|| rejection(RejectionStage::ContractValidation, "enrollment"))?;
+    verify_signature_core(artifact, "holderBinding", enrollment)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    verify_artifact(artifact, "holderBinding", domains, enrollment)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
+    validate_cross_artifact_holder(scenario)
+        .map_err(|detail| rejection(RejectionStage::CrossArtifactHolder, detail))?;
+    validate_cross_equations(scenario)
+        .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))
+}
+
 fn artifact_named<'a>(scenario: &'a Value, name: &str) -> Result<&'a Value> {
     array(scenario, "artifacts")?
         .iter()
@@ -4520,13 +4604,9 @@ fn validate_negative_candidate(
                 .map_err(|detail| rejection(RejectionStage::ContractValidation, detail))?;
             validate_scanner_fragment_boundary(url, scenario)
         }
-        "inviteAuthorization.documentName" => {
-            validate_mutated_candidate_inner(scenario, states, row, kind, domains, issuer_key)
-                .map_err(|detail| rejection(RejectionStage::DocumentNameBytes, detail))
-        }
+        "inviteAuthorization.documentName" => validate_document_name_boundary(scenario, kind),
         "holderBinding.holderDid" if mutation.contains_key("candidateArtifact") => {
-            validate_mutated_candidate_inner(scenario, states, row, kind, domains, issuer_key)
-                .map_err(|detail| rejection(RejectionStage::CrossArtifactHolder, detail))
+            validate_cross_artifact_holder_boundary(scenario, domains)
         }
         "holderBinding.signature.value" => validate_holder_signature_boundary(scenario, domains),
         target
@@ -4822,7 +4902,7 @@ fn reduce_operation_commands(
             .get("invitation")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let command_result: Result<()> = (|| {
+        let command_result: std::result::Result<(), CommandExecutionError> = (|| {
             match name {
                 "create_invitation" => {
                     assert_ok(operation == "transaction", "create operation")?;
@@ -4877,7 +4957,7 @@ fn reduce_operation_commands(
                         "premature invalidation precondition",
                     )?;
                     durable.insert("oldSecret".into(), Value::String("retired".into()));
-                    return Err("command rejected: premature invalidation".into());
+                    return Err(reject_command(name, "premature invalidation"));
                 }
                 "prepare_resend" => {
                     assert_ok(operation == "transaction", "resend operation")?;
@@ -4987,7 +5067,7 @@ fn reduce_operation_commands(
                             version.parse::<u64>().map_err(|error| error.to_string())?,
                         ),
                         "failure" => "TERMINAL_ERROR".into(),
-                        _ => return Err(format!("unknown issuance outcome {outcome}")),
+                        _ => return Err(format!("unknown issuance outcome {outcome}").into()),
                     };
                     durable.insert("invitation".into(), Value::String(invitation));
                     durable.insert(
@@ -5018,7 +5098,7 @@ fn reduce_operation_commands(
                     )?;
                     durable.insert("result".into(), Value::String("partial".into()));
                     durable.insert("consumed".into(), Value::Bool(true));
-                    return Err("command rejected: partial atomic write".into());
+                    return Err(reject_command(name, "partial atomic write"));
                 }
                 "cleanup_seed" => {
                     assert_ok(operation == "reject", "cleanup operation")?;
@@ -5033,7 +5113,7 @@ fn reduce_operation_commands(
                         "pending cleanup precondition",
                     )?;
                     durable.insert("seed".into(), Value::String("deleted".into()));
-                    return Err("command rejected: pending seed cleanup".into());
+                    return Err(reject_command(name, "pending seed cleanup"));
                 }
                 "redeem_if_active" => {
                     let redemption_id = operand_text(operands, "redemptionId")?;
@@ -5058,6 +5138,10 @@ fn reduce_operation_commands(
                             .get("result")
                             .and_then(Value::as_str)
                             .map(str::to_owned);
+                        let expected_cached_outcome =
+                            operands.get("cachedOutcome").ok_or("CAS cached outcome")?;
+                        let expected_cached_bytes = jcs(expected_cached_outcome)?;
+                        let mut contender_outcomes = Vec::with_capacity(attempts as usize);
                         for attempt in 0..attempts {
                             if issuance_count == 0 {
                                 issuance_count += 1;
@@ -5072,7 +5156,32 @@ fn reduce_operation_commands(
                                     &format!("CAS idempotency attempt {attempt}"),
                                 )?;
                             }
+                            let outcome = Value::Object(
+                                [
+                                    ("status".into(), Value::String("issued".into())),
+                                    (
+                                        "result".into(),
+                                        Value::String(
+                                            cached_result
+                                                .as_deref()
+                                                .ok_or("CAS contender result")?
+                                                .into(),
+                                        ),
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            );
+                            assert_ok(
+                                jcs(&outcome)? == expected_cached_bytes,
+                                &format!("CAS cached outcome bytes {attempt}"),
+                            )?;
+                            contender_outcomes.push(outcome);
                         }
+                        assert_ok(
+                            contender_outcomes.len() == attempts as usize,
+                            "CAS contender outcome count",
+                        )?;
                         assert_ok(issuance_count == 1, "CAS issued more than once")?;
                         assert_ok(cached_result.as_deref() == Some(result), "CAS result cache")?;
                         durable.insert("issuanceCount".into(), issuance_count.into());
@@ -5093,7 +5202,7 @@ fn reduce_operation_commands(
                             .ok_or("different redemption issuance count")?
                             + 1;
                         durable.insert("issuanceCount".into(), attempted_count.into());
-                        return Err("command rejected: different redemption".into());
+                        return Err(reject_command(name, "different redemption"));
                     }
                 }
                 "wrong_otp_attempts" => {
@@ -5130,7 +5239,7 @@ fn reduce_operation_commands(
                         "nonce replay precondition",
                     )?;
                     durable.insert("nonceReplayAttempted".into(), Value::Bool(true));
-                    return Err("command rejected: nonce replay".into());
+                    return Err(reject_command(name, "nonce replay"));
                 }
                 "reserve_jti" => {
                     assert_ok(operation == "reject", "JTI operation")?;
@@ -5142,7 +5251,7 @@ fn reduce_operation_commands(
                         "JTI replay precondition",
                     )?;
                     durable.insert("digest".into(), Value::String(digest.into()));
-                    return Err("command rejected: JTI replay".into());
+                    return Err(reject_command(name, "JTI replay"));
                 }
                 "scanner_get" => {
                     assert_ok(
@@ -5152,26 +5261,23 @@ fn reduce_operation_commands(
                         "scanner GET precondition",
                     )?;
                 }
-                _ => return Err(format!("unknown operation command {name}")),
+                _ => return Err(format!("unknown operation command {name}").into()),
             }
             Ok(())
         })();
         if operation == "reject" {
-            let detail = match command_result {
+            let command_rejection = match command_result {
                 Ok(()) => return Err(format!("rejected command accepted: {name}")),
-                Err(detail) => detail,
+                Err(CommandExecutionError::Rejected(rejection)) => rejection,
+                Err(CommandExecutionError::Invalid(detail)) => {
+                    return Err(format!(
+                        "rejected command failed validation: {name}: {detail}"
+                    ))
+                }
             };
             assert_ok(
-                detail.starts_with("command rejected:"),
-                "command did not produce a typed rejection",
-            )?;
-            let command_rejection = CommandRejection {
-                name: name.into(),
-                detail,
-            };
-            assert_ok(
-                !command_rejection.name.is_empty() && !command_rejection.detail.is_empty(),
-                "untyped command rejection",
+                command_rejection.name == name && !command_rejection.detail.is_empty(),
+                "typed command rejection name",
             )?;
             assert_ok(
                 durable != scratch,
@@ -5181,7 +5287,13 @@ fn reduce_operation_commands(
             durable = scratch;
             assert_ok(durable == rolled_back, "rejected command rollback")?;
         } else {
-            command_result.map_err(|detail| format!("command {name}: {detail}"))?;
+            command_result.map_err(|error| match error {
+                CommandExecutionError::Rejected(rejection) => format!(
+                    "command {name} unexpectedly rejected as {}: {}",
+                    rejection.name, rejection.detail
+                ),
+                CommandExecutionError::Invalid(detail) => format!("command {name}: {detail}"),
+            })?;
         }
     }
     Ok(durable)
