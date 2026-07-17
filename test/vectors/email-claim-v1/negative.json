@@ -7,181 +7,414 @@
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": " Alice@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": " Alice@example.com"
     },
     {
       "id": "trailing-space",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@example.com "
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@example.com "
     },
     {
       "id": "tab",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@\texample.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@\texample.com"
     },
     {
       "id": "newline",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@example.com\n"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@example.com\n"
     },
     {
       "id": "inner-space",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice Notes@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice Notes@example.com"
     },
     {
       "id": "leading-dot-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": ".Alice@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": ".Alice@example.com"
     },
     {
       "id": "trailing-dot-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice.@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice.@example.com"
     },
     {
       "id": "repeated-dot-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice..Notes@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice..Notes@example.com"
     },
     {
       "id": "empty-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "@example.com"
     },
     {
       "id": "empty-domain",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@"
     },
     {
       "id": "multiple-at",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@gmail.com@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@gmail.com@example.com"
     },
     {
       "id": "quoted-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "\"Alice\"@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "\"Alice\"@example.com"
     },
     {
       "id": "comment-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice(comment)@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice(comment)@example.com"
     },
     {
       "id": "backslash-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice\\Bob@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice\\Bob@example.com"
     },
     {
       "id": "angle-form",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice <alice@example.com>"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice <alice@example.com>"
     },
     {
       "id": "unicode-local",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "álíce@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "álíce@example.com"
     },
     {
       "id": "unicode-domain",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@bücher.example"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@bücher.example"
     },
     {
       "id": "local-over-64",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com"
     },
     {
       "id": "label-over-63",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com"
     },
     {
       "id": "empty-domain-label",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@example..com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@example..com"
     },
     {
       "id": "trailing-domain-dot",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@example.com."
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@example.com."
     },
     {
       "id": "leading-hyphen",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@-example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@-example.com"
     },
     {
       "id": "trailing-hyphen",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "Alice@example-.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "Alice@example-.com"
     },
     {
       "id": "domain-over-253",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeex"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "a@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeex"
     },
     {
       "id": "total-over-254",
       "kind": "email",
       "target": "canonicalEmail",
       "mutation": "reject-input",
-      "expected": "reject"
+      "mutationData": {
+        "operation": "reject-input",
+        "input": "aa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject",
+      "input": "aa@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     {
       "id": "policy-cid-is-real",
       "kind": "cid",
       "target": "policyBytes",
       "mutation": "replace-policy-bytes-with-other-bytes",
+      "mutationData": {
+        "operation": "replace",
+        "replacement": "other policy bytes"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -189,6 +422,15 @@
       "kind": "policy",
       "target": "policyBytes",
       "mutation": "insert-policyCid-self-reference",
+      "mutationData": {
+        "operation": "insert-property",
+        "property": "policyCid",
+        "value": "scenario.policyCid"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -196,6 +438,14 @@
       "kind": "cid",
       "target": "sealedBlob",
       "mutation": "flip-one-blob-byte",
+      "mutationData": {
+        "operation": "flip-byte",
+        "offset": "last"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -203,20 +453,42 @@
       "kind": "aead",
       "target": "sealedBlob",
       "mutation": "flip-authenticated-byte",
+      "mutationData": {
+        "operation": "flip-byte",
+        "offset": "last"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "envelope-policy-target-missing-kind",
       "kind": "schema",
-      "target": "envelope.authorizationTarget",
+      "target": "envelope.authorizationTarget.kind",
       "mutation": "delete-kind",
+      "mutationData": {
+        "operation": "delete"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "envelope-policy-target-missing-bytes",
       "kind": "schema",
-      "target": "envelope.authorizationTarget",
+      "target": "envelope.authorizationTarget.policyBytes",
       "mutation": "delete-policyBytes",
+      "mutationData": {
+        "operation": "delete"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -224,6 +496,15 @@
       "kind": "envelope",
       "target": "envelope.authorizationTarget",
       "mutation": "re-sign-policyCid-with-other-policyBytes",
+      "mutationData": {
+        "operation": "replace-pair",
+        "policyCid": "cid(other policy)",
+        "policyBytes": "policy(other recipient)"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -231,34 +512,110 @@
       "kind": "envelope",
       "target": "envelope.target.origin",
       "mutation": "re-sign-origin",
+      "mutationData": {
+        "operation": "replace",
+        "value": "https://evil.example"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "envelope-domain-from-unregistered-label",
       "kind": "signature",
-      "target": "envelope",
+      "target": "envelope.domain",
       "mutation": "verify-with-nonregistry-domain",
+      "mutationData": {
+        "operation": "replace",
+        "value": "unregistered.example\\u0000"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "jcs-lone-surrogate",
       "kind": "jcs",
-      "target": "all",
+      "target": "value",
       "mutation": "insert-lone-surrogate",
+      "mutationData": {
+        "operation": "insert",
+        "jsonLiteral": "\\ud800"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "jcs-unsafe-number",
       "kind": "jcs",
-      "target": "all",
+      "target": "value",
       "mutation": "insert-unsafe-number",
+      "mutationData": {
+        "operation": "insert",
+        "jsonLiteral": "9007199254740992",
+        "numberKind": "unsafe-integer",
+        "value": 9007199254740992
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "jcs-fractional-number",
+      "kind": "jcs",
+      "target": "value",
+      "mutation": "insert-fractional-number",
+      "mutationData": {
+        "operation": "insert",
+        "jsonLiteral": "1.5",
+        "numberKind": "fractional",
+        "value": 1.5
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "jcs-negative-zero",
+      "kind": "jcs",
+      "target": "value",
+      "mutation": "insert-negative-zero",
+      "mutationData": {
+        "operation": "insert",
+        "jsonLiteral": "-0",
+        "numberKind": "negative-zero",
+        "value": "-0"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "jcs-undefined",
       "kind": "jcs",
-      "target": "all",
+      "target": "value",
       "mutation": "insert-undefined",
+      "mutationData": {
+        "operation": "insert",
+        "jsonLiteral": "undefined"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -266,6 +623,14 @@
       "kind": "encoding",
       "target": "invitationId",
       "mutation": "set-nonzero-trailing-bits",
+      "mutationData": {
+        "operation": "replace",
+        "value": "noncanonical base64url"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -273,34 +638,74 @@
       "kind": "encoding",
       "target": "signature",
       "mutation": "set-nonzero-trailing-bits",
+      "mutationData": {
+        "operation": "replace",
+        "value": "noncanonical base64url"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "noncanonical-holder-kid",
       "kind": "signature",
-      "target": "holderBinding",
+      "target": "holderBinding.signature.kid",
       "mutation": "use-did-key-with-wrong-fragment",
+      "mutationData": {
+        "operation": "replace",
+        "value": "holder DID plus wrong fragment"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "small-order-did-key",
       "kind": "did-key",
-      "target": "holderBinding",
+      "target": "holderBinding.holderDid",
       "mutation": "identity-public-key",
+      "mutationData": {
+        "operation": "replace",
+        "value": "Ed25519 identity key"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "noncanonical-ed25519-s",
       "kind": "signature",
-      "target": "holderBinding",
+      "target": "holderBinding.signature.value",
       "mutation": "set-s-to-group-order",
+      "mutationData": {
+        "operation": "replace",
+        "value": "Ed25519 group order"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "short-signature",
       "kind": "signature",
-      "target": "readInvocation",
+      "target": "readInvocation.signature.value",
       "mutation": "truncate-signature",
+      "mutationData": {
+        "operation": "truncate",
+        "bytes": 63
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -308,6 +713,14 @@
       "kind": "source",
       "target": "sql.argumentsDigest",
       "mutation": "change-one-argument",
+      "mutationData": {
+        "operation": "change",
+        "field": "arguments.document_id",
+        "value": "other"
+      },
+      "appliesTo": [
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -315,27 +728,59 @@
       "kind": "source",
       "target": "sql.arguments",
       "mutation": "exceed-4096-byte-jcs",
+      "mutationData": {
+        "operation": "insert",
+        "field": "large",
+        "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "appliesTo": [
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "sql-arbitrary-query-field",
       "kind": "schema",
-      "target": "sqlSource",
+      "target": "sqlSource.query",
       "mutation": "add-query",
+      "mutationData": {
+        "operation": "add-property",
+        "field": "query",
+        "value": "select *"
+      },
+      "appliesTo": [
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "policy-action-source-mismatch",
       "kind": "binding",
-      "target": "policy",
+      "target": "policy.action",
       "mutation": "change-action-only",
+      "mutationData": {
+        "operation": "replace",
+        "value": "opposite source action"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "content-source-propagation",
       "kind": "binding",
-      "target": "policyPresentation",
+      "target": "policyPresentation.contentSource.path",
       "mutation": "change-path-one-field",
+      "mutationData": {
+        "operation": "replace",
+        "value": "other.md"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -343,55 +788,121 @@
       "kind": "credential",
       "target": "credential.claims.sub",
       "mutation": "sender-did",
+      "mutationData": {
+        "operation": "replace",
+        "value": "scenario.senderDid"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "credential-legacy-email-path",
       "kind": "credential",
-      "target": "credential.disclosures",
+      "target": "credential.disclosures[0].path",
       "mutation": "email-address-path",
+      "mutationData": {
+        "operation": "replace",
+        "value": "/email/address"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "credential-unsupported-status",
       "kind": "credential",
-      "target": "credential.claims",
+      "target": "credential.claims.status",
       "mutation": "add-status",
+      "mutationData": {
+        "operation": "add-property",
+        "value": {
+          "list": "unsupported"
+        }
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "different-holder-valid-signature",
       "kind": "signature",
-      "target": "holderBinding",
+      "target": "holderBinding.holderDid",
       "mutation": "replace-holder-and-resign",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "scenario.senderDid"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "policy-challenge-replay",
       "kind": "state",
-      "target": "nonce",
+      "target": "nonce.state",
       "mutation": "consume-twice",
+      "mutationData": {
+        "operation": "transition",
+        "from": "CONSUMED",
+        "to": "CONSUMED"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "session-token-only",
       "kind": "state",
-      "target": "read",
+      "target": "read.proof",
       "mutation": "omit-holder-proof",
+      "mutationData": {
+        "operation": "delete"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "old-secret-after-resend",
       "kind": "state",
-      "target": "invitation",
+      "target": "invitation.version",
       "mutation": "use-v1-after-v2-accepted",
+      "mutationData": {
+        "operation": "replace",
+        "value": 1
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "otp-after-five-wrong",
       "kind": "state",
-      "target": "otp",
+      "target": "otp.attempts",
       "mutation": "correct-code-after-lock",
+      "mutationData": {
+        "operation": "replace",
+        "value": 5
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
@@ -399,34 +910,173 @@
       "kind": "state",
       "target": "fragment",
       "mutation": "GET-consumes-claim",
+      "mutationData": {
+        "operation": "consume-on-GET",
+        "value": "https://share.tinycloud.xyz/s/cid#k=x&i=y&c=z"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "resend-recipient-supplied-email",
       "kind": "schema",
-      "target": "resendRequest",
+      "target": "resendRequest.email",
       "mutation": "add-email",
+      "mutationData": {
+        "operation": "add-property",
+        "field": "email",
+        "value": "Alice+Notes@example.com"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "capability-extra-route",
       "kind": "capability",
-      "target": "witness",
+      "target": "witness.routes",
       "mutation": "add-route",
+      "mutationData": {
+        "operation": "append",
+        "value": "/v1/extra"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "capability-wildcard-origin",
       "kind": "capability",
-      "target": "node",
+      "target": "node.origin",
       "mutation": "wildcard-origin",
+      "mutationData": {
+        "operation": "replace",
+        "value": "https://*.example"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     },
     {
       "id": "read-body-one-field-mutation",
       "kind": "preimage",
-      "target": "sqlReadRequest",
+      "target": "sqlReadRequest.resource",
       "mutation": "change-one-argument",
+      "mutationData": {
+        "operation": "replace",
+        "value": "other"
+      },
+      "appliesTo": [
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "claim-redeem-magic-with-otp",
+      "kind": "method",
+      "target": "claimRedeemRequest.mailboxProof",
+      "mutation": "magic-method-with-otp-proof",
+      "mutationData": {
+        "operation": "replace",
+        "method": "magic",
+        "field": "mailboxProof",
+        "value": "042731"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "claim-redeem-otp-with-magic",
+      "kind": "method",
+      "target": "claimRedeemRequest.mailboxProof",
+      "mutation": "otp-method-with-magic-proof",
+      "mutationData": {
+        "operation": "replace",
+        "method": "otp",
+        "field": "mailboxProof",
+        "value": "scenario.claimSecret"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "policy-challenge-response-proof",
+      "kind": "proof",
+      "target": "policyChallengeResponse.proof",
+      "mutation": "use-holder-proof-for-node-artifact",
+      "mutationData": {
+        "operation": "replace",
+        "artifact": "policyChallenge",
+        "signer": "holder"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "policy-session-response-proof",
+      "kind": "proof",
+      "target": "policySessionResponse.proof",
+      "mutation": "use-holder-proof-for-node-artifact",
+      "mutationData": {
+        "operation": "replace",
+        "artifact": "policySession",
+        "signer": "holder"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "sd-jwt-missing-alg",
+      "kind": "sd-jwt",
+      "target": "credential.claims._sd_alg",
+      "mutation": "delete-sd-alg",
+      "mutationData": {
+        "operation": "delete",
+        "expected": "sha-256"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "sd-jwt-two-element-disclosure",
+      "kind": "sd-jwt",
+      "target": "credential.disclosures[0].encoded",
+      "mutation": "replace-disclosure-with-two-elements",
+      "mutationData": {
+        "operation": "replace",
+        "arrayShape": [
+          "email",
+          "canonicalEmail"
+        ]
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
       "expected": "reject"
     }
   ]

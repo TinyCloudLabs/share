@@ -6,8 +6,9 @@ fixture set is test-only; its private keys MUST never be used in production.
 
 ## Canonical bytes
 
-All protocol messages use RFC 8785 JCS UTF-8. The implementation rejects
-non-finite numbers, unsafe integers, `-0`, undefined/functions/symbols,
+All protocol messages use RFC 8785 JCS UTF-8. v1 JSON numbers are integers
+only; the implementation rejects fractional, non-finite, unsafe integers,
+`-0`, undefined/functions/symbols,
 non-plain objects, and lone UTF-16 surrogates. Object keys are sorted by UTF-16
 code unit. Binary is strict unpadded base64url. A normal signed artifact is
 `UTF8(domains[artifact]) || UTF8(JCS(message))`, including the frozen envelope
@@ -42,16 +43,30 @@ JSON object whose JCS UTF-8 bytes are separately digested and bounded. Raw SQL
 transport is never part of this contract. Both source and source digest are
 carried byte-for-byte by every signed artifact.
 
+The email credential uses the OpenCredentials SD-JWT profile: claims carry
+`_sd_alg: "sha-256"`, and the sole email object disclosure decodes exactly to
+`[salt, "email", canonicalEmail]`. Fixture salts are deterministic and the
+disclosure digest is SHA-256 over the encoded disclosure string. The issuer
+compact JWT uses the library profile (`alg: "EdDSA"`); the test-only salt and
+keys are not production material.
+
 ## API and state coverage
 
 `schemas.json` covers every invitation-create, resend, claim-challenge,
 claim-redeem, policy-challenge, policy-session, and read request, success, and
-failure surface from product spec §§6 and 9. Capability descriptors are
+failure surface from product spec §§6 and 9. `claimRedeemRequest` is a
+discriminated `oneOf`: `magic` carries a 32-byte claim secret and `otp` carries
+exactly six decimal digits. Policy challenge/session response wrappers carry a
+strict node proof bound to their signed challenge/session artifact; claim
+challenge responses retain both `contentSource` and `contentSourceDigest`.
+Capability descriptors are
 validated against their strict schema and route allowlists. `negative.json` is
 executable: every row drives a real schema/CID/JCS/DID/signature/reference
-validator or a re-signed mutation. `states.json` is executed as a transactional
-model covering resend/provider acceptance/crash recovery, OTP, JTI, nonce,
-redemption idempotency, and scanner GET boundaries.
+validator or a re-signed mutation. Every row contains its target and concrete
+mutation/input data, including email inputs and the method/number/SD-JWT
+cross-matrix. `states.json` is executed as a transactional model covering
+resend/provider acceptance/crash recovery, OTP, JTI, nonce, redemption
+idempotency, and scanner GET boundaries.
 
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in
 shipping envelope package currently signs and verifies its envelope body as
@@ -68,5 +83,14 @@ node test/vectors/email-claim-v1/build.mjs
 node test/vectors/email-claim-v1/validate.mjs
 tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --strict --skipLibCheck test/vectors/email-claim-v1/loader.ts
 bun test/vectors/email-claim-v1/loader.ts
+cargo fmt --check --manifest-path test/vectors/email-claim-v1/rust/Cargo.toml
+cargo clippy --offline --manifest-path test/vectors/email-claim-v1/rust/Cargo.toml -- -D warnings
 cargo test --offline --manifest-path test/vectors/email-claim-v1/rust/Cargo.toml
+cargo run --offline --manifest-path test/vectors/email-claim-v1/rust/Cargo.toml
 ```
+
+The Rust verifier independently checks fixture bytes, signatures, SD-JWT
+disclosure shape/digests, negative-row/state completeness and invariants. It
+does not claim to execute JavaScript schema callbacks; JS performs executable
+callback/schema mutation checks, while Rust validates the serialized contract
+and its declared mutation matrix.

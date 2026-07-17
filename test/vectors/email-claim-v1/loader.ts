@@ -37,7 +37,7 @@ function jcs(value: unknown): string {
     return JSON.stringify(value);
   }
   if (typeof value === "number") {
-    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError("unsafe number");
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value) || Object.is(value, -0)) throw new TypeError("unsafe number");
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) return `[${value.map(jcs).join(",")}]`;
@@ -47,6 +47,16 @@ function jcs(value: unknown): string {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const readJson = async <T>(path: string): Promise<T> => JSON.parse(await readFile(path, "utf8")) as T;
+const record = (value: unknown, label: string): Record<string, unknown> => { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}: expected object`); return value as Record<string, unknown>; };
+const list = (value: unknown, label: string): unknown[] => { if (!Array.isArray(value)) throw new Error(`${label}: expected array`); return value; };
+function validateMatrix(positive: unknown, negative: unknown, states: unknown): void {
+  const p = record(positive, "positive"); const scenarios = list(p.scenarios, "positive.scenarios"); if (scenarios.length !== 2) throw new Error("positive scenario count");
+  const kinds = new Set(scenarios.map((value) => String(record(value, "scenario").kind))); if (kinds.size !== 2 || !kinds.has("kv") || !kinds.has("sql")) throw new Error("positive source matrix");
+  for (const value of scenarios) { const scenario = record(value, "scenario"); if (scenario.testOnly !== true || scenario.canonicalEmail !== "Alice+Notes@example.com" || typeof scenario.sdJwtSalt !== "string") throw new Error("positive deterministic markers"); const preimages = record(scenario.preimages, "scenario.preimages"); if (!preimages.claimRedeemRequest || !preimages.claimRedeemOtpRequest || !preimages.policyChallengeResponse || !preimages.policySessionResponse) throw new Error("endpoint matrix incomplete"); const credential = record(scenario.credential, "credential"); const claims = record(credential.claims, "credential.claims"); if (claims._sd_alg !== "sha-256") throw new Error("SD-JWT algorithm marker"); const disclosures = list(credential.disclosures, "credential.disclosures"); if (disclosures.length !== 1 || record(disclosures[0], "disclosure").salt !== scenario.sdJwtSalt) throw new Error("SD-JWT salt marker"); }
+  const n = record(negative, "negative"); const rows = list(n.cases, "negative.cases"); const ids = new Set<string>(); const known = new Set(["email","cid","policy","aead","schema","envelope","signature","jcs","encoding","did-key","source","binding","credential","state","capability","preimage","method","proof","sd-jwt"]);
+  for (const value of rows) { const row = record(value, "negative row"); const id = row.id; if (typeof id !== "string" || ids.has(id)) throw new Error("negative IDs must be unique"); ids.add(id); if (row.expected !== "reject" || typeof row.kind !== "string" || !known.has(row.kind) || typeof row.target !== "string" || typeof row.mutation !== "string") throw new Error(`negative row incomplete: ${String(id)}`); const data = record(row.mutationData, `${String(id)}.mutationData`); if (typeof data.operation !== "string") throw new Error(`${String(id)} mutation operation`); const applies = list(row.appliesTo, `${String(id)}.appliesTo`); if (applies.length === 0 || applies.some((kind) => kind !== "kv" && kind !== "sql")) throw new Error(`${String(id)} applicability`); if (row.kind === "email" && typeof row.input !== "string") throw new Error(`${String(id)} email input`); if (row.kind === "method" && (typeof data.method !== "string" || typeof data.field !== "string" || typeof data.value !== "string")) throw new Error(`${String(id)} method mutation`); if (row.kind === "jcs" && (typeof data.jsonLiteral !== "string" || typeof data.numberKind !== "undefined" && typeof data.numberKind !== "string")) throw new Error(`${String(id)} number mutation`); if (row.kind === "sd-jwt" && typeof data.operation !== "string") throw new Error(`${String(id)} SD-JWT mutation`); }
+  const s = record(states, "states"); const delivery = list(s.delivery, "states.delivery"); const names = new Set(delivery.map((flow) => String(record(flow, "delivery flow").name))); if (delivery.length !== 4 || names.size !== 4 || !["create-accepted","resend-accepted","resend-provider-failure","crash-after-provider-accept"].every((name) => names.has(name))) throw new Error("delivery state matrix incomplete"); if (JSON.stringify(s.invitation) !== JSON.stringify(["ABSENT","ACTIVE(v1)","REDEEMING(v1,redemption-001)","CONSUMED(v1)"]) || JSON.stringify(s.nonce) !== JSON.stringify(["ISSUED","VERIFYING","CONSUMED"]) || !list(s.session, "states.session").includes("EXPIRED") || !list(s.session, "states.session").includes("REVOKED")) throw new Error("state invariants"); const semantics = record(s.semantics, "states.semantics"); const race = record(semantics.sameRedemptionConcurrency, "same redemption"); if (race.attempts !== 20 || race.effectiveIssuances !== 1 || race.sameResultForSameId !== true) throw new Error("redemption invariant");
+}
 
 /** Loads and verifies the manifest and every byte-addressed bundle member. */
 export async function loadFixtureBundle(baseDir = here): Promise<FixtureBundle> {
@@ -58,11 +68,15 @@ export async function loadFixtureBundle(baseDir = here): Promise<FixtureBundle> 
     const path = name === "README.md" || name === "domains.json" || name === "schemas.json" ? resolve(specDir, name) : resolve(baseDir, name);
     if (digest(await readFile(path)) !== expected) throw new Error(`email-claim-v1 file digest mismatch: ${name}`);
   }
+  const positive = await readJson(resolve(baseDir, "positive.json"));
+  const negative = await readJson(resolve(baseDir, "negative.json"));
+  const states = await readJson(resolve(baseDir, "states.json"));
+  validateMatrix(positive, negative, states);
   return {
     manifest,
-    positive: await readJson(resolve(baseDir, "positive.json")),
-    negative: await readJson(resolve(baseDir, "negative.json")),
-    states: await readJson(resolve(baseDir, "states.json")),
+    positive,
+    negative,
+    states,
     domains: await readJson(resolve(specDir, "domains.json")),
     schemas: await readJson(resolve(specDir, "schemas.json")),
   };
