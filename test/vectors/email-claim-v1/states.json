@@ -1,0 +1,157 @@
+{
+  "version": "tinycloud.share-email-claim/v1",
+  "testOnly": true,
+  "delivery": [
+    {
+      "name": "create-accepted",
+      "events": [
+        [
+          "ABSENT",
+          "PENDING_DELIVERY(v1)"
+        ],
+        [
+          "PENDING_DELIVERY(v1)",
+          "ACTIVE(v1)"
+        ],
+        [
+          "ACTIVE(v1)",
+          "REDEEMING(v1,redemption-001)"
+        ],
+        [
+          "REDEEMING(v1,redemption-001)",
+          "CONSUMED(v1)"
+        ]
+      ],
+      "providerIdempotencyKey": "invite:create:auth-kv-001",
+      "encryptedUntilProviderAcceptance": true,
+      "atomicActivation": true,
+      "materialDeletedAfterAccept": true
+    },
+    {
+      "name": "resend-accepted",
+      "events": [
+        [
+          "ACTIVE(v1)",
+          "PENDING_DELIVERY(v2)"
+        ],
+        [
+          "PENDING_DELIVERY(v2)",
+          "ACTIVE(v2)"
+        ],
+        [
+          "ACTIVE(v2)",
+          "REDEEMING(v2,redemption-002)"
+        ],
+        [
+          "REDEEMING(v2,redemption-002)",
+          "CONSUMED(v2)"
+        ]
+      ],
+      "providerIdempotencyKey": "invite:resend:invitation-001:v2",
+      "oldVersionRemainsActiveWhilePending": true,
+      "oldVersionInvalidatedOnlyAfterAccept": true,
+      "replacementMaterialEncryptedUntilAcceptance": true,
+      "atomicActivation": true
+    },
+    {
+      "name": "resend-provider-failure",
+      "events": [
+        [
+          "ACTIVE(v1)",
+          "PENDING_DELIVERY(v2)"
+        ],
+        [
+          "PENDING_DELIVERY(v2)",
+          "ACTIVE(v1)"
+        ],
+        [
+          "ACTIVE(v1)",
+          "REDEEMING(v1,redemption-003)"
+        ],
+        [
+          "REDEEMING(v1,redemption-003)",
+          "CONSUMED(v1)"
+        ]
+      ],
+      "providerIdempotencyKey": "invite:resend:invitation-001:v2",
+      "oldVersionRemainsUsable": true,
+      "replacementDiscardedOnFailure": true
+    },
+    {
+      "name": "crash-after-provider-accept",
+      "events": [
+        [
+          "ACTIVE(v1)",
+          "PENDING_DELIVERY(v2)"
+        ],
+        [
+          "PENDING_DELIVERY(v2)",
+          "RECOVERING_PROVIDER_ACCEPT(v2)"
+        ],
+        [
+          "RECOVERING_PROVIDER_ACCEPT(v2)",
+          "ACTIVE(v2)"
+        ]
+      ],
+      "providerAcceptedBeforeCrash": true,
+      "sameIdempotencyKeyOnRetry": true,
+      "recoveryReconcilesProviderAcceptance": true,
+      "oneEffectiveSend": true,
+      "oldVersionInvalidatedAfterRecovery": true
+    }
+  ],
+  "invitation": [
+    "ABSENT",
+    "ACTIVE(v1)",
+    "REDEEMING(v1,redemption-001)",
+    "CONSUMED(v1)"
+  ],
+  "nonce": [
+    "ISSUED",
+    "VERIFYING",
+    "CONSUMED"
+  ],
+  "session": [
+    "ACTIVE",
+    "EXPIRED",
+    "REVOKED"
+  ],
+  "operations": [
+    "create_persist_outbox",
+    "provider_accept",
+    "activate_v1",
+    "wrong_otp_x5",
+    "lock_v1",
+    "resend_persist_v2",
+    "provider_accept_v2",
+    "invalidate_v1",
+    "claim_v2",
+    "consume_nonce",
+    "crash_after_provider_accept",
+    "retry_same_provider_idempotency",
+    "same_redemption_idempotent",
+    "different_redemption_rejected",
+    "scanner_get_no_state_change"
+  ],
+  "semantics": {
+    "claimMaterial": {
+      "encryptedUntilProviderAcceptance": true,
+      "deletedAfterProviderAcceptance": true
+    },
+    "resend": {
+      "oldVersionActiveWhilePending": true,
+      "invalidatedOnlyAfterProviderAcceptance": true,
+      "providerIdempotent": true
+    },
+    "sameRedemptionConcurrency": {
+      "attempts": 20,
+      "effectiveIssuances": 1,
+      "sameResultForSameId": true
+    },
+    "otp": {
+      "wrongAttemptsBeforeLock": 5,
+      "correctAfterLock": "reject",
+      "invalidMagicDoesNotIncrementOtp": true
+    }
+  }
+}

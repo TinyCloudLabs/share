@@ -1,0 +1,433 @@
+{
+  "version": "tinycloud.share-email-claim/v1",
+  "testOnly": true,
+  "cases": [
+    {
+      "id": "leading-space",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "trailing-space",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "tab",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "newline",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "inner-space",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "leading-dot-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "trailing-dot-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "repeated-dot-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "empty-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "empty-domain",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "multiple-at",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "quoted-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "comment-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "backslash-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "angle-form",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "unicode-local",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "unicode-domain",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "local-over-64",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "label-over-63",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "empty-domain-label",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "trailing-domain-dot",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "leading-hyphen",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "trailing-hyphen",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "domain-over-253",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "total-over-254",
+      "kind": "email",
+      "target": "canonicalEmail",
+      "mutation": "reject-input",
+      "expected": "reject"
+    },
+    {
+      "id": "policy-cid-is-real",
+      "kind": "cid",
+      "target": "policyBytes",
+      "mutation": "replace-policy-bytes-with-other-bytes",
+      "expected": "reject"
+    },
+    {
+      "id": "policy-bytes-self-policy-cid",
+      "kind": "policy",
+      "target": "policyBytes",
+      "mutation": "insert-policyCid-self-reference",
+      "expected": "reject"
+    },
+    {
+      "id": "share-cid-is-real",
+      "kind": "cid",
+      "target": "sealedBlob",
+      "mutation": "flip-one-blob-byte",
+      "expected": "reject"
+    },
+    {
+      "id": "sealed-blob-aead-tamper",
+      "kind": "aead",
+      "target": "sealedBlob",
+      "mutation": "flip-authenticated-byte",
+      "expected": "reject"
+    },
+    {
+      "id": "envelope-policy-target-missing-kind",
+      "kind": "schema",
+      "target": "envelope.authorizationTarget",
+      "mutation": "delete-kind",
+      "expected": "reject"
+    },
+    {
+      "id": "envelope-policy-target-missing-bytes",
+      "kind": "schema",
+      "target": "envelope.authorizationTarget",
+      "mutation": "delete-policyBytes",
+      "expected": "reject"
+    },
+    {
+      "id": "envelope-policy-target-mismatch",
+      "kind": "envelope",
+      "target": "envelope.authorizationTarget",
+      "mutation": "re-sign-policyCid-with-other-policyBytes",
+      "expected": "reject"
+    },
+    {
+      "id": "envelope-origin-mismatch",
+      "kind": "envelope",
+      "target": "envelope.target.origin",
+      "mutation": "re-sign-origin",
+      "expected": "reject"
+    },
+    {
+      "id": "envelope-domain-from-unregistered-label",
+      "kind": "signature",
+      "target": "envelope",
+      "mutation": "verify-with-nonregistry-domain",
+      "expected": "reject"
+    },
+    {
+      "id": "jcs-lone-surrogate",
+      "kind": "jcs",
+      "target": "all",
+      "mutation": "insert-lone-surrogate",
+      "expected": "reject"
+    },
+    {
+      "id": "jcs-unsafe-number",
+      "kind": "jcs",
+      "target": "all",
+      "mutation": "insert-unsafe-number",
+      "expected": "reject"
+    },
+    {
+      "id": "jcs-undefined",
+      "kind": "jcs",
+      "target": "all",
+      "mutation": "insert-undefined",
+      "expected": "reject"
+    },
+    {
+      "id": "noncanonical-b64url-16-tail",
+      "kind": "encoding",
+      "target": "invitationId",
+      "mutation": "set-nonzero-trailing-bits",
+      "expected": "reject"
+    },
+    {
+      "id": "noncanonical-b64url-64-tail",
+      "kind": "encoding",
+      "target": "signature",
+      "mutation": "set-nonzero-trailing-bits",
+      "expected": "reject"
+    },
+    {
+      "id": "noncanonical-holder-kid",
+      "kind": "signature",
+      "target": "holderBinding",
+      "mutation": "use-did-key-with-wrong-fragment",
+      "expected": "reject"
+    },
+    {
+      "id": "small-order-did-key",
+      "kind": "did-key",
+      "target": "holderBinding",
+      "mutation": "identity-public-key",
+      "expected": "reject"
+    },
+    {
+      "id": "noncanonical-ed25519-s",
+      "kind": "signature",
+      "target": "holderBinding",
+      "mutation": "set-s-to-group-order",
+      "expected": "reject"
+    },
+    {
+      "id": "short-signature",
+      "kind": "signature",
+      "target": "readInvocation",
+      "mutation": "truncate-signature",
+      "expected": "reject"
+    },
+    {
+      "id": "wrong-source-digest",
+      "kind": "source",
+      "target": "sql.argumentsDigest",
+      "mutation": "change-one-argument",
+      "expected": "reject"
+    },
+    {
+      "id": "sql-arguments-too-large",
+      "kind": "source",
+      "target": "sql.arguments",
+      "mutation": "exceed-4096-byte-jcs",
+      "expected": "reject"
+    },
+    {
+      "id": "sql-arbitrary-query-field",
+      "kind": "schema",
+      "target": "sqlSource",
+      "mutation": "add-query",
+      "expected": "reject"
+    },
+    {
+      "id": "policy-action-source-mismatch",
+      "kind": "binding",
+      "target": "policy",
+      "mutation": "change-action-only",
+      "expected": "reject"
+    },
+    {
+      "id": "content-source-propagation",
+      "kind": "binding",
+      "target": "policyPresentation",
+      "mutation": "change-path-one-field",
+      "expected": "reject"
+    },
+    {
+      "id": "credential-sub-mismatch",
+      "kind": "credential",
+      "target": "credential.claims.sub",
+      "mutation": "sender-did",
+      "expected": "reject"
+    },
+    {
+      "id": "credential-legacy-email-path",
+      "kind": "credential",
+      "target": "credential.disclosures",
+      "mutation": "email-address-path",
+      "expected": "reject"
+    },
+    {
+      "id": "credential-unsupported-status",
+      "kind": "credential",
+      "target": "credential.claims",
+      "mutation": "add-status",
+      "expected": "reject"
+    },
+    {
+      "id": "different-holder-valid-signature",
+      "kind": "signature",
+      "target": "holderBinding",
+      "mutation": "replace-holder-and-resign",
+      "expected": "reject"
+    },
+    {
+      "id": "policy-challenge-replay",
+      "kind": "state",
+      "target": "nonce",
+      "mutation": "consume-twice",
+      "expected": "reject"
+    },
+    {
+      "id": "session-token-only",
+      "kind": "state",
+      "target": "read",
+      "mutation": "omit-holder-proof",
+      "expected": "reject"
+    },
+    {
+      "id": "old-secret-after-resend",
+      "kind": "state",
+      "target": "invitation",
+      "mutation": "use-v1-after-v2-accepted",
+      "expected": "reject"
+    },
+    {
+      "id": "otp-after-five-wrong",
+      "kind": "state",
+      "target": "otp",
+      "mutation": "correct-code-after-lock",
+      "expected": "reject"
+    },
+    {
+      "id": "scanner-get",
+      "kind": "state",
+      "target": "fragment",
+      "mutation": "GET-consumes-claim",
+      "expected": "reject"
+    },
+    {
+      "id": "resend-recipient-supplied-email",
+      "kind": "schema",
+      "target": "resendRequest",
+      "mutation": "add-email",
+      "expected": "reject"
+    },
+    {
+      "id": "capability-extra-route",
+      "kind": "capability",
+      "target": "witness",
+      "mutation": "add-route",
+      "expected": "reject"
+    },
+    {
+      "id": "capability-wildcard-origin",
+      "kind": "capability",
+      "target": "node",
+      "mutation": "wildcard-origin",
+      "expected": "reject"
+    },
+    {
+      "id": "read-body-one-field-mutation",
+      "kind": "preimage",
+      "target": "sqlReadRequest",
+      "mutation": "change-one-argument",
+      "expected": "reject"
+    }
+  ]
+}

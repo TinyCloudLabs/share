@@ -1,0 +1,106 @@
+{
+  "version": "tinycloud.share-email-claim/v1",
+  "signedByteFormat": "UTF8(registry.domain) || UTF8(JCS(message))",
+  "encoding": {"binary": "base64url-unpadded", "digest": "sha256"},
+  "domains": {
+    "envelope": "xyz.tinycloud.share/envelope/v1\u0000",
+    "policy": "xyz.tinycloud.share/policy/v1\u0000",
+    "inviteAuthorization": "xyz.tinycloud.share/invite-authorization/v1\u0000",
+    "holderBinding": "xyz.tinycloud.share/email-claim-holder-binding/v1\u0000",
+    "policyChallenge": "xyz.tinycloud.share/policy-challenge/v1\u0000",
+    "policyPresentation": "xyz.tinycloud.share/policy-presentation/v1\u0000",
+    "policySession": "xyz.tinycloud.share/policy-session/v1\u0000",
+    "readInvocation": "xyz.tinycloud.share/read-invocation/v1\u0000",
+    "tokenHash": "tinycloud-share-email-claim/v1\u0000",
+    "otpHash": "tinycloud-share-email-otp/v1\u0000",
+    "issuanceKdf": "tinycloud-share-email-issuance-seed/v1\u0000"
+  },
+  "envelopeSigning": "shipping-packages-envelope-signEnvelope-jcs-only",
+  "ttlSeconds": {
+    "inviteAuthorization": 300,
+    "magicClaim": 604800,
+    "otp": 600,
+    "claimNonce": 300,
+    "holderBinding": 120,
+    "credential": 2592000,
+    "policyNonce": 120,
+    "policySession": 300,
+    "readInvocation": 60
+  },
+  "limits": {
+    "emailBytes": 254,
+    "emailLocalBytes": 64,
+    "emailDomainBytes": 253,
+    "dnsLabelBytes": 63,
+    "documentNameBytes": 200,
+    "shareIdBytes": 128,
+    "delegationBytes": 65536,
+    "policyBytes": 65536,
+    "resourceBytes": 1024,
+    "markdownBytes": 1048576,
+    "credentialBytes": 65536,
+    "sqlArgumentsBytes": 4096,
+    "otpAttempts": 5,
+    "resendCooldownSeconds": 20,
+    "resendsPerShareHour": 3,
+    "resendsPerEmailDay": 5,
+    "resendsPerIpDay": 20
+  },
+  "errors": [
+    "invalid_or_expired_claim",
+    "claim_already_used",
+    "invitation_authorization_invalid",
+    "untrusted_node",
+    "invalid_content_source",
+    "invalid_holder_proof",
+    "invalid_credential_profile",
+    "policy_denied",
+    "nonce_already_used",
+    "read_denied",
+    "capability_unavailable"
+  ],
+  "capabilities": {
+    "witness": {
+      "id": "tinycloud.share-email-claim",
+      "version": 1,
+      "origin": "https://witness.credentials.org",
+      "returnOrigin": "https://share.tinycloud.xyz",
+      "routes": [
+        "/v1/share-email/invitations",
+        "/v1/share-email/invitations/resend",
+        "/v1/share-email/claims/challenge",
+        "/v1/share-email/claims/redeem"
+      ],
+      "mailProvider": "resend",
+      "status": "disabled-until-real-provider"
+    },
+    "node": {
+      "id": "tinycloud.node-policy-email-v1",
+      "version": 1,
+      "origin": "https://node.example",
+      "routes": [
+        "/share/v1/invitations/authorize",
+        "/share/v1/policy/challenges",
+        "/share/v1/policy/session",
+        "/share/v1/read"
+      ],
+      "contentKinds": ["kv", "sql"],
+      "status": "disabled-until-authority-ready"
+    }
+  },
+  "keySeparationLabels": [
+    "issuer-signing",
+    "pii-envelope-encryption",
+    "otp-pepper",
+    "delivery-material",
+    "issuance-seed-wrapping",
+    "daily-log-correlation"
+  ],
+  "testKeys": {
+    "warning": "NON-PRODUCTION TEST VECTORS ONLY",
+    "senderSeedHex": "4444444444444444444444444444444444444444444444444444444444444444",
+    "nodeSeedHex": "4242424242424242424242424242424242424242424242424242424242424242",
+    "issuerSeedHex": "4343434343434343434343434343434343434343434343434343434343434343",
+    "holderSeedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+  }
+}
