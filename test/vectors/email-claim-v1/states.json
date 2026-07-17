@@ -130,7 +130,17 @@
           "claimMaterial": "encrypted"
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "create_invitation",
+          "operands": {
+            "version": 1,
+            "outboxKey": "invite:create:auth-kv-001",
+            "claimMaterial": "encrypted"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "PENDING_DELIVERY(v1)",
           "outbox": "invite:create:auth-kv-001",
@@ -148,7 +158,16 @@
           "claimMaterial": "encrypted"
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "provider_accept",
+          "operands": {
+            "version": 1,
+            "claimMaterialAfter": "deleted"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "ACTIVE(v1)",
           "providerAccepted": true,
@@ -167,10 +186,16 @@
           "oldSecret": "present"
         }
       },
-      "attempted": {
-        "operation": "invalidate-old-version"
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "invalidate_old_version",
+          "operands": {
+            "version": 1,
+            "onlyAfter": "provider_acceptance"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "PENDING_DELIVERY(v2)",
           "activeVersion": 1,
@@ -190,7 +215,17 @@
           "oldSecret": "present"
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "prepare_resend",
+          "operands": {
+            "fromVersion": 1,
+            "toVersion": 2,
+            "replacementMaterial": "encrypted"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "PENDING_DELIVERY(v2)",
           "activeVersion": 1,
@@ -212,7 +247,17 @@
           "replacementMaterial": "encrypted"
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "provider_reject",
+          "operands": {
+            "pendingVersion": 2,
+            "restoreVersion": 1,
+            "replacementMaterialAfter": "discarded"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "ACTIVE(v1)",
           "activeVersion": 1,
@@ -233,7 +278,17 @@
           "providerAccepted": false
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "provider_accept_then_crash",
+          "operands": {
+            "version": 2,
+            "idempotencyKey": "invite:resend:invitation-001:v2",
+            "sendCount": 1
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "PENDING_DELIVERY(v2)",
           "activeVersion": 1,
@@ -255,7 +310,18 @@
           "crashObserved": true
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "reconcile_provider_acceptance",
+          "operands": {
+            "version": 2,
+            "idempotencyKey": "invite:resend:invitation-001:v2",
+            "sendCount": 1,
+            "retireVersion": 1
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "ACTIVE(v2)",
           "activeVersion": 2,
@@ -276,7 +342,18 @@
           "consumed": false
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "resolve_issuance",
+          "operands": {
+            "redemptionId": "redemption-001",
+            "outcome": "success",
+            "result": "persisted",
+            "seedAfter": "deleted"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "CONSUMED(v1)",
           "seed": "deleted",
@@ -296,7 +373,18 @@
           "consumed": false
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "resolve_issuance",
+          "operands": {
+            "redemptionId": "redemption-002",
+            "outcome": "failure",
+            "result": "terminal-error",
+            "seedAfter": "deleted"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "TERMINAL_ERROR",
           "seed": "deleted",
@@ -316,14 +404,19 @@
           "consumed": false
         }
       },
-      "attempted": {
-        "operation": "partial-write",
-        "writes": [
-          "result",
-          "consumed"
-        ]
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "atomic_write",
+          "operands": {
+            "writes": [
+              "result",
+              "consumed"
+            ],
+            "requireAtomic": true
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "REDEEMING(v1,redemption-003)",
           "seed": "encrypted",
@@ -341,10 +434,16 @@
           "seed": "encrypted"
         }
       },
-      "attempted": {
-        "operation": "cleanup"
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "cleanup_seed",
+          "operands": {
+            "pendingSeedAction": "refuse",
+            "requiresDurableCompletion": true
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "REDEEMING(v1,redemption-004)",
           "seed": "encrypted"
@@ -354,7 +453,6 @@
     {
       "id": "same-redemption-contenders",
       "operation": "transaction",
-      "attempts": 20,
       "pre": {
         "durableRows": {
           "invitation": "ACTIVE(v1)",
@@ -362,7 +460,17 @@
           "issuanceCount": 0
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "redeem_if_active",
+          "operands": {
+            "redemptionId": "redemption-001",
+            "attempts": 20,
+            "result": "same-result"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "CONSUMED(v1)",
           "redemptionId": "redemption-001",
@@ -381,10 +489,17 @@
           "issuanceCount": 1
         }
       },
-      "attempted": {
-        "redemptionId": "redemption-002"
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "redeem_if_active",
+          "operands": {
+            "redemptionId": "redemption-002",
+            "attempts": 1,
+            "result": "different-result"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "CONSUMED(v1)",
           "redemptionId": "redemption-001",
@@ -395,7 +510,6 @@
     {
       "id": "otp-wrong-vs-invalid-magic",
       "operation": "transaction",
-      "attempts": 5,
       "pre": {
         "durableRows": {
           "invitation": "ACTIVE(v1)",
@@ -403,7 +517,17 @@
           "invalidMagicOtpAttempts": 0
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "wrong_otp_attempts",
+          "operands": {
+            "attempts": 5,
+            "lockAt": 5,
+            "invalidMagicAttempts": 0
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "LOCKED(v1)",
           "otpAttempts": 5,
@@ -419,10 +543,15 @@
           "nonce": "CONSUMED"
         }
       },
-      "attempted": {
-        "operation": "consume-nonce"
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "consume_nonce",
+          "operands": {
+            "requiredState": "VERIFYING"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "nonce": "CONSUMED"
         }
@@ -437,11 +566,16 @@
           "digest": "digest-a"
         }
       },
-      "attempted": {
-        "operation": "reuse-jti",
-        "digest": "digest-b"
-      },
-      "post": {
+      "commands": [
+        {
+          "name": "reserve_jti",
+          "operands": {
+            "jti": "authorization-jti-001",
+            "digest": "digest-b"
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "jti": "authorization-jti-001",
           "digest": "digest-a"
@@ -457,7 +591,16 @@
           "consumed": false
         }
       },
-      "post": {
+      "commands": [
+        {
+          "name": "scanner_get",
+          "operands": {
+            "method": "GET",
+            "mutate": false
+          }
+        }
+      ],
+      "expected": {
         "durableRows": {
           "invitation": "ACTIVE(v1)",
           "consumed": false

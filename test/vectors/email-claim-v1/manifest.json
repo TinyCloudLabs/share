@@ -3,18 +3,18 @@
   "contractVersion": "tinycloud.share-email-claim/v1",
   "files": {
     "positive.json": "TCja63Vc6oV01rtC96T8dnjlIJvkNZ0_yuvS_5pn21o",
-    "negative.json": "PvAmCx6d6Mi0niTk-OZVB_E_FR0hXNFqDhVEm_xs4aw",
-    "states.json": "pFpBK4J7rWU4W1PDFImgi8_2Ep7fsH1aKuW4uCZ_Epw",
-    "build.mjs": "m-mzPM9s1VkmQ8T086R-8EVVJw1L3gj85bEhIbcfX5A",
-    "validate.mjs": "ZpioDg0H75ro22lopepr4V-L58HO_hpXg4zAIonu7AM",
-    "loader.ts": "4x5QNbBJTvOSo9JvqVhvzByf_maeFMdnqwlE825UUOI",
+    "negative.json": "l6att9pJ2WQt4BZMNX1s_VxoNT8LNowUPJHvAtB6NYg",
+    "states.json": "CDXVjOJqXb_q2eXRshe_xh3cqnK5UHHlIJzQ5Tau6ho",
+    "build.mjs": "t4MSq_uDkDin9Ua5ceQi6DFlKf2gmxY_dOsXWdLL0zM",
+    "validate.mjs": "8OEMnrOo-Mr1KFPYVOHIy1VQ_HOYmxmTtXwwaglHN4A",
+    "loader.ts": "LdiTgO7NLbbayJ8gekw7l1_pEeh34Fqk2_u3LQOOjNw",
     "rust/Cargo.toml": "NMdpBiBPFtiy1N9yBltyPtR6UPUwV-WFTNf2s_dnnIU",
     "rust/Cargo.lock": "rWXLVvO1r531D1y3-SZjjqoknzpkOb6wjqTmhcFBZ-U",
-    "rust/src/main.rs": "S65zvtT-5Lvuw2Z0col1iPnvYT_XQIZci_7dyBI-3MA",
+    "rust/src/main.rs": "XMTN2ipJO5bIdhcqimkEiEQzimFkgfOvLHjXMVYTWeA",
     "domains.json": "c9DnpWQKTUQmkZGsdfQluXcazO06JUrsOgfK-dezaYo",
-    "schemas.json": "iEGlok8uiUByTdHpciYMMbL33Dqj3Oq_JfB8yz1n0W8",
+    "schemas.json": "xE1CI0nqnMS3EOfm6Zif8Wq8-Gn-2QNn4oqYMbGzNYA",
     "README.md": "M10wJFXiKQZt5kbSOiGiobwEc4RtbuaQIrYxel5zDYc"
   },
   "testOnly": true,
-  "manifestDigest": "jIH7T9fYHGQY9iQRz6P_Mr_ZdRKBA75vBFIWrNAZ6Y0"
+  "manifestDigest": "hnz0NpRoRkYLMkIg5_Acl4zRv_kx0A1YGnlqZTpG-M4"
 }
