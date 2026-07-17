@@ -425,7 +425,7 @@
       "mutationData": {
         "operation": "insert-property",
         "property": "policyCid",
-        "value": "scenario.policyCid"
+        "value": "bafkreihepz3bwuubhhm3q4beispxxy2edi6i3dolefyfu6jbwl6ofzgaom"
       },
       "appliesTo": [
         "kv",
@@ -440,7 +440,8 @@
       "mutation": "flip-one-blob-byte",
       "mutationData": {
         "operation": "flip-byte",
-        "offset": "last"
+        "offset": "last",
+        "replacementCid": "bafkreibhhiniz46x63wrrqghm7ypjix7ow5jybnydczju34z3i3smgu5xe"
       },
       "appliesTo": [
         "kv",
@@ -498,8 +499,8 @@
       "mutation": "re-sign-policyCid-with-other-policyBytes",
       "mutationData": {
         "operation": "replace-pair",
-        "policyCid": "cid(other policy)",
-        "policyBytes": "policy(other recipient)"
+        "policyCid": "bafkreihepz3bwuubhhm3q4beispxxy2edi6i3dolefyfu6jbwl6ofzgaom",
+        "policyBytes": "eyJhY3Rpb24iOiJ0aW55Y2xvdWQua3YvZ2V0IiwiY29udGVudFNvdXJjZSI6eyJhY3Rpb24iOiJ0aW55Y2xvdWQua3YvZ2V0Iiwia2luZCI6Imt2IiwicGF0aCI6ImRvY3VtZW50cy9wbGFuLm1kIiwic3BhY2UiOiJkaWQ6cGtoOmVpcDE1NToxOjB4MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSJ9LCJjb250ZW50U291cmNlRGlnZXN0IjoiQi1PNzVnSG1JeDJDeU9tOWNPZEhKaXZQLWt1cFJ0TldjVVBYdVpiRW5aNCIsImV4cGlyZXNBdCI6IjIwMjYtMDctMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlckRpZCI6ImRpZDprZXk6ejZNa3R3dHFBenVENUY3N3RBTUJNd05zMUt5YlplZmY2MUVlaFY5eEIxWnBYUUc3IiwicmVjaXBpZW50RW1haWwiOiJCb2JAZXhhbXBsZS5jb20iLCJyZXNvdXJjZSI6ImRvY3VtZW50cy9wbGFuLm1kIiwidHlwZSI6IlRpbnlDbG91ZFNoYXJlUG9saWN5IiwidmVyc2lvbiI6MX0"
       },
       "appliesTo": [
         "kv",
@@ -523,13 +524,208 @@
       "expected": "reject"
     },
     {
+      "id": "authorization-recipient-email-mismatch",
+      "kind": "binding",
+      "target": "inviteAuthorization.recipientEmail",
+      "mutation": "re-sign-recipient-email",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "Bob@example.com",
+        "signer": "did:web:node.example"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "redeem-redemption-id-mismatch",
+      "kind": "binding",
+      "target": "holderBinding.redemptionId",
+      "mutation": "re-sign-redemption-id",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "QUJDREVGR0hJSktMTU5PUA",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "redeem-invitation-id-mismatch",
+      "kind": "binding",
+      "target": "holderBinding.invitationId",
+      "mutation": "re-sign-invitation-id",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "ISIjJCUmJygpKissLS4vMA",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "share-id-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.shareId",
+      "mutation": "re-sign-share-id",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "share-mutated-001",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "share-cid-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.shareCid",
+      "mutation": "re-sign-share-cid",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "bafkreibhhiniz46x63wrrqghm7ypjix7ow5jybnydczju34z3i3smgu5xe",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "policy-cid-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.policyCid",
+      "mutation": "re-sign-policy-cid",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "bafkreihepz3bwuubhhm3q4beispxxy2edi6i3dolefyfu6jbwl6ofzgaom",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "target-origin-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.targetOrigin",
+      "mutation": "re-sign-target-origin",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "https://evil.example",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "node-audience-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.nodeAudience",
+      "mutation": "re-sign-node-audience",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "did:web:evil.example",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "holder-did-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.holderDid",
+      "mutation": "re-sign-holder-did",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "did:web:other-holder.example",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "content-source-digest-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.contentSourceDigest",
+      "mutation": "re-sign-content-source-digest",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "aFfa136AIBdUuYO5b7kWQ2QgUyBl39KTfAtUHi_8y7A",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "action-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.action",
+      "mutation": "re-sign-action",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "valueByKind": {
+          "kv": "tinycloud.sql/read",
+          "sql": "tinycloud.kv/get"
+        },
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
+      "id": "resource-propagation",
+      "kind": "binding",
+      "target": "policyPresentation.resource",
+      "mutation": "re-sign-resource",
+      "mutationData": {
+        "operation": "replace-and-resign",
+        "value": "other/resource",
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
+      },
+      "appliesTo": [
+        "kv",
+        "sql"
+      ],
+      "expected": "reject"
+    },
+    {
       "id": "envelope-domain-from-unregistered-label",
       "kind": "signature",
       "target": "envelope.domain",
       "mutation": "verify-with-nonregistry-domain",
       "mutationData": {
         "operation": "replace",
-        "value": "unregistered.example\\u0000"
+        "value": "unregistered.example\u0000"
       },
       "appliesTo": [
         "kv",
@@ -625,7 +821,7 @@
       "mutation": "set-nonzero-trailing-bits",
       "mutationData": {
         "operation": "replace",
-        "value": "noncanonical base64url"
+        "value": "AAECAwQFBgcICQoLDA0ODB"
       },
       "appliesTo": [
         "kv",
@@ -640,7 +836,7 @@
       "mutation": "set-nonzero-trailing-bits",
       "mutationData": {
         "operation": "replace",
-        "value": "noncanonical base64url"
+        "value": "jL6f77-Kddr2DlUWrSMtnQ8DHnKiR4NkvWmVS-6zvLMpKmsz7qllGICQ_DZiJmJEwCEShijWhOramvMA9ix9BB"
       },
       "appliesTo": [
         "kv",
@@ -655,7 +851,7 @@
       "mutation": "use-did-key-with-wrong-fragment",
       "mutationData": {
         "operation": "replace",
-        "value": "holder DID plus wrong fragment"
+        "value": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw#wrong"
       },
       "appliesTo": [
         "kv",
@@ -670,7 +866,7 @@
       "mutation": "identity-public-key",
       "mutationData": {
         "operation": "replace",
-        "value": "Ed25519 identity key"
+        "value": "did:key:z6MkeXATEjyXENzBXBxgC5EHk2JE5aqd7qMGGtDpLUH1e2Sj"
       },
       "appliesTo": [
         "kv",
@@ -685,7 +881,7 @@
       "mutation": "set-s-to-group-order",
       "mutationData": {
         "operation": "replace",
-        "value": "Ed25519 group order"
+        "value": "zRnsOxCPJmQQmmL0t_P_T2jJvcYHkfbcJ1m_X9r_64zt0_VcGmMSWNac96Le-d4UAAAAAAAAAAAAAAAAAAAAAA"
       },
       "appliesTo": [
         "kv",
@@ -760,7 +956,10 @@
       "mutation": "change-action-only",
       "mutationData": {
         "operation": "replace",
-        "value": "opposite source action"
+        "valueByKind": {
+          "kv": "tinycloud.sql/read",
+          "sql": "tinycloud.kv/get"
+        }
       },
       "appliesTo": [
         "kv",
@@ -790,7 +989,7 @@
       "mutation": "sender-did",
       "mutationData": {
         "operation": "replace",
-        "value": "scenario.senderDid"
+        "value": "did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7"
       },
       "appliesTo": [
         "kv",
@@ -837,7 +1036,8 @@
       "mutation": "replace-holder-and-resign",
       "mutationData": {
         "operation": "replace-and-resign",
-        "value": "scenario.senderDid"
+        "value": "did:key:z6MktwtqAzuD5F77tAMBMwNs1KybZeff61EehV9xB1ZpXQG7",
+        "signer": "sender"
       },
       "appliesTo": [
         "kv",
@@ -1006,7 +1206,7 @@
         "operation": "replace",
         "method": "otp",
         "field": "mailboxProof",
-        "value": "scenario.claimSecret"
+        "value": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
       },
       "appliesTo": [
         "kv",
@@ -1022,7 +1222,7 @@
       "mutationData": {
         "operation": "replace",
         "artifact": "policyChallenge",
-        "signer": "holder"
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
       },
       "appliesTo": [
         "kv",
@@ -1038,7 +1238,7 @@
       "mutationData": {
         "operation": "replace",
         "artifact": "policySession",
-        "signer": "holder"
+        "signer": "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw"
       },
       "appliesTo": [
         "kv",
@@ -1070,7 +1270,7 @@
         "operation": "replace",
         "arrayShape": [
           "email",
-          "canonicalEmail"
+          "Alice+Notes@example.com"
         ]
       },
       "appliesTo": [

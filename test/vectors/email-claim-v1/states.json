@@ -153,5 +153,123 @@
       "correctAfterLock": "reject",
       "invalidMagicDoesNotIncrementOtp": true
     }
+  },
+  "issuanceRecovery": {
+    "seedCiphertext": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo-QkZKTlJWWl5iZmpucnZ6f",
+    "retrySeedCiphertext": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo-QkZKTlJWWl5iZmpucnZ6f",
+    "pendingSeedCiphertext": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo-QkZKTlJWWl5iZmpucnZ6f",
+    "retryPendingSeedCiphertext": "cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo-QkZKTlJWWl5iZmpucnZ6f",
+    "resultBytes": "dmMrc2Qtand0OmRldGVybWluaXN0aWMtcmVzdWx0LTAwMQ",
+    "resultDigest": "pSMcc-kSEtxd0ZWaRuNOCoB5lWmpG1x_W-BeRO3Fh8Q",
+    "idempotencyKey": "issuance:invitation-001:redemption-001",
+    "timeline": [
+      {
+        "at": "2026-07-16T12:00:00.000Z",
+        "event": "seed_persisted",
+        "state": "PENDING_ENCRYPTED",
+        "seedEncrypted": true,
+        "credentialGenerated": false,
+        "durableCompletion": false,
+        "resultPersisted": false
+      },
+      {
+        "at": "2026-07-16T12:00:01.000Z",
+        "event": "credential_generated_then_crash",
+        "state": "PENDING_ENCRYPTED",
+        "seedEncrypted": true,
+        "credentialGenerated": true,
+        "durableCompletion": false,
+        "resultPersisted": false
+      },
+      {
+        "at": "2026-07-16T12:00:02.000Z",
+        "event": "retry_same_seed",
+        "state": "RETRYING",
+        "seedEncrypted": true,
+        "credentialGenerated": true,
+        "durableCompletion": false,
+        "resultPersisted": false
+      },
+      {
+        "at": "2026-07-16T12:00:03.000Z",
+        "event": "durable_completion",
+        "state": "COMPLETED",
+        "seedEncrypted": true,
+        "credentialGenerated": true,
+        "durableCompletion": true,
+        "durableCompletionAt": "2026-07-16T12:00:03.000Z",
+        "resultPersisted": true
+      },
+      {
+        "at": "2026-07-16T12:00:03.000Z",
+        "event": "atomic_consumed_result_persisted",
+        "state": "CONSUMED",
+        "seedEncrypted": false,
+        "credentialGenerated": true,
+        "durableCompletion": true,
+        "durableCompletionAt": "2026-07-16T12:00:03.000Z",
+        "consumedPersisted": true,
+        "resultPersisted": true,
+        "atomicConsumedAndResult": true,
+        "resultDigest": "pSMcc-kSEtxd0ZWaRuNOCoB5lWmpG1x_W-BeRO3Fh8Q"
+      }
+    ],
+    "terminalFailureTimeline": [
+      {
+        "at": "2026-07-16T12:00:00.000Z",
+        "event": "seed_persisted",
+        "state": "PENDING_ENCRYPTED",
+        "seedEncrypted": true,
+        "terminalErrorPersisted": false
+      },
+      {
+        "at": "2026-07-16T12:00:02.000Z",
+        "event": "retry_exhausted",
+        "state": "RETRYING",
+        "seedEncrypted": true,
+        "terminalErrorPersisted": false
+      },
+      {
+        "at": "2026-07-16T12:00:03.000Z",
+        "event": "atomic_terminal_error_persisted",
+        "state": "TERMINAL_ERROR",
+        "seedEncrypted": false,
+        "terminalErrorPersisted": true,
+        "atomicTerminalAndSeedDeletion": true,
+        "errorCode": "credential_issuance_failed"
+      }
+    ],
+    "invariants": {
+      "pendingSeedEncrypted": true,
+      "retrySeedByteIdentical": true,
+      "completionRequiresDurableWrite": true,
+      "durableCompletionAt": "2026-07-16T12:00:03.000Z",
+      "consumedAndResultPersistedAtomically": true,
+      "terminalResolutionAtomic": true,
+      "cleanupRefusesPendingSeed": true,
+      "redactionWindowSeconds": 900,
+      "redactionStartsOnlyAt": "durable_completion",
+      "redactionMeasuredFrom": "2026-07-16T12:00:03.000Z",
+      "redactionAt": "2026-07-16T12:15:03.000Z"
+    },
+    "cleanup": {
+      "pendingSeedAction": "refuse",
+      "completedSeedAction": "delete",
+      "pendingSeedRemains": true
+    },
+    "terminalResolution": {
+      "states": [
+        "PENDING_ENCRYPTED",
+        "RETRYING",
+        "COMPLETED",
+        "CONSUMED",
+        "TERMINAL_ERROR"
+      ],
+      "successOutcome": "CONSUMED",
+      "failureOutcome": "TERMINAL_ERROR",
+      "atomic": true,
+      "atomicConsumedAndResultPersisted": true,
+      "atomicTerminalAndSeedDeletion": true
+    }
   }
 }

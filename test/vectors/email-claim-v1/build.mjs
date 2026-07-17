@@ -172,38 +172,59 @@ function makeScenario(kind) {
 }
 
 const positive = { version: "tinycloud.share-email-claim/v1", generatedBy: "build.mjs", testOnly: true, keyWarning: "NON-PRODUCTION TEST VECTORS ONLY", canonicalization, scenarios: [makeScenario("kv"), makeScenario("sql")] };
+const fixtureKv = positive.scenarios[0];
+const negativePolicyCid = cid(utf8("negative-policy-bytes"));
+const negativeShareCid = cid(utf8("negative-share-blob"));
+const negativePolicyBytes = b64(utf8(jcs({ ...fixtureKv.policy, recipientEmail: "Bob@example.com" })));
+const negativeEnvelopeDomain = "unregistered.example\u0000";
+const negativeNoncanonical16 = `${fixtureKv.preimages.resendRequest.body.invitationId.slice(0, -1)}B`;
+const negativeNoncanonical64 = `${fixtureKv.preimages.authorizationResponse.body.proof.signature.slice(0, -1)}B`;
+const negativeSmallOrderDid = `did:key:z${base58(Uint8Array.of(0xed, 1, 1, ...new Uint8Array(31)))}`;
+const negativeGroupOrderSignature = (() => { const value = new Uint8Array(Buffer.from(fixtureKv.artifacts.find((artifact) => artifact.name === "holderBinding").signature.value, "base64url")); const order = hex(`edd3f55c1a631258d69cf7a2def9de14${"00".repeat(16)}`); value.set(order, 32); return b64(value); })();
 const negativeRow = (id, kind, target, mutation, mutationData, appliesTo = ["kv", "sql"], extra = {}) => ({ id, kind, target, mutation, mutationData, appliesTo, expected: "reject", ...extra });
 const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, cases: [
   ...emailRejects.map(({ id, input }) => negativeRow(id, "email", "canonicalEmail", "reject-input", { operation: "reject-input", input }, ["kv", "sql"], { input })),
   negativeRow("policy-cid-is-real", "cid", "policyBytes", "replace-policy-bytes-with-other-bytes", { operation: "replace", replacement: "other policy bytes" }),
-  negativeRow("policy-bytes-self-policy-cid", "policy", "policyBytes", "insert-policyCid-self-reference", { operation: "insert-property", property: "policyCid", value: "scenario.policyCid" }),
-  negativeRow("share-cid-is-real", "cid", "sealedBlob", "flip-one-blob-byte", { operation: "flip-byte", offset: "last" }),
+  negativeRow("policy-bytes-self-policy-cid", "policy", "policyBytes", "insert-policyCid-self-reference", { operation: "insert-property", property: "policyCid", value: negativePolicyCid }),
+  negativeRow("share-cid-is-real", "cid", "sealedBlob", "flip-one-blob-byte", { operation: "flip-byte", offset: "last", replacementCid: negativeShareCid }),
   negativeRow("sealed-blob-aead-tamper", "aead", "sealedBlob", "flip-authenticated-byte", { operation: "flip-byte", offset: "last" }),
   negativeRow("envelope-policy-target-missing-kind", "schema", "envelope.authorizationTarget.kind", "delete-kind", { operation: "delete" }),
   negativeRow("envelope-policy-target-missing-bytes", "schema", "envelope.authorizationTarget.policyBytes", "delete-policyBytes", { operation: "delete" }),
-  negativeRow("envelope-policy-target-mismatch", "envelope", "envelope.authorizationTarget", "re-sign-policyCid-with-other-policyBytes", { operation: "replace-pair", policyCid: "cid(other policy)", policyBytes: "policy(other recipient)" }),
+  negativeRow("envelope-policy-target-mismatch", "envelope", "envelope.authorizationTarget", "re-sign-policyCid-with-other-policyBytes", { operation: "replace-pair", policyCid: negativePolicyCid, policyBytes: negativePolicyBytes }),
   negativeRow("envelope-origin-mismatch", "envelope", "envelope.target.origin", "re-sign-origin", { operation: "replace", value: "https://evil.example" }),
-  negativeRow("envelope-domain-from-unregistered-label", "signature", "envelope.domain", "verify-with-nonregistry-domain", { operation: "replace", value: "unregistered.example\\u0000" }),
+  negativeRow("authorization-recipient-email-mismatch", "binding", "inviteAuthorization.recipientEmail", "re-sign-recipient-email", { operation: "replace-and-resign", value: "Bob@example.com", signer: fixtureKv.artifacts[2].signerDid }),
+  negativeRow("redeem-redemption-id-mismatch", "binding", "holderBinding.redemptionId", "re-sign-redemption-id", { operation: "replace-and-resign", value: b64(fixedBytes(16, 0x41)), signer: fixtureKv.artifacts[3].signerDid }),
+  negativeRow("redeem-invitation-id-mismatch", "binding", "holderBinding.invitationId", "re-sign-invitation-id", { operation: "replace-and-resign", value: b64(fixedBytes(16, 0x21)), signer: fixtureKv.artifacts[3].signerDid }),
+  negativeRow("share-id-propagation", "binding", "policyPresentation.shareId", "re-sign-share-id", { operation: "replace-and-resign", value: "share-mutated-001", signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("share-cid-propagation", "binding", "policyPresentation.shareCid", "re-sign-share-cid", { operation: "replace-and-resign", value: negativeShareCid, signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("policy-cid-propagation", "binding", "policyPresentation.policyCid", "re-sign-policy-cid", { operation: "replace-and-resign", value: negativePolicyCid, signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("target-origin-propagation", "binding", "policyPresentation.targetOrigin", "re-sign-target-origin", { operation: "replace-and-resign", value: "https://evil.example", signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("node-audience-propagation", "binding", "policyPresentation.nodeAudience", "re-sign-node-audience", { operation: "replace-and-resign", value: "did:web:evil.example", signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("holder-did-propagation", "binding", "policyPresentation.holderDid", "re-sign-holder-did", { operation: "replace-and-resign", value: "did:web:other-holder.example", signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("content-source-digest-propagation", "binding", "policyPresentation.contentSourceDigest", "re-sign-content-source-digest", { operation: "replace-and-resign", value: digest(utf8("other source")), signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("action-propagation", "binding", "policyPresentation.action", "re-sign-action", { operation: "replace-and-resign", valueByKind: { kv: "tinycloud.sql/read", sql: "tinycloud.kv/get" }, signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("resource-propagation", "binding", "policyPresentation.resource", "re-sign-resource", { operation: "replace-and-resign", value: "other/resource", signer: fixtureKv.artifacts[5].signerDid }),
+  negativeRow("envelope-domain-from-unregistered-label", "signature", "envelope.domain", "verify-with-nonregistry-domain", { operation: "replace", value: negativeEnvelopeDomain }),
   negativeRow("jcs-lone-surrogate", "jcs", "value", "insert-lone-surrogate", { operation: "insert", jsonLiteral: "\\ud800" }),
   negativeRow("jcs-unsafe-number", "jcs", "value", "insert-unsafe-number", { operation: "insert", jsonLiteral: "9007199254740992", numberKind: "unsafe-integer", value: 9007199254740992 }),
   negativeRow("jcs-fractional-number", "jcs", "value", "insert-fractional-number", { operation: "insert", jsonLiteral: "1.5", numberKind: "fractional", value: 1.5 }),
   negativeRow("jcs-negative-zero", "jcs", "value", "insert-negative-zero", { operation: "insert", jsonLiteral: "-0", numberKind: "negative-zero", value: "-0" }),
   negativeRow("jcs-undefined", "jcs", "value", "insert-undefined", { operation: "insert", jsonLiteral: "undefined" }),
-  negativeRow("noncanonical-b64url-16-tail", "encoding", "invitationId", "set-nonzero-trailing-bits", { operation: "replace", value: "noncanonical base64url" }),
-  negativeRow("noncanonical-b64url-64-tail", "encoding", "signature", "set-nonzero-trailing-bits", { operation: "replace", value: "noncanonical base64url" }),
-  negativeRow("noncanonical-holder-kid", "signature", "holderBinding.signature.kid", "use-did-key-with-wrong-fragment", { operation: "replace", value: "holder DID plus wrong fragment" }),
-  negativeRow("small-order-did-key", "did-key", "holderBinding.holderDid", "identity-public-key", { operation: "replace", value: "Ed25519 identity key" }),
-  negativeRow("noncanonical-ed25519-s", "signature", "holderBinding.signature.value", "set-s-to-group-order", { operation: "replace", value: "Ed25519 group order" }),
+  negativeRow("noncanonical-b64url-16-tail", "encoding", "invitationId", "set-nonzero-trailing-bits", { operation: "replace", value: negativeNoncanonical16 }),
+  negativeRow("noncanonical-b64url-64-tail", "encoding", "signature", "set-nonzero-trailing-bits", { operation: "replace", value: negativeNoncanonical64 }),
+  negativeRow("noncanonical-holder-kid", "signature", "holderBinding.signature.kid", "use-did-key-with-wrong-fragment", { operation: "replace", value: `${fixtureKv.artifacts[3].signerDid}#wrong` }),
+  negativeRow("small-order-did-key", "did-key", "holderBinding.holderDid", "identity-public-key", { operation: "replace", value: negativeSmallOrderDid }),
+  negativeRow("noncanonical-ed25519-s", "signature", "holderBinding.signature.value", "set-s-to-group-order", { operation: "replace", value: negativeGroupOrderSignature }),
   negativeRow("short-signature", "signature", "readInvocation.signature.value", "truncate-signature", { operation: "truncate", bytes: 63 }),
   negativeRow("wrong-source-digest", "source", "sql.argumentsDigest", "change-one-argument", { operation: "change", field: "arguments.document_id", value: "other" }, ["sql"]),
   negativeRow("sql-arguments-too-large", "source", "sql.arguments", "exceed-4096-byte-jcs", { operation: "insert", field: "large", value: "x".repeat(4097) }, ["sql"]),
   negativeRow("sql-arbitrary-query-field", "schema", "sqlSource.query", "add-query", { operation: "add-property", field: "query", value: "select *" }, ["sql"]),
-  negativeRow("policy-action-source-mismatch", "binding", "policy.action", "change-action-only", { operation: "replace", value: "opposite source action" }),
+  negativeRow("policy-action-source-mismatch", "binding", "policy.action", "change-action-only", { operation: "replace", valueByKind: { kv: "tinycloud.sql/read", sql: "tinycloud.kv/get" } }),
   negativeRow("content-source-propagation", "binding", "policyPresentation.contentSource.path", "change-path-one-field", { operation: "replace", value: "other.md" }),
-  negativeRow("credential-sub-mismatch", "credential", "credential.claims.sub", "sender-did", { operation: "replace", value: "scenario.senderDid" }),
+  negativeRow("credential-sub-mismatch", "credential", "credential.claims.sub", "sender-did", { operation: "replace", value: fixtureKv.artifacts[0].signerDid }),
   negativeRow("credential-legacy-email-path", "credential", "credential.disclosures[0].path", "email-address-path", { operation: "replace", value: "/email/address" }),
   negativeRow("credential-unsupported-status", "credential", "credential.claims.status", "add-status", { operation: "add-property", value: { list: "unsupported" } }),
-  negativeRow("different-holder-valid-signature", "signature", "holderBinding.holderDid", "replace-holder-and-resign", { operation: "replace-and-resign", value: "scenario.senderDid" }),
+  negativeRow("different-holder-valid-signature", "signature", "holderBinding.holderDid", "replace-holder-and-resign", { operation: "replace-and-resign", value: fixtureKv.artifacts[0].signerDid, signer: "sender" }),
   negativeRow("policy-challenge-replay", "state", "nonce.state", "consume-twice", { operation: "transition", from: "CONSUMED", to: "CONSUMED" }),
   negativeRow("session-token-only", "state", "read.proof", "omit-holder-proof", { operation: "delete" }),
   negativeRow("old-secret-after-resend", "state", "invitation.version", "use-v1-after-v2-accepted", { operation: "replace", value: 1 }),
@@ -214,18 +235,60 @@ const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, ca
   negativeRow("capability-wildcard-origin", "capability", "node.origin", "wildcard-origin", { operation: "replace", value: "https://*.example" }),
   negativeRow("read-body-one-field-mutation", "preimage", "sqlReadRequest.resource", "change-one-argument", { operation: "replace", value: "other" }, ["sql"]),
   negativeRow("claim-redeem-magic-with-otp", "method", "claimRedeemRequest.mailboxProof", "magic-method-with-otp-proof", { operation: "replace", method: "magic", field: "mailboxProof", value: "042731" }),
-  negativeRow("claim-redeem-otp-with-magic", "method", "claimRedeemRequest.mailboxProof", "otp-method-with-magic-proof", { operation: "replace", method: "otp", field: "mailboxProof", value: "scenario.claimSecret" }),
-  negativeRow("policy-challenge-response-proof", "proof", "policyChallengeResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policyChallenge", signer: "holder" }),
-  negativeRow("policy-session-response-proof", "proof", "policySessionResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policySession", signer: "holder" }),
+  negativeRow("claim-redeem-otp-with-magic", "method", "claimRedeemRequest.mailboxProof", "otp-method-with-magic-proof", { operation: "replace", method: "otp", field: "mailboxProof", value: b64(fixedBytes(32, 0x20)) }),
+  negativeRow("policy-challenge-response-proof", "proof", "policyChallengeResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policyChallenge", signer: fixtureKv.artifacts[3].signerDid }),
+  negativeRow("policy-session-response-proof", "proof", "policySessionResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policySession", signer: fixtureKv.artifacts[3].signerDid }),
   negativeRow("sd-jwt-missing-alg", "sd-jwt", "credential.claims._sd_alg", "delete-sd-alg", { operation: "delete", expected: "sha-256" }),
-  negativeRow("sd-jwt-two-element-disclosure", "sd-jwt", "credential.disclosures[0].encoded", "replace-disclosure-with-two-elements", { operation: "replace", arrayShape: ["email", "canonicalEmail"] })
+  negativeRow("sd-jwt-two-element-disclosure", "sd-jwt", "credential.disclosures[0].encoded", "replace-disclosure-with-two-elements", { operation: "replace", arrayShape: ["email", "Alice+Notes@example.com"] })
 ] };
 const states = { version: "tinycloud.share-email-claim/v1", testOnly: true, delivery: [
   { name: "create-accepted", events: [["ABSENT","PENDING_DELIVERY(v1)"],["PENDING_DELIVERY(v1)","ACTIVE(v1)"],["ACTIVE(v1)","REDEEMING(v1,redemption-001)"],["REDEEMING(v1,redemption-001)","CONSUMED(v1)"]], providerIdempotencyKey: "invite:create:auth-kv-001", encryptedUntilProviderAcceptance: true, atomicActivation: true, materialDeletedAfterAccept: true },
   { name: "resend-accepted", events: [["ACTIVE(v1)","PENDING_DELIVERY(v2)"],["PENDING_DELIVERY(v2)","ACTIVE(v2)"],["ACTIVE(v2)","REDEEMING(v2,redemption-002)"],["REDEEMING(v2,redemption-002)","CONSUMED(v2)"]], providerIdempotencyKey: "invite:resend:invitation-001:v2", oldVersionRemainsActiveWhilePending: true, oldVersionInvalidatedOnlyAfterAccept: true, replacementMaterialEncryptedUntilAcceptance: true, atomicActivation: true },
   { name: "resend-provider-failure", events: [["ACTIVE(v1)","PENDING_DELIVERY(v2)"],["PENDING_DELIVERY(v2)","ACTIVE(v1)"],["ACTIVE(v1)","REDEEMING(v1,redemption-003)"],["REDEEMING(v1,redemption-003)","CONSUMED(v1)"]], providerIdempotencyKey: "invite:resend:invitation-001:v2", oldVersionRemainsUsable: true, replacementDiscardedOnFailure: true },
   { name: "crash-after-provider-accept", events: [["ACTIVE(v1)","PENDING_DELIVERY(v2)"],["PENDING_DELIVERY(v2)","RECOVERING_PROVIDER_ACCEPT(v2)"],["RECOVERING_PROVIDER_ACCEPT(v2)","ACTIVE(v2)"]], providerAcceptedBeforeCrash: true, sameIdempotencyKeyOnRetry: true, recoveryReconcilesProviderAcceptance: true, oneEffectiveSend: true, oldVersionInvalidatedAfterRecovery: true }
-], invitation: ["ABSENT","ACTIVE(v1)","REDEEMING(v1,redemption-001)","CONSUMED(v1)"], nonce: ["ISSUED","VERIFYING","CONSUMED"], session: ["ACTIVE","EXPIRED","REVOKED"], operations: ["create_persist_outbox","provider_accept","activate_v1","wrong_otp_x5","lock_v1","resend_persist_v2","provider_accept_v2","invalidate_v1","claim_v2","consume_nonce","crash_after_provider_accept","retry_same_provider_idempotency","same_redemption_idempotent","different_redemption_rejected","scanner_get_no_state_change"], semantics: { claimMaterial: { encryptedUntilProviderAcceptance: true, deletedAfterProviderAcceptance: true }, resend: { oldVersionActiveWhilePending: true, invalidatedOnlyAfterProviderAcceptance: true, providerIdempotent: true }, sameRedemptionConcurrency: { attempts: 20, effectiveIssuances: 1, sameResultForSameId: true }, otp: { wrongAttemptsBeforeLock: 5, correctAfterLock: "reject", invalidMagicDoesNotIncrementOtp: true } } };
+], invitation: ["ABSENT","ACTIVE(v1)","REDEEMING(v1,redemption-001)","CONSUMED(v1)"], nonce: ["ISSUED","VERIFYING","CONSUMED"], session: ["ACTIVE","EXPIRED","REVOKED"], operations: ["create_persist_outbox","provider_accept","activate_v1","wrong_otp_x5","lock_v1","resend_persist_v2","provider_accept_v2","invalidate_v1","claim_v2","consume_nonce","crash_after_provider_accept","retry_same_provider_idempotency","same_redemption_idempotent","different_redemption_rejected","scanner_get_no_state_change"], semantics: { claimMaterial: { encryptedUntilProviderAcceptance: true, deletedAfterProviderAcceptance: true }, resend: { oldVersionActiveWhilePending: true, invalidatedOnlyAfterProviderAcceptance: true, providerIdempotent: true }, sameRedemptionConcurrency: { attempts: 20, effectiveIssuances: 1, sameResultForSameId: true }, otp: { wrongAttemptsBeforeLock: 5, correctAfterLock: "reject", invalidMagicDoesNotIncrementOtp: true } }, issuanceRecovery: {
+  seedCiphertext: b64(fixedBytes(48, 0x70)),
+  retrySeedCiphertext: b64(fixedBytes(48, 0x70)),
+  pendingSeedCiphertext: b64(fixedBytes(48, 0x70)),
+  retryPendingSeedCiphertext: b64(fixedBytes(48, 0x70)),
+  resultBytes: b64(utf8("vc+sd-jwt:deterministic-result-001")),
+  resultDigest: digest(utf8("vc+sd-jwt:deterministic-result-001")),
+  idempotencyKey: "issuance:invitation-001:redemption-001",
+  timeline: [
+    { at: "2026-07-16T12:00:00.000Z", event: "seed_persisted", state: "PENDING_ENCRYPTED", seedEncrypted: true, credentialGenerated: false, durableCompletion: false, resultPersisted: false },
+    { at: "2026-07-16T12:00:01.000Z", event: "credential_generated_then_crash", state: "PENDING_ENCRYPTED", seedEncrypted: true, credentialGenerated: true, durableCompletion: false, resultPersisted: false },
+    { at: "2026-07-16T12:00:02.000Z", event: "retry_same_seed", state: "RETRYING", seedEncrypted: true, credentialGenerated: true, durableCompletion: false, resultPersisted: false },
+    { at: "2026-07-16T12:00:03.000Z", event: "durable_completion", state: "COMPLETED", seedEncrypted: true, credentialGenerated: true, durableCompletion: true, durableCompletionAt: "2026-07-16T12:00:03.000Z", resultPersisted: true },
+    { at: "2026-07-16T12:00:03.000Z", event: "atomic_consumed_result_persisted", state: "CONSUMED", seedEncrypted: false, credentialGenerated: true, durableCompletion: true, durableCompletionAt: "2026-07-16T12:00:03.000Z", consumedPersisted: true, resultPersisted: true, atomicConsumedAndResult: true, resultDigest: digest(utf8("vc+sd-jwt:deterministic-result-001")) }
+  ],
+  terminalFailureTimeline: [
+    { at: "2026-07-16T12:00:00.000Z", event: "seed_persisted", state: "PENDING_ENCRYPTED", seedEncrypted: true, terminalErrorPersisted: false },
+    { at: "2026-07-16T12:00:02.000Z", event: "retry_exhausted", state: "RETRYING", seedEncrypted: true, terminalErrorPersisted: false },
+    { at: "2026-07-16T12:00:03.000Z", event: "atomic_terminal_error_persisted", state: "TERMINAL_ERROR", seedEncrypted: false, terminalErrorPersisted: true, atomicTerminalAndSeedDeletion: true, errorCode: "credential_issuance_failed" }
+  ],
+  invariants: {
+    pendingSeedEncrypted: true,
+    retrySeedByteIdentical: true,
+    completionRequiresDurableWrite: true,
+    durableCompletionAt: "2026-07-16T12:00:03.000Z",
+    consumedAndResultPersistedAtomically: true,
+    terminalResolutionAtomic: true,
+    cleanupRefusesPendingSeed: true,
+    redactionWindowSeconds: 900,
+    redactionStartsOnlyAt: "durable_completion",
+    redactionMeasuredFrom: "2026-07-16T12:00:03.000Z",
+    redactionAt: "2026-07-16T12:15:03.000Z"
+  },
+  cleanup: { pendingSeedAction: "refuse", completedSeedAction: "delete", pendingSeedRemains: true },
+  terminalResolution: {
+    states: ["PENDING_ENCRYPTED", "RETRYING", "COMPLETED", "CONSUMED", "TERMINAL_ERROR"],
+    successOutcome: "CONSUMED",
+    failureOutcome: "TERMINAL_ERROR",
+    atomic: true,
+    atomicConsumedAndResultPersisted: true,
+    atomicTerminalAndSeedDeletion: true
+  }
+} };
 
 async function put(path, value) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8"); }
 await put(resolve(here, "positive.json"), positive); await put(resolve(here, "negative.json"), negative); await put(resolve(here, "states.json"), states);

@@ -61,12 +61,22 @@ strict node proof bound to their signed challenge/session artifact; claim
 challenge responses retain both `contentSource` and `contentSourceDigest`.
 Capability descriptors are
 validated against their strict schema and route allowlists. `negative.json` is
-executable: every row drives a real schema/CID/JCS/DID/signature/reference
-validator or a re-signed mutation. Every row contains its target and concrete
-mutation/input data, including email inputs and the method/number/SD-JWT
-cross-matrix. `states.json` is executed as a transactional model covering
-resend/provider acceptance/crash recovery, OTP, JTI, nonce, redemption
-idempotency, and scanner GET boundaries.
+executable: every applicable row drives a native schema/CID/JCS/DID/signature/
+reference validator or a re-signed mutation in each consumer. Rows contain
+concrete deterministic mutation/input data; symbolic scenario references are
+forbidden. JavaScript executes cryptographic/schema mutations, strict
+TypeScript independently executes the serialized mutation semantics, and Rust
+independently executes the same serialized mutations and equations. Unknown
+row IDs fail all three consumers. `states.json` is executed as a transactional
+model covering resend/provider acceptance/crash recovery, pending encrypted
+issuance-seed retry, durable completion, atomic `CONSUMED` plus result
+persistence, and an explicit atomic `TERMINAL_ERROR` branch that persists the
+error while deleting the seed in the same transaction. Provider acceptance is
+confined to delivery; issuance recovery models credential generation and
+durable credential persistence separately. The model also covers cleanup
+refusal, OTP, JTI, nonce, redemption
+idempotency, and scanner GET boundaries. The redaction window is 900 seconds
+from durable completion only.
 
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in
 shipping envelope package currently signs and verifies its envelope body as
@@ -90,7 +100,6 @@ cargo run --offline --manifest-path test/vectors/email-claim-v1/rust/Cargo.toml
 ```
 
 The Rust verifier independently checks fixture bytes, signatures, SD-JWT
-disclosure shape/digests, negative-row/state completeness and invariants. It
-does not claim to execute JavaScript schema callbacks; JS performs executable
-callback/schema mutation checks, while Rust validates the serialized contract
-and its declared mutation matrix.
+disclosure shape/digests, cross-artifact equations, native negative mutations,
+and state invariants. It does not claim to execute JavaScript schema callbacks;
+each language validates the serialized contract with its own native checks.
