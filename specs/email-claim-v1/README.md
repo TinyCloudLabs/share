@@ -37,6 +37,9 @@ The protocol accepts only an ASCII addr-spec. The local part is RFC 5322
 is ASCII-lowercased. Leading, trailing, repeated, or interior whitespace,
 quoted/commented locals, Unicode, multiple `@`, and invalid LDH/A-label DNS
 labels are rejected. Limits are byte limits, not JavaScript character counts.
+`documentName` is a non-empty printable string capped at 200 UTF-8 bytes; a
+string with fewer than 200 JavaScript code units can still be rejected when it
+contains multi-byte characters.
 
 `contentSource` is a strict KV or named-SQL union. SQL v1 arguments are a flat
 object with at most 32 properties; every value is a safe JSON integer and
@@ -50,6 +53,26 @@ The email credential uses the OpenCredentials SD-JWT profile: claims carry
 disclosure digest is SHA-256 over the encoded disclosure string. The issuer
 compact JWT uses the library profile (`alg: "EdDSA"`); the test-only salt and
 keys are not production material.
+
+`shareUrl` is exactly `https://share.tinycloud.xyz/s/<share-CID>#k=<32-byte
+base64url>`. The parser rejects HTTP, userinfo, ports, alternate hosts or
+paths, query strings, duplicate fragment keys, unknown keys, percent-encoding,
+and non-canonical base64url. Scanner fragments additionally carry exactly one
+32-byte `k`, one 16-byte `i`, and one 32-byte `c`; scanning is read-only.
+
+The node authority tuple is frozen as `https://node.example` ↔
+`did:web:node.example`. An enrollment is accepted only when enabled, on the
+authority's active key version, and with the matching key ID/public key.
+Rotation uses a strictly higher version; retired or disabled versions reject
+both new proof verification and enrollment. Issuer trust is likewise an exact
+issuer-DID, VCT, and enabled Ed25519 public-key tuple.
+
+Every positive scenario supplies an explicit `evaluationTime` and
+`clockSkewSeconds`. Credential `iat`/`nbf`/`exp` are checked against those
+values, and `exp` is also exactly the share expiry. The credential must have
+the sole `/email` disclosure and the complete four-field `tinycloud_share`
+scope; all signed re-bindings are checked against the same holder, node,
+source, share, and policy values.
 
 ## API and state coverage
 
@@ -77,9 +100,15 @@ error event likewise persists the terminal result, marks the invitation
 `CONSUMED`, and deletes the seed atomically. Provider acceptance is confined to
 delivery; issuance recovery models credential generation and durable credential
 persistence separately. The model also covers cleanup refusal, OTP, JTI, nonce,
-redemption idempotency, and scanner GET boundaries: a valid `k`/`i`/`c`
-fragment is parsed without consuming invitation state. The redaction window is 900 seconds
-from durable completion only.
+redemption idempotency, and scanner GET boundaries. `states.json` contains a
+serialized `operationProgram`; every operation carries pre/post durable rows
+and explicit `transaction`, `crash`, `retry`, or `reject` operations. JavaScript
+interprets that program to execute premature resend invalidation, provider
+failure/recovery, atomic success/failure rollback, cleanup refusal, twenty
+same-redemption contenders with one issuance, different-redemption rejection,
+OTP wrong-vs-invalid-magic isolation, nonce/JTI replay, and a valid scanner GET
+with no mutation. The redaction window is 900 seconds from durable completion
+only.
 
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in
 shipping envelope package currently signs and verifies its envelope body as

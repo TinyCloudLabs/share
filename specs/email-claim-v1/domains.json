@@ -16,6 +16,24 @@
     "issuanceKdf": "tinycloud-share-email-issuance-seed/v1\u0000"
   },
   "envelopeSigning": "shipping-packages-envelope-signEnvelope-jcs-only",
+  "nodeAuthority": {
+    "origin": "https://node.example",
+    "nodeAudience": "did:web:node.example",
+    "activeKeyVersion": 1,
+    "keyVersions": [
+      {"keyVersion": 1, "invitationKid": "did:web:node.example#invitation-key-1", "publicKey": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI", "state": "active"},
+      {"keyVersion": 2, "invitationKid": "did:web:node.example#invitation-key-2", "publicKey": "Y1VpHBeKj_kQB6dHivuVXvc1LGPnslcDmEz3iybiGlY", "state": "retired"}
+    ],
+    "rules": {"originAudienceImmutable": true, "enabledRequired": true, "rotationRequiresHigherVersion": true, "retiredVersionsReject": true}
+  },
+  "issuerTrust": {
+    "issuerDid": "did:web:issuer.credentials.org",
+    "vct": "opencredentials.email/v1",
+    "keyVersion": 1,
+    "kid": "did:web:issuer.credentials.org#email-signing-key-1",
+    "publicKey": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY",
+    "enabled": true
+  },
   "ttlSeconds": {
     "inviteAuthorization": 300,
     "magicClaim": 604800,

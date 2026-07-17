@@ -137,6 +137,8 @@
         "keyVersion": 1,
         "enabled": true
       },
+      "evaluationTime": "2026-07-16T12:00:30.000Z",
+      "clockSkewSeconds": 30,
       "sdJwtSalt": "MDEyMzQ1Njc4OTo7PD0-Pw",
       "credential": {
         "format": "vc+sd-jwt",
@@ -1209,6 +1211,8 @@
         "keyVersion": 1,
         "enabled": true
       },
+      "evaluationTime": "2026-07-16T12:00:30.000Z",
+      "clockSkewSeconds": 30,
       "sdJwtSalt": "QEFCQ0RFRkdISUpLTE1OTw",
       "credential": {
         "format": "vc+sd-jwt",

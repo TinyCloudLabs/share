@@ -3,11 +3,954 @@ use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
 };
 
 type Result<T> = std::result::Result<T, String>;
+
+const CONTRACT_VERSION: &str = "tinycloud.share-email-claim/v1";
+
+fn exact_object<'a>(
+    value: &'a Value,
+    required: &[&str],
+    optional: &[&str],
+    label: &str,
+) -> Result<&'a Map<String, Value>> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{label}: object required"))?;
+    for key in required {
+        assert_ok(
+            object.contains_key(*key),
+            &format!("{label}: missing {key}"),
+        )?;
+    }
+    for key in object.keys() {
+        assert_ok(
+            required.contains(&key.as_str()) || optional.contains(&key.as_str()),
+            &format!("{label}: unexpected field {key}"),
+        )?;
+    }
+    Ok(object)
+}
+
+fn map_value<'a>(object: &'a Map<String, Value>, key: &str, label: &str) -> Result<&'a Value> {
+    object
+        .get(key)
+        .ok_or_else(|| format!("{label}: missing {key}"))
+}
+
+fn const_string(value: &Value, expected: &str, label: &str) -> Result<()> {
+    assert_ok(value.as_str() == Some(expected), label)
+}
+
+fn const_number(value: &Value, expected: i64, label: &str) -> Result<()> {
+    assert_ok(value.as_i64() == Some(expected), label)
+}
+
+fn b64_string(value: &Value, length: Option<usize>, label: &str) -> Result<Vec<u8>> {
+    let encoded = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: string required"))?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|error| format!("{label}: {error}"))?;
+    assert_ok(
+        URL_SAFE_NO_PAD.encode(&decoded) == encoded,
+        &format!("{label}: non-canonical base64url"),
+    )?;
+    if let Some(expected) = length {
+        assert_ok(
+            decoded.len() == expected,
+            &format!("{label}: wrong byte length"),
+        )?;
+    }
+    Ok(decoded)
+}
+
+fn valid_digest(value: &Value, label: &str) -> Result<()> {
+    let bytes = b64_string(value, Some(32), label)?;
+    assert_ok(bytes.len() == 32, label)
+}
+
+fn valid_cid(value: &Value, label: &str) -> Result<()> {
+    let cid = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: CID string required"))?;
+    assert_ok(
+        cid.len() == 59
+            && cid.starts_with("bafkrei")
+            && cid[7..]
+                .bytes()
+                .all(|byte| b"abcdefghijklmnopqrstuvwxyz234567".contains(&byte)),
+        &format!("{label}: invalid CID"),
+    )
+}
+
+fn valid_share_id(value: &Value, label: &str) -> Result<()> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: string required"))?;
+    assert_ok(
+        !text.is_empty()
+            && text.len() <= 128
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte)),
+        &format!("{label}: invalid share ID"),
+    )
+}
+
+fn valid_path(value: &Value, label: &str) -> Result<()> {
+    let path = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: path string required"))?;
+    assert_ok(
+        !path.is_empty()
+            && path.len() <= 1024
+            && !path.starts_with('/')
+            && !path.contains("//")
+            && !path.contains('\\')
+            && !path.contains('?')
+            && !path.contains('#')
+            && !path
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+            && path.bytes().all(|byte| !(byte <= 0x1f || byte == 0x7f)),
+        &format!("{label}: invalid path"),
+    )
+}
+
+fn valid_origin(value: &Value, label: &str) -> Result<()> {
+    let origin = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: origin string required"))?;
+    let rest = origin
+        .strip_prefix("https://")
+        .ok_or_else(|| format!("{label}: HTTPS origin required"))?;
+    assert_ok(
+        !rest.is_empty() && !rest.contains('/') && !rest.contains('*') && !rest.contains('?'),
+        &format!("{label}: invalid origin"),
+    )?;
+    let host_port = rest.split_once(':');
+    let host = host_port.map_or(rest, |(host, port)| {
+        if port.is_empty()
+            || port.starts_with('0')
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            ""
+        } else {
+            host
+        }
+    });
+    assert_ok(
+        !host.is_empty()
+            && host.split('.').all(|label| {
+                !label.is_empty()
+                    && label.len() <= 63
+                    && label.as_bytes()[0].is_ascii_alphanumeric()
+                    && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            }),
+        &format!("{label}: invalid origin host"),
+    )
+}
+
+fn valid_time(value: &Value, label: &str) -> Result<i64> {
+    let time = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: time string required"))?;
+    assert_ok(
+        time.len() == 24
+            && time.as_bytes()[4] == b'-'
+            && time.as_bytes()[7] == b'-'
+            && time.as_bytes()[10] == b'T'
+            && time.as_bytes()[13] == b':'
+            && time.as_bytes()[16] == b':'
+            && time.as_bytes()[19] == b'.'
+            && time.as_bytes()[23] == b'Z'
+            && [0..4, 5..7, 8..10, 11..13, 14..16, 17..19, 20..23]
+                .into_iter()
+                .all(|range| time[range].bytes().all(|byte| byte.is_ascii_digit())),
+        &format!("{label}: invalid RFC3339 millisecond time"),
+    )?;
+    let number = |range: std::ops::Range<usize>| -> Result<i64> {
+        time[range]
+            .parse::<i64>()
+            .map_err(|error| format!("{label}: {error}"))
+    };
+    let year = number(0..4)?;
+    let month = number(5..7)?;
+    let day = number(8..10)?;
+    let hour = number(11..13)?;
+    let minute = number(14..16)?;
+    let second = number(17..19)?;
+    let millis = number(20..23)?;
+    assert_ok(
+        (1..=12).contains(&month)
+            && (1..=31).contains(&day)
+            && hour < 24
+            && minute < 60
+            && second < 60
+            && millis < 1000,
+        &format!("{label}: invalid time component"),
+    )?;
+    // Howard Hinnant's proleptic Gregorian civil-date conversion, UTC only.
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = (if adjusted_year >= 0 {
+        adjusted_year
+    } else {
+        adjusted_year - 399
+    }) / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146097 + day_of_era - 719468;
+    Ok(days * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+fn valid_did(value: &Value, label: &str) -> Result<()> {
+    let did = value
+        .as_str()
+        .ok_or_else(|| format!("{label}: DID string required"))?;
+    let valid = if let Some(rest) = did.strip_prefix("did:web:") {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b".:%_-".contains(&byte))
+    } else if let Some(rest) = did.strip_prefix("did:pkh:") {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b":._-".contains(&byte))
+    } else if let Some(rest) = did.strip_prefix("did:key:z") {
+        !rest.is_empty() && rest.bytes().all(|byte| B58.contains(&byte))
+    } else {
+        false
+    };
+    assert_ok(valid, &format!("{label}: invalid DID"))
+}
+
+fn canonical_kid(did: &str) -> Result<String> {
+    if did.starts_with("did:key:z") {
+        did_key_bytes(did)?;
+        Ok(format!("{}#{}", did, &did["did:key:".len()..]))
+    } else if did.starts_with("did:web:") {
+        Ok(format!("{did}#invitation-key-1"))
+    } else {
+        Err("cannot derive canonical kid".into())
+    }
+}
+
+fn validate_source(source: &Value, expected_kind: &str) -> Result<()> {
+    let source_object = if expected_kind == "sql" {
+        exact_object(
+            source,
+            &[
+                "kind",
+                "space",
+                "database",
+                "path",
+                "statement",
+                "arguments",
+                "argumentsDigest",
+                "action",
+            ],
+            &[],
+            "sourceSql",
+        )?
+    } else {
+        exact_object(
+            source,
+            &["kind", "space", "path", "action"],
+            &[],
+            "sourceKv",
+        )?
+    };
+    const_string(
+        map_value(source_object, "kind", "source")?,
+        expected_kind,
+        "source kind",
+    )?;
+    valid_did(map_value(source_object, "space", "source")?, "source space")?;
+    valid_path(map_value(source_object, "path", "source")?, "source path")?;
+    let action = if expected_kind == "sql" {
+        "tinycloud.sql/read"
+    } else {
+        "tinycloud.kv/get"
+    };
+    const_string(
+        map_value(source_object, "action", "source")?,
+        action,
+        "source action",
+    )?;
+    if expected_kind == "sql" {
+        let database = map_value(source_object, "database", "source")?
+            .as_str()
+            .ok_or("SQL database string")?;
+        assert_ok(
+            !database.is_empty()
+                && database.len() <= 128
+                && database
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte)),
+            "SQL database",
+        )?;
+        let statement = map_value(source_object, "statement", "source")?
+            .as_str()
+            .ok_or("SQL statement string")?;
+        assert_ok(
+            !statement.is_empty()
+                && statement.len() <= 128
+                && statement.bytes().enumerate().all(|(index, byte)| {
+                    (index == 0 && byte.is_ascii_alphabetic())
+                        || (index > 0 && (byte.is_ascii_alphanumeric() || b"_.-".contains(&byte)))
+                }),
+            "SQL statement",
+        )?;
+        let arguments = map_object(source_object, "arguments")?;
+        assert_ok(arguments.len() <= 32, "SQL argument count")?;
+        for (name, value) in arguments {
+            assert_ok(
+                !name.is_empty()
+                    && value
+                        .as_i64()
+                        .is_some_and(|number| number.unsigned_abs() <= 9_007_199_254_740_991),
+                "SQL arguments must be safe integers",
+            )?;
+            assert_ok(
+                jcs(value).is_ok(),
+                "SQL argument must be canonical JSON integer",
+            )?;
+        }
+        valid_digest(
+            map_value(source_object, "argumentsDigest", "source")?,
+            "argumentsDigest",
+        )?;
+        assert_ok(
+            digest(jcs(&Value::Object(arguments.clone()))?.as_bytes())
+                == map_text(source_object, "argumentsDigest")?,
+            "SQL arguments digest",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_proof(value: &Value, label: &str) -> Result<()> {
+    let proof = exact_object(value, &["alg", "kid", "signature"], &[], label)?;
+    const_string(map_value(proof, "alg", label)?, "EdDSA", "proof alg")?;
+    let kid = map_value(proof, "kid", label)?
+        .as_str()
+        .ok_or("proof kid string")?;
+    assert_ok(
+        kid.len() >= 8
+            && kid.len() <= 256
+            && kid.matches('#').count() == 1
+            && !kid.split('#').nth(1).unwrap_or("").is_empty()
+            && !kid
+                .split('#')
+                .nth(1)
+                .unwrap_or("")
+                .contains(char::is_whitespace),
+        "proof kid shape",
+    )?;
+    valid_did(
+        &Value::String(kid.split('#').next().unwrap_or_default().into()),
+        "proof kid DID",
+    )?;
+    b64_string(
+        map_value(proof, "signature", label)?,
+        Some(64),
+        "proof signature",
+    )?;
+    Ok(())
+}
+
+fn validate_message_schema(name: &str, message: &Value, expected_kind: &str) -> Result<()> {
+    match name {
+        "policy" => {
+            let object = exact_object(
+                message,
+                &[
+                    "type",
+                    "version",
+                    "recipientEmail",
+                    "contentSource",
+                    "contentSourceDigest",
+                    "action",
+                    "resource",
+                    "expiresAt",
+                    "issuerDid",
+                ],
+                &[],
+                "policy",
+            )?;
+            const_string(
+                map_value(object, "type", "policy")?,
+                "TinyCloudSharePolicy",
+                "policy type",
+            )?;
+            const_number(map_value(object, "version", "policy")?, 1, "policy version")?;
+            assert_ok(
+                strict_email(map_text(object, "recipientEmail")?),
+                "policy email",
+            )?;
+            validate_source(map_value(object, "contentSource", "policy")?, expected_kind)?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", "policy")?,
+                "policy source digest",
+            )?;
+            assert_ok(
+                digest(jcs(map_value(object, "contentSource", "policy")?)?.as_bytes())
+                    == map_text(object, "contentSourceDigest")?,
+                "policy source digest preimage",
+            )?;
+            const_string(
+                map_value(object, "action", "policy")?,
+                if expected_kind == "sql" {
+                    "tinycloud.sql/read"
+                } else {
+                    "tinycloud.kv/get"
+                },
+                "policy action",
+            )?;
+            valid_path(map_value(object, "resource", "policy")?, "policy resource")?;
+            valid_time(map_value(object, "expiresAt", "policy")?, "policy expiry")?;
+            valid_did(map_value(object, "issuerDid", "policy")?, "policy issuer")?;
+        }
+        "envelope" => {
+            let object = exact_object(
+                message,
+                &[
+                    "version",
+                    "shareId",
+                    "delegation",
+                    "authorizationTarget",
+                    "target",
+                    "display",
+                    "expiry",
+                ],
+                &["content", "signature"],
+                "envelope",
+            )?;
+            const_number(
+                map_value(object, "version", "envelope")?,
+                1,
+                "envelope version",
+            )?;
+            valid_share_id(
+                map_value(object, "shareId", "envelope")?,
+                "envelope share ID",
+            )?;
+            let delegation = map_text(object, "delegation")?;
+            assert_ok(
+                !delegation.is_empty() && delegation.len() <= 65_536,
+                "delegation",
+            )?;
+            let target = exact_object(
+                map_value(object, "authorizationTarget", "envelope")?,
+                &["kind", "policyCid", "policyBytes"],
+                &[],
+                "authorization target",
+            )?;
+            const_string(
+                map_value(target, "kind", "authorization target")?,
+                "policy",
+                "authorization target kind",
+            )?;
+            valid_cid(
+                map_value(target, "policyCid", "authorization target")?,
+                "target policy CID",
+            )?;
+            let policy_bytes = b64_string(
+                map_value(target, "policyBytes", "authorization target")?,
+                None,
+                "target policy bytes",
+            )?;
+            assert_ok(policy_bytes.len() <= 65_536, "policy byte limit")?;
+            let envelope_target = exact_object(
+                map_value(object, "target", "envelope")?,
+                &["origin", "nodeAudience", "spaceId", "resource"],
+                &[],
+                "envelope target",
+            )?;
+            valid_origin(
+                map_value(envelope_target, "origin", "envelope target")?,
+                "envelope origin",
+            )?;
+            valid_did(
+                map_value(envelope_target, "nodeAudience", "envelope target")?,
+                "envelope audience",
+            )?;
+            let space_id = map_text(envelope_target, "spaceId")?;
+            assert_ok(
+                !space_id.is_empty() && space_id.len() <= 128 && !space_id.contains('/'),
+                "envelope space ID",
+            )?;
+            let resource = exact_object(
+                map_value(envelope_target, "resource", "envelope target")?,
+                &["kind", "path"],
+                &[],
+                "envelope resource",
+            )?;
+            const_string(
+                map_value(resource, "kind", "envelope resource")?,
+                "exact",
+                "envelope resource kind",
+            )?;
+            valid_path(
+                map_value(resource, "path", "envelope resource")?,
+                "envelope resource path",
+            )?;
+            let display = exact_object(
+                map_value(object, "display", "envelope")?,
+                &[],
+                &["senderName", "filename", "recipientHint", "mode"],
+                "display",
+            )?;
+            for key in ["senderName", "filename", "recipientHint"] {
+                if let Some(value) = display.get(key) {
+                    let text = value.as_str().ok_or("display text")?;
+                    assert_ok(
+                        text.len() <= 200 && !text.bytes().any(|byte| byte < 0x20 || byte == 0x7f),
+                        "display byte boundary",
+                    )?;
+                }
+            }
+            if let Some(mode) = display.get("mode") {
+                assert_ok(
+                    matches!(
+                        mode.as_str(),
+                        Some("document") | Some("source") | Some("folder")
+                    ),
+                    "display mode",
+                )?;
+            }
+            valid_time(map_value(object, "expiry", "envelope")?, "envelope expiry")?;
+            if let Some(signature) = object.get("signature") {
+                let signature = exact_object(
+                    signature,
+                    &["signerDid", "algorithm", "value"],
+                    &[],
+                    "envelope shipping signature",
+                )?;
+                let signer = map_value(signature, "signerDid", "shipping signature")?;
+                did_key_bytes(signer.as_str().ok_or("shipping signer DID")?)?;
+                const_string(
+                    map_value(signature, "algorithm", "shipping signature")?,
+                    "Ed25519",
+                    "shipping algorithm",
+                )?;
+                b64_string(
+                    map_value(signature, "value", "shipping signature")?,
+                    Some(64),
+                    "shipping signature value",
+                )?;
+            }
+        }
+        "inviteAuthorization" => validate_invite_authorization(message, expected_kind)?,
+        "holderBinding" => validate_holder_binding(message, expected_kind)?,
+        "policyChallenge" | "policyPresentation" | "policySession" | "readInvocation" => {
+            validate_policy_artifact_message(name, message, expected_kind)?
+        }
+        _ => return Err(format!("unknown signed message schema {name}")),
+    }
+    Ok(())
+}
+
+fn validate_invite_authorization(message: &Value, expected_kind: &str) -> Result<()> {
+    let object = exact_object(
+        message,
+        &[
+            "type",
+            "version",
+            "jti",
+            "senderDid",
+            "shareCid",
+            "shareId",
+            "policyCid",
+            "recipientEmail",
+            "targetOrigin",
+            "nodeAudience",
+            "returnOrigin",
+            "documentName",
+            "senderTrust",
+            "contentSource",
+            "contentSourceDigest",
+            "shareExpiresAt",
+            "issuedAt",
+            "expiresAt",
+            "reportAbuseToken",
+        ],
+        &[],
+        "inviteAuthorization",
+    )?;
+    const_string(
+        map_value(object, "type", "authorization")?,
+        "TinyCloudShareInviteAuthorization",
+        "authorization type",
+    )?;
+    const_number(
+        map_value(object, "version", "authorization")?,
+        1,
+        "authorization version",
+    )?;
+    b64_string(
+        map_value(object, "jti", "authorization")?,
+        Some(16),
+        "authorization JTI",
+    )?;
+    valid_did(
+        map_value(object, "senderDid", "authorization")?,
+        "sender DID",
+    )?;
+    valid_cid(
+        map_value(object, "shareCid", "authorization")?,
+        "authorization share CID",
+    )?;
+    valid_share_id(
+        map_value(object, "shareId", "authorization")?,
+        "authorization share ID",
+    )?;
+    valid_cid(
+        map_value(object, "policyCid", "authorization")?,
+        "authorization policy CID",
+    )?;
+    assert_ok(
+        strict_email(map_text(object, "recipientEmail")?),
+        "authorization email",
+    )?;
+    valid_origin(
+        map_value(object, "targetOrigin", "authorization")?,
+        "authorization origin",
+    )?;
+    valid_did(
+        map_value(object, "nodeAudience", "authorization")?,
+        "authorization audience",
+    )?;
+    const_string(
+        map_value(object, "returnOrigin", "authorization")?,
+        "https://share.tinycloud.xyz",
+        "return origin",
+    )?;
+    let document_name = map_text(object, "documentName")?;
+    assert_ok(
+        !document_name.is_empty()
+            && document_name.len() <= 200
+            && !document_name
+                .bytes()
+                .any(|byte| byte <= 0x1f || byte == 0x7f),
+        "document name byte boundary",
+    )?;
+    assert_ok(
+        matches!(map_text(object, "senderTrust")?, "verified" | "unverified"),
+        "sender trust",
+    )?;
+    validate_source(
+        map_value(object, "contentSource", "authorization")?,
+        expected_kind,
+    )?;
+    valid_digest(
+        map_value(object, "contentSourceDigest", "authorization")?,
+        "authorization source digest",
+    )?;
+    assert_ok(
+        digest(jcs(map_value(object, "contentSource", "authorization")?)?.as_bytes())
+            == map_text(object, "contentSourceDigest")?,
+        "authorization source digest preimage",
+    )?;
+    valid_time(
+        map_value(object, "shareExpiresAt", "authorization")?,
+        "share expiry",
+    )?;
+    valid_time(
+        map_value(object, "issuedAt", "authorization")?,
+        "authorization issuedAt",
+    )?;
+    valid_time(
+        map_value(object, "expiresAt", "authorization")?,
+        "authorization expiresAt",
+    )?;
+    b64_string(
+        map_value(object, "reportAbuseToken", "authorization")?,
+        Some(16),
+        "abuse token",
+    )?;
+    Ok(())
+}
+
+fn validate_holder_binding(message: &Value, expected_kind: &str) -> Result<()> {
+    let object = exact_object(
+        message,
+        &[
+            "type",
+            "version",
+            "redemptionId",
+            "invitationId",
+            "claimNonce",
+            "shareCid",
+            "shareId",
+            "policyCid",
+            "contentSource",
+            "contentSourceDigest",
+            "emailHash",
+            "holderDid",
+            "targetOrigin",
+            "nodeAudience",
+            "requestOrigin",
+            "issuedAt",
+            "expiresAt",
+            "jti",
+        ],
+        &[],
+        "holderBinding",
+    )?;
+    const_string(
+        map_value(object, "type", "binding")?,
+        "TinyCloudEmailClaimHolderBinding",
+        "binding type",
+    )?;
+    const_number(
+        map_value(object, "version", "binding")?,
+        1,
+        "binding version",
+    )?;
+    b64_string(
+        map_value(object, "redemptionId", "binding")?,
+        Some(16),
+        "redemption ID",
+    )?;
+    b64_string(
+        map_value(object, "invitationId", "binding")?,
+        Some(16),
+        "invitation ID",
+    )?;
+    b64_string(
+        map_value(object, "claimNonce", "binding")?,
+        Some(32),
+        "claim nonce",
+    )?;
+    valid_cid(
+        map_value(object, "shareCid", "binding")?,
+        "binding share CID",
+    )?;
+    valid_share_id(map_value(object, "shareId", "binding")?, "binding share ID")?;
+    valid_cid(
+        map_value(object, "policyCid", "binding")?,
+        "binding policy CID",
+    )?;
+    validate_source(
+        map_value(object, "contentSource", "binding")?,
+        expected_kind,
+    )?;
+    valid_digest(
+        map_value(object, "contentSourceDigest", "binding")?,
+        "binding source digest",
+    )?;
+    valid_digest(
+        map_value(object, "emailHash", "binding")?,
+        "binding email hash",
+    )?;
+    did_key_bytes(map_text(object, "holderDid")?)?;
+    valid_origin(
+        map_value(object, "targetOrigin", "binding")?,
+        "binding origin",
+    )?;
+    valid_did(
+        map_value(object, "nodeAudience", "binding")?,
+        "binding audience",
+    )?;
+    const_string(
+        map_value(object, "requestOrigin", "binding")?,
+        "https://share.tinycloud.xyz",
+        "binding request origin",
+    )?;
+    valid_time(
+        map_value(object, "issuedAt", "binding")?,
+        "binding issuedAt",
+    )?;
+    valid_time(
+        map_value(object, "expiresAt", "binding")?,
+        "binding expiresAt",
+    )?;
+    b64_string(
+        map_value(object, "jti", "binding")?,
+        Some(16),
+        "binding JTI",
+    )?;
+    Ok(())
+}
+
+fn validate_policy_artifact_message(
+    name: &str,
+    message: &Value,
+    expected_kind: &str,
+) -> Result<()> {
+    let (required, label) = match name {
+        "policyChallenge" => (
+            &[
+                "type",
+                "version",
+                "challengeId",
+                "nonce",
+                "shareCid",
+                "shareId",
+                "delegationCid",
+                "policyCid",
+                "contentSource",
+                "contentSourceDigest",
+                "holderDid",
+                "targetOrigin",
+                "nodeAudience",
+                "action",
+                "resource",
+                "requestBodyDigest",
+                "issuedAt",
+                "expiresAt",
+            ][..],
+            "policyChallenge",
+        ),
+        "policyPresentation" => (
+            &[
+                "type",
+                "version",
+                "challengeId",
+                "nonce",
+                "shareCid",
+                "shareId",
+                "delegationCid",
+                "policyCid",
+                "contentSource",
+                "contentSourceDigest",
+                "holderDid",
+                "targetOrigin",
+                "nodeAudience",
+                "credentialDigest",
+                "action",
+                "resource",
+                "requestBodyDigest",
+                "issuedAt",
+                "expiresAt",
+                "jti",
+            ][..],
+            "policyPresentation",
+        ),
+        "policySession" => (
+            &[
+                "type",
+                "version",
+                "sessionId",
+                "shareCid",
+                "shareId",
+                "delegationCid",
+                "policyCid",
+                "contentSource",
+                "contentSourceDigest",
+                "holderDid",
+                "targetOrigin",
+                "nodeAudience",
+                "action",
+                "resource",
+                "credentialDigest",
+                "issuedAt",
+                "expiresAt",
+            ][..],
+            "policySession",
+        ),
+        "readInvocation" => (
+            &[
+                "type",
+                "version",
+                "sessionId",
+                "shareCid",
+                "shareId",
+                "policyCid",
+                "contentSource",
+                "contentSourceDigest",
+                "holderDid",
+                "targetOrigin",
+                "nodeAudience",
+                "action",
+                "resource",
+                "requestBodyDigest",
+                "issuedAt",
+                "expiresAt",
+                "jti",
+            ][..],
+            "readInvocation",
+        ),
+        _ => return Err("invalid policy artifact name".into()),
+    };
+    let object = exact_object(message, required, &[], label)?;
+    let expected_type = match name {
+        "policyChallenge" => "TinyCloudSharePolicyChallenge",
+        "policyPresentation" => "TinyCloudSharePolicyPresentation",
+        "policySession" => "TinyCloudSharePolicySession",
+        _ => "TinyCloudShareReadInvocation",
+    };
+    const_string(
+        map_value(object, "type", label)?,
+        expected_type,
+        "artifact type",
+    )?;
+    const_number(map_value(object, "version", label)?, 1, "artifact version")?;
+    let cid_fields = if name == "readInvocation" {
+        ["shareCid", "policyCid", ""]
+    } else {
+        ["shareCid", "policyCid", "delegationCid"]
+    };
+    for key in cid_fields.into_iter().filter(|key| !key.is_empty()) {
+        valid_cid(map_value(object, key, label)?, key)?;
+    }
+    valid_share_id(map_value(object, "shareId", label)?, "artifact share ID")?;
+    if let Some(value) = object.get("challengeId") {
+        b64_string(value, Some(32), "challenge ID")?;
+    }
+    if let Some(value) = object.get("nonce") {
+        b64_string(value, Some(32), "artifact nonce")?;
+    }
+    if let Some(value) = object.get("sessionId") {
+        b64_string(value, Some(16), "session ID")?;
+    }
+    validate_source(map_value(object, "contentSource", label)?, expected_kind)?;
+    valid_digest(
+        map_value(object, "contentSourceDigest", label)?,
+        "artifact source digest",
+    )?;
+    did_key_bytes(map_text(object, "holderDid")?)?;
+    valid_origin(map_value(object, "targetOrigin", label)?, "artifact origin")?;
+    valid_did(
+        map_value(object, "nodeAudience", label)?,
+        "artifact audience",
+    )?;
+    if let Some(value) = object.get("credentialDigest") {
+        valid_digest(value, "credential digest")?;
+    }
+    const_string(
+        map_value(object, "action", label)?,
+        if expected_kind == "sql" {
+            "tinycloud.sql/read"
+        } else {
+            "tinycloud.kv/get"
+        },
+        "artifact action",
+    )?;
+    valid_path(map_value(object, "resource", label)?, "artifact resource")?;
+    if let Some(value) = object.get("requestBodyDigest") {
+        valid_digest(value, "request body digest")?;
+    }
+    valid_time(map_value(object, "issuedAt", label)?, "artifact issuedAt")?;
+    valid_time(map_value(object, "expiresAt", label)?, "artifact expiresAt")?;
+    if let Some(value) = object.get("jti") {
+        b64_string(value, Some(16), "artifact JTI")?;
+    }
+    Ok(())
+}
 
 fn jcs(value: &Value) -> Result<String> {
     match value {
@@ -199,13 +1142,43 @@ fn verify_artifact(
     domains: &Map<String, Value>,
     enrollment: &Value,
 ) -> Result<()> {
+    let artifact_object = exact_object(
+        artifact,
+        &[
+            "name",
+            "domain",
+            "signerDid",
+            "message",
+            "jcs",
+            "messageDigest",
+            "signedBytesDigest",
+            "signatureDigest",
+            "signature",
+        ],
+        &[],
+        artifact_name,
+    )?;
+    const_string(
+        map_value(artifact_object, "name", artifact_name)?,
+        artifact_name,
+        "artifact name",
+    )?;
     let domain = text(artifact, "domain")?;
     let registered_domain = domains
         .get(artifact_name)
         .and_then(Value::as_str)
         .ok_or("missing domain")?;
-    assert_ok(domain == registered_domain, "registry domain mismatch")?;
+    assert_ok(
+        domain == registered_domain && domain.ends_with('\0'),
+        "registry domain mismatch",
+    )?;
     let message = artifact.get("message").ok_or("missing artifact message")?;
+    let expected_kind = message
+        .get("contentSource")
+        .and_then(|source| source.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or("kv");
+    validate_message_schema(artifact_name, message, expected_kind)?;
     let canonical = jcs(message)?;
     assert_ok(canonical == text(artifact, "jcs")?, "JCS mismatch")?;
     let signed = [domain.as_bytes(), canonical.as_bytes()].concat();
@@ -217,30 +1190,61 @@ fn verify_artifact(
         digest(&signed) == text(artifact, "signedBytesDigest")?,
         "signed bytes digest mismatch",
     )?;
-    let signature_object = object(artifact, "signature")?;
-    let signature_value = signature_object
-        .get("value")
-        .and_then(Value::as_str)
-        .ok_or("signature value")?;
-    let signature = URL_SAFE_NO_PAD
-        .decode(signature_value)
-        .map_err(|e| e.to_string())?;
-    assert_ok(
-        URL_SAFE_NO_PAD.encode(&signature) == signature_value,
-        "non-canonical signature encoding",
+    let signature_object = exact_object(
+        map_value(artifact_object, "signature", artifact_name)?,
+        &["alg", "kid", "value"],
+        &[],
+        "artifact signature",
     )?;
-    assert_ok(signature.len() == 64, "signature length")?;
+    const_string(
+        map_value(signature_object, "alg", "artifact signature")?,
+        "EdDSA",
+        "artifact signature algorithm",
+    )?;
+    let signature = b64_string(
+        map_value(signature_object, "value", "artifact signature")?,
+        Some(64),
+        "artifact signature",
+    )?;
+    assert_canonical_ed25519_s(&signature)?;
     assert_ok(
         digest(&signature) == text(artifact, "signatureDigest")?,
         "signature digest mismatch",
     )?;
     let signer = text(artifact, "signerDid")?;
-    let public = if artifact_name == "inviteAuthorization"
-        || artifact_name == "policyChallenge"
-        || artifact_name == "policySession"
-    {
+    valid_did(&Value::String(signer.into()), "artifact signer DID")?;
+    let node_signed = matches!(
+        artifact_name,
+        "inviteAuthorization" | "policyChallenge" | "policySession"
+    );
+    let expected_kid = if node_signed {
+        assert_ok(
+            signer == text(enrollment, "nodeAudience")?,
+            "node signer DID mismatch",
+        )?;
+        text(enrollment, "invitationKid")?.to_string()
+    } else {
+        assert_ok(
+            signer.starts_with("did:key:z"),
+            "holder/sender signer must be did:key",
+        )?;
+        canonical_kid(signer)?
+    };
+    assert_ok(
+        map_text(signature_object, "kid")? == expected_kid,
+        "non-canonical artifact kid",
+    )?;
+    let public = if node_signed {
         let raw = b64(enrollment, "invitationPublicKey")?;
-        raw.try_into()
+        assert_ok(raw.len() == 32, "node public key length")?;
+        let expected = raw.clone();
+        assert_ok(
+            signer == text(enrollment, "nodeAudience")?
+                && expected_kid == text(enrollment, "invitationKid")?,
+            "node enrollment authority mismatch",
+        )?;
+        expected
+            .try_into()
             .map_err(|_| "node public key length".to_string())?
     } else {
         did_key_bytes(signer)?
@@ -249,7 +1253,29 @@ fn verify_artifact(
     let sig = Signature::from_slice(&signature).map_err(|e| e.to_string())?;
     key.verify_strict(&signed, &sig)
         .map_err(|e| format!("{artifact_name}: {e}"))?;
+    // The artifact's signer key and kid are independently bound above. Keep this
+    // explicit check so a valid signature cannot be moved between artifact roles.
+    if artifact_name == "policy" || artifact_name == "envelope" {
+        assert_ok(
+            signer != text(enrollment, "nodeAudience")?,
+            "sender/node key confusion",
+        )?;
+    }
     Ok(())
+}
+
+fn assert_canonical_ed25519_s(signature: &[u8]) -> Result<()> {
+    assert_ok(signature.len() == 64, "Ed25519 signature length")?;
+    // Ed25519 signatures encode S as a little-endian scalar. Strict verification
+    // rejects S >= L; checking the encoding explicitly keeps that rejection
+    // independent of the crypto crate's parser behavior.
+    const GROUP_ORDER: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+    ];
+    let s = &signature[32..];
+    let canonical = s.iter().rev().cmp(GROUP_ORDER.iter().rev()).is_lt();
+    assert_ok(canonical, "non-canonical Ed25519 S")
 }
 fn verify_signature_core(artifact: &Value, artifact_name: &str, enrollment: &Value) -> Result<()> {
     let domain = text(artifact, "domain")?;
@@ -284,8 +1310,18 @@ fn proof_matches(
     enrollment: &Value,
     label: &str,
 ) -> Result<()> {
-    let proof = object(response, "proof")?;
-    let signature = object(artifact, "signature")?;
+    let proof = exact_object(
+        response.get("proof").ok_or("proof")?,
+        &["alg", "kid", "signature"],
+        &[],
+        "wrapper proof",
+    )?;
+    let signature = exact_object(
+        artifact.get("signature").ok_or("artifact signature")?,
+        &["alg", "kid", "value"],
+        &[],
+        "artifact signature",
+    )?;
     let kid = text(enrollment, "invitationKid")?;
     assert_ok(
         map_text(signature, "alg")? == "EdDSA"
@@ -295,17 +1331,449 @@ fn proof_matches(
             && text(artifact, "signerDid")? == text(enrollment, "nodeAudience")?
             && map_text(proof, "signature")? == map_text(signature, "value")?,
         label,
-    )
+    )?;
+    b64_string(
+        map_value(proof, "signature", "proof")?,
+        Some(64),
+        "proof signature",
+    )?;
+    Ok(())
+}
+
+fn validate_node_enrollment(enrollment: &Value, domains: &Value) -> Result<()> {
+    let authority = exact_object(
+        domains
+            .get("nodeAuthority")
+            .ok_or("node authority registry")?,
+        &[
+            "origin",
+            "nodeAudience",
+            "activeKeyVersion",
+            "keyVersions",
+            "rules",
+        ],
+        &[],
+        "node authority registry",
+    )?;
+    const_string(
+        map_value(authority, "origin", "node authority")?,
+        "https://node.example",
+        "authority origin",
+    )?;
+    const_string(
+        map_value(authority, "nodeAudience", "node authority")?,
+        "did:web:node.example",
+        "authority audience",
+    )?;
+    const_number(
+        map_value(authority, "activeKeyVersion", "node authority")?,
+        1,
+        "active node key version",
+    )?;
+    let rules = exact_object(
+        map_value(authority, "rules", "node authority")?,
+        &[
+            "originAudienceImmutable",
+            "enabledRequired",
+            "rotationRequiresHigherVersion",
+            "retiredVersionsReject",
+        ],
+        &[],
+        "node authority rules",
+    )?;
+    for key in [
+        "originAudienceImmutable",
+        "enabledRequired",
+        "rotationRequiresHigherVersion",
+        "retiredVersionsReject",
+    ] {
+        assert_ok(
+            rules.get(key) == Some(&Value::Bool(true)),
+            "node authority rule",
+        )?;
+    }
+    let object = exact_object(
+        enrollment,
+        &[
+            "targetOrigin",
+            "nodeAudience",
+            "invitationKid",
+            "invitationPublicKey",
+            "keyVersion",
+            "enabled",
+        ],
+        &[],
+        "trusted node enrollment",
+    )?;
+    valid_origin(
+        map_value(object, "targetOrigin", "enrollment")?,
+        "enrollment origin",
+    )?;
+    valid_did(
+        map_value(object, "nodeAudience", "enrollment")?,
+        "enrollment audience",
+    )?;
+    let audience = map_text(object, "nodeAudience")?;
+    assert_ok(
+        audience == "did:web:node.example",
+        "untrusted node audience",
+    )?;
+    let kid = map_text(object, "invitationKid")?;
+    assert_ok(
+        kid == "did:web:node.example#invitation-key-1",
+        "node authority kid",
+    )?;
+    assert_ok(!kid.contains(char::is_whitespace), "node kid whitespace")?;
+    b64_string(
+        map_value(object, "invitationPublicKey", "enrollment")?,
+        Some(32),
+        "enrollment public key",
+    )?;
+    const_number(
+        map_value(object, "keyVersion", "enrollment")?,
+        1,
+        "enrollment key version",
+    )?;
+    assert_ok(
+        object.get("enabled") == Some(&Value::Bool(true)),
+        "node enrollment disabled",
+    )?;
+    let key_versions = map_array(authority, "keyVersions")?;
+    assert_ok(key_versions.len() == 2, "node key rotation registry")?;
+    let active = exact_object(
+        &key_versions[0],
+        &["keyVersion", "invitationKid", "publicKey", "state"],
+        &[],
+        "active node key",
+    )?;
+    const_number(
+        map_value(active, "keyVersion", "active node key")?,
+        1,
+        "active key version",
+    )?;
+    const_string(
+        map_value(active, "invitationKid", "active node key")?,
+        kid,
+        "active key ID",
+    )?;
+    const_string(
+        map_value(active, "state", "active node key")?,
+        "active",
+        "active key state",
+    )?;
+    assert_ok(
+        b64_string(
+            map_value(active, "publicKey", "active node key")?,
+            Some(32),
+            "active node public key",
+        )? == b64_string(
+            map_value(object, "invitationPublicKey", "enrollment")?,
+            Some(32),
+            "enrollment public key",
+        )?,
+        "active enrollment key binding",
+    )?;
+    let retired = exact_object(
+        &key_versions[1],
+        &["keyVersion", "invitationKid", "publicKey", "state"],
+        &[],
+        "retired node key",
+    )?;
+    const_number(
+        map_value(retired, "keyVersion", "retired node key")?,
+        2,
+        "retired key version",
+    )?;
+    const_string(
+        map_value(retired, "state", "retired node key")?,
+        "retired",
+        "retired key state",
+    )?;
+    let node_key = seed_verifying_key(domains, "nodeSeedHex")?;
+    assert_ok(
+        b64_string(
+            map_value(object, "invitationPublicKey", "enrollment")?,
+            Some(32),
+            "enrollment public key",
+        )? == node_key.to_bytes(),
+        "enrollment public key does not match authority",
+    )?;
+    Ok(())
+}
+
+fn validate_capability_registry(domains: &Value) -> Result<()> {
+    let capabilities = object(domains, "capabilities")?;
+    let witness = exact_object(
+        capabilities.get("witness").ok_or("witness capability")?,
+        &[
+            "id",
+            "version",
+            "origin",
+            "returnOrigin",
+            "routes",
+            "mailProvider",
+            "status",
+        ],
+        &[],
+        "witness capability",
+    )?;
+    const_string(
+        map_value(witness, "id", "witness")?,
+        "tinycloud.share-email-claim",
+        "witness ID",
+    )?;
+    const_number(
+        map_value(witness, "version", "witness")?,
+        1,
+        "witness version",
+    )?;
+    valid_origin(map_value(witness, "origin", "witness")?, "witness origin")?;
+    const_string(
+        map_value(witness, "returnOrigin", "witness")?,
+        "https://share.tinycloud.xyz",
+        "witness return origin",
+    )?;
+    const_string(
+        map_value(witness, "mailProvider", "witness")?,
+        "resend",
+        "mail provider",
+    )?;
+    const_string(
+        map_value(witness, "status", "witness")?,
+        "disabled-until-real-provider",
+        "witness status",
+    )?;
+    let witness_routes = map_array(witness, "routes")?;
+    assert_ok(
+        witness_routes.len() == 4
+            && witness_routes
+                .iter()
+                .map(Value::as_str)
+                .collect::<HashSet<_>>()
+                == [
+                    Some("/v1/share-email/invitations"),
+                    Some("/v1/share-email/invitations/resend"),
+                    Some("/v1/share-email/claims/challenge"),
+                    Some("/v1/share-email/claims/redeem"),
+                ]
+                .into_iter()
+                .collect(),
+        "witness capability routes",
+    )?;
+    let node = exact_object(
+        capabilities.get("node").ok_or("node capability")?,
+        &[
+            "id",
+            "version",
+            "origin",
+            "routes",
+            "contentKinds",
+            "status",
+        ],
+        &[],
+        "node capability",
+    )?;
+    const_string(
+        map_value(node, "id", "node")?,
+        "tinycloud.node-policy-email-v1",
+        "node ID",
+    )?;
+    const_number(map_value(node, "version", "node")?, 1, "node version")?;
+    const_string(
+        map_value(node, "origin", "node")?,
+        "https://node.example",
+        "node origin",
+    )?;
+    const_string(
+        map_value(node, "status", "node")?,
+        "disabled-until-authority-ready",
+        "node status",
+    )?;
+    let routes = map_array(node, "routes")?;
+    assert_ok(
+        routes.len() == 4
+            && routes.iter().all(|route| {
+                matches!(
+                    route.as_str(),
+                    Some("/share/v1/invitations/authorize")
+                        | Some("/share/v1/policy/challenges")
+                        | Some("/share/v1/policy/session")
+                        | Some("/share/v1/read")
+                )
+            }),
+        "node capability routes",
+    )?;
+    let content_kinds = map_array(node, "contentKinds")?;
+    assert_ok(
+        content_kinds.len() == 2
+            && content_kinds
+                .iter()
+                .any(|value| value.as_str() == Some("kv"))
+            && content_kinds
+                .iter()
+                .any(|value| value.as_str() == Some("sql")),
+        "node capability content kinds",
+    )?;
+    Ok(())
+}
+
+fn validate_issuer_trust(domains: &Value, issuer_key: &VerifyingKey) -> Result<()> {
+    let trust = exact_object(
+        domains.get("issuerTrust").ok_or("issuer trust registry")?,
+        &[
+            "issuerDid",
+            "vct",
+            "keyVersion",
+            "kid",
+            "publicKey",
+            "enabled",
+        ],
+        &[],
+        "issuer trust registry",
+    )?;
+    const_string(
+        map_value(trust, "issuerDid", "issuer trust")?,
+        "did:web:issuer.credentials.org",
+        "issuer trust DID",
+    )?;
+    const_string(
+        map_value(trust, "vct", "issuer trust")?,
+        "opencredentials.email/v1",
+        "issuer trust VCT",
+    )?;
+    const_number(
+        map_value(trust, "keyVersion", "issuer trust")?,
+        1,
+        "issuer trust key version",
+    )?;
+    const_string(
+        map_value(trust, "kid", "issuer trust")?,
+        "did:web:issuer.credentials.org#email-signing-key-1",
+        "issuer trust kid",
+    )?;
+    assert_ok(
+        trust.get("enabled") == Some(&Value::Bool(true)),
+        "issuer key disabled",
+    )?;
+    assert_ok(
+        b64_string(
+            map_value(trust, "publicKey", "issuer trust")?,
+            Some(32),
+            "issuer trust public key",
+        )? == issuer_key.to_bytes(),
+        "issuer trust public key",
+    )?;
+    Ok(())
 }
 fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
-    let credential = object(scenario, "credential")?;
-    let claims = map_object(credential, "claims")?;
+    let credential = exact_object(
+        scenario.get("credential").ok_or("credential")?,
+        &[
+            "format",
+            "credential",
+            "holderDid",
+            "expiresAt",
+            "issuerDid",
+            "vct",
+            "claims",
+            "disclosures",
+            "credentialDigest",
+            "issuerJws",
+        ],
+        &[],
+        "credential",
+    )?;
+    const_string(
+        map_value(credential, "format", "credential")?,
+        "vc+sd-jwt",
+        "credential format",
+    )?;
+    const_string(
+        map_value(credential, "vct", "credential")?,
+        "opencredentials.email/v1",
+        "credential vct",
+    )?;
+    let credential_text = map_text(credential, "credential")?;
+    assert_ok(
+        !credential_text.is_empty() && credential_text.len() <= 65_536,
+        "credential byte limit",
+    )?;
+    valid_digest(
+        map_value(credential, "credentialDigest", "credential")?,
+        "credential digest",
+    )?;
+    assert_ok(
+        digest(credential_text.as_bytes()) == map_text(credential, "credentialDigest")?,
+        "credential digest preimage",
+    )?;
+    let credential_holder = map_text(credential, "holderDid")?;
+    did_key_bytes(credential_holder)?;
+    let issuer_did = map_text(credential, "issuerDid")?;
+    assert_ok(
+        issuer_did == "did:web:issuer.credentials.org",
+        "untrusted credential issuer",
+    )?;
+    valid_did(&Value::String(issuer_did.into()), "credential issuer DID")?;
+    let share_expiry = valid_time(
+        &Value::String(map_text(object(scenario, "authorization")?, "shareExpiresAt")?.into()),
+        "share expiry",
+    )?;
+    assert_ok(
+        map_text(credential, "expiresAt")?
+            == map_text(object(scenario, "authorization")?, "shareExpiresAt")?,
+        "credential/share expiry mismatch",
+    )?;
+    assert_ok(
+        valid_time(
+            map_value(credential, "expiresAt", "credential")?,
+            "credential expiry",
+        )? == share_expiry,
+        "credential expiry value",
+    )?;
+    let claims = exact_object(
+        map_value(credential, "claims", "credential")?,
+        &[
+            "iss",
+            "sub",
+            "iat",
+            "nbf",
+            "exp",
+            "jti",
+            "vct",
+            "tinycloud_share",
+            "_sd_alg",
+            "_sd",
+        ],
+        &[],
+        "SD-JWT claims",
+    )?;
+    const_string(
+        map_value(claims, "vct", "SD-JWT claims")?,
+        "opencredentials.email/v1",
+        "SD-JWT claims vct",
+    )?;
+    let claim_jti = map_text(claims, "jti")?;
+    assert_ok(
+        !claim_jti.is_empty() && claim_jti.len() <= 256,
+        "SD-JWT JTI",
+    )?;
     assert_ok(map_text(claims, "_sd_alg")? == "sha-256", "SD-JWT _sd_alg")?;
     let sd = map_array(claims, "_sd")?;
     assert_ok(sd.len() == 1, "SD-JWT _sd cardinality")?;
     let disclosure = map_array(credential, "disclosures")?;
     assert_ok(disclosure.len() == 1, "SD-JWT disclosure cardinality")?;
     let disclosure = &disclosure[0];
+    let disclosure_object = exact_object(
+        disclosure,
+        &["path", "salt", "encoded", "digest", "value"],
+        &[],
+        "SD-JWT disclosure",
+    )?;
+    const_string(
+        map_value(disclosure_object, "path", "disclosure")?,
+        "/email",
+        "SD-JWT disclosure path",
+    )?;
     let salt = text(disclosure, "salt")?;
     let encoded = text(disclosure, "encoded")?;
     let encoded_bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|e| e.to_string())?;
@@ -331,7 +1799,15 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
         salt == text(scenario, "sdJwtSalt")?,
         "SD-JWT deterministic salt",
     )?;
-    let credential_text = map_text(credential, "credential")?;
+    b64_string(
+        map_value(disclosure_object, "salt", "disclosure")?,
+        Some(16),
+        "SD-JWT salt",
+    )?;
+    assert_ok(
+        strict_email(text(disclosure, "value")?),
+        "SD-JWT disclosed email",
+    )?;
     let parts: Vec<&str> = credential_text.split('~').collect();
     assert_ok(
         parts.len() == 3 && parts[1] == encoded && parts[2].is_empty(),
@@ -366,6 +1842,7 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
         "SD-JWT signed payload differs from detached claims",
     )?;
     let scope = map_object(claims, "tinycloud_share")?;
+    assert_ok(scope.len() == 4, "SD-JWT scope shape")?;
     assert_ok(
         map_text(scope, "share_cid")? == text(scenario, "shareCid")?
             && map_text(scope, "share_id")? == text(scenario, "shareId")?
@@ -374,13 +1851,23 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
                 == map_text(object(scenario, "authorization")?, "nodeAudience")?,
         "SD-JWT signed scope",
     )?;
-    let issuer_jws = map_object(credential, "issuerJws")?;
+    let issuer_jws = exact_object(
+        map_value(credential, "issuerJws", "credential")?,
+        &["signingInput", "signingInputDigest", "signature"],
+        &[],
+        "issuer JWS",
+    )?;
     let signing_input = format!("{}.{}", jwt_parts[0], jwt_parts[1]);
     assert_ok(
         signing_input == map_text(issuer_jws, "signingInput")?
             && digest(signing_input.as_bytes()) == map_text(issuer_jws, "signingInputDigest")?
             && digest(credential_text.as_bytes()) == map_text(credential, "credentialDigest")?,
         "SD-JWT issuer preimages",
+    )?;
+    b64_string(
+        map_value(issuer_jws, "signature", "issuer JWS")?,
+        Some(64),
+        "issuer signature",
     )?;
     let signature_bytes = URL_SAFE_NO_PAD
         .decode(jwt_parts[2])
@@ -394,10 +1881,667 @@ fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
         map_text(credential, "issuerDid")? == issuer_did,
         "SD-JWT issuer DID binding",
     )?;
+    assert_ok(
+        map_text(claims, "iss")? == issuer_did,
+        "SD-JWT issuer trust binding",
+    )?;
+    let binding_holder = text(artifact_message(scenario, "holderBinding")?, "holderDid")?;
+    assert_ok(
+        credential_holder == map_text(claims, "sub")? && credential_holder == binding_holder,
+        "SD-JWT holder equality",
+    )?;
+    let iat = claims
+        .get("iat")
+        .and_then(Value::as_i64)
+        .ok_or("SD-JWT iat")?;
+    let nbf = claims
+        .get("nbf")
+        .and_then(Value::as_i64)
+        .ok_or("SD-JWT nbf")?;
+    let exp = claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .ok_or("SD-JWT exp")?;
+    assert_ok(
+        iat >= 0 && nbf >= 0 && exp >= 0 && iat <= nbf && nbf < exp,
+        "SD-JWT date ordering",
+    )?;
+    assert_ok(exp == share_expiry, "SD-JWT share expiry")?;
+    let evaluation_time = valid_time(
+        scenario.get("evaluationTime").ok_or("evaluation time")?,
+        "evaluation time",
+    )?;
+    let clock_skew = scenario
+        .get("clockSkewSeconds")
+        .and_then(Value::as_i64)
+        .ok_or("clock skew")?;
+    assert_ok((0..=300).contains(&clock_skew), "clock skew bounds")?;
+    let issued_at = valid_time(
+        &Value::String(map_text(object(scenario, "authorization")?, "issuedAt")?.into()),
+        "authorization issuedAt",
+    )?;
+    assert_ok(
+        iat == issued_at && nbf == issued_at,
+        "SD-JWT issued-at binding",
+    )?;
+    assert_ok(
+        iat <= evaluation_time + clock_skew,
+        "SD-JWT iat is from the future",
+    )?;
+    assert_ok(
+        nbf <= evaluation_time + clock_skew,
+        "SD-JWT nbf is not active",
+    )?;
+    assert_ok(exp > evaluation_time - clock_skew, "SD-JWT expired")?;
     let signature = Signature::from_slice(&signature_bytes).map_err(|e| e.to_string())?;
     issuer_key
         .verify_strict(signing_input.as_bytes(), &signature)
         .map_err(|e| format!("SD-JWT issuer signature: {e}"))?;
+    Ok(())
+}
+
+fn artifact_named<'a>(scenario: &'a Value, name: &str) -> Result<&'a Value> {
+    array(scenario, "artifacts")?
+        .iter()
+        .find(|artifact| text(artifact, "name").ok() == Some(name))
+        .ok_or_else(|| format!("missing artifact {name}"))
+}
+
+fn assert_equal_field(
+    left: &Map<String, Value>,
+    right: &Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<()> {
+    assert_ok(left.get(key) == right.get(key), label)
+}
+
+fn validate_share_url(url: &str, scenario: &Value) -> Result<()> {
+    let cid = text(scenario, "shareCid")?;
+    valid_cid(&Value::String(cid.into()), "share URL CID")?;
+    let expected_prefix = format!("https://share.tinycloud.xyz/s/{cid}#");
+    assert_ok(url.starts_with(&expected_prefix), "share URL origin/CID")?;
+    let fragment = url
+        .strip_prefix(&expected_prefix)
+        .ok_or("share URL fragment")?;
+    let members: Vec<&str> = fragment.split('&').collect();
+    assert_ok(members.len() == 1, "share URL fragment fields")?;
+    let (key, encoded) = members[0].split_once('=').ok_or("share URL key field")?;
+    assert_ok(
+        key == "k" && !encoded.is_empty() && !encoded.contains('='),
+        "share URL key parser",
+    )?;
+    let key_bytes = b64_string(&Value::String(encoded.into()), Some(32), "share URL key")?;
+    assert_ok(
+        key_bytes == b64(scenario, "envelopeKey")?,
+        "share URL key/envelope key binding",
+    )?;
+    Ok(())
+}
+
+fn validate_endpoint_body(
+    name: &str,
+    body: &Value,
+    scenario: &Value,
+    enrollment: &Value,
+    issuer_key: &VerifyingKey,
+) -> Result<()> {
+    let kind = text(scenario, "kind")?;
+    let source = scenario.get("source").ok_or("source")?;
+    let source_object = source.as_object().ok_or("source object")?;
+    let auth = object(scenario, "authorization")?;
+    let credential = object(scenario, "credential")?;
+    let artifacts = scenario.get("artifacts").ok_or("artifacts")?;
+    match name {
+        "authorizationRequest" => {
+            let expected_request_digest = map_text(
+                map_object(
+                    object(
+                        scenario.get("preimages").ok_or("preimages")?,
+                        "authorizationRequest",
+                    )?,
+                    "body",
+                )?,
+                "requestBodyDigest",
+            )?;
+            let object = exact_object(
+                body,
+                &[
+                    "shareCid",
+                    "shareId",
+                    "policyCid",
+                    "recipientEmail",
+                    "targetOrigin",
+                    "nodeAudience",
+                    "action",
+                    "resource",
+                    "requestBodyDigest",
+                ],
+                &[],
+                name,
+            )?;
+            for (key, expected) in [
+                ("shareCid", text(scenario, "shareCid")?),
+                ("shareId", text(scenario, "shareId")?),
+                ("policyCid", text(scenario, "policyCid")?),
+                ("recipientEmail", text(scenario, "canonicalEmail")?),
+                ("targetOrigin", map_text(auth, "targetOrigin")?),
+                ("nodeAudience", map_text(auth, "nodeAudience")?),
+                ("action", text(source, "action")?),
+                ("resource", text(source, "path")?),
+                ("requestBodyDigest", expected_request_digest),
+            ] {
+                assert_ok(
+                    map_text(object, key)? == expected,
+                    "authorization request scope",
+                )?;
+            }
+            valid_cid(
+                map_value(object, "shareCid", name)?,
+                "authorization request share CID",
+            )?;
+            valid_share_id(
+                map_value(object, "shareId", name)?,
+                "authorization request share ID",
+            )?;
+            valid_cid(
+                map_value(object, "policyCid", name)?,
+                "authorization request policy CID",
+            )?;
+            assert_ok(
+                strict_email(map_text(object, "recipientEmail")?),
+                "authorization request email",
+            )?;
+            valid_origin(
+                map_value(object, "targetOrigin", name)?,
+                "authorization request origin",
+            )?;
+            valid_did(
+                map_value(object, "nodeAudience", name)?,
+                "authorization request audience",
+            )?;
+            valid_path(
+                map_value(object, "resource", name)?,
+                "authorization request resource",
+            )?;
+            valid_digest(
+                map_value(object, "requestBodyDigest", name)?,
+                "authorization request digest",
+            )?;
+        }
+        "authorizationResponse" | "createInvitationRequest" => {
+            let object = if name == "authorizationResponse" {
+                exact_object(body, &["authorization", "proof"], &[], name)?
+            } else {
+                exact_object(body, &["authorization", "proof", "shareUrl"], &[], name)?
+            };
+            validate_invite_authorization(map_value(object, "authorization", name)?, kind)?;
+            validate_proof(map_value(object, "proof", name)?, "authorization proof")?;
+            let proof = map_object(object, "proof")?;
+            let auth_artifact = artifact_named(scenario, "inviteAuthorization")?;
+            proof_matches(
+                &Value::Object(object.clone()),
+                auth_artifact,
+                enrollment,
+                "authorization proof binding",
+            )?;
+            if name == "createInvitationRequest" {
+                validate_share_url(map_text(object, "shareUrl")?, scenario)?;
+                assert_ok(
+                    map_text(proof, "kid")? == text(enrollment, "invitationKid")?,
+                    "invitation proof kid",
+                )?;
+            }
+        }
+        "createInvitationResponse" | "resendResponse" => {
+            let object = exact_object(body, &["status", "retryAfterSeconds"], &[], name)?;
+            const_string(
+                map_value(object, "status", name)?,
+                "accepted",
+                "delivery status",
+            )?;
+            const_number(
+                map_value(object, "retryAfterSeconds", name)?,
+                20,
+                "delivery retry",
+            )?;
+        }
+        "resendRequest" => {
+            let object = exact_object(body, &["invitationId", "claimSecret"], &[], name)?;
+            b64_string(
+                map_value(object, "invitationId", name)?,
+                Some(16),
+                "resend invitation ID",
+            )?;
+            b64_string(
+                map_value(object, "claimSecret", name)?,
+                Some(32),
+                "resend claim secret",
+            )?;
+        }
+        "claimChallengeMagicRequest" => {
+            let object = exact_object(body, &["invitationId", "method", "claimSecret"], &[], name)?;
+            b64_string(
+                map_value(object, "invitationId", name)?,
+                Some(16),
+                "magic invitation ID",
+            )?;
+            const_string(map_value(object, "method", name)?, "magic", "magic method")?;
+            b64_string(
+                map_value(object, "claimSecret", name)?,
+                Some(32),
+                "magic claim secret",
+            )?;
+        }
+        "claimChallengeOtpRequest" => {
+            let object = exact_object(body, &["invitationId", "method", "otp"], &[], name)?;
+            b64_string(
+                map_value(object, "invitationId", name)?,
+                Some(16),
+                "OTP invitation ID",
+            )?;
+            const_string(map_value(object, "method", name)?, "otp", "OTP method")?;
+            let otp = map_text(object, "otp")?;
+            assert_ok(
+                otp.len() == 6 && otp.bytes().all(|byte| byte.is_ascii_digit()),
+                "OTP shape",
+            )?;
+        }
+        "claimChallengeResponse" => {
+            let object = exact_object(
+                body,
+                &[
+                    "claimNonce",
+                    "shareCid",
+                    "shareId",
+                    "policyCid",
+                    "contentSource",
+                    "contentSourceDigest",
+                    "emailHash",
+                    "targetOrigin",
+                    "nodeAudience",
+                    "expiresAt",
+                ],
+                &[],
+                name,
+            )?;
+            b64_string(
+                map_value(object, "claimNonce", name)?,
+                Some(32),
+                "claim nonce",
+            )?;
+            validate_source(map_value(object, "contentSource", name)?, kind)?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", name)?,
+                "claim source digest",
+            )?;
+            valid_digest(map_value(object, "emailHash", name)?, "claim email hash")?;
+            valid_time(
+                map_value(object, "expiresAt", name)?,
+                "claim challenge expiry",
+            )?;
+            for key in ["shareCid", "policyCid"] {
+                valid_cid(map_value(object, key, name)?, key)?;
+            }
+            valid_share_id(map_value(object, "shareId", name)?, "claim share ID")?;
+            valid_origin(map_value(object, "targetOrigin", name)?, "claim origin")?;
+            valid_did(map_value(object, "nodeAudience", name)?, "claim audience")?;
+        }
+        "claimRedeemRequest" | "claimRedeemOtpRequest" => {
+            let object = exact_object(
+                body,
+                &[
+                    "version",
+                    "redemptionId",
+                    "invitationId",
+                    "method",
+                    "mailboxProof",
+                    "binding",
+                    "holderProof",
+                ],
+                &[],
+                name,
+            )?;
+            const_string(
+                map_value(object, "version", name)?,
+                CONTRACT_VERSION,
+                "redeem version",
+            )?;
+            b64_string(
+                map_value(object, "redemptionId", name)?,
+                Some(16),
+                "redeem ID",
+            )?;
+            b64_string(
+                map_value(object, "invitationId", name)?,
+                Some(16),
+                "redeem invitation ID",
+            )?;
+            let expected_method = if name == "claimRedeemRequest" {
+                "magic"
+            } else {
+                "otp"
+            };
+            const_string(
+                map_value(object, "method", name)?,
+                expected_method,
+                "redeem method",
+            )?;
+            if expected_method == "magic" {
+                b64_string(
+                    map_value(object, "mailboxProof", name)?,
+                    Some(32),
+                    "magic mailbox proof",
+                )?;
+            } else {
+                let otp = map_text(object, "mailboxProof")?;
+                assert_ok(
+                    otp.len() == 6 && otp.bytes().all(|byte| byte.is_ascii_digit()),
+                    "OTP mailbox proof",
+                )?;
+            }
+            let binding = map_value(object, "binding", name)?;
+            validate_holder_binding(binding, kind)?;
+            let binding_object = binding.as_object().ok_or("binding object")?;
+            assert_equal_field(
+                object,
+                binding_object,
+                "redemptionId",
+                "redeem/binding redemption ID",
+            )?;
+            assert_equal_field(
+                object,
+                binding_object,
+                "invitationId",
+                "redeem/binding invitation ID",
+            )?;
+            validate_proof(map_value(object, "holderProof", name)?, "holder proof")?;
+            let holder_artifact = artifact_named(scenario, "holderBinding")?;
+            let holder_proof = map_object(object, "holderProof")?;
+            let holder_signature = holder_artifact
+                .get("signature")
+                .and_then(Value::as_object)
+                .ok_or("holder artifact signature")?;
+            assert_ok(
+                map_text(holder_proof, "alg")? == "EdDSA"
+                    && map_text(holder_proof, "kid")? == map_text(holder_signature, "kid")?
+                    && map_text(holder_proof, "signature")? == map_text(holder_signature, "value")?,
+                "holder wrapper proof binding",
+            )?;
+        }
+        "claimRedeemResponse" => {
+            let object = exact_object(
+                body,
+                &["format", "credential", "holderDid", "expiresAt"],
+                &[],
+                name,
+            )?;
+            const_string(
+                map_value(object, "format", name)?,
+                "vc+sd-jwt",
+                "redeem response format",
+            )?;
+            assert_ok(
+                map_text(object, "credential")? == map_text(credential, "credential")?,
+                "redeem response credential",
+            )?;
+            assert_ok(
+                map_text(object, "holderDid")? == map_text(credential, "holderDid")?,
+                "redeem response holder",
+            )?;
+            assert_ok(
+                map_text(object, "expiresAt")? == map_text(credential, "expiresAt")?,
+                "redeem response expiry",
+            )?;
+            did_key_bytes(map_text(object, "holderDid")?)?;
+        }
+        "policyChallengeRequest" => {
+            let object = exact_object(
+                body,
+                &[
+                    "shareCid",
+                    "shareId",
+                    "delegationCid",
+                    "policyCid",
+                    "contentSource",
+                    "contentSourceDigest",
+                    "holderDid",
+                    "targetOrigin",
+                    "nodeAudience",
+                    "action",
+                    "resource",
+                    "requestBodyDigest",
+                ],
+                &[],
+                name,
+            )?;
+            validate_source(map_value(object, "contentSource", name)?, kind)?;
+            for key in ["shareCid", "delegationCid", "policyCid"] {
+                valid_cid(map_value(object, key, name)?, key)?;
+            }
+            valid_share_id(
+                map_value(object, "shareId", name)?,
+                "challenge request share ID",
+            )?;
+            did_key_bytes(map_text(object, "holderDid")?)?;
+            valid_origin(
+                map_value(object, "targetOrigin", name)?,
+                "challenge request origin",
+            )?;
+            valid_did(
+                map_value(object, "nodeAudience", name)?,
+                "challenge request audience",
+            )?;
+            valid_path(
+                map_value(object, "resource", name)?,
+                "challenge request resource",
+            )?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", name)?,
+                "challenge request source digest",
+            )?;
+            valid_digest(
+                map_value(object, "requestBodyDigest", name)?,
+                "challenge request body digest",
+            )?;
+        }
+        "policyChallengeResponse" => {
+            let object = exact_object(body, &["challenge", "proof"], &[], name)?;
+            validate_message_schema(
+                "policyChallenge",
+                map_value(object, "challenge", name)?,
+                kind,
+            )?;
+            validate_proof(map_value(object, "proof", name)?, "challenge proof")?;
+            proof_matches(
+                body,
+                artifact_named(scenario, "policyChallenge")?,
+                enrollment,
+                "challenge proof binding",
+            )?;
+        }
+        "policySessionRequest" => {
+            let object = exact_object(body, &["presentation", "credential", "proof"], &[], name)?;
+            validate_message_schema(
+                "policyPresentation",
+                map_value(object, "presentation", name)?,
+                kind,
+            )?;
+            assert_ok(
+                map_text(object, "credential")? == map_text(credential, "credential")?,
+                "session credential binding",
+            )?;
+            validate_proof(map_value(object, "proof", name)?, "presentation proof")?;
+            let proof = map_object(object, "proof")?;
+            let artifact_signature = artifact_named(scenario, "policyPresentation")?
+                .get("signature")
+                .and_then(Value::as_object)
+                .ok_or("presentation artifact signature")?;
+            assert_ok(
+                map_text(proof, "kid")? == map_text(artifact_signature, "kid")?
+                    && map_text(proof, "signature")? == map_text(artifact_signature, "value")?,
+                "presentation wrapper proof binding",
+            )?;
+        }
+        "policySessionResponse" => {
+            let object = exact_object(body, &["session", "proof"], &[], name)?;
+            validate_message_schema("policySession", map_value(object, "session", name)?, kind)?;
+            validate_proof(map_value(object, "proof", name)?, "session proof")?;
+            proof_matches(
+                body,
+                artifact_named(scenario, "policySession")?,
+                enrollment,
+                "session proof binding",
+            )?;
+        }
+        "kvReadRequest" | "sqlReadRequest" => {
+            let object = exact_object(
+                body,
+                &[
+                    "sessionId",
+                    "contentSource",
+                    "contentSourceDigest",
+                    "action",
+                    "resource",
+                    "requestBodyDigest",
+                    "invocation",
+                    "proof",
+                ],
+                &[],
+                name,
+            )?;
+            if (name == "kvReadRequest") != (kind == "kv") {
+                return Ok(());
+            }
+            validate_source(map_value(object, "contentSource", name)?, kind)?;
+            b64_string(
+                map_value(object, "sessionId", name)?,
+                Some(16),
+                "read session ID",
+            )?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", name)?,
+                "read source digest",
+            )?;
+            valid_path(map_value(object, "resource", name)?, "read resource")?;
+            valid_digest(
+                map_value(object, "requestBodyDigest", name)?,
+                "read body digest",
+            )?;
+            validate_message_schema(
+                "readInvocation",
+                map_value(object, "invocation", name)?,
+                kind,
+            )?;
+            validate_proof(map_value(object, "proof", name)?, "read proof")?;
+            let invocation = map_object(object, "invocation")?;
+            assert_equal_field(object, invocation, "sessionId", "read/invocation session")?;
+            assert_equal_field(
+                object,
+                invocation,
+                "contentSource",
+                "read/invocation source",
+            )?;
+            assert_equal_field(
+                object,
+                invocation,
+                "contentSourceDigest",
+                "read/invocation source digest",
+            )?;
+            assert_equal_field(object, invocation, "action", "read/invocation action")?;
+            assert_equal_field(object, invocation, "resource", "read/invocation resource")?;
+            assert_equal_field(
+                object,
+                invocation,
+                "requestBodyDigest",
+                "read/invocation body digest",
+            )?;
+            let proof = map_object(object, "proof")?;
+            let signature = artifact_named(scenario, "readInvocation")?
+                .get("signature")
+                .and_then(Value::as_object)
+                .ok_or("read artifact signature")?;
+            assert_ok(
+                map_text(proof, "kid")? == map_text(signature, "kid")?
+                    && map_text(proof, "signature")? == map_text(signature, "value")?,
+                "read wrapper proof binding",
+            )?;
+        }
+        "readResponse" => {
+            let object = exact_object(
+                body,
+                &["mediaType", "content", "contentSourceDigest", "bodyDigest"],
+                &[],
+                name,
+            )?;
+            const_string(
+                map_value(object, "mediaType", name)?,
+                "text/markdown; charset=utf-8",
+                "read media type",
+            )?;
+            let content = map_text(object, "content")?;
+            assert_ok(content.len() <= 1_048_576, "read content byte limit")?;
+            assert_ok(
+                map_text(object, "contentSourceDigest")? == text(scenario, "sourceDigest")?,
+                "read response source",
+            )?;
+            assert_ok(
+                digest(content.as_bytes()) == map_text(object, "bodyDigest")?,
+                "read response body digest",
+            )?;
+        }
+        value if value.ends_with("Failure") => {
+            let object = exact_object(body, &["error"], &[], name)?;
+            let error = exact_object(
+                map_value(object, "error", name)?,
+                &["code"],
+                &[],
+                "failure error",
+            )?;
+            let code = map_text(error, "code")?;
+            assert_ok(
+                [
+                    "invalid_or_expired_claim",
+                    "claim_already_used",
+                    "invitation_authorization_invalid",
+                    "untrusted_node",
+                    "invalid_content_source",
+                    "invalid_holder_proof",
+                    "invalid_credential_profile",
+                    "policy_denied",
+                    "nonce_already_used",
+                    "read_denied",
+                    "capability_unavailable",
+                ]
+                .contains(&code),
+                "failure code",
+            )?;
+        }
+        _ => return Err(format!("unknown endpoint preimage {name}")),
+    }
+    let _ = (source_object, artifacts, issuer_key);
+    Ok(())
+}
+
+fn validate_jti_replay_bindings(scenario: &Value) -> Result<()> {
+    let mut seen = HashSet::new();
+    for (artifact_name, field) in [
+        ("inviteAuthorization", "jti"),
+        ("holderBinding", "jti"),
+        ("policyPresentation", "jti"),
+        ("readInvocation", "jti"),
+    ] {
+        let jti = text(artifact_message(scenario, artifact_name)?, field)?;
+        assert_ok(seen.insert(jti.to_string()), "duplicate artifact JTI")?;
+    }
+    let credential_jti = map_text(
+        map_object(object(scenario, "credential")?, "claims")?,
+        "jti",
+    )?;
+    assert_ok(
+        seen.insert(credential_jti.to_string()),
+        "credential JTI replay",
+    )?;
     Ok(())
 }
 fn validate_negative(negative: &Value) -> Result<()> {
@@ -422,6 +2566,8 @@ fn validate_negative(negative: &Value) -> Result<()> {
         "method",
         "proof",
         "sd-jwt",
+        "share-url",
+        "enrollment",
     ];
     let mut ids = Vec::new();
     for row in rows {
@@ -440,6 +2586,10 @@ fn validate_negative(negative: &Value) -> Result<()> {
         assert_ok(
             !text(row, "target")?.is_empty() && !text(row, "mutation")?.is_empty(),
             "negative target/mutation",
+        )?;
+        assert_ok(
+            !text(row, "rejectionStage")?.is_empty(),
+            "negative rejection stage",
         )?;
         let mutation = object(row, "mutationData")?;
         assert_ok(
@@ -539,6 +2689,12 @@ fn check_scope(value: &Value, expected: &Map<String, Value>, source: &Value) -> 
     }
     if let Some(actual) = value.get("contentSource") {
         assert_ok(jcs(actual)? == jcs(source)?, "content source equation")?;
+    }
+    if let Some(actual) = value.get("contentSourceDigest") {
+        assert_ok(
+            actual == &Value::String(digest(jcs(source)?.as_bytes())),
+            "content source digest equation",
+        )?;
     }
     Ok(())
 }
@@ -813,6 +2969,14 @@ fn known_native_id(id: &str) -> bool {
             | "envelope-policy-target-missing-bytes"
             | "envelope-policy-target-mismatch"
             | "envelope-origin-mismatch"
+            | "share-url-userinfo"
+            | "share-url-query"
+            | "share-url-duplicate-k"
+            | "share-url-unknown-fragment"
+            | "share-url-noncanonical-k"
+            | "share-url-wrong-origin"
+            | "share-url-wrong-path"
+            | "document-name-over-200-utf8"
             | "authorization-recipient-email-mismatch"
             | "redeem-redemption-id-mismatch"
             | "redeem-invitation-id-mismatch"
@@ -848,6 +3012,12 @@ fn known_native_id(id: &str) -> bool {
             | "credential-sub-mismatch"
             | "credential-legacy-email-path"
             | "credential-unsupported-status"
+            | "credential-expired-resigned"
+            | "credential-issuer-did-resigned"
+            | "credential-issuer-key-resigned"
+            | "credential-vct-resigned"
+            | "credential-holder-resigned"
+            | "credential-scope-resigned"
             | "different-holder-valid-signature"
             | "policy-challenge-replay"
             | "session-token-only"
@@ -857,6 +3027,11 @@ fn known_native_id(id: &str) -> bool {
             | "resend-recipient-supplied-email"
             | "capability-extra-route"
             | "capability-wildcard-origin"
+            | "node-enrollment-disabled"
+            | "node-enrollment-origin-audience"
+            | "node-enrollment-audience-origin"
+            | "node-enrollment-retired-key"
+            | "node-enrollment-kid-version-mismatch"
             | "read-body-one-field-mutation"
             | "claim-redeem-magic-with-otp"
             | "claim-redeem-otp-with-magic"
@@ -940,6 +3115,14 @@ fn apply_negative_mutation(
                 .ok_or("envelope target")?;
             target.insert("origin".into(), value.ok_or("envelope origin")?);
         }
+        "createInvitationRequest.shareUrl" => {
+            preimage_body_mut(scenario, "createInvitationRequest")?
+                .insert("shareUrl".into(), value.ok_or("share URL")?);
+        }
+        "inviteAuthorization.documentName" => {
+            artifact_message_mut(scenario, "inviteAuthorization")?
+                .insert("documentName".into(), value.ok_or("document name")?);
+        }
         "inviteAuthorization.recipientEmail" => {
             artifact_message_mut(scenario, "inviteAuthorization")?
                 .insert("recipientEmail".into(), value.ok_or("recipient email")?);
@@ -1008,8 +3191,20 @@ fn apply_negative_mutation(
                 .insert("value".into(), value.ok_or("holder signature value")?);
         }
         "holderBinding.holderDid" => {
-            artifact_message_mut(scenario, "holderBinding")?
-                .insert("holderDid".into(), value.ok_or("holder DID")?);
+            if let Some(candidate) = mutation.get("candidateArtifact") {
+                let artifacts = scenario
+                    .get_mut("artifacts")
+                    .and_then(Value::as_array_mut)
+                    .ok_or("artifacts")?;
+                let index = artifacts
+                    .iter()
+                    .position(|artifact| text(artifact, "name").ok() == Some("holderBinding"))
+                    .ok_or("holder artifact")?;
+                artifacts[index] = candidate.clone();
+            } else {
+                artifact_message_mut(scenario, "holderBinding")?
+                    .insert("holderDid".into(), value.ok_or("holder DID")?);
+            }
         }
         "readInvocation.signature.value" => {
             let signature = artifact_mut(scenario, "readInvocation")?
@@ -1091,6 +3286,12 @@ fn apply_negative_mutation(
             } else {
                 claims.insert(field.into(), value.ok_or("credential value")?);
             }
+        }
+        target if target.starts_with("credential.") && mutation.get("credential").is_some() => {
+            scenario["credential"] = mutation
+                .get("credential")
+                .cloned()
+                .ok_or("credential candidate")?;
         }
         "credential.disclosures[0].path" => {
             let disclosure = scenario
@@ -1253,6 +3454,12 @@ fn apply_negative_mutation(
                 .ok_or("credential disclosure")?
                 .insert("encoded".into(), encoded.into());
         }
+        target if target.starts_with("enrollment.") => {
+            scenario["enrollment"] = mutation
+                .get("enrollment")
+                .cloned()
+                .ok_or("enrollment candidate")?;
+        }
         _ => return Err(format!("unknown native negative target {target}")),
     }
     Ok(())
@@ -1320,6 +3527,24 @@ fn validate_mutated_candidate(
             )?,
             "envelope origin mismatch",
         ),
+        "createInvitationRequest.shareUrl" => {
+            let body = map_object(
+                object(
+                    scenario.get("preimages").ok_or("preimages")?,
+                    "createInvitationRequest",
+                )?,
+                "body",
+            )?;
+            validate_share_url(map_text(body, "shareUrl")?, scenario)
+        }
+        "inviteAuthorization.documentName" => {
+            let artifact = artifact_named(scenario, "inviteAuthorization")?;
+            validate_message_schema(
+                "inviteAuthorization",
+                artifact.get("message").ok_or("authorization message")?,
+                kind,
+            )
+        }
         "inviteAuthorization.recipientEmail" => assert_ok(
             text(
                 artifact_message(scenario, "inviteAuthorization")?,
@@ -1420,7 +3645,8 @@ fn validate_mutated_candidate(
                 .ok_or("holder artifact")?;
             let enrollment = scenario.get("enrollment").ok_or("enrollment")?;
             verify_signature_core(artifact, "holderBinding", enrollment)?;
-            verify_artifact(artifact, "holderBinding", domains, enrollment)
+            verify_artifact(artifact, "holderBinding", domains, enrollment)?;
+            validate_cross_equations(scenario)
         }
         "sql.argumentsDigest" | "sql.arguments" => {
             let source = scenario.get("source").ok_or("source")?;
@@ -1625,6 +3851,30 @@ fn validate_mutated_candidate(
         "credential.claims._sd_alg" | "credential.disclosures[0].encoded" => {
             validate_sd_jwt(scenario, issuer_key)
         }
+        target if target.starts_with("credential.") => validate_sd_jwt(scenario, issuer_key),
+        target if target.starts_with("enrollment.") => {
+            let enrollment = object(scenario, "enrollment")?;
+            assert_ok(
+                map_text(enrollment, "targetOrigin")? == "https://node.example",
+                "enrollment authority origin",
+            )?;
+            assert_ok(
+                map_text(enrollment, "nodeAudience")? == "did:web:node.example",
+                "enrollment authority audience",
+            )?;
+            assert_ok(
+                map_text(enrollment, "invitationKid")? == "did:web:node.example#invitation-key-1",
+                "enrollment key rotation",
+            )?;
+            assert_ok(
+                enrollment.get("keyVersion") == Some(&Value::from(1)),
+                "enrollment key version",
+            )?;
+            assert_ok(
+                enrollment.get("enabled") == Some(&Value::Bool(true)),
+                "enrollment enabled",
+            )
+        }
         _ => Err(format!("unknown native negative target {target}")),
     }
 }
@@ -1652,6 +3902,31 @@ fn validate_negative_native(
         assert_ok(
             text(row, "expected")? == "reject",
             "negative expected marker",
+        )?;
+        assert_ok(
+            [
+                "contract-validation",
+                "credential-holder",
+                "credential-scope",
+                "credential-time",
+                "credential-vct",
+                "cross-artifact-holder",
+                "document-name-bytes",
+                "issuer-key",
+                "issuer-trust",
+                "node-authority",
+                "node-enrollment",
+                "node-key-retirement",
+                "node-key-rotation",
+                "share-url-fragment",
+                "share-url-key",
+                "share-url-origin",
+                "share-url-path",
+                "share-url-query",
+                "signature-encoding",
+            ]
+            .contains(&text(row, "rejectionStage")?),
+            "unknown negative rejection stage",
         )?;
         let mutation_text = serde_json::to_string(row.get("mutationData").ok_or("mutation data")?)
             .map_err(|e| e.to_string())?;
@@ -1681,8 +3956,9 @@ fn validate_negative_native(
         }
     }
     assert_ok(ids.len() == rows.len(), "native negative coverage")?;
-    validate_recovery_native(states)
+    execute_operation_program(states)
 }
+#[allow(dead_code)]
 fn validate_recovery_native(states: &Value) -> Result<()> {
     let recovery_value = states.get("issuanceRecovery").ok_or("issuanceRecovery")?;
     let recovery = recovery_value
@@ -1812,7 +4088,144 @@ fn expect_string_array(value: &Value, expected: &[&str], label: &str) -> Result<
     }
     Ok(())
 }
+fn execute_operation_program(states: &Value) -> Result<()> {
+    let program = array(states, "operationProgram")?;
+    assert_ok(program.len() >= 15, "operation program coverage")?;
+    let mut ids = HashSet::new();
+    for row in program {
+        let row = row.as_object().ok_or("operation row object")?;
+        let id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("operation ID")?;
+        assert_ok(ids.insert(id), "duplicate operation ID")?;
+        let operation = row
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or("operation kind")?;
+        assert_ok(
+            matches!(
+                operation,
+                "transaction" | "reject" | "crash" | "retry" | "read-only"
+            ),
+            "unknown operation kind",
+        )?;
+        let pre = exact_object(
+            row.get("pre").ok_or("operation pre")?,
+            &["durableRows"],
+            &[],
+            "operation pre",
+        )?;
+        let post = exact_object(
+            row.get("post").ok_or("operation post")?,
+            &["durableRows"],
+            &[],
+            "operation post",
+        )?;
+        let pre_rows = map_object(pre, "durableRows")?;
+        let post_rows = map_object(post, "durableRows")?;
+        let mut durable = pre_rows.clone();
+        for (key, expected) in pre_rows {
+            assert_ok(durable.get(key) == Some(expected), "operation precondition")?;
+        }
+        match operation {
+            "reject" | "read-only" => {
+                assert_ok(
+                    row.get("attempted").is_some() || operation == "read-only",
+                    "rejected operation evidence",
+                )?;
+                for (key, expected) in post_rows {
+                    assert_ok(
+                        pre_rows.get(key) == Some(expected),
+                        "rejected operation mutated state",
+                    )?;
+                }
+            }
+            "transaction" | "crash" | "retry" => {
+                for (key, value) in post_rows {
+                    durable.insert(key.clone(), value.clone());
+                }
+            }
+            _ => unreachable!(),
+        }
+        match id {
+            "same-redemption-contenders" => assert_ok(
+                row.get("attempts") == Some(&Value::from(20))
+                    && durable.get("issuanceCount") == Some(&Value::from(1))
+                    && durable.get("result") == Some(&Value::String("same-result".into())),
+                "same redemption race",
+            )?,
+            "different-redemption-rejected" => assert_ok(
+                row.get("attempted")
+                    .and_then(|value| value.get("redemptionId"))
+                    == Some(&Value::String("redemption-002".into()))
+                    && durable.get("issuanceCount") == Some(&Value::from(1)),
+                "different redemption rejection",
+            )?,
+            "otp-wrong-vs-invalid-magic" => assert_ok(
+                row.get("attempts") == Some(&Value::from(5))
+                    && durable.get("invitation") == Some(&Value::String("LOCKED(v1)".into()))
+                    && durable.get("otpAttempts") == Some(&Value::from(5))
+                    && durable.get("invalidMagicOtpAttempts") == Some(&Value::from(0)),
+                "OTP isolation",
+            )?,
+            "nonce-replay-rejected" | "jti-replay-rejected" | "scanner-get-no-mutation" => {
+                assert_ok(
+                    pre_rows == post_rows,
+                    "replay/scanner operation mutated durable state",
+                )?;
+            }
+            "atomic-partial-write-rejected"
+            | "cleanup-pending-seed-refused"
+            | "premature-resend-invalidation" => {
+                assert_ok(
+                    pre_rows == post_rows,
+                    "rejected atomic operation mutated durable state",
+                )?;
+            }
+            "provider-accept-crash" => assert_ok(
+                operation == "crash"
+                    && durable.get("providerAccepted") == Some(&Value::Bool(true))
+                    && durable.get("crashObserved") == Some(&Value::Bool(true)),
+                "crash point",
+            )?,
+            "provider-accept-retry" => assert_ok(
+                operation == "retry"
+                    && durable.get("invitation") == Some(&Value::String("ACTIVE(v2)".into()))
+                    && durable.get("providerSendCount") == Some(&Value::from(1)),
+                "provider acceptance recovery",
+            )?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_states(states: &Value) -> Result<()> {
+    let state_object = exact_object(
+        states,
+        &[
+            "version",
+            "testOnly",
+            "delivery",
+            "invitation",
+            "nonce",
+            "session",
+            "operations",
+            "operationProgram",
+        ],
+        &[],
+        "states",
+    )?;
+    const_string(
+        map_value(state_object, "version", "states")?,
+        CONTRACT_VERSION,
+        "states version",
+    )?;
+    assert_ok(
+        state_object.get("testOnly") == Some(&Value::Bool(true)),
+        "states testOnly",
+    )?;
     let delivery = array(states, "delivery")?;
     assert_ok(delivery.len() == 4, "delivery state count")?;
     let names = [
@@ -1830,6 +4243,13 @@ fn validate_states(states: &Value) -> Result<()> {
         )?;
     }
     for flow in delivery {
+        let name = text(flow, "name")?;
+        let expected_keys = if name == "crash-after-provider-accept" {
+            &["name", "events"][..]
+        } else {
+            &["name", "events", "providerIdempotencyKey"][..]
+        };
+        exact_object(flow, expected_keys, &[], "delivery state")?;
         let events = array(flow, "events")?;
         assert_ok(!events.is_empty(), "delivery events")?;
         let mut current = events[0]
@@ -1845,35 +4265,13 @@ fn validate_states(states: &Value) -> Result<()> {
             )?;
             current = pair[1].as_str().ok_or("delivery transition target")?;
         }
-        match text(flow, "name")? {
-            "create-accepted" => assert_ok(
-                flow.get("encryptedUntilProviderAcceptance") == Some(&Value::Bool(true))
-                    && flow.get("atomicActivation") == Some(&Value::Bool(true))
-                    && flow.get("materialDeletedAfterAccept") == Some(&Value::Bool(true)),
-                "create delivery invariants",
-            )?,
-            "resend-accepted" => assert_ok(
-                flow.get("oldVersionRemainsActiveWhilePending") == Some(&Value::Bool(true))
-                    && flow.get("oldVersionInvalidatedOnlyAfterAccept") == Some(&Value::Bool(true))
-                    && flow.get("replacementMaterialEncryptedUntilAcceptance")
-                        == Some(&Value::Bool(true))
-                    && flow.get("atomicActivation") == Some(&Value::Bool(true)),
-                "resend delivery invariants",
-            )?,
-            "resend-provider-failure" => assert_ok(
-                flow.get("oldVersionRemainsUsable") == Some(&Value::Bool(true))
-                    && flow.get("replacementDiscardedOnFailure") == Some(&Value::Bool(true)),
-                "failed resend invariants",
-            )?,
-            "crash-after-provider-accept" => assert_ok(
-                flow.get("providerAcceptedBeforeCrash") == Some(&Value::Bool(true))
-                    && flow.get("sameIdempotencyKeyOnRetry") == Some(&Value::Bool(true))
-                    && flow.get("recoveryReconcilesProviderAcceptance") == Some(&Value::Bool(true))
-                    && flow.get("oneEffectiveSend") == Some(&Value::Bool(true))
-                    && flow.get("oldVersionInvalidatedAfterRecovery") == Some(&Value::Bool(true)),
-                "crash recovery invariants",
-            )?,
-            _ => return Err("unknown delivery flow".into()),
+        if name != "crash-after-provider-accept" {
+            assert_ok(
+                flow.get("providerIdempotencyKey")
+                    .and_then(Value::as_str)
+                    .is_some(),
+                "delivery idempotency key",
+            )?;
         }
     }
     expect_string_array(
@@ -1901,14 +4299,28 @@ fn validate_states(states: &Value) -> Result<()> {
                 .any(|value| value.as_str() == Some("REVOKED")),
         "session terminal states",
     )?;
-    let semantics = object(states, "semantics")?;
-    let race = map_object(semantics, "sameRedemptionConcurrency")?;
-    assert_ok(
-        race.get("attempts") == Some(&Value::from(20))
-            && race.get("effectiveIssuances") == Some(&Value::from(1))
-            && race.get("sameResultForSameId") == Some(&Value::Bool(true)),
-        "redemption race invariants",
+    expect_string_array(
+        states.get("operations").ok_or("operations")?,
+        &[
+            "create_persist_outbox",
+            "provider_accept",
+            "activate_v1",
+            "wrong_otp_x5",
+            "lock_v1",
+            "resend_persist_v2",
+            "provider_accept_v2",
+            "invalidate_v1",
+            "claim_v2",
+            "consume_nonce",
+            "crash_after_provider_accept",
+            "retry_same_provider_idempotency",
+            "same_redemption_idempotent",
+            "different_redemption_rejected",
+            "scanner_get_no_state_change",
+        ],
+        "operations",
     )?;
+    execute_operation_program(states)?;
     Ok(())
 }
 fn verify(root: &Path) -> Result<()> {
@@ -1953,15 +4365,84 @@ fn verify(root: &Path) -> Result<()> {
         "envelope domain missing",
     )?;
     assert_ok(schemas.get("schemas").is_some(), "schemas missing")?;
+    validate_capability_registry(&domains)?;
     let positive = read_json(&vector_dir.join("positive.json"))?;
     let negative = read_json(&vector_dir.join("negative.json"))?;
     let states = read_json(&vector_dir.join("states.json"))?;
     let domains_map = object(&domains, "domains")?;
     let issuer_key = seed_verifying_key(&domains, "issuerSeedHex")?;
+    validate_issuer_trust(&domains, &issuer_key)?;
     validate_negative(&negative)?;
     validate_states(&states)?;
     validate_negative_native(&positive, &negative, &states, domains_map, &issuer_key)?;
     for scenario in array(&positive, "scenarios")? {
+        exact_object(
+            scenario,
+            &[
+                "kind",
+                "testOnly",
+                "canonicalEmail",
+                "emailHash",
+                "source",
+                "sourceDigest",
+                "policy",
+                "policyBytes",
+                "policyCid",
+                "sealedBlob",
+                "shareCid",
+                "shareId",
+                "envelopeKey",
+                "envelope",
+                "authorization",
+                "reportAbuseToken",
+                "evaluationTime",
+                "clockSkewSeconds",
+                "sdJwtSalt",
+                "credential",
+                "enrollment",
+                "artifacts",
+                "signedBytePreimages",
+                "preimages",
+            ],
+            &[],
+            "positive scenario",
+        )?;
+        assert_ok(
+            scenario.get("testOnly") == Some(&Value::Bool(true)),
+            "positive fixture testOnly",
+        )?;
+        let kind = text(scenario, "kind")?;
+        assert_ok(matches!(kind, "kv" | "sql"), "scenario kind")?;
+        valid_time(
+            scenario.get("evaluationTime").ok_or("evaluation time")?,
+            "evaluation time",
+        )?;
+        assert_ok(
+            scenario
+                .get("clockSkewSeconds")
+                .and_then(Value::as_i64)
+                .is_some_and(|skew| (0..=300).contains(&skew)),
+            "clock skew",
+        )?;
+        assert_ok(
+            strict_email(text(scenario, "canonicalEmail")?),
+            "canonical email",
+        )?;
+        valid_digest(scenario.get("emailHash").ok_or("email hash")?, "email hash")?;
+        assert_ok(
+            digest(text(scenario, "canonicalEmail")?.as_bytes()) == text(scenario, "emailHash")?,
+            "email hash preimage",
+        )?;
+        validate_source(scenario.get("source").ok_or("source")?, kind)?;
+        valid_digest(
+            scenario.get("sourceDigest").ok_or("source digest")?,
+            "source digest",
+        )?;
+        assert_ok(
+            digest(jcs(scenario.get("source").ok_or("source")?)?.as_bytes())
+                == text(scenario, "sourceDigest")?,
+            "source digest preimage",
+        )?;
         validate_sql_arguments(scenario.get("source").ok_or("source")?)?;
         let policy_bytes = b64(scenario, "policyBytes")?;
         assert_ok(
@@ -1972,12 +4453,43 @@ fn verify(root: &Path) -> Result<()> {
             cid(&policy_bytes) == text(scenario, "policyCid")?,
             "policy CID mismatch",
         )?;
+        assert_ok(
+            serde_json::from_slice::<Value>(&policy_bytes).map_err(|error| error.to_string())?
+                == *scenario.get("policy").ok_or("policy")?,
+            "policy bytes/object mismatch",
+        )?;
+        validate_message_schema("policy", scenario.get("policy").ok_or("policy")?, kind)?;
         let sealed = b64(scenario, "sealedBlob")?;
         assert_ok(
             cid(&sealed) == text(scenario, "shareCid")?,
             "share CID mismatch",
         )?;
+        b64_string(
+            scenario.get("envelopeKey").ok_or("envelope key")?,
+            Some(32),
+            "envelope key",
+        )?;
+        valid_cid(scenario.get("shareCid").ok_or("share CID")?, "share CID")?;
+        valid_cid(scenario.get("policyCid").ok_or("policy CID")?, "policy CID")?;
+        valid_share_id(scenario.get("shareId").ok_or("share ID")?, "share ID")?;
+        b64_string(
+            scenario.get("reportAbuseToken").ok_or("abuse token")?,
+            Some(16),
+            "abuse token",
+        )?;
+        b64_string(
+            scenario.get("sdJwtSalt").ok_or("SD-JWT salt")?,
+            Some(16),
+            "SD-JWT salt",
+        )?;
         let enrollment = scenario.get("enrollment").ok_or("enrollment")?;
+        validate_node_enrollment(enrollment, &domains)?;
+        validate_message_schema(
+            "envelope",
+            scenario.get("envelope").ok_or("envelope")?,
+            kind,
+        )?;
+        validate_invite_authorization(scenario.get("authorization").ok_or("authorization")?, kind)?;
         let artifacts = array(scenario, "artifacts")?;
         assert_ok(artifacts.len() == 8, "signed artifact count")?;
         let mut artifact_names = Vec::new();
@@ -1990,6 +4502,49 @@ fn verify(root: &Path) -> Result<()> {
             artifact_names.push(name.to_string());
             verify_artifact(artifact, name, domains_map, enrollment)?;
         }
+        let policy_artifact = artifact_named(scenario, "policy")?;
+        assert_ok(
+            text(policy_artifact, "signerDid")?
+                == text(artifact_message(scenario, "policy")?, "issuerDid")?,
+            "policy signer/issuer binding",
+        )?;
+        assert_ok(
+            text(artifact_named(scenario, "envelope")?, "signerDid")?
+                == text(artifact_message(scenario, "policy")?, "issuerDid")?,
+            "envelope signer/policy issuer binding",
+        )?;
+        for name in ["holderBinding", "policyPresentation", "readInvocation"] {
+            assert_ok(
+                text(artifact_named(scenario, name)?, "signerDid")?
+                    == text(artifact_message(scenario, name)?, "holderDid")?,
+                "holder signer binding",
+            )?;
+        }
+        for name in ["policyChallenge", "policySession"] {
+            assert_ok(
+                text(artifact_named(scenario, name)?, "signerDid")?
+                    == text(enrollment, "nodeAudience")?,
+                "node signer binding",
+            )?;
+        }
+        assert_ok(
+            scenario.get("authorization")
+                == Some(artifact_message(scenario, "inviteAuthorization")?),
+            "authorization artifact/object mismatch",
+        )?;
+        assert_ok(
+            scenario.get("policy") == Some(artifact_message(scenario, "policy")?),
+            "policy artifact/object mismatch",
+        )?;
+        let mut unsigned_envelope = scenario.get("envelope").ok_or("envelope")?.clone();
+        unsigned_envelope
+            .as_object_mut()
+            .ok_or("envelope object")?
+            .remove("signature");
+        assert_ok(
+            &unsigned_envelope == artifact_message(scenario, "envelope")?,
+            "envelope artifact/object mismatch",
+        )?;
         for required in [
             "policy",
             "envelope",
@@ -2019,13 +4574,20 @@ fn verify(root: &Path) -> Result<()> {
             )?;
         }
         for (name, preimage) in preimages {
-            let body = preimage.get("body").ok_or("preimage body")?;
+            let preimage_object = exact_object(
+                preimage,
+                &["body", "jcs", "digest"],
+                &[],
+                "endpoint preimage",
+            )?;
+            let body = map_value(preimage_object, "body", "endpoint preimage")?;
             let canonical = jcs(body)?;
             assert_ok(
                 canonical == text(preimage, "jcs")?
                     && digest(canonical.as_bytes()) == text(preimage, "digest")?,
                 &format!("preimage mismatch: {name}"),
             )?;
+            validate_endpoint_body(name, body, scenario, enrollment, &issuer_key)?;
         }
         let signed_preimages = object(scenario, "signedBytePreimages")?;
         for artifact in artifacts {
@@ -2065,6 +4627,7 @@ fn verify(root: &Path) -> Result<()> {
             "session response proof",
         )?;
         validate_sd_jwt(scenario, &issuer_key)?;
+        validate_jti_replay_bindings(scenario)?;
         validate_cross_equations(scenario)?;
     }
     Ok(())
