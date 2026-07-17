@@ -38,10 +38,11 @@ is ASCII-lowercased. Leading, trailing, repeated, or interior whitespace,
 quoted/commented locals, Unicode, multiple `@`, and invalid LDH/A-label DNS
 labels are rejected. Limits are byte limits, not JavaScript character counts.
 
-`contentSource` is a strict KV or named-SQL union. SQL arguments are a plain
-JSON object whose JCS UTF-8 bytes are separately digested and bounded. Raw SQL
-transport is never part of this contract. Both source and source digest are
-carried byte-for-byte by every signed artifact.
+`contentSource` is a strict KV or named-SQL union. SQL v1 arguments are a flat
+object with at most 32 properties; every value is a safe JSON integer and
+negative zero is rejected. Their JCS UTF-8 bytes are separately digested and
+bounded to 4096 bytes. Raw SQL transport is never part of this contract. Both
+source and source digest are carried byte-for-byte by every signed artifact.
 
 The email credential uses the OpenCredentials SD-JWT profile: claims carry
 `_sd_alg: "sha-256"`, and the sole email object disclosure decodes exactly to
@@ -69,13 +70,15 @@ TypeScript independently executes the serialized mutation semantics, and Rust
 independently executes the same serialized mutations and equations. Unknown
 row IDs fail all three consumers. `states.json` is executed as a transactional
 model covering resend/provider acceptance/crash recovery, pending encrypted
-issuance-seed retry, durable completion, atomic `CONSUMED` plus result
-persistence, and an explicit atomic `TERMINAL_ERROR` branch that persists the
-error while deleting the seed in the same transaction. Provider acceptance is
-confined to delivery; issuance recovery models credential generation and
-durable credential persistence separately. The model also covers cleanup
-refusal, OTP, JTI, nonce, redemption
-idempotency, and scanner GET boundaries. The redaction window is 900 seconds
+issuance-seed retry, and atomic issuance resolution. Before the single success
+event there is no durable result; that event persists the credential/result,
+marks the invitation `CONSUMED`, and deletes the seed together. The terminal
+error event likewise persists the terminal result, marks the invitation
+`CONSUMED`, and deletes the seed atomically. Provider acceptance is confined to
+delivery; issuance recovery models credential generation and durable credential
+persistence separately. The model also covers cleanup refusal, OTP, JTI, nonce,
+redemption idempotency, and scanner GET boundaries: a valid `k`/`i`/`c`
+fragment is parsed without consuming invitation state. The redaction window is 900 seconds
 from durable completion only.
 
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in

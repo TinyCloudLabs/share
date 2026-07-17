@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -114,6 +114,19 @@ fn b64_map(value: &Map<String, Value>, key: &str) -> Result<Vec<u8>> {
         return Err(format!("{key}: non-canonical base64url"));
     }
     Ok(decoded)
+}
+fn seed_verifying_key(domains: &Value, key: &str) -> Result<VerifyingKey> {
+    let encoded = map_text(object(domains, "testKeys")?, key)?;
+    assert_ok(
+        encoded.len() == 64 && encoded.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        key,
+    )?;
+    let mut seed = [0u8; 32];
+    for (index, byte) in seed.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&encoded[index * 2..index * 2 + 2], 16)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(SigningKey::from_bytes(&seed).verifying_key())
 }
 fn assert_ok(condition: bool, message: &str) -> Result<()> {
     if condition {
@@ -284,7 +297,7 @@ fn proof_matches(
         label,
     )
 }
-fn validate_sd_jwt(scenario: &Value) -> Result<()> {
+fn validate_sd_jwt(scenario: &Value, issuer_key: &VerifyingKey) -> Result<()> {
     let credential = object(scenario, "credential")?;
     let claims = map_object(credential, "claims")?;
     assert_ok(map_text(claims, "_sd_alg")? == "sha-256", "SD-JWT _sd_alg")?;
@@ -329,12 +342,37 @@ fn validate_sd_jwt(scenario: &Value) -> Result<()> {
     let header_bytes = URL_SAFE_NO_PAD
         .decode(jwt_parts[0])
         .map_err(|e| e.to_string())?;
+    assert_ok(
+        URL_SAFE_NO_PAD.encode(&header_bytes) == jwt_parts[0],
+        "SD-JWT header encoding",
+    )?;
     let header: Value = serde_json::from_slice(&header_bytes).map_err(|e| e.to_string())?;
     let header_object = header.as_object().ok_or("SD-JWT header object")?;
     assert_ok(
         header_object.len() == 1
             && header_object.get("alg").and_then(Value::as_str) == Some("EdDSA"),
         "SD-JWT issuer header",
+    )?;
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(jwt_parts[1])
+        .map_err(|e| e.to_string())?;
+    assert_ok(
+        URL_SAFE_NO_PAD.encode(&payload_bytes) == jwt_parts[1],
+        "SD-JWT payload encoding",
+    )?;
+    let payload: Value = serde_json::from_slice(&payload_bytes).map_err(|e| e.to_string())?;
+    assert_ok(
+        payload.as_object() == Some(claims),
+        "SD-JWT signed payload differs from detached claims",
+    )?;
+    let scope = map_object(claims, "tinycloud_share")?;
+    assert_ok(
+        map_text(scope, "share_cid")? == text(scenario, "shareCid")?
+            && map_text(scope, "share_id")? == text(scenario, "shareId")?
+            && map_text(scope, "policy_cid")? == text(scenario, "policyCid")?
+            && map_text(scope, "node_audience")?
+                == map_text(object(scenario, "authorization")?, "nodeAudience")?,
+        "SD-JWT signed scope",
     )?;
     let issuer_jws = map_object(credential, "issuerJws")?;
     let signing_input = format!("{}.{}", jwt_parts[0], jwt_parts[1]);
@@ -344,6 +382,22 @@ fn validate_sd_jwt(scenario: &Value) -> Result<()> {
             && digest(credential_text.as_bytes()) == map_text(credential, "credentialDigest")?,
         "SD-JWT issuer preimages",
     )?;
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(jwt_parts[2])
+        .map_err(|e| e.to_string())?;
+    assert_ok(
+        URL_SAFE_NO_PAD.encode(&signature_bytes) == jwt_parts[2] && signature_bytes.len() == 64,
+        "SD-JWT issuer signature encoding",
+    )?;
+    let issuer_did = map_text(claims, "iss")?;
+    assert_ok(
+        map_text(credential, "issuerDid")? == issuer_did,
+        "SD-JWT issuer DID binding",
+    )?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|e| e.to_string())?;
+    issuer_key
+        .verify_strict(signing_input.as_bytes(), &signature)
+        .map_err(|e| format!("SD-JWT issuer signature: {e}"))?;
     Ok(())
 }
 fn validate_negative(negative: &Value) -> Result<()> {
@@ -626,6 +680,57 @@ fn strict_email(input: &str) -> bool {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     })
 }
+fn validate_sql_arguments(source: &Value) -> Result<()> {
+    if text(source, "kind")? != "sql" {
+        return Ok(());
+    }
+    let arguments = object(source, "arguments")?;
+    assert_ok(arguments.len() <= 32, "SQL arguments property limit")?;
+    for value in arguments.values() {
+        let safe_integer = value
+            .as_i64()
+            .is_some_and(|number| number.unsigned_abs() <= 9_007_199_254_740_991)
+            || value
+                .as_u64()
+                .is_some_and(|number| number <= 9_007_199_254_740_991);
+        assert_ok(safe_integer, "SQL argument must be a safe integer")?;
+    }
+    let canonical = jcs(&Value::Object(arguments.clone()))?;
+    assert_ok(canonical.len() <= 4096, "SQL arguments byte limit")?;
+    assert_ok(
+        digest(canonical.as_bytes()) == text(source, "argumentsDigest")?,
+        "SQL arguments digest mismatch",
+    )
+}
+fn validate_scanner_fragment(url: &str, scenario: &Value) -> Result<()> {
+    let (base, fragment) = url.split_once('#').ok_or("scanner fragment missing")?;
+    assert_ok(
+        base == format!(
+            "https://share.tinycloud.xyz/s/{}",
+            text(scenario, "shareCid")?
+        ),
+        "scanner share URL",
+    )?;
+    let mut fields = Map::new();
+    for member in fragment.split('&') {
+        let (key, value) = member.split_once('=').ok_or("scanner fragment member")?;
+        assert_ok(
+            matches!(key, "k" | "i" | "c") && !fields.contains_key(key),
+            "scanner fragment shape",
+        )?;
+        fields.insert(key.into(), Value::String(value.into()));
+    }
+    assert_ok(fields.len() == 3, "scanner fragment cardinality")?;
+    for (key, length) in [("k", 32usize), ("i", 16usize), ("c", 32usize)] {
+        let encoded = map_text(&fields, key)?;
+        let decoded = URL_SAFE_NO_PAD.decode(encoded).map_err(|e| e.to_string())?;
+        assert_ok(
+            decoded.len() == length && URL_SAFE_NO_PAD.encode(&decoded) == encoded,
+            "scanner fragment encoding",
+        )?;
+    }
+    Ok(())
+}
 fn artifact_message_mut<'a>(
     scenario: &'a mut Value,
     name: &str,
@@ -733,6 +838,9 @@ fn known_native_id(id: &str) -> bool {
             | "noncanonical-ed25519-s"
             | "short-signature"
             | "wrong-source-digest"
+            | "sql-string-argument"
+            | "sql-fractional-argument"
+            | "sql-negative-zero-argument"
             | "sql-arguments-too-large"
             | "sql-arbitrary-query-field"
             | "policy-action-source-mismatch"
@@ -925,23 +1033,34 @@ fn apply_negative_mutation(
                 .get_mut("source")
                 .and_then(Value::as_object_mut)
                 .ok_or("source")?;
-            let arguments = source
-                .get_mut("arguments")
-                .and_then(Value::as_object_mut)
-                .ok_or("SQL arguments")?;
-            if target == "sql.argumentsDigest" {
-                arguments.insert(
-                    map_text(mutation, "field")?
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or("field")
-                        .into(),
-                    value.ok_or("SQL argument")?,
+            if mutation.get("operation").and_then(Value::as_str) == Some("replace-object") {
+                source.insert(
+                    "arguments".into(),
+                    mutation
+                        .get("value")
+                        .cloned()
+                        .ok_or("SQL arguments object")?,
                 );
             } else {
+                let arguments = source
+                    .get_mut("arguments")
+                    .and_then(Value::as_object_mut)
+                    .ok_or("SQL arguments")?;
+                let argument_value =
+                    if let Some(literal) = mutation.get("jsonLiteral").and_then(Value::as_str) {
+                        serde_json::from_str(literal).map_err(|e| e.to_string())?
+                    } else {
+                        value.ok_or("SQL argument")?
+                    };
+                let field = map_text(mutation, "field")?;
                 arguments.insert(
-                    map_text(mutation, "field")?.into(),
-                    value.ok_or("SQL argument")?,
+                    if target == "sql.argumentsDigest" {
+                        field.rsplit('.').next().unwrap_or("field")
+                    } else {
+                        field
+                    }
+                    .into(),
+                    argument_value,
                 );
             }
         }
@@ -985,13 +1104,25 @@ fn apply_negative_mutation(
             disclosure.insert("path".into(), value.ok_or("disclosure path")?);
         }
         "nonce.state" | "invitation.version" | "otp.attempts" => match target {
-            "nonce.state" => states["nonceTransition"] = Value::Object(mutation.clone()),
+            "nonce.state" => {
+                states["nativeNonceAttempt"] = serde_json::json!({
+                    "current": mutation.get("from").cloned().ok_or("nonce from")?,
+                    "operation": "consume",
+                    "requested": mutation.get("to").cloned().ok_or("nonce to")?
+                });
+            }
             "invitation.version" => {
-                states["invitationVersion"] =
-                    mutation.get("value").cloned().ok_or("invitation version")?
+                states["nativeInvitationAttempt"] = serde_json::json!({
+                    "activeVersion": 2,
+                    "attemptedVersion": mutation.get("value").cloned().ok_or("invitation version")?,
+                    "state": "ACTIVE"
+                });
             }
             "otp.attempts" => {
-                states["otpAttempts"] = mutation.get("value").cloned().ok_or("OTP attempts")?
+                states["nativeOtpAttempt"] = serde_json::json!({
+                    "attempts": mutation.get("value").cloned().ok_or("OTP attempts")?,
+                    "submittedCorrectCode": true
+                });
             }
             _ => return Err("unknown state mutation".into()),
         },
@@ -1006,6 +1137,11 @@ fn apply_negative_mutation(
         "fragment" | "resendRequest.email" => {
             if target == "fragment" {
                 scenario["fragment"] = value.ok_or("fragment")?;
+                states["nativeScannerGetAttempt"] = serde_json::json!({
+                    "method": "GET",
+                    "before": "ACTIVE(v1)",
+                    "after": "CONSUMED(v1)"
+                });
             } else {
                 preimage_body_mut(scenario, "resendRequest")?
                     .insert("email".into(), value.ok_or("resend email")?);
@@ -1096,10 +1232,21 @@ fn apply_negative_mutation(
                 .ok_or("disclosure shape")?;
             let encoded =
                 URL_SAFE_NO_PAD.encode(serde_json::to_vec(shape).map_err(|e| e.to_string())?);
-            scenario
+            let credential = scenario
                 .get_mut("credential")
                 .and_then(Value::as_object_mut)
-                .and_then(|credential| credential.get_mut("disclosures"))
+                .ok_or("credential")?;
+            let issuer = map_text(credential, "credential")?
+                .split('~')
+                .next()
+                .ok_or("issuer JWT")?
+                .to_owned();
+            credential.insert(
+                "credential".into(),
+                Value::String(format!("{issuer}~{encoded}~")),
+            );
+            credential
+                .get_mut("disclosures")
                 .and_then(Value::as_array_mut)
                 .and_then(|disclosures| disclosures.first_mut())
                 .and_then(Value::as_object_mut)
@@ -1116,6 +1263,7 @@ fn validate_mutated_candidate(
     row: &Value,
     kind: &str,
     domains: &Map<String, Value>,
+    issuer_key: &VerifyingKey,
 ) -> Result<()> {
     let target = text(row, "target")?;
     let mutation = object(row, "mutationData")?;
@@ -1276,12 +1424,7 @@ fn validate_mutated_candidate(
         }
         "sql.argumentsDigest" | "sql.arguments" => {
             let source = scenario.get("source").ok_or("source")?;
-            let arguments = object(source, "arguments")?;
-            let canonical = jcs(&Value::Object(arguments.clone()))?;
-            assert_ok(
-                digest(canonical.as_bytes()) == text(source, "argumentsDigest")?,
-                "SQL arguments digest mismatch",
-            )
+            validate_sql_arguments(source)
         }
         "sqlSource.query" => assert_ok(
             !object(scenario, "source")?.contains_key("query"),
@@ -1309,10 +1452,13 @@ fn validate_mutated_candidate(
             "unsupported credential status",
         ),
         "nonce.state" => {
-            let changed = object(states, "nonceTransition")?;
+            let changed = object(states, "nativeNonceAttempt")?;
+            let current = map_text(changed, "current")?;
+            let requested = map_text(changed, "requested")?;
             assert_ok(
-                map_text(changed, "from")? != map_text(changed, "to")?
-                    && map_text(changed, "from")? != "CONSUMED",
+                map_text(changed, "operation")? == "consume"
+                    && current == "VERIFYING"
+                    && requested == "CONSUMED",
                 "invalid nonce transition accepted",
             )
         }
@@ -1329,22 +1475,17 @@ fn validate_mutated_candidate(
             map_object(body, "proof").map(|_| ())
         }
         "invitation.version" => {
-            let version = states
-                .get("invitationVersion")
-                .and_then(Value::as_i64)
-                .ok_or("invitation version")?;
-            let operations = array(states, "operations")?;
+            let attempt = object(states, "nativeInvitationAttempt")?;
             assert_ok(
-                !(version == 1
-                    && operations
-                        .iter()
-                        .any(|op| op.as_str() == Some("invalidate_v1"))),
+                map_text(attempt, "state")? == "ACTIVE"
+                    && attempt.get("attemptedVersion") == attempt.get("activeVersion"),
                 "old invitation version accepted after resend",
             )
         }
         "otp.attempts" => {
-            let attempts = states
-                .get("otpAttempts")
+            let attempt = object(states, "nativeOtpAttempt")?;
+            let attempts = attempt
+                .get("attempts")
                 .and_then(Value::as_i64)
                 .ok_or("OTP attempts")?;
             let threshold = map_object(object(states, "semantics")?, "otp")?
@@ -1353,18 +1494,17 @@ fn validate_mutated_candidate(
                 .ok_or("OTP threshold")?;
             assert_ok(
                 !(attempts >= threshold
-                    && map_text(
-                        map_object(object(states, "semantics")?, "otp")?,
-                        "correctAfterLock",
-                    )? == "reject"),
+                    && attempt.get("submittedCorrectCode") == Some(&Value::Bool(true))),
                 "locked OTP accepted",
             )
         }
         "fragment" => {
             let url = text(scenario, "fragment")?;
+            validate_scanner_fragment(url, scenario)?;
+            let attempt = object(states, "nativeScannerGetAttempt")?;
             assert_ok(
-                !url.split_once('#')
-                    .is_some_and(|(_, fragment)| !fragment.is_empty()),
+                map_text(attempt, "method")? == "GET"
+                    && map_text(attempt, "after")? == map_text(attempt, "before")?,
                 "GET consumed claim",
             )
         }
@@ -1483,7 +1623,7 @@ fn validate_mutated_candidate(
             )
         }
         "credential.claims._sd_alg" | "credential.disclosures[0].encoded" => {
-            validate_sd_jwt(scenario)
+            validate_sd_jwt(scenario, issuer_key)
         }
         _ => Err(format!("unknown native negative target {target}")),
     }
@@ -1493,6 +1633,7 @@ fn validate_negative_native(
     negative: &Value,
     states: &Value,
     domains: &Map<String, Value>,
+    issuer_key: &VerifyingKey,
 ) -> Result<()> {
     let rows = array(negative, "cases")?;
     let scenarios = array(positive, "scenarios")?;
@@ -1527,9 +1668,14 @@ fn validate_negative_native(
             let mut candidate = scenario.clone();
             let mut state_candidate = states.clone();
             apply_negative_mutation(&mut candidate, &mut state_candidate, row, kind)?;
-            if let Ok(()) =
-                validate_mutated_candidate(&candidate, &state_candidate, row, kind, domains)
-            {
+            if let Ok(()) = validate_mutated_candidate(
+                &candidate,
+                &state_candidate,
+                row,
+                kind,
+                domains,
+                issuer_key,
+            ) {
                 return Err(format!("native negative accepted: {id}/{kind}"));
             }
         }
@@ -1556,18 +1702,26 @@ fn validate_recovery_native(states: &Value) -> Result<()> {
             && timeline[1].get("credentialGenerated") == Some(&Value::Bool(true))
             && timeline[1].get("durableCompletion") == Some(&Value::Bool(false))
             && text(&timeline[2], "event")? == "retry_same_seed"
-            && timeline[3].get("durableCompletion") == Some(&Value::Bool(true))
-            && timeline[3].get("durableCompletionAt")
-                == Some(&Value::from("2026-07-16T12:00:03.000Z"))
-            && timeline[3].get("resultPersisted") == Some(&Value::Bool(true))
+            && text(&timeline[3], "event")? == "prepare_atomic_success"
+            && timeline[3].get("durableCompletion") == Some(&Value::Bool(false))
+            && timeline[3].get("resultPersisted") == Some(&Value::Bool(false))
+            && timeline[3].get("consumedPersisted") == Some(&Value::Bool(false))
             && text(&timeline[4], "state")? == "CONSUMED"
+            && text(&timeline[4], "event")? == "atomic_credential_result_consumed_persisted"
+            && timeline[4].get("credentialPersisted") == Some(&Value::Bool(true))
+            && timeline[4].get("durableCompletion") == Some(&Value::Bool(true))
+            && timeline[4].get("durableCompletionAt")
+                == Some(&Value::from("2026-07-16T12:00:03.000Z"))
+            && timeline[4].get("invitationState") == Some(&Value::from("CONSUMED"))
             && timeline[4].get("consumedPersisted") == Some(&Value::Bool(true))
             && timeline[4].get("resultPersisted") == Some(&Value::Bool(true))
             && timeline[4].get("atomicConsumedAndResult") == Some(&Value::Bool(true))
+            && timeline[4].get("atomicCredentialResultInvitationConsumedAndSeedDeletion")
+                == Some(&Value::Bool(true))
             && timeline[4].get("resultDigest") == recovery.get("resultDigest"),
         "recovery timeline ordering",
     )?;
-    for event in &timeline[..3] {
+    for event in &timeline[..4] {
         assert_ok(
             event.get("seedEncrypted") == Some(&Value::Bool(true)),
             "pending seed must remain encrypted",
@@ -1585,9 +1739,17 @@ fn validate_recovery_native(states: &Value) -> Result<()> {
             && text(&failure[1], "state")? == "RETRYING"
             && failure[1].get("seedEncrypted") == Some(&Value::Bool(true))
             && text(&failure[2], "state")? == "TERMINAL_ERROR"
+            && text(&failure[2], "event")? == "atomic_terminal_result_consumed_persisted"
+            && failure[2].get("terminalResultPersisted") == Some(&Value::Bool(true))
             && failure[2].get("terminalErrorPersisted") == Some(&Value::Bool(true))
+            && failure[2].get("resultPersisted") == Some(&Value::Bool(true))
+            && failure[2].get("invitationState") == Some(&Value::from("CONSUMED"))
+            && failure[2].get("consumedPersisted") == Some(&Value::Bool(true))
+            && failure[2].get("atomicConsumedAndResult") == Some(&Value::Bool(true))
             && failure[2].get("seedEncrypted") == Some(&Value::Bool(false))
             && failure[2].get("atomicTerminalAndSeedDeletion") == Some(&Value::Bool(true))
+            && failure[2].get("atomicTerminalResultInvitationConsumedAndSeedDeletion")
+                == Some(&Value::Bool(true))
             && text(&failure[2], "errorCode")? == "credential_issuance_failed",
         "atomic terminal failure",
     )?;
@@ -1597,6 +1759,8 @@ fn validate_recovery_native(states: &Value) -> Result<()> {
         "retrySeedByteIdentical",
         "completionRequiresDurableWrite",
         "consumedAndResultPersistedAtomically",
+        "noDurableResultBeforeAtomicSuccess",
+        "terminalResultAndConsumedPersistedAtomically",
         "terminalResolutionAtomic",
         "cleanupRefusesPendingSeed",
     ] {
@@ -1621,7 +1785,11 @@ fn validate_recovery_native(states: &Value) -> Result<()> {
     assert_ok(
         terminal.get("atomic") == Some(&Value::Bool(true))
             && terminal.get("atomicConsumedAndResultPersisted") == Some(&Value::Bool(true))
+            && terminal.get("atomicCredentialResultInvitationConsumedAndSeedDeletion")
+                == Some(&Value::Bool(true))
             && terminal.get("atomicTerminalAndSeedDeletion") == Some(&Value::Bool(true))
+            && terminal.get("atomicTerminalResultInvitationConsumedAndSeedDeletion")
+                == Some(&Value::Bool(true))
             && map_text(terminal, "successOutcome")? == "CONSUMED"
             && map_text(terminal, "failureOutcome")? == "TERMINAL_ERROR",
         "terminal resolution",
@@ -1789,10 +1957,12 @@ fn verify(root: &Path) -> Result<()> {
     let negative = read_json(&vector_dir.join("negative.json"))?;
     let states = read_json(&vector_dir.join("states.json"))?;
     let domains_map = object(&domains, "domains")?;
+    let issuer_key = seed_verifying_key(&domains, "issuerSeedHex")?;
     validate_negative(&negative)?;
     validate_states(&states)?;
-    validate_negative_native(&positive, &negative, &states, domains_map)?;
+    validate_negative_native(&positive, &negative, &states, domains_map, &issuer_key)?;
     for scenario in array(&positive, "scenarios")? {
+        validate_sql_arguments(scenario.get("source").ok_or("source")?)?;
         let policy_bytes = b64(scenario, "policyBytes")?;
         assert_ok(
             !String::from_utf8_lossy(&policy_bytes).contains("policyCid"),
@@ -1894,7 +2064,7 @@ fn verify(root: &Path) -> Result<()> {
             enrollment,
             "session response proof",
         )?;
-        validate_sd_jwt(scenario)?;
+        validate_sd_jwt(scenario, &issuer_key)?;
         validate_cross_equations(scenario)?;
     }
     Ok(())

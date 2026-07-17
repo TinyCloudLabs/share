@@ -2,19 +2,19 @@
   "manifestVersion": 1,
   "contractVersion": "tinycloud.share-email-claim/v1",
   "files": {
-    "positive.json": "JDU06fVEcRc_FjA1y1g2zNpNNkpqXRs0ovk4QlCqi1s",
-    "negative.json": "4tvJGVu0XcCuB92AsO5e0RwaLfnURSEcYIiq5ya_7f0",
-    "states.json": "WsRRv_s9Gk0vTztCaBSnYmggQnfGC3MkiPQFdwQ6eMA",
-    "build.mjs": "I1qCognMiyH64O2Q9yuF7kLRIa_NKipBhRS7dI98fWQ",
-    "validate.mjs": "fhj_HArhr0tC9UFgd9S__nHIZ_pqd8oZVfwAyaC_GsI",
-    "loader.ts": "U7pF1KjcsA7mYxbirxMKSxshmACkVJfBCBDPEtZv1ck",
+    "positive.json": "px-DjiDcVp0D2iWSPRAgUb1EayCOi2AV2kHiCCOR-sc",
+    "negative.json": "FjrIvn7lrq50whnwdlwY7M8BAPXPm85t59a7rOfdYeM",
+    "states.json": "RDsZZx-P7YzBPusTfqpyjXqZCUW78FN4QNBecauSgj8",
+    "build.mjs": "7j4StHDGnaeXteSC9VyixGEiB3-x10S4bvcUbnt-mxI",
+    "validate.mjs": "6hHyl_ls2RM8LXW6F-zvk_jEe4anusum5-5a2q3UZKk",
+    "loader.ts": "gO3lKP_8yI8p0VM6PF956gdPnevBwXOaqqMznzkcGrI",
     "rust/Cargo.toml": "NMdpBiBPFtiy1N9yBltyPtR6UPUwV-WFTNf2s_dnnIU",
     "rust/Cargo.lock": "rWXLVvO1r531D1y3-SZjjqoknzpkOb6wjqTmhcFBZ-U",
-    "rust/src/main.rs": "d3ewUIQfibWfVYzXqlYzrdVY-ENMq9asfg-t_PD588I",
+    "rust/src/main.rs": "phyGwCngINV_WWbPOeaU26mLB1wZSSdo5CQCWeackNI",
     "domains.json": "YU9UFYqx7K0XL7wtWiolsDRYSRcN0gVRab1xcygDCiM",
-    "schemas.json": "q3tzrPbV-5WFyNRog7ZnVMYO0yEnvObUNRTIrPfyWOE",
-    "README.md": "BLRqsDOWHazKpOgaTbSeI-GSj0OOxVSlRw0t4FLrNb8"
+    "schemas.json": "j7_dw5_jA0lP74sJd4IDgvogsj39wM0ur6t-_Ot6MQY",
+    "README.md": "XmeJ1GKEBthtUnFR3-hhJ9S_PtQKan_O9D2lzXXkfIs"
   },
   "testOnly": true,
-  "manifestDigest": "u7KLZ03rlQHbgYLl0gUxa1Rtlk0RoOVdk73DiYBeKUg"
+  "manifestDigest": "Rf_twnCK8fdbPw2ml2DvvfUcO4giaMorcMsFuRicdPk"
 }

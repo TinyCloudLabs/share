@@ -69,7 +69,7 @@ function shippingEnvelope(unsigned, seed, domains) {
 function sourceFor(kind) {
   const space = "did:pkh:eip155:1:0x1111111111111111111111111111111111111111";
   if (kind === "kv") return { kind, space, path: "documents/plan.md", action: "tinycloud.kv/get" };
-  const args = { document_id: "doc_123" };
+  const args = { document_id: 123 };
   return { kind, space, database: "documents", path: "shared/plan", statement: "shared_document_by_id", arguments: args, argumentsDigest: digest(utf8(jcs(args))), action: "tinycloud.sql/read" };
 }
 function bodyDigest(body) { return digest(utf8(jcs(body))); }
@@ -181,6 +181,8 @@ const negativeNoncanonical16 = `${fixtureKv.preimages.resendRequest.body.invitat
 const negativeNoncanonical64 = `${fixtureKv.preimages.authorizationResponse.body.proof.signature.slice(0, -1)}B`;
 const negativeSmallOrderDid = `did:key:z${base58(Uint8Array.of(0xed, 1, 1, ...new Uint8Array(31)))}`;
 const negativeGroupOrderSignature = (() => { const value = new Uint8Array(Buffer.from(fixtureKv.artifacts.find((artifact) => artifact.name === "holderBinding").signature.value, "base64url")); const order = hex(`edd3f55c1a631258d69cf7a2def9de14${"00".repeat(16)}`); value.set(order, 32); return b64(value); })();
+const sqlOver32Arguments = Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`argument_${String(index).padStart(2, "0")}`, index]));
+const scannerGetFragment = `https://share.tinycloud.xyz/s/${fixtureKv.shareCid}#k=${fixtureKv.envelopeKey}&i=${fixtureKv.preimages.resendRequest.body.invitationId}&c=${fixtureKv.preimages.claimChallengeMagicRequest.body.claimSecret}`;
 const negativeRow = (id, kind, target, mutation, mutationData, appliesTo = ["kv", "sql"], extra = {}) => ({ id, kind, target, mutation, mutationData, appliesTo, expected: "reject", ...extra });
 const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, cases: [
   ...emailRejects.map(({ id, input }) => negativeRow(id, "email", "canonicalEmail", "reject-input", { operation: "reject-input", input }, ["kv", "sql"], { input })),
@@ -216,8 +218,11 @@ const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, ca
   negativeRow("small-order-did-key", "did-key", "holderBinding.holderDid", "identity-public-key", { operation: "replace", value: negativeSmallOrderDid }),
   negativeRow("noncanonical-ed25519-s", "signature", "holderBinding.signature.value", "set-s-to-group-order", { operation: "replace", value: negativeGroupOrderSignature }),
   negativeRow("short-signature", "signature", "readInvocation.signature.value", "truncate-signature", { operation: "truncate", bytes: 63 }),
-  negativeRow("wrong-source-digest", "source", "sql.argumentsDigest", "change-one-argument", { operation: "change", field: "arguments.document_id", value: "other" }, ["sql"]),
-  negativeRow("sql-arguments-too-large", "source", "sql.arguments", "exceed-4096-byte-jcs", { operation: "insert", field: "large", value: "x".repeat(4097) }, ["sql"]),
+  negativeRow("wrong-source-digest", "source", "sql.argumentsDigest", "change-one-argument", { operation: "change", field: "arguments.document_id", value: 456 }, ["sql"]),
+  negativeRow("sql-string-argument", "source", "sql.arguments", "insert-non-integer-argument", { operation: "insert-property", field: "label", value: "doc_456", valueType: "string" }, ["sql"]),
+  negativeRow("sql-fractional-argument", "source", "sql.arguments", "insert-non-integer-argument", { operation: "insert-property", field: "revision", value: 1.5, valueType: "fractional" }, ["sql"]),
+  negativeRow("sql-negative-zero-argument", "source", "sql.arguments", "insert-non-integer-argument", { operation: "insert-property", field: "offset", jsonLiteral: "-0", value: "-0", valueType: "negative-zero" }, ["sql"]),
+  negativeRow("sql-arguments-too-large", "source", "sql.arguments", "replace-with-over-32-properties", { operation: "replace-object", field: "arguments", value: sqlOver32Arguments, propertyCount: 33, valueType: "safe-json-integers" }, ["sql"]),
   negativeRow("sql-arbitrary-query-field", "schema", "sqlSource.query", "add-query", { operation: "add-property", field: "query", value: "select *" }, ["sql"]),
   negativeRow("policy-action-source-mismatch", "binding", "policy.action", "change-action-only", { operation: "replace", valueByKind: { kv: "tinycloud.sql/read", sql: "tinycloud.kv/get" } }),
   negativeRow("content-source-propagation", "binding", "policyPresentation.contentSource.path", "change-path-one-field", { operation: "replace", value: "other.md" }),
@@ -229,7 +234,7 @@ const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, ca
   negativeRow("session-token-only", "state", "read.proof", "omit-holder-proof", { operation: "delete" }),
   negativeRow("old-secret-after-resend", "state", "invitation.version", "use-v1-after-v2-accepted", { operation: "replace", value: 1 }),
   negativeRow("otp-after-five-wrong", "state", "otp.attempts", "correct-code-after-lock", { operation: "replace", value: 5 }),
-  negativeRow("scanner-get", "state", "fragment", "GET-consumes-claim", { operation: "consume-on-GET", value: "https://share.tinycloud.xyz/s/cid#k=x&i=y&c=z" }),
+  negativeRow("scanner-get", "state", "fragment", "GET-consumes-claim", { operation: "consume-on-GET", value: scannerGetFragment }),
   negativeRow("resend-recipient-supplied-email", "schema", "resendRequest.email", "add-email", { operation: "add-property", field: "email", value: "Alice+Notes@example.com" }),
   negativeRow("capability-extra-route", "capability", "witness.routes", "add-route", { operation: "append", value: "/v1/extra" }),
   negativeRow("capability-wildcard-origin", "capability", "node.origin", "wildcard-origin", { operation: "replace", value: "https://*.example" }),
@@ -258,13 +263,13 @@ const states = { version: "tinycloud.share-email-claim/v1", testOnly: true, deli
     { at: "2026-07-16T12:00:00.000Z", event: "seed_persisted", state: "PENDING_ENCRYPTED", seedEncrypted: true, credentialGenerated: false, durableCompletion: false, resultPersisted: false },
     { at: "2026-07-16T12:00:01.000Z", event: "credential_generated_then_crash", state: "PENDING_ENCRYPTED", seedEncrypted: true, credentialGenerated: true, durableCompletion: false, resultPersisted: false },
     { at: "2026-07-16T12:00:02.000Z", event: "retry_same_seed", state: "RETRYING", seedEncrypted: true, credentialGenerated: true, durableCompletion: false, resultPersisted: false },
-    { at: "2026-07-16T12:00:03.000Z", event: "durable_completion", state: "COMPLETED", seedEncrypted: true, credentialGenerated: true, durableCompletion: true, durableCompletionAt: "2026-07-16T12:00:03.000Z", resultPersisted: true },
-    { at: "2026-07-16T12:00:03.000Z", event: "atomic_consumed_result_persisted", state: "CONSUMED", seedEncrypted: false, credentialGenerated: true, durableCompletion: true, durableCompletionAt: "2026-07-16T12:00:03.000Z", consumedPersisted: true, resultPersisted: true, atomicConsumedAndResult: true, resultDigest: digest(utf8("vc+sd-jwt:deterministic-result-001")) }
+    { at: "2026-07-16T12:00:03.000Z", event: "prepare_atomic_success", state: "RETRYING", seedEncrypted: true, credentialGenerated: true, durableCompletion: false, resultPersisted: false, consumedPersisted: false },
+    { at: "2026-07-16T12:00:03.000Z", event: "atomic_credential_result_consumed_persisted", state: "CONSUMED", seedEncrypted: false, credentialGenerated: true, credentialPersisted: true, durableCompletion: true, durableCompletionAt: "2026-07-16T12:00:03.000Z", invitationState: "CONSUMED", consumedPersisted: true, resultPersisted: true, atomicConsumedAndResult: true, atomicCredentialResultInvitationConsumedAndSeedDeletion: true, resultDigest: digest(utf8("vc+sd-jwt:deterministic-result-001")) }
   ],
   terminalFailureTimeline: [
     { at: "2026-07-16T12:00:00.000Z", event: "seed_persisted", state: "PENDING_ENCRYPTED", seedEncrypted: true, terminalErrorPersisted: false },
     { at: "2026-07-16T12:00:02.000Z", event: "retry_exhausted", state: "RETRYING", seedEncrypted: true, terminalErrorPersisted: false },
-    { at: "2026-07-16T12:00:03.000Z", event: "atomic_terminal_error_persisted", state: "TERMINAL_ERROR", seedEncrypted: false, terminalErrorPersisted: true, atomicTerminalAndSeedDeletion: true, errorCode: "credential_issuance_failed" }
+    { at: "2026-07-16T12:00:03.000Z", event: "atomic_terminal_result_consumed_persisted", state: "TERMINAL_ERROR", seedEncrypted: false, terminalResultPersisted: true, terminalErrorPersisted: true, resultPersisted: true, invitationState: "CONSUMED", consumedPersisted: true, atomicConsumedAndResult: true, atomicTerminalAndSeedDeletion: true, atomicTerminalResultInvitationConsumedAndSeedDeletion: true, errorCode: "credential_issuance_failed" }
   ],
   invariants: {
     pendingSeedEncrypted: true,
@@ -272,6 +277,8 @@ const states = { version: "tinycloud.share-email-claim/v1", testOnly: true, deli
     completionRequiresDurableWrite: true,
     durableCompletionAt: "2026-07-16T12:00:03.000Z",
     consumedAndResultPersistedAtomically: true,
+    noDurableResultBeforeAtomicSuccess: true,
+    terminalResultAndConsumedPersistedAtomically: true,
     terminalResolutionAtomic: true,
     cleanupRefusesPendingSeed: true,
     redactionWindowSeconds: 900,
@@ -281,12 +288,14 @@ const states = { version: "tinycloud.share-email-claim/v1", testOnly: true, deli
   },
   cleanup: { pendingSeedAction: "refuse", completedSeedAction: "delete", pendingSeedRemains: true },
   terminalResolution: {
-    states: ["PENDING_ENCRYPTED", "RETRYING", "COMPLETED", "CONSUMED", "TERMINAL_ERROR"],
+    states: ["PENDING_ENCRYPTED", "RETRYING", "CONSUMED", "TERMINAL_ERROR"],
     successOutcome: "CONSUMED",
     failureOutcome: "TERMINAL_ERROR",
     atomic: true,
     atomicConsumedAndResultPersisted: true,
-    atomicTerminalAndSeedDeletion: true
+    atomicCredentialResultInvitationConsumedAndSeedDeletion: true,
+    atomicTerminalAndSeedDeletion: true,
+    atomicTerminalResultInvitationConsumedAndSeedDeletion: true
   }
 } };
 
