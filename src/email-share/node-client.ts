@@ -13,6 +13,7 @@ import {
   digest,
   digestText,
   verifyNodeProof,
+  readResponseBody,
 } from "./node-verifier.js";
 
 const READ_TTL_MS = 60_000;
@@ -104,7 +105,7 @@ export async function readClaimedShare(input: {
   assertNodeTime(session.issuedAt, session.expiresAt, Date.now(), 300);
   if (session.sessionId === undefined || typeof session.sessionId !== "string") throw new Error("session-invalid");
 
-  const invocation = {
+  const invocationBase = {
     type: "TinyCloudShareReadInvocation",
     version: 1,
     sessionId: session.sessionId,
@@ -120,23 +121,40 @@ export async function readClaimedShare(input: {
     nodeAudience: input.share.nodeAudience,
     action: input.share.action,
     resource: input.share.resource,
-    requestBodyDigest,
     issuedAt: nowIso(),
     expiresAt: boundedReadExpiry(String(session.expiresAt), input.share.expiry),
     jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
   };
-  assertNodeTime(invocation.issuedAt, invocation.expiresAt, Date.now(), 60);
-  const response = await input.transport.read({
+  const readPreimage = {
     sessionId: session.sessionId,
+    delegationCid: input.share.delegationCid,
+    authorityMaterialHandle: input.share.authorityMaterialHandle,
+    authorityMaterialDigest: input.share.authorityMaterialDigest,
     contentSource: source,
     contentSourceDigest: input.share.contentSourceDigest,
     action: input.share.action,
     resource: input.share.resource,
-    requestBodyDigest,
+    invocation: invocationBase,
+  };
+  const readRequestBodyDigest = await digest(readPreimage);
+  const invocation = { ...invocationBase, requestBodyDigest: readRequestBodyDigest };
+  assertNodeTime(invocation.issuedAt, invocation.expiresAt, Date.now(), 60);
+  const readRequestBody = {
+    sessionId: session.sessionId,
+    delegationCid: input.share.delegationCid,
+    authorityMaterialHandle: input.share.authorityMaterialHandle,
+    authorityMaterialDigest: input.share.authorityMaterialDigest,
+    contentSource: source,
+    contentSourceDigest: input.share.contentSourceDigest,
+    action: input.share.action,
+    resource: input.share.resource,
+    requestBodyDigest: readRequestBodyDigest,
     invocation,
     proof: await holderProof(input.claim, SIGNATURE_DOMAINS.readInvocation, invocation),
-  });
-  const verified = assertReadResponseBinding(response, input.share);
+  };
+  const response = await input.transport.read(readRequestBody);
+  await verifyNodeProof(readResponseBody(response as unknown as Record<string, unknown>), response.proof, input.share.trustedNode, SIGNATURE_DOMAINS.readResponse);
+  const verified = assertReadResponseBinding(response, input.share, { sessionId: session.sessionId, holderDid: input.claim.holder.did, credentialDigest, requestBodyDigest: readRequestBodyDigest, requestJti: invocation.jti });
   if (verified.bodyDigest !== await digestText(verified.content)) throw new Error("read-body-digest-invalid");
   return verified.content;
 }

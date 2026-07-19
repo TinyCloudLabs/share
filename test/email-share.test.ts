@@ -34,13 +34,14 @@ const scope: SenderScope = {
 function transport(overrides: Partial<ShareTransport> = {}): ShareTransport {
   return {
     authorizeInvitation: vi.fn(async (input) => {
-      const authorization = { type: "TinyCloudShareInviteAuthorization", version: 1, jti: input.jti, senderDid: input.senderDid, shareCid: input.shareCid, shareId: input.shareId, policyCid: input.policyCid, delegationCid: input.delegationCid, authorityMaterialHandle: input.authorityMaterialHandle, authorityMaterialDigest: input.authorityMaterialDigest, recipientEmail: input.recipientEmail, targetOrigin: input.targetOrigin, nodeAudience: input.nodeAudience, returnOrigin: "https://share.tinycloud.xyz", documentName: input.documentName, senderTrust: input.senderTrust, contentSource: input.contentSource, contentSourceDigest: input.contentSourceDigest, shareExpiresAt: input.shareExpiresAt, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(), reportAbuseToken: input.reportAbuseToken };
+      const request = input.request as Record<string, any>;
+      const authorization = { type: "TinyCloudShareInviteAuthorization", version: 1, jti: request.jti, senderDid: request.senderDid, shareCid: request.shareCid, shareId: request.shareId, policyCid: request.policyCid, delegationCid: request.delegationCid, authorityMaterialHandle: request.authorityMaterialHandle, authorityMaterialDigest: request.authorityMaterialDigest, recipientEmail: request.recipientEmail, targetOrigin: request.targetOrigin, nodeAudience: request.nodeAudience, returnOrigin: "https://share.tinycloud.xyz", documentName: request.documentName, senderTrust: request.senderTrust, contentSource: request.contentSource, contentSourceDigest: request.contentSourceDigest, shareExpiresAt: request.shareExpiresAt, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(), reportAbuseToken: request.reportAbuseToken };
       const bytes = new TextEncoder().encode(`xyz.tinycloud.share/invite-authorization/v1\0${canonicalize(authorization)}`);
       return { authorization: authorization as never, proof: { alg: "EdDSA" as const, kid: "did:web:node.example#invitation-key-1", signature: toBase64Url(ed25519.sign(bytes, nodeSeed)) } };
     }),
     requestDelivery: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20, delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) })),
     resend: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20, delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) })),
-    activate: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20 })),
+    activate: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20, activationId: "A".repeat(22) })),
     claimChallenge: vi.fn(async () => ({ claimNonce: "A".repeat(43), shareCid: "cid", shareId: "id", policyCid: "policy", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), emailHash: "A".repeat(43), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", expiresAt: new Date(Date.now() + 60_000).toISOString() })),
     claimRedeem: vi.fn(async (body) => {
       const holderDid = String((body.binding as Record<string, unknown>).holderDid);
@@ -117,10 +118,10 @@ describe("exact-email share UI protocol boundaries", () => {
     const requests: Array<{ readonly url: string; readonly init: RequestInit }> = [];
     const fetchFn: typeof fetch = async (input, init) => {
       requests.push({ url: String(input), init: init ?? {} });
-      return new Response(JSON.stringify({ status: "accepted", retryAfterSeconds: 20 }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ status: "accepted", retryAfterSeconds: 20, activationId: "A".repeat(22) }), { status: 200, headers: { "content-type": "application/json" } });
     };
     const http = createHttpTransport({ nodeOrigin: "https://node.example", credentialsOrigin: "https://credentials.example", fetchFn });
-    await expect(http.activate({ invitationId: "B".repeat(22), claimSecret: "C".repeat(43) })).resolves.toEqual({ status: "accepted", retryAfterSeconds: 20 });
+    await expect(http.activate({ invitationId: "B".repeat(22), claimSecret: "C".repeat(43) })).resolves.toEqual({ status: "accepted", retryAfterSeconds: 20, activationId: "A".repeat(22) });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe("https://credentials.example/v1/share-email/claims/activate");
     expect(requests[0]?.init.method).toBe("POST");
@@ -166,7 +167,15 @@ describe("exact-email share UI protocol boundaries", () => {
       const session = { type: "TinyCloudSharePolicySession", version: 1, sessionId: "F".repeat(22), shareCid: presentation.shareCid, shareId: presentation.shareId, delegationCid: presentation.delegationCid, policyCid: presentation.policyCid, authorityMaterialHandle: presentation.authorityMaterialHandle, authorityMaterialDigest: presentation.authorityMaterialDigest, contentSource: presentation.contentSource, contentSourceDigest: presentation.contentSourceDigest, holderDid: presentation.holderDid, targetOrigin: presentation.targetOrigin, nodeAudience: presentation.nodeAudience, action: presentation.action, resource: presentation.resource, credentialDigest: createHash("sha256").update(credential).digest("base64url"), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 300_000).toISOString() };
       return { session, proof: { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.policySession}${canonicalize(session)}`), nodeSeed)) } };
     });
-    t.read = vi.fn(async () => ({ mediaType: "text/markdown; charset=utf-8" as const, content: "# Verified\n", contentSourceDigest: share.contentSourceDigest, bodyDigest: createHash("sha256").update("# Verified\n").digest("base64url"), delegationCid: share.delegationCid, authorityMaterialHandle: share.authorityMaterialHandle, authorityMaterialDigest: share.authorityMaterialDigest }));
+    t.read = vi.fn(async (body) => {
+      const request = body as Record<string, any>;
+      const invocation = request.invocation as Record<string, any>;
+      const content = "# Verified\n";
+      const issuedAt = new Date().toISOString();
+      const responseBody = { type: "TinyCloudShareReadResponse", version: 1, sessionId: invocation.sessionId, requestJti: invocation.jti, readJti: invocation.jti, audience: share.nodeAudience, holderDid: invocation.holderDid, credentialDigest: createHash("sha256").update(credential).digest("base64url"), issuedAt, expiresAt: new Date(Date.now() + 30_000).toISOString(), mediaType: "text/markdown; charset=utf-8", content, contentSource: share.contentSource, contentSourceDigest: share.contentSourceDigest, action: share.action, resource: share.resource, requestBodyDigest: request.requestBodyDigest, bodyDigest: createHash("sha256").update(content).digest("base64url"), delegationCid: share.delegationCid, authorityMaterialHandle: share.authorityMaterialHandle, authorityMaterialDigest: share.authorityMaterialDigest };
+      const proof = { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.readResponse}${canonicalize(responseBody)}`), nodeSeed)) };
+      return { ...responseBody, proof } as any;
+    });
     const content = await controller.read();
     expect(content).toBe("# Verified\n");
     expect(controller.state.state).toBe("reading");

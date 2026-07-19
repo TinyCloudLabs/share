@@ -30,6 +30,8 @@ export interface ClaimController {
   readonly state: ClaimState;
   subscribe(listener: (state: ClaimState) => void): () => void;
   openDocument(): Promise<void>;
+  retry(): Promise<void>;
+  useOtp(): void;
   submitOtp(code: string): Promise<void>;
   resend(): Promise<void>;
   read(): Promise<string | undefined>;
@@ -128,7 +130,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
   let holder: HolderKey | undefined;
   let claimSecret: string | undefined = input.claimSecret;
   let material: ClaimMaterial | undefined;
-  let activated = false;
+  let activationId: string | undefined;
   const redemptionId = randomB64(16);
   const listeners = new Set<(state: ClaimState) => void>();
   let inFlight: Promise<void> | undefined;
@@ -137,9 +139,15 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
   const ensureHolder = async (): Promise<HolderKey> => { holder ??= await createHolder(); return holder; };
   const claim = async (mailboxProof: string, method: "magic" | "otp"): Promise<void> => {
     const key = await ensureHolder();
-    if (method === "magic" && !activated) { await input.transport.activate({ invitationId: input.invitationId, claimSecret: mailboxProof }); activated = true; }
+    if (method === "magic" && activationId === undefined) {
+      const activation = await input.transport.activate({ invitationId: input.invitationId, claimSecret: mailboxProof });
+      activationId = activation.activationId;
+    }
     setState({ state: "challenge", emailHint: input.share.recipientHint });
-    const challenge = await input.transport.claimChallenge({ invitationId: input.invitationId, method, ...(method === "magic" ? { claimSecret: mailboxProof } : { otp: mailboxProof }) });
+    const challengeRequest = method === "magic"
+      ? { invitationId: input.invitationId, method, activationId: activationId as string }
+      : { invitationId: input.invitationId, method, otp: mailboxProof };
+    const challenge = await input.transport.claimChallenge(challengeRequest);
     assertClaimChallenge(challenge, input.share);
     setState({ state: "redeeming", emailHint: input.share.recipientHint });
     const proof = await holderProof(key, input.share, input.invitationId, challenge, redemptionId);
@@ -154,23 +162,36 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
     inFlight = operation().finally(() => { inFlight = undefined; });
     return inFlight;
   };
+  const openDocument = (): Promise<void> => run(async () => {
+    if (state.state !== "verifying" && state.state !== "ready" && state.state !== "otp") return;
+    if (claimSecret === undefined) { setState({ state: "error", code: "missing-secret", retryable: false }); return; }
+    setState({ state: "activation", emailHint: input.share.recipientHint });
+    try { await claim(claimSecret, "magic"); }
+    catch (error) {
+      if (error instanceof Error && error.message === "unsupported-browser") {
+        setState({ state: "error", code: "unsupported-browser", retryable: false });
+        return;
+      }
+      const failure = mapTransportFailure(error);
+      if (failure.code === "offline" || failure.code === "capability-unavailable" || failure.code === "delivery-failed") setState({ state: "error", code: failure.code, retryable: failure.retryable, ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: failure.retryAfterSeconds }) });
+      else if (failure.code === "denied") setState({ state: "otp", emailHint: input.share.recipientHint, message: "The link could not be verified. Enter the six-digit code from the email." });
+      else if (failure.code === "invalid") setState({ state: "error", code: "invalid", retryable: false });
+      else setState(terminalFrom(failure));
+    }
+  });
   return {
     get state() { return state; },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    openDocument() {
-      return run(async () => {
-        if (state.state !== "verifying" && state.state !== "ready" && state.state !== "otp") return;
-        if (claimSecret === undefined) { setState({ state: "error", code: "missing-secret", retryable: false }); return; }
-        setState({ state: "activation", emailHint: input.share.recipientHint });
-        try { await claim(claimSecret, "magic"); }
-        catch (error) {
-          const failure = mapTransportFailure(error);
-          if (failure.code === "offline" || failure.code === "capability-unavailable" || failure.code === "delivery-failed") setState({ state: "error", code: failure.code, retryable: failure.retryable, ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: failure.retryAfterSeconds }) });
-          else if (failure.code === "denied") setState({ state: "otp", emailHint: input.share.recipientHint, message: "The link could not be verified. Enter the six-digit code from the email." });
-          else if (failure.code === "invalid") setState({ state: "error", code: "invalid", retryable: false });
-          else setState(terminalFrom(failure));
-        }
-      });
+    openDocument,
+    retry() {
+      if (state.state !== "error" || !state.retryable) return Promise.resolve();
+      setState({ state: "verifying", emailHint: input.share.recipientHint });
+      return openDocument();
+    },
+    useOtp() {
+      if (state.state === "verifying" || state.state === "ready" || state.state === "error") {
+        setState({ state: "otp", emailHint: input.share.recipientHint, message: "Enter the six-digit code from the invitation email." });
+      }
     },
     submitOtp(code) {
       return run(async () => {

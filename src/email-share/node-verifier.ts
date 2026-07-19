@@ -128,13 +128,30 @@ export function assertCredentialDigest(actual: unknown, expected: string): void 
   if (actual !== expected) throw new NodeVerificationError();
 }
 
-export function assertReadResponseBinding(value: unknown, share: VerifiedExactEmailShare): { readonly content: string; readonly bodyDigest: string } {
-  const response = exact(value, ["mediaType", "content", "contentSourceDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest"]);
-  if (response.mediaType !== "text/markdown; charset=utf-8" || typeof response.content !== "string" || new TextEncoder().encode(response.content).length > 1_048_576) throw new NodeVerificationError();
+export function readResponseBody(value: Record<string, unknown>): Record<string, unknown> {
+  const { proof: _proof, ...body } = value;
+  return body;
+}
+
+export function assertReadResponseBinding(value: unknown, share: VerifiedExactEmailShare, expected?: { readonly sessionId: string; readonly holderDid: string; readonly credentialDigest: string; readonly requestBodyDigest: string; readonly requestJti: string }): { readonly content: string; readonly bodyDigest: string } {
+  const response = exact(value, ["type", "version", "sessionId", "requestJti", "readJti", "audience", "holderDid", "credentialDigest", "issuedAt", "expiresAt", "mediaType", "content", "contentSource", "contentSourceDigest", "action", "resource", "requestBodyDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "proof"]);
+  if (response.type !== "TinyCloudShareReadResponse" || response.version !== 1 || response.mediaType !== "text/markdown; charset=utf-8" || typeof response.content !== "string" || new TextEncoder().encode(response.content).length > 1_048_576) throw new NodeVerificationError();
   equalField(response.delegationCid, share.delegationCid);
   equalField(response.authorityMaterialHandle, share.authorityMaterialHandle);
   equalField(response.authorityMaterialDigest, share.authorityMaterialDigest);
   equalField(response.contentSourceDigest, share.contentSourceDigest);
+  equalField(response.contentSource, share.contentSource);
+  equalField(response.action, share.action);
+  equalField(response.resource, share.resource);
+  equalField(response.audience, share.nodeAudience);
+  if (expected !== undefined) {
+    equalField(response.sessionId, expected.sessionId);
+    equalField(response.holderDid, expected.holderDid);
+    equalField(response.credentialDigest, expected.credentialDigest);
+    equalField(response.requestBodyDigest, expected.requestBodyDigest);
+    equalField(response.requestJti, expected.requestJti);
+  }
+  assertNodeTime(response.issuedAt, response.expiresAt, Date.now(), READ_INVOCATION_TTL_SECONDS);
   if (typeof response.bodyDigest !== "string" || response.bodyDigest.length !== 43) throw new NodeVerificationError();
   return { content: response.content, bodyDigest: response.bodyDigest };
 }

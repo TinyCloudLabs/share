@@ -37,7 +37,7 @@
     its render throws and the diagram falls back to sanitized source text —
     fail closed, never fail open.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:8787 http://localhost:8787; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://node.example https://witness.credentials.org http://127.0.0.1:8787 http://localhost:8787; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
 <!-- The URL fragment is the decryption key: never leak the URL anywhere. -->
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">

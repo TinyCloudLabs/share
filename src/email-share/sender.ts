@@ -38,9 +38,8 @@ export function createSenderController(input: {
       try {
         setState({ state: "authorizing" });
         const draft = await createInvitationDraft({ ...request, uploadEnvelope: input.uploadEnvelope });
-        const issuedAt = new Date().toISOString();
-        const signed = await signedInvitationProof(draft, request.scope, issuedAt);
-        const authorized = await input.transport.authorizeInvitation(signed.request);
+        const signed = await signedInvitationProof(draft, request.scope);
+        const authorized = await input.transport.authorizeInvitation({ request: signed.request, proof: signed.proof });
         const trustedShare = {
           shareId: draft.envelope.shareId,
           shareCid: draft.shareCid,
@@ -68,11 +67,7 @@ export function createSenderController(input: {
           if (typeof value === "object" ? JSON.stringify(actual) !== JSON.stringify(value) : actual !== value) throw new Error("invitation-authorization-mismatch");
         }
         setState({ state: "requesting" });
-        const accepted = await input.transport.requestDelivery({
-          ...authorized.authorization,
-          proof: authorized.proof,
-          shareUrl: draft.shareUrl,
-        });
+        const accepted = await input.transport.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl });
         setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: draft.envelope.shareId, resource: request.source.path });
       } catch (error) {
         const failure = mapTransportFailure(error);

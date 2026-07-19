@@ -35,12 +35,37 @@ export interface ShareTransport {
   authorizeInvitation(input: Record<string, unknown>): Promise<AuthorizedInvitation>;
   requestDelivery(input: Record<string, unknown>): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
   resend(input: { readonly invitationId: string; readonly claimSecret: string }): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
-  activate(input: { readonly invitationId: string; readonly claimSecret: string }): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number }>;
-  claimChallenge(input: { readonly invitationId: string; readonly method: "magic" | "otp"; readonly claimSecret?: string; readonly otp?: string }): Promise<ClaimChallengeResponse>;
+  activate(input: { readonly invitationId: string; readonly claimSecret: string }): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly activationId: string }>;
+  claimChallenge(input: { readonly invitationId: string; readonly method: "magic" | "otp"; readonly activationId?: string; readonly otp?: string }): Promise<ClaimChallengeResponse>;
   claimRedeem(input: Record<string, unknown>): Promise<ClaimCredentialResponse>;
   policyChallenge(input: Record<string, unknown>): Promise<{ readonly challenge: Record<string, unknown>; readonly proof: SignedProof }>;
   policySession(input: Record<string, unknown>): Promise<{ readonly session: Record<string, unknown>; readonly proof: SignedProof }>;
-  read(input: Record<string, unknown>): Promise<{ readonly mediaType: "text/markdown; charset=utf-8"; readonly content: string; readonly contentSourceDigest: string; readonly bodyDigest: string; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
+  read(input: Record<string, unknown>): Promise<ReadResponse>;
+}
+
+export interface ReadResponse {
+  readonly type: "TinyCloudShareReadResponse";
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly requestJti: string;
+  readonly readJti: string;
+  readonly audience: string;
+  readonly holderDid: string;
+  readonly credentialDigest: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly mediaType: "text/markdown; charset=utf-8";
+  readonly content: string;
+  readonly contentSource: ContentSource;
+  readonly contentSourceDigest: string;
+  readonly action: "tinycloud.kv/get" | "tinycloud.sql/read";
+  readonly resource: string;
+  readonly requestBodyDigest: string;
+  readonly bodyDigest: string;
+  readonly delegationCid: string;
+  readonly authorityMaterialHandle: string;
+  readonly authorityMaterialDigest: string;
+  readonly proof: SignedProof;
 }
 
 export interface ClaimChallengeResponse {
@@ -140,11 +165,11 @@ function parseAccepted(value: unknown): { readonly status: "accepted"; readonly 
   return { status: "accepted", retryAfterSeconds: 20, delegationCid: text(object.delegationCid), authorityMaterialHandle: text(object.authorityMaterialHandle), authorityMaterialDigest: text(object.authorityMaterialDigest) };
 }
 
-function parseActivationAccepted(value: unknown): { readonly status: "accepted"; readonly retryAfterSeconds: number } {
-  const object = exact(value, ["status", "retryAfterSeconds"]);
+function parseActivationAccepted(value: unknown): { readonly status: "accepted"; readonly retryAfterSeconds: number; readonly activationId: string } {
+  const object = exact(value, ["status", "retryAfterSeconds", "activationId"]);
   const retryAfterSeconds = object.retryAfterSeconds;
-  if (object.status !== "accepted" || typeof retryAfterSeconds !== "number" || !Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 0 || retryAfterSeconds > 3600) throw new ShareTransportError("unknown");
-  return { status: "accepted", retryAfterSeconds };
+  if (object.status !== "accepted" || typeof retryAfterSeconds !== "number" || !Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 0 || retryAfterSeconds > 3600 || typeof object.activationId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(object.activationId)) throw new ShareTransportError("unknown");
+  return { status: "accepted", retryAfterSeconds, activationId: object.activationId };
 }
 
 function parseClaimChallenge(value: unknown): ClaimChallengeResponse {
@@ -188,11 +213,14 @@ function parsePolicySession(value: unknown): { readonly session: Record<string, 
   return { session: exact(object.session, ["type", "version", "sessionId", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "credentialDigest", "issuedAt", "expiresAt"]), proof: parseProof(object.proof) };
 }
 
-function parseRead(value: unknown): { readonly mediaType: "text/markdown; charset=utf-8"; readonly content: string; readonly contentSourceDigest: string; readonly bodyDigest: string; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string } {
-  const object = exact(value, ["mediaType", "content", "contentSourceDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest"]);
-  if (object.mediaType !== "text/markdown; charset=utf-8" || typeof object.content !== "string" || new TextEncoder().encode(object.content).length > 1_048_576) throw new ShareTransportError("unknown");
-  for (const key of ["contentSourceDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest"]) text(object[key]);
-  return object as never;
+function parseRead(value: unknown): ReadResponse {
+  const object = exact(value, ["type", "version", "sessionId", "requestJti", "readJti", "audience", "holderDid", "credentialDigest", "issuedAt", "expiresAt", "mediaType", "content", "contentSource", "contentSourceDigest", "action", "resource", "requestBodyDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "proof"]);
+  if (object.type !== "TinyCloudShareReadResponse" || object.version !== 1 || object.mediaType !== "text/markdown; charset=utf-8" || typeof object.content !== "string" || new TextEncoder().encode(object.content).length > 1_048_576) throw new ShareTransportError("unknown");
+  for (const key of ["sessionId", "requestJti", "readJti", "audience", "holderDid", "credentialDigest", "issuedAt", "expiresAt", "contentSourceDigest", "resource", "requestBodyDigest", "bodyDigest", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest"]) text(object[key]);
+  if (object.action !== "tinycloud.kv/get" && object.action !== "tinycloud.sql/read") throw new ShareTransportError("unknown");
+  let contentSource: ContentSource;
+  try { contentSource = validateSource(object.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
+  return { ...object, contentSource, proof: parseProof(object.proof) } as unknown as ReadResponse;
 }
 
 export function createHttpTransport(input: { readonly nodeOrigin: string; readonly credentialsOrigin: string; readonly fetchFn?: typeof fetch }): ShareTransport {

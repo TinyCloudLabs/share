@@ -87,7 +87,6 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (options.scope === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
-    if (options.defaultSource === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
     try {
       const source = sourceFromForm(form, options.defaultSource); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
       const request = { email: email.value, source, scope: options.scope, shareId: `share-${crypto.randomUUID()}`, expiresAt };

@@ -18,6 +18,10 @@ export const PROTOCOL = "tinycloud.share-email-claim/v1" as const;
 export const MARKDOWN_LIMIT = 1_048_576;
 export const MAX_SQL_ARGUMENTS = 32;
 export const NODE_INVITATION_KID = "did:web:node.example#invitation-key-1";
+export const INVITATION_AUTHORIZATION_TTL_SECONDS = 300;
+export const MAGIC_TOKEN_TTL_SECONDS = 604_800;
+export const OTP_TTL_SECONDS = 600;
+export const MAX_ACCESS_TTL_SECONDS = 2_592_000;
 
 export const SIGNATURE_DOMAINS = Object.freeze({
   envelope: "xyz.tinycloud.share/envelope/v1\0",
@@ -27,6 +31,7 @@ export const SIGNATURE_DOMAINS = Object.freeze({
   policyPresentation: "xyz.tinycloud.share/policy-presentation/v1\0",
   policySession: "xyz.tinycloud.share/policy-session/v1\0",
   readInvocation: "xyz.tinycloud.share/read-invocation/v1\0",
+  readResponse: "xyz.tinycloud.share/read-response/v1\0",
 } as const);
 
 export type ShareAction = "tinycloud.kv/get" | "tinycloud.sql/read";
@@ -128,6 +133,27 @@ export interface AuthorizedInvitation {
   readonly proof: SignedProof;
 }
 
+export function boundedExpiry(input: { readonly issuedAt: string; readonly accessExpiresAt: string; readonly ttlSeconds: number }): string {
+  const issuedAt = Date.parse(input.issuedAt);
+  const accessExpiresAt = Date.parse(input.accessExpiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(accessExpiresAt) || accessExpiresAt <= issuedAt || input.ttlSeconds <= 0) {
+    throw new TypeError("Invalid expiry equation.");
+  }
+  return new Date(Math.min(accessExpiresAt, issuedAt + input.ttlSeconds * 1000)).toISOString();
+}
+
+export function invitationAuthorizationExpiry(issuedAt: string, accessExpiresAt: string): string {
+  return boundedExpiry({ issuedAt, accessExpiresAt, ttlSeconds: INVITATION_AUTHORIZATION_TTL_SECONDS });
+}
+
+export function magicTokenExpiry(issuedAt: string, accessExpiresAt: string): string {
+  return boundedExpiry({ issuedAt, accessExpiresAt, ttlSeconds: MAGIC_TOKEN_TTL_SECONDS });
+}
+
+export function otpExpiry(issuedAt: string, accessExpiresAt: string): string {
+  return boundedExpiry({ issuedAt, accessExpiresAt, ttlSeconds: OTP_TTL_SECONDS });
+}
+
 export function canonicalEmail(value: string): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.length < 3 || bytes.length > 254 || !/^[\x00-\x7f]*$/.test(value)) {
@@ -195,6 +221,14 @@ export async function createInvitationDraft(input: {
   readonly now?: string;
 }): Promise<InvitationDraft> {
   const email = canonicalEmail(input.email);
+  const issuedAt = input.now ?? new Date().toISOString();
+  const issuedTime = Date.parse(issuedAt);
+  const accessExpiry = Date.parse(input.expiresAt);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(issuedAt) || !Number.isFinite(issuedTime) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(input.expiresAt) || !Number.isFinite(accessExpiry) ||
+      accessExpiry <= issuedTime || accessExpiry - issuedTime > MAX_ACCESS_TTL_SECONDS * 1000) {
+    throw new TypeError("Choose an access expiry within the allowed policy window.");
+  }
   const validated = validateSource(input.source);
   const source: ContentSource = validated.kind === "sql"
     ? { ...validated, argumentsDigest: await canonicalDigest(validated.arguments) }
@@ -248,13 +282,24 @@ export async function createInvitationDraft(input: {
 export async function signedInvitationProof(
   draft: InvitationDraft,
   scope: SenderScope,
-  issuedAt: string,
 ): Promise<{ request: Record<string, unknown>; proof: SignedProof }> {
-  const requestBase = {
+  const requestBody = {
+    shareCid: draft.shareCid,
+    shareId: draft.envelope.shareId,
+    policyCid: draft.policyCid,
+    delegationCid: scope.delegationCid,
+    authorityMaterialHandle: scope.authorityMaterialHandle,
+    authorityMaterialDigest: scope.authorityMaterialDigest,
+    recipientEmail: draft.email,
+    targetOrigin: scope.targetOrigin,
+    nodeAudience: scope.nodeAudience,
+    action: draft.source.action,
+    resource: draft.source.path,
+  } as const;
+  const request = {
     jti: draft.invitationJti,
     reportAbuseToken: draft.reportAbuseToken,
     senderDid: scope.senderDid,
-    policyOwnerDid: scope.policyOwnerDid,
     shareCid: draft.shareCid,
     shareId: draft.envelope.shareId,
     delegationCid: scope.delegationCid,
@@ -269,15 +314,8 @@ export async function signedInvitationProof(
     contentSource: draft.source,
     contentSourceDigest: draft.sourceDigest,
     shareExpiresAt: draft.envelope.expiry,
-    shareUrl: draft.shareUrl,
+    requestBodyDigest: await canonicalDigest(requestBody),
   };
-  const authorizationBody = {
-    shareCid: draft.shareCid, shareId: draft.envelope.shareId, policyCid: draft.policyCid, delegationCid: scope.delegationCid,
-    authorityMaterialHandle: scope.authorityMaterialHandle, authorityMaterialDigest: scope.authorityMaterialDigest,
-    recipientEmail: draft.email, targetOrigin: scope.targetOrigin, nodeAudience: scope.nodeAudience,
-    action: draft.source.action, resource: draft.source.path,
-  };
-  const request = { ...requestBase, requestBodyDigest: await canonicalDigest(authorizationBody) };
   const publicKey = ed25519.getPublicKey(scope.senderPrivateKey);
   const signerDid = didKeyFromEd25519PublicKey(publicKey);
   if (signerDid !== scope.senderDid) throw new TypeError("Sender proof key does not match the authorized sender.");

@@ -22,6 +22,7 @@ import { createClaimController, type ClaimState, type CredentialTrust } from "..
 import type { ShareTransport } from "../email-share/transport.js";
 import type { VerifiedExactEmailShare } from "../email-share/verified-share.js";
 import { assertTrustedNodeScope } from "../email-share/node-verifier.js";
+import { assertProductionCredentialTrust } from "../email-share/runtime.js";
 
 async function boot(): Promise<void> {
   const root = document.getElementById("viewer");
@@ -49,6 +50,7 @@ function configuredRuntime(): EmailClaimRuntime | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const candidate = value as Partial<EmailClaimRuntime>;
   if (typeof candidate.verify !== "function" || typeof candidate.transport !== "object" || candidate.transport === null || typeof candidate.credentialTrust !== "object" || candidate.credentialTrust === null) return undefined;
+  try { assertProductionCredentialTrust(candidate.credentialTrust as CredentialTrust); } catch { return undefined; }
   return candidate as EmailClaimRuntime;
 }
 
@@ -71,12 +73,15 @@ export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: 
     return;
   }
   try {
+    assertProductionCredentialTrust(configured.credentialTrust);
     const share = await configured.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
     if (result.envelope.authorizationTarget.kind !== "policy" || share.shareCid !== result.shareCid || share.shareId !== result.envelope.shareId || share.policyCid !== result.envelope.authorizationTarget.policyCid || share.nodeOrigin !== result.envelope.target.origin || share.nodeAudience !== result.envelope.target.nodeAudience || share.expiry !== result.envelope.expiry || result.policy.recipientEmail !== share.recipientEmail || result.policy.expiresAt !== share.expiry || result.policy.action !== share.action || result.policy.resource !== share.resource || result.policy.contentSourceDigest !== share.contentSourceDigest || canonicalize(result.policy.contentSource) !== canonicalize(share.contentSource)) throw new Error("runtime-share-binding-invalid");
     assertTrustedNodeScope(share, share.trustedNode);
     const controller = createClaimController({ share, invitationId: launch.invite.invitationId, claimSecret: launch.invite.claimSecret, transport: configured.transport, credentialTrust: configured.credentialTrust });
     const render = (state: ClaimState): void => renderEmailClaimState(root, state, {
       onOpen: () => { void controller.openDocument(); },
+      onRetry: () => { void controller.retry(); },
+      onUseOtp: () => controller.useOtp(),
       onOtp: (code) => { void controller.submitOtp(code); },
       onResend: () => { void controller.resend(); },
       onForget: () => controller.forget(),

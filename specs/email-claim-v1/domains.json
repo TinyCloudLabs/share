@@ -1,7 +1,7 @@
 {
   "version": "tinycloud.share-email-claim/v1",
   "signedByteFormat": "UTF8(registry.domain) || UTF8(JCS(message))",
-  "encoding": {"binary": "base64url-unpadded", "digest": "sha256"},
+  "encoding": { "binary": "base64url-unpadded", "digest": "sha256" },
   "domains": {
     "envelope": "xyz.tinycloud.share/envelope/v1\u0000",
     "policy": "xyz.tinycloud.share/policy/v1\u0000",
@@ -11,6 +11,7 @@
     "policyPresentation": "xyz.tinycloud.share/policy-presentation/v1\u0000",
     "policySession": "xyz.tinycloud.share/policy-session/v1\u0000",
     "readInvocation": "xyz.tinycloud.share/read-invocation/v1\u0000",
+    "readResponse": "xyz.tinycloud.share/read-response/v1\u0000",
     "authorityMaterial": "xyz.tinycloud.share/authority-material-bundle/v1\u0000",
     "authorityStatus": "xyz.tinycloud.share/authority-status-observation/v1\u0000",
     "enrollmentAttestation": "xyz.tinycloud.share/enrollment-runtime-attestation/v1\u0000",
@@ -37,10 +38,25 @@
     "nodeAudience": "did:web:node.example",
     "activeKeyVersion": 1,
     "keyVersions": [
-      {"keyVersion": 1, "invitationKid": "did:web:node.example#invitation-key-1", "publicKey": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI", "state": "active"},
-      {"keyVersion": 2, "invitationKid": "did:web:node.example#invitation-key-2", "publicKey": "Y1VpHBeKj_kQB6dHivuVXvc1LGPnslcDmEz3iybiGlY", "state": "retired"}
+      {
+        "keyVersion": 1,
+        "invitationKid": "did:web:node.example#invitation-key-1",
+        "publicKey": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI",
+        "state": "active"
+      },
+      {
+        "keyVersion": 2,
+        "invitationKid": "did:web:node.example#invitation-key-2",
+        "publicKey": "Y1VpHBeKj_kQB6dHivuVXvc1LGPnslcDmEz3iybiGlY",
+        "state": "retired"
+      }
     ],
-    "rules": {"originAudienceImmutable": true, "enabledRequired": true, "rotationRequiresHigherVersion": true, "retiredVersionsReject": true}
+    "rules": {
+      "originAudienceImmutable": true,
+      "enabledRequired": true,
+      "rotationRequiresHigherVersion": true,
+      "retiredVersionsReject": true
+    }
   },
   "issuerTrust": {
     "issuerDid": "did:web:issuer.credentials.org",
@@ -102,6 +118,7 @@
       "routes": [
         "/v1/share-email/invitations",
         "/v1/share-email/invitations/resend",
+        "/v1/share-email/claims/activate",
         "/v1/share-email/claims/challenge",
         "/v1/share-email/claims/redeem"
       ],

@@ -909,6 +909,9 @@ fn validate_invite_authorization(message: &Value, expected_kind: &str) -> Result
             "recipientEmail",
             "targetOrigin",
             "nodeAudience",
+            "delegationCid",
+            "authorityMaterialHandle",
+            "authorityMaterialDigest",
             "returnOrigin",
             "documentName",
             "senderTrust",
@@ -919,11 +922,7 @@ fn validate_invite_authorization(message: &Value, expected_kind: &str) -> Result
             "expiresAt",
             "reportAbuseToken",
         ],
-        &[
-            "delegationCid",
-            "authorityMaterialHandle",
-            "authorityMaterialDigest",
-        ],
+        &[],
         "inviteAuthorization",
     )?;
     const_string(
@@ -1234,6 +1233,7 @@ fn validate_policy_artifact_message(
                 "shareCid",
                 "shareId",
                 "policyCid",
+                "delegationCid",
                 "contentSource",
                 "contentSourceDigest",
                 "holderDid",
@@ -1281,11 +1281,7 @@ fn validate_policy_artifact_message(
         "artifact type",
     )?;
     const_number(map_value(object, "version", label)?, 1, "artifact version")?;
-    let cid_fields = if name == "readInvocation" {
-        ["shareCid", "policyCid", ""]
-    } else {
-        ["shareCid", "policyCid", "delegationCid"]
-    };
+    let cid_fields = ["shareCid", "policyCid", "delegationCid"];
     for key in cid_fields.into_iter().filter(|key| !key.is_empty()) {
         valid_cid(map_value(object, key, label)?, key)?;
     }
@@ -1945,7 +1941,7 @@ fn validate_capability_registry(domains: &Value) -> Result<()> {
     )?;
     let witness_routes = map_array(witness, "routes")?;
     assert_ok(
-        witness_routes.len() == 4
+        witness_routes.len() == 5
             && witness_routes
                 .iter()
                 .map(Value::as_str)
@@ -1953,6 +1949,7 @@ fn validate_capability_registry(domains: &Value) -> Result<()> {
                 == [
                     Some("/v1/share-email/invitations"),
                     Some("/v1/share-email/invitations/resend"),
+                    Some("/v1/share-email/claims/activate"),
                     Some("/v1/share-email/claims/challenge"),
                     Some("/v1/share-email/claims/redeem"),
                 ]
@@ -2823,39 +2820,37 @@ fn validate_endpoint_body(
     let artifacts = scenario.get("artifacts").ok_or("artifacts")?;
     match name {
         "authorizationRequest" => {
-            let expected_request_digest = map_text(
-                map_object(
-                    object(
-                        scenario.get("preimages").ok_or("preimages")?,
-                        "authorizationRequest",
-                    )?,
-                    "body",
-                )?,
-                "requestBodyDigest",
-            )?;
             let object = exact_object(
                 body,
                 &[
+                    "jti",
+                    "reportAbuseToken",
+                    "senderDid",
                     "shareCid",
                     "shareId",
-                    "policyCid",
                     "delegationCid",
                     "authorityMaterialHandle",
                     "authorityMaterialDigest",
+                    "policyCid",
                     "recipientEmail",
                     "targetOrigin",
                     "nodeAudience",
-                    "action",
-                    "resource",
+                    "documentName",
+                    "senderTrust",
+                    "contentSource",
+                    "contentSourceDigest",
+                    "shareExpiresAt",
                     "requestBodyDigest",
                 ],
                 &[],
                 name,
             )?;
             for (key, expected) in [
+                ("jti", map_text(auth, "jti")?),
+                ("reportAbuseToken", text(scenario, "reportAbuseToken")?),
+                ("senderDid", map_text(auth, "senderDid")?),
                 ("shareCid", text(scenario, "shareCid")?),
                 ("shareId", text(scenario, "shareId")?),
-                ("policyCid", text(scenario, "policyCid")?),
                 ("delegationCid", text(scenario, "delegationCid")?),
                 (
                     "authorityMaterialHandle",
@@ -2865,18 +2860,41 @@ fn validate_endpoint_body(
                     "authorityMaterialDigest",
                     text(scenario, "authorityMaterialDigest")?,
                 ),
+                ("policyCid", text(scenario, "policyCid")?),
                 ("recipientEmail", text(scenario, "canonicalEmail")?),
                 ("targetOrigin", map_text(auth, "targetOrigin")?),
                 ("nodeAudience", map_text(auth, "nodeAudience")?),
-                ("action", text(source, "action")?),
-                ("resource", text(source, "path")?),
-                ("requestBodyDigest", expected_request_digest),
+                ("documentName", map_text(auth, "documentName")?),
+                ("senderTrust", map_text(auth, "senderTrust")?),
+                ("shareExpiresAt", map_text(auth, "shareExpiresAt")?),
             ] {
                 assert_ok(
                     map_text(object, key)? == expected,
                     "authorization request scope",
                 )?;
             }
+            assert_ok(
+                map_text(object, "contentSourceDigest")? == text(scenario, "sourceDigest")?,
+                "authorization request source digest",
+            )?;
+            validate_source(map_value(object, "contentSource", name)?, kind)?;
+            let request_body = serde_json::json!({
+                "shareCid": text(scenario, "shareCid")?,
+                "shareId": text(scenario, "shareId")?,
+                "policyCid": text(scenario, "policyCid")?,
+                "delegationCid": text(scenario, "delegationCid")?,
+                "authorityMaterialHandle": text(scenario, "authorityMaterialHandle")?,
+                "authorityMaterialDigest": text(scenario, "authorityMaterialDigest")?,
+                "recipientEmail": text(scenario, "canonicalEmail")?,
+                "targetOrigin": map_text(auth, "targetOrigin")?,
+                "nodeAudience": map_text(auth, "nodeAudience")?,
+                "action": text(source, "action")?,
+                "resource": text(source, "path")?,
+            });
+            assert_ok(
+                digest(jcs(&request_body)?.as_bytes()) == map_text(object, "requestBodyDigest")?,
+                "authorization request body digest",
+            )?;
             valid_cid(
                 map_value(object, "shareCid", name)?,
                 "authorization request share CID",
@@ -2901,9 +2919,18 @@ fn validate_endpoint_body(
                 map_value(object, "nodeAudience", name)?,
                 "authorization request audience",
             )?;
-            valid_path(
-                map_value(object, "resource", name)?,
-                "authorization request resource",
+            valid_time(
+                map_value(object, "shareExpiresAt", name)?,
+                "authorization share expiry",
+            )?;
+            assert_ok(
+                map_text(object, "senderTrust")? == "verified"
+                    || map_text(object, "senderTrust")? == "unverified",
+                "authorization sender trust",
+            )?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", name)?,
+                "authorization source digest",
             )?;
             valid_digest(
                 map_value(object, "requestBodyDigest", name)?,
@@ -2985,8 +3012,44 @@ fn validate_endpoint_body(
                 "resend claim secret",
             )?;
         }
+        "activationRequest" => {
+            let object = exact_object(body, &["invitationId", "claimSecret"], &[], name)?;
+            b64_string(
+                map_value(object, "invitationId", name)?,
+                Some(16),
+                "activation invitation ID",
+            )?;
+            b64_string(
+                map_value(object, "claimSecret", name)?,
+                Some(32),
+                "activation claim secret",
+            )?;
+        }
+        "activationResponse" => {
+            let object = exact_object(
+                body,
+                &["status", "retryAfterSeconds", "activationId"],
+                &[],
+                name,
+            )?;
+            const_string(
+                map_value(object, "status", name)?,
+                "accepted",
+                "activation status",
+            )?;
+            let retry = map_value(object, "retryAfterSeconds", name)?
+                .as_i64()
+                .ok_or("activation retry")?;
+            assert_ok((0..=3600).contains(&retry), "activation retry range")?;
+            b64_string(
+                map_value(object, "activationId", name)?,
+                Some(16),
+                "activation ID",
+            )?;
+        }
         "claimChallengeMagicRequest" => {
-            let object = exact_object(body, &["invitationId", "method", "claimSecret"], &[], name)?;
+            let object =
+                exact_object(body, &["invitationId", "method", "activationId"], &[], name)?;
             b64_string(
                 map_value(object, "invitationId", name)?,
                 Some(16),
@@ -2994,9 +3057,9 @@ fn validate_endpoint_body(
             )?;
             const_string(map_value(object, "method", name)?, "magic", "magic method")?;
             b64_string(
-                map_value(object, "claimSecret", name)?,
-                Some(32),
-                "magic claim secret",
+                map_value(object, "activationId", name)?,
+                Some(16),
+                "magic activation ID",
             )?;
         }
         "claimChallengeOtpRequest" => {
@@ -3290,6 +3353,9 @@ fn validate_endpoint_body(
                 body,
                 &[
                     "sessionId",
+                    "delegationCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
                     "contentSource",
                     "contentSourceDigest",
                     "action",
@@ -3319,6 +3385,24 @@ fn validate_endpoint_body(
                 map_value(object, "requestBodyDigest", name)?,
                 "read body digest",
             )?;
+            valid_cid(
+                map_value(object, "delegationCid", name)?,
+                "read delegation CID",
+            )?;
+            assert_ok(
+                map_text(object, "delegationCid")? == text(scenario, "delegationCid")?,
+                "read delegation binding",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialHandle")?
+                    == text(scenario, "authorityMaterialHandle")?,
+                "read authority handle binding",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialDigest")?
+                    == text(scenario, "authorityMaterialDigest")?,
+                "read authority digest binding",
+            )?;
             validate_message_schema(
                 "readInvocation",
                 map_value(object, "invocation", name)?,
@@ -3327,6 +3411,24 @@ fn validate_endpoint_body(
             validate_proof(map_value(object, "proof", name)?, "read proof")?;
             let invocation = map_object(object, "invocation")?;
             assert_equal_field(object, invocation, "sessionId", "read/invocation session")?;
+            assert_equal_field(
+                object,
+                invocation,
+                "delegationCid",
+                "read/invocation delegation",
+            )?;
+            assert_equal_field(
+                object,
+                invocation,
+                "authorityMaterialHandle",
+                "read/invocation authority handle",
+            )?;
+            assert_equal_field(
+                object,
+                invocation,
+                "authorityMaterialDigest",
+                "read/invocation authority digest",
+            )?;
             assert_equal_field(
                 object,
                 invocation,
@@ -3357,21 +3459,96 @@ fn validate_endpoint_body(
                     && map_text(proof, "signature")? == map_text(signature, "value")?,
                 "read wrapper proof binding",
             )?;
+            let mut preimage = object.clone();
+            preimage.remove("proof");
+            preimage.remove("requestBodyDigest");
+            if let Some(invocation) = preimage
+                .get_mut("invocation")
+                .and_then(Value::as_object_mut)
+            {
+                invocation.remove("requestBodyDigest");
+            }
+            assert_ok(
+                digest(jcs(&Value::Object(preimage))?.as_bytes())
+                    == map_text(object, "requestBodyDigest")?,
+                "read request body digest preimage",
+            )?;
         }
         "readResponse" => {
             let object = exact_object(
                 body,
                 &[
+                    "type",
+                    "version",
+                    "sessionId",
+                    "requestJti",
+                    "readJti",
+                    "audience",
+                    "holderDid",
+                    "credentialDigest",
+                    "issuedAt",
+                    "expiresAt",
                     "mediaType",
                     "content",
+                    "contentSource",
                     "contentSourceDigest",
+                    "action",
+                    "resource",
+                    "requestBodyDigest",
                     "bodyDigest",
                     "delegationCid",
                     "authorityMaterialHandle",
                     "authorityMaterialDigest",
+                    "proof",
                 ],
                 &[],
                 name,
+            )?;
+            const_string(
+                map_value(object, "type", name)?,
+                "TinyCloudShareReadResponse",
+                "read response type",
+            )?;
+            const_number(
+                map_value(object, "version", name)?,
+                1,
+                "read response version",
+            )?;
+            b64_string(
+                map_value(object, "sessionId", name)?,
+                Some(16),
+                "read response session",
+            )?;
+            b64_string(
+                map_value(object, "requestJti", name)?,
+                Some(16),
+                "read response request JTI",
+            )?;
+            b64_string(
+                map_value(object, "readJti", name)?,
+                Some(16),
+                "read response read JTI",
+            )?;
+            assert_ok(
+                map_text(object, "requestJti")? == map_text(object, "readJti")?,
+                "read JTI binding",
+            )?;
+            assert_ok(
+                map_text(object, "audience")? == map_text(auth, "nodeAudience")?,
+                "read response audience",
+            )?;
+            did_key_bytes(map_text(object, "holderDid")?)?;
+            valid_digest(
+                map_value(object, "credentialDigest", name)?,
+                "read credential digest",
+            )?;
+            valid_time(
+                map_value(object, "issuedAt", name)?,
+                "read response issuedAt",
+            )?;
+            valid_time(
+                map_value(object, "expiresAt", name)?,
+                "read response expiresAt",
             )?;
             const_string(
                 map_value(object, "mediaType", name)?,
@@ -3384,9 +3561,30 @@ fn validate_endpoint_body(
                 map_text(object, "contentSourceDigest")? == text(scenario, "sourceDigest")?,
                 "read response source",
             )?;
+            validate_source(map_value(object, "contentSource", name)?, kind)?;
+            assert_ok(
+                map_text(object, "action")? == text(source, "action")?,
+                "read response action",
+            )?;
+            assert_ok(
+                map_text(object, "resource")? == text(source, "path")?,
+                "read response resource",
+            )?;
+            valid_digest(
+                map_value(object, "contentSourceDigest", name)?,
+                "read response source digest",
+            )?;
+            valid_digest(
+                map_value(object, "requestBodyDigest", name)?,
+                "read response request digest",
+            )?;
             assert_ok(
                 digest(content.as_bytes()) == map_text(object, "bodyDigest")?,
                 "read response body digest",
+            )?;
+            valid_digest(
+                map_value(object, "bodyDigest", name)?,
+                "read response body digest shape",
             )?;
             valid_cid(
                 map_value(object, "delegationCid", name)?,
@@ -3402,6 +3600,29 @@ fn validate_endpoint_body(
                     == text(scenario, "authorityMaterialDigest")?,
                 "read authority digest",
             )?;
+            validate_proof(map_value(object, "proof", name)?, "read response proof")?;
+            let proof = map_object(object, "proof")?;
+            assert_ok(
+                map_text(proof, "kid")? == text(enrollment, "invitationKid")?,
+                "read response proof kid",
+            )?;
+            let signature = URL_SAFE_NO_PAD
+                .decode(map_text(proof, "signature")?)
+                .map_err(|e| e.to_string())?;
+            let public: [u8; 32] = b64(enrollment, "invitationPublicKey")?
+                .try_into()
+                .map_err(|_| "node public key length".to_string())?;
+            let key = VerifyingKey::from_bytes(&public).map_err(|e| e.to_string())?;
+            let sig = Signature::from_slice(&signature).map_err(|e| e.to_string())?;
+            let body_without_proof = {
+                let mut copy = object.clone();
+                copy.remove("proof");
+                Value::Object(copy)
+            };
+            let domain = "xyz.tinycloud.share/read-response/v1\0";
+            let signed = [domain.as_bytes(), jcs(&body_without_proof)?.as_bytes()].concat();
+            key.verify_strict(&signed, &sig)
+                .map_err(|e| format!("read response proof: {e}"))?;
         }
         value if value.ends_with("Failure") => {
             let object = exact_object(body, &["error"], &[], name)?;

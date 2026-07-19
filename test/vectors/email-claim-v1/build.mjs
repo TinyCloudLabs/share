@@ -124,7 +124,7 @@ function sealEnvelope(plaintext, key, nonce) {
 }
 
 const domains = JSON.parse(await readFile(resolve(spec, "domains.json"), "utf8"));
-const domainNames = ["envelope", "policy", "inviteAuthorization", "holderBinding", "policyChallenge", "policyPresentation", "policySession", "readInvocation", "authorityMaterial"];
+const domainNames = ["envelope", "policy", "inviteAuthorization", "holderBinding", "policyChallenge", "policyPresentation", "policySession", "readInvocation", "readResponse", "authorityMaterial"];
 for (const name of domainNames) if (typeof domains.domains[name] !== "string" || !domains.domains[name].endsWith("\u0000")) throw new Error(`invalid domain registry entry: ${name}`);
 
 const seeds = { sender: hex("44".repeat(32)), node: hex("42".repeat(32)), issuer: hex("43".repeat(32)), holder: hex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60") };
@@ -159,6 +159,7 @@ function makeScenario(kind) {
   const sealedBlob = sealEnvelope(utf8(envelopeJcs), envelopeKey, envelopeNonce);
   const shareCid = cid(sealedBlob);
   const invitationId = b64(fixedBytes(16));
+  const activationId = b64(fixedBytes(16, 0x10));
   const claimSecret = b64(fixedBytes(32, 0x20));
   const claimNonce = b64(fixedBytes(32, 0xa0));
   const redemptionId = b64(fixedBytes(16, 0x40));
@@ -212,8 +213,8 @@ function makeScenario(kind) {
   const envelopeArtifact = { name: "envelope", domain: domains.domains.envelope, signerDid: ids.senderDid, message: unsignedEnvelope, jcs: jcs(unsignedEnvelope), messageDigest: digest(utf8(jcs(unsignedEnvelope))), signedBytesDigest: digest(Buffer.concat([utf8(domains.domains.envelope), utf8(jcs(unsignedEnvelope))])), signatureDigest: digest(Buffer.from(envelope.signature.value, "base64url")), signature: { alg: "EdDSA", kid: ids.senderKid, value: envelope.signature.value } };
   const authArtifact = signed("inviteAuthorization", domains, auth, seeds.node, ids.nodeDid, ids.nodeKid);
   const binding = { type: "TinyCloudEmailClaimHolderBinding", version: 1, redemptionId, invitationId, claimNonce, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, emailHash, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, requestOrigin: "https://share.tinycloud.xyz", issuedAt: times.issued, expiresAt: times.bindingExpires, jti };
-  const readBody = { sessionId, shareCid, shareId, policyCid, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path };
-  const requestBodyDigest = bodyDigest(readBody);
+  const challengeBody = { shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path };
+  const requestBodyDigest = bodyDigest(challengeBody);
   const challenge = { type: "TinyCloudSharePolicyChallenge", version: 1, challengeId, nonce: claimNonce, shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest, issuedAt: times.issued, expiresAt: times.challengeExpires };
   const sdJwtSalt = b64(fixedBytes(16, kind === "kv" ? 0x30 : 0x40));
   const issuerClaims = { iss: ids.issuerDid, sub: ids.holderDid, iat: 1784203200, nbf: 1784203200, exp: 1784808000, jti: `urn:uuid:${kind}-credential-001`, vct: "opencredentials.email/v1", tinycloud_share: { share_cid: shareCid, share_id: shareId, policy_cid: policyCid, node_audience: ids.nodeDid }, _sd_alg: "sha-256", _sd: [] };
@@ -223,28 +224,36 @@ function makeScenario(kind) {
   const credential = { format: "vc+sd-jwt", credential: credentialString, holderDid: ids.holderDid, expiresAt: times.claimExpires, issuerDid: ids.issuerDid, vct: "opencredentials.email/v1", claims: issuerClaims, disclosures: [{ path: "/email", salt: sdJwtSalt, encoded: disclosure, digest: disclosureDigest, value: canonicalEmail }], credentialDigest: digest(utf8(credentialString)), issuerJws: { signingInput: issuerInput, signingInputDigest: digest(utf8(issuerInput)), signature: issuerSig } };
   const presentation = { type: "TinyCloudSharePolicyPresentation", version: 1, challengeId, nonce: claimNonce, shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, credentialDigest: credential.credentialDigest, action: source.action, resource: source.path, requestBodyDigest, issuedAt: times.issued, expiresAt: times.challengeExpires, jti: b64(fixedBytes(16, 0x11)) };
   const session = { type: "TinyCloudSharePolicySession", version: 1, sessionId, shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, credentialDigest: credential.credentialDigest, issuedAt: times.issued, expiresAt: times.sessionExpires };
-  const read = { type: "TinyCloudShareReadInvocation", version: 1, sessionId, shareCid, shareId, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest, issuedAt: times.issued, expiresAt: times.readExpires, jti: readJti };
+  const readBase = { type: "TinyCloudShareReadInvocation", version: 1, sessionId, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, issuedAt: times.issued, expiresAt: times.readExpires, jti: readJti };
+  const readRequestPreimage = { sessionId, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, invocation: readBase };
+  const readRequestBodyDigest = bodyDigest(readRequestPreimage);
+  const read = { ...readBase, requestBodyDigest: readRequestBodyDigest };
   const holderBindingArtifact = signed("holderBinding", domains, binding, seeds.holder, ids.holderDid, ids.holderKid);
   const policyChallengeArtifact = signed("policyChallenge", domains, challenge, seeds.node, ids.nodeDid, ids.nodeKid);
   const policyPresentationArtifact = signed("policyPresentation", domains, presentation, seeds.holder, ids.holderDid, ids.holderKid);
   const policySessionArtifact = signed("policySession", domains, session, seeds.node, ids.nodeDid, ids.nodeKid);
   const readArtifact = signed("readInvocation", domains, read, seeds.holder, ids.holderDid, ids.holderKid);
+  const readResponseBody = { type: "TinyCloudShareReadResponse", version: 1, sessionId, requestJti: readJti, readJti, audience: ids.nodeDid, holderDid: ids.holderDid, credentialDigest: credential.credentialDigest, issuedAt: times.issued, expiresAt: times.readExpires, mediaType: "text/markdown; charset=utf-8", content: "# Project plan\n", contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest: readRequestBodyDigest, bodyDigest: digest(utf8("# Project plan\n")), delegationCid, authorityMaterialHandle, authorityMaterialDigest };
+  const readResponseSignature = sign(null, Buffer.concat([utf8(domains.domains.readResponse), utf8(jcs(readResponseBody))]), privateKey(seeds.node));
+  const readResponse = { ...readResponseBody, proof: { alg: "EdDSA", kid: ids.nodeKid, signature: b64(readResponseSignature) } };
   const authorityMaterialArtifact = signed("authorityMaterial", domains, authorityMaterial, seeds.sender, ids.senderDid, ids.senderKid);
   const artifacts = [policyArtifact, envelopeArtifact, authArtifact, holderBindingArtifact, policyChallengeArtifact, policyPresentationArtifact, policySessionArtifact, readArtifact, authorityMaterialArtifact];
   const authorizationProof = artifactProof(authArtifact);
   const shareUrl = `https://share.tinycloud.xyz/s/${shareCid}#k=${b64(envelopeKey)}`;
+  const authorizationBody = { shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, recipientEmail: canonicalEmail, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path };
+  const authorizationRequest = { jti: auth.jti, reportAbuseToken, senderDid: ids.senderDid, shareCid, shareId, delegationCid, authorityMaterialHandle, authorityMaterialDigest, policyCid, recipientEmail: canonicalEmail, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, documentName: "Project plan.md", senderTrust: "verified", contentSource: source, contentSourceDigest: sourceDigest, shareExpiresAt: times.claimExpires, requestBodyDigest: bodyDigest(authorizationBody) };
   const bodies = {
-    authorizationRequest: { shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, recipientEmail: canonicalEmail, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest },
+    authorizationRequest,
     authorizationResponse: { authorization: auth, proof: authorizationProof },
     createInvitationRequest: { authorization: auth, proof: authorizationProof, shareUrl },
     createInvitationResponse: { status: "accepted", retryAfterSeconds: 20, delegationCid, authorityMaterialHandle, authorityMaterialDigest }, resendRequest: { invitationId, claimSecret }, resendResponse: { status: "accepted", retryAfterSeconds: 20, delegationCid, authorityMaterialHandle, authorityMaterialDigest },
-    claimChallengeMagicRequest: { invitationId, method: "magic", claimSecret }, claimChallengeOtpRequest: { invitationId, method: "otp", otp: "042731" }, claimChallengeResponse: { claimNonce, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, emailHash, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, expiresAt: times.challengeExpires },
+    activationRequest: { invitationId, claimSecret }, activationResponse: { status: "accepted", retryAfterSeconds: 20, activationId }, claimChallengeMagicRequest: { invitationId, method: "magic", activationId }, claimChallengeOtpRequest: { invitationId, method: "otp", otp: "042731" }, claimChallengeResponse: { claimNonce, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, emailHash, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, expiresAt: times.challengeExpires },
     claimRedeemRequest: { version: "tinycloud.share-email-claim/v1", redemptionId, invitationId, method: "magic", mailboxProof: claimSecret, binding, holderProof: artifactProof(holderBindingArtifact) }, claimRedeemOtpRequest: { version: "tinycloud.share-email-claim/v1", redemptionId, invitationId, method: "otp", mailboxProof: "042731", binding, holderProof: artifactProof(holderBindingArtifact) }, claimRedeemResponse: { format: "vc+sd-jwt", credential: credentialString, holderDid: ids.holderDid, expiresAt: times.claimExpires },
     policyChallengeRequest: { shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest }, policyChallengeResponse: { challenge, proof: artifactProof(policyChallengeArtifact) },
     policySessionRequest: { presentation, credential: credentialString, proof: artifactProof(policyPresentationArtifact) }, policySessionResponse: { session, proof: artifactProof(policySessionArtifact) },
-    kvReadRequest: { sessionId, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
-    sqlReadRequest: { sessionId, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
-    readResponse: { mediaType: "text/markdown; charset=utf-8", content: "# Project plan\n", contentSourceDigest: sourceDigest, bodyDigest: digest(utf8("# Project plan\n")), delegationCid, authorityMaterialHandle, authorityMaterialDigest }
+    kvReadRequest: { sessionId, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest: readRequestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
+    sqlReadRequest: { sessionId, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest: readRequestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
+    readResponse
   };
   const failures = { authorizationFailure: { error: { code: "invitation_authorization_invalid" } }, createInvitationFailure: { error: { code: "capability_unavailable" } }, resendFailure: { error: { code: "invalid_or_expired_claim" } }, claimChallengeFailure: { error: { code: "invalid_or_expired_claim" } }, claimRedeemFailure: { error: { code: "claim_already_used" } }, policyChallengeFailure: { error: { code: "policy_denied" } }, policySessionFailure: { error: { code: "invalid_credential_profile" } }, kvReadFailure: { error: { code: "read_denied" } }, sqlReadFailure: { error: { code: "read_denied" } } };
   const preimages = Object.fromEntries(Object.entries({ ...bodies, ...failures }).map(([name, body]) => [name, { body, jcs: jcs(body), digest: bodyDigest(body) }]));
@@ -294,15 +303,15 @@ const candidateSigningKeys = {
 };
 const credentialKeyData = (key) => ({ candidateSigningPublicKeyByKind: { kv: candidateSigningKeys[key], sql: candidateSigningKeys[key] } });
 const sqlOver32Arguments = Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`argument_${String(index).padStart(2, "0")}`, index]));
-const scannerGetFragment = `https://share.tinycloud.xyz/s/${fixtureKv.shareCid}#k=${fixtureKv.envelopeKey}&i=${fixtureKv.preimages.resendRequest.body.invitationId}&c=${fixtureKv.preimages.claimChallengeMagicRequest.body.claimSecret}`;
-const scannerGetFragmentSql = `https://share.tinycloud.xyz/s/${fixtureSql.shareCid}#k=${fixtureSql.envelopeKey}&i=${fixtureSql.preimages.resendRequest.body.invitationId}&c=${fixtureSql.preimages.claimChallengeMagicRequest.body.claimSecret}`;
+const scannerGetFragment = `https://share.tinycloud.xyz/s/${fixtureKv.shareCid}#k=${fixtureKv.envelopeKey}&i=${fixtureKv.preimages.activationRequest.body.invitationId}&c=${fixtureKv.preimages.activationRequest.body.claimSecret}`;
+const scannerGetFragmentSql = `https://share.tinycloud.xyz/s/${fixtureSql.shareCid}#k=${fixtureSql.envelopeKey}&i=${fixtureSql.preimages.activationRequest.body.invitationId}&c=${fixtureSql.preimages.activationRequest.body.claimSecret}`;
 const negativeRow = (id, kind, target, mutation, mutationData, appliesTo = ["kv", "sql"], extra = {}) => {
   if (kind === "share-url" && typeof mutationData.value === "string" && appliesTo.includes("kv") && appliesTo.includes("sql")) {
     const sqlValue = mutationData.value
       .replaceAll(fixtureKv.shareCid, fixtureSql.shareCid)
       .replaceAll(fixtureKv.envelopeKey, fixtureSql.envelopeKey)
       .replaceAll(fixtureKv.preimages.resendRequest.body.invitationId, fixtureSql.preimages.resendRequest.body.invitationId)
-      .replaceAll(fixtureKv.preimages.claimChallengeMagicRequest.body.claimSecret, fixtureSql.preimages.claimChallengeMagicRequest.body.claimSecret);
+      .replaceAll(fixtureKv.preimages.activationRequest.body.claimSecret, fixtureSql.preimages.activationRequest.body.claimSecret);
     mutationData = { ...mutationData, valueByKind: { kv: mutationData.value, sql: sqlValue } };
     delete mutationData.value;
   }

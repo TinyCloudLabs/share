@@ -52,6 +52,8 @@ body {
 .viewer-otp-input:focus-visible, .viewer-primary-action:focus-visible, .viewer-secondary-action:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .viewer-primary-action { margin-top: 1.25rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 650; padding: 0.65rem 1rem; cursor: pointer; }
 .viewer-secondary-action { margin: 0.85rem 0 0; border: 0; background: transparent; color: var(--ink-soft); font: inherit; text-decoration: underline; text-underline-offset: 0.2em; cursor: pointer; }
+.viewer-secondary-action:disabled { opacity: 0.55; cursor: not-allowed; text-decoration: none; }
+.viewer-cooldown { margin: 0.9rem auto 0; color: var(--ink-soft); font-size: 0.9rem; }
 
 .viewer-bar {
   display: flex;
