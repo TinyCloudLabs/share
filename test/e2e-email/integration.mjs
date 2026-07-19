@@ -10,7 +10,7 @@ const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(shareRoot, "../.
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? resolve(shareRoot, "../../../opencredentials/feat/email-claim-o4-integration");
 const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witness");
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
-const expectedManifestDigest = "0KhpZQqEm2N01I3fNOSN0LclCbR3uw_EK8CoBtqua2g";
+const expectedManifestDigest = "5TT8KlMz2P1pYnIRys5yGb6wfialFJi-Bz-6SwqUXJ4";
 
 function run(command, args, cwd) {
   console.log(`$ ${command} ${args.join(" ")}`);
