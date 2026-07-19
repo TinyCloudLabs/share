@@ -204,6 +204,7 @@ function parseProof(value: unknown): SignedProof {
 function parseAuthorization(value: unknown): AuthorizedInvitation {
   const outer = exact(value, ["authorization", "proof"]);
   const authorization = exact(outer.authorization, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
+  console.error(`sender auth parse: trust=${String(authorization.senderTrust)} type=${String(authorization.type)} proof=${JSON.stringify(outer.proof)}`);
   if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 1 || authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") throw new ShareTransportError("unknown");
   try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
   return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
