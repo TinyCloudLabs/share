@@ -34,8 +34,8 @@ void (async () => {
     const publicConfig = await loadSharePublicConfig();
     const capability = await loadCapability(publicConfig.shareOrigin);
     const transport = createHttpTransport({ nodeOrigin: publicConfig.nodeOrigin, credentialsOrigin: publicConfig.credentialsOrigin });
-    const uploadEnvelope = async (cid: string, blob: Uint8Array): Promise<void> => {
-      const response = await fetch("/registry/blobs", { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*" }, body: blob.buffer as ArrayBuffer });
+    const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
+      const response = await fetch("/registry/blobs", { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: blob.buffer as ArrayBuffer });
       if (!response.ok) throw new Error(`registry upload failed (${response.status})`);
       void cid;
     };

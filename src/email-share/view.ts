@@ -7,7 +7,7 @@ import type { ShareTransport } from "./transport.js";
 export interface SenderMountOptions {
   readonly scope?: SenderScope;
   readonly transport: ShareTransport;
-  readonly uploadEnvelope: (cid: string, blob: Uint8Array) => Promise<void>;
+  readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
   readonly defaultSource?: ContentSource;
 }
 

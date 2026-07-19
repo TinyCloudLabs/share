@@ -26,7 +26,7 @@ export interface SenderController {
 
 export function createSenderController(input: {
   readonly transport: ShareTransport;
-  readonly uploadEnvelope: (cid: string, blob: Uint8Array) => Promise<void>;
+  readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
 }): SenderController {
   let state: SenderState = { state: "editing" };
   const listeners = new Set<(next: SenderState) => void>();

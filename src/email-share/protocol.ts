@@ -217,7 +217,7 @@ export async function createInvitationDraft(input: {
   readonly scope: SenderScope;
   readonly shareId: string;
   readonly expiresAt: string;
-  readonly uploadEnvelope: (cid: string, blob: Uint8Array) => Promise<void>;
+  readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
   readonly now?: string;
 }): Promise<InvitationDraft> {
   const email = canonicalEmail(input.email);
@@ -271,7 +271,7 @@ export async function createInvitationDraft(input: {
   };
   const envelope = signEnvelope(unsigned, input.scope.senderPrivateKey);
   const sealed = await seal(new Uint8Array(new TextEncoder().encode(canonicalize(envelope))), envelopeKey);
-  await input.uploadEnvelope(sealed.cid, sealed.blob);
+  await input.uploadEnvelope(sealed.cid, sealed.blob, input.expiresAt);
   const jti = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const reportAbuseToken = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const shareUrl = encodeShareUrl({ origin: SHARE_ORIGIN, ciphertextCid: sealed.cid, key32: envelopeKey });
