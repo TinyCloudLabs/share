@@ -256,8 +256,6 @@ async function installInterception(page, targets) {
   });
 }
 
-function fixedIssuerPublicKey() { return decodeBase64("Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "issuer public key"); }
-
 async function readCapture(path) {
   try {
     const content = await readFile(path, "utf8");
@@ -295,7 +293,7 @@ async function postJson(base, path, body) {
   return fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(body) });
 }
 
-async function runBrowserCase(browser, targets, fixture, caseIndex) {
+async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex) {
   const scope = cloneScope(fixture.scope ?? fixture);
   const source = fixture.source ?? scope.source;
   if (source === undefined) throw new Error(`case ${caseIndex}: source is missing`);
@@ -381,7 +379,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
         };
       },
     };
-  }, { scope: browserScope, source, issuerPublicKey: Array.from(fixedIssuerPublicKey()) });
+  }, { scope: browserScope, source, issuerPublicKey: Array.from(issuerPublicKey) });
   await page.goto(link, { waitUntil: "networkidle0" });
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
   catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
@@ -469,7 +467,8 @@ async function mountedGate() {
     try {
       for (const [index, fixture] of fixtures.entries()) {
         fixture.mailArtifact = mailArtifact;
-        await runBrowserCase(instance, targets, fixture, index);
+        const issuerPublicKey = credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey;
+        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index);
       }
     } catch (error) {
       const diagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim holder signature mismatch")));
