@@ -386,7 +386,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
   const senderA11y = await sender.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role") }));
-  if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed`);
+  if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed (${JSON.stringify(senderA11y)})`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
   const expiry = fixture.expiresAt === undefined ? new Date(Date.now() + 3_600_000) : new Date(fixture.expiresAt);
   const expiryInput = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
