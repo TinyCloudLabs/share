@@ -399,6 +399,7 @@ async function mountedGate() {
   let nodeUrl = arg("node-url") ?? process.env.TINYCLOUD_NODE_URL;
   let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
   let nodeDescriptor;
+  let nodeProcess;
   let credentialsDescriptor;
   const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
   activeCleanup = cleanup;
@@ -407,6 +408,7 @@ async function mountedGate() {
       const node = arg("node-command") === undefined
         ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "--invitation-public-key", "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI"], nodeRoot)
         : spawnOwned(arg("node-command"), nodeRoot);
+      nodeProcess = node;
       owned.push(node);
       nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node");
       nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
@@ -462,6 +464,9 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
+    } catch (error) {
+      if (nodeProcess !== undefined) console.error(`mounted Node output:\n${nodeProcess.output()}`);
+      throw error;
     } finally { await instance.close(); }
   } finally {
     await cleanup();
