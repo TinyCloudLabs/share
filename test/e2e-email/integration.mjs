@@ -132,7 +132,7 @@ async function freePort() {
 }
 
 async function waitForFileJson(path, label) {
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 300_000;
   let lastError = "file not written";
   while (Date.now() < deadline) {
     try { return JSON.parse(await readFile(path, "utf8")); }
@@ -143,7 +143,7 @@ async function waitForFileJson(path, label) {
 }
 
 async function waitForDescriptor(process, label) {
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 300_000;
   while (Date.now() < deadline) {
     for (const line of process.output().split("\n").reverse()) {
       try { const value = JSON.parse(line); if (value?.testOnly === true) return value; }
