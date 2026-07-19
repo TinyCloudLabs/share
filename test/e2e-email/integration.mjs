@@ -116,7 +116,12 @@ function spawnOwned(command, cwd, extraEnv = {}) {
 function spawnOwnedArgs(command, args, cwd, extraEnv = {}) {
   const child = spawn(command, args, { cwd, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
-  const collect = (chunk) => { output += String(chunk); if (output.length > 128_000) output = output.slice(-128_000); };
+  const collect = (chunk) => {
+    const text = String(chunk);
+    output += text;
+    if (text.includes("mounted policy session:")) console.error(`owned fixture: ${text.trim()}`);
+    if (output.length > 128_000) output = output.slice(-128_000);
+  };
   child.stdout.on("data", collect);
   child.stderr.on("data", collect);
   return { child, output: () => output, done: new Promise((resolveDone) => child.once("exit", resolveDone)) };
