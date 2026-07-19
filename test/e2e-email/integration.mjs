@@ -387,7 +387,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
   await page.click("button.viewer-primary-action");
   try { await page.waitForFunction((marker) => (document.body.textContent ?? "").includes(marker), { timeout: 30_000 }, fixture.expectedContent ?? source.path); }
-  catch { throw new Error(`case ${caseIndex}: recipient did not render content: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
+  catch { throw new Error(`case ${caseIndex}: recipient did not render content: ${(await page.evaluate(() => JSON.stringify({ body: document.body.textContent ?? "", url: location.href, secure: isSecureContext, subtle: typeof crypto?.subtle }))).slice(0, 900)}`); }
   await recipient.close();
 
   const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
