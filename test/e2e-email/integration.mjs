@@ -354,7 +354,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
       try {
         const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const value = await response.json().catch(() => undefined);
-        console.error(`recipient claim ${path}: ${response.status} ${value && typeof value === "object" ? Object.keys(value).join(",") : "non-json"}`);
+        console.error(`recipient claim ${path}: ${response.status} ${value && typeof value === "object" ? Object.keys(value).join(",") : "non-json"}${value?.error?.code ? ` code=${value.error.code}` : ""}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return value;
       } catch (error) { console.error(`recipient claim ${path} failed: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; }
