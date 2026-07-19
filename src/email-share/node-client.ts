@@ -33,9 +33,9 @@ async function holderProof(material: ClaimMaterial, domain: string, value: unkno
 
 function nowIso(): string { return new Date().toISOString(); }
 
-function boundedReadExpiry(sessionExpiresAt: string, shareExpiry: string): string {
-  const expiresAt = Math.min(Date.now() + READ_TTL_MS, Date.parse(sessionExpiresAt), Date.parse(shareExpiry));
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error("session-expired");
+function boundedReadExpiry(sessionExpiresAt: string, shareExpiry: string, now = Date.now()): string {
+  const expiresAt = Math.min(now + READ_TTL_MS, Date.parse(sessionExpiresAt), Date.parse(shareExpiry));
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) throw new Error("session-expired");
   return new Date(expiresAt).toISOString();
 }
 
@@ -105,6 +105,7 @@ export async function readClaimedShare(input: {
   assertNodeTime(session.issuedAt, session.expiresAt, Date.now(), 300);
   if (session.sessionId === undefined || typeof session.sessionId !== "string") throw new Error("session-invalid");
 
+  const readNow = Date.now();
   const invocationBase = {
     type: "TinyCloudShareReadInvocation",
     version: 1,
@@ -122,8 +123,8 @@ export async function readClaimedShare(input: {
     nodeAudience: input.share.nodeAudience,
     action: input.share.action,
     resource: input.share.resource,
-    issuedAt: nowIso(),
-    expiresAt: boundedReadExpiry(String(session.expiresAt), input.share.expiry),
+    issuedAt: new Date(readNow).toISOString(),
+    expiresAt: boundedReadExpiry(String(session.expiresAt), input.share.expiry, readNow),
     jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
   };
   const readPreimage = {
@@ -139,7 +140,7 @@ export async function readClaimedShare(input: {
   };
   const readRequestBodyDigest = await digest(readPreimage);
   const invocation = { ...invocationBase, requestBodyDigest: readRequestBodyDigest };
-  assertNodeTime(invocation.issuedAt, invocation.expiresAt, Date.now(), 60);
+  assertNodeTime(invocation.issuedAt, invocation.expiresAt, readNow, 60);
   const readRequestBody = {
     sessionId: session.sessionId,
     delegationCid: input.share.delegationCid,
