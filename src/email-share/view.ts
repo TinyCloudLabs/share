@@ -84,6 +84,7 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   let lastRequest: { readonly email: string; readonly source: ContentSource; readonly scope: SenderScope; readonly shareId: string; readonly expiresAt: string } | undefined;
   const render = (state: SenderState): void => renderState(root, state, lastRequest === undefined ? undefined : () => { void controller.request(lastRequest as never); });
   controller.subscribe(render);
+  renderState(root, controller.state);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (options.scope === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
