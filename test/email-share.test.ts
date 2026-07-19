@@ -2,9 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalize, didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { ed25519 } from "@noble/curves/ed25519";
 import { captureAndScrubLaunch } from "../src/email-share/url.js";
-import { canonicalEmail, createInvitationDraft, type SenderScope } from "../src/email-share/protocol.js";
+import { canonicalDigest, canonicalEmail, createInvitationDraft, signedInvitationProof, type SenderScope } from "../src/email-share/protocol.js";
 import { createClaimController, createHolder } from "../src/email-share/claim.js";
-import { createHttpTransport, ShareTransportError, type ShareTransport } from "../src/email-share/transport.js";
+import { readClaimedShare } from "../src/email-share/node-client.js";
+import { createHttpTransport, ShareTransportError, type ReadResponse, type ShareTransport } from "../src/email-share/transport.js";
 import { createSenderController } from "../src/email-share/sender.js";
 import { createHash } from "node:crypto";
 import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
@@ -91,6 +92,177 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(target.kind).toBe("policy");
     if (target.kind !== "policy") throw new Error("expected policy target");
     expect(new TextDecoder().decode(Uint8Array.from(atob(target.policyBytes.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0)))).toContain("shared_document_by_id");
+  });
+
+  it("pins the named-SQL invitation payload to the mounted scope contract", async () => {
+    const source = {
+      kind: "sql" as const,
+      space: scope.spaceId,
+      database: "documents",
+      path: "shared/plan",
+      statement: "shared_document_by_id",
+      arguments: { document_id: 123 },
+      argumentsDigest: "ignored",
+      action: "tinycloud.sql/read" as const,
+    };
+    const draft = await createInvitationDraft({
+      email: "Alice+Notes@example.com",
+      source,
+      scope: { ...scope, authorityMaterialHandle: "amh_sql_001" },
+      shareId: "share-sql-mounted",
+      expiresAt: "2026-07-23T12:00:00.000Z",
+      now: "2026-07-19T12:00:00.000Z",
+      uploadEnvelope: async () => {},
+    });
+    const signed = await signedInvitationProof(draft, { ...scope, authorityMaterialHandle: "amh_sql_001" });
+    const request = signed.request;
+    const expectedSource = {
+      kind: "sql",
+      space: scope.spaceId,
+      database: "documents",
+      path: "shared/plan",
+      statement: "shared_document_by_id",
+      arguments: { document_id: 123 },
+      argumentsDigest: "Wvt9ycf107Id2Qe58i0BnWykVBsdjhyS03P2psS0bSg",
+      action: "tinycloud.sql/read",
+    };
+    expect(request.contentSource).toEqual(expectedSource);
+    expect(request.contentSourceDigest).toBe("OmF5ZcmUhf6D3372Toi6tvaibZ7kpamg4oFe89d_xwU");
+    expect(request.contentSource).toMatchObject({ statement: "shared_document_by_id", argumentsDigest: expectedSource.argumentsDigest, arguments: { document_id: 123 } });
+    expect(request).not.toHaveProperty("action");
+    expect(request).not.toHaveProperty("resource");
+    expect(request.requestBodyDigest).toBe(await canonicalDigest({
+      shareCid: request.shareCid,
+      shareId: request.shareId,
+      policyCid: request.policyCid,
+      delegationCid: request.delegationCid,
+      authorityMaterialHandle: request.authorityMaterialHandle,
+      authorityMaterialDigest: request.authorityMaterialDigest,
+      recipientEmail: request.recipientEmail,
+      targetOrigin: request.targetOrigin,
+      nodeAudience: request.nodeAudience,
+      action: "tinycloud.sql/read",
+      resource: "shared/plan",
+    }));
+  });
+
+  it("binds named-SQL reads to the same source and signed markdown body", async () => {
+    const holder = await createHolder();
+    const source = {
+      kind: "sql" as const,
+      space: scope.spaceId,
+      database: "documents",
+      path: "shared/plan",
+      statement: "shared_document_by_id",
+      arguments: { document_id: 123 },
+      argumentsDigest: "Wvt9ycf107Id2Qe58i0BnWykVBsdjhyS03P2psS0bSg",
+      action: "tinycloud.sql/read" as const,
+    };
+    const share = {
+      shareId: "share-sql-mounted",
+      shareCid: "A".repeat(59),
+      policyCid: "B".repeat(59),
+      recipientEmail: "Alice+Notes@example.com",
+      recipientHint: "A***@example.com",
+      expiry: "2026-07-23T12:00:00.000Z",
+      nodeOrigin: "https://node.example",
+      nodeAudience: "did:web:node.example",
+      requestOrigin: "https://share.tinycloud.xyz",
+      delegationCid: "C".repeat(59),
+      authorityMaterialHandle: "amh_sql_001",
+      authorityMaterialDigest: "D".repeat(43),
+      contentSource: source,
+      contentSourceDigest: "OmF5ZcmUhf6D3372Toi6tvaibZ7kpamg4oFe89d_xwU",
+      action: "tinycloud.sql/read" as const,
+      resource: "shared/plan",
+      trustedNode: scope.trustedNode,
+    };
+    const credential = "mounted-sql-credential";
+    const challenge = (body: Record<string, unknown>) => ({
+      ...body,
+      type: "TinyCloudSharePolicyChallenge",
+      version: 1,
+      challengeId: "E".repeat(22),
+      nonce: "F".repeat(43),
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    });
+    const nodeProof = (message: Record<string, unknown>, domain: string) => ({
+      alg: "EdDSA" as const,
+      kid: share.trustedNode.invitationKid,
+      signature: toBase64Url(ed25519.sign(new TextEncoder().encode(domain + canonicalize(message)), nodeSeed)),
+    });
+    let readRequest: Record<string, unknown> | undefined;
+    const t = transport({
+      policyChallenge: vi.fn(async (body) => {
+        const value = challenge(body as Record<string, unknown>);
+        return { challenge: value, proof: nodeProof(value, SIGNATURE_DOMAINS.policyChallenge) };
+      }),
+      policySession: vi.fn(async (body) => {
+        const presentation = body.presentation as Record<string, unknown>;
+        const { challengeId: _challengeId, nonce: _nonce, jti: _jti, requestBodyDigest: _digest, ...sessionFields } = presentation;
+        const session = {
+          ...sessionFields,
+          type: "TinyCloudSharePolicySession",
+          version: 1,
+          sessionId: "G".repeat(22),
+          credentialDigest: createHash("sha256").update(credential).digest("base64url"),
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 300_000).toISOString(),
+        };
+        return { session, proof: nodeProof(session, SIGNATURE_DOMAINS.policySession) };
+      }),
+      read: vi.fn(async (body) => {
+        readRequest = body as Record<string, unknown>;
+        const invocation = body.invocation as Record<string, unknown>;
+        const content = "# SQL mounted plan\n";
+        const response: Omit<ReadResponse, "proof"> = {
+          type: "TinyCloudShareReadResponse",
+          version: 1,
+          sessionId: String(invocation.sessionId),
+          requestJti: String(invocation.jti),
+          readJti: String(invocation.jti),
+          audience: share.nodeAudience,
+          holderDid: String(invocation.holderDid),
+          credentialDigest: createHash("sha256").update(credential).digest("base64url"),
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30_000).toISOString(),
+          mediaType: "text/markdown; charset=utf-8" as const,
+          content,
+          contentSource: source,
+          contentSourceDigest: share.contentSourceDigest,
+          action: "tinycloud.sql/read" as const,
+          resource: "shared/plan",
+          requestBodyDigest: String(body.requestBodyDigest),
+          bodyDigest: createHash("sha256").update(content).digest("base64url"),
+          delegationCid: share.delegationCid,
+          authorityMaterialHandle: share.authorityMaterialHandle,
+          authorityMaterialDigest: share.authorityMaterialDigest,
+        };
+        return { ...response, proof: nodeProof(response, SIGNATURE_DOMAINS.readResponse) };
+      }),
+    });
+    const content = await readClaimedShare({ share, claim: { holder, credential, expiresAt: share.expiry, persisted: false }, transport: t });
+    expect(content).toBe("# SQL mounted plan\n");
+    expect(readRequest?.contentSource).toEqual(source);
+    expect(readRequest?.contentSourceDigest).toBe(share.contentSourceDigest);
+    expect(readRequest?.action).toBe("tinycloud.sql/read");
+    expect(readRequest?.resource).toBe("shared/plan");
+    const invocation = readRequest?.invocation as Record<string, unknown>;
+    expect(invocation.contentSource).toEqual(source);
+    expect(invocation.requestBodyDigest).toBe(readRequest?.requestBodyDigest);
+    const { requestBodyDigest: _digest, ...invocationWithoutDigest } = invocation;
+    expect(readRequest?.requestBodyDigest).toBe(await canonicalDigest({
+      sessionId: readRequest?.sessionId,
+      delegationCid: readRequest?.delegationCid,
+      authorityMaterialHandle: readRequest?.authorityMaterialHandle,
+      authorityMaterialDigest: readRequest?.authorityMaterialDigest,
+      contentSource: readRequest?.contentSource,
+      contentSourceDigest: readRequest?.contentSourceDigest,
+      action: readRequest?.action,
+      resource: readRequest?.resource,
+      invocation: invocationWithoutDigest,
+    }));
   });
 
   it("creates a non-extractable holder key", async () => {
