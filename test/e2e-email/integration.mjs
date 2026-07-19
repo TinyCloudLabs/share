@@ -475,7 +475,7 @@ async function mountedGate() {
         await runBrowserCase(instance, targets, fixture, index);
       }
     } catch (error) {
-      const validatorDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim validator")));
+      const validatorDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim validator") || line.includes("email-claim decoder")));
       if (validatorDiagnostics.length > 0) console.error(`mounted validator diagnostics: ${validatorDiagnostics.join(" | ")}`);
       throw error;
     }
