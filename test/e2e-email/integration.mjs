@@ -412,9 +412,13 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   await page.click("button.viewer-primary-action");
   try {
     await page.waitForFunction((marker) => {
-      if ((document.body.textContent ?? "").includes(marker)) return true;
+      const renderedMarker = marker.replace(/^#+\s*/, "").trim();
+      if ((document.body.textContent ?? "").includes(renderedMarker)) return true;
       return Array.from(document.querySelectorAll("iframe")).some((frame) => {
-        try { return (frame.contentDocument?.body?.textContent ?? "").includes(marker); } catch { return false; }
+        try {
+          return (frame.contentDocument?.body?.textContent ?? "").includes(renderedMarker)
+            || (frame.getAttribute("srcdoc") ?? "").includes(renderedMarker);
+        } catch { return (frame.getAttribute("srcdoc") ?? "").includes(renderedMarker); }
       });
     }, { timeout: 30_000 }, fixture.expectedContent ?? source.path);
   }
