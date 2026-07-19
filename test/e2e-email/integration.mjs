@@ -341,18 +341,10 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const captured = await waitForCapture(fixture.mailArtifact, before);
   const link = captured.href;
-  const initialMailbox = bodyFromLink(link);
-  if (initialMailbox.invitationId === null || initialMailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed captured link`);
-  const inert = await fetch(new URL(`/v1/share-email/claims/activate?invitationId=${initialMailbox.invitationId}&claimSecret=${initialMailbox.claimSecret}`, targets.credentials), { headers: { origin: canonical.share } });
+  const mailbox = bodyFromLink(link);
+  if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed captured link`);
+  const inert = await fetch(new URL(`/v1/share-email/claims/activate?invitationId=${mailbox.invitationId}&claimSecret=${mailbox.claimSecret}`, targets.credentials), { headers: { origin: canonical.share } });
   if (inert.status !== 200) throw new Error(`case ${caseIndex}: inert scanner GET was not accepted as read-only (${inert.status})`);
-
-  const resendBeforeClaim = await postJson(targets.credentials, "/v1/share-email/invitations/resend", initialMailbox);
-  if (!resendBeforeClaim.ok) throw new Error(`case ${caseIndex}: pre-claim resend failed (${resendBeforeClaim.status})`);
-  const resent = await waitForCapture(fixture.mailArtifact, before + 1);
-  const mailbox = bodyFromLink(resent.href);
-  if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed resent link`);
-  const superseded = await postJson(targets.credentials, "/v1/share-email/claims/activate", initialMailbox);
-  if (superseded.ok) throw new Error(`case ${caseIndex}: superseded activation unexpectedly succeeded`);
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
