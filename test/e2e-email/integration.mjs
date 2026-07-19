@@ -314,7 +314,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   }, { scope: browserScope, source });
   await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
   const emailInput = await sender.$('input[name="email"]');
-  if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount (${await sender.$eval("body", (body) => body.textContent ?? "").catch(() => "no body")})`);
+  if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
   await sender.type('input[name="expiry"]', fixture.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString().slice(0, 16));
   await sender.click('button[type="submit"]');
