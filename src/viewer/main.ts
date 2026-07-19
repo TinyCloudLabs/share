@@ -76,7 +76,7 @@ function appendPersistentForgetAction(root: HTMLElement, onForget: () => void): 
   footer.append(button);
 }
 
-export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: EmailClaimRuntime): Promise<void> {
+export async function bootDefault(launch: CapturedLaunch | undefined): Promise<void> {
   const root = document.getElementById("viewer");
   if (root === null) throw new Error("viewer root element missing");
   if (launch === undefined) {
@@ -90,7 +90,7 @@ export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: 
     return;
   }
   let configured: EmailClaimRuntime;
-  try { configured = runtime ?? await configuredRuntime(); } catch { renderEmailClaimUnavailable(root); return; }
+  try { configured = await configuredRuntime(); } catch { renderEmailClaimUnavailable(root); return; }
   try {
     assertProductionCredentialTrust(configured.credentialTrust);
     const share = await configured.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });

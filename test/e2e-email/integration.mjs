@@ -25,7 +25,8 @@ const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(shareRoot, "../.
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? resolve(shareRoot, "../../../opencredentials/feat/email-claim-o4-integration");
 const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witness");
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
-const expectedManifestDigest = "2sUjz8uHWUP66ePxe8zrHUVnAM9YJC0QZ9cD_XGA9vc";
+const expectedContractCommit = "36f6c4303eca3bee917692c77237c264b4dfa342";
+const expectedManifestDigest = "pl8-1Rpx_DYCBjOpK3hRrLfrSVDINNFssZDfFw6BMTs";
 
 const canonical = Object.freeze({
   share: "https://share.tinycloud.xyz",
@@ -72,6 +73,11 @@ async function cleanAndExact(repo, expected, label) {
   if (head !== expected) throw new Error(`${label} exact release head mismatch: expected ${expected}, found ${head}`);
 }
 
+async function assertContractCommit(repo) {
+  const contract = (await runCapture("git", ["rev-parse", expectedContractCommit], repo)).trim();
+  if (contract !== expectedContractCommit) throw new Error(`Share contract commit is unavailable: ${expectedContractCommit}`);
+}
+
 function runCapture(command, args, cwd) {
   const child = spawn(command, args, { cwd, env: process.env });
   let stdout = "";
@@ -88,17 +94,34 @@ async function nativeGate() {
   await cleanAndExact(shareRoot, process.env.SHARE_RELEASE_HEAD, "Share");
   await cleanAndExact(nodeRoot, process.env.TINYCLOUD_NODE_RELEASE_HEAD, "tinycloud-node");
   await cleanAndExact(credentialsRoot, process.env.OPEN_CREDENTIALS_RELEASE_HEAD, "OpenCredentials");
+  await assertContractCommit(shareRoot);
   const manifest = JSON.parse(await readFile(resolve(vectorRoot, "manifest.json"), "utf8"));
   if (manifest.manifestDigest !== expectedManifestDigest) throw new Error(`Share manifest mismatch: ${manifest.manifestDigest}`);
   await run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
+  await run("node", ["test/vectors/email-claim-v1/build.mjs"], shareRoot);
+  await run("npm", ["ci", "--ignore-scripts"], shareRoot);
   await run("npm", ["test"], shareRoot);
   await run("npm", ["run", "typecheck"], shareRoot);
   await run("npm", ["run", "build"], shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+  await run("cargo", ["fmt", "--all", "--", "--check"], nodeRoot);
+  await run("cargo", ["clippy", "-p", "tinycloud-core", "-p", "tinycloud-node", "--all-targets", "--", "-D", "warnings"], nodeRoot);
   await run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
   await run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
-  await run("cargo", ["test", "--manifest-path", resolve(nodeRoot, "test/w5-policy-runtime-node-e2e/Cargo.toml"), "--test", "tc119_registry_wire_paths"], nodeRoot);
+  await run("cargo", ["test", "--manifest-path", resolve(nodeRoot, "test/n4-mounted-e2e/Cargo.toml")], nodeRoot);
+  await run("cargo", ["test", "--workspace", "--exclude", "tinycloud-sdk-wasm", "--exclude", "siwe"], nodeRoot);
+  await run("cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], nodeRoot);
+  await run("cargo", ["fmt", "--check"], credentialsRustRoot);
+  await run("cargo", ["test", "--bin", "opencredentials-witness"], credentialsRustRoot);
   await run("cargo", ["test", "--test", "share_email_postgres"], credentialsRustRoot);
-  await run("cargo", ["test", "--bin", "opencredentials-witness", "share_email::runtime::tests"], credentialsRustRoot);
+  await run("cargo", ["test", "--features", "dstack"], credentialsRustRoot);
+  await run("cargo", ["test", "--features", "dstack", "--test", "share_email_postgres"], credentialsRustRoot);
+  await run("cargo", ["clippy", "--features", "dstack", "--all-targets", "--", "-D", "warnings"], credentialsRustRoot);
+  const sdJwtRoot = resolve(credentialsRoot, "rust/opencredentials_sd_jwt");
+  await run("cargo", ["fmt", "--check"], sdJwtRoot);
+  await run("cargo", ["test"], sdJwtRoot);
+  await run("cargo", ["clippy", "--", "-D", "warnings"], sdJwtRoot);
+  await run("node", ["scripts/oi-share-email/verify-readiness-contract.mjs"], credentialsRoot);
+  await run("node", ["scripts/oi-share-email/verify-key-separation.mjs"], credentialsRoot);
 }
 
 function spawnOwned(command, cwd, extraEnv = {}) {

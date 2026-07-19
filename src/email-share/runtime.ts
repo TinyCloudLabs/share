@@ -16,6 +16,9 @@ export const PRODUCTION_ENDPOINTS = Object.freeze({
   issuerVct: "opencredentials.email/v1" as const,
 });
 
+export const SHARE_CONTRACT_COMMIT = "36f6c4303eca3bee917692c77237c264b4dfa342";
+export const SHARE_CONTRACT_MANIFEST_DIGEST = "pl8-1Rpx_DYCBjOpK3hRrLfrSVDINNFssZDfFw6BMTs";
+
 const NODE_INVITATION_KEY = fromBase64Url("IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI");
 const ISSUER_KEY = fromBase64Url("Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY");
 

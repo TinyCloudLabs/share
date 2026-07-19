@@ -20,6 +20,25 @@ it uses the shipped HTTP transport and production verifier. The test may use
 a capture delivery port, but it does not replace verifier logic or simulate a
 successful claim.
 
+The native matrix is deliberately explicit: Share vectors/tests/typecheck/build;
+Node format, focused clippy/tests, mounted/config-readiness, and the feasible
+full workspace tests/clippy; OpenCredentials normal, PostgreSQL, dstack,
+dstack/PostgreSQL, SD-JWT, format/clippy, provider-boundary, and
+config-readiness checks. The joined command is run twice from clean state. Only
+fixtures started by that command may be stopped between runs.
+
+The capture adapter is a hermetic implementation of the production delivery
+port. It is compiled only with `email-claim-fixture`; production composition
+constructs `ResendDeliveryPort` and rejects capture/provider mixing. The real
+Resend smoke command is separately committed and refuses to run unless an
+operator supplies an explicit controlled recipient and complete signed request.
+
+Release stamping uses runtime-provided exact expected heads. Do not put a
+release commit hash inside the commit that creates it. The evidence descriptor
+records the immutable contract commit and final owning heads; its parent and a
+separately recorded evidence commit identify the evidence snapshot without a
+self-referential hash.
+
 Generate a redacted, reproducible evidence record after a successful run:
 
 ```sh
