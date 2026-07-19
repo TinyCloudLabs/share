@@ -474,7 +474,11 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) { throw error; }
+    } catch (error) {
+      const fixtureDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim fixture redeem")));
+      if (fixtureDiagnostics.length > 0) console.error(`mounted claim diagnostics: ${fixtureDiagnostics.join(" | ")}`);
+      throw error;
+    }
     finally { await instance.close(); }
   } finally {
     await cleanup();
