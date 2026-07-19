@@ -135,10 +135,9 @@ async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: strin
   }
   try {
     const body = await response.text();
-    console.error(`sender transport response: ${response.status} ${body.slice(0, 1200)}`);
     if (new TextEncoder().encode(body).length > 1_048_576) throw new Error("response-too-large");
     const parsed = JSON.parse(body) as unknown;
-    if (parsed !== null && typeof parsed === "object") {
+    if (parsed !== null && typeof parsed === "object" && "authorization" in (parsed as object)) {
       const record = parsed as Record<string, unknown>;
       const authorization = record.authorization;
       const proof = record.proof;

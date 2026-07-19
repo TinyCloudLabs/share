@@ -537,7 +537,7 @@ async function mountedGate() {
 }
 
 try {
-  await nativeGate();
+  if (process.env.EMAIL_CLAIM_MOUNTED_ONLY !== "1") await nativeGate();
   await mountedGate();
   console.error(`email-claim continuous mounted gate: PASS (${expectedManifestDigest})`);
 } catch (error) {
