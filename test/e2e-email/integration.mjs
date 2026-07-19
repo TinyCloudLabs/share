@@ -304,6 +304,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
+  sender.on("response", (response) => { if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) console.error(`sender response: ${response.status()} ${response.url()}`); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
@@ -321,7 +322,11 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
   await sender.type('input[name="expiry"]', fixture.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString().slice(0, 16));
   await sender.click('button[type="submit"]');
-  await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
+  try {
+    await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
+  } catch {
+    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
+  }
   await sender.close();
 
   const captured = await waitForCapture(fixture.mailArtifact, before);
