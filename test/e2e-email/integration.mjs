@@ -1,51 +1,339 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+/*
+ * Continuous email-claim gate.
+ *
+ * The service URLs are deliberately supplied by the mounted fixtures rather
+ * than invented here.  The browser still runs at the production Share origin
+ * and all production endpoint URLs remain unchanged; Puppeteer only routes
+ * those requests to the ephemeral fixture listeners.  This keeps the same
+ * origin, CSP, URL scrub, WebCrypto, signed-response, and browser lifecycle
+ * boundary while making the test deterministic and offline-capable.
+ */
+
+import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+const require = createRequire(import.meta.url);
 const shareRoot = resolve(import.meta.dirname, "../..");
 const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(shareRoot, "../../../tinycloud-node/feat/email-claim-n4-integration");
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? resolve(shareRoot, "../../../opencredentials/feat/email-claim-o4-integration");
 const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witness");
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
 const expectedManifestDigest = "5TT8KlMz2P1pYnIRys5yGb6wfialFJi-Bz-6SwqUXJ4";
+const pins = Object.freeze({
+  share: "2764a62d47768a9c892d5fa8f622999b9b3db926",
+  node: "8622290b76fe1626be100b51d4ad2adaeeb68e6e",
+  credentials: "ca614e5fcba0d121a94359f535a0d2b9fdd0bdaa",
+});
 
-function run(command, args, cwd) {
-  console.log(`$ ${command} ${args.join(" ")}`);
-  const result = spawnSync(command, args, { cwd, stdio: "inherit", env: process.env });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+const canonical = Object.freeze({
+  share: "https://share.tinycloud.xyz",
+  node: "https://node.example",
+  credentials: "https://witness.credentials.org",
+});
+
+function arg(name) {
+  const index = process.argv.indexOf(`--${name}`);
+  return index === -1 ? undefined : process.argv[index + 1];
 }
 
-function clean(repo) {
-  const result = spawnSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" });
-  if (result.status !== 0 || result.stdout.trim() !== "") {
-    throw new Error(`worktree must be clean: ${repo}`);
+function required(value, name) {
+  if (value === undefined || value.length === 0) throw new Error(`E2E prerequisite missing: ${name}`);
+  return value;
+}
+
+function run(command, args, cwd) {
+  console.error(`$ ${command} ${args.join(" ")}`);
+  const result = spawn(command, args, { cwd, stdio: "inherit", env: process.env });
+  return new Promise((resolveResult, reject) => {
+    result.once("error", reject);
+    result.once("exit", (code, signal) => resolveResult(code === 0 ? undefined : new Error(`${command} exited ${code ?? signal}`)));
+  }).then((error) => { if (error !== undefined) throw error; });
+}
+
+async function cleanAndPinned(repo, expected, label) {
+  const status = await runCapture("git", ["status", "--porcelain=v1"], repo);
+  if (status.trim() !== "") throw new Error(`${label} worktree is dirty`);
+  const head = (await runCapture("git", ["rev-parse", "HEAD"], repo)).trim();
+  if (head !== expected) throw new Error(`${label} pin mismatch: ${head}`);
+}
+
+function runCapture(command, args, cwd) {
+  const child = spawn(command, args, { cwd, env: process.env });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return new Promise((resolveResult, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolveResult(stdout) : reject(new Error(`${command} failed (${code}): ${stderr.slice(0, 800)}`)));
+  });
+}
+
+async function nativeGate() {
+  await cleanAndPinned(shareRoot, pins.share, "Share");
+  await cleanAndPinned(nodeRoot, pins.node, "tinycloud-node");
+  await cleanAndPinned(credentialsRoot, pins.credentials, "OpenCredentials");
+  const manifest = JSON.parse(await readFile(resolve(vectorRoot, "manifest.json"), "utf8"));
+  if (manifest.manifestDigest !== expectedManifestDigest) throw new Error(`Share manifest mismatch: ${manifest.manifestDigest}`);
+  await run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
+  await run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
+  await run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
+  await run("cargo", ["test", "--manifest-path", resolve(nodeRoot, "test/w5-policy-runtime-node-e2e/Cargo.toml"), "--test", "tc119_registry_wire_paths"], nodeRoot);
+  await run("cargo", ["test", "--test", "share_email_postgres"], credentialsRustRoot);
+  await run("cargo", ["test", "--bin", "opencredentials-witness", "share_email::runtime::tests"], credentialsRustRoot);
+}
+
+function spawnOwned(command, cwd, extraEnv = {}) {
+  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  const collect = (chunk) => { output += String(chunk); if (output.length > 128_000) output = output.slice(-128_000); };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  return { child, output: () => output };
+}
+
+async function waitForUrl(url, label, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "unreachable";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { redirect: "manual" });
+      if (response.status < 500) return response;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`${label} did not become ready: ${lastError}`);
+}
+
+function decodeBase64(value, label) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${label} must be unpadded base64url`);
+  const bytes = Buffer.from(value, "base64url");
+  if (bytes.length === 0 || Buffer.from(bytes).toString("base64url") !== value) throw new Error(`${label} is not canonical base64url`);
+  return new Uint8Array(bytes);
+}
+
+function cloneScope(input) {
+  const scope = structuredClone(input);
+  if (typeof scope.senderPrivateKey === "string") scope.senderPrivateKey = decodeBase64(scope.senderPrivateKey, "scope.senderPrivateKey");
+  else if (Array.isArray(scope.senderPrivateKey)) scope.senderPrivateKey = new Uint8Array(scope.senderPrivateKey);
+  else throw new Error("scope.senderPrivateKey is required");
+  if (scope.trustedNode && typeof scope.trustedNode.invitationPublicKey === "string") scope.trustedNode.invitationPublicKey = decodeBase64(scope.trustedNode.invitationPublicKey, "trustedNode.invitationPublicKey");
+  else if (scope.trustedNode && Array.isArray(scope.trustedNode.invitationPublicKey)) scope.trustedNode.invitationPublicKey = new Uint8Array(scope.trustedNode.invitationPublicKey);
+  return scope;
+}
+
+function providerModule() {
+  try { return require("puppeteer"); }
+  catch { throw new Error("E2E prerequisite missing: install the pinned puppeteer dev dependency and a Chromium browser, or set BROWSER_EXECUTABLE"); }
+}
+
+function canonicalRequestTarget(url, targets) {
+  const parsed = new URL(url);
+  if (parsed.origin === canonical.node) return new URL(`${parsed.pathname}${parsed.search}`, targets.node).toString();
+  if (parsed.origin === canonical.credentials) return new URL(`${parsed.pathname}${parsed.search}`, targets.credentials).toString();
+  if (parsed.origin === canonical.share) {
+    const registryPath = parsed.pathname === "/registry" || parsed.pathname.startsWith("/registry/");
+    const path = registryPath
+      ? parsed.pathname.slice("/registry".length) || "/"
+      : `${parsed.pathname}${parsed.search}`;
+    return registryPath ? new URL(path, targets.registry).toString() : new URL(path, targets.vite).toString();
+  }
+  return undefined;
+}
+
+async function installInterception(page, targets) {
+  await page.setRequestInterception(true);
+  page.on("request", (request) => {
+    const target = canonicalRequestTarget(request.url(), targets);
+    if (target === undefined) { void request.continue(); return; }
+    void request.continue({ url: target });
+  });
+}
+
+function fixedIssuerPublicKey() { return decodeBase64("Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "issuer public key"); }
+
+async function readCapture(path) {
+  try {
+    const content = await readFile(path, "utf8");
+    const values = content.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return values.length > 0 ? values : [JSON.parse(content)];
+  } catch { return []; }
+}
+
+function emittedLink(messages, after = 0) {
+  for (const message of messages.slice(after)) {
+    const haystack = `${message.html ?? ""}\n${message.text ?? ""}`;
+    const match = haystack.match(/https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]+#k=[A-Za-z0-9_-]{43}&i=[A-Za-z0-9_-]{22}&c=[A-Za-z0-9_-]{43}/);
+    if (match !== null) return { href: match[0], message };
+  }
+  return undefined;
+}
+
+async function waitForCapture(path, after) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const found = emittedLink(await readCapture(path), after);
+    if (found !== undefined) return found;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  throw new Error("delivery fixture did not capture a rendered message");
+}
+
+function bodyFromLink(href) {
+  const parsed = new URL(href);
+  const values = new URLSearchParams(parsed.hash.slice(1));
+  return { invitationId: values.get("i"), claimSecret: values.get("c") };
+}
+
+async function postJson(base, path, body) {
+  return fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(body) });
+}
+
+async function runBrowserCase(browser, targets, fixture, caseIndex) {
+  const scope = cloneScope(fixture.scope ?? fixture);
+  const source = fixture.source ?? scope.source;
+  if (source === undefined) throw new Error(`case ${caseIndex}: source is missing`);
+  scope.expectedRecipientEmail = fixture.email ?? scope.expectedRecipientEmail;
+  scope.expectedContentSourceDigest = fixture.contentSourceDigest ?? scope.expectedContentSourceDigest;
+  if (typeof scope.expectedRecipientEmail !== "string" || typeof scope.expectedContentSourceDigest !== "string") throw new Error(`case ${caseIndex}: expected recipient/digest are required`);
+  const before = (await readCapture(fixture.mailArtifact)).length;
+  const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
+
+  const sender = await browser.newPage();
+  await installInterception(sender, targets);
+  await sender.evaluateOnNewDocument((data) => {
+    const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
+    window.__TINY_CLOUD_SHARE_BOOTSTRAP__ = {
+      nodeOrigin: "https://node.example", credentialsOrigin: "https://witness.credentials.org", scope, source: data.source,
+      uploadEnvelope: async (_cid, blob) => {
+        const response = await fetch("https://share.tinycloud.xyz/registry/blobs", { method: "POST", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": new Date(Date.now() + 86_400_000).toISOString() }, body: blob });
+        if (!response.ok) throw new Error(`registry upload failed: ${response.status}`);
+      },
+    };
+  }, { scope: browserScope, source });
+  await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
+  await sender.type('input[name="email"]', scope.expectedRecipientEmail);
+  await sender.type('input[name="expiry"]', fixture.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString().slice(0, 16));
+  await sender.click('button[type="submit"]');
+  await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
+  await sender.close();
+
+  const captured = await waitForCapture(fixture.mailArtifact, before);
+  const link = captured.href;
+  const mailbox = bodyFromLink(link);
+  if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed captured link`);
+  const inert = await fetch(new URL(`/v1/share-email/claims/activate?invitationId=${mailbox.invitationId}&claimSecret=${mailbox.claimSecret}`, targets.credentials), { headers: { origin: canonical.share } });
+  if (inert.status !== 200) throw new Error(`case ${caseIndex}: inert scanner GET was not accepted as read-only (${inert.status})`);
+
+  const recipient = await browser.createBrowserContext();
+  const page = await recipient.newPage();
+  await installInterception(page, targets);
+  await page.evaluateOnNewDocument((data) => {
+    const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
+    const post = async (origin, path, body) => {
+      const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const value = await response.json().catch(() => undefined);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return value;
+    };
+    const transport = {
+      authorizeInvitation: (body) => post("https://node.example", "/share/v1/invitations/authorize", body),
+      requestDelivery: (body) => post("https://witness.credentials.org", "/v1/share-email/invitations", body),
+      resend: (body) => post("https://witness.credentials.org", "/v1/share-email/invitations/resend", body),
+      activate: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/activate", body),
+      claimChallenge: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/challenge", body),
+      claimRedeem: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/redeem", body),
+      policyChallenge: (body) => post("https://node.example", "/share/v1/policy/challenges", body),
+      policySession: (body) => post("https://node.example", "/share/v1/policy/session", body),
+      read: (body) => post("https://node.example", "/share/v1/read", body),
+    };
+    window.__TINY_CLOUD_EMAIL_CLAIM_RUNTIME__ = {
+      transport,
+      credentialTrust: { issuerDid: "did:web:issuer.credentials.org", vct: "opencredentials.email/v1", issuerPublicKey: new Uint8Array(data.issuerPublicKey) },
+      verify: async ({ envelope, shareCid, policy }) => {
+        if (policy.recipientEmail !== scope.expectedRecipientEmail || JSON.stringify(policy.contentSource) !== JSON.stringify(data.source) || policy.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error("mounted authority scope mismatch");
+        return {
+          shareId: envelope.shareId, shareCid, policyCid: envelope.authorizationTarget.policyCid, recipientEmail: policy.recipientEmail,
+          recipientHint: policy.recipientEmail, expiry: envelope.expiry, nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example",
+          requestOrigin: "https://share.tinycloud.xyz", delegationCid: scope.delegationCid, authorityMaterialHandle: scope.authorityMaterialHandle,
+          authorityMaterialDigest: scope.authorityMaterialDigest, contentSource: policy.contentSource, contentSourceDigest: policy.contentSourceDigest,
+          action: policy.action, resource: policy.resource, trustedNode: scope.trustedNode,
+        };
+      },
+    };
+  }, { scope: browserScope, source, issuerPublicKey: Array.from(fixedIssuerPublicKey()) });
+  await page.goto(link, { waitUntil: "networkidle0" });
+  await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 });
+  const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
+  if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
+  await page.click("button.viewer-primary-action");
+  await page.waitForFunction((marker) => (document.body.textContent ?? "").includes(marker), { timeout: 30_000 }, fixture.expectedContent ?? source.path);
+  await recipient.close();
+
+  const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
+  if (replay.ok) throw new Error(`case ${caseIndex}: activation replay unexpectedly succeeded`);
+  const resend = await postJson(targets.credentials, "/v1/share-email/invitations/resend", mailbox);
+  if (!resend.ok) throw new Error(`case ${caseIndex}: resend failed (${resend.status})`);
+  await waitForCapture(fixture.mailArtifact, before + 1);
+}
+
+async function mountedGate() {
+  const nodeUrl = required(arg("node-url") ?? process.env.TINYCLOUD_NODE_URL, "--node-url or TINYCLOUD_NODE_URL");
+  const credentialsUrl = required(arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL, "--credentials-url or OPENCREDENTIALS_URL");
+  let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
+  const mailArtifact = required(arg("mail-artifact") ?? process.env.SHARE_EMAIL_CAPTURE_ARTIFACT, "--mail-artifact or SHARE_EMAIL_CAPTURE_ARTIFACT");
+  const scopePath = required(arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE, "--scope-file or SHARE_EMAIL_SCOPE_FILE");
+  if (!existsSync(scopePath)) throw new Error(`scope fixture is missing: ${scopePath}`);
+  const fixtureValue = JSON.parse(readFileSync(scopePath, "utf8"));
+  const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+  if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
+
+  const owned = [];
+  const nodeProcess = arg("node-command") === undefined ? undefined : spawnOwned(arg("node-command"), nodeRoot);
+  const credentialsProcess = arg("credentials-command") === undefined ? undefined : spawnOwned(arg("credentials-command"), credentialsRustRoot);
+  if (nodeProcess !== undefined) owned.push(nodeProcess);
+  if (credentialsProcess !== undefined) owned.push(credentialsProcess);
+  const registryProcess = arg("registry-command") === undefined ? undefined : spawnOwned(arg("registry-command"), shareRoot);
+  if (registryProcess !== undefined) {
+    owned.push(registryProcess);
+    const deadline = Date.now() + 30_000;
+    while (registryUrl === undefined && Date.now() < deadline) {
+      const match = registryProcess.output().match(/https?:\/\/127\.0\.0\.1:\d+/);
+      if (match !== null) registryUrl = match[0];
+      else await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+  }
+  registryUrl = required(registryUrl, "--registry-url/SHARE_REGISTRY_URL or --registry-command");
+  const vite = spawnOwned(arg("vite-command") ?? "npm run dev -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+  owned.push(vite);
+  const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
+  const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
+  await waitForUrl(new URL("/healthz", nodeUrl), "Node");
+  await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+  const browser = providerModule();
+  const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    for (const [index, fixture] of fixtures.entries()) {
+      fixture.mailArtifact = mailArtifact;
+      await runBrowserCase(instance, targets, fixture, index);
+    }
+  } finally {
+    await instance.close();
+    for (const process of owned) process.child.kill("SIGTERM");
   }
 }
 
-if (!existsSync(resolve(vectorRoot, "manifest.json"))) throw new Error("Share vectors are missing");
-if (!existsSync(resolve(nodeRoot, "Cargo.toml"))) throw new Error(`Node worktree is missing: ${nodeRoot}`);
-if (!existsSync(resolve(credentialsRustRoot, "Cargo.toml"))) throw new Error(`OpenCredentials worktree is missing: ${credentialsRustRoot}`);
-
-for (const repo of [shareRoot, nodeRoot, credentialsRoot]) clean(repo);
-
-const manifest = JSON.parse(await readFile(resolve(vectorRoot, "manifest.json"), "utf8"));
-if (manifest.manifestDigest !== expectedManifestDigest) {
-  throw new Error(`unexpected Share manifest digest: ${manifest.manifestDigest}`);
+try {
+  await nativeGate();
+  await mountedGate();
+  console.error(`email-claim continuous mounted gate: PASS (${expectedManifestDigest})`);
+} catch (error) {
+  console.error(`email-claim continuous mounted gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
 }
-
-// This is deliberately a native production-boundary gate. It runs the exact
-// committed Share program, Node's mounted #117 read tests, and the
-// OpenCredentials router/store tests serially. It never selects fake routes,
-// unsigned credentials, fabricated database rows, or a simulated provider.
-run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
-run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
-run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
-run("cargo", ["test", "--test", "tc119_registry_wire_paths"], resolve(nodeRoot, "test/w5-policy-runtime-node-e2e"));
-run("cargo", ["test", "--test", "share_email_postgres"], credentialsRustRoot);
-run("cargo", ["test", "--bin", "opencredentials-witness", "share_email::runtime::tests"], credentialsRustRoot);
-
-console.log(`email-claim native cross-repository gate: PASS (${expectedManifestDigest})`);
