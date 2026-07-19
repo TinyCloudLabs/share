@@ -305,7 +305,8 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", (response) => { if (/\/v1\/share-email\/invitations/.test(response.url())) void response.text().then((body) => console.error(`sender delivery response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
+  sender.on("request", (request) => { if (/\/v1\/share-email\//.test(request.url())) console.error(`sender share-email request: ${request.method()} ${request.url()} ${request.postData()?.slice(0, 2000) ?? ""}`); });
+  sender.on("response", (response) => { if (/\/v1\/share-email\//.test(response.url())) void response.text().then((body) => console.error(`sender share-email response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
@@ -402,6 +403,7 @@ async function mountedGate() {
   let nodeDescriptor;
   let nodeProcess;
   let credentialsDescriptor;
+  let credentialsProcess;
   const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
   activeCleanup = cleanup;
   try {
@@ -429,6 +431,7 @@ async function mountedGate() {
           SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
           SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
         });
+      credentialsProcess = credentials;
       owned.push(credentials);
       credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
       credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
@@ -467,6 +470,7 @@ async function mountedGate() {
       }
     } catch (error) {
       if (nodeProcess !== undefined) console.error(`mounted Node output:\n${nodeProcess.output()}`);
+      if (credentialsProcess !== undefined) console.error(`mounted OpenCredentials output:\n${credentialsProcess.output()}`);
       throw error;
     } finally { await instance.close(); }
   } finally {
