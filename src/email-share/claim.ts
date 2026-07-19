@@ -135,6 +135,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
   const redemptionId = randomB64(16);
   const listeners = new Set<(state: ClaimState) => void>();
   let inFlight: Promise<void> | undefined;
+  let readInFlight: Promise<string | undefined> | undefined;
   let resendAvailableAt = 0;
   const setState = (next: ClaimState): void => { state = next; listeners.forEach((listener) => listener(next)); };
   const ensureHolder = async (): Promise<HolderKey> => { holder ??= await createHolder(); return holder; };
@@ -215,15 +216,22 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
       });
     },
     read() {
-      let content: string | undefined;
-      return run(async () => {
-        if (material === undefined || (state.state !== "claimed" && state.state !== "session" && state.state !== "reading")) return undefined;
-        setState({ state: "session", claim: material });
-        try {
-          setState({ state: "reading", claim: material });
-          content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
-        } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
-      }).then(() => content);
+      if (readInFlight !== undefined) return readInFlight;
+      const claimInFlight = inFlight;
+      readInFlight = (async () => {
+        if (claimInFlight !== undefined) await claimInFlight;
+        let content: string | undefined;
+        await run(async () => {
+          if (material === undefined || (state.state !== "claimed" && state.state !== "session" && state.state !== "reading")) return;
+          setState({ state: "session", claim: material });
+          try {
+            setState({ state: "reading", claim: material });
+            content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
+          } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
+        });
+        return content;
+      })().finally(() => { readInFlight = undefined; });
+      return readInFlight;
     },
     forget() { holder = undefined; material = undefined; claimSecret = undefined; setState({ state: "forgotten" }); },
   };

@@ -150,6 +150,18 @@ describe("exact-email share UI protocol boundaries", () => {
     }
   });
 
+  it("queues the automatic read until claim completion releases the controller lock", async () => {
+    const t = transport();
+    const share = { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get" as const, resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true as const } };
+    const controller = createClaimController({ share, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    let automaticRead: Promise<string | undefined> | undefined;
+    controller.subscribe((state) => { if (state.state === "claimed" && automaticRead === undefined) automaticRead = controller.read(); });
+    await controller.openDocument();
+    await automaticRead;
+    expect(t.policyChallenge).toHaveBeenCalledTimes(1);
+    expect(controller.state.state).toBe("error");
+  });
+
   it("verifies signed session bindings and read content before entering reading", async () => {
     const t = transport();
     const share = { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get" as const, resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true as const } };
