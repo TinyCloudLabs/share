@@ -197,6 +197,7 @@ function parseCredential(value: unknown): ClaimCredentialResponse {
 
 function parseProof(value: unknown): SignedProof {
   const object = exact(value, ["alg", "kid", "signature"]);
+  console.error(`sender proof parse: alg=${String(object.alg)} kid=${String(object.kid)} kidMatch=${/^did:(?:web|key):[^#\s]+#[^#\s]+$/.test(String(object.kid))} sigType=${typeof object.signature} sigLen=${typeof object.signature === "string" ? object.signature.length : -1}`);
   if (object.alg !== "EdDSA" || typeof object.kid !== "string" || !/^did:(?:web|key):[^#\s]+#[^#\s]+$/.test(object.kid) || typeof object.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(object.signature)) throw new ShareTransportError("unknown");
   return object as unknown as SignedProof;
 }
