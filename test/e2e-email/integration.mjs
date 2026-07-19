@@ -351,7 +351,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
       try {
-        if (path.endsWith("/claims/redeem")) console.error(`recipient holder signature chars: ${body?.holderProof?.signature?.length ?? "missing"}`);
+        if (path.endsWith("/claims/redeem")) console.error(`recipient holder signature chars: ${body?.holderProof?.signature?.length ?? "missing"} suffix=${body?.holderProof?.signature?.slice(-2) ?? "missing"}`);
         const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const value = await response.json().catch(() => undefined);
         console.error(`recipient claim ${path}: ${response.status} ${value && typeof value === "object" ? Object.keys(value).join(",") : "non-json"}${value?.error?.code ? ` code=${value.error.code}` : ""}`);
