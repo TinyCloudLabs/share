@@ -341,6 +341,9 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
+  page.on("console", (message) => { if (message.type() === "error") console.error(`recipient console: ${message.text()}`); });
+  page.on("pageerror", (error) => console.error(`recipient page error: ${error.message}`));
+  page.on("requestfailed", (request) => { const url = new URL(request.url()); console.error(`recipient request failed: ${request.method()} ${url.origin}${url.pathname} ${request.failure()?.errorText ?? "unknown"}`); });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
@@ -377,11 +380,13 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
     };
   }, { scope: browserScope, source, issuerPublicKey: Array.from(fixedIssuerPublicKey()) });
   await page.goto(link, { waitUntil: "networkidle0" });
-  await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 });
+  try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
+  catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
   const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
   if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
   await page.click("button.viewer-primary-action");
-  await page.waitForFunction((marker) => (document.body.textContent ?? "").includes(marker), { timeout: 30_000 }, fixture.expectedContent ?? source.path);
+  try { await page.waitForFunction((marker) => (document.body.textContent ?? "").includes(marker), { timeout: 30_000 }, fixture.expectedContent ?? source.path); }
+  catch { throw new Error(`case ${caseIndex}: recipient did not render content: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
   await recipient.close();
 
   const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
