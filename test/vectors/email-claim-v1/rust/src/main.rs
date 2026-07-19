@@ -494,8 +494,279 @@ fn validate_proof(value: &Value, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_authority_material_message(message: &Value, expected_kind: &str) -> Result<()> {
+    let object = exact_object(
+        message,
+        &[
+            "type",
+            "version",
+            "handle",
+            "sharePolicyCid",
+            "shareDelegationCid",
+            "ownerDid",
+            "senderDid",
+            "policyAuthority",
+            "policyAuthorityCid",
+            "policyAuthorityBytes",
+            "policyEnforcement",
+            "policyEnforcementCid",
+            "policyEnforcementBytes",
+            "status",
+            "attestation",
+        ],
+        &[],
+        "authority material",
+    )?;
+    const_string(
+        map_value(object, "type", "authority material")?,
+        "TinyCloudShareAuthorityMaterialBundle",
+        "authority material type",
+    )?;
+    const_number(
+        map_value(object, "version", "authority material")?,
+        1,
+        "authority material version",
+    )?;
+    let handle = map_text(object, "handle")?;
+    assert_ok(
+        handle == format!("amh_{expected_kind}_001"),
+        "authority material handle",
+    )?;
+    valid_cid(
+        map_value(object, "sharePolicyCid", "authority material")?,
+        "authority Share policy CID",
+    )?;
+    valid_cid(
+        map_value(object, "shareDelegationCid", "authority material")?,
+        "authority Share delegation CID",
+    )?;
+    let owner = map_text(object, "ownerDid")?;
+    did_key_bytes(owner)?;
+    assert_ok(
+        map_text(object, "senderDid")? == owner,
+        "authority owner/sender equation",
+    )?;
+    let authority = exact_object(
+        map_value(object, "policyAuthority", "authority material")?,
+        &[
+            "type",
+            "version",
+            "sharePolicyCid",
+            "shareDelegationCid",
+            "ownerDid",
+            "contentSource",
+            "contentSourceDigest",
+            "action",
+            "resource",
+            "expiresAt",
+        ],
+        &[],
+        "PolicyAuthority",
+    )?;
+    const_string(
+        map_value(authority, "type", "PolicyAuthority")?,
+        "PolicyAuthority",
+        "PolicyAuthority type",
+    )?;
+    const_number(
+        map_value(authority, "version", "PolicyAuthority")?,
+        1,
+        "PolicyAuthority version",
+    )?;
+    assert_ok(
+        map_value(authority, "sharePolicyCid", "PolicyAuthority")?
+            == map_value(object, "sharePolicyCid", "authority material")?
+            && map_value(authority, "shareDelegationCid", "PolicyAuthority")?
+                == map_value(object, "shareDelegationCid", "authority material")?
+            && map_text(authority, "ownerDid")? == owner,
+        "PolicyAuthority mapping",
+    )?;
+    validate_source(
+        map_value(authority, "contentSource", "PolicyAuthority")?,
+        expected_kind,
+    )?;
+    valid_digest(
+        map_value(authority, "contentSourceDigest", "PolicyAuthority")?,
+        "PolicyAuthority source digest",
+    )?;
+    valid_path(
+        map_value(authority, "resource", "PolicyAuthority")?,
+        "PolicyAuthority resource",
+    )?;
+    valid_time(
+        map_value(authority, "expiresAt", "PolicyAuthority")?,
+        "PolicyAuthority expiry",
+    )?;
+    let authority_bytes = b64_string(
+        map_value(object, "policyAuthorityBytes", "authority material")?,
+        None,
+        "PolicyAuthority bytes",
+    )?;
+    assert_ok(
+        String::from_utf8(authority_bytes.clone()).map_err(|_| "PolicyAuthority UTF-8")?
+            == jcs(&Value::Object(authority.clone()))?,
+        "PolicyAuthority canonical bytes",
+    )?;
+    assert_ok(
+        cid(&authority_bytes) == map_text(object, "policyAuthorityCid")?,
+        "PolicyAuthority CID",
+    )?;
+    let attestation = exact_object(
+        map_value(object, "attestation", "authority material")?,
+        &[
+            "type",
+            "version",
+            "origin",
+            "audience",
+            "enforcerKid",
+            "keyVersion",
+            "measurement",
+            "digest",
+            "issuedAt",
+            "expiresAt",
+            "enrollmentDigest",
+        ],
+        &[],
+        "attestation",
+    )?;
+    const_string(
+        map_value(attestation, "type", "attestation")?,
+        "PolicyEnforcerAttestation",
+        "attestation type",
+    )?;
+    const_number(
+        map_value(attestation, "version", "attestation")?,
+        1,
+        "attestation version",
+    )?;
+    valid_origin(
+        map_value(attestation, "origin", "attestation")?,
+        "attestation origin",
+    )?;
+    valid_did(
+        map_value(attestation, "audience", "attestation")?,
+        "attestation audience",
+    )?;
+    assert_ok(
+        map_value(attestation, "keyVersion", "attestation")?.as_i64() == Some(1),
+        "attestation key version",
+    )?;
+    valid_digest(
+        map_value(attestation, "digest", "attestation")?,
+        "attestation digest",
+    )?;
+    valid_digest(
+        map_value(attestation, "enrollmentDigest", "attestation")?,
+        "enrollment digest",
+    )?;
+    valid_time(
+        map_value(attestation, "issuedAt", "attestation")?,
+        "attestation issuedAt",
+    )?;
+    valid_time(
+        map_value(attestation, "expiresAt", "attestation")?,
+        "attestation expiresAt",
+    )?;
+    let enforcement = exact_object(
+        map_value(object, "policyEnforcement", "authority material")?,
+        &[
+            "type",
+            "version",
+            "policyAuthorityCid",
+            "sharePolicyCid",
+            "shareDelegationCid",
+            "origin",
+            "audience",
+            "enforcerKid",
+            "keyVersion",
+            "measurement",
+            "digest",
+            "expiresAt",
+        ],
+        &[],
+        "PolicyEnforcement",
+    )?;
+    const_string(
+        map_value(enforcement, "type", "PolicyEnforcement")?,
+        "PolicyEnforcement",
+        "PolicyEnforcement type",
+    )?;
+    const_number(
+        map_value(enforcement, "version", "PolicyEnforcement")?,
+        1,
+        "PolicyEnforcement version",
+    )?;
+    assert_ok(
+        map_value(enforcement, "policyAuthorityCid", "PolicyEnforcement")?
+            == map_value(object, "policyAuthorityCid", "authority material")?
+            && map_value(enforcement, "sharePolicyCid", "PolicyEnforcement")?
+                == map_value(object, "sharePolicyCid", "authority material")?
+            && map_value(enforcement, "shareDelegationCid", "PolicyEnforcement")?
+                == map_value(object, "shareDelegationCid", "authority material")?
+            && map_value(enforcement, "origin", "PolicyEnforcement")?
+                == map_value(attestation, "origin", "attestation")?
+            && map_value(enforcement, "audience", "PolicyEnforcement")?
+                == map_value(attestation, "audience", "attestation")?
+            && map_value(enforcement, "keyVersion", "PolicyEnforcement")?
+                == map_value(attestation, "keyVersion", "attestation")?
+            && map_value(enforcement, "digest", "PolicyEnforcement")?
+                == map_value(attestation, "digest", "attestation")?,
+        "PolicyEnforcement binding",
+    )?;
+    let enforcement_bytes = b64_string(
+        map_value(object, "policyEnforcementBytes", "authority material")?,
+        None,
+        "PolicyEnforcement bytes",
+    )?;
+    assert_ok(
+        String::from_utf8(enforcement_bytes.clone()).map_err(|_| "PolicyEnforcement UTF-8")?
+            == jcs(&Value::Object(enforcement.clone()))?,
+        "PolicyEnforcement canonical bytes",
+    )?;
+    assert_ok(
+        cid(&enforcement_bytes) == map_text(object, "policyEnforcementCid")?,
+        "PolicyEnforcement CID",
+    )?;
+    let status = exact_object(
+        map_value(object, "status", "authority material")?,
+        &[
+            "type",
+            "version",
+            "authorityCid",
+            "sequence",
+            "state",
+            "issuedAt",
+            "freshUntil",
+            "revokedAt",
+        ],
+        &[],
+        "authority status",
+    )?;
+    const_string(
+        map_value(status, "type", "status")?,
+        "PolicyAuthorityStatus",
+        "status type",
+    )?;
+    const_number(map_value(status, "version", "status")?, 1, "status version")?;
+    assert_ok(
+        map_value(status, "sequence", "status")?.as_i64() == Some(7)
+            && map_text(status, "state")? == "active"
+            && map_value(status, "revokedAt", "status")? == &Value::Null
+            && map_value(status, "authorityCid", "status")?
+                == map_value(object, "policyAuthorityCid", "authority material")?,
+        "authenticated active status",
+    )?;
+    valid_time(map_value(status, "issuedAt", "status")?, "status issuedAt")?;
+    valid_time(
+        map_value(status, "freshUntil", "status")?,
+        "status freshUntil",
+    )?;
+    Ok(())
+}
+
 fn validate_message_schema(name: &str, message: &Value, expected_kind: &str) -> Result<()> {
     match name {
+        "authorityMaterial" => validate_authority_material_message(message, expected_kind)?,
         "policy" => {
             let object = exact_object(
                 message,
@@ -710,7 +981,11 @@ fn validate_invite_authorization(message: &Value, expected_kind: &str) -> Result
             "expiresAt",
             "reportAbuseToken",
         ],
-        &[],
+        &[
+            "delegationCid",
+            "authorityMaterialHandle",
+            "authorityMaterialDigest",
+        ],
         "inviteAuthorization",
     )?;
     const_string(
@@ -804,6 +1079,18 @@ fn validate_invite_authorization(message: &Value, expected_kind: &str) -> Result
         Some(16),
         "abuse token",
     )?;
+    valid_cid(
+        map_value(object, "delegationCid", "authorization")?,
+        "authorization delegation CID",
+    )?;
+    assert_ok(
+        map_text(object, "authorityMaterialHandle")?.starts_with("amh_"),
+        "authorization authority handle",
+    )?;
+    valid_digest(
+        map_value(object, "authorityMaterialDigest", "authorization")?,
+        "authorization authority digest",
+    )?;
     Ok(())
 }
 
@@ -830,7 +1117,11 @@ fn validate_holder_binding(message: &Value, expected_kind: &str) -> Result<()> {
             "expiresAt",
             "jti",
         ],
-        &[],
+        &[
+            "delegationCid",
+            "authorityMaterialHandle",
+            "authorityMaterialDigest",
+        ],
         "holderBinding",
     )?;
     const_string(
@@ -905,6 +1196,18 @@ fn validate_holder_binding(message: &Value, expected_kind: &str) -> Result<()> {
         map_value(object, "jti", "binding")?,
         Some(16),
         "binding JTI",
+    )?;
+    valid_cid(
+        map_value(object, "delegationCid", "binding")?,
+        "binding delegation CID",
+    )?;
+    assert_ok(
+        map_text(object, "authorityMaterialHandle")?.starts_with("amh_"),
+        "binding authority handle",
+    )?;
+    valid_digest(
+        map_value(object, "authorityMaterialDigest", "binding")?,
+        "binding authority digest",
     )?;
     Ok(())
 }
@@ -1009,7 +1312,25 @@ fn validate_policy_artifact_message(
         ),
         _ => return Err("invalid policy artifact name".into()),
     };
-    let object = exact_object(message, required, &[], label)?;
+    let object = exact_object(
+        message,
+        required,
+        &["authorityMaterialHandle", "authorityMaterialDigest"],
+        label,
+    )?;
+    assert_ok(
+        object.contains_key("authorityMaterialHandle")
+            && object.contains_key("authorityMaterialDigest"),
+        "authority material propagation",
+    )?;
+    assert_ok(
+        map_text(object, "authorityMaterialHandle")?.starts_with("amh_"),
+        "authority material handle",
+    )?;
+    valid_digest(
+        map_value(object, "authorityMaterialDigest", label)?,
+        "authority material digest",
+    )?;
     let expected_type = match name {
         "policyChallenge" => "TinyCloudSharePolicyChallenge",
         "policyPresentation" => "TinyCloudSharePolicyPresentation",
@@ -1309,6 +1630,12 @@ fn verify_artifact_with_schema(
     let expected_kind = message
         .get("contentSource")
         .and_then(|source| source.get("kind"))
+        .or_else(|| {
+            message
+                .get("policyAuthority")
+                .and_then(|authority| authority.get("contentSource"))
+                .and_then(|source| source.get("kind"))
+        })
         .and_then(Value::as_str)
         .unwrap_or("kv");
     if validate_schema {
@@ -2574,6 +2901,9 @@ fn validate_endpoint_body(
                     "shareCid",
                     "shareId",
                     "policyCid",
+                    "delegationCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
                     "recipientEmail",
                     "targetOrigin",
                     "nodeAudience",
@@ -2588,6 +2918,15 @@ fn validate_endpoint_body(
                 ("shareCid", text(scenario, "shareCid")?),
                 ("shareId", text(scenario, "shareId")?),
                 ("policyCid", text(scenario, "policyCid")?),
+                ("delegationCid", text(scenario, "delegationCid")?),
+                (
+                    "authorityMaterialHandle",
+                    text(scenario, "authorityMaterialHandle")?,
+                ),
+                (
+                    "authorityMaterialDigest",
+                    text(scenario, "authorityMaterialDigest")?,
+                ),
                 ("recipientEmail", text(scenario, "canonicalEmail")?),
                 ("targetOrigin", map_text(auth, "targetOrigin")?),
                 ("nodeAudience", map_text(auth, "nodeAudience")?),
@@ -2719,6 +3058,9 @@ fn validate_endpoint_body(
                     "shareCid",
                     "shareId",
                     "policyCid",
+                    "delegationCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
                     "contentSource",
                     "contentSourceDigest",
                     "emailHash",
@@ -2748,6 +3090,18 @@ fn validate_endpoint_body(
                 valid_cid(map_value(object, key, name)?, key)?;
             }
             valid_share_id(map_value(object, "shareId", name)?, "claim share ID")?;
+            valid_cid(
+                map_value(object, "delegationCid", name)?,
+                "claim delegation CID",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialHandle")?.starts_with("amh_"),
+                "claim authority handle",
+            )?;
+            valid_digest(
+                map_value(object, "authorityMaterialDigest", name)?,
+                "claim authority digest",
+            )?;
             valid_origin(map_value(object, "targetOrigin", name)?, "claim origin")?;
             valid_did(map_value(object, "nodeAudience", name)?, "claim audience")?;
         }
@@ -2867,6 +3221,8 @@ fn validate_endpoint_body(
                     "shareId",
                     "delegationCid",
                     "policyCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
                     "contentSource",
                     "contentSourceDigest",
                     "holderDid",
@@ -2883,6 +3239,14 @@ fn validate_endpoint_body(
             for key in ["shareCid", "delegationCid", "policyCid"] {
                 valid_cid(map_value(object, key, name)?, key)?;
             }
+            assert_ok(
+                map_text(object, "authorityMaterialHandle")?.starts_with("amh_"),
+                "challenge authority handle",
+            )?;
+            valid_digest(
+                map_value(object, "authorityMaterialDigest", name)?,
+                "challenge authority digest",
+            )?;
             valid_share_id(
                 map_value(object, "shareId", name)?,
                 "challenge request share ID",
@@ -3132,6 +3496,7 @@ fn validate_negative(negative: &Value) -> Result<()> {
         "sd-jwt",
         "share-url",
         "enrollment",
+        "authority",
     ];
     let mut ids = Vec::new();
     for row in rows {
@@ -3295,6 +3660,18 @@ fn validate_cross_equations(scenario: &Value) -> Result<()> {
         expected.insert(field.into(), text(scenario, field)?.into());
     }
     expected.insert(
+        "delegationCid".into(),
+        text(scenario, "delegationCid")?.into(),
+    );
+    expected.insert(
+        "authorityMaterialHandle".into(),
+        text(scenario, "authorityMaterialHandle")?.into(),
+    );
+    expected.insert(
+        "authorityMaterialDigest".into(),
+        text(scenario, "authorityMaterialDigest")?.into(),
+    );
+    expected.insert(
         "targetOrigin".into(),
         text(authorization, "targetOrigin")?.into(),
     );
@@ -3316,6 +3693,15 @@ fn validate_cross_equations(scenario: &Value) -> Result<()> {
             source,
         )?;
     }
+    let authority = artifact_message(scenario, "authorityMaterial")?;
+    let authority_object = authority.as_object().ok_or("authority material object")?;
+    assert_ok(
+        map_text(authority_object, "sharePolicyCid")? == text(scenario, "policyCid")?
+            && map_text(authority_object, "shareDelegationCid")?
+                == text(scenario, "delegationCid")?
+            && map_text(authority_object, "handle")? == text(scenario, "authorityMaterialHandle")?,
+        "authority material identifier equation",
+    )?;
     let envelope = scenario.get("envelope").ok_or("envelope")?;
     assert_ok(
         text(envelope, "shareId")? == text(scenario, "shareId")?,
@@ -3739,6 +4125,15 @@ fn known_native_id(id: &str) -> bool {
             | "claim-redeem-otp-with-magic"
             | "policy-challenge-response-proof"
             | "policy-session-response-proof"
+            | "authority-material-signature"
+            | "authority-material-policy-mapping"
+            | "authority-status-rollback"
+            | "authority-status-stale"
+            | "authority-status-revoked"
+            | "authority-key-version"
+            | "authority-attestation-binding"
+            | "authority-measurement-digest-expiry"
+            | "authority-identifier-domain-confusion"
             | "sd-jwt-missing-alg"
             | "sd-jwt-two-element-disclosure"
     )
@@ -4187,6 +4582,45 @@ fn apply_negative_mutation(
                 .cloned()
                 .ok_or("enrollment candidate")?;
         }
+        target if target.starts_with("authorityMaterial.") => {
+            if target.ends_with("signature.value") {
+                let artifacts = scenario
+                    .get_mut("artifacts")
+                    .and_then(Value::as_array_mut)
+                    .ok_or("artifacts")?;
+                let artifact = artifacts
+                    .iter_mut()
+                    .find(|artifact| text(artifact, "name").ok() == Some("authorityMaterial"))
+                    .ok_or("authority artifact")?;
+                let signature = artifact
+                    .get_mut("signature")
+                    .and_then(Value::as_object_mut)
+                    .ok_or("authority signature")?;
+                let encoded = map_text(signature, "value")?;
+                let mut bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|e| e.to_string())?;
+                let first = bytes.first_mut().ok_or("authority signature bytes")?;
+                *first ^= 1;
+                signature.insert("value".into(), URL_SAFE_NO_PAD.encode(bytes).into());
+            } else {
+                let field = map_text(mutation, "field")?;
+                let mut parts = field.split('.');
+                let first = parts.next().ok_or("authority field")?;
+                let second = parts.next();
+                let material = scenario
+                    .get_mut("authorityMaterial")
+                    .and_then(Value::as_object_mut)
+                    .ok_or("authority material")?;
+                if let Some(second) = second {
+                    material
+                        .get_mut(first)
+                        .and_then(Value::as_object_mut)
+                        .ok_or("authority nested field")?
+                        .insert(second.into(), value.ok_or("authority mutation value")?);
+                } else {
+                    material.insert(first.into(), value.ok_or("authority mutation value")?);
+                }
+            }
+        }
         _ => return Err(format!("unknown native negative target {target}")),
     }
     Ok(())
@@ -4608,6 +5042,50 @@ fn validate_mutated_candidate_inner(
                 enrollment.get("enabled") == Some(&Value::Bool(true)),
                 "enrollment enabled",
             )
+        }
+        target if target.starts_with("authorityMaterial.") => {
+            if target.ends_with("signature.value") {
+                let artifact = artifact_named(scenario, "authorityMaterial")?;
+                verify_artifact(
+                    artifact,
+                    "authorityMaterial",
+                    domains,
+                    scenario.get("enrollment").ok_or("enrollment")?,
+                )
+            } else {
+                let material = scenario
+                    .get("authorityMaterial")
+                    .ok_or("authority material")?;
+                validate_message_schema("authorityMaterial", material, kind)?;
+                let material_object = material.as_object().ok_or("authority material object")?;
+                assert_ok(
+                    map_text(material_object, "sharePolicyCid")? == text(scenario, "policyCid")?
+                        && map_text(material_object, "shareDelegationCid")?
+                            == text(scenario, "delegationCid")?,
+                    "authority Share identifier mapping",
+                )?;
+                let attestation = object(
+                    map_value(material_object, "attestation", "authority material")?,
+                    "attestation",
+                )?;
+                let basis = serde_json::json!({"origin": map_value(attestation, "origin", "attestation")?, "audience": map_value(attestation, "audience", "attestation")?, "enforcerKid": map_value(attestation, "enforcerKid", "attestation")?, "keyVersion": map_value(attestation, "keyVersion", "attestation")?, "measurement": map_value(attestation, "measurement", "attestation")?});
+                assert_ok(
+                    digest(jcs(&basis)?.as_bytes()) == map_text(attestation, "digest")?,
+                    "attestation measurement digest",
+                )?;
+                let status = object(
+                    map_value(material_object, "status", "authority material")?,
+                    "status",
+                )?;
+                assert_ok(
+                    map_text(status, "state")? == "active"
+                        && map_value(status, "sequence", "status")?.as_i64() == Some(7)
+                        && map_text(status, "freshUntil")? >= text(scenario, "evaluationTime")?
+                        && map_text(status, "freshUntil")? <= map_text(attestation, "expiresAt")?,
+                    "authority status freshness",
+                )?;
+                Ok(())
+            }
         }
         _ => Err(format!("unknown native negative target {target}")),
     }
@@ -5593,6 +6071,10 @@ fn verify(root: &Path) -> Result<()> {
                 "policy",
                 "policyBytes",
                 "policyCid",
+                "delegationCid",
+                "authorityMaterialHandle",
+                "authorityMaterialDigest",
+                "authorityMaterial",
                 "sealedBlob",
                 "shareCid",
                 "shareId",
@@ -5676,6 +6158,29 @@ fn verify(root: &Path) -> Result<()> {
         )?;
         valid_cid(scenario.get("shareCid").ok_or("share CID")?, "share CID")?;
         valid_cid(scenario.get("policyCid").ok_or("policy CID")?, "policy CID")?;
+        valid_cid(
+            scenario.get("delegationCid").ok_or("delegation CID")?,
+            "delegation CID",
+        )?;
+        let authority_material = scenario
+            .get("authorityMaterial")
+            .ok_or("authority material")?;
+        assert_ok(
+            text(scenario, "authorityMaterialHandle")?
+                == map_text(
+                    authority_material
+                        .as_object()
+                        .ok_or("authority material object")?,
+                    "handle",
+                )?,
+            "authority handle",
+        )?;
+        assert_ok(
+            digest(jcs(authority_material)?.as_bytes())
+                == text(scenario, "authorityMaterialDigest")?,
+            "authority material digest",
+        )?;
+        validate_message_schema("authorityMaterial", authority_material, kind)?;
         valid_share_id(scenario.get("shareId").ok_or("share ID")?, "share ID")?;
         b64_string(
             scenario.get("reportAbuseToken").ok_or("abuse token")?,
@@ -5696,7 +6201,7 @@ fn verify(root: &Path) -> Result<()> {
         )?;
         validate_invite_authorization(scenario.get("authorization").ok_or("authorization")?, kind)?;
         let artifacts = array(scenario, "artifacts")?;
-        assert_ok(artifacts.len() == 8, "signed artifact count")?;
+        assert_ok(artifacts.len() == 9, "signed artifact count")?;
         let mut artifact_names = Vec::new();
         for artifact in artifacts {
             let name = text(artifact, "name")?;
@@ -5759,6 +6264,7 @@ fn verify(root: &Path) -> Result<()> {
             "policyPresentation",
             "policySession",
             "readInvocation",
+            "authorityMaterial",
         ] {
             assert_ok(
                 artifact_names.iter().any(|name| name == required),

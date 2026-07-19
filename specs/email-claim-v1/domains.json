@@ -11,11 +11,25 @@
     "policyPresentation": "xyz.tinycloud.share/policy-presentation/v1\u0000",
     "policySession": "xyz.tinycloud.share/policy-session/v1\u0000",
     "readInvocation": "xyz.tinycloud.share/read-invocation/v1\u0000",
+    "authorityMaterial": "xyz.tinycloud.share/authority-material-bundle/v1\u0000",
     "tokenHash": "tinycloud-share-email-claim/v1\u0000",
     "otpHash": "tinycloud-share-email-otp/v1\u0000",
     "issuanceKdf": "tinycloud-share-email-issuance-seed/v1\u0000"
   },
   "envelopeSigning": "shipping-packages-envelope-signEnvelope-jcs-only",
+  "authorityMaterialProfile": {
+    "version": 1,
+    "bundleType": "TinyCloudShareAuthorityMaterialBundle",
+    "signatureDomain": "authorityMaterial",
+    "signedPreimage": "UTF8(domains.authorityMaterial) || UTF8(JCS(bundle))",
+    "cid": "CIDv1/raw/SHA-256 over exact UTF-8 JCS bytes; no self-reference",
+    "producer": "owner/sender did:key; ownerDid == senderDid == TinyCloudSharePolicy.issuerDid",
+    "handle": "opaque authenticated amh_<source>_001; handle is not authority",
+    "shareMapping": "sharePolicyCid == Share policyCid; shareDelegationCid == Share delegationCid; #117 CIDs remain separate typed domains",
+    "status": "authenticated active sequence is monotonic, fresh at evaluation, and revoked is irreversible",
+    "attestation": "origin, audience, enforcerKid, keyVersion, measurement, digest, and expiry bind exactly to trusted enrollment",
+    "keySelection": "owner key is canonical did:key kid; node invitation key remains enrollment-selected; enforcer key/version is explicit"
+  },
   "nodeAuthority": {
     "origin": "https://node.example",
     "nodeAudience": "did:web:node.example",

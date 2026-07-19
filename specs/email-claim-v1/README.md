@@ -67,6 +67,32 @@ Rotation uses a strictly higher version; retired or disabled versions reject
 both new proof verification and enrollment. Issuer trust is likewise an exact
 issuer-DID, VCT, and enabled Ed25519 public-key tuple.
 
+## Authority-material profile
+
+The v1 authority seam is a strict, owner-signed `authorityMaterial` artifact
+with registry domain `xyz.tinycloud.share/authority-material-bundle/v1\0`.
+Its preimage is exactly `UTF8(domains.authorityMaterial) ||
+UTF8(JCS(bundle))`; the artifact wrapper records the JCS, message digest,
+signed-byte digest, signature digest, Ed25519 `kid`, and signature. The
+producer is the already-authorized inviter/owner: `ownerDid == senderDid ==
+TinyCloudSharePolicy.issuerDid`, and the only accepted owner key is the
+canonical `did:key` fragment. The handle (`amh_kv_001` or `amh_sql_001`) is an
+authenticated lookup handle, never authority and never a substitute for the
+bundle.
+
+The bundle maps the existing Share `policyCid` and `delegationCid` to exact
+canonical bytes and CIDv1/raw/SHA-256 CIDs for #117 `PolicyAuthority` and
+`PolicyEnforcement`. Share CIDs, Share delegation CIDs, PolicyAuthority CIDs,
+and PolicyEnforcement CIDs remain separate identifier domains. The status
+statement is authenticated by the bundle signature, carries a monotonic
+sequence, must be fresh at evaluation, and treats `revoked` as irreversible.
+The attestation binds trusted enrollment origin/audience, enforcer key ID and
+version, deployment measurement, measurement digest, and expiry; the
+enforcement bytes repeat those bindings. Every authorization, holder binding,
+policy challenge/presentation/session, and read invocation carries the handle
+and bundle digest, so a node cannot manufacture authority from email or
+session payload fields.
+
 Every positive scenario supplies an explicit `evaluationTime` and
 `clockSkewSeconds`. Credential `iat`/`nbf`/`exp` are checked against those
 values, and `exp` is also exactly the share expiry. The credential must have
