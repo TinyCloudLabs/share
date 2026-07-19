@@ -138,6 +138,12 @@ async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: strin
     console.error(`sender transport response: ${response.status} ${body.slice(0, 1200)}`);
     if (new TextEncoder().encode(body).length > 1_048_576) throw new Error("response-too-large");
     const parsed = JSON.parse(body) as unknown;
+    if (parsed !== null && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      const authorization = record.authorization;
+      const proof = record.proof;
+      console.error(`sender transport shape: top=${Object.keys(record).join(",")} auth=${authorization !== null && typeof authorization === "object" ? Object.keys(authorization as Record<string, unknown>).join(",") : "none"} proof=${proof !== null && typeof proof === "object" ? JSON.stringify(proof) : "none"}`);
+    }
     if (!response.ok) throw new ShareTransportError(parseFailure(parsed), response.status >= 500 || response.status === 429, retryAfter(response.headers.get("Retry-After")));
     return parsed as T;
   } catch (error) {
