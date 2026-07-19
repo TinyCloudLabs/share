@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,5 +41,6 @@ const evidence = {
   artifactHashes: { manifest: await hash("test/vectors/email-claim-v1/manifest.json"), packageLock: await hash("package-lock.json") },
   cleanup: { ownedProcessesStoppedBy: "test/e2e-email/integration.mjs", secretsIncluded: false },
 };
+await mkdir(dirname(resolve(root, output)), { recursive: true });
 await writeFile(resolve(root, output), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
 console.log(JSON.stringify({ output, manifestDigest: manifest.manifestDigest, shareHead: evidence.heads.share }));
