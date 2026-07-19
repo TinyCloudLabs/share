@@ -135,6 +135,7 @@ async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: strin
   }
   try {
     const body = await response.text();
+    console.error(`sender transport response: ${response.status} ${body.slice(0, 1200)}`);
     if (new TextEncoder().encode(body).length > 1_048_576) throw new Error("response-too-large");
     const parsed = JSON.parse(body) as unknown;
     if (!response.ok) throw new ShareTransportError(parseFailure(parsed), response.status >= 500 || response.status === 429, retryAfter(response.headers.get("Retry-After")));
