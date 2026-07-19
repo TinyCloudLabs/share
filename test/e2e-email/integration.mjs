@@ -56,9 +56,9 @@ function required(value, name) {
   return value;
 }
 
-function run(command, args, cwd) {
+function run(command, args, cwd, extraEnv = {}) {
   console.error(`$ ${command} ${args.join(" ")}`);
-  const result = spawn(command, args, { cwd, stdio: "inherit", env: process.env });
+  const result = spawn(command, args, { cwd, stdio: "inherit", env: { ...process.env, ...extraEnv } });
   return new Promise((resolveResult, reject) => {
     result.once("error", reject);
     result.once("exit", (code, signal) => resolveResult(code === 0 ? undefined : new Error(`${command} exited ${code ?? signal}`)));
@@ -455,7 +455,7 @@ async function mountedGate() {
     registryUrl = required(registryUrl, "registry URL");
     let vite;
     if (arg("vite-command") === undefined) {
-      await run("npm", ["run", "build"], shareRoot);
+      await run("npm", ["run", "build"], shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
       vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
     } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
     owned.push(vite);
