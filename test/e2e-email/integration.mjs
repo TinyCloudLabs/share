@@ -344,6 +344,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   page.on("console", (message) => { if (message.type() === "error") console.error(`recipient console: ${message.text()}`); });
   page.on("pageerror", (error) => console.error(`recipient page error: ${error.message}`));
   page.on("requestfailed", (request) => { const url = new URL(request.url()); console.error(`recipient request failed: ${request.method()} ${url.origin}${url.pathname} ${request.failure()?.errorText ?? "unknown"}`); });
+  page.on("response", (response) => { const url = new URL(response.url()); if (/claims|share\/v1\//.test(url.pathname) && response.request().method() !== "OPTIONS") void response.text().then((body) => console.error(`recipient response: ${response.status()} ${url.pathname} ${body.slice(0, 1200)}`)).catch(() => {}); });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
