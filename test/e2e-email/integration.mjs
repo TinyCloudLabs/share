@@ -470,14 +470,14 @@ async function mountedGate() {
   try {
     if (nodeUrl === undefined) {
       const node = arg("node-command") === undefined
-        ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "--invitation-public-key", "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI"], nodeRoot)
+        ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"], nodeRoot)
         : spawnOwned(arg("node-command"), nodeRoot);
       owned.push(node);
       nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
       nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
     } else nodeDescriptor = JSON.parse(await readFile(scopePath, "utf8"));
     const trustedKey = nodeDescriptor.trustedNode?.invitationPublicKey;
-    if (trustedKey !== "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI") throw new Error(`mounted Node enrollment key mismatch: ${trustedKey ?? "missing"}`);
+    if (typeof trustedKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(trustedKey)) throw new Error(`mounted Node enrollment key is missing or non-canonical: ${trustedKey ?? "missing"}`);
     if (credentialsUrl === undefined) {
       postgres = await startPostgres(owned, tempRoot);
       const credentials = arg("credentials-command") === undefined

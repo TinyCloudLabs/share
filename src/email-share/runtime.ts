@@ -19,7 +19,7 @@ export const PRODUCTION_ENDPOINTS = Object.freeze({
 export const SHARE_CONTRACT_COMMIT = "36f6c4303eca3bee917692c77237c264b4dfa342";
 export const SHARE_CONTRACT_MANIFEST_DIGEST = "pl8-1Rpx_DYCBjOpK3hRrLfrSVDINNFssZDfFw6BMTs";
 
-const NODE_INVITATION_KEY = fromBase64Url("IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI");
+const NODE_INVITATION_KEY = fromBase64Url("tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI");
 const ISSUER_KEY = fromBase64Url("Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY");
 
 export const PRODUCTION_TRUSTED_NODE: TrustedNode = Object.freeze({
@@ -66,7 +66,7 @@ export function assertProductionAuthorityMaterial(scope: SenderScope): void {
   const enrollment = material.enrollment;
   if (typeof enrollment !== "object" || enrollment === null || Array.isArray(enrollment)) throw new TypeError("Authority material enrollment is not trusted.");
   const enrollmentObject = enrollment as Record<string, unknown>;
-  if (enrollmentObject.targetOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || enrollmentObject.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience || enrollmentObject.invitationKid !== PRODUCTION_TRUSTED_NODE.invitationKid || enrollmentObject.keyVersion !== PRODUCTION_TRUSTED_NODE.keyVersion || enrollmentObject.enabled !== true || typeof enrollmentObject.invitationPublicKey !== "string" || enrollmentObject.invitationPublicKey !== "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI") throw new TypeError("Authority material enrollment is not trusted.");
+  if (enrollmentObject.targetOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || enrollmentObject.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience || enrollmentObject.invitationKid !== PRODUCTION_TRUSTED_NODE.invitationKid || enrollmentObject.keyVersion !== PRODUCTION_TRUSTED_NODE.keyVersion || enrollmentObject.enabled !== true || typeof enrollmentObject.invitationPublicKey !== "string" || enrollmentObject.invitationPublicKey !== "tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI") throw new TypeError("Authority material enrollment is not trusted.");
   const mapping = material.mapping;
   if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) throw new TypeError("Authority material mapping is missing.");
   const mappingObject = mapping as Record<string, unknown>;
