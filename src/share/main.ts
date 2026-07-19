@@ -29,7 +29,7 @@ export function bootstrap(): ShareBootstrap | undefined {
     const trusted = scope.trustedNode as TrustedNode;
     assertProductionTrustedNode(trusted);
     validateSource(candidate.source as ContentSource);
-  } catch { return undefined; }
+  } catch (error) { console.error("share bootstrap rejected", error); return undefined; }
   return candidate as ShareBootstrap;
 }
 
