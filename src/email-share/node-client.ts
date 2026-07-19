@@ -111,6 +111,7 @@ export async function readClaimedShare(input: {
     sessionId: session.sessionId,
     shareCid: input.share.shareCid,
     shareId: input.share.shareId,
+    delegationCid: input.share.delegationCid,
     policyCid: input.share.policyCid,
     authorityMaterialHandle: input.share.authorityMaterialHandle,
     authorityMaterialDigest: input.share.authorityMaterialDigest,
