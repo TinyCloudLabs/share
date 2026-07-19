@@ -309,6 +309,18 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("response", (response) => { if (/\/v1\/share-email\//.test(response.url())) void response.text().then((body) => console.error(`sender share-email response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      try {
+        const response = await nativeFetch(...args);
+        const url = typeof args[0] === "string" ? args[0] : args[0] instanceof Request ? args[0].url : String(args[0]);
+        if (url.includes("/v1/share-email/")) console.error(`sender fetch response: ${response.status} ${url} ${await response.clone().text()}`);
+        return response;
+      } catch (error) {
+        console.error(`sender fetch failure: ${String(error)}`);
+        throw error;
+      }
+    };
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     window.__TINY_CLOUD_SHARE_BOOTSTRAP__ = {
       nodeOrigin: "https://node.example", credentialsOrigin: "https://witness.credentials.org", scope, source: data.source,
