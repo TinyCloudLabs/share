@@ -305,8 +305,8 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("request", (request) => { if (/\/v1\/share-email\//.test(request.url())) console.error(`sender share-email request: ${request.method()} ${request.url()} ${request.postData()?.slice(0, 2000) ?? ""}`); });
-  sender.on("response", (response) => { if (/\/v1\/share-email\//.test(response.url())) void response.text().then((body) => console.error(`sender share-email response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
+  sender.on("request", (request) => { if (request.method() !== "GET" && /share\.tinycloud\.xyz|node\.example|credentials\.org/.test(request.url())) console.error(`sender request: ${request.method()} ${request.url()} ${request.postData()?.slice(0, 2000) ?? ""}`); });
+  sender.on("response", (response) => { if (response.status() >= 400) void response.text().then((body) => console.error(`sender error response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
     const nativeFetch = window.fetch.bind(window);
