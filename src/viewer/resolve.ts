@@ -75,7 +75,7 @@ export type ResolveResult =
    * decrypted, CID-verified file text when the signed envelope carries a
    * content pointer (stage 4); absent for pointer-less envelopes.
    */
-  | { state: "ok"; envelope: ShareEnvelope; senderVerified: false; content?: string }
+  | { state: "ok"; access?: "bearer" | "policy"; envelope: ShareEnvelope; senderVerified: boolean; content?: string }
   /** The URL is not a well-formed /s/<cid>#k= share link. */
   | { state: "invalid-link"; detail: string }
   /** Registry unreachable / blob missing (deleted, expired, never existed). */
@@ -97,6 +97,7 @@ export type ResolveResult =
   | { state: "capability-invalid"; detail: string }
   /** Envelope expiry is in the past. */
   | { state: "expired"; envelope: ShareEnvelope }
+  | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
   /** Signed content pointer present, but the registry couldn't serve the blob. */
   | { state: "content-fetch-failed"; detail: string }
   /**
@@ -180,7 +181,20 @@ export async function resolveShare(
     //    others get an honest "unsupported" — we do NOT fake verification
     //    for them (there is no expected signer to verify against yet).
     if (envelope.authorizationTarget.kind === "policy") {
-      return { state: "unsupported", reason: "policy-target", envelope };
+      let policy: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(envelope.authorizationTarget.policyBytes))) as unknown;
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("invalid policy");
+        policy = parsed as Record<string, unknown>;
+        if (policy["type"] !== "TinyCloudSharePolicy" || policy["version"] !== 1 || typeof policy["issuerDid"] !== "string" || typeof policy["recipientEmail"] !== "string") throw new Error("invalid policy");
+      } catch { return { state: "unsupported", reason: "policy-target", envelope }; }
+      let verified = false;
+      try { verified = await verifyEnvelope(envelope, { expectedSignerDid: String(policy["issuerDid"]) }); } catch { verified = false; }
+      if (!verified) return { state: "signature-invalid" };
+      if (envelope.target.resource.kind !== "exact") return { state: "unsupported", reason: "prefix-resource", envelope };
+      const now = options.now?.() ?? Date.now();
+      if (Date.parse(envelope.expiry) <= now) return { state: "expired", envelope };
+      return { state: "policy-email-claim-required", envelope, shareCid: ciphertextCid, policy };
     }
     if (envelope.authorizationTarget.kind === "recipientDid") {
       return { state: "unsupported", reason: "recipient-did-target", envelope };

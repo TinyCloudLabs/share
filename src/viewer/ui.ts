@@ -74,6 +74,34 @@ function renderErrorState(root: HTMLElement, title: string, detail: string): voi
   root.append(box);
 }
 
+export interface EmailClaimViewActions {
+  readonly onOpen: () => void;
+  readonly onOtp: (code: string) => void;
+  readonly onResend: () => void;
+  readonly onForget: () => void;
+}
+
+export function renderEmailClaimUnavailable(root: HTMLElement): void {
+  renderErrorState(root, "Email invitations aren't connected", "This share was verified locally, but this deployment has not enabled its exact-email claim adapter. No credential or storage request was made.");
+}
+
+export function renderEmailClaimState(root: HTMLElement, state: import("../email-share/claim.js").ClaimState, actions: EmailClaimViewActions): void {
+  root.replaceChildren();
+  const doc = root.ownerDocument;
+  const box = el(doc, "section", "viewer-state viewer-claim");
+  box.setAttribute("aria-labelledby", "claim-title");
+  const title = el(doc, "h1", "viewer-state-title", state.state === "claimed" ? "Credential ready" : state.state === "otp" ? "Enter the email code" : state.state === "opening" ? "Opening document…" : state.state === "resending" ? "Requesting a new code…" : state.state === "error" ? "We couldn't finish the invitation" : "Open this shared document");
+  title.id = "claim-title";
+  const detail = el(doc, "p", "viewer-state-detail", state.state === "claimed" ? "Your browser now holds a non-extractable key for this share. The node will authorize one read using that key." : state.state === "otp" ? (state.message ?? "The link scanner-safe step is complete. Enter the six-digit code from the invitation email.") : state.state === "error" ? `The invitation could not be completed (${state.code}). ${state.retryable ? "You can retry when the service is available." : "Ask the sender for a fresh invitation."}` : "The envelope and exact policy are verified locally. Selecting Open document is the required confirmation; simply visiting this link is inert.");
+  box.append(title, detail);
+  if (state.state === "ready" || state.state === "verifying") { const button = el(doc, "button", "viewer-primary-action", "Open document"); button.type = "button"; button.addEventListener("click", actions.onOpen); box.append(button); }
+  if (state.state === "otp") {
+    const form = el(doc, "form", "viewer-otp-form") as HTMLFormElement; const label = el(doc, "label", "viewer-otp-label", "Six-digit code"); const input = el(doc, "input", "viewer-otp-input") as HTMLInputElement; input.inputMode = "numeric"; input.autocomplete = "one-time-code"; input.pattern = "[0-9]{6}"; input.maxLength = 6; input.required = true; label.append(input); const submit = el(doc, "button", "viewer-primary-action", "Verify code"); submit.type = "submit"; form.append(label, submit); form.addEventListener("submit", (event) => { event.preventDefault(); actions.onOtp(input.value); }); box.append(form); const resend = el(doc, "button", "viewer-secondary-action", "Resend email"); resend.type = "button"; resend.addEventListener("click", actions.onResend); box.append(resend);
+  }
+  if (state.state === "claimed") { const forget = el(doc, "button", "viewer-secondary-action", "Forget this browser key"); forget.type = "button"; forget.addEventListener("click", actions.onForget); box.append(forget); }
+  root.append(box);
+}
+
 const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: string }> = {
   "policy-target": {
     title: "This share isn't supported in this build yet",
@@ -101,6 +129,7 @@ function renderOk(
   root: HTMLElement,
   envelope: ShareEnvelope,
   hasContent: boolean,
+  senderVerified = false,
 ): HTMLElement {
   root.replaceChildren();
   const doc = root.ownerDocument;
@@ -115,8 +144,8 @@ function renderOk(
       "span",
       "viewer-sender",
       sender !== undefined && sender.length > 0
-        ? `shared by ${sender} (unverified)`
-        : "shared via link (sender unverified)",
+        ? `shared by ${sender}${senderVerified ? " (verified)" : " (unverified)"}`
+        : senderVerified ? "shared by a verified TinyCloud sender" : "shared via link (sender unverified)",
     ),
   );
   bar.append(el(doc, "span", "viewer-mode", "read-only"));
@@ -128,8 +157,8 @@ function renderOk(
     el(
       doc,
       "p",
-      "viewer-bearer-note",
-      "Anyone with this link can open it. The sender name above comes from the link itself and is not independently verified.",
+      senderVerified ? "viewer-addressed-note" : "viewer-bearer-note",
+      senderVerified ? "This file was addressed to the verified recipient policy. The browser key and read request stay local to this tab." : "Anyone with this link can open it. The sender name above comes from the link itself and is not independently verified.",
     ),
   );
 
@@ -199,7 +228,10 @@ export function renderViewerState(
 ): HTMLElement | null {
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope, result.content !== undefined);
+      return renderOk(root, result.envelope, result.content !== undefined, result.senderVerified);
+    case "policy-email-claim-required":
+      renderErrorState(root, "This invitation needs a confirmation", "The share envelope and exact recipient policy are verified. Open the document from the invitation link to continue.");
+      return null;
     case "invalid-link":
       renderErrorState(
         root,

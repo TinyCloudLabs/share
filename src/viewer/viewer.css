@@ -42,6 +42,16 @@ body {
 .viewer-state-title { font-size: 1.4rem; margin: 0 0 0.6rem; }
 .viewer-state-detail { color: var(--ink-soft); max-width: 46ch; margin: 0 auto; }
 .viewer-error .viewer-state-title { color: var(--accent); }
+.viewer-claim { max-width: 520px; margin: 0 auto; padding: 3rem 1rem; }
+.viewer-claim .viewer-state-title { text-wrap: balance; }
+.viewer-addressed-note { font-size: 0.82rem; color: var(--ink-soft); margin: 0.6rem 0 0; }
+.viewer-state[role="alert"] .viewer-state-title { color: #9b2638; }
+.viewer-otp-form { max-width: 20rem; margin: 1.5rem auto 0; text-align: left; }
+.viewer-otp-label { display: grid; gap: 0.4rem; font-weight: 650; }
+.viewer-otp-input { width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised); color: var(--ink); font: 650 1.35rem/1.4 ui-monospace, Menlo, monospace; letter-spacing: 0.2em; padding: 0.65rem 0.75rem; text-align: center; }
+.viewer-otp-input:focus-visible, .viewer-primary-action:focus-visible, .viewer-secondary-action:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.viewer-primary-action { margin-top: 1.25rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-weight: 650; padding: 0.65rem 1rem; cursor: pointer; }
+.viewer-secondary-action { margin: 0.85rem 0 0; border: 0; background: transparent; color: var(--ink-soft); font: inherit; text-decoration: underline; text-underline-offset: 0.2em; cursor: pointer; }
 
 .viewer-bar {
   display: flex;
@@ -116,3 +126,4 @@ body {
 }
 .viewer-agent-hint-text { margin: 0; }
 .viewer-source { white-space: pre-wrap; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }

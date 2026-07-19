@@ -13,8 +13,14 @@ import "./viewer.css";
 import { REGISTRY_BASE_URL } from "./config.js";
 import { presentShare } from "./present.js";
 import { resolveShare } from "./resolve.js";
-import { renderResolving } from "./ui.js";
+import { renderEmailClaimState, renderEmailClaimUnavailable, renderResolving } from "./ui.js";
 import { hrefForParse, scrubKeyFragment } from "./url.js";
+
+import type { CapturedLaunch } from "../email-share/url.js";
+import { createClaimController, type ClaimState } from "../email-share/claim.js";
+import { readClaimedShare } from "../email-share/node-client.js";
+import type { ShareTransport } from "../email-share/transport.js";
+import type { VerifiedExactEmailShare } from "../email-share/verified-share.js";
 
 async function boot(): Promise<void> {
   const root = document.getElementById("viewer");
@@ -31,4 +37,41 @@ async function boot(): Promise<void> {
   await presentShare(root, result);
 }
 
-void boot();
+export interface EmailClaimRuntime {
+  readonly transport: ShareTransport;
+  readonly verify: (input: { readonly envelope: import("@tinycloud/share-envelope").ShareEnvelope; readonly shareCid: string; readonly policy: Record<string, unknown> }) => Promise<VerifiedExactEmailShare>;
+}
+
+export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: EmailClaimRuntime): Promise<void> {
+  const root = document.getElementById("viewer");
+  if (root === null) throw new Error("viewer root element missing");
+  if (launch === undefined) {
+    renderResolving(root);
+    root.textContent = "This invitation link is incomplete. Ask the sender to resend it.";
+    return;
+  }
+  const result = await resolveShare(launch.shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
+  if (result.state !== "policy-email-claim-required" || launch.invite === undefined) {
+    await presentShare(root, result);
+    return;
+  }
+  if (runtime === undefined) {
+    renderEmailClaimUnavailable(root);
+    return;
+  }
+  try {
+    const share = await runtime.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
+    const controller = createClaimController({ share, invitationId: launch.invite.invitationId, claimSecret: launch.invite.claimSecret, transport: runtime.transport });
+    const render = (state: ClaimState): void => renderEmailClaimState(root, state, {
+      onOpen: () => { void controller.openDocument(); },
+      onOtp: (code) => { void controller.submitOtp(code); },
+      onResend: () => { void controller.resend(); },
+      onForget: () => controller.forget(),
+    });
+    controller.subscribe(render);
+    render(controller.state);
+    controller.subscribe((state) => {
+      if (state.state === "claimed") void readClaimedShare({ share, claim: state.claim, transport: runtime.transport }).then((content) => presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content })).catch(() => renderEmailClaimState(root, { state: "error", code: "node-unavailable", retryable: true }, { onOpen: () => { void controller.openDocument(); }, onOtp: () => {}, onResend: () => {}, onForget: () => controller.forget() }));
+    });
+  } catch { renderEmailClaimUnavailable(root); }
+}
