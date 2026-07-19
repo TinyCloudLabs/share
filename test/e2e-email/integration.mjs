@@ -43,7 +43,7 @@ if (manifest.manifestDigest !== expectedManifestDigest) {
 // unsigned credentials, fabricated database rows, or a simulated provider.
 run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
 run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
-run("cargo", ["test", "--test", "challenge_to_native_read"], resolve(nodeRoot, "test/w5-policy-runtime-node-e2e"));
+run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
 run("cargo", ["test", "--test", "tc119_registry_wire_paths"], resolve(nodeRoot, "test/w5-policy-runtime-node-e2e"));
 run("cargo", ["test", "--test", "share_email_postgres"], credentialsRustRoot);
 run("cargo", ["test", "--bin", "opencredentials-witness", "share_email::runtime::tests"], credentialsRustRoot);
