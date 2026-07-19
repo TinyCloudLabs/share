@@ -306,7 +306,7 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("request", (request) => { if (request.method() !== "GET" && /share\.tinycloud\.xyz|node\.example|credentials\.org/.test(request.url())) console.error(`sender request: ${request.method()} ${request.url()} ${request.postData()?.slice(0, 2000) ?? ""}`); });
-  sender.on("response", (response) => { if (/node\.example|credentials\.org/.test(response.url())) { console.error(`sender service response: ${response.status()} ${response.url()}`); void response.text().then((body) => console.error(`sender service body: ${body.slice(0, 4000)}`)); } else if (response.status() >= 400) void response.text().then((body) => console.error(`sender error response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); });
+  sender.on("response", (response) => { if (/node\.example|credentials\.org/.test(response.url())) { console.error(`sender service response: ${response.request().method()} ${response.status()} ${response.url()}`); if (response.request().method() !== "OPTIONS") void response.text().then((body) => console.error(`sender service body: ${body.slice(0, 4000)}`)); } else if (response.status() >= 400) void response.text().then((body) => console.error(`sender error response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
     const nativeFetch = window.fetch.bind(window);
