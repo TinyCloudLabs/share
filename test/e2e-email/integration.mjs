@@ -119,7 +119,7 @@ function spawnOwnedArgs(command, args, cwd, extraEnv = {}) {
   const collect = (chunk) => {
     const text = String(chunk);
     output += text;
-    if (text.includes("mounted session:") || text.includes("mounted policy session:")) console.error(`owned fixture: ${text.trim().slice(0, 400)}`);
+    if (text.includes("mounted session:") || text.includes("mounted policy session:") || text.includes("mounted read:")) console.error(`owned fixture: ${text.trim().slice(0, 400)}`);
     if (output.length > 128_000) output = output.slice(-128_000);
   };
   child.stdout.on("data", collect);
