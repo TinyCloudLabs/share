@@ -345,19 +345,16 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
-  page.on("console", (message) => { if (message.text().startsWith("recipient holder")) console.error(message.text()); });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
       try {
-        if (path.endsWith("/claims/redeem")) console.error(`recipient holder signature chars: ${body?.holderProof?.signature?.length ?? "missing"} suffix=${body?.holderProof?.signature?.slice(-2) ?? "missing"}`);
         const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const value = await response.json().catch(() => undefined);
-        console.error(`recipient claim ${path}: ${response.status} ${value && typeof value === "object" ? Object.keys(value).join(",") : "non-json"}${value?.error?.code ? ` code=${value.error.code}` : ""}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return value;
-      } catch (error) { console.error(`recipient claim ${path} failed: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; }
+      } catch (error) { throw error; }
     };
     const transport = {
       authorizeInvitation: (body) => post("https://node.example", "/share/v1/invitations/authorize", body),
@@ -474,11 +471,7 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) {
-      const validatorDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim validator") || line.includes("email-claim decoder")));
-      if (validatorDiagnostics.length > 0) console.error(`mounted validator diagnostics: ${validatorDiagnostics.join(" | ")}`);
-      throw error;
-    }
+    } catch (error) { throw error; }
     finally { await instance.close(); }
   } finally {
     await cleanup();
