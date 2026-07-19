@@ -305,22 +305,9 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("request", (request) => { if (request.method() !== "GET" && /share\.tinycloud\.xyz|node\.example|credentials\.org/.test(request.url())) console.error(`sender request: ${request.method()} ${request.url()} ${request.postData()?.slice(0, 2000) ?? ""}`); });
-  sender.on("response", (response) => { if (/node\.example|credentials\.org/.test(response.url())) { console.error(`sender service response: ${response.request().method()} ${response.status()} ${response.url()}`); if (response.request().method() !== "OPTIONS") void response.text().then((body) => console.error(`sender service body: ${body.slice(0, 4000)}`)); } else if (response.status() >= 400) void response.text().then((body) => console.error(`sender error response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); });
+  sender.on("response", (response) => { if (/\/v1\/share-email\/invitations/.test(response.url())) void response.text().then((body) => console.error(`sender delivery response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async (...args) => {
-      try {
-        const response = await nativeFetch(...args);
-        const url = typeof args[0] === "string" ? args[0] : args[0] instanceof Request ? args[0].url : String(args[0]);
-        if (url.includes("/v1/share-email/")) console.error(`sender fetch response: ${response.status} ${url} ${await response.clone().text()}`);
-        return response;
-      } catch (error) {
-        console.error(`sender fetch failure: ${String(error)}`);
-        throw error;
-      }
-    };
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     window.__TINY_CLOUD_SHARE_BOOTSTRAP__ = {
       nodeOrigin: "https://node.example", credentialsOrigin: "https://witness.credentials.org", scope, source: data.source,
@@ -415,7 +402,6 @@ async function mountedGate() {
   let nodeDescriptor;
   let nodeProcess;
   let credentialsDescriptor;
-  let credentialsProcess;
   const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
   activeCleanup = cleanup;
   try {
@@ -443,7 +429,6 @@ async function mountedGate() {
           SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
           SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
         });
-      credentialsProcess = credentials;
       owned.push(credentials);
       credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
       credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
@@ -482,7 +467,6 @@ async function mountedGate() {
       }
     } catch (error) {
       if (nodeProcess !== undefined) console.error(`mounted Node output:\n${nodeProcess.output()}`);
-      if (credentialsProcess !== undefined) console.error(`mounted OpenCredentials output:\n${credentialsProcess.output()}`);
       throw error;
     } finally { await instance.close(); }
   } finally {
