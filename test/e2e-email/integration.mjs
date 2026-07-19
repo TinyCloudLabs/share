@@ -131,12 +131,13 @@ async function freePort() {
   return port;
 }
 
-async function waitForFileJson(path, label) {
+async function waitForFileJson(path, label, process) {
   const deadline = Date.now() + 300_000;
   let lastError = "file not written";
   while (Date.now() < deadline) {
     try { return JSON.parse(await readFile(path, "utf8")); }
     catch (error) { lastError = error instanceof Error ? error.message : String(error); }
+    if (process?.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor: ${process.output().slice(-4_000)}`);
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`${label} descriptor was not published: ${lastError}`);
@@ -410,7 +411,7 @@ async function mountedGate() {
         : spawnOwned(arg("node-command"), nodeRoot);
       nodeProcess = node;
       owned.push(node);
-      nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node");
+      nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
       nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
     } else nodeDescriptor = JSON.parse(await readFile(scopePath, "utf8"));
     const trustedKey = nodeDescriptor.trustedNode?.invitationPublicKey;
