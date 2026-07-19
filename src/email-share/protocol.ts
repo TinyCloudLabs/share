@@ -324,5 +324,5 @@ export async function signedInvitationProof(
   const preimage = new Uint8Array(domain.length + message.length);
   preimage.set(domain);
   preimage.set(message, domain.length);
-  return { request, proof: { alg: "EdDSA", kid: signerDid, signature: toBase64Url(ed25519.sign(preimage, scope.senderPrivateKey)) } };
+  return { request, proof: { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(ed25519.sign(preimage, scope.senderPrivateKey)) } };
 }
