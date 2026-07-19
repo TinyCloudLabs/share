@@ -301,6 +301,9 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
 
   const sender = await browser.newPage();
+  sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
+  sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
+  sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   await installInterception(sender, targets);
   await sender.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
