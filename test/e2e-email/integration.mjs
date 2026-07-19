@@ -343,6 +343,16 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
+  page.on("response", (response) => {
+    if (response.request().method() === "OPTIONS" || !/node\.example|credentials\.org/.test(response.url())) return;
+    void response.text().then((body) => {
+      let parsed;
+      try { parsed = JSON.parse(body); } catch { parsed = undefined; }
+      const errorCode = parsed?.error?.code;
+      const keys = parsed !== undefined && typeof parsed === "object" && parsed !== null ? Object.keys(parsed).sort().join(",") : "non-json";
+      console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
+    }).catch(() => {});
+  });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
