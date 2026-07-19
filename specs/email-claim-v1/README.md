@@ -69,29 +69,29 @@ issuer-DID, VCT, and enabled Ed25519 public-key tuple.
 
 ## Authority-material profile
 
-The v1 authority seam is a strict, owner-signed `authorityMaterial` artifact
-with registry domain `xyz.tinycloud.share/authority-material-bundle/v1\0`.
+The v1 authority seam is a strict, sender-signed wrapper containing exact
+Node #117 parent artifacts, with registry domain
+`xyz.tinycloud.share/authority-material-bundle/v1\0`.
 Its preimage is exactly `UTF8(domains.authorityMaterial) ||
 UTF8(JCS(bundle))`; the artifact wrapper records the JCS, message digest,
 signed-byte digest, signature digest, Ed25519 `kid`, and signature. The
-producer is the already-authorized inviter/owner: `ownerDid == senderDid ==
-TinyCloudSharePolicy.issuerDid`, and the only accepted owner key is the
-canonical `did:key` fragment. The handle (`amh_kv_001` or `amh_sql_001`) is an
-authenticated lookup handle, never authority and never a substitute for the
-bundle.
+The wrapper freezes `policyOwnerDid` and `senderDid` as an authenticated,
+distinct relationship: the policy owner signs the exact Node parent bytes,
+while the invitation sender signs the Share authorization and wrapper. The
+handle (`amh_kv_001` or `amh_sql_001`) is an authenticated lookup handle,
+never authority and never a substitute for the bundle.
 
 The bundle maps the existing Share `policyCid` and `delegationCid` to exact
-canonical bytes and CIDv1/raw/SHA-256 CIDs for #117 `PolicyAuthority` and
+canonical bytes and CIDv1/raw/BLAKE3-256 CIDs for #117 `PolicyAuthority` and
 `PolicyEnforcement`. Share CIDs, Share delegation CIDs, PolicyAuthority CIDs,
-and PolicyEnforcement CIDs remain separate identifier domains. The status
-statement is authenticated by the bundle signature, carries a monotonic
-sequence, must be fresh at evaluation, and treats `revoked` as irreversible.
-The attestation binds trusted enrollment origin/audience, enforcer key ID and
-version, deployment measurement, measurement digest, and expiry; the
-enforcement bytes repeat those bindings. Every authorization, holder binding,
-policy challenge/presentation/session, and read invocation carries the handle
-and bundle digest, so a node cannot manufacture authority from email or
-session payload fields.
+and PolicyEnforcement CIDs remain separate identifier domains. Each parent has
+a separately signed status observation with a monotonic sequence,
+checkedAt/freshUntil bounded to 300 seconds, and irreversible revocation. A
+separately signed runtime attestation binds target origin/audience, enforcer
+DID/key/version, local signer, measurement/digest, expiry, and enrollment
+digest. Every frozen authorization, holder binding,
+policy challenge/presentation/session, and read invocation carries
+`delegationCid`, `authorityMaterialHandle`, and `authorityMaterialDigest`.
 
 Every positive scenario supplies an explicit `evaluationTime` and
 `clockSkewSeconds`. Credential `iat`/`nbf`/`exp` are checked against those
@@ -102,7 +102,7 @@ source, share, and policy values.
 
 ## API and state coverage
 
-`schemas.json` covers every invitation-create, resend, claim-challenge,
+`schemas.json` and `authority-material.schema.json` cover every invitation-create, resend, claim-challenge,
 claim-redeem, policy-challenge, policy-session, and read request, success, and
 failure surface from product spec §§6 and 9. `claimRedeemRequest` is a
 discriminated `oneOf`: `magic` carries a 32-byte claim secret and `otp` carries

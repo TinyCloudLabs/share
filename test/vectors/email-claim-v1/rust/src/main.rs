@@ -494,7 +494,215 @@ fn validate_proof(value: &Value, label: &str) -> Result<()> {
     Ok(())
 }
 
+fn valid_node_cid(value: &Value, label: &str) -> Result<()> {
+    let text = value.as_str().ok_or(format!("{label}: CID string"))?;
+    assert_ok(text.starts_with("bafkr4i") && text.len() == 59, label)
+}
+
+fn validate_exact_authority_material_message(message: &Value, _expected_kind: &str) -> Result<()> {
+    let object = exact_object(
+        message,
+        &[
+            "type",
+            "version",
+            "handle",
+            "policyOwnerDid",
+            "senderDid",
+            "relationship",
+            "mapping",
+            "policyAuthorityBytes",
+            "policyAuthorityCid",
+            "policyEnforcementBytes",
+            "policyEnforcementCid",
+            "statusObservations",
+            "enrollment",
+            "attestation",
+        ],
+        &[],
+        "exact authority material",
+    )?;
+    const_string(
+        map_value(object, "type", "exact authority material")?,
+        "TinyCloudShareAuthorityMaterial",
+        "exact authority type",
+    )?;
+    const_number(
+        map_value(object, "version", "exact authority material")?,
+        1,
+        "exact authority version",
+    )?;
+    let actual_handle = map_text(object, "handle")?;
+    assert_ok(
+        actual_handle == "amh_kv_001" || actual_handle == "amh_sql_001",
+        "exact authority handle",
+    )?;
+    let owner = map_text(object, "policyOwnerDid")?;
+    assert_ok(owner.starts_with("did:pkh:"), "policy owner DID")?;
+    let sender = map_text(object, "senderDid")?;
+    did_key_bytes(sender)?;
+    assert_ok(owner != sender, "policy owner and sender must be distinct")?;
+    let relationship = exact_object(
+        map_value(object, "relationship", "exact authority material")?,
+        &["policyOwnerDid", "senderDid", "authenticated"],
+        &[],
+        "authenticated relationship",
+    )?;
+    assert_ok(
+        map_text(relationship, "policyOwnerDid")? == owner
+            && map_text(relationship, "senderDid")? == sender
+            && map_value(relationship, "authenticated", "relationship")? == &Value::Bool(true),
+        "authenticated relationship mapping",
+    )?;
+    let mapping = exact_object(
+        map_value(object, "mapping", "exact authority material")?,
+        &[
+            "sharePolicyCid",
+            "shareDelegationCid",
+            "policyAuthorityCid",
+            "policyEnforcementCid",
+        ],
+        &[],
+        "authority identifier mapping",
+    )?;
+    valid_cid(
+        map_value(mapping, "sharePolicyCid", "mapping")?,
+        "Share policy CID",
+    )?;
+    valid_cid(
+        map_value(mapping, "shareDelegationCid", "mapping")?,
+        "Share delegation CID",
+    )?;
+    valid_node_cid(
+        map_value(mapping, "policyAuthorityCid", "mapping")?,
+        "policy authority CID",
+    )?;
+    valid_node_cid(
+        map_value(mapping, "policyEnforcementCid", "mapping")?,
+        "policy enforcement CID",
+    )?;
+    for (bytes_key, cid_key, role) in [
+        (
+            "policyAuthorityBytes",
+            "policyAuthorityCid",
+            "policy-authority",
+        ),
+        (
+            "policyEnforcementBytes",
+            "policyEnforcementCid",
+            "policy-enforcement",
+        ),
+    ] {
+        let bytes = b64_string(
+            map_value(object, bytes_key, "exact authority material")?,
+            None,
+            bytes_key,
+        )?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| "parent JSON")?;
+        assert_ok(
+            jcs(&value)? == String::from_utf8(bytes).map_err(|_| "parent UTF-8")?,
+            "parent canonical JCS",
+        )?;
+        let artifact = value.as_object().ok_or("parent object")?;
+        assert_ok(
+            artifact.get("schema").and_then(Value::as_str)
+                == Some("xyz.tinycloud.policy/enforcement-delegation/v1")
+                && artifact.get("role").and_then(Value::as_str) == Some(role),
+            "exact Node role",
+        )?;
+        valid_node_cid(
+            artifact
+                .get("delegationCid")
+                .ok_or("parent delegationCid")?,
+            bytes_key,
+        )?;
+        assert_ok(
+            artifact.get("delegationCid") == object.get(cid_key),
+            "parent CID mapping",
+        )?;
+        let facts = artifact
+            .get("facts")
+            .and_then(Value::as_object)
+            .ok_or("parent facts")?;
+        assert_ok(!facts.is_empty(), "parent full facts")?;
+        assert_ok(
+            artifact
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty()),
+            "parent capabilities",
+        )?;
+        assert_ok(
+            artifact
+                .get("signature")
+                .and_then(Value::as_object)
+                .is_some(),
+            "parent signature",
+        )?;
+    }
+    let statuses = map_value(object, "statusObservations", "exact authority material")?
+        .as_array()
+        .ok_or("status observations array")?;
+    assert_ok(statuses.len() == 2, "one status observation per parent")?;
+    for status in statuses {
+        let row = status.as_object().ok_or("status observation object")?;
+        for key in [
+            "parentCid",
+            "state",
+            "sequence",
+            "checkedAt",
+            "freshUntil",
+            "signerKid",
+            "signature",
+        ] {
+            assert_ok(row.contains_key(key), "status observation field")?;
+        }
+        valid_node_cid(row.get("parentCid").unwrap(), "status parent CID")?;
+        assert_ok(
+            row.get("state").and_then(Value::as_str) == Some("active")
+                && row.get("revokedAt") == Some(&Value::Null),
+            "active irreversible status",
+        )?;
+        assert_ok(
+            row.get("signature").and_then(Value::as_object).is_some(),
+            "signed status observation",
+        )?;
+    }
+    let enrollment = map_value(object, "enrollment", "exact authority material")?
+        .as_object()
+        .ok_or("enrollment object")?;
+    assert_ok(
+        enrollment
+            .get("targetOrigin")
+            .and_then(Value::as_str)
+            .is_some()
+            && enrollment
+                .get("nodeAudience")
+                .and_then(Value::as_str)
+                .is_some()
+            && enrollment.get("keyVersion").and_then(Value::as_i64) == Some(1)
+            && enrollment.get("enabled") == Some(&Value::Bool(true)),
+        "enrollment binding",
+    )?;
+    let attestation = map_value(object, "attestation", "exact authority material")?
+        .as_object()
+        .ok_or("attestation object")?;
+    assert_ok(
+        attestation.get("targetOrigin") == enrollment.get("targetOrigin")
+            && attestation.get("nodeAudience") == enrollment.get("nodeAudience")
+            && attestation.get("keyVersion") == enrollment.get("keyVersion")
+            && attestation
+                .get("signature")
+                .and_then(Value::as_object)
+                .is_some(),
+        "runtime attestation binding",
+    )?;
+    Ok(())
+}
+
 fn validate_authority_material_message(message: &Value, expected_kind: &str) -> Result<()> {
+    if message.get("type").and_then(Value::as_str) == Some("TinyCloudShareAuthorityMaterial") {
+        return validate_exact_authority_material_message(message, expected_kind);
+    }
     let object = exact_object(
         message,
         &[
@@ -2997,7 +3205,18 @@ fn validate_endpoint_body(
             }
         }
         "createInvitationResponse" | "resendResponse" => {
-            let object = exact_object(body, &["status", "retryAfterSeconds"], &[], name)?;
+            let object = exact_object(
+                body,
+                &[
+                    "status",
+                    "retryAfterSeconds",
+                    "delegationCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
+                ],
+                &[],
+                name,
+            )?;
             const_string(
                 map_value(object, "status", name)?,
                 "accepted",
@@ -3007,6 +3226,20 @@ fn validate_endpoint_body(
                 map_value(object, "retryAfterSeconds", name)?,
                 20,
                 "delivery retry",
+            )?;
+            valid_cid(
+                map_value(object, "delegationCid", name)?,
+                "delivery delegation CID",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialHandle")?
+                    == text(scenario, "authorityMaterialHandle")?,
+                "delivery authority handle",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialDigest")?
+                    == text(scenario, "authorityMaterialDigest")?,
+                "delivery authority digest",
             )?;
         }
         "resendRequest" => {
@@ -3398,7 +3631,15 @@ fn validate_endpoint_body(
         "readResponse" => {
             let object = exact_object(
                 body,
-                &["mediaType", "content", "contentSourceDigest", "bodyDigest"],
+                &[
+                    "mediaType",
+                    "content",
+                    "contentSourceDigest",
+                    "bodyDigest",
+                    "delegationCid",
+                    "authorityMaterialHandle",
+                    "authorityMaterialDigest",
+                ],
                 &[],
                 name,
             )?;
@@ -3416,6 +3657,20 @@ fn validate_endpoint_body(
             assert_ok(
                 digest(content.as_bytes()) == map_text(object, "bodyDigest")?,
                 "read response body digest",
+            )?;
+            valid_cid(
+                map_value(object, "delegationCid", name)?,
+                "read delegation CID",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialHandle")?
+                    == text(scenario, "authorityMaterialHandle")?,
+                "read authority handle",
+            )?;
+            assert_ok(
+                map_text(object, "authorityMaterialDigest")?
+                    == text(scenario, "authorityMaterialDigest")?,
+                "read authority digest",
             )?;
         }
         value if value.ends_with("Failure") => {
@@ -3695,9 +3950,13 @@ fn validate_cross_equations(scenario: &Value) -> Result<()> {
     }
     let authority = artifact_message(scenario, "authorityMaterial")?;
     let authority_object = authority.as_object().ok_or("authority material object")?;
+    let authority_mapping = authority_object
+        .get("mapping")
+        .and_then(Value::as_object)
+        .ok_or("authority material mapping")?;
     assert_ok(
-        map_text(authority_object, "sharePolicyCid")? == text(scenario, "policyCid")?
-            && map_text(authority_object, "shareDelegationCid")?
+        map_text(authority_mapping, "sharePolicyCid")? == text(scenario, "policyCid")?
+            && map_text(authority_mapping, "shareDelegationCid")?
                 == text(scenario, "delegationCid")?
             && map_text(authority_object, "handle")? == text(scenario, "authorityMaterialHandle")?,
         "authority material identifier equation",
@@ -6017,7 +6276,11 @@ fn verify(root: &Path) -> Result<()> {
     )?;
     let files = object(&manifest, "files")?;
     for (name, expected) in files {
-        let path = if name == "README.md" || name == "domains.json" || name == "schemas.json" {
+        let path = if name == "README.md"
+            || name == "domains.json"
+            || name == "schemas.json"
+            || name == "authority-material.schema.json"
+        {
             spec_dir.join(name)
         } else {
             vector_dir.join(name)

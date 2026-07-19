@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.tinycloud.xyz/email-claim-v1/authority-material.schema.json",
+  "title": "TinyCloud exact Node #117 authority material",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "version", "handle", "policyOwnerDid", "senderDid", "relationship", "mapping", "policyAuthorityBytes", "policyAuthorityCid", "policyEnforcementBytes", "policyEnforcementCid", "statusObservations", "enrollment", "attestation"],
+  "properties": {
+    "type": {"const": "TinyCloudShareAuthorityMaterial"},
+    "version": {"const": 1},
+    "handle": {"pattern": "^amh_(kv|sql)_001$"},
+    "policyOwnerDid": {"pattern": "^did:pkh:"},
+    "senderDid": {"pattern": "^did:key:z"},
+    "relationship": {"type": "object", "additionalProperties": false, "required": ["policyOwnerDid", "senderDid", "authenticated"], "properties": {"policyOwnerDid": {"type": "string"}, "senderDid": {"type": "string"}, "authenticated": {"const": true}}},
+    "mapping": {"type": "object", "additionalProperties": false, "required": ["sharePolicyCid", "shareDelegationCid", "policyAuthorityCid", "policyEnforcementCid"], "properties": {"sharePolicyCid": {"pattern": "^bafk"}, "shareDelegationCid": {"pattern": "^bafk"}, "policyAuthorityCid": {"pattern": "^bafkr4i"}, "policyEnforcementCid": {"pattern": "^bafkr4i"}}},
+    "policyAuthorityBytes": {"type": "string", "minLength": 1},
+    "policyAuthorityCid": {"pattern": "^bafkr4i"},
+    "policyEnforcementBytes": {"type": "string", "minLength": 1},
+    "policyEnforcementCid": {"pattern": "^bafkr4i"},
+    "statusObservations": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/statusObservation"}},
+    "enrollment": {"type": "object", "required": ["targetOrigin", "nodeAudience", "keyVersion", "enabled"]},
+    "attestation": {"type": "object", "required": ["targetOrigin", "nodeAudience", "keyVersion", "signature"]}
+  },
+  "$defs": {
+    "statusObservation": {"type": "object", "additionalProperties": false, "required": ["parentCid", "state", "sequence", "checkedAt", "freshUntil", "revokedAt", "signerKid", "signerVersion", "signature"], "properties": {"parentCid": {"pattern": "^bafkr4i"}, "state": {"enum": ["active", "revoked"]}, "sequence": {"type": "integer", "minimum": 0}, "checkedAt": {"type": "string"}, "freshUntil": {"type": "string"}, "revokedAt": {"type": "null"}, "signerKid": {"type": "string"}, "signerVersion": {"type": "integer", "minimum": 1}, "signature": {"type": "object", "required": ["suite", "value"]}}}
+  }
+}

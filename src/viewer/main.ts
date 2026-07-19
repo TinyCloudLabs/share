@@ -17,7 +17,7 @@ import { renderEmailClaimState, renderEmailClaimUnavailable, renderResolving } f
 import { hrefForParse, scrubKeyFragment } from "./url.js";
 
 import type { CapturedLaunch } from "../email-share/url.js";
-import { createClaimController, type ClaimState } from "../email-share/claim.js";
+import { createClaimController, type ClaimState, type CredentialTrust } from "../email-share/claim.js";
 import { readClaimedShare } from "../email-share/node-client.js";
 import type { ShareTransport } from "../email-share/transport.js";
 import type { VerifiedExactEmailShare } from "../email-share/verified-share.js";
@@ -39,6 +39,7 @@ async function boot(): Promise<void> {
 
 export interface EmailClaimRuntime {
   readonly transport: ShareTransport;
+  readonly credentialTrust: CredentialTrust;
   readonly verify: (input: { readonly envelope: import("@tinycloud/share-envelope").ShareEnvelope; readonly shareCid: string; readonly policy: Record<string, unknown> }) => Promise<VerifiedExactEmailShare>;
 }
 
@@ -61,7 +62,7 @@ export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: 
   }
   try {
     const share = await runtime.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
-    const controller = createClaimController({ share, invitationId: launch.invite.invitationId, claimSecret: launch.invite.claimSecret, transport: runtime.transport });
+    const controller = createClaimController({ share, invitationId: launch.invite.invitationId, claimSecret: launch.invite.claimSecret, transport: runtime.transport, credentialTrust: runtime.credentialTrust });
     const render = (state: ClaimState): void => renderEmailClaimState(root, state, {
       onOpen: () => { void controller.openDocument(); },
       onOtp: (code) => { void controller.submitOtp(code); },

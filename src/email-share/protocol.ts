@@ -41,6 +41,8 @@ export interface NamedSqlSource {
 export type ContentSource = KvSource | NamedSqlSource;
 
 export interface SenderScope {
+  /** Authenticated Node #117 policy owner; deliberately distinct from senderDid. */
+  readonly policyOwnerDid: string;
   readonly senderDid: string;
   readonly senderPrivateKey: Uint8Array;
   readonly delegation: string;
@@ -177,6 +179,7 @@ export async function createInvitationDraft(input: {
   if (input.scope.spaceId !== source.space) throw new TypeError("The selected resource is outside the authorized space.");
   const target = new URL(input.scope.targetOrigin);
   if (target.protocol !== "https:" || target.origin !== input.scope.targetOrigin) throw new TypeError("The selected node origin is not trusted.");
+  if (!input.scope.policyOwnerDid.startsWith("did:pkh:") || input.scope.policyOwnerDid === input.scope.senderDid) throw new TypeError("Policy owner and invitation sender must be distinct trusted identities.");
   if (source.kind === "kv" && input.scope.authorityMaterialHandle !== "amh_kv_001") throw new TypeError("KV authority material is required.");
   if (source.kind === "sql" && input.scope.authorityMaterialHandle !== "amh_sql_001") throw new TypeError("SQL authority material is required.");
   if (input.scope.documentName.length === 0 || new TextEncoder().encode(input.scope.documentName).length > 200) throw new TypeError("Document name is too long.");
@@ -228,6 +231,7 @@ export async function signedInvitationProof(
     jti: draft.invitationJti,
     reportAbuseToken: draft.reportAbuseToken,
     senderDid: scope.senderDid,
+    policyOwnerDid: scope.policyOwnerDid,
     shareCid: draft.shareCid,
     shareId: draft.envelope.shareId,
     delegationCid: scope.delegationCid,

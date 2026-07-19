@@ -1,17 +1,39 @@
 import "../email-share/sender.css";
-import { createHttpTransport } from "../email-share/transport.js";
 import { mountSender } from "../email-share/view.js";
+import { createHttpTransport, type ShareTransport } from "../email-share/transport.js";
+import type { ContentSource, SenderScope } from "../email-share/protocol.js";
+
+interface ShareBootstrap {
+  readonly nodeOrigin: string;
+  readonly credentialsOrigin: string;
+  readonly scope: SenderScope;
+  readonly source: ContentSource;
+  readonly uploadEnvelope: (cid: string, blob: Uint8Array) => Promise<void>;
+}
+
+function bootstrap(): ShareBootstrap | undefined {
+  const value = (window as Window & { __TINY_CLOUD_SHARE_BOOTSTRAP__?: unknown }).__TINY_CLOUD_SHARE_BOOTSTRAP__;
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = value as Partial<ShareBootstrap>;
+  if (typeof candidate.nodeOrigin !== "string" || typeof candidate.credentialsOrigin !== "string" ||
+      typeof candidate.uploadEnvelope !== "function" || typeof candidate.scope !== "object" || candidate.scope === null ||
+      typeof candidate.source !== "object" || candidate.source === null) return undefined;
+  return candidate as ShareBootstrap;
+}
 
 const root = document.getElementById("share-app");
 if (root === null) throw new Error("share app root missing");
-
-const nodeOrigin = (import.meta.env.VITE_TINYCLOUD_NODE_ORIGIN as string | undefined) ?? "";
-const credentialsOrigin = (import.meta.env.VITE_OPEN_CREDENTIALS_ORIGIN as string | undefined) ?? "";
-const transport = createHttpTransport({ nodeOrigin: nodeOrigin || "https://node.example", credentialsOrigin: credentialsOrigin || "https://credentials.example" });
-
-mountSender(root, {
-  transport,
-  uploadEnvelope: async () => {
-    throw new Error("registry-upload-adapter-not-configured");
-  },
-});
+const config = bootstrap();
+if (config === undefined) {
+  root.replaceChildren();
+  const message = document.createElement("main");
+  message.className = "sender-shell";
+  message.setAttribute("role", "status");
+  message.textContent = "Exact-email sharing is unavailable until the host supplies a verified capability.";
+  root.append(message);
+} else {
+  let transport: ShareTransport;
+  try { transport = createHttpTransport({ nodeOrigin: config.nodeOrigin, credentialsOrigin: config.credentialsOrigin }); }
+  catch { root.textContent = "Exact-email sharing is unavailable for this origin."; throw new Error("invalid-share-bootstrap-origin"); }
+  mountSender(root, { transport, scope: config.scope, defaultSource: config.source, uploadEnvelope: config.uploadEnvelope });
+}

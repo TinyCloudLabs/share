@@ -30,6 +30,7 @@ button, input, select, textarea { font: inherit; }
 .field-legend { margin-bottom: 14px; }
 .scope-note { margin: 2px 0 20px; color: var(--share-muted); font-size: 0.88rem; }
 .button { min-height: 44px; border: 1px solid transparent; border-radius: 8px; padding: 9px 16px; font-weight: 750; cursor: pointer; }
+.button, .field-input { touch-action: manipulation; }
 .button-primary { background: var(--share-accent); color: #fff; }
 .button-primary:hover { background: var(--share-accent-dark); }
 .button-secondary { margin-left: 12px; background: #fff; border-color: var(--share-line); color: var(--share-ink); }

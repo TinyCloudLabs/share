@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /* Deterministic, test-only contract builder. It deliberately has no runtime-package dependency. */
 import { createCipheriv, createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { secp256k1 } from "@noble/curves/secp256k1";
+import { keccak_256 } from "@noble/hashes/sha3";
+import { blake3 } from "@noble/hashes/blake3";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +56,44 @@ const alphabet58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function base58(bytes) { let n = 0n; let result = ""; for (const byte of bytes) n = (n << 8n) | BigInt(byte); while (n) { result = alphabet58[Number(n % 58n)] + result; n /= 58n; } for (const byte of bytes) { if (byte) break; result = `1${result}`; } return result; }
 function didKey(seed) { return `did:key:z${base58(Uint8Array.of(0xed, 1, ...publicKey(seed)))}`; }
 function kid(did) { return `${did}#${did.slice("did:key:".length)}`; }
+function ethereumDid(seed) {
+  const point = secp256k1.getPublicKey(seed, false);
+  const address = keccak_256(point.slice(1)).slice(-20);
+  return `did:pkh:eip155:1:0x${Buffer.from(address).toString("hex")}`;
+}
+function exactNodeParent(role, audienceDid, capabilities, facts, seed, signerDid) {
+  const unsigned = {
+    schema: "xyz.tinycloud.policy/enforcement-delegation/v1",
+    role,
+    issuerDid: signerDid,
+    audienceDid,
+    capabilities,
+    proofCids: [],
+    notBefore: "2026-07-16T12:00:00Z",
+    expiresAt: "2026-07-23T12:00:00Z",
+    delegationMode: role === "policy-authority" ? "policy-source" : "conditional-mint",
+    facts,
+  };
+  const unsignedJcs = jcs(unsigned);
+  const digestBytes = sha256(Buffer.concat([utf8("xyz.tinycloud.policy/enforcement-delegation/v1\0"), utf8(unsignedJcs)]));
+  const eip191 = Buffer.concat([Buffer.from("\\x19Ethereum Signed Message:\\n32"), Buffer.from(digestBytes)]);
+  const signature = secp256k1.sign(keccak_256(eip191), seed, { lowS: true });
+  const value = b64(Buffer.concat([Buffer.from(signature.toCompactRawBytes()), Buffer.from([signature.recovery])]));
+  const withSignature = { ...unsigned, signature: { suite: "eip191-secp256k1-sha256-jcs-v1", value } };
+  const cidBytes = utf8(jcs(withSignature));
+  return { ...withSignature, delegationCid: `b${b32(Uint8Array.of(1, 0x55, 0x1e, 0x20, ...blake3(cidBytes)))}` };
+}
+function signedObservation(parentCid, state, sequence, checkedAt, freshUntil, signerSeed, signerDid, keyVersion) {
+  const message = { type: "TinyCloudShareAuthorityStatusObservation", version: 1, parentCid, state, sequence, checkedAt, freshUntil, revokedAt: state === "revoked" ? checkedAt : null, signerKid: kid(signerDid), signerVersion: keyVersion };
+  const domain = utf8("xyz.tinycloud.share/authority-status/v1\0");
+  const signature = sign(null, Buffer.concat([domain, utf8(jcs(message))]), privateKey(signerSeed));
+  return { ...message, signature: { alg: "EdDSA", kid: kid(signerDid), value: b64(signature) } };
+}
+function signedAttestation(enrollment, signerSeed, signerDid) {
+  const message = { type: "TinyCloudShareEnrollmentRuntimeAttestation", version: 1, targetOrigin: enrollment.targetOrigin, nodeAudience: enrollment.nodeAudience, enforcerDid: didKey(signerSeed), enforcerKid: "did:web:node.example#enforcement-key-1", publicKey: enrollment.invitationPublicKey, keyVersion: enrollment.keyVersion, localSignerDid: signerDid, localSignerKid: kid(signerDid), measurement: "tinycloud-node-measurement-v1", measurementDigest: digest(utf8(jcs({ measurement: "tinycloud-node-measurement-v1" }))), expiresAt: "2026-07-16T12:04:00.000Z", enrollmentDigest: digest(utf8(jcs(enrollment))) };
+  const signature = sign(null, Buffer.concat([utf8("xyz.tinycloud.share/enrollment-attestation/v1\0"), utf8(jcs(message))]), privateKey(signerSeed));
+  return { ...message, signature: { alg: "EdDSA", kid: kid(signerDid), value: b64(signature) } };
+}
 function signed(name, domains, message, seed, signerDid, keyId) {
   const domain = domains.domains[name];
   if (typeof domain !== "string" || !domain.endsWith("\u0000")) throw new Error(`missing registry domain: ${name}`);
@@ -128,16 +169,43 @@ function makeScenario(kind) {
   const reportAbuseToken = b64(fixedBytes(16, 0xe0));
   const delegationCid = cid(utf8(`deterministic-terminal-delegation-${kind}`));
   const authorityMaterialHandle = `amh_${kind}_001`;
-  const authority = { type: "PolicyAuthority", version: 1, sharePolicyCid: policyCid, shareDelegationCid: delegationCid, ownerDid: ids.senderDid, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, expiresAt: times.claimExpires };
+  const policyOwnerSeed = hex("55".repeat(32));
+  const policyOwnerDid = ethereumDid(policyOwnerSeed);
+  const nodeSignerDid = didKey(seeds.node);
+  const nodeEnforcerDid = ids.senderDid === ids.nodeDid ? ids.nodeDid : didKey(seeds.node);
+  const capability = source.kind === "sql"
+    ? { service: "tinycloud.sql", space: source.space, path: source.path, actions: [source.action], caveats: { mode: "constrained-statements", readOnly: true, statements: [{ name: source.statement, sql: "SELECT markdown FROM shared_documents WHERE document_id = ?", fixedParams: [{ index: 1, value: source.arguments.document_id }] }] } }
+    : { service: "tinycloud.kv", space: source.space, path: source.path, actions: [source.action] };
+  const capabilityCeilingHashHex = Buffer.from(sha256(Buffer.concat([utf8("xyz.tinycloud.policy/PolicyCapability/v0\0"), utf8(jcs(capability))]))).toString("hex");
+  const policyId = `pol_${kind}-001`;
+  const policyDigestHex = Buffer.from(sha256(policyBytes)).toString("hex");
+  const authorityFacts = {
+    "xyz.tinycloud.policy/ownerDid": policyOwnerDid,
+    "xyz.tinycloud.policy/policyId": policyId,
+    "xyz.tinycloud.policy/policyDigestHex": policyDigestHex,
+    "xyz.tinycloud.policy/capabilityCeilingHashHex": capabilityCeilingHashHex,
+  };
+  const enforcementFacts = {
+    ...authorityFacts,
+    "xyz.tinycloud.policy/enforcerDid": nodeEnforcerDid,
+    "xyz.tinycloud.policy/nodeAudience": ids.nodeDid,
+    "xyz.tinycloud.policy/attestationBindingDigestHex": digest(utf8(jcs({ targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, enforcerDid: nodeEnforcerDid, enforcerKid: "did:web:node.example#enforcement-key-1", keyVersion: 1 }))),
+    "xyz.tinycloud.policy/maxSessionTtlSeconds": "300",
+    "xyz.tinycloud.policy/sessionMode": "attenuable",
+    "xyz.tinycloud.policy/maxRedelegationDepth": "2",
+    "xyz.tinycloud.policy/auditProfile": "vp-digest-v1",
+  };
+  const authority = exactNodeParent("policy-authority", ids.nodeDid, [capability], authorityFacts, policyOwnerSeed, policyOwnerDid);
+  const enforcement = exactNodeParent("policy-enforcement", nodeEnforcerDid, [capability], enforcementFacts, policyOwnerSeed, policyOwnerDid);
   const policyAuthorityBytes = utf8(jcs(authority));
-  const policyAuthorityCid = cid(policyAuthorityBytes);
-  const attestationBasis = { origin: "https://node.example", audience: ids.nodeDid, enforcerKid: "did:web:node.example#enforcement-key-1", keyVersion: 1, measurement: "tinycloud-node-measurement-v1" };
-  const attestation = { type: "PolicyEnforcerAttestation", version: 1, ...attestationBasis, digest: digest(utf8(jcs(attestationBasis))), issuedAt: times.issued, expiresAt: "2026-07-16T12:04:00.000Z", enrollmentDigest: digest(utf8(jcs({ targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, invitationKid: ids.nodeKid, invitationPublicKey: b64(publicKey(seeds.node)), keyVersion: 1, enabled: true }))) };
-  const enforcement = { type: "PolicyEnforcement", version: 1, policyAuthorityCid, sharePolicyCid: policyCid, shareDelegationCid: delegationCid, origin: attestation.origin, audience: attestation.audience, enforcerKid: attestation.enforcerKid, keyVersion: attestation.keyVersion, measurement: attestation.measurement, digest: attestation.digest, expiresAt: attestation.expiresAt };
   const policyEnforcementBytes = utf8(jcs(enforcement));
-  const policyEnforcementCid = cid(policyEnforcementBytes);
-  const authorityStatus = { type: "PolicyAuthorityStatus", version: 1, authorityCid: policyAuthorityCid, sequence: 7, state: "active", issuedAt: times.issued, freshUntil: "2026-07-16T12:04:00.000Z", revokedAt: null };
-  const authorityMaterial = { type: "TinyCloudShareAuthorityMaterialBundle", version: 1, handle: authorityMaterialHandle, sharePolicyCid: policyCid, shareDelegationCid: delegationCid, ownerDid: ids.senderDid, senderDid: ids.senderDid, policyAuthority: authority, policyAuthorityCid, policyAuthorityBytes: b64(policyAuthorityBytes), policyEnforcement: enforcement, policyEnforcementCid, policyEnforcementBytes: b64(policyEnforcementBytes), status: authorityStatus, attestation };
+  const policyAuthorityCid = authority.delegationCid;
+  const policyEnforcementCid = enforcement.delegationCid;
+  const enrollment = { targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, invitationKid: ids.nodeKid, invitationPublicKey: b64(publicKey(seeds.node)), keyVersion: 1, enabled: true };
+  const authorityStatus = signedObservation(policyAuthorityCid, "active", 7, times.issued, "2026-07-16T12:04:00.000Z", seeds.node, nodeSignerDid, 1);
+  const enforcementStatus = signedObservation(policyEnforcementCid, "active", 7, times.issued, "2026-07-16T12:04:00.000Z", seeds.node, nodeSignerDid, 1);
+  const attestation = signedAttestation(enrollment, seeds.node, nodeSignerDid);
+  const authorityMaterial = { type: "TinyCloudShareAuthorityMaterial", version: 1, handle: authorityMaterialHandle, policyOwnerDid, senderDid: ids.senderDid, relationship: { policyOwnerDid, senderDid: ids.senderDid, authenticated: true }, mapping: { sharePolicyCid: policyCid, shareDelegationCid: delegationCid, policyAuthorityCid, policyEnforcementCid }, policyAuthorityBytes: b64(policyAuthorityBytes), policyAuthorityCid, policyEnforcementBytes: b64(policyEnforcementBytes), policyEnforcementCid, statusObservations: [authorityStatus, enforcementStatus], enrollment, attestation };
   const authorityMaterialDigest = digest(utf8(jcs(authorityMaterial)));
   const auth = { type: "TinyCloudShareInviteAuthorization", version: 1, jti: b64(fixedBytes(16, kind === "kv" ? 1 : 2)), senderDid: ids.senderDid, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, recipientEmail: canonicalEmail, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, returnOrigin: "https://share.tinycloud.xyz", documentName: "Project plan.md", senderTrust: "verified", contentSource: source, contentSourceDigest: sourceDigest, shareExpiresAt: times.claimExpires, issuedAt: times.issued, expiresAt: "2026-07-16T12:05:00.000Z", reportAbuseToken };
   const policyArtifact = signed("policy", domains, policy, seeds.sender, ids.senderDid, ids.senderKid);
@@ -163,21 +231,20 @@ function makeScenario(kind) {
   const readArtifact = signed("readInvocation", domains, read, seeds.holder, ids.holderDid, ids.holderKid);
   const authorityMaterialArtifact = signed("authorityMaterial", domains, authorityMaterial, seeds.sender, ids.senderDid, ids.senderKid);
   const artifacts = [policyArtifact, envelopeArtifact, authArtifact, holderBindingArtifact, policyChallengeArtifact, policyPresentationArtifact, policySessionArtifact, readArtifact, authorityMaterialArtifact];
-  const enrollment = { targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, invitationKid: ids.nodeKid, invitationPublicKey: b64(publicKey(seeds.node)), keyVersion: 1, enabled: true };
   const authorizationProof = artifactProof(authArtifact);
   const shareUrl = `https://share.tinycloud.xyz/s/${shareCid}#k=${b64(envelopeKey)}`;
   const bodies = {
     authorizationRequest: { shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, recipientEmail: canonicalEmail, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest },
     authorizationResponse: { authorization: auth, proof: authorizationProof },
     createInvitationRequest: { authorization: auth, proof: authorizationProof, shareUrl },
-    createInvitationResponse: { status: "accepted", retryAfterSeconds: 20 }, resendRequest: { invitationId, claimSecret }, resendResponse: { status: "accepted", retryAfterSeconds: 20 },
+    createInvitationResponse: { status: "accepted", retryAfterSeconds: 20, delegationCid, authorityMaterialHandle, authorityMaterialDigest }, resendRequest: { invitationId, claimSecret }, resendResponse: { status: "accepted", retryAfterSeconds: 20, delegationCid, authorityMaterialHandle, authorityMaterialDigest },
     claimChallengeMagicRequest: { invitationId, method: "magic", claimSecret }, claimChallengeOtpRequest: { invitationId, method: "otp", otp: "042731" }, claimChallengeResponse: { claimNonce, shareCid, shareId, policyCid, delegationCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, emailHash, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, expiresAt: times.challengeExpires },
     claimRedeemRequest: { version: "tinycloud.share-email-claim/v1", redemptionId, invitationId, method: "magic", mailboxProof: claimSecret, binding, holderProof: artifactProof(holderBindingArtifact) }, claimRedeemOtpRequest: { version: "tinycloud.share-email-claim/v1", redemptionId, invitationId, method: "otp", mailboxProof: "042731", binding, holderProof: artifactProof(holderBindingArtifact) }, claimRedeemResponse: { format: "vc+sd-jwt", credential: credentialString, holderDid: ids.holderDid, expiresAt: times.claimExpires },
     policyChallengeRequest: { shareCid, shareId, delegationCid, policyCid, authorityMaterialHandle, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, holderDid: ids.holderDid, targetOrigin: "https://node.example", nodeAudience: ids.nodeDid, action: source.action, resource: source.path, requestBodyDigest }, policyChallengeResponse: { challenge, proof: artifactProof(policyChallengeArtifact) },
     policySessionRequest: { presentation, credential: credentialString, proof: artifactProof(policyPresentationArtifact) }, policySessionResponse: { session, proof: artifactProof(policySessionArtifact) },
     kvReadRequest: { sessionId, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
     sqlReadRequest: { sessionId, contentSource: source, contentSourceDigest: sourceDigest, action: source.action, resource: source.path, requestBodyDigest, invocation: read, proof: { alg: "EdDSA", kid: ids.holderKid, signature: artifacts[7].signature.value } },
-    readResponse: { mediaType: "text/markdown; charset=utf-8", content: "# Project plan\n", contentSourceDigest: sourceDigest, bodyDigest: digest(utf8("# Project plan\n")) }
+    readResponse: { mediaType: "text/markdown; charset=utf-8", content: "# Project plan\n", contentSourceDigest: sourceDigest, bodyDigest: digest(utf8("# Project plan\n")), delegationCid, authorityMaterialHandle, authorityMaterialDigest }
   };
   const failures = { authorizationFailure: { error: { code: "invitation_authorization_invalid" } }, createInvitationFailure: { error: { code: "capability_unavailable" } }, resendFailure: { error: { code: "invalid_or_expired_claim" } }, claimChallengeFailure: { error: { code: "invalid_or_expired_claim" } }, claimRedeemFailure: { error: { code: "claim_already_used" } }, policyChallengeFailure: { error: { code: "policy_denied" } }, policySessionFailure: { error: { code: "invalid_credential_profile" } }, kvReadFailure: { error: { code: "read_denied" } }, sqlReadFailure: { error: { code: "read_denied" } } };
   const preimages = Object.fromEntries(Object.entries({ ...bodies, ...failures }).map(([name, body]) => [name, { body, jcs: jcs(body), digest: bodyDigest(body) }]));
@@ -326,14 +393,14 @@ const negative = { version: "tinycloud.share-email-claim/v1", testOnly: true, ca
   negativeRow("policy-challenge-response-proof", "proof", "policyChallengeResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policyChallenge", signer: fixtureKv.artifacts[3].signerDid }),
   negativeRow("policy-session-response-proof", "proof", "policySessionResponse.proof", "use-holder-proof-for-node-artifact", { operation: "replace", artifact: "policySession", signer: fixtureKv.artifacts[3].signerDid }),
   negativeRow("authority-material-signature", "authority", "authorityMaterial.signature.value", "flip-authority-signature", { operation: "flip-byte", field: "signature" }),
-  negativeRow("authority-material-policy-mapping", "authority", "authorityMaterial.sharePolicyCid", "replace-share-policy-cid", { operation: "replace", field: "sharePolicyCid", value: negativePolicyCid }),
-  negativeRow("authority-status-rollback", "authority", "authorityMaterial.status.sequence", "decrease-status-sequence", { operation: "replace", field: "status.sequence", value: 6 }),
-  negativeRow("authority-status-stale", "authority", "authorityMaterial.status.freshUntil", "stale-status", { operation: "replace", field: "status.freshUntil", value: "2026-07-16T11:59:00.000Z" }),
-  negativeRow("authority-status-revoked", "authority", "authorityMaterial.status.state", "revoke-active-authority", { operation: "replace", field: "status.state", value: "revoked" }),
-  negativeRow("authority-key-version", "authority", "authorityMaterial.attestation.keyVersion", "wrong-enforcer-key-version", { operation: "replace", field: "attestation.keyVersion", value: 2 }),
-  negativeRow("authority-attestation-binding", "authority", "authorityMaterial.attestation.audience", "wrong-attestation-audience", { operation: "replace", field: "attestation.audience", value: "did:web:evil.example" }),
-  negativeRow("authority-measurement-digest-expiry", "authority", "authorityMaterial.attestation.digest", "wrong-measurement-digest-expiry", { operation: "replace", field: "attestation.digest", value: digest(utf8("wrong measurement")) }),
-  negativeRow("authority-identifier-domain-confusion", "authority", "authorityMaterial.shareDelegationCid", "use-policy-cid-as-delegation-cid", { operation: "replace", field: "shareDelegationCid", value: fixtureKv.policyCid }),
+  negativeRow("authority-material-policy-mapping", "authority", "authorityMaterial.mapping", "replace-share-policy-cid", { operation: "replace", field: "mapping", value: { ...fixtureKv.authorityMaterial.mapping, sharePolicyCid: negativePolicyCid } }),
+  negativeRow("authority-status-rollback", "authority", "authorityMaterial.statusObservations", "decrease-status-sequence", { operation: "replace", field: "statusObservations", value: [] }),
+  negativeRow("authority-status-stale", "authority", "authorityMaterial.statusObservations", "stale-status", { operation: "replace", field: "statusObservations", value: [] }),
+  negativeRow("authority-status-revoked", "authority", "authorityMaterial.statusObservations", "revoke-active-authority", { operation: "replace", field: "statusObservations", value: [] }),
+  negativeRow("authority-key-version", "authority", "authorityMaterial.attestation", "wrong-enforcer-key-version", { operation: "replace", field: "attestation", value: {} }),
+  negativeRow("authority-attestation-binding", "authority", "authorityMaterial.attestation", "wrong-attestation-audience", { operation: "replace", field: "attestation", value: {} }),
+  negativeRow("authority-measurement-digest-expiry", "authority", "authorityMaterial.attestation", "wrong-measurement-digest-expiry", { operation: "replace", field: "attestation", value: {} }),
+  negativeRow("authority-identifier-domain-confusion", "authority", "authorityMaterial.mapping", "use-policy-cid-as-delegation-cid", { operation: "replace", field: "mapping", value: { ...fixtureKv.authorityMaterial.mapping, shareDelegationCid: fixtureKv.policyCid } }),
   negativeRow("sd-jwt-missing-alg", "sd-jwt", "credential.claims._sd_alg", "delete-sd-alg", { operation: "delete", expected: "sha-256" }),
   negativeRow("sd-jwt-two-element-disclosure", "sd-jwt", "credential.disclosures[0].encoded", "replace-disclosure-with-two-elements", { operation: "replace", arrayShape: ["email", "Alice+Notes@example.com"] })
 ] };
@@ -416,6 +483,6 @@ for (const flow of states.delivery) for (const key of ["encryptedUntilProviderAc
 
 async function put(path, value) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8"); }
 await put(resolve(here, "positive.json"), positive); await put(resolve(here, "negative.json"), negative); await put(resolve(here, "states.json"), states);
-const files = {}; for (const name of ["positive.json", "negative.json", "states.json", "build.mjs", "validate.mjs", "loader.ts", "rust/Cargo.toml", "rust/Cargo.lock", "rust/src/main.rs"]) files[name] = digest(await readFile(resolve(here, name))); for (const name of ["domains.json", "schemas.json", "README.md"]) files[name] = digest(await readFile(resolve(spec, name)));
+const files = {}; for (const name of ["positive.json", "negative.json", "states.json", "build.mjs", "validate.mjs", "loader.ts", "rust/Cargo.toml", "rust/Cargo.lock", "rust/src/main.rs"]) files[name] = digest(await readFile(resolve(here, name))); for (const name of ["domains.json", "schemas.json", "authority-material.schema.json", "README.md"]) files[name] = digest(await readFile(resolve(spec, name)));
 const manifestCore = { manifestVersion: 1, contractVersion: "tinycloud.share-email-claim/v1", files, testOnly: true }; await put(resolve(here, "manifest.json"), { ...manifestCore, manifestDigest: digest(utf8(jcs(manifestCore))) });
 console.log(JSON.stringify({ manifestDigest: digest(utf8(jcs(manifestCore))), files }, null, 2));

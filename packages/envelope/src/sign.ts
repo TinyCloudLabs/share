@@ -21,14 +21,21 @@ import {
  */
 const ED25519_VERIFY_OPTS = { zip215: false } as const;
 
-/** JCS bytes of every envelope field except `signature` — the signed message. */
+const ENVELOPE_DOMAIN = "xyz.tinycloud.share/envelope/v1\0";
+
+/** Domain-separated JCS bytes of every envelope field except `signature`. */
 function signingBytes(unsigned: UnsignedShareEnvelope): Uint8Array {
-  return utf8Bytes(canonicalize(unsigned));
+  const domain = utf8Bytes(ENVELOPE_DOMAIN);
+  const body = utf8Bytes(canonicalize(unsigned));
+  const bytes = new Uint8Array(domain.length + body.length);
+  bytes.set(domain);
+  bytes.set(body, domain.length);
+  return bytes;
 }
 
 /**
  * Sign an envelope body with an ed25519 private key (32-byte seed). The
- * signature covers the RFC 8785 canonical JSON of all other fields —
+ * signature covers the domain-separated RFC 8785 canonical JSON of all other fields —
  * including `authorizationTarget.kind` and `target.origin` (blueprint §2.1).
  * Throws if the body does not validate against the strict schema.
  */
@@ -86,7 +93,7 @@ export function verifyEnvelopeSignatureOnly(envelope: ShareEnvelope): boolean {
  *
  * 1. strict schema parse (throws on malformed input),
  * 2. `signature.signerDid` must equal `options.expectedSignerDid`,
- * 3. the ed25519 signature must verify (strict RFC 8032) over the JCS bytes,
+ * 3. the ed25519 signature must verify (strict RFC 8032) over the domain-separated JCS bytes,
  * 4. for `authorizationTarget.kind === "policy"`, the decoded `policyBytes`
  *    must hash to `policyCid` (CIDv1/raw/sha2-256).
  *

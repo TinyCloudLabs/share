@@ -40,7 +40,11 @@ export function createSenderController(input: {
         const signed = await signedInvitationProof(draft, request.scope, issuedAt);
         const authorized = await input.transport.authorizeInvitation(signed.request);
         setState({ state: "requesting" });
-        const accepted = await input.transport.requestDelivery({ authorization: authorized, shareUrl: draft.shareUrl });
+        const accepted = await input.transport.requestDelivery({
+          ...authorized.authorization,
+          proof: authorized.proof,
+          shareUrl: draft.shareUrl,
+        });
         setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: draft.envelope.shareId, resource: request.source.path });
       } catch (error) {
         const failure = mapTransportFailure(error);

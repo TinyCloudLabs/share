@@ -15,7 +15,8 @@ function element<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, c
   const node = doc.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node;
 }
 
-function sourceFromForm(form: HTMLFormElement): ContentSource {
+function sourceFromForm(form: HTMLFormElement, authorized: ContentSource | undefined): ContentSource {
+  if (authorized !== undefined) return authorized;
   const kind = new FormData(form).get("source-kind");
   const space = String(new FormData(form).get("space") ?? "").trim();
   const path = String(new FormData(form).get("path") ?? "").trim();
@@ -69,6 +70,10 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   kind.addEventListener("change", () => { sqlFields.hidden = kind.value !== "sql"; });
   const expiryLabel = element(doc, "label", "field-label", "Access ends"); const expiry = element(doc, "input", "field-input") as HTMLInputElement; expiry.type = "datetime-local"; expiry.name = "expiry"; expiry.required = true; expiryLabel.append(expiry);
   const scopeNote = element(doc, "p", "scope-note", "Read-only. No raw SQL, folder listing, downloads, or write access are available in v1.");
+  if (options.defaultSource !== undefined) {
+    kindLabel.hidden = true; spaceLabel.hidden = true; pathLabel.hidden = true; sqlFields.hidden = true;
+    scopeNote.textContent = "The host supplied a pre-authorized read-only source. Resource scope cannot be edited in this page.";
+  }
   const submit = element(doc, "button", "button button-primary", "Request invitation"); submit.type = "submit";
   const status = element(doc, "div", "sender-status"); status.dataset.senderStatus = "true";
   form.append(emailLabel, kindLabel, spaceLabel, pathLabel, sqlFields, expiryLabel, scopeNote, submit, status);
@@ -82,8 +87,9 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (options.scope === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
+    if (options.defaultSource === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
     try {
-      const source = sourceFromForm(form); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
+      const source = sourceFromForm(form, options.defaultSource); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
       const request = { email: email.value, source, scope: options.scope, shareId: `share-${crypto.randomUUID()}`, expiresAt };
       lastRequest = request; void controller.request(request);
     } catch { renderState(root, { state: "invalid", message: "Check the email and resource details, then try again." }); }

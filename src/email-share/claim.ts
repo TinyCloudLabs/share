@@ -1,4 +1,5 @@
-import { didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelope";
+import { didKeyFromEd25519PublicKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
+import { ed25519 } from "@noble/curves/ed25519";
 import type { VerifiedExactEmailShare } from "./verified-share.js";
 import { canonicalize } from "@tinycloud/share-envelope";
 import { mapTransportFailure, type ClaimChallengeResponse, type ShareTransport } from "./transport.js";
@@ -28,6 +29,12 @@ export interface ClaimController {
   forget(): void;
 }
 
+export interface CredentialTrust {
+  readonly issuerDid: string;
+  readonly vct: "opencredentials.email/v1";
+  readonly issuerPublicKey?: Uint8Array;
+}
+
 export async function createHolder(): Promise<HolderKey> {
   if (typeof crypto?.subtle?.generateKey !== "function") throw new Error("unsupported-browser");
   const pair = await crypto.subtle.generateKey("Ed25519", false, ["sign", "verify"]);
@@ -55,15 +62,37 @@ async function holderProof(holder: HolderKey, share: VerifiedExactEmailShare, in
   return { binding, holderProof: { alg: "EdDSA", kid: `${holder.did}#${holder.did.slice("did:key:".length)}`, signature: toBase64Url(signature) } };
 }
 
-function assertCredential(value: { format: string; credential: string; holderDid: string; expiresAt: string }, holder: HolderKey): void {
-  if (value.format !== "vc+sd-jwt" || value.holderDid !== holder.did || Date.parse(value.expiresAt) <= Date.now()) throw new Error("credential-invalid");
-  const payload = value.credential.split(".")[1];
-  if (payload === undefined) throw new Error("credential-invalid");
-  const decoded = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0))));
-  if (decoded.sub !== holder.did) throw new Error("credential-invalid");
+function decodeJson(segment: string): Record<string, unknown> {
+  let value: unknown;
+  try { value = JSON.parse(new TextDecoder().decode(fromBase64Url(segment))); } catch { throw new Error("credential-invalid"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("credential-invalid");
+  return value as Record<string, unknown>;
 }
 
-export function createClaimController(input: { readonly share: VerifiedExactEmailShare; readonly invitationId: string; readonly claimSecret: string; readonly transport: ShareTransport }): ClaimController {
+function assertCredential(value: { format: string; credential: string; holderDid: string; expiresAt: string }, holder: HolderKey, trust: CredentialTrust | undefined): void {
+  if (value.format !== "vc+sd-jwt" || value.holderDid !== holder.did || Date.parse(value.expiresAt) <= Date.now()) throw new Error("credential-invalid");
+  const [jws, ...disclosures] = value.credential.split("~");
+  if (!jws || disclosures.length !== 1) throw new Error("credential-invalid");
+  const parts = jws.split(".");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) throw new Error("credential-invalid");
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  if (encodedHeader === undefined || encodedPayload === undefined || encodedSignature === undefined) throw new Error("credential-invalid");
+  const header = decodeJson(encodedHeader);
+  const payload = decodeJson(encodedPayload);
+  if (header.alg !== "EdDSA" || payload.sub !== holder.did || payload.vct !== "opencredentials.email/v1" ||
+      typeof payload.iss !== "string" || typeof payload.iat !== "number" || typeof payload.nbf !== "number" ||
+      typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now() || payload.nbf * 1000 > Date.now() + 5_000 ||
+      typeof payload.tinycloud_share !== "object" || payload.tinycloud_share === null ||
+      payload._sd_alg !== "sha-256" || !Array.isArray(payload._sd) || payload._sd.length !== 1) throw new Error("credential-invalid");
+  if (trust === undefined || payload.iss !== trust.issuerDid) throw new Error("credential-invalid");
+  if (trust.issuerPublicKey !== undefined) {
+    try {
+      if (!ed25519.verify(fromBase64Url(encodedSignature), new TextEncoder().encode(`${encodedHeader}.${encodedPayload}`), trust.issuerPublicKey, { zip215: false })) throw new Error("credential-invalid");
+    } catch { throw new Error("credential-invalid"); }
+  } else if (fromBase64Url(encodedSignature).length !== 64) throw new Error("credential-invalid");
+}
+
+export function createClaimController(input: { readonly share: VerifiedExactEmailShare; readonly invitationId: string; readonly claimSecret: string; readonly transport: ShareTransport; readonly credentialTrust?: CredentialTrust }): ClaimController {
   let state: ClaimState = { state: "verifying", emailHint: input.share.recipientHint };
   let holder: HolderKey | undefined;
   let challenge: ClaimChallengeResponse | undefined;
@@ -77,7 +106,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
     challenge = await input.transport.claimChallenge({ invitationId: input.invitationId, method, ...(method === "magic" ? { claimSecret: mailboxProof } : { otp: mailboxProof }) });
     const proof = await holderProof(key, input.share, input.invitationId, challenge, redemptionId);
     const response = await input.transport.claimRedeem({ version: "tinycloud.share-email-claim/v1", redemptionId, invitationId: input.invitationId, method, mailboxProof, ...proof });
-    assertCredential(response, key);
+    assertCredential(response, key, input.credentialTrust);
     claimSecret = undefined;
     setState({ state: "claimed", claim: { holder: key, credential: response.credential, expiresAt: response.expiresAt, persisted: false } });
   };
