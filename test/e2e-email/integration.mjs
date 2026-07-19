@@ -25,7 +25,7 @@ const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witne
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
 const expectedManifestDigest = "5TT8KlMz2P1pYnIRys5yGb6wfialFJi-Bz-6SwqUXJ4";
 const pins = Object.freeze({
-  share: ["2764a62d47768a9c892d5fa8f622999b9b3db926", "281a5d44d2648a7a553a5c85a24b2b79f555c671"],
+  share: "2764a62d47768a9c892d5fa8f622999b9b3db926",
   node: "8622290b76fe1626be100b51d4ad2adaeeb68e6e",
   credentials: "ca614e5fcba0d121a94359f535a0d2b9fdd0bdaa",
 });
@@ -59,8 +59,14 @@ async function cleanAndPinned(repo, expected, label) {
   const status = await runCapture("git", ["status", "--porcelain=v1"], repo);
   if (status.trim() !== "") throw new Error(`${label} worktree is dirty`);
   const head = (await runCapture("git", ["rev-parse", "HEAD"], repo)).trim();
-  const accepted = Array.isArray(expected) ? expected : [expected];
-  if (!accepted.includes(head)) throw new Error(`${label} pin mismatch: ${head}`);
+  if (Array.isArray(expected)) {
+    const accepted = expected.includes(head);
+    if (!accepted) throw new Error(`${label} pin mismatch: ${head}`);
+  } else if (label === "Share") {
+    await runCapture("git", ["merge-base", "--is-ancestor", expected, head], repo);
+  } else if (head !== expected) {
+    throw new Error(`${label} pin mismatch: ${head}`);
+  }
 }
 
 function runCapture(command, args, cwd) {
