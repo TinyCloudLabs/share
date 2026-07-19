@@ -438,7 +438,11 @@ async function mountedGate() {
       if (registryUrl === undefined) throw new Error("Share registry did not publish a bound URL");
     }
     registryUrl = required(registryUrl, "registry URL");
-    const vite = arg("vite-command") === undefined ? spawnOwned("npm run dev -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` }) : spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+    let vite;
+    if (arg("vite-command") === undefined) {
+      await run("npm", ["run", "build"], shareRoot);
+      vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
     owned.push(vite);
     const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
     const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
