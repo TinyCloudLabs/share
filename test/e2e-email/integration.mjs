@@ -472,7 +472,11 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) { throw error; }
+    } catch (error) {
+      const validatorDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim validator")));
+      if (validatorDiagnostics.length > 0) console.error(`mounted validator diagnostics: ${validatorDiagnostics.join(" | ")}`);
+      throw error;
+    }
     finally { await instance.close(); }
   } finally {
     await cleanup();
