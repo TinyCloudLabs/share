@@ -380,7 +380,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (/\/v1\/share-email\/invitations/.test(response.url())) void response.text().then((body) => console.error(`sender delivery response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
+  sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
   await installInterception(sender, targets, { publicConfig, capability, binding });
   await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
   const emailInput = await sender.$('input[name="email"]');
