@@ -10,11 +10,10 @@ All protocol messages use RFC 8785 JCS UTF-8. v1 JSON numbers are integers
 only; the implementation rejects fractional, non-finite, unsafe integers,
 `-0`, undefined/functions/symbols,
 non-plain objects, and lone UTF-16 surrogates. Object keys are sorted by UTF-16
-code unit. Binary is strict unpadded base64url. A normal signed artifact is
-`UTF8(domains[artifact]) || UTF8(JCS(message))`, including the frozen envelope
-domain. The checked-in shipping envelope signer still signs bare JCS; the
-runtime conformance gap and required domain-separation patch are recorded
-below.
+code unit. Binary is strict unpadded base64url. Every signed artifact,
+including the shipped envelope, signs exactly
+`UTF8(domains[artifact]) || UTF8(JCS(message))`. The envelope domain is
+normative and is not optional or a future compatibility patch.
 
 The shipped envelope body is the strict object:
 
@@ -137,12 +136,9 @@ with no mutation. The redaction window is 900 seconds from durable completion
 only.
 
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in
-shipping envelope package currently signs and verifies its envelope body as
-JCS-only; it has no domain-registry input. This fixture suite intentionally
-uses the frozen registry domain and records the compatibility gap here. A
-future runtime conformance patch must add the registry domain to the shipping
-package's envelope sign/verify input, then update its local tests; runtime
-files are outside this contract recovery change.
+shipping envelope package signs and verifies the envelope body with that
+domain-separated input. This fixture suite and the package tests therefore
+share one normative preimage; there is no bare-JCS compatibility mode.
 
 Run the complete contract suite with:
 

@@ -25,12 +25,7 @@ const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(shareRoot, "../.
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? resolve(shareRoot, "../../../opencredentials/feat/email-claim-o4-integration");
 const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witness");
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
-const expectedManifestDigest = "5TT8KlMz2P1pYnIRys5yGb6wfialFJi-Bz-6SwqUXJ4";
-const pins = Object.freeze({
-  share: ["2764a62d47768a9c892d5fa8f622999b9b3db926"],
-  node: ["8622290b76fe1626be100b51d4ad2adaeeb68e6e"],
-  credentials: ["ca614e5fcba0d121a94359f535a0d2b9fdd0bdaa"],
-});
+const expectedManifestDigest = "2sUjz8uHWUP66ePxe8zrHUVnAM9YJC0QZ9cD_XGA9vc";
 
 const canonical = Object.freeze({
   share: "https://share.tinycloud.xyz",
@@ -69,13 +64,12 @@ function run(command, args, cwd, extraEnv = {}) {
   }).then((error) => { if (error !== undefined) throw error; });
 }
 
-async function cleanAndPinned(repo, expected, label) {
+async function cleanAndExact(repo, expected, label) {
   const status = await runCapture("git", ["status", "--porcelain=v1"], repo);
   if (status.trim() !== "") throw new Error(`${label} worktree is dirty`);
   const head = (await runCapture("git", ["rev-parse", "HEAD"], repo)).trim();
-  if (!Array.isArray(expected) || expected.length === 0) throw new Error(`${label} pin configuration is invalid`);
-  for (const ancestor of expected) await runCapture("git", ["merge-base", "--is-ancestor", ancestor, head], repo)
-    .catch(() => { throw new Error(`${label} required ancestor missing: ${ancestor} (HEAD ${head})`); });
+  if (typeof expected !== "string" || !/^[0-9a-f]{40}$/.test(expected)) throw new Error(`${label} exact release head is required (set the convergence-time release head)`);
+  if (head !== expected) throw new Error(`${label} exact release head mismatch: expected ${expected}, found ${head}`);
 }
 
 function runCapture(command, args, cwd) {
@@ -91,12 +85,15 @@ function runCapture(command, args, cwd) {
 }
 
 async function nativeGate() {
-  await cleanAndPinned(shareRoot, pins.share, "Share");
-  await cleanAndPinned(nodeRoot, pins.node, "tinycloud-node");
-  await cleanAndPinned(credentialsRoot, pins.credentials, "OpenCredentials");
+  await cleanAndExact(shareRoot, process.env.SHARE_RELEASE_HEAD, "Share");
+  await cleanAndExact(nodeRoot, process.env.TINYCLOUD_NODE_RELEASE_HEAD, "tinycloud-node");
+  await cleanAndExact(credentialsRoot, process.env.OPEN_CREDENTIALS_RELEASE_HEAD, "OpenCredentials");
   const manifest = JSON.parse(await readFile(resolve(vectorRoot, "manifest.json"), "utf8"));
   if (manifest.manifestDigest !== expectedManifestDigest) throw new Error(`Share manifest mismatch: ${manifest.manifestDigest}`);
   await run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
+  await run("npm", ["test"], shareRoot);
+  await run("npm", ["run", "typecheck"], shareRoot);
+  await run("npm", ["run", "build"], shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
   await run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
   await run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
   await run("cargo", ["test", "--manifest-path", resolve(nodeRoot, "test/w5-policy-runtime-node-e2e/Cargo.toml"), "--test", "tc119_registry_wire_paths"], nodeRoot);
@@ -252,9 +249,29 @@ function canonicalRequestTarget(url, targets) {
   return undefined;
 }
 
-async function installInterception(page, targets) {
+async function installInterception(page, targets, fixtureConfig = {}) {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
+    const parsed = new URL(request.url());
+    if (parsed.origin === canonical.share && parsed.pathname === "/.well-known/tinycloud-share/config.json") {
+      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.publicConfig) });
+      return;
+    }
+    if (parsed.origin === canonical.share && parsed.pathname === "/api/share/capability") {
+      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.capability) });
+      return;
+    }
+    if (parsed.origin === canonical.share && parsed.pathname.startsWith("/.well-known/tinycloud-share/bindings/")) {
+      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.binding) });
+      return;
+    }
+    if (parsed.origin === canonical.node && parsed.pathname === "/share/v1/invitations/authorize" && fixtureConfig.binding !== undefined) {
+      try {
+        const body = JSON.parse(request.postData() ?? "{}").request;
+        if (typeof body?.policyCid === "string") fixtureConfig.binding.policyCid = body.policyCid;
+        if (typeof body?.shareId === "string") fixtureConfig.binding.shareId = body.shareId;
+      } catch { /* the real Node response remains authoritative */ }
+    }
     const target = canonicalRequestTarget(request.url(), targets);
     if (target === undefined) { void request.continue(); return; }
     void request.continue({ url: target });
@@ -307,26 +324,46 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   if (typeof scope.expectedRecipientEmail !== "string" || typeof scope.expectedContentSourceDigest !== "string") throw new Error(`case ${caseIndex}: expected recipient/digest are required`);
   const before = (await readCapture(fixture.mailArtifact)).length;
   const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
+  const publicConfig = {
+    version: "tinycloud.share-email-claim/config-v1",
+    shareOrigin: canonical.share,
+    registryOrigin: canonical.share,
+    nodeOrigin: canonical.node,
+    credentialsOrigin: canonical.credentials,
+    nodeAudience: "did:web:node.example",
+    issuerDid: "did:web:issuer.credentials.org",
+    issuerVct: "opencredentials.email/v1",
+    nodeInvitationKid: scope.trustedNode.invitationKid,
+    nodeInvitationPublicKey: Buffer.from(scope.trustedNode.invitationPublicKey).toString("base64url"),
+    issuerPublicKey: Buffer.from(issuerPublicKey).toString("base64url"),
+  };
+  const capability = { scope: { ...browserScope, trustedNode: { ...browserScope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } }, source };
+  const binding = {
+    shareId: "pending",
+    policyCid: "pending",
+    recipientEmail: scope.expectedRecipientEmail,
+    expiry: new Date(fixture.expiresAt ?? Date.now() + 3_600_000).toISOString(),
+    delegationCid: scope.delegationCid,
+    authorityMaterialHandle: scope.authorityMaterialHandle,
+    authorityMaterialDigest: scope.authorityMaterialDigest,
+    contentSource: source,
+    contentSourceDigest: scope.expectedContentSourceDigest,
+    action: source.action,
+    resource: source.path,
+  };
 
   const sender = await browser.newPage();
+  await sender.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (/\/v1\/share-email\/invitations/.test(response.url())) void response.text().then((body) => console.error(`sender delivery response: ${response.status()} ${response.url()} ${body.slice(0, 2000)}`)); else if (response.status() >= 400 && /node\.example|credentials\.org|127\.0\.0\.1/.test(response.url())) void response.text().then((body) => console.error(`sender response: ${response.status()} ${response.url()} ${body.slice(0, 500)}`)); });
-  await installInterception(sender, targets);
-  await sender.evaluateOnNewDocument((data) => {
-    const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
-    window.__TINY_CLOUD_SHARE_BOOTSTRAP__ = {
-      nodeOrigin: "https://node.example", credentialsOrigin: "https://witness.credentials.org", scope, source: data.source,
-      uploadEnvelope: async (_cid, blob) => {
-        const response = await fetch("https://share.tinycloud.xyz/registry/blobs", { method: "POST", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": new Date(Date.now() + 86_400_000).toISOString() }, body: blob });
-        if (!response.ok) throw new Error(`registry upload failed: ${response.status}`);
-      },
-    };
-  }, { scope: browserScope, source });
+  await installInterception(sender, targets, { publicConfig, capability, binding });
   await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
+  const senderA11y = await sender.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role") }));
+  if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
   const expiry = fixture.expiresAt === undefined ? new Date(Date.now() + 3_600_000) : new Date(fixture.expiresAt);
   const expiryInput = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
@@ -348,6 +385,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   page.on("console", (message) => {
     if (message.type() === "error" && message.text().startsWith("share test:")) console.error(`recipient ${message.text()}`);
   });
@@ -361,54 +399,14 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
       console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
     }).catch(() => {});
   });
-  await installInterception(page, targets);
-  await page.evaluateOnNewDocument((data) => {
-    const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
-    const post = async (origin, path, body) => {
-      try {
-        if (path === "/share/v1/policy/session") {
-          const payload = String(body.credential ?? "").split(".")[1] ?? "";
-          let credentialExp = "invalid";
-          try { credentialExp = String(JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))).exp); } catch { /* bounded test trace */ }
-          console.error(`share test: session request presentationExpiry=${body.presentation?.expiresAt ?? "missing"} credentialExp=${credentialExp} requestDigestLength=${String(body.presentation?.requestBodyDigest ?? "").length}`);
-        }
-        const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-        const value = await response.json().catch(() => undefined);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return value;
-      } catch (error) { throw error; }
-    };
-    const transport = {
-      authorizeInvitation: (body) => post("https://node.example", "/share/v1/invitations/authorize", body),
-      requestDelivery: (body) => post("https://witness.credentials.org", "/v1/share-email/invitations", body),
-      resend: (body) => post("https://witness.credentials.org", "/v1/share-email/invitations/resend", body),
-      activate: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/activate", body),
-      claimChallenge: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/challenge", body),
-      claimRedeem: (body) => post("https://witness.credentials.org", "/v1/share-email/claims/redeem", body),
-      policyChallenge: (body) => post("https://node.example", "/share/v1/policy/challenges", body),
-      policySession: (body) => post("https://node.example", "/share/v1/policy/session", body),
-      read: (body) => post("https://node.example", "/share/v1/read", body),
-    };
-    window.__TINY_CLOUD_EMAIL_CLAIM_RUNTIME__ = {
-      transport,
-      credentialTrust: { issuerDid: "did:web:issuer.credentials.org", vct: "opencredentials.email/v1", issuerPublicKey: new Uint8Array(data.issuerPublicKey) },
-      verify: async ({ envelope, shareCid, policy }) => {
-        if (policy.recipientEmail !== scope.expectedRecipientEmail || JSON.stringify(policy.contentSource) !== JSON.stringify(data.source) || policy.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error("mounted authority scope mismatch");
-        return {
-          shareId: envelope.shareId, shareCid, policyCid: envelope.authorizationTarget.policyCid, recipientEmail: policy.recipientEmail,
-          recipientHint: policy.recipientEmail, expiry: envelope.expiry, nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example",
-          requestOrigin: "https://share.tinycloud.xyz", delegationCid: scope.delegationCid, authorityMaterialHandle: scope.authorityMaterialHandle,
-          authorityMaterialDigest: scope.authorityMaterialDigest, contentSource: policy.contentSource, contentSourceDigest: policy.contentSourceDigest,
-          action: policy.action, resource: policy.resource, trustedNode: scope.trustedNode,
-        };
-      },
-    };
-  }, { scope: browserScope, source, issuerPublicKey: Array.from(issuerPublicKey) });
+  await installInterception(page, targets, { publicConfig, capability, binding });
   await page.goto(link, { waitUntil: "networkidle0" });
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
   catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
   const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
   if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
+  const recipientA11y = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, live: document.querySelector("[aria-live]") !== null, primary: document.querySelector("button.viewer-primary-action")?.textContent }));
+  if (recipientA11y.overflow || !recipientA11y.live || recipientA11y.primary !== "Open document") throw new Error(`case ${caseIndex}: recipient accessibility/mobile assertion failed`);
   await page.click("button.viewer-primary-action");
   try {
     await page.waitForFunction((marker) => {

@@ -1,8 +1,10 @@
-import { fromBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, fromBase64Url, verifyEnvelope, type ShareEnvelope } from "@tinycloud/share-envelope";
 import type { CredentialTrust } from "./claim.js";
 import type { ShareTransport } from "./transport.js";
 import type { TrustedNode } from "./protocol.js";
-import type { SenderScope } from "./protocol.js";
+import { canonicalEmail, sourceDigest, validateSource, type ContentSource, type SenderScope } from "./protocol.js";
+import type { SharePublicBinding, SharePublicConfig } from "./config.js";
+import type { VerifiedExactEmailShare } from "./verified-share.js";
 
 /** Production endpoints are contract constants, never page-controlled URLs. */
 export const PRODUCTION_ENDPOINTS = Object.freeze({
@@ -71,4 +73,59 @@ export function assertProductionAuthorityMaterial(scope: SenderScope): void {
 
 export function productionTransport(create: (input: { nodeOrigin: string; credentialsOrigin: string }) => ShareTransport): ShareTransport {
   return create({ nodeOrigin: PRODUCTION_ENDPOINTS.nodeOrigin, credentialsOrigin: PRODUCTION_ENDPOINTS.credentialsOrigin });
+}
+
+/**
+ * The browser-side recipient adapter. It verifies the signed envelope and
+ * policy before any claim call is possible; browser tests may replace only
+ * the delivery transport, never this verifier.
+ */
+export async function verifyProductionEmailShare(input: {
+  readonly envelope: ShareEnvelope;
+  readonly shareCid: string;
+  readonly policy: Record<string, unknown>;
+  readonly config: SharePublicConfig;
+  readonly binding: SharePublicBinding;
+}): Promise<VerifiedExactEmailShare> {
+  const { envelope, shareCid, policy, config, binding } = input;
+  if (envelope.authorizationTarget.kind !== "policy") throw new TypeError("policy target required");
+  const policyBytes = fromBase64Url(envelope.authorizationTarget.policyBytes);
+  const parsedPolicy = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(policyBytes)) as unknown;
+  if (canonicalize(parsedPolicy) !== canonicalize(policy)) throw new TypeError("policy bytes do not match resolved policy");
+  if (await computeCid(policyBytes) !== envelope.authorizationTarget.policyCid) throw new TypeError("policy CID is invalid");
+  if (policy.type !== "TinyCloudSharePolicy" || policy.version !== 1 || typeof policy.issuerDid !== "string" || policy.issuerDid !== envelope.signature.signerDid || typeof policy.recipientEmail !== "string" || typeof policy.expiresAt !== "string" || typeof policy.action !== "string" || typeof policy.resource !== "string" || typeof policy.contentSourceDigest !== "string") throw new TypeError("policy shape is invalid");
+  const source = validateSource(policy.contentSource as ContentSource);
+  if (source.action !== policy.action || source.path !== policy.resource || await sourceDigest(source) !== policy.contentSourceDigest) throw new TypeError("policy source binding is invalid");
+  canonicalEmail(policy.recipientEmail);
+  if (envelope.shareId === undefined || envelope.expiry !== policy.expiresAt || envelope.target.origin !== config.nodeOrigin || envelope.target.nodeAudience !== config.nodeAudience || envelope.target.spaceId !== source.space || envelope.target.resource.kind !== "exact" || envelope.target.resource.path !== source.path || Date.parse(envelope.expiry) <= Date.now()) throw new TypeError("envelope scope is invalid");
+  if (!(await verifyEnvelope(envelope, { expectedSignerDid: policy.issuerDid }))) throw new TypeError("envelope signature is invalid");
+  if (binding.shareId !== envelope.shareId || binding.policyCid !== envelope.authorizationTarget.policyCid || binding.recipientEmail !== policy.recipientEmail || binding.expiry !== envelope.expiry || canonicalize(binding.contentSource) !== canonicalize(source) || binding.contentSourceDigest !== policy.contentSourceDigest || binding.action !== source.action || binding.resource !== source.path) throw new TypeError("public authority binding is invalid");
+  if ((source.kind === "kv" && binding.authorityMaterialHandle !== "amh_kv_001") || (source.kind === "sql" && binding.authorityMaterialHandle !== "amh_sql_001")) throw new TypeError("authority material kind is invalid");
+  const trustedNode = {
+    targetOrigin: config.nodeOrigin,
+    nodeAudience: config.nodeAudience,
+    invitationKid: config.nodeInvitationKid,
+    invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey),
+    keyVersion: 1,
+    enabled: true as const,
+  };
+  return {
+    shareId: envelope.shareId,
+    shareCid,
+    policyCid: envelope.authorizationTarget.policyCid,
+    recipientEmail: policy.recipientEmail,
+    recipientHint: envelope.display.recipientHint ?? `${policy.recipientEmail.slice(0, 1)}***@${policy.recipientEmail.split("@")[1]}`,
+    expiry: envelope.expiry,
+    nodeOrigin: config.nodeOrigin,
+    nodeAudience: config.nodeAudience,
+    requestOrigin: config.shareOrigin,
+    delegationCid: binding.delegationCid,
+    authorityMaterialHandle: binding.authorityMaterialHandle,
+    authorityMaterialDigest: binding.authorityMaterialDigest,
+    contentSource: source,
+    contentSourceDigest: policy.contentSourceDigest,
+    action: source.action,
+    resource: source.path,
+    trustedNode,
+  };
 }

@@ -22,7 +22,9 @@ import { createClaimController, type ClaimState, type CredentialTrust } from "..
 import type { ShareTransport } from "../email-share/transport.js";
 import type { VerifiedExactEmailShare } from "../email-share/verified-share.js";
 import { assertTrustedNodeScope } from "../email-share/node-verifier.js";
-import { assertProductionCredentialTrust } from "../email-share/runtime.js";
+import { assertProductionCredentialTrust, verifyProductionEmailShare } from "../email-share/runtime.js";
+import { credentialTrustFromConfig, loadSharePublicBinding, loadSharePublicConfig, trustedNodeFromConfig } from "../email-share/config.js";
+import { createHttpTransport } from "../email-share/transport.js";
 
 async function boot(): Promise<void> {
   const root = document.getElementById("viewer");
@@ -45,13 +47,33 @@ export interface EmailClaimRuntime {
   readonly verify: (input: { readonly envelope: import("@tinycloud/share-envelope").ShareEnvelope; readonly shareCid: string; readonly policy: Record<string, unknown> }) => Promise<VerifiedExactEmailShare>;
 }
 
-function configuredRuntime(): EmailClaimRuntime | undefined {
-  const value = (window as Window & { __TINY_CLOUD_EMAIL_CLAIM_RUNTIME__?: unknown }).__TINY_CLOUD_EMAIL_CLAIM_RUNTIME__;
-  if (typeof value !== "object" || value === null) return undefined;
-  const candidate = value as Partial<EmailClaimRuntime>;
-  if (typeof candidate.verify !== "function" || typeof candidate.transport !== "object" || candidate.transport === null || typeof candidate.credentialTrust !== "object" || candidate.credentialTrust === null) return undefined;
-  try { assertProductionCredentialTrust(candidate.credentialTrust as CredentialTrust); } catch { return undefined; }
-  return candidate as EmailClaimRuntime;
+async function configuredRuntime(): Promise<EmailClaimRuntime> {
+  const config = await loadSharePublicConfig();
+  const credentialTrust = credentialTrustFromConfig(config);
+  assertProductionCredentialTrust(credentialTrust);
+  const trustedNode = trustedNodeFromConfig(config);
+  const transport = createHttpTransport({ nodeOrigin: config.nodeOrigin, credentialsOrigin: config.credentialsOrigin });
+  return {
+    transport,
+    credentialTrust,
+    verify: async ({ envelope, shareCid, policy }) => {
+      const binding = await loadSharePublicBinding(shareCid);
+      return { ...(await verifyProductionEmailShare({ envelope, shareCid, policy, config, binding })), trustedNode };
+    },
+  };
+}
+
+function appendPersistentForgetAction(root: HTMLElement, onForget: () => void): void {
+  root.querySelector("[data-forget-key]")?.remove();
+  const footer = root.querySelector(".viewer-footer") ?? root;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "viewer-secondary-action viewer-forget-key";
+  button.dataset.forgetKey = "true";
+  button.textContent = "Forget this browser key";
+  button.setAttribute("aria-label", "Forget the private browser key for this share");
+  button.addEventListener("click", onForget, { once: true });
+  footer.append(button);
 }
 
 export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: EmailClaimRuntime): Promise<void> {
@@ -67,11 +89,8 @@ export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: 
     await presentShare(root, result);
     return;
   }
-  const configured = runtime ?? configuredRuntime();
-  if (configured === undefined) {
-    renderEmailClaimUnavailable(root);
-    return;
-  }
+  let configured: EmailClaimRuntime;
+  try { configured = runtime ?? await configuredRuntime(); } catch { renderEmailClaimUnavailable(root); return; }
   try {
     assertProductionCredentialTrust(configured.credentialTrust);
     const share = await configured.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
@@ -89,7 +108,7 @@ export async function bootDefault(launch: CapturedLaunch | undefined, runtime?: 
     controller.subscribe(render);
     render(controller.state);
     controller.subscribe((state) => {
-      if (state.state === "claimed") void controller.read().then((content) => { if (content !== undefined) void presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content }); });
+      if (state.state === "claimed") void controller.read().then((content) => { if (content !== undefined) void presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content }).then(() => appendPersistentForgetAction(root, () => controller.forget())); });
     });
   } catch { renderEmailClaimUnavailable(root); }
 }

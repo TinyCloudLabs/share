@@ -185,7 +185,7 @@ describe("exact-email share UI protocol boundaries", () => {
       challengeId: "E".repeat(22),
       nonce: "F".repeat(43),
       issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      expiresAt: new Date(Date.now() + 119_000).toISOString(),
     });
     const nodeProof = (message: Record<string, unknown>, domain: string) => ({
       alg: "EdDSA" as const,
@@ -306,9 +306,13 @@ describe("exact-email share UI protocol boundaries", () => {
     const controller = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
     await controller.openDocument();
     expect(controller.state.state).toBe("otp");
+    vi.useFakeTimers();
     await controller.resend();
     expect(controller.state.state).toBe("otp");
     expect(controller.state).toMatchObject({ retryAfterSeconds: 20 });
+    vi.advanceTimersByTime(20_000);
+    expect(controller.state).toMatchObject({ state: "otp", retryAfterSeconds: 0 });
+    vi.useRealTimers();
     await controller.resend();
     expect(t.resend).toHaveBeenCalledTimes(1);
     await controller.submitOtp("042731");

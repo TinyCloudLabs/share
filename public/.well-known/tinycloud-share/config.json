@@ -1,0 +1,13 @@
+{
+  "version": "tinycloud.share-email-claim/config-v1",
+  "shareOrigin": "https://share.tinycloud.xyz",
+  "registryOrigin": "https://share.tinycloud.xyz",
+  "nodeOrigin": "https://node.example",
+  "credentialsOrigin": "https://witness.credentials.org",
+  "nodeAudience": "did:web:node.example",
+  "issuerDid": "did:web:issuer.credentials.org",
+  "issuerVct": "opencredentials.email/v1",
+  "nodeInvitationKid": "did:web:node.example#invitation-key-1",
+  "nodeInvitationPublicKey": "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI",
+  "issuerPublicKey": "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"
+}

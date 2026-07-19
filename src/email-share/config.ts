@@ -1,0 +1,110 @@
+import { fromBase64Url } from "@tinycloud/share-envelope";
+import type { CredentialTrust } from "./claim.js";
+import { PRODUCTION_ENDPOINTS, PRODUCTION_TRUSTED_NODE } from "./runtime.js";
+import type { TrustedNode } from "./protocol.js";
+
+const CONFIG_VERSION = "tinycloud.share-email-claim/config-v1" as const;
+const B64_256 = /^[A-Za-z0-9_-]{43}$/;
+const DID_WEB = /^did:web:[A-Za-z0-9.-]+$/;
+
+/** Public deployment data. No private key, mailbox secret, token, or session is legal here. */
+export interface SharePublicConfig {
+  readonly version: typeof CONFIG_VERSION;
+  readonly shareOrigin: string;
+  readonly registryOrigin: string;
+  readonly nodeOrigin: string;
+  readonly credentialsOrigin: string;
+  readonly nodeAudience: string;
+  readonly issuerDid: string;
+  readonly issuerVct: "opencredentials.email/v1";
+  readonly nodeInvitationKid: string;
+  readonly nodeInvitationPublicKey: string;
+  readonly issuerPublicKey: string;
+}
+
+export interface SharePublicBinding {
+  readonly shareId: string;
+  readonly policyCid: string;
+  readonly recipientEmail: string;
+  readonly expiry: string;
+  readonly delegationCid: string;
+  readonly authorityMaterialHandle: "amh_kv_001" | "amh_sql_001";
+  readonly authorityMaterialDigest: string;
+  readonly contentSource: Record<string, unknown>;
+  readonly contentSourceDigest: string;
+  readonly action: "tinycloud.kv/get" | "tinycloud.sql/read";
+  readonly resource: string;
+}
+
+function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).length !== keys.length || keys.some((key) => !Object.hasOwn(object, key))) throw new TypeError("share config has unknown or missing fields");
+  return object;
+}
+
+function httpsOrigin(value: unknown, name: string): string {
+  if (typeof value !== "string") throw new TypeError(`${name} is missing`);
+  const parsed = new URL(value);
+  if (parsed.protocol !== "https:" || parsed.origin !== value) throw new TypeError(`${name} must be a canonical HTTPS origin`);
+  return value;
+}
+
+function publicKey(value: unknown, name: string): string {
+  if (typeof value !== "string" || !B64_256.test(value) || fromBase64Url(value).length !== 32) throw new TypeError(`${name} must be a 32-byte base64url public key`);
+  return value;
+}
+
+export function validateSharePublicConfig(value: unknown): SharePublicConfig {
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "issuerDid", "issuerVct", "nodeInvitationKid", "nodeInvitationPublicKey", "issuerPublicKey"]);
+  if (object.version !== CONFIG_VERSION || object.issuerVct !== PRODUCTION_ENDPOINTS.issuerVct) throw new TypeError("unsupported share config version");
+  const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
+  const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
+  const nodeOrigin = httpsOrigin(object.nodeOrigin, "nodeOrigin");
+  const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
+  if (shareOrigin !== PRODUCTION_ENDPOINTS.shareOrigin || nodeOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || credentialsOrigin !== PRODUCTION_ENDPOINTS.credentialsOrigin) throw new TypeError("share config service origin is not enrolled");
+  if (typeof object.nodeAudience !== "string" || object.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience || typeof object.issuerDid !== "string" || object.issuerDid !== PRODUCTION_ENDPOINTS.issuerDid || typeof object.nodeInvitationKid !== "string" || object.nodeInvitationKid !== PRODUCTION_TRUSTED_NODE.invitationKid) throw new TypeError("share config trust binding is not enrolled");
+  if (!DID_WEB.test(object.nodeAudience)) throw new TypeError("node audience is invalid");
+  return Object.freeze({
+    version: CONFIG_VERSION,
+    shareOrigin,
+    registryOrigin,
+    nodeOrigin,
+    credentialsOrigin,
+    nodeAudience: object.nodeAudience,
+    issuerDid: object.issuerDid,
+    issuerVct: "opencredentials.email/v1",
+    nodeInvitationKid: object.nodeInvitationKid,
+    nodeInvitationPublicKey: publicKey(object.nodeInvitationPublicKey, "nodeInvitationPublicKey"),
+    issuerPublicKey: publicKey(object.issuerPublicKey, "issuerPublicKey"),
+  });
+}
+
+export function trustedNodeFromConfig(config: SharePublicConfig): TrustedNode {
+  return Object.freeze({ targetOrigin: config.nodeOrigin, nodeAudience: config.nodeAudience, invitationKid: config.nodeInvitationKid, invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey), keyVersion: 1, enabled: true });
+}
+
+export function credentialTrustFromConfig(config: SharePublicConfig): CredentialTrust {
+  return Object.freeze({ issuerDid: config.issuerDid, vct: config.issuerVct, issuerPublicKey: fromBase64Url(config.issuerPublicKey) });
+}
+
+export async function loadSharePublicConfig(fetchFn: typeof fetch = globalThis.fetch.bind(globalThis), url = "/.well-known/tinycloud-share/config.json"): Promise<SharePublicConfig> {
+  const parsed = new URL(url, globalThis.location?.origin ?? PRODUCTION_ENDPOINTS.shareOrigin);
+  if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin) && parsed.origin !== PRODUCTION_ENDPOINTS.shareOrigin) throw new TypeError("share config must be same-origin or the enrolled Share origin");
+  const response = await fetchFn(parsed, { credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+  if (!response.ok) throw new Error(`share config unavailable (${response.status})`);
+  return validateSharePublicConfig(await response.json());
+}
+
+export function validateSharePublicBinding(value: unknown): SharePublicBinding {
+  const object = exactObject(value, ["shareId", "policyCid", "recipientEmail", "expiry", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "action", "resource"]);
+  if (typeof object.shareId !== "string" || object.shareId.length === 0 || typeof object.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(object.policyCid) || typeof object.recipientEmail !== "string" || typeof object.expiry !== "string" || typeof object.delegationCid !== "string" || !/^b[a-z2-7]{58}$/.test(object.delegationCid) || (object.authorityMaterialHandle !== "amh_kv_001" && object.authorityMaterialHandle !== "amh_sql_001") || typeof object.authorityMaterialDigest !== "string" || !B64_256.test(object.authorityMaterialDigest) || typeof object.contentSource !== "object" || object.contentSource === null || Array.isArray(object.contentSource) || typeof object.contentSourceDigest !== "string" || !B64_256.test(object.contentSourceDigest) || (object.action !== "tinycloud.kv/get" && object.action !== "tinycloud.sql/read") || typeof object.resource !== "string") throw new TypeError("share binding is invalid");
+  return object as unknown as SharePublicBinding;
+}
+
+export async function loadSharePublicBinding(shareCid: string, fetchFn: typeof fetch = globalThis.fetch.bind(globalThis)): Promise<SharePublicBinding> {
+  if (!/^bafkrei[a-z2-7]{52}$/.test(shareCid)) throw new TypeError("share CID is invalid");
+  const response = await fetchFn(`/.well-known/tinycloud-share/bindings/${shareCid}.json`, { credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+  if (!response.ok) throw new Error(`share binding unavailable (${response.status})`);
+  return validateSharePublicBinding(await response.json());
+}

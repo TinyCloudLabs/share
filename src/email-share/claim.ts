@@ -137,7 +137,16 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
   let inFlight: Promise<void> | undefined;
   let readInFlight: Promise<string | undefined> | undefined;
   let resendAvailableAt = 0;
+  let cooldownTimer: ReturnType<typeof setInterval> | undefined;
   const setState = (next: ClaimState): void => { state = next; listeners.forEach((listener) => listener(next)); };
+  const stopCooldown = (): void => { if (cooldownTimer !== undefined) { clearInterval(cooldownTimer); cooldownTimer = undefined; } };
+  const tickCooldown = (): void => {
+    if (state.state !== "otp") { stopCooldown(); return; }
+    const seconds = Math.max(0, Math.ceil((resendAvailableAt - Date.now()) / 1000));
+    if (seconds === 0) { stopCooldown(); setState({ ...state, retryAfterSeconds: 0 }); return; }
+    if (state.retryAfterSeconds !== seconds) setState({ ...state, retryAfterSeconds: seconds });
+  };
+  const startCooldown = (): void => { stopCooldown(); tickCooldown(); if (resendAvailableAt > Date.now()) cooldownTimer = setInterval(tickCooldown, 250); };
   const ensureHolder = async (): Promise<HolderKey> => { holder ??= await createHolder(); return holder; };
   const claim = async (mailboxProof: string, method: "magic" | "otp"): Promise<void> => {
     const key = await ensureHolder();
@@ -211,6 +220,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
         try {
           const accepted = await input.transport.resend({ invitationId: input.invitationId, claimSecret });
           resendAvailableAt = Date.now() + accepted.retryAfterSeconds * 1000;
+          startCooldown();
           setState({ state: "otp", emailHint: input.share.recipientHint, message: "A new code was requested. Check your inbox.", retryAfterSeconds: accepted.retryAfterSeconds });
         } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
       });
@@ -233,6 +243,6 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
       })().finally(() => { readInFlight = undefined; });
       return readInFlight;
     },
-    forget() { holder = undefined; material = undefined; claimSecret = undefined; setState({ state: "forgotten" }); },
+    forget() { stopCooldown(); holder = undefined; material = undefined; claimSecret = undefined; setState({ state: "forgotten" }); },
   };
 }
