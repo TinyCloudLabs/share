@@ -320,7 +320,8 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
-  const expiryInput = fixture.expiresAt === undefined ? new Date(Date.now() + 3_600_000).toISOString().slice(0, 16) : fixture.expiresAt.slice(0, 16);
+  const expiry = fixture.expiresAt === undefined ? new Date(Date.now() + 3_600_000) : new Date(fixture.expiresAt);
+  const expiryInput = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
   await sender.$eval('input[name="expiry"]', (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); }, expiryInput);
   await sender.click('button[type="submit"]');
   try {
