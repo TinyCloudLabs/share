@@ -471,7 +471,11 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) { throw error; }
+    } catch (error) {
+      const diagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim holder signature mismatch")));
+      if (diagnostics.length > 0) console.error(`mounted claim diagnostics: ${diagnostics.join(" | ")}`);
+      throw error;
+    }
     finally { await instance.close(); }
   } finally {
     await cleanup();
