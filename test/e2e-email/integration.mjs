@@ -13,9 +13,11 @@
 
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createConnection, createServer } from "node:net";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const shareRoot = resolve(import.meta.dirname, "../..");
@@ -25,9 +27,9 @@ const credentialsRustRoot = resolve(credentialsRoot, "rust/opencredentials_witne
 const vectorRoot = resolve(shareRoot, "test/vectors/email-claim-v1");
 const expectedManifestDigest = "5TT8KlMz2P1pYnIRys5yGb6wfialFJi-Bz-6SwqUXJ4";
 const pins = Object.freeze({
-  share: "2764a62d47768a9c892d5fa8f622999b9b3db926",
-  node: "8622290b76fe1626be100b51d4ad2adaeeb68e6e",
-  credentials: "ca614e5fcba0d121a94359f535a0d2b9fdd0bdaa",
+  share: ["2764a62d47768a9c892d5fa8f622999b9b3db926"],
+  node: ["8622290b76fe1626be100b51d4ad2adaeeb68e6e"],
+  credentials: ["ca614e5fcba0d121a94359f535a0d2b9fdd0bdaa"],
 });
 
 const canonical = Object.freeze({
@@ -35,6 +37,14 @@ const canonical = Object.freeze({
   node: "https://node.example",
   credentials: "https://witness.credentials.org",
 });
+
+let activeCleanup;
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => {
+    if (activeCleanup === undefined) process.exit(128);
+    void activeCleanup().finally(() => process.exit(128));
+  });
+}
 
 function arg(name) {
   const index = process.argv.indexOf(`--${name}`);
@@ -59,14 +69,9 @@ async function cleanAndPinned(repo, expected, label) {
   const status = await runCapture("git", ["status", "--porcelain=v1"], repo);
   if (status.trim() !== "") throw new Error(`${label} worktree is dirty`);
   const head = (await runCapture("git", ["rev-parse", "HEAD"], repo)).trim();
-  if (Array.isArray(expected)) {
-    const accepted = expected.includes(head);
-    if (!accepted) throw new Error(`${label} pin mismatch: ${head}`);
-  } else if (label === "Share") {
-    await runCapture("git", ["merge-base", "--is-ancestor", expected, head], repo);
-  } else if (head !== expected) {
-    throw new Error(`${label} pin mismatch: ${head}`);
-  }
+  if (!Array.isArray(expected) || expected.length === 0) throw new Error(`${label} pin configuration is invalid`);
+  for (const ancestor of expected) await runCapture("git", ["merge-base", "--is-ancestor", ancestor, head], repo)
+    .catch(() => { throw new Error(`${label} required ancestor missing: ${ancestor} (HEAD ${head})`); });
 }
 
 function runCapture(command, args, cwd) {
@@ -101,7 +106,90 @@ function spawnOwned(command, cwd, extraEnv = {}) {
   const collect = (chunk) => { output += String(chunk); if (output.length > 128_000) output = output.slice(-128_000); };
   child.stdout.on("data", collect);
   child.stderr.on("data", collect);
-  return { child, output: () => output };
+  return { child, output: () => output, done: new Promise((resolveDone) => child.once("exit", resolveDone)) };
+}
+
+function spawnOwnedArgs(command, args, cwd, extraEnv = {}) {
+  const child = spawn(command, args, { cwd, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  const collect = (chunk) => { output += String(chunk); if (output.length > 128_000) output = output.slice(-128_000); };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  return { child, output: () => output, done: new Promise((resolveDone) => child.once("exit", resolveDone)) };
+}
+
+async function commandAvailable(command) {
+  try { await runCapture("sh", ["-c", `command -v ${command}`], shareRoot); return true; }
+  catch { return false; }
+}
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolvePort, rejectPort) => { server.once("error", rejectPort); server.listen(0, "127.0.0.1", resolvePort); });
+  const port = server.address().port;
+  await new Promise((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
+  return port;
+}
+
+async function waitForFileJson(path, label) {
+  const deadline = Date.now() + 120_000;
+  let lastError = "file not written";
+  while (Date.now() < deadline) {
+    try { return JSON.parse(await readFile(path, "utf8")); }
+    catch (error) { lastError = error instanceof Error ? error.message : String(error); }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`${label} descriptor was not published: ${lastError}`);
+}
+
+async function waitForDescriptor(process, label) {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    for (const line of process.output().split("\n").reverse()) {
+      try { const value = JSON.parse(line); if (value?.testOnly === true) return value; }
+      catch { /* cargo diagnostics and tracing share the captured stream */ }
+    }
+    if (process.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error(`${label} descriptor was not published`);
+}
+
+async function waitForPort(port, label) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      await new Promise((resolvePort, rejectPort) => {
+        const socket = createConnection({ host: "127.0.0.1", port });
+        socket.once("connect", () => socket.end(resolvePort));
+        socket.once("error", rejectPort);
+      });
+      return;
+    } catch { await new Promise((resolveWait) => setTimeout(resolveWait, 250)); }
+  }
+  throw new Error(`${label} did not bind 127.0.0.1:${port}`);
+}
+
+async function startPostgres(owned, tempRoot) {
+  if (!(await commandAvailable("initdb")) || !(await commandAvailable("postgres"))) {
+    throw new Error("E2E prerequisite missing: local PostgreSQL (initdb and postgres) is required for the default gate");
+  }
+  const dataDir = join(tempRoot, "postgres");
+  await run("initdb", ["--no-locale", "-A", "trust", "-U", "email_claim", "-D", dataDir], shareRoot);
+  const port = await freePort();
+  const server = spawnOwnedArgs("postgres", ["-D", dataDir, "-h", "127.0.0.1", "-p", String(port)], shareRoot);
+  owned.push(server);
+  await waitForPort(port, "PostgreSQL");
+  return { url: `postgres://email_claim@127.0.0.1:${port}/postgres`, dataDir };
+}
+
+async function stopOwned(owned) {
+  await Promise.all(owned.slice().reverse().map(async ({ child, done }) => {
+    if (child.exitCode !== null) return;
+    child.kill("SIGTERM");
+    await Promise.race([done, new Promise((resolveStop) => setTimeout(resolveStop, 5_000))]);
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }));
 }
 
 async function waitForUrl(url, label, timeoutMs = 30_000) {
@@ -291,48 +379,77 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 }
 
 async function mountedGate() {
-  const nodeUrl = required(arg("node-url") ?? process.env.TINYCLOUD_NODE_URL, "--node-url or TINYCLOUD_NODE_URL");
-  const credentialsUrl = required(arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL, "--credentials-url or OPENCREDENTIALS_URL");
-  let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
-  const mailArtifact = required(arg("mail-artifact") ?? process.env.SHARE_EMAIL_CAPTURE_ARTIFACT, "--mail-artifact or SHARE_EMAIL_CAPTURE_ARTIFACT");
-  const scopePath = required(arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE, "--scope-file or SHARE_EMAIL_SCOPE_FILE");
-  if (!existsSync(scopePath)) throw new Error(`scope fixture is missing: ${scopePath}`);
-  const fixtureValue = JSON.parse(readFileSync(scopePath, "utf8"));
-  const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
-  if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
-
   const owned = [];
-  const nodeProcess = arg("node-command") === undefined ? undefined : spawnOwned(arg("node-command"), nodeRoot);
-  const credentialsProcess = arg("credentials-command") === undefined ? undefined : spawnOwned(arg("credentials-command"), credentialsRustRoot);
-  if (nodeProcess !== undefined) owned.push(nodeProcess);
-  if (credentialsProcess !== undefined) owned.push(credentialsProcess);
-  const registryProcess = arg("registry-command") === undefined ? undefined : spawnOwned(arg("registry-command"), shareRoot);
-  if (registryProcess !== undefined) {
-    owned.push(registryProcess);
-    const deadline = Date.now() + 30_000;
-    while (registryUrl === undefined && Date.now() < deadline) {
-      const match = registryProcess.output().match(/https?:\/\/127\.0\.0\.1:\d+/);
-      if (match !== null) registryUrl = match[0];
-      else await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-    }
-  }
-  registryUrl = required(registryUrl, "--registry-url/SHARE_REGISTRY_URL or --registry-command");
-  const vite = spawnOwned(arg("vite-command") ?? "npm run dev -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
-  owned.push(vite);
-  const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
-  const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
-  await waitForUrl(new URL("/healthz", nodeUrl), "Node");
-  await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
-  const browser = providerModule();
-  const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
+  const scopePath = arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE ?? join(tempRoot, "node.json");
+  const mailArtifact = arg("mail-artifact") ?? process.env.SHARE_EMAIL_CAPTURE_ARTIFACT ?? join(tempRoot, "mail.ndjson");
+  let postgres;
+  let nodeUrl = arg("node-url") ?? process.env.TINYCLOUD_NODE_URL;
+  let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
+  let nodeDescriptor;
+  let credentialsDescriptor;
+  const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
+  activeCleanup = cleanup;
   try {
-    for (const [index, fixture] of fixtures.entries()) {
-      fixture.mailArtifact = mailArtifact;
-      await runBrowserCase(instance, targets, fixture, index);
+    if (nodeUrl === undefined) {
+      const node = arg("node-command") === undefined
+        ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "--invitation-public-key", "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI"], nodeRoot)
+        : spawnOwned(arg("node-command"), nodeRoot);
+      owned.push(node);
+      nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node");
+      nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
+    } else nodeDescriptor = JSON.parse(await readFile(scopePath, "utf8"));
+    const trustedKey = nodeDescriptor.trustedNode?.invitationPublicKey;
+    if (trustedKey !== "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI") throw new Error(`mounted Node enrollment key mismatch: ${trustedKey ?? "missing"}`);
+    if (credentialsUrl === undefined) {
+      postgres = await startPostgres(owned, tempRoot);
+      const credentials = arg("credentials-command") === undefined
+        ? spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
+        EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
+        SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
+        SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
+        })
+        : spawnOwned(arg("credentials-command"), credentialsRustRoot, {
+          EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
+          SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
+          SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
+        });
+      owned.push(credentials);
+      credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
+      credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
     }
+    if (!existsSync(scopePath)) throw new Error(`scope fixture is missing: ${scopePath}`);
+    const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
+    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+    if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
+    let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
+    if (registryUrl === undefined) {
+      const registryProcess = arg("registry-command") === undefined
+        ? spawnOwned("npm run -w @tinycloud/share-registry dev-server -- --port 0", shareRoot)
+        : spawnOwned(arg("registry-command"), shareRoot);
+      owned.push(registryProcess);
+      const deadline = Date.now() + 30_000;
+      while (registryUrl === undefined && Date.now() < deadline) { const match = registryProcess.output().match(/http:\/\/127\.0\.0\.1:\d+/); if (match) registryUrl = match[0]; else await new Promise((resolveWait) => setTimeout(resolveWait, 100)); }
+      if (registryUrl === undefined) throw new Error("Share registry did not publish a bound URL");
+    }
+    registryUrl = required(registryUrl, "registry URL");
+    const vite = arg("vite-command") === undefined ? spawnOwned("npm run dev -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` }) : spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+    owned.push(vite);
+    const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
+    const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
+    await waitForUrl(new URL("/healthz", nodeUrl), "Node");
+    await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+    const browser = providerModule();
+    const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      for (const [index, fixture] of fixtures.entries()) {
+        fixture.mailArtifact = mailArtifact;
+        await runBrowserCase(instance, targets, fixture, index);
+      }
+    } finally { await instance.close(); }
   } finally {
-    await instance.close();
-    for (const process of owned) process.child.kill("SIGTERM");
+    await cleanup();
+    if (activeCleanup === cleanup) activeCleanup = undefined;
   }
 }
 
