@@ -470,11 +470,7 @@ async function mountedGate() {
         const issuerPublicKey = credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey;
         await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index);
       }
-    } catch (error) {
-      const diagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim holder signature mismatch")));
-      if (diagnostics.length > 0) console.error(`mounted claim diagnostics: ${diagnostics.join(" | ")}`);
-      throw error;
-    }
+    } catch (error) { throw error; }
     finally { await instance.close(); }
   } finally {
     await cleanup();
