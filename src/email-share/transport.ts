@@ -4,6 +4,7 @@ import type {
   InvitationAuthorization,
   SignedProof,
 } from "./protocol.js";
+import { validateSource } from "./protocol.js";
 
 export type TransportErrorCode =
   | "offline"
@@ -19,12 +20,14 @@ export type TransportErrorCode =
 export class ShareTransportError extends Error {
   readonly code: TransportErrorCode;
   readonly retryable: boolean;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: TransportErrorCode, retryable = false) {
+  constructor(code: TransportErrorCode, retryable = false, retryAfterSeconds?: number) {
     super(code);
     this.name = "ShareTransportError";
     this.code = code;
     this.retryable = retryable;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -32,10 +35,11 @@ export interface ShareTransport {
   authorizeInvitation(input: Record<string, unknown>): Promise<AuthorizedInvitation>;
   requestDelivery(input: Record<string, unknown>): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
   resend(input: { readonly invitationId: string; readonly claimSecret: string }): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
+  activate(input: { readonly invitationId: string; readonly claimSecret: string }): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number }>;
   claimChallenge(input: { readonly invitationId: string; readonly method: "magic" | "otp"; readonly claimSecret?: string; readonly otp?: string }): Promise<ClaimChallengeResponse>;
   claimRedeem(input: Record<string, unknown>): Promise<ClaimCredentialResponse>;
   policyChallenge(input: Record<string, unknown>): Promise<{ readonly challenge: Record<string, unknown>; readonly proof: SignedProof }>;
-  policySession(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  policySession(input: Record<string, unknown>): Promise<{ readonly session: Record<string, unknown>; readonly proof: SignedProof }>;
   read(input: Record<string, unknown>): Promise<{ readonly mediaType: "text/markdown; charset=utf-8"; readonly content: string; readonly contentSourceDigest: string; readonly bodyDigest: string; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string }>;
 }
 
@@ -72,6 +76,24 @@ function codeFor(status: number): TransportErrorCode {
   return "unknown";
 }
 
+function retryAfter(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const seconds = Number(value);
+  return Number.isInteger(seconds) && seconds >= 0 && seconds <= 3600 ? seconds : undefined;
+}
+
+function parseFailure(value: unknown): TransportErrorCode {
+  const object = record(value);
+  const error = record(object.error);
+  if (Object.keys(object).length !== 1 || Object.keys(error).length !== 1 || typeof error.code !== "string") throw new ShareTransportError("unknown");
+  const mapping: Record<string, TransportErrorCode> = {
+    invalid_or_expired_claim: "expired", claim_already_used: "used", invitation_authorization_invalid: "invalid", untrusted_node: "denied", invalid_content_source: "invalid", invalid_holder_proof: "denied", invalid_credential_profile: "denied", policy_denied: "denied", nonce_already_used: "used", read_denied: "denied", capability_unavailable: "capability-unavailable",
+  };
+  const mapped = mapping[error.code];
+  if (mapped === undefined) throw new ShareTransportError("unknown");
+  return mapped;
+}
+
 async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: string, init: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -86,12 +108,15 @@ async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: strin
   } catch {
     throw new ShareTransportError("offline", true);
   }
-  if (!response.ok) throw new ShareTransportError(codeFor(response.status), response.status >= 500 || response.status === 429);
   try {
     const body = await response.text();
     if (new TextEncoder().encode(body).length > 1_048_576) throw new Error("response-too-large");
-    return JSON.parse(body) as T;
-  } catch {
+    const parsed = JSON.parse(body) as unknown;
+    if (!response.ok) throw new ShareTransportError(parseFailure(parsed), response.status >= 500 || response.status === 429, retryAfter(response.headers.get("Retry-After")));
+    return parsed as T;
+  } catch (error) {
+    if (error instanceof ShareTransportError && error.code !== "unknown") throw error;
+    if (!response.ok) throw new ShareTransportError(codeFor(response.status), response.status >= 500 || response.status === 429, retryAfter(response.headers.get("Retry-After")));
     throw new ShareTransportError("unknown", false);
   }
 }
@@ -115,18 +140,52 @@ function parseAccepted(value: unknown): { readonly status: "accepted"; readonly 
   return { status: "accepted", retryAfterSeconds: 20, delegationCid: text(object.delegationCid), authorityMaterialHandle: text(object.authorityMaterialHandle), authorityMaterialDigest: text(object.authorityMaterialDigest) };
 }
 
+function parseActivationAccepted(value: unknown): { readonly status: "accepted"; readonly retryAfterSeconds: number } {
+  const object = exact(value, ["status", "retryAfterSeconds"]);
+  const retryAfterSeconds = object.retryAfterSeconds;
+  if (object.status !== "accepted" || typeof retryAfterSeconds !== "number" || !Number.isInteger(retryAfterSeconds) || retryAfterSeconds < 0 || retryAfterSeconds > 3600) throw new ShareTransportError("unknown");
+  return { status: "accepted", retryAfterSeconds };
+}
+
 function parseClaimChallenge(value: unknown): ClaimChallengeResponse {
   const object = exact(value, ["claimNonce", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "emailHash", "targetOrigin", "nodeAudience", "expiresAt"]);
   for (const key of ["claimNonce", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSourceDigest", "emailHash", "targetOrigin", "nodeAudience", "expiresAt"]) text(object[key]);
-  if (typeof object.contentSource !== "object" || object.contentSource === null) throw new ShareTransportError("unknown");
-  return object as unknown as ClaimChallengeResponse;
+  let source: ContentSource;
+  try { source = validateSource(object.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(object.claimNonce as string) || !/^[A-Za-z0-9_-]{43}$/.test(object.emailHash as string)) throw new ShareTransportError("unknown");
+  return { ...object, contentSource: source } as unknown as ClaimChallengeResponse;
 }
 
 function parseCredential(value: unknown): ClaimCredentialResponse {
   const object = exact(value, ["format", "credential", "holderDid", "expiresAt"]);
   if (object.format !== "vc+sd-jwt") throw new ShareTransportError("unknown");
-  text(object.credential); text(object.holderDid); text(object.expiresAt);
+  const credential = text(object.credential); text(object.holderDid); text(object.expiresAt);
+  if (new TextEncoder().encode(credential).length > 65_536) throw new ShareTransportError("unknown");
   return object as unknown as ClaimCredentialResponse;
+}
+
+function parseProof(value: unknown): SignedProof {
+  const object = exact(value, ["alg", "kid", "signature"]);
+  if (object.alg !== "EdDSA" || typeof object.kid !== "string" || !/^did:(?:web|key):[^#\s]+#[^#\s]+$/.test(object.kid) || typeof object.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(object.signature)) throw new ShareTransportError("unknown");
+  return object as unknown as SignedProof;
+}
+
+function parseAuthorization(value: unknown): AuthorizedInvitation {
+  const outer = exact(value, ["authorization", "proof"]);
+  const authorization = exact(outer.authorization, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
+  if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 1 || authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") throw new ShareTransportError("unknown");
+  try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
+  return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
+}
+
+function parsePolicyChallenge(value: unknown): { readonly challenge: Record<string, unknown>; readonly proof: SignedProof } {
+  const object = exact(value, ["challenge", "proof"]);
+  return { challenge: exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "requestBodyDigest", "issuedAt", "expiresAt"]), proof: parseProof(object.proof) };
+}
+
+function parsePolicySession(value: unknown): { readonly session: Record<string, unknown>; readonly proof: SignedProof } {
+  const object = exact(value, ["session", "proof"]);
+  return { session: exact(object.session, ["type", "version", "sessionId", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "credentialDigest", "issuedAt", "expiresAt"]), proof: parseProof(object.proof) };
 }
 
 function parseRead(value: unknown): { readonly mediaType: "text/markdown; charset=utf-8"; readonly content: string; readonly contentSourceDigest: string; readonly bodyDigest: string; readonly delegationCid: string; readonly authorityMaterialHandle: string; readonly authorityMaterialDigest: string } {
@@ -145,13 +204,14 @@ export function createHttpTransport(input: { readonly nodeOrigin: string; readon
   const postNode = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.nodeOrigin, path, { method: "POST", body: JSON.stringify(body) });
   const postCredentials = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.credentialsOrigin, path, { method: "POST", body: JSON.stringify(body) });
   return {
-    authorizeInvitation: (body) => postNode<AuthorizedInvitation>("/share/v1/invitations/authorize", body),
+    authorizeInvitation: async (body) => parseAuthorization(await postNode<unknown>("/share/v1/invitations/authorize", body)),
     requestDelivery: async (body) => parseAccepted(await postCredentials("/v1/share-email/invitations", body)),
     resend: async (body) => parseAccepted(await postCredentials("/v1/share-email/invitations/resend", body)),
+    activate: async (body) => parseActivationAccepted(await postCredentials("/v1/share-email/claims/activate", body)),
     claimChallenge: async (body) => parseClaimChallenge(await postCredentials("/v1/share-email/claims/challenge", body)),
     claimRedeem: async (body) => parseCredential(await postCredentials("/v1/share-email/claims/redeem", body)),
-    policyChallenge: (body) => postNode("/share/v1/policy/challenges", body),
-    policySession: (body) => postNode("/share/v1/policy/session", body),
+    policyChallenge: async (body) => parsePolicyChallenge(await postNode("/share/v1/policy/challenges", body)),
+    policySession: async (body) => parsePolicySession(await postNode("/share/v1/policy/session", body)),
     read: async (body) => parseRead(await postNode("/share/v1/read", body)),
   };
 }

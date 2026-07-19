@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { ed25519 } from "@noble/curves/ed25519";
 import { captureAndScrubLaunch } from "../src/email-share/url.js";
 import { canonicalEmail, createInvitationDraft, type SenderScope } from "../src/email-share/protocol.js";
 import { createClaimController, createHolder } from "../src/email-share/claim.js";
-import type { ShareTransport } from "../src/email-share/transport.js";
+import { createHttpTransport, ShareTransportError, type ShareTransport } from "../src/email-share/transport.js";
 import { createSenderController } from "../src/email-share/sender.js";
+import { createHash } from "node:crypto";
+import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
+import { SIGNATURE_DOMAINS } from "../src/email-share/protocol.js";
 
 const seed = new Uint8Array(32).fill(7);
 const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(seed));
 const issuerSeed = new Uint8Array(32).fill(8);
 const issuerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(issuerSeed));
+const nodeSeed = new Uint8Array(32).fill(2);
 const scope: SenderScope = {
   policyOwnerDid: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
   senderDid,
@@ -24,21 +28,29 @@ const scope: SenderScope = {
   spaceId: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111",
   documentName: "Project plan.md",
   senderTrust: "verified",
+  trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true },
 };
 
 function transport(overrides: Partial<ShareTransport> = {}): ShareTransport {
   return {
-    authorizeInvitation: vi.fn(async () => ({ authorization: {} as never, proof: {} as never })),
+    authorizeInvitation: vi.fn(async (input) => {
+      const authorization = { type: "TinyCloudShareInviteAuthorization", version: 1, jti: input.jti, senderDid: input.senderDid, shareCid: input.shareCid, shareId: input.shareId, policyCid: input.policyCid, delegationCid: input.delegationCid, authorityMaterialHandle: input.authorityMaterialHandle, authorityMaterialDigest: input.authorityMaterialDigest, recipientEmail: input.recipientEmail, targetOrigin: input.targetOrigin, nodeAudience: input.nodeAudience, returnOrigin: "https://share.tinycloud.xyz", documentName: input.documentName, senderTrust: input.senderTrust, contentSource: input.contentSource, contentSourceDigest: input.contentSourceDigest, shareExpiresAt: input.shareExpiresAt, issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 300_000).toISOString(), reportAbuseToken: input.reportAbuseToken };
+      const bytes = new TextEncoder().encode(`xyz.tinycloud.share/invite-authorization/v1\0${canonicalize(authorization)}`);
+      return { authorization: authorization as never, proof: { alg: "EdDSA" as const, kid: "did:web:node.example#invitation-key-1", signature: toBase64Url(ed25519.sign(bytes, nodeSeed)) } };
+    }),
     requestDelivery: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20, delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) })),
     resend: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20, delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) })),
+    activate: vi.fn(async () => ({ status: "accepted" as const, retryAfterSeconds: 20 })),
     claimChallenge: vi.fn(async () => ({ claimNonce: "A".repeat(43), shareCid: "cid", shareId: "id", policyCid: "policy", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), emailHash: "A".repeat(43), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", expiresAt: new Date(Date.now() + 60_000).toISOString() })),
     claimRedeem: vi.fn(async (body) => {
       const holderDid = String((body.binding as Record<string, unknown>).holderDid);
-      const header = toBase64Url(new TextEncoder().encode(JSON.stringify({ alg: "EdDSA", typ: "vc+sd-jwt" })));
-      const payload = toBase64Url(new TextEncoder().encode(JSON.stringify({ iss: issuerDid, sub: holderDid, iat: Math.floor(Date.now() / 1000), nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 60, vct: "opencredentials.email/v1", tinycloud_share: { share_cid: "cid", share_id: "id", policy_cid: "policy", node_audience: "did:web:node.example" }, _sd_alg: "sha-256", _sd: ["A".repeat(43)] })));
+      const expiresAt = new Date((Math.floor(Date.now() / 1000) + 60) * 1000).toISOString();
+      const disclosure = toBase64Url(new TextEncoder().encode(JSON.stringify(["A".repeat(22), "email", "Alice@example.com"])));
+      const disclosureDigest = createHash("sha256").update(disclosure).digest("base64url");
+      const header = toBase64Url(new TextEncoder().encode(JSON.stringify({ alg: "EdDSA" })));
+      const payload = toBase64Url(new TextEncoder().encode(JSON.stringify({ iss: issuerDid, sub: holderDid, iat: Math.floor(Date.now() / 1000), nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.parse(expiresAt) / 1000), vct: "opencredentials.email/v1", jti: "test", tinycloud_share: { share_cid: "cid", share_id: "id", policy_cid: "policy", node_audience: "did:web:node.example" }, _sd_alg: "sha-256", _sd: [disclosureDigest] })));
       const signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`${header}.${payload}`), issuerSeed));
-      const disclosure = toBase64Url(new TextEncoder().encode(JSON.stringify(["salt", "email", "Alice@example.com"])));
-      return { format: "vc+sd-jwt" as const, credential: `${header}.${payload}.${signature}~${disclosure}`, holderDid, expiresAt: new Date(Date.now() + 60_000).toISOString() };
+      return { format: "vc+sd-jwt" as const, credential: `${header}.${payload}.${signature}~${disclosure}~`, holderDid, expiresAt };
     }),
     policyChallenge: vi.fn(), policySession: vi.fn(), read: vi.fn(),
     ...overrides,
@@ -88,13 +100,90 @@ describe("exact-email share UI protocol boundaries", () => {
 
   it("keeps invitation open inert until explicit activation, then supports OTP and resend", async () => {
     const t = transport();
-    const controller = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 60_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md" }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    const states: string[] = [];
+    const controller = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    controller.subscribe((next) => states.push(next.state));
     expect(t.claimChallenge).not.toHaveBeenCalled();
     await controller.openDocument();
+    expect(states).toEqual(["activation", "challenge", "redeeming", "claimed"]);
+    expect(t.activate).toHaveBeenCalledTimes(1);
     expect(controller.state.state).toBe("claimed");
     expect(t.claimRedeem).toHaveBeenCalledTimes(1);
     controller.forget();
     expect(controller.state.state).toBe("forgotten");
+  });
+
+  it("uses a scanner-safe activation POST with the exact claim body", async () => {
+    const requests: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    const fetchFn: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init: init ?? {} });
+      return new Response(JSON.stringify({ status: "accepted", retryAfterSeconds: 20 }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const http = createHttpTransport({ nodeOrigin: "https://node.example", credentialsOrigin: "https://credentials.example", fetchFn });
+    await expect(http.activate({ invitationId: "B".repeat(22), claimSecret: "C".repeat(43) })).resolves.toEqual({ status: "accepted", retryAfterSeconds: 20 });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://credentials.example/v1/share-email/claims/activate");
+    expect(requests[0]?.init.method).toBe("POST");
+    expect(JSON.parse(String(requests[0]?.init.body))).toEqual({ invitationId: "B".repeat(22), claimSecret: "C".repeat(43) });
+    expect(requests.some(({ init }) => init.method === "GET")).toBe(false);
+  });
+
+  it("keeps OTP fallback, resend cooldown, and terminal claim states explicit", async () => {
+    const t = transport({ activate: vi.fn(async () => { throw new ShareTransportError("denied"); }) });
+    const controller = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    await controller.openDocument();
+    expect(controller.state.state).toBe("otp");
+    await controller.resend();
+    expect(controller.state.state).toBe("otp");
+    expect(controller.state).toMatchObject({ retryAfterSeconds: 20 });
+    await controller.resend();
+    expect(t.resend).toHaveBeenCalledTimes(1);
+    await controller.submitOtp("042731");
+    expect(controller.state.state).toBe("claimed");
+
+    for (const code of ["used", "expired", "revoked"] as const) {
+      const failed = transport({ activate: vi.fn(async () => { throw new ShareTransportError(code); }) });
+      const terminal = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: failed, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+      await terminal.openDocument();
+      expect(terminal.state.state).toBe(code);
+    }
+  });
+
+  it("verifies signed session bindings and read content before entering reading", async () => {
+    const t = transport();
+    const share = { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get" as const, resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true as const } };
+    const controller = createClaimController({ share, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    await controller.openDocument();
+    if (controller.state.state !== "claimed") throw new Error("claim did not complete");
+    const credential = controller.state.claim.credential;
+    const now = Date.now();
+    t.policyChallenge = vi.fn(async (body) => {
+      const challenge = { ...body, type: "TinyCloudSharePolicyChallenge", version: 1, challengeId: "D".repeat(43), nonce: "E".repeat(43), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString() };
+      return { challenge, proof: { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.policyChallenge}${canonicalize(challenge)}`), nodeSeed)) } };
+    });
+    t.policySession = vi.fn(async (body) => {
+      const presentation = body.presentation as Record<string, unknown>;
+      const session = { type: "TinyCloudSharePolicySession", version: 1, sessionId: "F".repeat(22), shareCid: presentation.shareCid, shareId: presentation.shareId, delegationCid: presentation.delegationCid, policyCid: presentation.policyCid, authorityMaterialHandle: presentation.authorityMaterialHandle, authorityMaterialDigest: presentation.authorityMaterialDigest, contentSource: presentation.contentSource, contentSourceDigest: presentation.contentSourceDigest, holderDid: presentation.holderDid, targetOrigin: presentation.targetOrigin, nodeAudience: presentation.nodeAudience, action: presentation.action, resource: presentation.resource, credentialDigest: createHash("sha256").update(credential).digest("base64url"), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 300_000).toISOString() };
+      return { session, proof: { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.policySession}${canonicalize(session)}`), nodeSeed)) } };
+    });
+    t.read = vi.fn(async () => ({ mediaType: "text/markdown; charset=utf-8" as const, content: "# Verified\n", contentSourceDigest: share.contentSourceDigest, bodyDigest: createHash("sha256").update("# Verified\n").digest("base64url"), delegationCid: share.delegationCid, authorityMaterialHandle: share.authorityMaterialHandle, authorityMaterialDigest: share.authorityMaterialDigest }));
+    const content = await controller.read();
+    expect(content).toBe("# Verified\n");
+    expect(controller.state.state).toBe("reading");
+    expect(t.policyChallenge).toHaveBeenCalledTimes(1);
+    expect(t.policySession).toHaveBeenCalledTimes(1);
+    expect(t.read).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects forged, stale, and misbound Node responses before UI advancement", async () => {
+    const message = { type: "TinyCloudSharePolicyChallenge", version: 1, challengeId: "A".repeat(43), nonce: "B".repeat(43) };
+    const proof = { alg: "EdDSA" as const, kid: "did:web:node.example#invitation-key-1", signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.policyChallenge}${canonicalize(message)}`), nodeSeed)) };
+    await expect(verifyNodeProof(message, proof, { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: proof.kid, invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true }, SIGNATURE_DOMAINS.policyChallenge)).resolves.toBeUndefined();
+    await expect(verifyNodeProof(message, { ...proof, signature: `${proof.signature.slice(0, -1)}A` }, { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: proof.kid, invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true }, SIGNATURE_DOMAINS.policyChallenge)).rejects.toThrow();
+    expect(() => assertNodeTime("2020-01-01T00:00:00.000Z", "2020-01-01T00:02:00.000Z", Date.parse("2026-07-19T00:00:00.000Z"), 120)).toThrow();
+    const share = { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: "2026-07-23T12:00:00.000Z", nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv" as const, space: "space", path: "doc.md", action: "tinycloud.kv/get" as const }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get" as const, resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: proof.kid, invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true as const } };
+    expect(() => assertCommonNodeBinding({ shareCid: "wrong" }, share, "did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw")).toThrow();
+    expect(() => assertReadResponseBinding({ mediaType: "text/markdown; charset=utf-8", content: "# Plan\n", contentSourceDigest: "B".repeat(43), bodyDigest: "C".repeat(43), delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) }, share)).toThrow();
   });
 
   it("reports requested instead of pretending that an email was sent", async () => {

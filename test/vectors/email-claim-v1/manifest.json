@@ -6,16 +6,16 @@
     "negative.json": "HU6oz7nYywuR9_pdPGJHr_WGhClPNVz63_-ATfHs4oI",
     "states.json": "I5vwcw3UyGqnLUZFMONW3Mz4NB9fMYV4n8VxpjyeKDI",
     "build.mjs": "37QaZCYitIGveW2ccrOES5S4KIoWWj44PcNkTleN_fI",
-    "validate.mjs": "KLJ0qIHeJ_u7_WA8slP6AzJc4kGqQ-t9ItELce4QCYs",
-    "loader.ts": "4PFyMWtgQQGfpb_z2v8twbb9bXpk6Gdp4NjITypPtAs",
+    "validate.mjs": "nV3nJ8hL8Avt84i5-DjccOxktWIG4s8XNzA1IosC5WY",
+    "loader.ts": "Bx9iZ7WcjTfs7KB9ypIYji2s5D4ZBQpNm3p7Gs_ak_Q",
     "rust/Cargo.toml": "NMdpBiBPFtiy1N9yBltyPtR6UPUwV-WFTNf2s_dnnIU",
     "rust/Cargo.lock": "rWXLVvO1r531D1y3-SZjjqoknzpkOb6wjqTmhcFBZ-U",
-    "rust/src/main.rs": "C52-jaeVc6Ccf1Q_48dgOSaTuYHfVzw24EqahQJGzNg",
+    "rust/src/main.rs": "j946EmbyjX0rsbvaoRW_j1GB1Xel1FCuzDMoX4bZ8Lw",
     "domains.json": "_BHATlpFbRqvXeFef7TtZTwWfL_ADBoSvp7ZhGMxQac",
     "schemas.json": "s9gW-p28rM1b_Z7gGtEzbwWyb4pkdK8_wygm3xcK9UY",
     "authority-material.schema.json": "xehWmu5J2haU6qS6-jeLwCGUziTnNs3-dHIhf43tdag",
     "README.md": "mkcabSgACXTxo1wMQImQsi-zkNvFa0ICI1nyuDe54Tc"
   },
   "testOnly": true,
-  "manifestDigest": "igffN_rZVLK-AeeHdQoBEeQAvlJZCZVg9smOq-IbRWk"
+  "manifestDigest": "0KhpZQqEm2N01I3fNOSN0LclCbR3uw_EK8CoBtqua2g"
 }

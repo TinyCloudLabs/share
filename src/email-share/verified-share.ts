@@ -1,3 +1,5 @@
+import type { ContentSource, TrustedNode } from "./protocol.js";
+
 export interface VerifiedExactEmailShare {
   readonly shareId: string;
   readonly shareCid: string;
@@ -11,8 +13,9 @@ export interface VerifiedExactEmailShare {
   readonly delegationCid: string;
   readonly authorityMaterialHandle: string;
   readonly authorityMaterialDigest: string;
-  readonly contentSource: Record<string, unknown>;
+  readonly contentSource: ContentSource;
   readonly contentSourceDigest: string;
   readonly action: "tinycloud.kv/get" | "tinycloud.sql/read";
   readonly resource: string;
+  readonly trustedNode: TrustedNode;
 }

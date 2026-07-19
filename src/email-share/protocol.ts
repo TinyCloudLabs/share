@@ -17,6 +17,17 @@ export const RETURN_ORIGIN = SHARE_ORIGIN;
 export const PROTOCOL = "tinycloud.share-email-claim/v1" as const;
 export const MARKDOWN_LIMIT = 1_048_576;
 export const MAX_SQL_ARGUMENTS = 32;
+export const NODE_INVITATION_KID = "did:web:node.example#invitation-key-1";
+
+export const SIGNATURE_DOMAINS = Object.freeze({
+  envelope: "xyz.tinycloud.share/envelope/v1\0",
+  inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0",
+  holderBinding: "xyz.tinycloud.share/email-claim-holder-binding/v1\0",
+  policyChallenge: "xyz.tinycloud.share/policy-challenge/v1\0",
+  policyPresentation: "xyz.tinycloud.share/policy-presentation/v1\0",
+  policySession: "xyz.tinycloud.share/policy-session/v1\0",
+  readInvocation: "xyz.tinycloud.share/read-invocation/v1\0",
+} as const);
 
 export type ShareAction = "tinycloud.kv/get" | "tinycloud.sql/read";
 
@@ -54,6 +65,18 @@ export interface SenderScope {
   readonly spaceId: string;
   readonly documentName: string;
   readonly senderTrust: "verified" | "unverified";
+  readonly trustedNode: TrustedNode;
+  /** The authenticated authority bundle supplied by the host, never user input. */
+  readonly authorityMaterial?: Readonly<Record<string, unknown>>;
+}
+
+export interface TrustedNode {
+  readonly targetOrigin: string;
+  readonly nodeAudience: string;
+  readonly invitationKid: string;
+  readonly invitationPublicKey: Uint8Array;
+  readonly keyVersion: number;
+  readonly enabled: true;
 }
 
 export interface InvitationDraft {
@@ -258,7 +281,7 @@ export async function signedInvitationProof(
   const publicKey = ed25519.getPublicKey(scope.senderPrivateKey);
   const signerDid = didKeyFromEd25519PublicKey(publicKey);
   if (signerDid !== scope.senderDid) throw new TypeError("Sender proof key does not match the authorized sender.");
-  const domain = new TextEncoder().encode("xyz.tinycloud.share/invite-authorization/v1\0");
+  const domain = new TextEncoder().encode(SIGNATURE_DOMAINS.inviteAuthorization);
   const message = new TextEncoder().encode(canonicalize(request));
   const preimage = new Uint8Array(domain.length + message.length);
   preimage.set(domain);
