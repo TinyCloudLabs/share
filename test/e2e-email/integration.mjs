@@ -365,7 +365,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
           const payload = String(body.credential ?? "").split(".")[1] ?? "";
           let credentialExp = "invalid";
           try { credentialExp = String(JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))).exp); } catch { /* bounded test trace */ }
-          console.error(`share test: session request presentationExpiry=${body.presentation?.expiresAt ?? "missing"} credentialExp=${credentialExp} requestDigest=${body.presentation?.requestBodyDigest ?? "missing"}`);
+          console.error(`share test: session request presentationExpiry=${body.presentation?.expiresAt ?? "missing"} credentialExp=${credentialExp} requestDigestLength=${String(body.presentation?.requestBodyDigest ?? "").length}`);
         }
         const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const value = await response.json().catch(() => undefined);
