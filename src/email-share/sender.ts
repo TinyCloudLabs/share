@@ -71,6 +71,7 @@ export function createSenderController(input: {
         setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: draft.envelope.shareId, resource: request.source.path });
       } catch (error) {
         const failure = mapTransportFailure(error);
+        console.error(`sender transport failure: ${failure.code}`);
         setState({ state: failure.code === "capability-unavailable" ? "unavailable" : failure.code === "invalid" ? "invalid" : "delivery-failed", retryable: failure.retryable, code: failure.code, ...(failure.code === "invalid" ? { message: "Check the email and resource details, then try again." } : {}) } as SenderState);
       }
     },
