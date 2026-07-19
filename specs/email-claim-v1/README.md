@@ -138,7 +138,9 @@ only.
 The envelope domain is `xyz.tinycloud.share/envelope/v1\0`. The checked-in
 shipping envelope package signs and verifies the envelope body with that
 domain-separated input. This fixture suite and the package tests therefore
-share one normative preimage; there is no bare-JCS compatibility mode.
+share one normative preimage. A consumer MUST reject a bare-JCS envelope
+signature; there is no bare-JCS compatibility mode, migration exception, or
+runtime flag that can enable one.
 
 Run the complete contract suite with:
 
