@@ -10,6 +10,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts",
+    "test:e2e:email": "node test/e2e-email/integration.mjs",
     "typecheck": "tsc --noEmit",
     "sync:wireframes": "cp wireframes/*.svg public/wireframes/"
   },
