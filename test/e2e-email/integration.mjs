@@ -345,14 +345,19 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
+  page.on("console", (message) => { if (message.text().startsWith("recipient claim")) console.error(message.text()); });
+  page.on("pageerror", (error) => console.error(`recipient claim page error: ${error.name}: ${error.message}`));
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
-      const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-      const value = await response.json().catch(() => undefined);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return value;
+      try {
+        const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+        const value = await response.json().catch(() => undefined);
+        console.error(`recipient claim ${path}: ${response.status} ${value && typeof value === "object" ? Object.keys(value).join(",") : "non-json"}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return value;
+      } catch (error) { console.error(`recipient claim ${path} failed: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; }
     };
     const transport = {
       authorizeInvitation: (body) => post("https://node.example", "/share/v1/invitations/authorize", body),
