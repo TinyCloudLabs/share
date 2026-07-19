@@ -54,15 +54,16 @@ export async function createHolder(): Promise<HolderKey> {
 function randomB64(length: 16 | 32): string { return toBase64Url(crypto.getRandomValues(new Uint8Array(length))); }
 
 async function holderProof(holder: HolderKey, share: VerifiedExactEmailShare, inviteId: string, challenge: ClaimChallengeResponse, redemptionId: string): Promise<{ readonly binding: Record<string, unknown>; readonly holderProof: Record<string, string> }> {
-  const now = Date.now();
-  const expiresAt = new Date(Math.min(now + 120_000, Date.parse(challenge.expiresAt), Date.parse(share.expiry))).toISOString();
+  const issuedAtSeconds = Math.floor(Date.now() / 1000);
+  const issuedAt = new Date(issuedAtSeconds * 1000).toISOString();
+  const expiresAt = new Date(Math.min((issuedAtSeconds + 120) * 1000, Date.parse(challenge.expiresAt), Date.parse(share.expiry))).toISOString();
   const binding = {
     type: "TinyCloudEmailClaimHolderBinding", version: 1, redemptionId, invitationId: inviteId, claimNonce: challenge.claimNonce,
     shareCid: share.shareCid, shareId: share.shareId, policyCid: share.policyCid, delegationCid: challenge.delegationCid,
     authorityMaterialHandle: challenge.authorityMaterialHandle, authorityMaterialDigest: challenge.authorityMaterialDigest,
     contentSource: challenge.contentSource, contentSourceDigest: challenge.contentSourceDigest, emailHash: challenge.emailHash,
     holderDid: holder.did, targetOrigin: share.nodeOrigin, nodeAudience: share.nodeAudience, requestOrigin: share.requestOrigin,
-    issuedAt: new Date(now).toISOString(), expiresAt, jti: randomB64(16),
+    issuedAt, expiresAt, jti: randomB64(16),
   };
   const message = new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${canonicalize(binding)}`);
   const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", holder.privateKey, message));

@@ -345,8 +345,6 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
-  page.on("console", (message) => { if (message.text().startsWith("recipient claim")) console.error(message.text()); });
-  page.on("pageerror", (error) => console.error(`recipient claim page error: ${error.name}: ${error.message}`));
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
@@ -474,11 +472,7 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) {
-      const fixtureDiagnostics = owned.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("email-claim fixture redeem")));
-      if (fixtureDiagnostics.length > 0) console.error(`mounted claim diagnostics: ${fixtureDiagnostics.join(" | ")}`);
-      throw error;
-    }
+    } catch (error) { throw error; }
     finally { await instance.close(); }
   } finally {
     await cleanup();
