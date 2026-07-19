@@ -65,7 +65,7 @@ export function assertProductionAuthorityMaterial(scope: SenderScope): void {
   const mapping = material.mapping;
   if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) throw new TypeError("Authority material mapping is missing.");
   const mappingObject = mapping as Record<string, unknown>;
-  if (Object.keys(mappingObject).length !== 4 || mappingObject.shareDelegationCid !== scope.delegationCid || typeof mappingObject.sharePolicyCid !== "string" || !/^bafkrei[a-z2-7]{52}$/.test(String(mappingObject.policyAuthorityCid)) || !/^bafkrei[a-z2-7]{52}$/.test(String(mappingObject.policyEnforcementCid))) throw new TypeError("Authority material mapping is invalid.");
+  if (Object.keys(mappingObject).length !== 4 || mappingObject.shareDelegationCid !== scope.delegationCid || typeof mappingObject.sharePolicyCid !== "string" || !/^b[a-z2-7]{58}$/.test(String(mappingObject.policyAuthorityCid)) || !/^b[a-z2-7]{58}$/.test(String(mappingObject.policyEnforcementCid))) throw new TypeError("Authority material mapping is invalid.");
   if (!/^bafkrei[a-z2-7]{52}$/.test(scope.delegationCid) || !/^[A-Za-z0-9_-]{43}$/.test(scope.authorityMaterialDigest)) throw new TypeError("Authority material digest binding is invalid.");
 }
 
