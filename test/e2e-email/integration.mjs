@@ -56,6 +56,10 @@ function required(value, name) {
   return value;
 }
 
+function diagnosticOutput(value) {
+  return value.replace(/("(?:senderPrivateKey|privateKey|claimSecret|secret|password|token|authorization)"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2").slice(-4_000);
+}
+
 function run(command, args, cwd, extraEnv = {}) {
   console.error(`$ ${command} ${args.join(" ")}`);
   const result = spawn(command, args, { cwd, stdio: "inherit", env: { ...process.env, ...extraEnv } });
@@ -137,7 +141,7 @@ async function waitForFileJson(path, label, process) {
   while (Date.now() < deadline) {
     try { return JSON.parse(await readFile(path, "utf8")); }
     catch (error) { lastError = error instanceof Error ? error.message : String(error); }
-    if (process?.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor: ${process.output().slice(-4_000)}`);
+    if (process?.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor: ${diagnosticOutput(process.output())}`);
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`${label} descriptor was not published: ${lastError}`);
@@ -341,16 +345,8 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
-  page.on("console", (message) => { if (message.type() === "error") console.error(`recipient console: ${message.text()}`); });
-  page.on("pageerror", (error) => console.error(`recipient page error: ${error.message}`));
-  page.on("requestfailed", (request) => { const url = new URL(request.url()); console.error(`recipient request failed: ${request.method()} ${url.origin}${url.pathname} ${request.failure()?.errorText ?? "unknown"}`); });
-  page.on("response", (response) => { const url = new URL(response.url()); if (/claims|share\/v1\//.test(url.pathname) && response.request().method() !== "OPTIONS") void response.text().then((body) => console.error(`recipient response: ${response.status()} ${url.pathname} ${body.slice(0, 1200)}`)).catch(() => {}); });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
-    const generateKey = crypto.subtle.generateKey.bind(crypto.subtle);
-    crypto.subtle.generateKey = async (...args) => { try { return await generateKey(...args); } catch (error) { console.error(`recipient crypto.generateKey: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; } };
-    const sign = crypto.subtle.sign.bind(crypto.subtle);
-    crypto.subtle.sign = async (...args) => { try { return await sign(...args); } catch (error) { console.error(`recipient crypto.sign: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; } };
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
       const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -410,7 +406,6 @@ async function mountedGate() {
   let nodeUrl = arg("node-url") ?? process.env.TINYCLOUD_NODE_URL;
   let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
   let nodeDescriptor;
-  let nodeProcess;
   let credentialsDescriptor;
   const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
   activeCleanup = cleanup;
@@ -419,7 +414,6 @@ async function mountedGate() {
       const node = arg("node-command") === undefined
         ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY", "--invitation-public-key", "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI"], nodeRoot)
         : spawnOwned(arg("node-command"), nodeRoot);
-      nodeProcess = node;
       owned.push(node);
       nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
       nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
@@ -475,10 +469,8 @@ async function mountedGate() {
         fixture.mailArtifact = mailArtifact;
         await runBrowserCase(instance, targets, fixture, index);
       }
-    } catch (error) {
-      if (nodeProcess !== undefined) console.error(`mounted Node output:\n${nodeProcess.output()}`);
-      throw error;
-    } finally { await instance.close(); }
+    } catch (error) { throw error; }
+    finally { await instance.close(); }
   } finally {
     await cleanup();
     if (activeCleanup === cleanup) activeCleanup = undefined;
