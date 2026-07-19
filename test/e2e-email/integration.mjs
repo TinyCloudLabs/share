@@ -347,6 +347,10 @@ async function runBrowserCase(browser, targets, fixture, caseIndex) {
   page.on("response", (response) => { const url = new URL(response.url()); if (/claims|share\/v1\//.test(url.pathname) && response.request().method() !== "OPTIONS") void response.text().then((body) => console.error(`recipient response: ${response.status()} ${url.pathname} ${body.slice(0, 1200)}`)).catch(() => {}); });
   await installInterception(page, targets);
   await page.evaluateOnNewDocument((data) => {
+    const generateKey = crypto.subtle.generateKey.bind(crypto.subtle);
+    crypto.subtle.generateKey = async (...args) => { try { return await generateKey(...args); } catch (error) { console.error(`recipient crypto.generateKey: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; } };
+    const sign = crypto.subtle.sign.bind(crypto.subtle);
+    crypto.subtle.sign = async (...args) => { try { return await sign(...args); } catch (error) { console.error(`recipient crypto.sign: ${error instanceof Error ? error.name + ":" + error.message : String(error)}`); throw error; } };
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
       const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
