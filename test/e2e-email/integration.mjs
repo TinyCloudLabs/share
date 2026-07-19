@@ -343,6 +343,9 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
+  page.on("console", (message) => {
+    if (message.type() === "error" && message.text().startsWith("share test:")) console.error(`recipient ${message.text()}`);
+  });
   page.on("response", (response) => {
     if (response.request().method() === "OPTIONS" || !/node\.example|credentials\.org/.test(response.url())) return;
     void response.text().then((body) => {
@@ -358,6 +361,12 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
     const scope = { ...data.scope, senderPrivateKey: new Uint8Array(data.scope.senderPrivateKey), trustedNode: { ...data.scope.trustedNode, invitationPublicKey: new Uint8Array(data.scope.trustedNode.invitationPublicKey) } };
     const post = async (origin, path, body) => {
       try {
+        if (path === "/share/v1/policy/session") {
+          const payload = String(body.credential ?? "").split(".")[1] ?? "";
+          let credentialExp = "invalid";
+          try { credentialExp = String(JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))).exp); } catch { /* bounded test trace */ }
+          console.error(`share test: session request presentationExpiry=${body.presentation?.expiresAt ?? "missing"} credentialExp=${credentialExp} requestDigest=${body.presentation?.requestBodyDigest ?? "missing"}`);
+        }
         const response = await fetch(`${origin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
         const value = await response.json().catch(() => undefined);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
