@@ -441,7 +441,7 @@ async function postJson(base, path, body) {
   return fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(body) });
 }
 
-async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex, boundary = {}) {
+async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex, boundary = {}, attempt = 0) {
   const scope = cloneScope(fixture.scope ?? fixture);
   const source = fixture.source ?? scope.source;
   if (source === undefined) throw new Error(`case ${caseIndex}: source is missing`);
@@ -449,7 +449,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   scope.expectedContentSourceDigest = fixture.contentSourceDigest ?? scope.expectedContentSourceDigest;
   if (typeof scope.expectedRecipientEmail !== "string" || typeof scope.expectedContentSourceDigest !== "string") throw new Error(`case ${caseIndex}: expected recipient/digest are required`);
   if (typeof fixture.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(fixture.policyCid)) throw new Error(`case ${caseIndex}: independently provisioned policyCid is required`);
-  const authoritativeBinding = fixture.authoritativeBinding;
+  const authoritativeBinding = fixture.authoritativeBindings?.[attempt] ?? fixture.authoritativeBinding;
   if (authoritativeBinding === undefined || authoritativeBinding.policyCid !== fixture.policyCid || authoritativeBinding.recipientEmail !== scope.expectedRecipientEmail || authoritativeBinding.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error(`case ${caseIndex}: independently provisioned authority binding is required`);
   const deterministicUuid = authoritativeBinding.shareId.startsWith("share-") ? authoritativeBinding.shareId.slice("share-".length) : `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
   const before = (await readMailArtifact(fixture.mailArtifact)).length;
@@ -648,8 +648,8 @@ async function mountedGate() {
         const responseMutation = fixture.kind === "kv"
           ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } }
           : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
-        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true });
-        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index + fixtures.length);
+        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0);
+        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
       }
     } catch (error) { throw error; }
     finally { await instance.close(); }
