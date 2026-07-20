@@ -362,7 +362,7 @@ async function installInterception(page, targets, fixtureConfig = {}) {
       void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.binding) });
       return;
     }
-    if (parsed.origin === canonical.node && parsed.pathname === "/share/v1/invitations/authorize" && fixtureConfig.binding !== undefined) {
+    if (request.method() === "POST" && parsed.origin === canonical.node && parsed.pathname === "/share/v1/invitations/authorize" && fixtureConfig.binding !== undefined) {
       try {
         const body = JSON.parse(request.postData() ?? "{}").request;
         const binding = fixtureConfig.binding;
@@ -383,7 +383,7 @@ async function installInterception(page, targets, fixtureConfig = {}) {
         const mismatches = Object.keys(expected).filter((key) => body?.[key] !== expected[key]);
         if (JSON.stringify(body?.contentSource) !== JSON.stringify(binding.contentSource)) mismatches.push("contentSource");
         if (mismatches.length > 0) {
-          fixtureConfig.bindingMismatch = { fields: mismatches, requestKeys: Object.keys(body ?? {}).sort() };
+          fixtureConfig.bindingMismatch = { fields: mismatches };
           void request.abort("blockedbyclient");
           return;
         }
