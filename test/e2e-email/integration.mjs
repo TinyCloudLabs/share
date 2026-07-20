@@ -558,26 +558,23 @@ async function mountedGate() {
     if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
     const nodePublicKey = typeof firstScope.trustedNode.invitationPublicKey === "string" ? decodeBase64(firstScope.trustedNode.invitationPublicKey, "node invitation public key") : new Uint8Array(firstScope.trustedNode.invitationPublicKey ?? []);
     const trustBundle = {
-      version: 1,
-      environment: "test",
-      public: {
-        returnOrigin: canonical.share,
-        shareOrigin: canonical.share,
-        registryOrigin: "https://registry.tinycloud.xyz",
-        credentialsOrigin: canonical.credentials,
-        nodeOrigin: canonical.node,
-        nodeAudience: firstScope.nodeAudience,
-        nodeInvitationKid: firstScope.trustedNode.invitationKid,
-        nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"),
-        nodeKeyVersion: firstScope.trustedNode.keyVersion,
-        nodeEnabled: true,
-        issuerDid: "did:web:issuer.credentials.org",
-        issuerVct: "opencredentials.email/v1",
-        issuerKid: "did:web:issuer.credentials.org#controller",
-        issuerPublicKey: credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey,
-        issuerKeyVersion: 1,
-        issuerEnabled: true,
-      },
+      version: "tinycloud.share-email-trust-bundle/v1",
+      returnOrigin: canonical.share,
+      shareOrigin: canonical.share,
+      registryOrigin: "https://registry.tinycloud.xyz",
+      credentialsOrigin: canonical.credentials,
+      nodeOrigin: canonical.node,
+      nodeAudience: firstScope.nodeAudience,
+      nodeInvitationKid: firstScope.trustedNode.invitationKid,
+      nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"),
+      nodeKeyVersion: firstScope.trustedNode.keyVersion,
+      nodeEnabled: true,
+      issuerDid: "did:web:issuer.credentials.org",
+      issuerVct: "opencredentials.email/v1",
+      issuerKid: "did:web:issuer.credentials.org#controller",
+      issuerPublicKey: credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey,
+      issuerKeyVersion: 1,
+      issuerEnabled: true,
     };
     const capabilityJson = fixtures.map((fixture) => {
       const scope = structuredClone(fixture.scope ?? fixture);
