@@ -8,13 +8,16 @@ require deployment secrets.
 
 Required production variables:
 
-- `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`: JSON v1 bundle containing
-  the Share, registry, node, witness, issuer, enrollment, and sender key
-  bindings. It must use `environment: "production"`; fixture, loopback, and
+- `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`: the strict
+  `tinycloud.share-email-trust-bundle/v1` public document also mounted into
+  tinycloud-node and OpenCredentials. It contains the Share, registry, node,
+  witness, issuer, and enrollment bindings. Fixture, loopback, and
   placeholder identities are rejected.
+- `SHARE_SENDER_PRIVATE_KEY`: a separately delivered server secret. It is
+  checked against the sender identity and is never part of the trust bundle,
+  capability response, or browser JavaScript.
 - `SHARE_SENDER_CAPABILITY_JSON`: authenticated-host capability provider output
-  for the sender session. Its private key is consumed only by the host adapter
-  and is never serialized to browser JavaScript.
+  for the sender session. It contains no signing secret.
 - `SHARE_SESSION_SECRET`: session binding secret delivered by the deployment
   secret manager.
 - `SHARE_BINDING_STORE_PATH`: durable, private path or mounted durable store for

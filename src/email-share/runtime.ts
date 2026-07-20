@@ -70,7 +70,7 @@ export async function verifyProductionEmailShare(input: {
     nodeAudience: config.nodeAudience,
     invitationKid: config.nodeInvitationKid,
     invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey),
-    keyVersion: 1,
+    keyVersion: config.nodeKeyVersion,
     enabled: true as const,
   };
   return {

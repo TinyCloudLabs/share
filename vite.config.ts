@@ -138,7 +138,8 @@ function shareHostAdapter(): Plugin {
         return;
       }
       const bundle = loadTrustBundle();
-      this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify({ version: "tinycloud.share-email-claim/config-v1", ...bundle.public })}\n` });
+      const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: bundle.public.shareOrigin, registryOrigin: bundle.public.registryOrigin, nodeOrigin: bundle.public.nodeOrigin, credentialsOrigin: bundle.public.credentialsOrigin, nodeAudience: bundle.public.nodeAudience, issuerDid: bundle.public.issuerDid, issuerVct: bundle.public.issuerVct, nodeInvitationKid: bundle.public.nodeInvitationKid, nodeInvitationPublicKey: bundle.public.nodeInvitationPublicKey, nodeKeyVersion: bundle.public.nodeKeyVersion, issuerKeyVersion: bundle.public.issuerKeyVersion, issuerPublicKey: bundle.public.issuerPublicKey };
+      this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify(publicConfig)}\n` });
     },
   };
 }

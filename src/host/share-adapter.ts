@@ -66,6 +66,19 @@ function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record
   return { scope, source };
 }
 
+function browserSafeScope(value: Record<string, unknown>): Record<string, unknown> {
+  const copy = structuredClone(value);
+  const scrub = (item: unknown): void => {
+    if (typeof item !== "object" || item === null) return;
+    for (const [key, child] of Object.entries(item as Record<string, unknown>)) {
+      if (/privatekey/i.test(key)) delete (item as Record<string, unknown>)[key];
+      else scrub(child);
+    }
+  };
+  scrub(copy);
+  return copy as Record<string, unknown>;
+}
+
 function sessionValid(request: Request, options: ShareHostOptions): boolean {
   const origin = request.headers.get("origin");
   if (origin !== options.bundle.public.shareOrigin) return false;
@@ -100,7 +113,7 @@ function assertSigningBinding(purpose: string, message: string, binding: Record<
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown> } {
   const signers = new Map<string, string>();
   const capability = options.capability;
-  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", ...options.bundle.public, ...(options.testMode ? { environment: "test" } : {}) };
+  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   const selectedCapability = (request: Request): { scope: Record<string, unknown>; source: ContentSource } => options.capabilities?.get(cookie(request, "share_case") ?? "0") ?? capability;
   async function handler(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -110,7 +123,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!sessionValid(request, options)) return generic(503);
         const selected = selectedCapability(request);
         const scope = selected.scope as Record<string, unknown>;
-        return response(200, { scope, source: capability.source }, { "set-cookie": `share_session=${options.sessionSecret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=300` });
+        return response(200, { scope: browserSafeScope(scope), source: selected.source }, { "set-cookie": `share_session=${options.sessionSecret}; HttpOnly; SameSite=Strict; Path=/; Max-Age=300` });
       }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
         if (!sessionValid(request, options)) return generic(503);

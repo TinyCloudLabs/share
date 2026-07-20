@@ -556,27 +556,35 @@ async function mountedGate() {
     const firstScope = fixtures[0].scope ?? fixtures[0];
     const privateKey = typeof firstScope.senderPrivateKey === "string" ? decodeBase64(firstScope.senderPrivateKey, "senderPrivateKey") : new Uint8Array(firstScope.senderPrivateKey ?? []);
     if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
-    const { ed25519 } = require("@noble/curves/ed25519");
-    const senderPublicKey = ed25519.getPublicKey(privateKey);
     const nodePublicKey = typeof firstScope.trustedNode.invitationPublicKey === "string" ? decodeBase64(firstScope.trustedNode.invitationPublicKey, "node invitation public key") : new Uint8Array(firstScope.trustedNode.invitationPublicKey ?? []);
     const trustBundle = {
       version: 1,
       environment: "test",
       public: {
+        returnOrigin: canonical.share,
         shareOrigin: canonical.share,
         registryOrigin: "https://registry.tinycloud.xyz",
-        nodeOrigin: canonical.node,
         credentialsOrigin: canonical.credentials,
+        nodeOrigin: canonical.node,
         nodeAudience: firstScope.nodeAudience,
-        issuerDid: "did:web:issuer.credentials.org",
-        issuerVct: "opencredentials.email/v1",
         nodeInvitationKid: firstScope.trustedNode.invitationKid,
         nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"),
+        nodeKeyVersion: firstScope.trustedNode.keyVersion,
+        nodeEnabled: true,
+        issuerDid: "did:web:issuer.credentials.org",
+        issuerVct: "opencredentials.email/v1",
+        issuerKid: "did:web:issuer.credentials.org#controller",
         issuerPublicKey: credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey,
+        issuerKeyVersion: 1,
+        issuerEnabled: true,
       },
-      sender: { senderDid: firstScope.senderDid, senderPublicKey: Buffer.from(senderPublicKey).toString("base64url"), senderPrivateKey: Buffer.from(privateKey).toString("base64url") },
     };
-    const capabilityJson = fixtures.map((fixture) => JSON.stringify({ scope: fixture.scope ?? fixture, source: fixture.source ?? (fixture.scope ?? fixture).source }));
+    const capabilityJson = fixtures.map((fixture) => {
+      const scope = structuredClone(fixture.scope ?? fixture);
+      delete scope.senderPrivateKey;
+      delete scope.privateKey;
+      return JSON.stringify({ scope, source: fixture.source ?? (fixture.scope ?? fixture).source });
+    });
     const bindings = Object.fromEntries(fixtures.flatMap((fixture) => (fixture.authoritativeBindings ?? [fixture.authoritativeBinding]).filter(Boolean).map((binding) => [binding.shareCid ?? fixture.shareCid, binding])));
     let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
     if (registryUrl === undefined) {
@@ -591,10 +599,10 @@ async function mountedGate() {
     registryUrl = required(registryUrl, "registry URL");
     let vite;
     if (arg("vite-command") === undefined) {
-      const hostEnv = { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" };
+      const hostEnv = { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" };
       await run("npm", ["run", "build"], shareRoot, hostEnv);
       vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, hostEnv);
-    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" });
+    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" });
     owned.push(vite);
     const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
     const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
