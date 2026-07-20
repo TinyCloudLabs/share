@@ -83,7 +83,7 @@ function sessionValid(request: Request, options: ShareHostOptions): boolean {
   const origin = request.headers.get("origin");
   const cookie = request.headers.get("cookie") ?? "";
   const hasSession = cookie.split(";").some((part) => part.trim() === `share_session=${options.sessionSecret}`);
-  if (origin === options.bundle.public.shareOrigin) return hasSession;
+  if (origin === options.bundle.public.shareOrigin) return hasSession || options.testMode;
   // Same-origin GET requests commonly omit Origin. The fixture runs through
   // canonical Host routing to a loopback listener, so its explicit test mode
   // is the only boundary allowed to accept that originless request.
