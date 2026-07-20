@@ -12,6 +12,12 @@ interface ShareCapability {
   readonly source: ContentSource;
 }
 
+function capabilityPublicKey(value: unknown): Uint8Array {
+  if (typeof value === "string") return fromBase64Url(value);
+  if (!Array.isArray(value) || value.length !== 32 || value.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new TypeError("share capability public key is invalid");
+  return new Uint8Array(value);
+}
+
 async function loadCapability(configOrigin: string): Promise<ShareCapability> {
   const response = await fetch(new URL("/api/share/capability", configOrigin), { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
   if (!response.ok) throw new Error(`share capability unavailable (${response.status})`);
@@ -19,7 +25,7 @@ async function loadCapability(configOrigin: string): Promise<ShareCapability> {
   if (Object.keys(value).length !== 2 || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null) throw new TypeError("share capability shape is invalid");
   const scope = value.scope as SenderScope & { readonly senderPrivateKey?: unknown };
   if (!Array.isArray(scope.senderPrivateKey) || scope.senderPrivateKey.length !== 32 || scope.senderPrivateKey.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new TypeError("share capability signer is unavailable");
-  const materialized = { ...scope, senderPrivateKey: new Uint8Array(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: typeof scope.trustedNode.invitationPublicKey === "string" ? fromBase64Url(scope.trustedNode.invitationPublicKey) : scope.trustedNode.invitationPublicKey } } as SenderScope;
+  const materialized = { ...scope, senderPrivateKey: new Uint8Array(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: capabilityPublicKey(scope.trustedNode?.invitationPublicKey) } } as SenderScope;
   assertProductionAuthorityMaterial(materialized);
   if (materialized.targetOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || materialized.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience) throw new TypeError("share capability target is not enrolled");
   assertProductionTrustedNode(materialized.trustedNode as TrustedNode);

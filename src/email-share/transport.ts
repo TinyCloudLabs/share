@@ -137,12 +137,6 @@ async function jsonRequest<T>(fetchFn: typeof fetch, origin: string, path: strin
     const body = await response.text();
     if (new TextEncoder().encode(body).length > 1_048_576) throw new Error("response-too-large");
     const parsed = JSON.parse(body) as unknown;
-    if (parsed !== null && typeof parsed === "object" && "authorization" in (parsed as object)) {
-      const record = parsed as Record<string, unknown>;
-      const authorization = record.authorization;
-      const proof = record.proof;
-      console.error(`sender transport shape: top=${Object.keys(record).join(",")} auth=${authorization !== null && typeof authorization === "object" ? Object.keys(authorization as Record<string, unknown>).join(",") : "none"} proof=${proof !== null && typeof proof === "object" ? JSON.stringify(proof) : "none"}`);
-    }
     if (!response.ok) throw new ShareTransportError(parseFailure(parsed), response.status >= 500 || response.status === 429, retryAfter(response.headers.get("Retry-After")));
     return parsed as T;
   } catch (error) {
@@ -197,7 +191,6 @@ function parseCredential(value: unknown): ClaimCredentialResponse {
 
 function parseProof(value: unknown): SignedProof {
   const object = exact(value, ["alg", "kid", "signature"]);
-  console.error(`sender proof parse: alg=${String(object.alg)} kid=${String(object.kid)} kidMatch=${/^did:(?:web|key):[^#\s]+#[^#\s]+$/.test(String(object.kid))} sigType=${typeof object.signature} sigLen=${typeof object.signature === "string" ? object.signature.length : -1}`);
   if (object.alg !== "EdDSA" || typeof object.kid !== "string" || !/^did:(?:web|key):[^#\s]+#[^#\s]+$/.test(object.kid) || typeof object.signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(object.signature)) throw new ShareTransportError("unknown");
   return object as unknown as SignedProof;
 }
@@ -205,7 +198,6 @@ function parseProof(value: unknown): SignedProof {
 function parseAuthorization(value: unknown): AuthorizedInvitation {
   const outer = exact(value, ["authorization", "proof"]);
   const authorization = exact(outer.authorization, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
-  console.error(`sender auth parse: trust=${String(authorization.senderTrust)} type=${String(authorization.type)} proof=${JSON.stringify(outer.proof)}`);
   if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 1 || authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") throw new ShareTransportError("unknown");
   try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
   return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };

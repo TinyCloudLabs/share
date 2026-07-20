@@ -64,14 +64,15 @@ export function createSenderController(input: {
         const expected = { shareCid: draft.shareCid, shareId: draft.envelope.shareId, policyCid: draft.policyCid, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, targetOrigin: request.scope.targetOrigin, nodeAudience: request.scope.nodeAudience, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, recipientEmail: draft.email, documentName: request.scope.documentName, shareExpiresAt: draft.envelope.expiry } as const;
         for (const [key, value] of Object.entries(expected)) {
           const actual = (authorized.authorization as unknown as Record<string, unknown>)[key];
-          if (typeof value === "object" ? JSON.stringify(actual) !== JSON.stringify(value) : actual !== value) throw new Error("invitation-authorization-mismatch");
+          if (typeof value === "object" ? JSON.stringify(actual) !== JSON.stringify(value) : actual !== value) {
+            throw new Error("invitation-authorization-mismatch");
+          }
         }
         setState({ state: "requesting" });
         const accepted = await input.transport.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl });
         setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: draft.envelope.shareId, resource: request.source.path });
       } catch (error) {
         const failure = mapTransportFailure(error);
-        console.error(`sender transport failure: ${failure.code}`);
         setState({ state: failure.code === "capability-unavailable" ? "unavailable" : failure.code === "invalid" ? "invalid" : "delivery-failed", retryable: failure.retryable, code: failure.code, ...(failure.code === "invalid" ? { message: "Check the email and resource details, then try again." } : {}) } as SenderState);
       }
     },
