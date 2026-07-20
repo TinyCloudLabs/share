@@ -1,10 +1,10 @@
 import "../email-share/sender.css";
-import { fromBase64Url } from "@tinycloud/share-envelope";
+import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { mountSender } from "../email-share/view.js";
 import { createHttpTransport, type ShareTransport } from "../email-share/transport.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import { type TrustedNode, validateSource } from "../email-share/protocol.js";
-import { assertProductionAuthorityMaterial, assertProductionTrustedNode, PRODUCTION_ENDPOINTS } from "../email-share/runtime.js";
+import { assertProductionAuthorityMaterial, assertProductionTrustedNode } from "../email-share/runtime.js";
 import { loadSharePublicConfig } from "../email-share/config.js";
 
 interface ShareCapability {
@@ -23,14 +23,23 @@ async function loadCapability(configOrigin: string): Promise<ShareCapability> {
   if (!response.ok) throw new Error(`share capability unavailable (${response.status})`);
   const value = await response.json() as Record<string, unknown>;
   if (Object.keys(value).length !== 2 || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null) throw new TypeError("share capability shape is invalid");
-  const scope = value.scope as SenderScope & { readonly senderPrivateKey?: unknown };
-  if (!Array.isArray(scope.senderPrivateKey) || scope.senderPrivateKey.length !== 32 || scope.senderPrivateKey.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)) throw new TypeError("share capability signer is unavailable");
-  const materialized = { ...scope, senderPrivateKey: new Uint8Array(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: capabilityPublicKey(scope.trustedNode?.invitationPublicKey) } } as SenderScope;
+  const scope = value.scope as SenderScope & { readonly signingCapability?: { readonly capabilityId?: unknown; readonly publicKey?: unknown } };
+  if (scope.signingCapability === undefined || typeof scope.signingCapability.capabilityId !== "string" || !/^[A-Za-z0-9_-]{22,128}$/.test(scope.signingCapability.capabilityId) || scope.signingCapability.publicKey === undefined) throw new TypeError("share capability signer is unavailable");
+  const materialized = { ...scope, signingCapability: { capabilityId: scope.signingCapability.capabilityId, publicKey: capabilityPublicKey(scope.signingCapability.publicKey) }, trustedNode: { ...scope.trustedNode, invitationPublicKey: capabilityPublicKey(scope.trustedNode?.invitationPublicKey) } } as SenderScope;
   assertProductionAuthorityMaterial(materialized);
-  if (materialized.targetOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || materialized.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience) throw new TypeError("share capability target is not enrolled");
   assertProductionTrustedNode(materialized.trustedNode as TrustedNode);
+  const signer = {
+    publicKey: materialized.signingCapability.publicKey,
+    sign: async (input: { readonly purpose: "envelope" | "inviteAuthorization"; readonly message: string; readonly binding: Record<string, unknown> }): Promise<Uint8Array> => {
+      const response = await fetch("/api/share/sign", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { accept: "application/json", "content-type": "application/json", "idempotency-key": toBase64Url(crypto.getRandomValues(new Uint8Array(16))) }, body: JSON.stringify({ capabilityId: materialized.signingCapability.capabilityId, ...input }) });
+      if (!response.ok) throw new Error("sender signing capability unavailable");
+      const body = await response.json() as Record<string, unknown>;
+      if (typeof body.signature !== "string") throw new Error("sender signing response invalid");
+      return fromBase64Url(body.signature);
+    },
+  };
   const source = validateSource(value.source as ContentSource);
-  return { scope: materialized, source };
+  return { scope: { ...materialized, signer, shareOrigin: configOrigin }, source };
 }
 
 const root = document.getElementById("share-app");
@@ -45,7 +54,11 @@ void (async () => {
       if (!response.ok) throw new Error(`registry upload failed (${response.status})`);
       void cid;
     };
-    mountSender(root, { transport, scope: capability.scope, defaultSource: capability.source, uploadEnvelope });
+    const publishBinding = async (binding: Record<string, unknown>): Promise<void> => {
+      const response = await fetch("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ shareCid: binding.shareCid, binding }) });
+      if (!response.ok) throw new Error("public share binding unavailable");
+    };
+    mountSender(root, { transport, scope: capability.scope, defaultSource: capability.source, uploadEnvelope, publishBinding });
   } catch (error) {
     root.replaceChildren();
     const message = document.createElement("main");

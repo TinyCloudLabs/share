@@ -14,6 +14,8 @@ import {
   MERMAID_SANDBOX_PATH,
   buildMermaidSandboxHtml,
 } from "./src/viewer/mermaid-frame.ts";
+import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
+import { loadTrustBundle } from "./src/host/trust-bundle.ts";
 
 /**
  * Serve viewer.html on /s/<cid> routes (dev + preview). The spec site stays
@@ -72,7 +74,6 @@ function mermaidSandboxHtml(): Plugin {
         return;
       }
       res.setHeader("content-type", "text/html; charset=utf-8");
-      res.setHeader("x-content-type-options", "nosniff");
       // Refuse third-party embedding: frame-ancestors MUST arrive as an
       // HTTP header (a <meta> CSP cannot carry it). PRODUCTION static hosts
       // must send these same headers for this path — the build ships a
@@ -98,9 +99,55 @@ function mermaidSandboxHtml(): Plugin {
   };
 }
 
+function shareHostAdapter(): Plugin {
+  let adapter: ReturnType<typeof createShareHostFromEnv> | undefined;
+  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/capability" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/");
+  const ensure = (): ReturnType<typeof createShareHostFromEnv> | undefined => {
+    if (adapter !== undefined) return adapter;
+    try { adapter = createShareHostFromEnv(); return adapter; }
+    catch (error) {
+      if (process.env.SHARE_DEPLOY_STARTUP === "true") throw error;
+      return undefined;
+    }
+  };
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    if (process.env.SHARE_DEPLOY_STARTUP === "true") ensure();
+    server.middlewares.use((req, res, next) => {
+      const path = (req.url ?? "").split("?")[0] ?? "";
+      if (!route(path)) { next(); return; }
+      const host = ensure();
+      if (host === undefined) { res.writeHead(503, JSON_HEADERS); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); return; }
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => void (async () => {
+        const body = Buffer.concat(chunks);
+        const requestInit: RequestInit & { duplex?: "half" } = { method: req.method ?? "GET", headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")), ...(body.length === 0 ? {} : { body: new Uint8Array(body), duplex: "half" }) };
+        const response = await host.handler(new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url ?? path}`, requestInit));
+        res.writeHead(response.status, Object.fromEntries(response.headers));
+        res.end(Buffer.from(await response.arrayBuffer()));
+      })().catch(() => { if (!res.headersSent) res.writeHead(500, JSON_HEADERS); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); }));
+    });
+  };
+  return {
+    name: "share-host-adapter",
+    configureServer: serve,
+    configurePreviewServer: serve,
+    generateBundle() {
+      if (process.env.SHARE_TRUST_BUNDLE === undefined) {
+        if (process.env.SHARE_DEPLOY_BUILD === "true") throw new Error("SHARE_TRUST_BUNDLE is required for deploy builds");
+        return;
+      }
+      const bundle = loadTrustBundle();
+      this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify({ version: "tinycloud.share-email-claim/config-v1", ...bundle.public })}\n` });
+    },
+  };
+}
+
+const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+
 export default defineConfig({
   base: "/",
-  plugins: [shareRouteRewrite(), mermaidSandboxHtml()],
+  plugins: [shareRouteRewrite(), mermaidSandboxHtml(), shareHostAdapter()],
   build: {
     rollupOptions: {
       input: {

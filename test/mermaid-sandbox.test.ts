@@ -65,6 +65,9 @@ describe("mermaid sandbox frame document (mermaid-frame.ts)", () => {
     expect(MERMAID_SANDBOX_HTTP_HEADERS).toEqual([
       ["content-security-policy", "frame-ancestors 'self'"],
       ["x-frame-options", "SAMEORIGIN"],
+      ["cache-control", "no-store"],
+      ["referrer-policy", "no-referrer"],
+      ["x-content-type-options", "nosniff"],
     ]);
     // cwd-relative: vitest runs from the project root (import.meta.url is
     // not a file: URL under the jsdom environment).

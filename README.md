@@ -31,7 +31,8 @@ Output goes to `dist/`.
 ## Deploying to Cloudflare Pages
 
 - Framework preset: **Vite**
-- Build command: `npm run build`
+- Build command: `npm run build:deploy` with the deployment variables in
+  [`docs/share-host-deployment.md`](docs/share-host-deployment.md)
 - Build output directory: `dist`
 
 One-liner alternative:

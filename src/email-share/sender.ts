@@ -27,6 +27,7 @@ export interface SenderController {
 export function createSenderController(input: {
   readonly transport: ShareTransport;
   readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
+  readonly publishBinding?: (binding: Record<string, unknown>) => Promise<void>;
 }): SenderController {
   let state: SenderState = { state: "editing" };
   const listeners = new Set<(next: SenderState) => void>();
@@ -38,6 +39,7 @@ export function createSenderController(input: {
       try {
         setState({ state: "authorizing" });
         const draft = await createInvitationDraft({ ...request, uploadEnvelope: input.uploadEnvelope });
+        await input.publishBinding?.({ shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path });
         const signed = await signedInvitationProof(draft, request.scope);
         const authorized = await input.transport.authorizeInvitation({ request: signed.request, proof: signed.proof });
         const trustedShare = {
@@ -49,7 +51,7 @@ export function createSenderController(input: {
           expiry: draft.envelope.expiry,
           nodeOrigin: request.scope.targetOrigin,
           nodeAudience: request.scope.nodeAudience,
-          requestOrigin: "https://share.tinycloud.xyz",
+          requestOrigin: request.scope.shareOrigin,
           delegationCid: request.scope.delegationCid,
           authorityMaterialHandle: request.scope.authorityMaterialHandle,
           authorityMaterialDigest: request.scope.authorityMaterialDigest,

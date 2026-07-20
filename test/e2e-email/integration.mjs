@@ -310,9 +310,6 @@ function decodeBase64(value, label) {
 
 function cloneScope(input) {
   const scope = structuredClone(input);
-  if (typeof scope.senderPrivateKey === "string") scope.senderPrivateKey = decodeBase64(scope.senderPrivateKey, "scope.senderPrivateKey");
-  else if (Array.isArray(scope.senderPrivateKey)) scope.senderPrivateKey = new Uint8Array(scope.senderPrivateKey);
-  else throw new Error("scope.senderPrivateKey is required");
   if (scope.trustedNode && typeof scope.trustedNode.invitationPublicKey === "string") scope.trustedNode.invitationPublicKey = decodeBase64(scope.trustedNode.invitationPublicKey, "trustedNode.invitationPublicKey");
   else if (scope.trustedNode && Array.isArray(scope.trustedNode.invitationPublicKey)) scope.trustedNode.invitationPublicKey = new Uint8Array(scope.trustedNode.invitationPublicKey);
   return scope;
@@ -350,49 +347,6 @@ async function installInterception(page, targets, fixtureConfig = {}) {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const parsed = new URL(request.url());
-    if (parsed.origin === canonical.share && parsed.pathname === "/.well-known/tinycloud-share/config.json") {
-      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.publicConfig) });
-      return;
-    }
-    if (parsed.origin === canonical.share && parsed.pathname === "/api/share/capability") {
-      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.capability) });
-      return;
-    }
-    if (parsed.origin === canonical.share && parsed.pathname.startsWith("/.well-known/tinycloud-share/bindings/")) {
-      void request.respond({ status: 200, contentType: "application/json", headers: { "cache-control": "no-store" }, body: JSON.stringify(fixtureConfig.binding) });
-      return;
-    }
-    if (request.method() === "POST" && parsed.origin === canonical.node && parsed.pathname === "/share/v1/invitations/authorize" && fixtureConfig.binding !== undefined) {
-      try {
-        const body = JSON.parse(request.postData() ?? "{}").request;
-        const binding = fixtureConfig.binding;
-        const expected = {
-          shareId: binding.shareId,
-          policyCid: binding.policyCid,
-          delegationCid: binding.delegationCid,
-          authorityMaterialHandle: binding.authorityMaterialHandle,
-          authorityMaterialDigest: binding.authorityMaterialDigest,
-          recipientEmail: binding.recipientEmail,
-          targetOrigin: canonical.node,
-          nodeAudience: "did:web:node.example",
-          contentSourceDigest: binding.contentSourceDigest,
-          shareExpiresAt: binding.expiry,
-          documentName: fixtureConfig.documentName,
-          senderTrust: "verified",
-        };
-        const mismatches = Object.keys(expected).filter((key) => body?.[key] !== expected[key]);
-        if (JSON.stringify(body?.contentSource) !== JSON.stringify(binding.contentSource)) mismatches.push("contentSource");
-        if (mismatches.length > 0) {
-          fixtureConfig.bindingMismatch = { fields: mismatches };
-          void request.abort("blockedbyclient");
-          return;
-        }
-      } catch (error) {
-        fixtureConfig.bindingMismatch = { error: error instanceof Error ? error.message : String(error) };
-        void request.abort("blockedbyclient");
-        return;
-      }
-    }
     const target = canonicalRequestTarget(request.url(), targets);
     if (target === undefined) { void request.continue(); return; }
     if (fixtureConfig.responseMutation !== undefined && parsed.origin === canonical.node && parsed.pathname === fixtureConfig.responseMutation.path && fixtureConfig.responseMutation.used !== true) {
@@ -453,22 +407,6 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   if (authoritativeBinding === undefined || authoritativeBinding.policyCid !== fixture.policyCid || authoritativeBinding.recipientEmail !== scope.expectedRecipientEmail || authoritativeBinding.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error(`case ${caseIndex}: independently provisioned authority binding is required`);
   const deterministicUuid = authoritativeBinding.shareId.startsWith("share-") ? authoritativeBinding.shareId.slice("share-".length) : `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
   const before = (await readMailArtifact(fixture.mailArtifact)).length;
-  const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
-  const publicConfig = {
-    version: "tinycloud.share-email-claim/config-v1",
-    shareOrigin: canonical.share,
-    registryOrigin: canonical.share,
-    nodeOrigin: canonical.node,
-    credentialsOrigin: canonical.credentials,
-    nodeAudience: "did:web:node.example",
-    issuerDid: "did:web:issuer.credentials.org",
-    issuerVct: "opencredentials.email/v1",
-    nodeInvitationKid: scope.trustedNode.invitationKid,
-    nodeInvitationPublicKey: Buffer.from(scope.trustedNode.invitationPublicKey).toString("base64url"),
-    issuerPublicKey: Buffer.from(issuerPublicKey).toString("base64url"),
-  };
-  const capability = { scope: { ...browserScope, trustedNode: { ...browserScope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } }, source };
-  const binding = authoritativeBinding;
 
   const sender = await browser.newPage();
   await sender.evaluateOnNewDocument((uuid) => {
@@ -479,8 +417,8 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (response.status() >= 400) void response.text().then((body) => console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`)); });
-  const interception = { publicConfig, capability, binding, documentName: scope.documentName };
-  await installInterception(sender, targets, interception);
+  await sender.setCookie({ name: "share_session", value: "fixture-session", domain: "share.tinycloud.xyz", path: "/" }, { name: "share_case", value: String(caseIndex % 2), domain: "share.tinycloud.xyz", path: "/" });
+  await installInterception(sender, targets, {});
   await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
@@ -494,11 +432,9 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   try {
     await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
   } catch {
-    const mismatch = interception.bindingMismatch === undefined ? "none" : JSON.stringify(interception.bindingMismatch);
-    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")} (binding=${mismatch})`);
+    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
   }
   await sender.close();
-  if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding (${interception.bindingMismatch.fields.join(",")})`);
 
   const captured = await waitForDelivery(fixture.mailArtifact, before);
   const link = captured.href;
@@ -523,7 +459,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
       console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
     }).catch(() => {});
   });
-  await installInterception(page, targets, { publicConfig, capability, binding, responseMutation: boundary.responseMutation });
+  await installInterception(page, targets, { responseMutation: boundary.responseMutation });
   await page.goto(link, { waitUntil: "networkidle0" });
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
   catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
@@ -617,6 +553,31 @@ async function mountedGate() {
     const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
     const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
     if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
+    const firstScope = fixtures[0].scope ?? fixtures[0];
+    const privateKey = typeof firstScope.senderPrivateKey === "string" ? decodeBase64(firstScope.senderPrivateKey, "senderPrivateKey") : new Uint8Array(firstScope.senderPrivateKey ?? []);
+    if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
+    const { ed25519 } = require("@noble/curves/ed25519");
+    const senderPublicKey = ed25519.getPublicKey(privateKey);
+    const nodePublicKey = typeof firstScope.trustedNode.invitationPublicKey === "string" ? decodeBase64(firstScope.trustedNode.invitationPublicKey, "node invitation public key") : new Uint8Array(firstScope.trustedNode.invitationPublicKey ?? []);
+    const trustBundle = {
+      version: 1,
+      environment: "test",
+      public: {
+        shareOrigin: canonical.share,
+        registryOrigin: "https://registry.tinycloud.xyz",
+        nodeOrigin: canonical.node,
+        credentialsOrigin: canonical.credentials,
+        nodeAudience: firstScope.nodeAudience,
+        issuerDid: "did:web:issuer.credentials.org",
+        issuerVct: "opencredentials.email/v1",
+        nodeInvitationKid: firstScope.trustedNode.invitationKid,
+        nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"),
+        issuerPublicKey: credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey,
+      },
+      sender: { senderDid: firstScope.senderDid, senderPublicKey: Buffer.from(senderPublicKey).toString("base64url"), senderPrivateKey: Buffer.from(privateKey).toString("base64url") },
+    };
+    const capabilityJson = fixtures.map((fixture) => JSON.stringify({ scope: fixture.scope ?? fixture, source: fixture.source ?? (fixture.scope ?? fixture).source }));
+    const bindings = Object.fromEntries(fixtures.flatMap((fixture) => (fixture.authoritativeBindings ?? [fixture.authoritativeBinding]).filter(Boolean).map((binding) => [binding.shareCid ?? fixture.shareCid, binding])));
     let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
     if (registryUrl === undefined) {
       const registryProcess = arg("registry-command") === undefined
@@ -630,9 +591,10 @@ async function mountedGate() {
     registryUrl = required(registryUrl, "registry URL");
     let vite;
     if (arg("vite-command") === undefined) {
-      await run("npm", ["run", "build"], shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
-      vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
-    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry` });
+      const hostEnv = { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" };
+      await run("npm", ["run", "build"], shareRoot, hostEnv);
+      vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, hostEnv);
+    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" });
     owned.push(vite);
     const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
     const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };

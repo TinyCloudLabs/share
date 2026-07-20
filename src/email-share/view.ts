@@ -8,6 +8,7 @@ export interface SenderMountOptions {
   readonly scope?: SenderScope;
   readonly transport: ShareTransport;
   readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
+  readonly publishBinding?: (binding: Record<string, unknown>) => Promise<void>;
   readonly defaultSource?: ContentSource;
 }
 
@@ -80,7 +81,7 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   shell.append(form);
   const explainer = element(doc, "section", "sender-explainer"); explainer.append(element(doc, "h2", "What happens next"), element(doc, "p", "sender-explainer-copy", "A signed envelope binds the exact email, source, method, node, and expiry. OpenCredentials only sends after TinyCloud authorizes that exact bundle. The recipient then explicitly opens the document before the one-use claim is redeemed."));
   const diagram = element(doc, "div", "sender-diagram"); diagram.setAttribute("aria-live", "polite"); const fallback = element(doc, "ol", "sender-diagram-fallback"); ["Verify scope locally", "Authorize with TinyCloud", "Request OpenCredentials delivery", "Recipient confirms and reads once"].forEach((item) => fallback.append(element(doc, "li", "", item))); diagram.append(fallback); explainer.append(diagram); shell.append(explainer); root.append(shell);
-  const controller = createSenderController({ transport: options.transport, uploadEnvelope: options.uploadEnvelope });
+  const controller = createSenderController({ transport: options.transport, uploadEnvelope: options.uploadEnvelope, ...(options.publishBinding === undefined ? {} : { publishBinding: options.publishBinding }) });
   let lastRequest: { readonly email: string; readonly source: ContentSource; readonly scope: SenderScope; readonly shareId: string; readonly expiresAt: string } | undefined;
   const render = (state: SenderState): void => renderState(root, state, lastRequest === undefined ? undefined : () => { void controller.request(lastRequest as never); });
   controller.subscribe(render);

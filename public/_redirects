@@ -1,0 +1,4 @@
+/s/* /viewer.html 200
+/share /share.html 200
+/viewer /viewer.html 200
+/registry/* https://registry.tinycloud.xyz/:splat 200

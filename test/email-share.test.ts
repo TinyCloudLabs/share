@@ -16,10 +16,19 @@ const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(seed));
 const issuerSeed = new Uint8Array(32).fill(8);
 const issuerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(issuerSeed));
 const nodeSeed = new Uint8Array(32).fill(2);
+const senderSigner = {
+  publicKey: ed25519.getPublicKey(seed),
+  sign: async (input: { purpose: "envelope" | "inviteAuthorization"; message: string; binding: Record<string, unknown> }): Promise<Uint8Array> => {
+    const domain = input.purpose === "envelope" ? SIGNATURE_DOMAINS.envelope : SIGNATURE_DOMAINS.inviteAuthorization;
+    return ed25519.sign(new TextEncoder().encode(`${domain}${input.message}`), seed);
+  },
+};
 const scope: SenderScope = {
   policyOwnerDid: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
   senderDid,
-  senderPrivateKey: seed,
+  signingCapability: { capabilityId: "A".repeat(22), publicKey: ed25519.getPublicKey(seed) },
+  signer: senderSigner,
+  shareOrigin: "https://share.tinycloud.xyz",
   delegation: "uCAESA.kv.terminal",
   delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4",
   authorityMaterialHandle: "amh_kv_001",

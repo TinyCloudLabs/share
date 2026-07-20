@@ -5,19 +5,14 @@ import {
   encodeShareUrl,
   generateKey,
   seal,
-  signEnvelope,
   toBase64Url,
   type ShareEnvelope,
   type UnsignedShareEnvelope,
 } from "@tinycloud/share-envelope";
-import { ed25519 } from "@noble/curves/ed25519";
 
-export const SHARE_ORIGIN = "https://share.tinycloud.xyz";
-export const RETURN_ORIGIN = SHARE_ORIGIN;
 export const PROTOCOL = "tinycloud.share-email-claim/v1" as const;
 export const MARKDOWN_LIMIT = 1_048_576;
 export const MAX_SQL_ARGUMENTS = 32;
-export const NODE_INVITATION_KID = "did:web:node.example#invitation-key-1";
 export const INVITATION_AUTHORIZATION_TTL_SECONDS = 300;
 export const MAGIC_TOKEN_TTL_SECONDS = 604_800;
 export const OTP_TTL_SECONDS = 600;
@@ -60,7 +55,10 @@ export interface SenderScope {
   /** Authenticated Node #117 policy owner; deliberately distinct from senderDid. */
   readonly policyOwnerDid: string;
   readonly senderDid: string;
-  readonly senderPrivateKey: Uint8Array;
+  /** Opaque capability metadata; signing remains in the authenticated host. */
+  readonly signingCapability: SenderSigningCapability;
+  readonly signer: SenderSigner;
+  readonly shareOrigin: string;
   readonly delegation: string;
   readonly delegationCid: string;
   readonly authorityMaterialHandle: "amh_kv_001" | "amh_sql_001";
@@ -73,6 +71,16 @@ export interface SenderScope {
   readonly trustedNode: TrustedNode;
   /** The authenticated authority bundle supplied by the host, never user input. */
   readonly authorityMaterial?: Readonly<Record<string, unknown>>;
+}
+
+export interface SenderSigningCapability {
+  readonly capabilityId: string;
+  readonly publicKey: Uint8Array;
+}
+
+export interface SenderSigner {
+  readonly publicKey: Uint8Array;
+  sign(input: { readonly purpose: "envelope" | "inviteAuthorization"; readonly message: string; readonly binding: Record<string, unknown> }): Promise<Uint8Array>;
 }
 
 export interface TrustedNode {
@@ -269,12 +277,22 @@ export async function createInvitationDraft(input: {
     display: { senderName: "TinyCloud sender", filename: input.scope.documentName, recipientHint: `${email.slice(0, 1)}***@${email.split("@")[1]}` },
     expiry: input.expiresAt,
   };
-  const envelope = signEnvelope(unsigned, input.scope.senderPrivateKey);
+  const signature = await input.scope.signer.sign({
+    purpose: "envelope",
+    message: canonicalize(unsigned),
+    binding: { shareId: input.shareId, recipientEmail: email, action: source.action, resource: source.path, expiresAt: input.expiresAt },
+  });
+  if (signature.length !== 64) throw new TypeError("Sender signer returned an invalid envelope signature.");
+  const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
+  const envelope: ShareEnvelope = {
+    ...unsigned,
+    signature: { signerDid, algorithm: "Ed25519", value: toBase64Url(signature) },
+  };
   const sealed = await seal(new Uint8Array(new TextEncoder().encode(canonicalize(envelope))), envelopeKey);
   await input.uploadEnvelope(sealed.cid, sealed.blob, input.expiresAt);
   const jti = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const reportAbuseToken = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
-  const shareUrl = encodeShareUrl({ origin: SHARE_ORIGIN, ciphertextCid: sealed.cid, key32: envelopeKey });
+  const shareUrl = encodeShareUrl({ origin: input.scope.shareOrigin, ciphertextCid: sealed.cid, key32: envelopeKey });
   envelopeKey.fill(0);
   return { email, source, sourceDigest: digest, policyCid, policyBytes: toBase64Url(policyBytesRaw), envelope, shareCid: sealed.cid, shareUrl, invitationJti: jti, reportAbuseToken };
 }
@@ -316,13 +334,9 @@ export async function signedInvitationProof(
     shareExpiresAt: draft.envelope.expiry,
     requestBodyDigest: await canonicalDigest(requestBody),
   };
-  const publicKey = ed25519.getPublicKey(scope.senderPrivateKey);
-  const signerDid = didKeyFromEd25519PublicKey(publicKey);
+  const signerDid = didKeyFromEd25519PublicKey(scope.signingCapability.publicKey);
   if (signerDid !== scope.senderDid) throw new TypeError("Sender proof key does not match the authorized sender.");
-  const domain = new TextEncoder().encode(SIGNATURE_DOMAINS.inviteAuthorization);
-  const message = new TextEncoder().encode(canonicalize(request));
-  const preimage = new Uint8Array(domain.length + message.length);
-  preimage.set(domain);
-  preimage.set(message, domain.length);
-  return { request, proof: { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(ed25519.sign(preimage, scope.senderPrivateKey)) } };
+  const signature = await scope.signer.sign({ purpose: "inviteAuthorization", message: canonicalize(request), binding: { shareId: draft.envelope.shareId, recipientEmail: draft.email, action: draft.source.action, resource: draft.source.path, expiresAt: draft.envelope.expiry } });
+  if (signature.length !== 64) throw new TypeError("Sender signer returned an invalid authorization signature.");
+  return { request, proof: { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) } };
 }

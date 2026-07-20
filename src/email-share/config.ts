@@ -1,6 +1,5 @@
 import { fromBase64Url } from "@tinycloud/share-envelope";
 import type { CredentialTrust } from "./claim.js";
-import { PRODUCTION_ENDPOINTS, PRODUCTION_TRUSTED_NODE } from "./runtime.js";
 import type { TrustedNode } from "./protocol.js";
 
 const CONFIG_VERSION = "tinycloud.share-email-claim/config-v1" as const;
@@ -20,6 +19,7 @@ export interface SharePublicConfig {
   readonly nodeInvitationKid: string;
   readonly nodeInvitationPublicKey: string;
   readonly issuerPublicKey: string;
+  readonly environment?: "production" | "test";
 }
 
 export interface SharePublicBinding {
@@ -56,15 +56,18 @@ function publicKey(value: unknown, name: string): string {
 }
 
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "issuerDid", "issuerVct", "nodeInvitationKid", "nodeInvitationPublicKey", "issuerPublicKey"]);
-  if (object.version !== CONFIG_VERSION || object.issuerVct !== PRODUCTION_ENDPOINTS.issuerVct) throw new TypeError("unsupported share config version");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
+  const raw = value as Record<string, unknown>;
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "issuerDid", "issuerVct", "nodeInvitationKid", "nodeInvitationPublicKey", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  if (object.version !== CONFIG_VERSION || object.issuerVct !== "opencredentials.email/v1") throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const nodeOrigin = httpsOrigin(object.nodeOrigin, "nodeOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
-  if (shareOrigin !== PRODUCTION_ENDPOINTS.shareOrigin || nodeOrigin !== PRODUCTION_ENDPOINTS.nodeOrigin || credentialsOrigin !== PRODUCTION_ENDPOINTS.credentialsOrigin) throw new TypeError("share config service origin is not enrolled");
-  if (typeof object.nodeAudience !== "string" || object.nodeAudience !== PRODUCTION_ENDPOINTS.nodeAudience || typeof object.issuerDid !== "string" || object.issuerDid !== PRODUCTION_ENDPOINTS.issuerDid || typeof object.nodeInvitationKid !== "string" || object.nodeInvitationKid !== PRODUCTION_TRUSTED_NODE.invitationKid) throw new TypeError("share config trust binding is not enrolled");
-  if (!DID_WEB.test(object.nodeAudience)) throw new TypeError("node audience is invalid");
+  const environment = object.environment === undefined ? "production" : object.environment;
+  if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
+  if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`)) throw new TypeError("share config trust binding is not enrolled");
+  if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
   return Object.freeze({
     version: CONFIG_VERSION,
     shareOrigin,
@@ -77,6 +80,7 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
     nodeInvitationKid: object.nodeInvitationKid,
     nodeInvitationPublicKey: publicKey(object.nodeInvitationPublicKey, "nodeInvitationPublicKey"),
     issuerPublicKey: publicKey(object.issuerPublicKey, "issuerPublicKey"),
+    ...(environment === "test" ? { environment } : {}),
   });
 }
 
@@ -89,8 +93,8 @@ export function credentialTrustFromConfig(config: SharePublicConfig): Credential
 }
 
 export async function loadSharePublicConfig(fetchFn: typeof fetch = globalThis.fetch.bind(globalThis), url = "/.well-known/tinycloud-share/config.json"): Promise<SharePublicConfig> {
-  const parsed = new URL(url, globalThis.location?.origin ?? PRODUCTION_ENDPOINTS.shareOrigin);
-  if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin) && parsed.origin !== PRODUCTION_ENDPOINTS.shareOrigin) throw new TypeError("share config must be same-origin or the enrolled Share origin");
+  const parsed = new URL(url, globalThis.location?.origin ?? "https://share.tinycloud.xyz");
+  if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin)) throw new TypeError("share config must be same-origin");
   const response = await fetchFn(parsed, { credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
   if (!response.ok) throw new Error(`share config unavailable (${response.status})`);
   return validateSharePublicConfig(await response.json());

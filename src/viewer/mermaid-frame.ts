@@ -68,6 +68,9 @@ export const MERMAID_SANDBOX_CSP =
 export const MERMAID_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["content-security-policy", "frame-ancestors 'self'"],
   ["x-frame-options", "SAMEORIGIN"],
+  ["cache-control", "no-store"],
+  ["referrer-policy", "no-referrer"],
+  ["x-content-type-options", "nosniff"],
 ];
 
 /** Message shapes crossing the boundary — keep these EXACTLY this narrow. */
