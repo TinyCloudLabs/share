@@ -61,4 +61,13 @@ describe("production trust and host boundaries", () => {
     expect(JSON.stringify(body)).not.toContain("senderPrivateKey");
     expect(JSON.stringify(body)).not.toContain("privateKey");
   });
+
+  it("accepts the fixture session cookie when a same-origin GET omits Origin", async () => {
+    const value = bundle();
+    const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
+    const scope = { senderDid, senderPrivateKey: toBase64Url(new Uint8Array(32).fill(9)), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", documentName: "doc.md", senderTrust: "verified" };
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: JSON.stringify({ scope, source: { kind: "kv", space: scope.spaceId, path: "documents/doc.md", action: "tinycloud.kv/get" } }), SHARE_SESSION_SECRET: "fixture-session" });
+    const response = await host.handler(new Request("http://share.tinycloud.xyz/api/share/capability", { headers: { cookie: "share_session=fixture-session" } }));
+    expect(response.status).toBe(200);
+  });
 });

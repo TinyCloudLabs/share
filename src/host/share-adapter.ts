@@ -81,9 +81,13 @@ function browserSafeScope(value: Record<string, unknown>): Record<string, unknow
 
 function sessionValid(request: Request, options: ShareHostOptions): boolean {
   const origin = request.headers.get("origin");
-  if (origin !== options.bundle.public.shareOrigin) return false;
   const cookie = request.headers.get("cookie") ?? "";
-  return cookie.split(";").some((part) => part.trim() === `share_session=${options.sessionSecret}`) || (options.testMode && request.url.includes("127.0.0.1"));
+  const hasSession = cookie.split(";").some((part) => part.trim() === `share_session=${options.sessionSecret}`);
+  if (origin === options.bundle.public.shareOrigin) return hasSession;
+  // Same-origin GET requests commonly omit Origin. The fixture keeps the
+  // browser flow authenticated by its explicit cookie without weakening the
+  // production origin check or accepting a cross-origin Origin value.
+  return options.testMode && origin === null && hasSession;
 }
 
 function cookie(request: Request, name: string): string | undefined {
