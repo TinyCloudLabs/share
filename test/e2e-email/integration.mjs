@@ -14,9 +14,10 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -239,6 +240,44 @@ async function startPostgres(owned, tempRoot) {
   return { url: `postgres://email_claim@127.0.0.1:${port}/postgres`, dataDir };
 }
 
+async function startLocalResendProvider(mailArtifact) {
+  const server = createHttpServer((request, response) => {
+    if (request.method !== "POST" || request.url !== "/emails") {
+      response.writeHead(404).end();
+      return;
+    }
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", async () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (!Array.isArray(body.to) || typeof body.to[0] !== "string" || typeof body.html !== "string" || typeof body.text !== "string") throw new Error("provider request shape");
+        const idempotencyKey = request.headers["idempotency-key"];
+        const record = {
+          id: `local-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          recipient: body.to[0],
+          subject: body.subject,
+          html: body.html,
+          text: body.text,
+          idempotencyKey: typeof idempotencyKey === "string" ? idempotencyKey : null,
+        };
+        await appendFile(mailArtifact, `${JSON.stringify(record)}\n`, "utf8");
+        const result = JSON.stringify({ id: record.id });
+        response.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(result) }).end(result);
+      } catch {
+        response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "provider_rejected" }));
+      }
+    });
+  });
+  await new Promise((resolveServer, rejectServer) => {
+    server.once("error", rejectServer);
+    server.listen(0, "127.0.0.1", resolveServer);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("local Resend provider did not bind");
+  return { endpoint: `http://127.0.0.1:${address.port}/emails`, close: () => new Promise((resolveClose) => server.close(() => resolveClose())) };
+}
+
 async function stopOwned(owned) {
   await Promise.all(owned.slice().reverse().map(async ({ child, done }) => {
     if (child.exitCode !== null) return;
@@ -363,7 +402,7 @@ async function installInterception(page, targets, fixtureConfig = {}) {
   });
 }
 
-async function readCapture(path) {
+async function readMailArtifact(path) {
   try {
     const content = await readFile(path, "utf8");
     const values = content.split("\n").filter(Boolean).map((line) => JSON.parse(line));
@@ -380,14 +419,14 @@ function emittedLink(messages, after = 0) {
   return undefined;
 }
 
-async function waitForCapture(path, after) {
+async function waitForDelivery(path, after) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    const found = emittedLink(await readCapture(path), after);
+    const found = emittedLink(await readMailArtifact(path), after);
     if (found !== undefined) return found;
     await new Promise((resolveWait) => setTimeout(resolveWait, 200));
   }
-  throw new Error("delivery fixture did not capture a rendered message");
+  throw new Error("local provider did not accept a rendered message");
 }
 
 function bodyFromLink(href) {
@@ -408,24 +447,10 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   scope.expectedContentSourceDigest = fixture.contentSourceDigest ?? scope.expectedContentSourceDigest;
   if (typeof scope.expectedRecipientEmail !== "string" || typeof scope.expectedContentSourceDigest !== "string") throw new Error(`case ${caseIndex}: expected recipient/digest are required`);
   if (typeof fixture.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(fixture.policyCid)) throw new Error(`case ${caseIndex}: independently provisioned policyCid is required`);
-  const deterministicUuid = `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
-  const authoritativeShareId = fixture.authoritativeBinding?.shareId ?? `share-${deterministicUuid}`;
-  const authoritativeBinding = {
-    shareId: authoritativeShareId,
-    policyCid: fixture.authoritativeBinding?.policyCid ?? fixture.policyCid,
-    recipientEmail: scope.expectedRecipientEmail,
-    expiry: fixture.expiresAt,
-    delegationCid: scope.delegationCid,
-    authorityMaterialHandle: scope.authorityMaterialHandle,
-    authorityMaterialDigest: scope.authorityMaterialDigest,
-    contentSource: source,
-    contentSourceDigest: scope.expectedContentSourceDigest,
-    action: source.action,
-    resource: source.path,
-    ...(fixture.authoritativeBinding ?? {}),
-  };
-  if (authoritativeBinding.policyCid !== fixture.policyCid) throw new Error(`case ${caseIndex}: authoritative policyCid disagrees with mounted authority`);
-  const before = (await readCapture(fixture.mailArtifact)).length;
+  const authoritativeBinding = fixture.authoritativeBinding;
+  if (authoritativeBinding === undefined || authoritativeBinding.policyCid !== fixture.policyCid || authoritativeBinding.recipientEmail !== scope.expectedRecipientEmail || authoritativeBinding.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error(`case ${caseIndex}: independently provisioned authority binding is required`);
+  const deterministicUuid = authoritativeBinding.shareId.startsWith("share-") ? authoritativeBinding.shareId.slice("share-".length) : `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
+  const before = (await readMailArtifact(fixture.mailArtifact)).length;
   const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
   const publicConfig = {
     version: "tinycloud.share-email-claim/config-v1",
@@ -441,19 +466,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
     issuerPublicKey: Buffer.from(issuerPublicKey).toString("base64url"),
   };
   const capability = { scope: { ...browserScope, trustedNode: { ...browserScope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } }, source };
-  const binding = {
-    shareId: authoritativeBinding.shareId,
-    policyCid: authoritativeBinding.policyCid,
-    recipientEmail: authoritativeBinding.recipientEmail,
-    expiry: new Date(authoritativeBinding.expiry ?? Date.now() + 3_600_000).toISOString(),
-    delegationCid: scope.delegationCid,
-    authorityMaterialHandle: scope.authorityMaterialHandle,
-    authorityMaterialDigest: scope.authorityMaterialDigest,
-    contentSource: source,
-    contentSourceDigest: scope.expectedContentSourceDigest,
-    action: source.action,
-    resource: source.path,
-  };
+  const binding = authoritativeBinding;
 
   const sender = await browser.newPage();
   await sender.evaluateOnNewDocument((uuid) => {
@@ -484,10 +497,10 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   await sender.close();
   if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding`);
 
-  const captured = await waitForCapture(fixture.mailArtifact, before);
+  const captured = await waitForDelivery(fixture.mailArtifact, before);
   const link = captured.href;
   const mailbox = bodyFromLink(link);
-  if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed captured link`);
+  if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed provider-delivered link`);
   const inert = await fetch(new URL(`/v1/share-email/claims/activate?invitationId=${mailbox.invitationId}&claimSecret=${mailbox.claimSecret}`, targets.credentials), { headers: { origin: canonical.share } });
   if (inert.status !== 200) throw new Error(`case ${caseIndex}: inert scanner GET was not accepted as read-only (${inert.status})`);
 
@@ -541,24 +554,26 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
   if (replay.ok) throw new Error(`case ${caseIndex}: activation replay unexpectedly succeeded`);
-  const postClaimCaptureCount = (await readCapture(fixture.mailArtifact)).length;
+  const postClaimCaptureCount = (await readMailArtifact(fixture.mailArtifact)).length;
   const resendAfterClaim = await postJson(targets.credentials, "/v1/share-email/invitations/resend", mailbox);
   if (!resendAfterClaim.ok) throw new Error(`case ${caseIndex}: post-claim resend lost accepted-shaped response (${resendAfterClaim.status})`);
   await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
-  if ((await readCapture(fixture.mailArtifact)).length !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
+  if ((await readMailArtifact(fixture.mailArtifact)).length !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
 }
 
 async function mountedGate() {
   const owned = [];
   const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
   const scopePath = arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE ?? join(tempRoot, "node.json");
-  const mailArtifact = arg("mail-artifact") ?? process.env.SHARE_EMAIL_CAPTURE_ARTIFACT ?? join(tempRoot, "mail.ndjson");
+  const mailArtifact = arg("mail-artifact") ?? process.env.SHARE_EMAIL_MAIL_ARTIFACT ?? join(tempRoot, "mail.ndjson");
+  let resendProvider;
   let postgres;
   let nodeUrl = arg("node-url") ?? process.env.TINYCLOUD_NODE_URL;
   let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
   let nodeDescriptor;
   let credentialsDescriptor;
   const cleanup = async () => {
+    await resendProvider?.close();
     await stopOwned(owned);
     const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
     const remaining = processListing.split("\n").filter((line) => line.includes("tinycloud-node-n4-mounted-fixture") || line.includes("email-claim-fixture") || line.includes(tempRoot));
@@ -579,15 +594,16 @@ async function mountedGate() {
     if (typeof trustedKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(trustedKey)) throw new Error(`mounted Node enrollment key is missing or non-canonical: ${trustedKey ?? "missing"}`);
     if (credentialsUrl === undefined) {
       postgres = await startPostgres(owned, tempRoot);
+      resendProvider = await startLocalResendProvider(mailArtifact);
       const credentials = arg("credentials-command") === undefined
         ? spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
         EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
-        SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
+        SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
         SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
         })
         : spawnOwned(arg("credentials-command"), credentialsRustRoot, {
           EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
-          SHARE_EMAIL_CAPTURE_ARTIFACT: mailArtifact,
+          SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
           SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
         });
       owned.push(credentials);

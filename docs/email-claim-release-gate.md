@@ -16,9 +16,11 @@ npm run test:e2e:email
 Share typecheck, production build, applicable Node/OpenCredentials gates, and
 the joined KV + constrained named-SQL browser matrix. The browser loads the
 same-origin public config artifact and authenticated sender capability route;
-it uses the shipped HTTP transport and production verifier. The test may use
-a capture delivery port, but it does not replace verifier logic or simulate a
-successful claim.
+it uses the shipped HTTP transport and production verifier. The joined fixture
+composes the production Resend adapter against a loopback HTTP provider that
+accepts the real request and records only the provider response artifact.
+Capture delivery remains available only to lower-level fixture tests and cannot
+be selected by the mounted composition.
 
 The native matrix is deliberately explicit: Share vectors/tests/typecheck/build;
 Node format, focused clippy/tests, mounted/config-readiness, and the feasible
@@ -27,11 +29,10 @@ dstack/PostgreSQL, SD-JWT, format/clippy, provider-boundary, and
 config-readiness checks. The joined command is run twice from clean state. Only
 fixtures started by that command may be stopped between runs.
 
-The capture adapter is a hermetic implementation of the production delivery
-port. It is compiled only with `email-claim-fixture`; production composition
-constructs `ResendDeliveryPort` and rejects capture/provider mixing. The real
-Resend smoke command is separately committed and refuses to run unless an
-operator supplies an explicit controlled recipient and complete signed request.
+The loopback provider is hermetic and accepts the unchanged production Resend
+wire request, including the provider idempotency key. The real Resend smoke
+command is separately committed and refuses to run unless an operator supplies
+an explicit controlled recipient and complete signed request.
 
 Release stamping uses runtime-provided exact expected heads. Do not put a
 release commit hash inside the commit that creates it. The evidence descriptor
