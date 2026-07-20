@@ -102,15 +102,20 @@ function bodyBinding(value: Record<string, unknown>): Record<string, unknown> {
 function assertSigningBinding(purpose: string, message: string, binding: Record<string, unknown>, scope: Record<string, unknown>): void {
   const parsed = JSON.parse(message) as Record<string, unknown>;
   const source = parsed.contentSource as Record<string, unknown> | undefined;
+  const authorizationTarget = parsed.authorizationTarget as Record<string, unknown> | undefined;
+  const policy = purpose === "envelope" && typeof authorizationTarget?.policyBytes === "string"
+    ? JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(authorizationTarget.policyBytes))) as Record<string, unknown>
+    : undefined;
   const expected = ["shareId", "recipientEmail", "action", "resource", "expiresAt"];
-  if (Object.keys(binding).length !== expected.length || expected.some((key) => binding[key] !== (key === "expiresAt" ? (parsed.expiresAt ?? parsed.expiry ?? parsed.shareExpiresAt) : key === "action" ? (parsed.action ?? source?.action) : key === "resource" ? (parsed.resource ?? source?.path) : parsed[key]))) throw new Error("signing binding mismatch");
+  const value = (key: string): unknown => purpose === "envelope"
+    ? (key === "expiresAt" ? parsed.expiry : key === "action" ? policy?.action : key === "resource" ? policy?.resource : key === "recipientEmail" ? policy?.recipientEmail : parsed[key])
+    : (key === "expiresAt" ? (parsed.expiresAt ?? parsed.expiry ?? parsed.shareExpiresAt) : key === "action" ? (parsed.action ?? source?.action) : key === "resource" ? (parsed.resource ?? source?.path) : parsed[key]);
+  if (Object.keys(binding).length !== expected.length || expected.some((key) => binding[key] !== value(key))) throw new Error("signing binding mismatch");
   if (purpose === "envelope") {
     const target = parsed.target as Record<string, unknown>;
     if (target?.origin !== scope.targetOrigin || target.nodeAudience !== scope.nodeAudience || (target.resource as Record<string, unknown>)?.path !== binding.resource) throw new Error("envelope signing binding mismatch");
-    const authorizationTarget = parsed.authorizationTarget as Record<string, unknown>;
     if (authorizationTarget?.kind !== "policy" || typeof authorizationTarget.policyBytes !== "string") throw new Error("envelope signing target mismatch");
-    const policy = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(authorizationTarget.policyBytes))) as Record<string, unknown>;
-    if (policy.recipientEmail !== binding.recipientEmail || policy.action !== binding.action || policy.resource !== binding.resource || policy.expiresAt !== binding.expiresAt) throw new Error("policy signing binding mismatch");
+    if (policy?.recipientEmail !== binding.recipientEmail || policy?.action !== binding.action || policy?.resource !== binding.resource || policy?.expiresAt !== binding.expiresAt) throw new Error("policy signing binding mismatch");
   } else if (parsed.senderDid !== scope.senderDid || parsed.targetOrigin !== scope.targetOrigin || parsed.nodeAudience !== scope.nodeAudience || parsed.contentSourceDigest === undefined) throw new Error("authorization signing binding mismatch");
 }
 
