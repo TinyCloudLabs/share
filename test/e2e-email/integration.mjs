@@ -366,22 +366,24 @@ async function installInterception(page, targets, fixtureConfig = {}) {
       try {
         const body = JSON.parse(request.postData() ?? "{}").request;
         const binding = fixtureConfig.binding;
-        const sourceMatches = JSON.stringify(body?.contentSource) === JSON.stringify(binding.contentSource);
-        const matches = body?.shareId === binding.shareId
-          && body?.policyCid === binding.policyCid
-          && body?.delegationCid === binding.delegationCid
-          && body?.authorityMaterialHandle === binding.authorityMaterialHandle
-          && body?.authorityMaterialDigest === binding.authorityMaterialDigest
-          && body?.recipientEmail === binding.recipientEmail
-          && body?.targetOrigin === canonical.node
-          && body?.nodeAudience === "did:web:node.example"
-          && body?.contentSourceDigest === binding.contentSourceDigest
-          && body?.shareExpiresAt === binding.expiry
-          && sourceMatches
-          && body?.documentName === fixtureConfig.documentName
-          && body?.senderTrust === "verified";
-        if (!matches) {
-          fixtureConfig.bindingMismatch = { request: body, authoritative: binding };
+        const expected = {
+          shareId: binding.shareId,
+          policyCid: binding.policyCid,
+          delegationCid: binding.delegationCid,
+          authorityMaterialHandle: binding.authorityMaterialHandle,
+          authorityMaterialDigest: binding.authorityMaterialDigest,
+          recipientEmail: binding.recipientEmail,
+          targetOrigin: canonical.node,
+          nodeAudience: "did:web:node.example",
+          contentSourceDigest: binding.contentSourceDigest,
+          shareExpiresAt: binding.expiry,
+          documentName: fixtureConfig.documentName,
+          senderTrust: "verified",
+        };
+        const mismatches = Object.keys(expected).filter((key) => body?.[key] !== expected[key]);
+        if (JSON.stringify(body?.contentSource) !== JSON.stringify(binding.contentSource)) mismatches.push("contentSource");
+        if (mismatches.length > 0) {
+          fixtureConfig.bindingMismatch = { fields: mismatches };
           void request.abort("blockedbyclient");
           return;
         }
@@ -495,7 +497,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
     throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
   }
   await sender.close();
-  if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding`);
+  if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding (${interception.bindingMismatch.fields.join(",")})`);
 
   const captured = await waitForDelivery(fixture.mailArtifact, before);
   const link = captured.href;
