@@ -54,7 +54,7 @@ const evidence = {
   results: { generatedBy: "release:evidence" },
   toolVersions: { node: command("node", ["--version"]), npm: command("npm", ["--version"]), git: command("git", ["--version"]), cargo: command("cargo", ["--version"]), chromium: process.env.BROWSER_EXECUTABLE ?? "puppeteer-managed" },
   artifactHashes: { manifest: await hash("test/vectors/email-claim-v1/manifest.json"), packageLock: await hash("package-lock.json"), releaseGate: await hash("test/e2e-email/integration.mjs"), nodeDeployment: createHash("sha256").update(command("git", ["ls-tree", "-r", "HEAD", "deploy/share-email"], nodeRoot)).digest("hex"), credentialsDeployment: createHash("sha256").update(command("git", ["ls-tree", "-r", "HEAD", "deploy/share-email", "docker-compose.email-claim-staging.yaml"], credentialsRoot)).digest("hex") },
-  cleanup: { ownedProcessesStoppedBy: "test/e2e-email/integration.mjs", processScan: command("sh", ["-c", "ps -Ao pid,ppid,command | grep -E 'tinycloud-node-n4-mounted-fixture|email-claim-fixture|vite preview|postgres' | grep -v grep || true"], root), secretsIncluded: false },
+  cleanup: { ownedProcessesStoppedBy: "test/e2e-email/integration.mjs", processScan: command("sh", ["-c", "ps -Ao pid=,ppid=,command= | awk '$0 ~ /tinycloud-node-n4-mounted-fixture|email-claim-fixture|vite preview/ || ($0 ~ /postgres/ && $0 ~ /tinycloud-email-claim-[[:alnum:]]+\\/postgres/) { print }'"], root) || "none", secretsIncluded: false },
 };
 await mkdir(dirname(resolve(root, output)), { recursive: true });
 await writeFile(resolve(root, output), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
