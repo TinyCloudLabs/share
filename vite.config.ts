@@ -89,6 +89,10 @@ function mermaidSandboxHtml(): Plugin {
     name: "mermaid-sandbox-html",
     configureServer: serve,
     configurePreviewServer: serve,
+    transformIndexHtml(html, context) {
+      if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" || context.path !== "/share.html") return html;
+      return html.replaceAll("https://node.tinycloud.xyz", loadTrustBundle().public.nodeOrigin);
+    },
     generateBundle() {
       this.emitFile({
         type: "asset",
