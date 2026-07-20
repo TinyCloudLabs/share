@@ -3,12 +3,10 @@
 /*
  * Continuous email-claim gate.
  *
- * The service URLs are deliberately supplied by the mounted fixtures rather
- * than invented here.  The browser still runs at the production Share origin
- * and all production endpoint URLs remain unchanged; Puppeteer only routes
- * those requests to the ephemeral fixture listeners.  This keeps the same
- * origin, CSP, URL scrub, WebCrypto, signed-response, and browser lifecycle
- * boundary while making the test deterministic and offline-capable.
+ * The browser runs at the production Share origin and all production endpoint
+ * URLs remain unchanged.  Local transport is hermetic test infrastructure;
+ * application processes are the default-feature Node app and the dstack-
+ * enabled OpenCredentials witness production binary.
  */
 
 import { createRequire } from "node:module";
@@ -129,6 +127,7 @@ async function nativeGate() {
   await cleanAndExact(nodeRoot, process.env.TINYCLOUD_NODE_RELEASE_HEAD, "tinycloud-node");
   await cleanAndExact(credentialsRoot, process.env.OPEN_CREDENTIALS_RELEASE_HEAD, "OpenCredentials");
   await assertContractCommit(shareRoot);
+  await run("node", ["test/e2e-email/release-positive-composition.mjs"], shareRoot);
   const manifest = JSON.parse(await readFile(resolve(vectorRoot, "manifest.json"), "utf8"));
   if (manifest.manifestDigest !== expectedManifestDigest) throw new Error(`Share manifest mismatch: ${manifest.manifestDigest}`);
   await run("node", ["test/vectors/email-claim-v1/validate.mjs"], shareRoot);
@@ -141,7 +140,7 @@ async function nativeGate() {
   await run("cargo", ["clippy", "-p", "tinycloud-core", "-p", "tinycloud-node", "--all-targets", "--", "-D", "warnings"], nodeRoot);
   await run("cargo", ["test", "--test", "email_claim_frozen_manifest"], nodeRoot);
   await run("cargo", ["test", "-p", "tinycloud-node", "--lib", "share_email"], nodeRoot);
-  await run("cargo", ["test", "--manifest-path", resolve(nodeRoot, "test/n4-mounted-e2e/Cargo.toml")], nodeRoot);
+  await run("cargo", ["test", "--test", "email_claim_route_parity"], nodeRoot);
   await run("cargo", ["test", "--workspace", "--exclude", "tinycloud-sdk-wasm", "--exclude", "siwe"], nodeRoot);
   await run("cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], nodeRoot);
   await run("cargo", ["fmt", "--check"], credentialsRustRoot);
@@ -212,13 +211,53 @@ async function waitForDescriptor(process, label) {
   const deadline = Date.now() + 300_000;
   while (Date.now() < deadline) {
     for (const line of process.output().split("\n").reverse()) {
-      try { const value = JSON.parse(line); if (value?.testOnly === true) return value; }
+      try { const value = JSON.parse(line); if (value?.production === true) return value; }
       catch { /* cargo diagnostics and tracing share the captured stream */ }
     }
     if (process.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor`);
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`${label} descriptor was not published`);
+}
+
+function ed25519PublicKey(seed) {
+  const pkcs8 = Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]);
+  const privateKey = require("node:crypto").createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+  return require("node:crypto").createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32);
+}
+
+async function startDstackSimulator(owned, tempRoot, issuerSeed) {
+  const socketPath = join(tempRoot, "dstack.sock");
+  const server = createServer((socket) => {
+    let request = "";
+    socket.on("data", (chunk) => {
+      request += String(chunk);
+      if (!request.includes("\r\n\r\n")) return;
+      const [header, body = ""] = request.split("\r\n\r\n", 2);
+      const contentLength = Number(header.match(/\r?\ncontent-length:\s*(\d+)/i)?.[1] ?? 0);
+      if (Buffer.byteLength(body) < contentLength) return;
+      const path = header.split("\n", 1)[0]?.split(" ")[1];
+      let payload;
+      if (path === "/Info") {
+        payload = { app_id: "hermetic-dstack-app", compose_hash: "hermetic-compose-hash", instance_id: "hermetic-instance" };
+      } else {
+        let requestedPath = "";
+        try { requestedPath = JSON.parse(body).path ?? ""; } catch {}
+        const key = requestedPath === "opencredentials/witness/signing-key"
+          ? issuerSeed
+          : createHash("sha256").update(requestedPath).digest();
+        payload = { key: key.toString("hex") };
+      }
+      const bytes = Buffer.from(JSON.stringify(payload));
+      socket.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.length}\r\nConnection: close\r\n\r\n${bytes}`);
+    });
+  });
+  await new Promise((resolveServer, rejectServer) => {
+    server.once("error", rejectServer);
+    server.listen(socketPath, resolveServer);
+  });
+  owned.push({ child: { pid: undefined, kill: () => server.close() }, done: new Promise((resolveDone) => server.once("close", resolveDone)) });
+  return socketPath;
 }
 
 async function waitForPort(port, label) {
@@ -242,11 +281,22 @@ async function startPostgres(owned, tempRoot) {
   }
   const dataDir = join(tempRoot, "postgres");
   await run("initdb", ["--no-locale", "-A", "trust", "-U", "email_claim", "-D", dataDir], shareRoot);
+  const caKey = join(tempRoot, "pg-ca.key");
+  const caCert = join(tempRoot, "pg-ca.pem");
+  const serverKey = join(tempRoot, "pg-server.key");
+  const serverCsr = join(tempRoot, "pg-server.csr");
+  const serverCert = join(tempRoot, "pg-server.pem");
+  const serverExt = join(tempRoot, "pg-server.ext");
+  await writeFile(serverExt, "subjectAltName=DNS:db.localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n", "utf8");
+  await run("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", caCert, "-subj", "/CN=TinyCloud hermetic PostgreSQL CA", "-days", "2"], shareRoot);
+  await run("openssl", ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=db.localhost"], shareRoot);
+  await run("openssl", ["x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial", "-out", serverCert, "-days", "2", "-extfile", serverExt], shareRoot);
+  await run("chmod", ["600", serverKey], shareRoot);
   const port = await freePort();
-  const server = spawnOwnedArgs("postgres", ["-D", dataDir, "-h", "127.0.0.1", "-p", String(port)], shareRoot);
+  const server = spawnOwnedArgs("postgres", ["-D", dataDir, "-h", "127.0.0.1,::1", "-p", String(port), "-c", "ssl=on", "-c", `ssl_cert_file=${serverCert}`, "-c", `ssl_key_file=${serverKey}`, "-c", `ssl_ca_file=${caCert}`], shareRoot);
   owned.push(server);
   await waitForPort(port, "PostgreSQL");
-  return { url: `postgres://email_claim@127.0.0.1:${port}/postgres`, dataDir };
+  return { url: `postgres://email_claim@db.localhost:${port}/postgres?sslmode=verify-full`, dataDir, caCert };
 }
 
 async function startLocalResendProvider(mailArtifact) {
@@ -261,6 +311,7 @@ async function startLocalResendProvider(mailArtifact) {
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         if (!Array.isArray(body.to) || typeof body.to[0] !== "string" || typeof body.html !== "string" || typeof body.text !== "string") throw new Error("provider request shape");
+        if (request.headers.authorization !== "Bearer hermetic-provider-key" || body.from !== "TinyCloud Share <invite@share.tinycloud.xyz>") throw new Error("provider authentication or sender shape");
         const idempotencyKey = request.headers["idempotency-key"];
         const record = {
           id: `local-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -435,7 +486,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", async (response) => { if (response.request().method() === "OPTIONS" || response.status() < 400) return; let body = ""; try { body = await response.text(); } catch { body = "<unreadable>"; } console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`); });
+  sender.on("response", async (response) => { if (response.request().method() === "OPTIONS" || (response.status() < 400 && !response.url().includes("/v1/share-email/invitations") && !response.url().includes("/share/v1/invitations/authorize"))) return; let body = ""; try { body = await response.text(); } catch { body = "<unreadable>"; } console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`); });
   await installInterception(sender, targets, {});
   const capabilityQuery = fixture.capabilityId === undefined ? "" : `?capabilityId=${encodeURIComponent(fixture.capabilityId)}`;
   await sender.goto(`${targets.vite}/share.html${capabilityQuery}`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
@@ -530,7 +581,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   if ((await readMailArtifact(fixture.mailArtifact)).length !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
 }
 
-async function mountedGateHermetic() {
+async function productionGateHermetic() {
   const owned = [];
   const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
   const scopePath = join(tempRoot, "node.json");
@@ -543,7 +594,7 @@ async function mountedGateHermetic() {
     await resendProvider?.close();
     await stopOwned(owned);
     const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
-    const remaining = processListing.split("\n").filter((line) => line.includes("tinycloud-node-n4-mounted-fixture") || line.includes("email-claim-fixture") || line.includes("share-registry") || line.includes(tempRoot));
+    const remaining = processListing.split("\n").filter((line) => line.includes("share-registry") || line.includes(tempRoot));
     ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
     await rm(tempRoot, { recursive: true, force: true });
   };
@@ -551,11 +602,37 @@ async function mountedGateHermetic() {
   try {
     const postgres = await startPostgres(owned, tempRoot);
     resendProvider = await startLocalResendProvider(mailArtifact);
-    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"], nodeRoot);
+    const issuerSeed = Buffer.alloc(32, 0x45);
+    const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+    const nodeKeySecret = Buffer.alloc(32, 0x09).toString("base64url");
+    const dstackSocket = await startDstackSimulator(owned, tempRoot, issuerSeed);
+    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", scopePath, "--issuer-public-key", issuerPublicKey, "--keys-secret", nodeKeySecret], nodeRoot, {
+      TINYCLOUD_KEYS_SECRET: nodeKeySecret,
+    });
     owned.push(node);
     const nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
     const nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
     const trustedKey = required(nodeDescriptor.trustedNode?.invitationPublicKey, "Node invitation public key");
+    const trustBundle = nodeDescriptor.trustBundle;
+    if (trustBundle === undefined || trustBundle.nodeInvitationPublicKey !== trustedKey || trustBundle.issuerPublicKey !== issuerPublicKey) throw new Error("production Node did not publish the exact JSON trust bundle used at startup");
+    const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
+    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+    if (fixtures.length < 2) throw new Error("production gate requires both KV and named-SQL cases");
+    const firstScope = fixtures[0].scope ?? fixtures[0];
+    const privateKey = decodeBase64(required(firstScope.senderPrivateKey, "server-only sender key"), "senderPrivateKey");
+    if (privateKey.length !== 32) throw new Error("sender key is not a 32-byte server-only key");
+    const migrationEnv = {
+      ...process.env,
+      DATABASE_URL: postgres.url,
+      DATABASE_SSL_ROOT_CERT: postgres.caCert,
+      DATABASE_MIGRATIONS_DIR: resolve(credentialsRoot, "deploy/share-email/migrations"),
+      DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000",
+      DATABASE_RECYCLE_TIMEOUT_MS: "5000", DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000",
+      DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000", STORAGE_READINESS_FILE: join(tempRoot, "readiness.json"),
+      STORAGE_READINESS_MAX_AGE_SECONDS: "30",
+    };
+    await run("bash", [resolve(credentialsRoot, "scripts/oi-share-email/migrate.sh")], credentialsRoot, migrationEnv);
+    await run("bash", [resolve(credentialsRoot, "scripts/oi-share-email/readiness-check.sh")], credentialsRoot, migrationEnv);
     const registry = spawnOwned("npm run -w @tinycloud/share-registry dev-server -- --port 0", shareRoot);
     owned.push(registry);
     let registryUrl;
@@ -565,33 +642,28 @@ async function mountedGateHermetic() {
       if (match !== null) registryUrl = match[0]; else await new Promise((resolveWait) => setTimeout(resolveWait, 100));
     }
     registryUrl = required(registryUrl, "local Share registry URL");
-    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
-      EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
-      SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
-      SHARE_EMAIL_TRUSTED_NODE_ORIGIN: canonical.node,
-      SHARE_EMAIL_TRUSTED_NODE_AUDIENCE: nodeDescriptor.trustedNode.nodeAudience,
-      SHARE_EMAIL_TRUSTED_NODE_KID: nodeDescriptor.trustedNode.invitationKid,
-      SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
-      SHARE_EMAIL_SHARE_URL: `${canonical.share}/s/bafkrei${"a".repeat(52)}`,
+    const credentialsPort = await freePort();
+    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "dstack", "--bin", "opencredentials-witness"], credentialsRustRoot, {
+      KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: "did:web:issuer.credentials.org", BIND_ADDR: `127.0.0.1:${credentialsPort}`,
+      CORS_ALLOWED_ORIGINS: canonical.share, SHARE_EMAIL_CAPABILITY: "true", RESEND_API_KEY: "hermetic-provider-key", RESEND_WEBHOOK_SECRET: "hermetic-webhook-secret",
+      RESEND_HERMETIC_ENDPOINT: resendProvider.endpoint, DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
+      DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000",
+      DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
+      DATABASE_MIGRATIONS_DIR: resolve(credentialsRoot, "deploy/share-email/migrations"), STORAGE_READINESS_FILE: migrationEnv.STORAGE_READINESS_FILE,
+      STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1", SHARE_EMAIL_SHARE_URL: `${canonical.share}/s/bafkrei${"a".repeat(52)}#k=${Buffer.alloc(32, 0x21).toString("base64url")}`,
+      SHARE_EMAIL_TRUST_BUNDLE_JSON: JSON.stringify(trustBundle),
     });
     owned.push(credentials);
-    const credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
-    const credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
-    const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
-    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
-    if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
-    const firstScope = fixtures[0].scope ?? fixtures[0];
-    const privateKey = decodeBase64(required(firstScope.senderPrivateKey, "server-only sender key"), "senderPrivateKey");
-    if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
-    const nodePublicKey = decodeBase64(trustedKey, "node invitation public key");
-    const trustBundle = {
-      version: "tinycloud.share-email-trust-bundle/v1", returnOrigin: canonical.share, shareOrigin: canonical.share,
-      registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, nodeOrigin: canonical.node,
-      nodeAudience: firstScope.nodeAudience, nodeInvitationKid: firstScope.trustedNode.invitationKid,
-      nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"), nodeKeyVersion: firstScope.trustedNode.keyVersion, nodeEnabled: true,
-      issuerDid: credentialsDescriptor.issuerDid, issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#controller",
-      issuerPublicKey: credentialsDescriptor.issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true,
-    };
+    try {
+      await waitForPort(credentialsPort, "OpenCredentials production witness");
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}: ${diagnosticOutput(credentials.output())}`);
+    }
+    const credentialsUrl = `http://127.0.0.1:${credentialsPort}`;
+    const issuerResponse = await fetch(`${credentialsUrl}/issuer`); if (issuerResponse.status !== 200) throw new Error(`OpenCredentials issuer route failed (${issuerResponse.status})`);
+    const issuerDescriptor = await issuerResponse.json();
+    const credentialsDescriptor = { issuerDid: issuerDescriptor.did, issuerPublicKey: issuerDescriptor.publicKeyJwk?.x };
+    if (credentialsDescriptor.issuerDid !== trustBundle.issuerDid || credentialsDescriptor.issuerPublicKey !== issuerPublicKey) throw new Error("production witness issuer did/key does not match the single JSON trust bundle");
     const capabilityJson = fixtures.map((fixture) => {
       const scope = structuredClone(fixture.scope ?? fixture); delete scope.senderPrivateKey; delete scope.privateKey;
       scope.userId = "sender-user-1";
@@ -633,7 +705,13 @@ async function mountedGateHermetic() {
     }
     const descriptorResponse = await fetch(`${shareUrl}/api/share/capabilities`); if (descriptorResponse.status !== 401) throw new Error("production Share host exposed capabilities before authentication");
     const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: shareUrl };
-    await waitForUrl(new URL("/healthz", nodeUrl), "Node"); await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+    await waitForUrl(new URL("/healthz", nodeUrl), "Node");
+    const nodeInfoResponse = await fetch(new URL("/info", nodeUrl)); if (nodeInfoResponse.status !== 200) throw new Error(`Node production info route failed (${nodeInfoResponse.status})`);
+    const nodeInfo = await nodeInfoResponse.json(); if (!nodeInfo.features?.includes("share-email-claim") || nodeInfo.shareEmail?.status !== "ready") throw new Error("Node production startup did not advertise its authenticated share-email capability");
+    await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+    for (const path of ["/capabilities", "/share-email/capabilities", "/share-email/readiness"]) {
+      const response = await fetch(new URL(path, credentialsUrl)); if (response.status !== 200) throw new Error(`OpenCredentials ${path} did not report fresh production readiness (${response.status})`);
+    }
     const browser = providerModule(); const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     try {
       const authPage = await instance.newPage();
@@ -655,7 +733,12 @@ async function mountedGateHermetic() {
       for (const [index, fixture] of fixtures.entries()) {
         const selected = capabilities.capabilities.find((candidate) => candidate.source?.kind === fixture.kind); if (selected === undefined) throw new Error(`no authenticated capability for ${fixture.kind}`); fixture.capabilityId = selected.capabilityId; fixture.mailArtifact = mailArtifact;
         const responseMutation = fixture.kind === "kv" ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } } : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
-        await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
+        try {
+          await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
+        } catch (error) {
+          const providerArtifact = await readFile(mailArtifact, "utf8").catch(() => "");
+          throw new Error(`${error instanceof Error ? error.message : String(error)}\nNode production output:\n${node.output().slice(-8_000)}\nOpenCredentials production output:\n${credentials.output().slice(-8_000)}\nProvider capture:\n${providerArtifact.slice(-4_000)}`);
+        }
       }
     } finally { await instance.close(); }
     await stopOwned([production.host]); production = undefined;
@@ -783,10 +866,10 @@ async function writeRunRecord(exitStatus, errorMessage) {
 
 try {
   if (!process.argv.includes("--mounted-only")) await nativeGate();
-  await mountedGateHermetic();
-  console.error(`email-claim continuous mounted gate: PASS (${expectedManifestDigest})`);
+  await productionGateHermetic();
+  console.error(`email-claim continuous production gate: PASS (${expectedManifestDigest})`);
 } catch (error) {
-  console.error(`email-claim continuous mounted gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`email-claim continuous production gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
   await writeRunRecord(1, error instanceof Error ? error.message : String(error));
 }

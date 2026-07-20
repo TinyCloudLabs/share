@@ -5,6 +5,7 @@ import {
   type ContentSource,
   type SenderScope,
 } from "./protocol.js";
+import { canonicalize } from "@tinycloud/share-envelope";
 import { mapTransportFailure, type ShareTransport, type TransportErrorCode } from "./transport.js";
 import { assertTrustedNodeScope, verifyNodeProof } from "./node-verifier.js";
 import { SIGNATURE_DOMAINS } from "./protocol.js";
@@ -66,7 +67,7 @@ export function createSenderController(input: {
         const expected = { shareCid: draft.shareCid, shareId: draft.envelope.shareId, policyCid: draft.policyCid, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, targetOrigin: request.scope.targetOrigin, nodeAudience: request.scope.nodeAudience, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, recipientEmail: draft.email, documentName: request.scope.documentName, shareExpiresAt: draft.envelope.expiry } as const;
         for (const [key, value] of Object.entries(expected)) {
           const actual = (authorized.authorization as unknown as Record<string, unknown>)[key];
-          if (typeof value === "object" ? JSON.stringify(actual) !== JSON.stringify(value) : actual !== value) {
+          if (typeof value === "object" ? canonicalize(actual) !== canonicalize(value) : actual !== value) {
             throw new Error("invitation-authorization-mismatch");
           }
         }

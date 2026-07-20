@@ -51,4 +51,13 @@ describe("production upstream proxy boundary", () => {
   it("fails closed before forwarding an oversized body", () => {
     expect(() => sanitizeUpstreamRequest("/share/v1/read", "POST", new Headers({ "content-type": "application/json" }), 128 * 1024 + 1, "https://share.tinycloud.xyz")).toThrow(/large/);
   });
+
+  it.each([
+    "/share/v1/invitations/authorize",
+    "/share/v1/policy/challenges",
+    "/share/v1/policy/session",
+    "/share/v1/read",
+  ])("allows the exact production Node route %s", (path) => {
+    expect(() => sanitizeUpstreamRequest(path, "POST", new Headers({ "content-type": "application/json" }), 2, "https://share.tinycloud.xyz")).not.toThrow();
+  });
 });

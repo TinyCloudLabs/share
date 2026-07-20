@@ -22,7 +22,7 @@ function mediaType(value: string | null): string | undefined {
 function routePolicy(path: string, method: string): { readonly service: ShareUpstream; readonly requestType: string | undefined; readonly responseTypes: readonly string[]; readonly maxBody: number } {
   const upper = method.toUpperCase();
   if (path.startsWith("/share/v1/")) {
-    if (upper !== "POST" || !["/share/v1/policy/challenges", "/share/v1/policy/sessions", "/share/v1/read"].includes(path)) throw new Error("upstream method is not allowed");
+    if (upper !== "POST" || !["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"].includes(path)) throw new Error("upstream method is not allowed");
     return { service: "node", requestType: "application/json", responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
   }
   if (path.startsWith("/v1/share-email/")) {
