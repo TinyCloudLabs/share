@@ -32,7 +32,7 @@ const expectedManifestDigest = "pl8-1Rpx_DYCBjOpK3hRrLfrSVDINNFssZDfFw6BMTs";
 
 const canonical = Object.freeze({
   share: "https://share.tinycloud.xyz",
-  node: "https://node.example",
+  node: "https://node.tinycloud.xyz",
   credentials: "https://witness.credentials.org",
 });
 
