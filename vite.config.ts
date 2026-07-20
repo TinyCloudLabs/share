@@ -90,7 +90,7 @@ function mermaidSandboxHtml(): Plugin {
     configureServer: serve,
     configurePreviewServer: serve,
     transformIndexHtml(html, context) {
-      if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" || context.path !== "/share.html") return html;
+      if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" || (context.path !== "/share.html" && context.path !== "/viewer.html")) return html;
       return html.replaceAll("https://node.tinycloud.xyz", loadTrustBundle().public.nodeOrigin);
     },
     generateBundle() {
