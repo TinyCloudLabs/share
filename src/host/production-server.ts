@@ -46,5 +46,5 @@ createServer((request, response) => {
     const bytes = await readFile(file);
     const contentType = contentTypes[extname(file)]; if (contentType !== undefined) response.setHeader("content-type", contentType);
     response.writeHead(200); response.end(bytes);
-  })().catch(() => { if (!response.headersSent) response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "capability_unavailable" } })); });
+  })().catch(() => { console.error(`share-host stage=request-error path=${path}`); if (!response.headersSent) response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "capability_unavailable" } })); });
 }).listen(Number(process.env.PORT ?? 8787), process.env.HOST ?? "0.0.0.0", () => console.log("share production host ready"));

@@ -57,8 +57,9 @@ async function configuredRuntime(): Promise<EmailClaimRuntime> {
     transport,
     credentialTrust,
     verify: async ({ envelope, shareCid, policy }) => {
-      const binding = await loadSharePublicBinding(shareCid);
-      return { ...(await verifyProductionEmailShare({ envelope, shareCid, policy, config, binding })), trustedNode };
+      let binding;
+      try { binding = await loadSharePublicBinding(shareCid); } catch { console.error("email-claim stage=binding-load"); throw new Error("binding-unavailable"); }
+      try { return { ...(await verifyProductionEmailShare({ envelope, shareCid, policy, config, binding })), trustedNode }; } catch { console.error("email-claim stage=share-verify"); throw new Error("share-verification-failed"); }
     },
   };
 }
@@ -90,7 +91,7 @@ export async function bootDefault(launch: CapturedLaunch | undefined): Promise<v
     return;
   }
   let configured: EmailClaimRuntime;
-  try { configured = await configuredRuntime(); } catch { renderEmailClaimUnavailable(root); return; }
+  try { configured = await configuredRuntime(); } catch { console.error("email-claim stage=runtime-config"); console.error("email-claim stage=unavailable"); renderEmailClaimUnavailable(root); return; }
   try {
     assertProductionCredentialTrust(configured.credentialTrust);
     const share = await configured.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
@@ -110,5 +111,5 @@ export async function bootDefault(launch: CapturedLaunch | undefined): Promise<v
     controller.subscribe((state) => {
       if (state.state === "claimed") void controller.read().then((content) => { if (content !== undefined) void presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content }).then(() => appendPersistentForgetAction(root, () => controller.forget())); });
     });
-  } catch { renderEmailClaimUnavailable(root); }
+  } catch { console.error("email-claim stage=runtime-verify"); console.error("email-claim stage=unavailable"); renderEmailClaimUnavailable(root); }
 }

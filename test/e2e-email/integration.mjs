@@ -71,8 +71,9 @@ function digestBytes(value) { return createHash("sha256").update(value).digest("
 function recordRunEvent(event) { runEvents.push({ at: new Date().toISOString(), ...event }); }
 function commandLabel(command, args) { return [command, ...args].join(" "); }
 
-function diagnosticOutput(value) {
-  return value.replace(/("(?:senderPrivateKey|privateKey|claimSecret|secret|password|token|authorization)"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2").slice(-4_000);
+function diagnosticOutput(value = "") {
+  const stages = value.split("\n").filter((line) => line.includes("stage=") || line.includes("stage\"")).slice(-32);
+  return stages.length === 0 ? "no bounded stage events" : stages.join("\n").slice(-8_000);
 }
 
 function run(command, args, cwd, extraEnv = {}) {
@@ -237,6 +238,7 @@ async function startDstackSimulator(owned, tempRoot, issuerSeed) {
       const contentLength = Number(header.match(/\r?\ncontent-length:\s*(\d+)/i)?.[1] ?? 0);
       if (Buffer.byteLength(body) < contentLength) return;
       const path = header.split("\n", 1)[0]?.split(" ")[1];
+      recordRunEvent({ type: "dstack-request", path, bytes: Buffer.byteLength(body) });
       let payload;
       if (path === "/Info") {
         payload = { app_id: "hermetic-dstack-app", compose_hash: "hermetic-compose-hash", instance_id: "hermetic-instance" };
@@ -249,6 +251,7 @@ async function startDstackSimulator(owned, tempRoot, issuerSeed) {
         payload = { key: key.toString("hex") };
       }
       const bytes = Buffer.from(JSON.stringify(payload));
+      recordRunEvent({ type: "dstack-response", path, status: 200 });
       socket.end(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${bytes.length}\r\nConnection: close\r\n\r\n${bytes}`);
     });
   });
@@ -300,29 +303,38 @@ async function startPostgres(owned, tempRoot) {
 }
 
 async function startLocalResendProvider(mailArtifact) {
+  const messages = [];
   const server = createHttpServer((request, response) => {
     if (request.method !== "POST" || request.url !== "/emails") {
       response.writeHead(404).end();
       return;
     }
     const chunks = [];
-    request.on("data", (chunk) => chunks.push(chunk));
+    let bytes = 0;
+    request.on("data", (chunk) => { bytes += chunk.length; if (bytes <= 256 * 1024) chunks.push(chunk); });
     request.on("end", async () => {
       try {
-        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (bytes > 256 * 1024) throw new Error("provider body too large");
+        const raw = Buffer.concat(chunks);
+        const body = JSON.parse(raw.toString("utf8"));
         if (!Array.isArray(body.to) || typeof body.to[0] !== "string" || typeof body.html !== "string" || typeof body.text !== "string") throw new Error("provider request shape");
         if (request.headers.authorization !== "Bearer hermetic-provider-key" || body.from !== "TinyCloud Share <invite@share.tinycloud.xyz>") throw new Error("provider authentication or sender shape");
         const idempotencyKey = request.headers["idempotency-key"];
+        const id = `local-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const record = {
-          id: `local-provider-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          recipient: body.to[0],
-          subject: body.subject,
-          html: body.html,
-          text: body.text,
-          idempotencyKey: typeof idempotencyKey === "string" ? idempotencyKey : null,
+          id,
+          acceptedAt: new Date().toISOString(),
+          bytes,
+          requestDigest: digestBytes(raw),
+          hasRecipient: true,
+          hasHtml: true,
+          hasText: true,
+          hasSender: true,
+          idempotencyKeyDigest: typeof idempotencyKey === "string" ? digestBytes(idempotencyKey) : null,
         };
         await appendFile(mailArtifact, `${JSON.stringify(record)}\n`, "utf8");
-        const result = JSON.stringify({ id: record.id });
+        messages.push({ html: body.html, text: body.text });
+        const result = JSON.stringify({ id });
         response.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(result) }).end(result);
       } catch {
         response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "provider_rejected" }));
@@ -335,8 +347,16 @@ async function startLocalResendProvider(mailArtifact) {
   });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("local Resend provider did not bind");
-  return { endpoint: `http://127.0.0.1:${address.port}/emails`, close: () => new Promise((resolveClose) => server.close(() => resolveClose())) };
+  return {
+    endpoint: `http://127.0.0.1:${address.port}/emails`,
+    captureCount: () => messages.length,
+    messages,
+    close: () => new Promise((resolveClose) => server.close(() => resolveClose())),
+  };
 }
+
+/* Rendered mail stays in process memory for the recipient browser. The
+ * durable capture is metadata and digests only. */
 
 async function stopOwned(owned) {
   await Promise.all(owned.slice().reverse().map(async ({ child, done }) => {
@@ -445,10 +465,11 @@ function emittedLink(messages, after = 0) {
   return undefined;
 }
 
-async function waitForDelivery(path, after) {
+async function waitForDelivery(providerOrPath, after) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    const found = emittedLink(await readMailArtifact(path), after);
+    const messages = typeof providerOrPath === "string" ? await readMailArtifact(providerOrPath) : providerOrPath.messages;
+    const found = emittedLink(messages, after);
     if (found !== undefined) return found;
     await new Promise((resolveWait) => setTimeout(resolveWait, 200));
   }
@@ -465,7 +486,7 @@ async function postJson(base, path, body) {
   return fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(body) });
 }
 
-async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex, boundary = {}, attempt = 0) {
+async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex, boundary = {}, attempt = 0, provider = undefined) {
   const scope = cloneScope(fixture.scope ?? fixture);
   const source = fixture.source ?? scope.source;
   if (source === undefined) throw new Error(`case ${caseIndex}: source is missing`);
@@ -476,7 +497,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   const authoritativeBinding = fixture.authoritativeBindings?.[attempt] ?? fixture.authoritativeBinding;
   if (authoritativeBinding === undefined || authoritativeBinding.policyCid !== fixture.policyCid || authoritativeBinding.recipientEmail !== scope.expectedRecipientEmail || authoritativeBinding.contentSourceDigest !== scope.expectedContentSourceDigest) throw new Error(`case ${caseIndex}: independently provisioned authority binding is required`);
   const deterministicUuid = authoritativeBinding.shareId.startsWith("share-") ? authoritativeBinding.shareId.slice("share-".length) : `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
-  const before = (await readMailArtifact(fixture.mailArtifact)).length;
+  const before = provider === undefined ? (await readMailArtifact(fixture.mailArtifact)).length : provider.captureCount();
 
   const sender = await browser.newPage();
   await sender.evaluateOnNewDocument((uuid) => {
@@ -486,7 +507,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", async (response) => { if (response.request().method() === "OPTIONS" || (response.status() < 400 && !response.url().includes("/v1/share-email/invitations") && !response.url().includes("/share/v1/invitations/authorize"))) return; let body = ""; try { body = await response.text(); } catch { body = "<unreadable>"; } console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`); });
+  sender.on("response", (response) => { if (response.request().method() === "OPTIONS" || (response.status() < 400 && !response.url().includes("/v1/share-email/invitations") && !response.url().includes("/share/v1/invitations/authorize"))) return; console.error(`sender response: ${response.request().method()} ${response.status()} ${new URL(response.url()).pathname}`); });
   await installInterception(sender, targets, {});
   const capabilityQuery = fixture.capabilityId === undefined ? "" : `?capabilityId=${encodeURIComponent(fixture.capabilityId)}`;
   await sender.goto(`${targets.vite}/share.html${capabilityQuery}`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
@@ -515,7 +536,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   }
   await sender.close();
 
-  const captured = await waitForDelivery(fixture.mailArtifact, before);
+  const captured = await waitForDelivery(provider ?? fixture.mailArtifact, before);
   const link = captured.href;
   const mailbox = bodyFromLink(link);
   if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed provider-delivered link`);
@@ -531,7 +552,12 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   page.on("pageerror", (error) => console.error(`recipient page error: ${error.message}`));
   page.on("requestfailed", (request) => console.error(`recipient request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   page.on("response", (response) => {
-    if (response.request().method() === "OPTIONS" || !/node\.example|credentials\.org/.test(response.url())) return;
+    if (response.request().method() === "OPTIONS") return;
+    const responsePath = new URL(response.url()).pathname;
+    if (responsePath.startsWith("/.well-known/tinycloud-share/") || /node\.example|credentials\.org/.test(response.url())) {
+      console.error(`recipient response: ${response.request().method()} ${response.status()} ${responsePath}`);
+    }
+    if (!/node\.example|credentials\.org/.test(response.url())) return;
     void response.text().then((body) => {
       let parsed;
       try { parsed = JSON.parse(body); } catch { parsed = undefined; }
@@ -543,7 +569,11 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   await installInterception(page, targets, { responseMutation: boundary.responseMutation, preserveOrigin: true });
   await page.goto(link, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
-  catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
+  catch {
+    const shareCid = new URL(link).pathname.slice("/s/".length);
+    const bindingProbe = await page.evaluate(async (cid) => { try { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { credentials: "omit", cache: "no-store" }); return response.status; } catch { return "fetch-error"; } }, shareCid);
+    throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]} binding-status=${bindingProbe}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`);
+  }
   const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
   if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
   const recipientA11y = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, live: document.querySelector("[aria-live]") !== null, primary: document.querySelector("button.viewer-primary-action")?.textContent }));
@@ -574,11 +604,12 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
   const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
   if (replay.ok) throw new Error(`case ${caseIndex}: activation replay unexpectedly succeeded`);
-  const postClaimCaptureCount = (await readMailArtifact(fixture.mailArtifact)).length;
+  const postClaimCaptureCount = provider === undefined ? (await readMailArtifact(fixture.mailArtifact)).length : provider.captureCount();
   const resendAfterClaim = await postJson(targets.credentials, "/v1/share-email/invitations/resend", mailbox);
   if (!resendAfterClaim.ok) throw new Error(`case ${caseIndex}: post-claim resend lost accepted-shaped response (${resendAfterClaim.status})`);
   await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
-  if ((await readMailArtifact(fixture.mailArtifact)).length !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
+  const finalCaptureCount = provider === undefined ? (await readMailArtifact(fixture.mailArtifact)).length : provider.captureCount();
+  if (finalCaptureCount !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
 }
 
 async function productionGateHermetic() {
@@ -718,7 +749,7 @@ async function productionGateHermetic() {
       authPage.on("console", (message) => console.error(`auth console ${message.type()}: ${message.text()}`));
       authPage.on("pageerror", (error) => console.error(`auth page error: ${error.message}`));
       authPage.on("requestfailed", (request) => console.error(`auth request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-      authPage.on("response", (response) => { if (response.status() >= 400) void response.text().then((body) => console.error(`auth response ${response.status()} ${response.url()} ${body.slice(0, 500)}`)).catch(() => {}); });
+      authPage.on("response", (response) => { if (response.status() >= 400) console.error(`auth response ${response.status()} ${new URL(response.url()).pathname}`); });
       await installInterception(authPage, targets, {}); await authPage.goto(`${targets.vite}/share.html`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
       await authPage.waitForSelector('input[name="username"]', { timeout: 5_000 }).catch(() => undefined);
       if (await authPage.$('input[name="username"]') === null) throw new Error(`clean browser did not reach the authenticated Share login boundary: ${(await authPage.content()).slice(0, 2_000)}`);
@@ -734,10 +765,11 @@ async function productionGateHermetic() {
         const selected = capabilities.capabilities.find((candidate) => candidate.source?.kind === fixture.kind); if (selected === undefined) throw new Error(`no authenticated capability for ${fixture.kind}`); fixture.capabilityId = selected.capabilityId; fixture.mailArtifact = mailArtifact;
         const responseMutation = fixture.kind === "kv" ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } } : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
         try {
-          await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
+          await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0, resendProvider); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1, resendProvider);
         } catch (error) {
           const providerArtifact = await readFile(mailArtifact, "utf8").catch(() => "");
-          throw new Error(`${error instanceof Error ? error.message : String(error)}\nNode production output:\n${node.output().slice(-8_000)}\nOpenCredentials production output:\n${credentials.output().slice(-8_000)}\nProvider capture:\n${providerArtifact.slice(-4_000)}`);
+          const dstackEvents = runEvents.filter((event) => event.type === "dstack-request" || event.type === "dstack-response");
+          throw new Error(`${error instanceof Error ? error.message : String(error)}\nProvider capture records: ${providerArtifact.split("\n").filter(Boolean).length}\nDstack events: ${JSON.stringify(dstackEvents.slice(-16))}\nShare host stages:\n${diagnosticOutput(production?.host.output())}\nNode stages:\n${diagnosticOutput(node.output())}\nOpenCredentials stages:\n${diagnosticOutput(credentials.output())}`);
         }
       }
     } finally { await instance.close(); }
