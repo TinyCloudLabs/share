@@ -494,7 +494,8 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   try {
     await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
   } catch {
-    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
+    const mismatch = interception.bindingMismatch === undefined ? "none" : JSON.stringify(interception.bindingMismatch);
+    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")} (binding=${mismatch})`);
   }
   await sender.close();
   if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding (${interception.bindingMismatch.fields.join(",")})`);
