@@ -68,6 +68,12 @@ export interface SenderScope {
   readonly spaceId: string;
   readonly documentName: string;
   readonly senderTrust: "verified" | "unverified";
+  /** Server-derived bounds for the sender's selectable access expiry. */
+  readonly expiryMin?: string;
+  readonly expiryMax?: string;
+  readonly expiryDefault?: string;
+  /** Legacy-compatible upper bound emitted by existing capability providers. */
+  readonly expiresAt?: string;
   readonly trustedNode: TrustedNode;
   /** The authenticated authority bundle supplied by the host, never user input. */
   readonly authorityMaterial?: Readonly<Record<string, unknown>>;

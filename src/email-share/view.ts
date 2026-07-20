@@ -6,6 +6,7 @@ import type { ShareTransport } from "./transport.js";
 
 export interface SenderMountOptions {
   readonly scope?: SenderScope;
+  readonly capabilities?: readonly { readonly scope: SenderScope; readonly source: ContentSource }[];
   readonly transport: ShareTransport;
   readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
   readonly publishBinding?: (binding: Record<string, unknown>) => Promise<void>;
@@ -16,8 +17,7 @@ function element<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, c
   const node = doc.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node;
 }
 
-function sourceFromForm(form: HTMLFormElement, authorized: ContentSource | undefined): ContentSource {
-  if (authorized !== undefined) return authorized;
+function sourceFromForm(form: HTMLFormElement): ContentSource {
   const kind = new FormData(form).get("source-kind");
   const space = String(new FormData(form).get("space") ?? "").trim();
   const path = String(new FormData(form).get("path") ?? "").trim();
@@ -64,13 +64,16 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   shell.append(header);
   const form = element(doc, "form", "sender-form") as HTMLFormElement;
   form.noValidate = true;
+  const capabilities = options.capabilities ?? (options.scope === undefined ? [] : [{ scope: options.scope, source: options.defaultSource! }]);
+  if (capabilities.length === 0 || capabilities.some((candidate) => candidate.source === undefined)) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
   const emailLabel = element(doc, "label", "field-label", "Recipient email");
   const email = element(doc, "input", "field-input") as HTMLInputElement; email.type = "email"; email.name = "email"; email.autocomplete = "email"; email.required = true; email.placeholder = "name@example.com"; emailLabel.append(email);
-  const authorizedRecipient = (options.scope as (SenderScope & { readonly recipientEmail?: unknown }) | undefined)?.recipientEmail;
-  if (typeof authorizedRecipient === "string") { email.value = authorizedRecipient; email.readOnly = true; emailLabel.append(element(doc, "span", "scope-note", "The authenticated capability fixes the recipient.")); }
+  const capabilityLabel = element(doc, "label", "field-label", "Authorized resource and action");
+  const capabilitySelect = element(doc, "select", "field-input") as HTMLSelectElement; capabilitySelect.name = "capability";
+  capabilities.forEach((candidate, index) => capabilitySelect.append(new Option(sourceSummary(candidate.source), String(index)))); capabilityLabel.append(capabilitySelect);
   const kindLabel = element(doc, "label", "field-label", "Source");
   const kind = element(doc, "select", "field-input") as HTMLSelectElement; kind.name = "source-kind"; kind.append(new Option("TinyCloud KV · exact path", "kv"), new Option("Named SQL · one constrained statement", "sql")); kindLabel.append(kind);
-  const spaceLabel = element(doc, "label", "field-label", "Space"); const space = element(doc, "input", "field-input") as HTMLInputElement; space.name = "space"; space.required = true; space.placeholder = "did:pkh:…"; spaceLabel.append(space);
+  const spaceLabel = element(doc, "label", "field-label", "Space"); const space = element(doc, "input", "field-input") as HTMLInputElement; space.name = "space"; space.required = true; space.readOnly = true; space.placeholder = "did:pkh:…"; spaceLabel.append(space);
   const pathLabel = element(doc, "label", "field-label", "Resource path"); const path = element(doc, "input", "field-input") as HTMLInputElement; path.name = "path"; path.required = true; path.placeholder = "documents/plan.md"; pathLabel.append(path);
   const sqlFields = element(doc, "fieldset", "sql-fields"); sqlFields.hidden = true; sqlFields.append(element(doc, "legend", "field-legend", "Named SQL scope"));
   const database = element(doc, "label", "field-label", "Database"); const databaseInput = element(doc, "input", "field-input") as HTMLInputElement; databaseInput.name = "database"; databaseInput.placeholder = "documents"; database.append(databaseInput);
@@ -81,15 +84,11 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   const scopeNote = element(doc, "p", "scope-note", "Read-only. No raw SQL, folder listing, downloads, or write access are available in v1.");
   const confirmed = element(doc, "label", "field-label", "Confirm exact capability");
   const confirmation = element(doc, "input", "field-input") as HTMLInputElement; confirmation.type = "checkbox"; confirmation.name = "scope-confirmation"; confirmation.required = true;
-  const exactScope = element(doc, "pre", "scope-note"); exactScope.textContent = options.defaultSource === undefined ? "Choose the exact source and action above." : sourceSummary(options.defaultSource);
+  const exactScope = element(doc, "pre", "scope-note");
   confirmed.prepend(confirmation); confirmed.append(" I confirm this exact resource and read action.");
-  if (options.defaultSource !== undefined) {
-    kindLabel.hidden = true; spaceLabel.hidden = true; pathLabel.hidden = true; sqlFields.hidden = true;
-    scopeNote.textContent = "The host supplied this pre-authorized read-only capability. Confirming it is required before an invitation can be requested.";
-  }
   const submit = element(doc, "button", "button button-primary", "Request invitation"); submit.type = "submit";
   const status = element(doc, "div", "sender-status"); status.dataset.senderStatus = "true";
-  form.append(emailLabel, kindLabel, spaceLabel, pathLabel, sqlFields, expiryLabel, scopeNote, exactScope, confirmed, submit, status);
+  form.append(emailLabel, capabilityLabel, kindLabel, spaceLabel, pathLabel, sqlFields, expiryLabel, scopeNote, exactScope, confirmed, submit, status);
   shell.append(form);
   const explainer = element(doc, "section", "sender-explainer"); explainer.append(element(doc, "h2", "What happens next"), element(doc, "p", "sender-explainer-copy", "A signed envelope binds the exact email, source, method, node, and expiry. OpenCredentials only sends after TinyCloud authorizes that exact bundle. The recipient then explicitly opens the document before the one-use claim is redeemed."));
   const diagram = element(doc, "div", "sender-diagram"); diagram.setAttribute("aria-live", "polite"); const fallback = element(doc, "ol", "sender-diagram-fallback"); ["Verify scope locally", "Authorize with TinyCloud", "Request OpenCredentials delivery", "Recipient confirms and reads once"].forEach((item) => fallback.append(element(doc, "li", "", item))); diagram.append(fallback); explainer.append(diagram); shell.append(explainer); root.append(shell);
@@ -98,13 +97,29 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   const render = (state: SenderState): void => renderState(root, state, lastRequest === undefined ? undefined : () => { void controller.request(lastRequest as never); });
   controller.subscribe(render);
   renderState(root, controller.state);
+  const selected = (): { readonly scope: SenderScope; readonly source: ContentSource } => capabilities[Number(capabilitySelect.value)]!;
+  const localDateTime = (value: string): string => new Date(Date.parse(value) - new Date(value).getTimezoneOffset() * 60_000).toISOString().slice(0, 23);
+  const renderSelection = (): void => {
+    const candidate = selected(); const source = candidate.source;
+    kind.value = source.kind; space.value = source.space; path.value = source.path;
+    kind.disabled = false; path.readOnly = true; sqlFields.hidden = source.kind !== "sql";
+    if (source.kind === "sql") { databaseInput.value = source.database; statementInput.value = source.statement; argsInput.value = JSON.stringify(source.arguments); databaseInput.readOnly = true; statementInput.readOnly = true; argsInput.readOnly = true; }
+    const max = candidate.scope.expiryMax ?? candidate.scope.expiresAt; const defaultExpiry = candidate.scope.expiryDefault ?? max;
+    if (candidate.scope.expiryMin !== undefined) expiry.min = localDateTime(candidate.scope.expiryMin); else expiry.removeAttribute("min");
+    if (max !== undefined) expiry.max = localDateTime(max); else expiry.removeAttribute("max");
+    if (defaultExpiry !== undefined && expiry.value === "") expiry.value = localDateTime(defaultExpiry);
+    exactScope.textContent = `Recipient: ${email.value || "(enter one exact email)"}\n${sourceSummary(source)}\nAccess ends: ${expiry.value || "(choose a bounded expiry)"}`;
+  };
+  capabilitySelect.addEventListener("change", renderSelection);
+  email.addEventListener("input", renderSelection); expiry.addEventListener("input", renderSelection); expiry.addEventListener("change", renderSelection);
+  renderSelection();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (options.scope === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
+    const candidate = selected();
     try {
       if (!confirmation.checked) throw new TypeError("Confirm the exact capability.");
-      const source = sourceFromForm(form, options.defaultSource); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
-      const request = { email: email.value, source, scope: options.scope, shareId: `share-${crypto.randomUUID()}`, expiresAt };
+      const source = sourceFromForm(form); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
+      const request = { email: email.value, source, scope: candidate.scope, shareId: `share-${crypto.randomUUID()}`, expiresAt };
       lastRequest = request; void controller.request(request);
     } catch { renderState(root, { state: "invalid", message: "Check the email and resource details, then try again." }); }
   });

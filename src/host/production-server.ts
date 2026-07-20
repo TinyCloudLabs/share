@@ -4,7 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createShareHostFromEnv } from "./share-adapter.js";
 import { loadTrustBundle, securityHeadersForPath } from "./trust-bundle.js";
-import { upstreamForPath } from "./upstream.js";
+import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./upstream.js";
 
 const root = fileURLToPath(new URL("../../dist/", import.meta.url));
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
@@ -25,11 +25,14 @@ createServer((request, response) => {
     const path = (request.url ?? "/").split("?")[0] ?? "/";
     for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) response.setHeader(name, value);
     const upstream = upstreamForPath(bundle, path);
-    if (upstream !== undefined && (upstream.service === "node" || upstream.service === "credentials")) {
+    if (upstream !== undefined) {
       const bytes = await body(request);
-      const target = new URL(request.url ?? path, upstream.origin);
-      const init: RequestInit & { duplex?: "half" } = { method: request.method ?? "GET", headers: Object.fromEntries(Object.entries(request.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")), ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer, duplex: "half" }) };
-      const result = await fetch(target, init); response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer())); return;
+      const method = request.method ?? "GET";
+      const headers = sanitizeUpstreamRequest(path, method, new Headers(request.headers as HeadersInit), bytes.length, bundle.public.shareOrigin);
+      const upstreamPath = upstream.service === "registry" ? path.slice("/registry".length) || "/" : path;
+      const target = new URL(`${upstreamPath}${new URL(request.url ?? path, "https://share.invalid").search}`, upstream.origin);
+      const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "error", ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer, duplex: "half" }) };
+      const result = sanitizeUpstreamResponse(path, method, await fetch(target, init)); response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer())); return;
     }
     if (dynamic(path)) {
       const bytes = await body(request);

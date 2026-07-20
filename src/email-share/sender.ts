@@ -39,7 +39,7 @@ export function createSenderController(input: {
       try {
         setState({ state: "authorizing" });
         const draft = await createInvitationDraft({ ...request, uploadEnvelope: input.uploadEnvelope });
-        await input.publishBinding?.({ shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path });
+        await input.publishBinding?.({ capabilityId: request.scope.signingCapability.capabilityId, shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path });
         const signed = await signedInvitationProof(draft, request.scope);
         const authorized = await input.transport.authorizeInvitation({ request: signed.request, proof: signed.proof });
         const trustedShare = {

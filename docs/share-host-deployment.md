@@ -16,8 +16,11 @@ Required production variables:
 - `SHARE_SENDER_PRIVATE_KEY`: a separately delivered server secret. It is
   checked against the sender identity and is never part of the trust bundle,
   capability response, or browser JavaScript.
-- `SHARE_SENDER_CAPABILITY_JSON`: authenticated-host capability provider output
-  for the sender session. It contains no signing secret.
+- `SHARE_SENDER_CAPABILITY_JSON` or `SHARE_SENDER_CAPABILITIES_JSON`:
+  authenticated-host capability provider output for the sender session. Each
+  entry describes only an authorized exact KV or named-SQL read and bounded
+  expiry; it does not pre-bind a recipient email and contains no signing
+  secret.
 - `SHARE_AUTH_USERS_JSON`: authenticated sender records with scrypt password
   hashes. The host issues a fresh opaque session after successful login; no
   environment secret is ever used as a cookie value.
@@ -42,11 +45,20 @@ HOST=0.0.0.0 PORT=8787 npm run start:deploy
 
 The production host requires the exact Share origin on login/signing requests,
 strict JSON/body and origin limits, an idempotency key, and a capability-bound
-signing request. It exposes only a public capability descriptor and signatures
-for the exact envelope/invitation binding. Missing trust, signer, authenticated
-user records, durable binding storage, or registry configuration disables the
-capability. Sessions are opaque, per-user, Secure, HttpOnly, SameSite, path-
-scoped, and expiring.
+signing request. The sender explicitly selects one listed capability, enters
+one canonical recipient, chooses a bounded expiry, reviews the exact
+recipient/resource/action/expiry, and confirms before sending. The server
+re-derives the selected capability from the authenticated session for every
+sign, binding, and upload request. Missing trust, signer, authenticated user
+records, durable binding storage, or registry configuration disables the
+capability. Sessions are opaque, per-user, Secure, HttpOnly, SameSite,
+path-scoped, and expiring.
+
+The production reverse proxy has route-specific method and media-type rules,
+bounded request bodies, and explicit request/response header allowlists. Cookie,
+Authorization, Host, forwarding, hop-by-hop, content-length, transfer-encoding,
+Set-Cookie, redirect, CSP, cache, and other Share security-header mutation are
+never forwarded across the service boundary.
 
 For local tests, use only the composition owned by `test/e2e-email`. It may set
 `SHARE_HERMETIC_COMPOSITION=true` and provide
