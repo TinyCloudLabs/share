@@ -162,7 +162,8 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!sessionValid(request, options)) return generic(503);
         const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
-        await options.bindingStore.put(cid, body.binding as Record<string, unknown>); return response(201, { status: "stored" });
+        const { shareCid: _shareCid, ...binding } = body.binding as Record<string, unknown>;
+        await options.bindingStore.put(cid, binding); return response(201, { status: "stored" });
       }
       if (url.pathname.startsWith("/.well-known/tinycloud-share/bindings/") && request.method === "GET") {
         const cid = url.pathname.slice("/.well-known/tinycloud-share/bindings/".length).replace(/\.json$/, "");
