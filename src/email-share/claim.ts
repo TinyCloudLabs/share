@@ -168,6 +168,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
     material = { holder: key, credential: response.credential, expiresAt: response.expiresAt, persisted: false };
     setState({ state: "claimed", claim: material });
   };
+  const canRecoverClaim = (): boolean => material !== undefined && state.state === "error" && state.retryable;
   const run = (operation: () => Promise<void>): Promise<void> => {
     if (inFlight !== undefined) return inFlight;
     inFlight = operation().finally(() => { inFlight = undefined; });
@@ -190,12 +191,35 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
       else setState(terminalFrom(failure));
     }
   });
+  const read = (): Promise<string | undefined> => {
+    if (readInFlight !== undefined) return readInFlight;
+    const claimInFlight = inFlight;
+    readInFlight = (async () => {
+      if (claimInFlight !== undefined) await claimInFlight;
+      let content: string | undefined;
+      await run(async () => {
+        if (material === undefined || (state.state !== "claimed" && state.state !== "session" && state.state !== "reading" && !canRecoverClaim())) return;
+        setState({ state: "session", claim: material });
+        try {
+          setState({ state: "reading", claim: material });
+          content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
+        } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
+      });
+      return content;
+    })().finally(() => { readInFlight = undefined; });
+    return readInFlight;
+  };
   return {
     get state() { return state; },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     openDocument,
     retry() {
       if (state.state !== "error" || !state.retryable) return Promise.resolve();
+      // Issuance is one-use and claimSecret is erased after it succeeds. A
+      // retryable Node outage must begin at the Node challenge with the
+      // retained non-extractable key and verified credential, never at
+      // activation or redemption.
+      if (material !== undefined) return read().then(() => undefined);
       setState({ state: "verifying", emailHint: input.share.recipientHint });
       return openDocument();
     },
@@ -225,24 +249,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
         } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
       });
     },
-    read() {
-      if (readInFlight !== undefined) return readInFlight;
-      const claimInFlight = inFlight;
-      readInFlight = (async () => {
-        if (claimInFlight !== undefined) await claimInFlight;
-        let content: string | undefined;
-        await run(async () => {
-          if (material === undefined || (state.state !== "claimed" && state.state !== "session" && state.state !== "reading")) return;
-          setState({ state: "session", claim: material });
-          try {
-            setState({ state: "reading", claim: material });
-            content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
-          } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
-        });
-        return content;
-      })().finally(() => { readInFlight = undefined; });
-      return readInFlight;
-    },
+    read,
     forget() { stopCooldown(); holder = undefined; material = undefined; claimSecret = undefined; setState({ state: "forgotten" }); },
   };
 }

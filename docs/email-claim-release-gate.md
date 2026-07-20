@@ -39,14 +39,20 @@ records the immutable contract commit and final owning heads; its parent and a
 separately recorded evidence commit identify the evidence snapshot without a
 self-referential hash.
 
-Generate a redacted, reproducible evidence record after a successful run:
+Each joined gate execution writes an immutable run record and a hashed execution
+log under `.release-evidence/runs/`. The record is written even on failure and
+contains the exact heads, start/end/duration, exit status, command, toolchain,
+coverage, artifact hashes, and owned-process cleanup result. Generate the final
+redacted snapshot only after two distinct clean records pass verification:
 
 ```sh
 npm run release:evidence -- --output .release-evidence/email-claim.json
 ```
 
-The record includes UTC timestamp, exact heads, manifest/digest, commands,
-tool versions, artifact hashes, and owned-process cleanup. It never records
-claim material, private keys, provider payloads, or authorization values.
+The generator refuses missing, failed, duplicate, tampered, stale, dirty, or
+toolchain-mismatched run records. It never records claim material, private
+keys, provider payloads, or authorization values. SIWE origin/main versus
+feature-head provenance is marked `not-run` unless the integration lane supplies
+both exact heads and the same-toolchain comparison metadata.
 The real Resend smoke lane is intentionally separate and must receive an
 explicit controlled recipient before it can run.

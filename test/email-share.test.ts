@@ -345,6 +345,13 @@ describe("exact-email share UI protocol boundaries", () => {
     await controller.openDocument();
     if (controller.state.state !== "claimed") throw new Error("claim did not complete");
     const credential = controller.state.claim.credential;
+    const outage = vi.fn(async () => { throw new ShareTransportError("offline", true); });
+    t.policyChallenge = outage;
+    await controller.read();
+    expect(controller.state).toMatchObject({ state: "error", code: "offline", retryable: true });
+    expect(outage).toHaveBeenCalledTimes(1);
+    expect(t.activate).toHaveBeenCalledTimes(1);
+    expect(t.claimRedeem).toHaveBeenCalledTimes(1);
     const now = Date.now();
     t.policyChallenge = vi.fn(async (body) => {
       const challenge = { ...body, type: "TinyCloudSharePolicyChallenge", version: 1, challengeId: "D".repeat(43), nonce: "E".repeat(43), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString() };
@@ -364,8 +371,7 @@ describe("exact-email share UI protocol boundaries", () => {
       const proof = { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.readResponse}${canonicalize(responseBody)}`), nodeSeed)) };
       return { ...responseBody, proof } as any;
     });
-    const content = await controller.read();
-    expect(content).toBe("# Verified\n");
+    await controller.retry();
     expect(controller.state.state).toBe("reading");
     expect(t.policyChallenge).toHaveBeenCalledTimes(1);
     expect(t.policySession).toHaveBeenCalledTimes(1);

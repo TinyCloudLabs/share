@@ -12,10 +12,11 @@
  */
 
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createConnection, createServer } from "node:net";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -52,16 +53,35 @@ function required(value, name) {
   return value;
 }
 
+const runStartedAt = new Date();
+const runId = process.env.SHARE_EMAIL_RUN_ID ?? `email-claim-${runStartedAt.toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}`;
+const runRecordPath = resolve(shareRoot, process.env.SHARE_EMAIL_RUN_RECORD ?? `.release-evidence/runs/${runId}.json`);
+const runLogPath = `${runRecordPath}.log`;
+const runEvents = [];
+let runCoverage = { fixtures: 0, sources: [], browser: [], negativeBoundaryCases: [], binding: "independent-provisioned" };
+let ownedProcessCleanup = { stopped: 0, remaining: [], complete: false };
+
+function digestBytes(value) { return createHash("sha256").update(value).digest("hex"); }
+function recordRunEvent(event) { runEvents.push({ at: new Date().toISOString(), ...event }); }
+function commandLabel(command, args) { return [command, ...args].join(" "); }
+
 function diagnosticOutput(value) {
   return value.replace(/("(?:senderPrivateKey|privateKey|claimSecret|secret|password|token|authorization)"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2").slice(-4_000);
 }
 
 function run(command, args, cwd, extraEnv = {}) {
   console.error(`$ ${command} ${args.join(" ")}`);
+  const label = commandLabel(command, args);
+  const started = Date.now();
+  recordRunEvent({ type: "command-start", command: label });
   const result = spawn(command, args, { cwd, stdio: "inherit", env: { ...process.env, ...extraEnv } });
   return new Promise((resolveResult, reject) => {
-    result.once("error", reject);
-    result.once("exit", (code, signal) => resolveResult(code === 0 ? undefined : new Error(`${command} exited ${code ?? signal}`)));
+    result.once("error", (error) => { recordRunEvent({ type: "command-end", command: label, status: "spawn-error", durationMs: Date.now() - started }); reject(error); });
+    result.once("exit", (code, signal) => {
+      const status = code === 0 ? "passed" : "failed";
+      recordRunEvent({ type: "command-end", command: label, status, exitStatus: code ?? 128, signal: signal ?? null, durationMs: Date.now() - started });
+      resolveResult(code === 0 ? undefined : new Error(`${command} exited ${code ?? signal}`));
+    });
   }).then((error) => { if (error !== undefined) throw error; });
 }
 
@@ -79,14 +99,20 @@ async function assertContractCommit(repo) {
 }
 
 function runCapture(command, args, cwd) {
+  const label = commandLabel(command, args);
+  const started = Date.now();
+  recordRunEvent({ type: "capture-start", command: label });
   const child = spawn(command, args, { cwd, env: process.env });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
   return new Promise((resolveResult, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolveResult(stdout) : reject(new Error(`${command} failed (${code}): ${stderr.slice(0, 800)}`)));
+    child.once("error", (error) => { recordRunEvent({ type: "capture-end", command: label, status: "spawn-error", durationMs: Date.now() - started }); reject(error); });
+    child.once("exit", (code) => {
+      recordRunEvent({ type: "capture-end", command: label, status: code === 0 ? "passed" : "failed", exitStatus: code, durationMs: Date.now() - started });
+      code === 0 ? resolveResult(stdout) : reject(new Error(`${command} failed (${code}): ${stderr.slice(0, 800)}`));
+    });
   });
 }
 
@@ -272,6 +298,15 @@ function canonicalRequestTarget(url, targets) {
   return undefined;
 }
 
+async function proxyJsonMutation(request, target, mutation) {
+  const response = await fetch(target, { method: request.method(), headers: request.headers(), body: request.postData() ?? undefined });
+  const text = await response.text();
+  let body;
+  try { body = JSON.parse(text); } catch { throw new Error("mutated boundary response was not JSON"); }
+  mutation(body);
+  await request.respond({ status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(body) });
+}
+
 async function installInterception(page, targets, fixtureConfig = {}) {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
@@ -291,12 +326,39 @@ async function installInterception(page, targets, fixtureConfig = {}) {
     if (parsed.origin === canonical.node && parsed.pathname === "/share/v1/invitations/authorize" && fixtureConfig.binding !== undefined) {
       try {
         const body = JSON.parse(request.postData() ?? "{}").request;
-        if (typeof body?.policyCid === "string") fixtureConfig.binding.policyCid = body.policyCid;
-        if (typeof body?.shareId === "string") fixtureConfig.binding.shareId = body.shareId;
-      } catch { /* the real Node response remains authoritative */ }
+        const binding = fixtureConfig.binding;
+        const sourceMatches = JSON.stringify(body?.contentSource) === JSON.stringify(binding.contentSource);
+        const matches = body?.shareId === binding.shareId
+          && body?.policyCid === binding.policyCid
+          && body?.delegationCid === binding.delegationCid
+          && body?.authorityMaterialHandle === binding.authorityMaterialHandle
+          && body?.authorityMaterialDigest === binding.authorityMaterialDigest
+          && body?.recipientEmail === binding.recipientEmail
+          && body?.targetOrigin === canonical.node
+          && body?.nodeAudience === "did:web:node.example"
+          && body?.contentSourceDigest === binding.contentSourceDigest
+          && body?.shareExpiresAt === binding.expiry
+          && sourceMatches
+          && body?.documentName === fixtureConfig.documentName
+          && body?.senderTrust === "verified";
+        if (!matches) {
+          fixtureConfig.bindingMismatch = { request: body, authoritative: binding };
+          void request.abort("blockedbyclient");
+          return;
+        }
+      } catch (error) {
+        fixtureConfig.bindingMismatch = { error: error instanceof Error ? error.message : String(error) };
+        void request.abort("blockedbyclient");
+        return;
+      }
     }
     const target = canonicalRequestTarget(request.url(), targets);
     if (target === undefined) { void request.continue(); return; }
+    if (fixtureConfig.responseMutation !== undefined && parsed.origin === canonical.node && parsed.pathname === fixtureConfig.responseMutation.path && fixtureConfig.responseMutation.used !== true) {
+      fixtureConfig.responseMutation.used = true;
+      void proxyJsonMutation(request, target, fixtureConfig.responseMutation.mutate).catch((error) => request.abort("failed").catch(() => { fixtureConfig.responseMutation.error = error instanceof Error ? error.message : String(error); }));
+      return;
+    }
     void request.continue({ url: target });
   });
 }
@@ -338,13 +400,31 @@ async function postJson(base, path, body) {
   return fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(body) });
 }
 
-async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex) {
+async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIndex, boundary = {}) {
   const scope = cloneScope(fixture.scope ?? fixture);
   const source = fixture.source ?? scope.source;
   if (source === undefined) throw new Error(`case ${caseIndex}: source is missing`);
   scope.expectedRecipientEmail = fixture.email ?? scope.expectedRecipientEmail;
   scope.expectedContentSourceDigest = fixture.contentSourceDigest ?? scope.expectedContentSourceDigest;
   if (typeof scope.expectedRecipientEmail !== "string" || typeof scope.expectedContentSourceDigest !== "string") throw new Error(`case ${caseIndex}: expected recipient/digest are required`);
+  if (typeof fixture.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(fixture.policyCid)) throw new Error(`case ${caseIndex}: independently provisioned policyCid is required`);
+  const deterministicUuid = `00000000-0000-4000-8000-${String(caseIndex + 1).padStart(12, "0")}`;
+  const authoritativeShareId = fixture.authoritativeBinding?.shareId ?? `share-${deterministicUuid}`;
+  const authoritativeBinding = {
+    shareId: authoritativeShareId,
+    policyCid: fixture.authoritativeBinding?.policyCid ?? fixture.policyCid,
+    recipientEmail: scope.expectedRecipientEmail,
+    expiry: fixture.expiresAt,
+    delegationCid: scope.delegationCid,
+    authorityMaterialHandle: scope.authorityMaterialHandle,
+    authorityMaterialDigest: scope.authorityMaterialDigest,
+    contentSource: source,
+    contentSourceDigest: scope.expectedContentSourceDigest,
+    action: source.action,
+    resource: source.path,
+    ...(fixture.authoritativeBinding ?? {}),
+  };
+  if (authoritativeBinding.policyCid !== fixture.policyCid) throw new Error(`case ${caseIndex}: authoritative policyCid disagrees with mounted authority`);
   const before = (await readCapture(fixture.mailArtifact)).length;
   const browserScope = { ...scope, senderPrivateKey: Array.from(scope.senderPrivateKey), trustedNode: { ...scope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } };
   const publicConfig = {
@@ -362,10 +442,10 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   };
   const capability = { scope: { ...browserScope, trustedNode: { ...browserScope.trustedNode, invitationPublicKey: Array.from(scope.trustedNode.invitationPublicKey) } }, source };
   const binding = {
-    shareId: "pending",
-    policyCid: "pending",
-    recipientEmail: scope.expectedRecipientEmail,
-    expiry: new Date(fixture.expiresAt ?? Date.now() + 3_600_000).toISOString(),
+    shareId: authoritativeBinding.shareId,
+    policyCid: authoritativeBinding.policyCid,
+    recipientEmail: authoritativeBinding.recipientEmail,
+    expiry: new Date(authoritativeBinding.expiry ?? Date.now() + 3_600_000).toISOString(),
     delegationCid: scope.delegationCid,
     authorityMaterialHandle: scope.authorityMaterialHandle,
     authorityMaterialDigest: scope.authorityMaterialDigest,
@@ -376,12 +456,16 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   };
 
   const sender = await browser.newPage();
+  await sender.evaluateOnNewDocument((uuid) => {
+    Object.defineProperty(crypto, "randomUUID", { configurable: false, value: () => uuid });
+  }, deterministicUuid);
   await sender.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (response.status() >= 400) void response.text().then((body) => console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`)); });
-  await installInterception(sender, targets, { publicConfig, capability, binding });
+  const interception = { publicConfig, capability, binding, documentName: scope.documentName };
+  await installInterception(sender, targets, interception);
   await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
@@ -398,6 +482,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
     throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
   }
   await sender.close();
+  if (interception.bindingMismatch !== undefined) throw new Error(`case ${caseIndex}: authorization request did not match independently provisioned binding`);
 
   const captured = await waitForCapture(fixture.mailArtifact, before);
   const link = captured.href;
@@ -422,7 +507,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
       console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
     }).catch(() => {});
   });
-  await installInterception(page, targets, { publicConfig, capability, binding });
+  await installInterception(page, targets, { publicConfig, capability, binding, responseMutation: boundary.responseMutation });
   await page.goto(link, { waitUntil: "networkidle0" });
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
   catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
@@ -431,6 +516,14 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   const recipientA11y = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, live: document.querySelector("[aria-live]") !== null, primary: document.querySelector("button.viewer-primary-action")?.textContent }));
   if (recipientA11y.overflow || !recipientA11y.live || recipientA11y.primary !== "Open document") throw new Error(`case ${caseIndex}: recipient accessibility/mobile assertion failed`);
   await page.click("button.viewer-primary-action");
+  if (boundary.expectReject === true) {
+    try {
+      await page.waitForFunction(() => document.body.textContent?.includes("couldn't finish the invitation") || document.body.textContent?.includes("Ask the sender"), { timeout: 30_000 });
+    } catch { throw new Error(`case ${caseIndex}: forged or stale Node response advanced the browser`); }
+    if ((await page.evaluate((marker) => document.body.textContent?.includes(marker), fixture.expectedContent ?? source.path))) throw new Error(`case ${caseIndex}: rejected Node response exposed document content`);
+    await recipient.close();
+    return;
+  }
   try {
     await page.waitForFunction((marker) => {
       const renderedMarker = marker.replace(/^#+\s*/, "").trim();
@@ -465,7 +558,13 @@ async function mountedGate() {
   let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
   let nodeDescriptor;
   let credentialsDescriptor;
-  const cleanup = async () => { await stopOwned(owned); await rm(tempRoot, { recursive: true, force: true }); };
+  const cleanup = async () => {
+    await stopOwned(owned);
+    const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
+    const remaining = processListing.split("\n").filter((line) => line.includes("tinycloud-node-n4-mounted-fixture") || line.includes("email-claim-fixture") || line.includes(tempRoot));
+    ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
+    await rm(tempRoot, { recursive: true, force: true });
+  };
   activeCleanup = cleanup;
   try {
     if (nodeUrl === undefined) {
@@ -523,10 +622,15 @@ async function mountedGate() {
     const browser = providerModule();
     const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     try {
+      runCoverage = { ...runCoverage, fixtures: fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["KV", "named-SQL", "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "post-claim resend suppression", "accessibility/mobile"], negativeBoundaryCases: ["authoritative binding propagation", "forged policy challenge", "misbound read response", "terminal claim states", "activation replay"] };
       for (const [index, fixture] of fixtures.entries()) {
         fixture.mailArtifact = mailArtifact;
         const issuerPublicKey = credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey;
-        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index);
+        const responseMutation = fixture.kind === "kv"
+          ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } }
+          : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
+        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true });
+        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index + fixtures.length);
       }
     } catch (error) { throw error; }
     finally { await instance.close(); }
@@ -536,6 +640,50 @@ async function mountedGate() {
   }
 }
 
+async function writeRunRecord(exitStatus, errorMessage) {
+  await mkdir(resolve(runRecordPath, ".."), { recursive: true });
+  const endedAt = new Date();
+  const heads = {};
+  for (const [name, repo, cwd] of [["share", process.env.SHARE_RELEASE_HEAD, shareRoot], ["node", process.env.TINYCLOUD_NODE_RELEASE_HEAD, nodeRoot], ["opencredentials", process.env.OPEN_CREDENTIALS_RELEASE_HEAD, credentialsRoot]]) {
+    heads[name] = { expected: repo ?? null, actual: await runCapture("git", ["rev-parse", "HEAD"], cwd).then((value) => value.trim()).catch(() => null) };
+  }
+  const logBytes = Buffer.from(JSON.stringify({ runId, events: runEvents }, null, 2) + "\n", "utf8");
+  await writeFile(runLogPath, logBytes, { encoding: "utf8", flag: "wx" });
+  const artifactPaths = ["test/vectors/email-claim-v1/manifest.json", "package-lock.json", "test/e2e-email/integration.mjs"];
+  const artifacts = {};
+  for (const relative of artifactPaths) {
+    const bytes = await readFile(resolve(shareRoot, relative));
+    artifacts[relative] = { sha256: digestBytes(bytes), bytes: bytes.byteLength };
+  }
+  const artifactHash = digestBytes(JSON.stringify({ heads, artifacts, coverage: runCoverage, logDigest: digestBytes(logBytes) }));
+  const record = {
+    schema: "tinycloud.share-email-claim/joined-run-v1",
+    immutable: true,
+    runId,
+    command: process.argv.join(" "),
+    start: runStartedAt.toISOString(),
+    end: endedAt.toISOString(),
+    durationMs: endedAt.getTime() - runStartedAt.getTime(),
+    exitStatus,
+    heads,
+    log: { path: runLogPath, digest: digestBytes(logBytes), bytes: logBytes.byteLength },
+    artifactHash,
+    artifacts,
+    toolVersions: {
+      node: process.version,
+      npm: await runCapture("npm", ["--version"], shareRoot).then((value) => value.trim()).catch(() => null),
+      git: await runCapture("git", ["--version"], shareRoot).then((value) => value.trim()).catch(() => null),
+      cargo: await runCapture("cargo", ["--version"], shareRoot).then((value) => value.trim()).catch(() => null),
+      chromium: process.env.BROWSER_EXECUTABLE ?? "puppeteer-managed",
+    },
+    coverage: runCoverage,
+    cleanup: ownedProcessCleanup,
+    error: errorMessage ?? null,
+  };
+  record.recordDigest = digestBytes(JSON.stringify(record));
+  await writeFile(runRecordPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+}
+
 try {
   await nativeGate();
   await mountedGate();
@@ -543,4 +691,8 @@ try {
 } catch (error) {
   console.error(`email-claim continuous mounted gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
+  await writeRunRecord(1, error instanceof Error ? error.message : String(error));
+}
+if (process.exitCode === undefined) {
+  await writeRunRecord(0, null);
 }
