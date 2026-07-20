@@ -74,6 +74,11 @@ if (files.length < 2) throw new Error(`release evidence requires two distinct cl
 const records = [];
 let toolchain;
 for (const name of files) {
+  const candidate = JSON.parse(await readFile(resolve(runsDir, name), "utf8"));
+  // Failed executions remain durable audit records, but they are not clean
+  // release candidates and must not prevent a later pair of clean runs from
+  // converging in the same run directory.
+  if (candidate.exitStatus !== 0) continue;
   const record = await verifyRun(resolve(runsDir, name), expectedHeads, toolchain);
   toolchain ??= JSON.stringify(record.toolVersions);
   records.push(record);
