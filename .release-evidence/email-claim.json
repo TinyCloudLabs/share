@@ -1,10 +1,10 @@
 {
   "schema": "tinycloud.share-email-claim/release-evidence-v2",
-  "generatedAt": "2026-07-20T02:32:07.479Z",
+  "generatedAt": "2026-07-20T04:52:36.745Z",
   "heads": {
-    "share": "a095403c43ebf67b99c9948322d08f99cae8957a",
-    "node": "6d4e4a2e7d13d6dc068a2a9f7f8d5f615e10233a",
-    "opencredentials": "a6c1b88b2ab7d689a24aa9d520ccba1da69f8932"
+    "share": "184f5a7423ffeef5fe04035efa63fbd730b1d03e",
+    "node": "afed9261a67adb2c1ea0e6edad2ba3daeddfcd46",
+    "opencredentials": "a7c075ca5ed9f7e2784586b7a8a896804ef3788d"
   },
   "contract": {
     "commit": "36f6c4303eca3bee917692c77237c264b4dfa342",
@@ -35,14 +35,14 @@
   },
   "runs": [
     {
-      "runId": "round31-final-gate-1b-20260720",
-      "start": "2026-07-20T02:27:40.164Z",
-      "end": "2026-07-20T02:29:07.316Z",
-      "durationMs": 87152,
+      "runId": "round32-gate-1-repair",
+      "start": "2026-07-20T04:46:50.081Z",
+      "end": "2026-07-20T04:48:11.272Z",
+      "durationMs": 81191,
       "exitStatus": 0,
       "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
-      "logDigest": "7f7328d2644a27335073e859fb9648e7b1439b169d46738db6f0fca23647e0b9",
-      "artifactHash": "c08598e3c0405b36f02c97d0f3ecaeef8a5fd40e0e33ed9e341a427d9ab9cda6",
+      "logDigest": "4321afa9a4333c0e6ebe2a3ba02c47ae8642f22d2edfa4b32a1ba72d4ce117c9",
+      "artifactHash": "d923726a7c48072341648411ad0ec2f842577869c4a92f94c501f3e7ff60c16b",
       "toolVersions": {
         "node": "v20.19.4",
         "npm": "10.8.2",
@@ -80,17 +80,17 @@
         "remaining": [],
         "complete": true
       },
-      "recordDigest": "32c48c7e3afb5c72f6712e85d5bc9bd708d9590c79ef81e9f6da7401ecd8c2d8"
+      "recordDigest": "46f3b0c390ac7e01110d25f69d0396ad3616aa21bfcc9faef1a4e9772f3681a2"
     },
     {
-      "runId": "round31-final-gate-2-20260720",
-      "start": "2026-07-20T02:29:27.626Z",
-      "end": "2026-07-20T02:30:38.490Z",
-      "durationMs": 70864,
+      "runId": "round32-gate-2-repair",
+      "start": "2026-07-20T04:48:35.108Z",
+      "end": "2026-07-20T04:49:45.093Z",
+      "durationMs": 69985,
       "exitStatus": 0,
       "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
-      "logDigest": "6c1a0b908d0f562f3c9310dcb3f8ea63810c27e124fdfad78531cf39568cdedf",
-      "artifactHash": "d44c1c93d7f9a6bb6d06a2679bff78199f8f5259775765a458e212453b9256df",
+      "logDigest": "75d352bcf4f55547398ff3678de0b9a81da5a43e48189c87489aa11bb4ae72a2",
+      "artifactHash": "12d8e70a351e8f0569f22c04d568fa3fde1784efa3097a5e4b2aa39f1d7daa71",
       "toolVersions": {
         "node": "v20.19.4",
         "npm": "10.8.2",
@@ -128,7 +128,7 @@
         "remaining": [],
         "complete": true
       },
-      "recordDigest": "e14996ccad591d875621ddcf1e4107c0cc49bc890719fb5f0e1e8b55064b5e58"
+      "recordDigest": "dfb0a051e7509d979fa936e8b46d7c0a83ac496ebbb06d7e55d9b8183d6c7449"
     }
   ],
   "results": {
@@ -144,9 +144,9 @@
         "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
         "chromium": "puppeteer-managed"
       },
-      "originMainHead": "cfac76a7f82d8ae74dd3d2eddfc3e617ea36893c",
-      "featureHead": "6d4e4a2e7d13d6dc068a2a9f7f8d5f615e10233a",
-      "command": "cargo test --manifest-path dependencies/siwe/Cargo.toml; origin/main and feature both exit 101 with 8/9 passed and tests::verification1 failure at dependencies/siwe/src/lib.rs:887; source SHA256 cd589ab451c0f0f8ba222f26a5ee1ad0538505f2f5c7806b125b799b8032742f; cargo 1.97.0"
+      "originMainHead": "a78e94d893c805869911b31900597ffadb29bc5b",
+      "featureHead": "afed9261a67adb2c1ea0e6edad2ba3daeddfcd46",
+      "command": "cargo 1.97.0 (c980f4866 2026-06-30); see .context/email-claim-siwe-round32-provenance.json; origin/main and feature-head both exit 101 with 8/9 tests passed and verification1 failure"
     }
   },
   "toolVersions": {
@@ -159,9 +159,9 @@
   "artifactHashes": {
     "manifest": "3e6b8975938693be08847b86286030cd7920cb89774d673126f44ac2c4e2ce2f",
     "packageLock": "36ccc2857b2e140e167bd0170be73b209e6d0377e6e23ed47b7ab2730e50e435",
-    "releaseGate": "670c5f888f6321ca62f477c62e4b6b21cd4cd54e07a51bcf4f7462df30575300",
-    "nodeDeployment": "a1294865ef5e3a034a6e5e5a78679bf6c59652495d7e658ea9a2018ed3c4691e",
-    "credentialsDeployment": "ea789eeac844a8bc78705c28611e89c6dfffd1ecf38fd5734b34c1a52749e083"
+    "releaseGate": "d76f3e78baac7f1ef944b68d22cc94dfbff77862f6f0a692a03ddfc064eff5ee",
+    "nodeDeployment": "95fa1c466a39fcdf760427bb0a02ffd03cfbd5e0656dd6394e06ecbd09042d7a",
+    "credentialsDeployment": "1a9eb26ea4a5bee0b7f5f04695b28c633fada78d03b7aa8909068a7e2f8ffae5"
   },
   "cleanup": {
     "secretsIncluded": false,
