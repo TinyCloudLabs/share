@@ -354,7 +354,7 @@ async function installInterception(page, targets, fixtureConfig = {}) {
       void proxyJsonMutation(request, target, fixtureConfig.responseMutation.mutate).catch((error) => request.abort("failed").catch(() => { fixtureConfig.responseMutation.error = error instanceof Error ? error.message : String(error); }));
       return;
     }
-    void request.continue({ url: target });
+    void request.continue({ url: target, headers: request.headers() });
   });
 }
 
