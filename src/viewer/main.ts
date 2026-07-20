@@ -16,9 +16,10 @@ import { presentShare } from "./present.js";
 import { resolveShare } from "./resolve.js";
 import { renderEmailClaimState, renderEmailClaimUnavailable, renderResolving } from "./ui.js";
 import { hrefForParse, scrubKeyFragment } from "./url.js";
+import { accessSharedContent, type ClaimController } from "@tinycloud/share-sdk";
 
 import type { CapturedLaunch } from "../email-share/url.js";
-import { createClaimController, type ClaimState, type CredentialTrust } from "../email-share/claim.js";
+import { type ClaimState, type CredentialTrust } from "../email-share/claim.js";
 import type { ShareTransport } from "../email-share/transport.js";
 import type { VerifiedExactEmailShare } from "../email-share/verified-share.js";
 import { assertTrustedNodeScope } from "../email-share/node-verifier.js";
@@ -58,7 +59,7 @@ async function configuredRuntime(): Promise<EmailClaimRuntime> {
     credentialTrust,
     verify: async ({ envelope, shareCid, policy }) => {
       let binding;
-      try { binding = await loadSharePublicBinding(shareCid); } catch { console.error("email-claim stage=binding-load"); throw new Error("binding-unavailable"); }
+      try { binding = await loadSharePublicBinding(shareCid); } catch (error) { console.error(`email-claim stage=binding-load:${error instanceof Error ? error.message : "invalid"}`); throw new Error("binding-unavailable"); }
       try { return { ...(await verifyProductionEmailShare({ envelope, shareCid, policy, config, binding })), trustedNode }; } catch { console.error("email-claim stage=share-verify"); throw new Error("share-verification-failed"); }
     },
   };
@@ -75,6 +76,28 @@ function appendPersistentForgetAction(root: HTMLElement, onForget: () => void): 
   button.setAttribute("aria-label", "Forget the private browser key for this share");
   button.addEventListener("click", onForget, { once: true });
   footer.append(button);
+}
+
+function assertRuntimeShareBinding(result: Extract<Awaited<ReturnType<typeof resolveShare>>, { state: "policy-email-claim-required" }>, share: VerifiedExactEmailShare): void {
+  const policyTarget = result.envelope.authorizationTarget;
+  if (policyTarget.kind !== "policy") throw new Error("runtime-share-binding-invalid:target-kind");
+  const checks: readonly [string, boolean][] = [
+    ["target-kind", true],
+    ["share-cid", share.shareCid === result.shareCid],
+    ["share-id", share.shareId === result.envelope.shareId],
+    ["policy-cid", share.policyCid === policyTarget.policyCid],
+    ["node-origin", share.nodeOrigin === result.envelope.target.origin],
+    ["node-audience", share.nodeAudience === result.envelope.target.nodeAudience],
+    ["expiry", share.expiry === result.envelope.expiry],
+    ["recipient", result.policy.recipientEmail === share.recipientEmail],
+    ["policy-expiry", result.policy.expiresAt === share.expiry],
+    ["action", result.policy.action === share.action],
+    ["resource", result.policy.resource === share.resource],
+    ["source-digest", result.policy.contentSourceDigest === share.contentSourceDigest],
+    ["source", canonicalize(result.policy.contentSource) === canonicalize(share.contentSource)],
+  ];
+  const failed = checks.find(([, passed]) => !passed)?.[0];
+  if (failed !== undefined) throw new Error(`runtime-share-binding-invalid:${failed}`);
 }
 
 export async function bootDefault(launch: CapturedLaunch | undefined): Promise<void> {
@@ -95,21 +118,44 @@ export async function bootDefault(launch: CapturedLaunch | undefined): Promise<v
   try {
     assertProductionCredentialTrust(configured.credentialTrust);
     const share = await configured.verify({ envelope: result.envelope, shareCid: result.shareCid, policy: result.policy });
-    if (result.envelope.authorizationTarget.kind !== "policy" || share.shareCid !== result.shareCid || share.shareId !== result.envelope.shareId || share.policyCid !== result.envelope.authorizationTarget.policyCid || share.nodeOrigin !== result.envelope.target.origin || share.nodeAudience !== result.envelope.target.nodeAudience || share.expiry !== result.envelope.expiry || result.policy.recipientEmail !== share.recipientEmail || result.policy.expiresAt !== share.expiry || result.policy.action !== share.action || result.policy.resource !== share.resource || result.policy.contentSourceDigest !== share.contentSourceDigest || canonicalize(result.policy.contentSource) !== canonicalize(share.contentSource)) throw new Error("runtime-share-binding-invalid");
+    assertRuntimeShareBinding(result, share);
     assertTrustedNodeScope(share, share.trustedNode);
-    const controller = createClaimController({ share, invitationId: launch.invite.invitationId, claimSecret: launch.invite.claimSecret, transport: configured.transport, credentialTrust: configured.credentialTrust });
+    let controller: ClaimController | undefined;
+    let confirmOpen: (() => void) | undefined;
+    let confirmed = false;
+    const confirmation = new Promise<boolean>((resolve) => { confirmOpen = () => { if (!confirmed) { confirmed = true; resolve(true); } }; });
+    let rendered = false;
+    const showContent = (content: string): void => {
+      if (rendered) return;
+      rendered = true;
+      void presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content }).then(() => appendPersistentForgetAction(root, () => controller?.forget()));
+    };
     const render = (state: ClaimState): void => renderEmailClaimState(root, state, {
-      onOpen: () => { void controller.openDocument(); },
-      onRetry: () => { void controller.retry(); },
-      onUseOtp: () => controller.useOtp(),
-      onOtp: (code) => { void controller.submitOtp(code); },
-      onResend: () => { void controller.resend(); },
-      onForget: () => controller.forget(),
+      onOpen: () => { confirmOpen?.(); },
+      onRetry: () => { void controller?.retry(); },
+      onUseOtp: () => controller?.useOtp(),
+      onOtp: (code) => { void controller?.submitOtp(code); },
+      onResend: () => { void controller?.resend(); },
+      onForget: () => controller?.forget(),
     });
-    controller.subscribe(render);
-    render(controller.state);
-    controller.subscribe((state) => {
-      if (state.state === "claimed") void controller.read().then((content) => { if (content !== undefined) void presentShare(root, { state: "ok", access: "policy", envelope: result.envelope, senderVerified: true, content }).then(() => appendPersistentForgetAction(root, () => controller.forget())); });
-    });
-  } catch { console.error("email-claim stage=runtime-verify"); console.error("email-claim stage=unavailable"); renderEmailClaimUnavailable(root); }
+    render({ state: "ready", emailHint: share.recipientHint });
+    void accessSharedContent({
+      shareUrl: `${launch.shareHref}&i=${launch.invite.invitationId}&c=${launch.invite.claimSecret}`,
+      invitation: launch.invite,
+      confirmAccess: () => confirmation,
+      dependencies: {
+        registryBaseUrl: REGISTRY_BASE_URL,
+        transport: configured.transport,
+        credentialTrust: configured.credentialTrust,
+        resolve: async () => result,
+        verifyShare: async () => share,
+        scrub: () => scrubKeyFragment(window.location, window.history),
+        onController: (next) => {
+          controller = next;
+          render(next.state);
+          next.subscribe(render);
+        },
+      },
+    }).then((access) => showContent(access.content)).catch(() => undefined);
+  } catch (error) { console.error("email-claim stage=runtime-verify"); if (error instanceof Error && error.message.startsWith("runtime-share-binding-invalid:")) console.error(`email-claim stage=${error.message}`); console.error("email-claim stage=unavailable"); renderEmailClaimUnavailable(root); }
 }

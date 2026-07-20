@@ -1,14 +1,6 @@
-import {
-  canonicalDigest,
-  createInvitationDraft,
-  signedInvitationProof,
-  type ContentSource,
-  type SenderScope,
-} from "./protocol.js";
-import { canonicalize } from "@tinycloud/share-envelope";
+import { canonicalDigest, type ContentSource, type SenderScope } from "./protocol.js";
+import { createShareLink, sendShareEmail, type ShareArtifact } from "@tinycloud/share-sdk";
 import { mapTransportFailure, type ShareTransport, type TransportErrorCode } from "./transport.js";
-import { assertTrustedNodeScope, verifyNodeProof } from "./node-verifier.js";
-import { SIGNATURE_DOMAINS } from "./protocol.js";
 
 export type SenderState =
   | { readonly state: "editing" }
@@ -39,41 +31,17 @@ export function createSenderController(input: {
     async request(request) {
       try {
         setState({ state: "authorizing" });
-        const draft = await createInvitationDraft({ ...request, uploadEnvelope: input.uploadEnvelope });
-        await input.publishBinding?.({ capabilityId: request.scope.signingCapability.capabilityId, shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path });
-        const signed = await signedInvitationProof(draft, request.scope);
-        const authorized = await input.transport.authorizeInvitation({ request: signed.request, proof: signed.proof });
-        const trustedShare = {
-          shareId: draft.envelope.shareId,
-          shareCid: draft.shareCid,
-          policyCid: draft.policyCid,
-          recipientEmail: draft.email,
-          recipientHint: draft.envelope.display.recipientHint ?? "",
-          expiry: draft.envelope.expiry,
-          nodeOrigin: request.scope.targetOrigin,
-          nodeAudience: request.scope.nodeAudience,
-          requestOrigin: request.scope.shareOrigin,
-          delegationCid: request.scope.delegationCid,
-          authorityMaterialHandle: request.scope.authorityMaterialHandle,
-          authorityMaterialDigest: request.scope.authorityMaterialDigest,
-          contentSource: draft.source,
-          contentSourceDigest: draft.sourceDigest,
-          action: draft.source.action,
-          resource: draft.source.path,
-          trustedNode: request.scope.trustedNode,
-        } as const;
-        assertTrustedNodeScope(trustedShare, request.scope.trustedNode);
-        await verifyNodeProof(authorized.authorization, authorized.proof, request.scope.trustedNode, SIGNATURE_DOMAINS.inviteAuthorization);
-        const expected = { shareCid: draft.shareCid, shareId: draft.envelope.shareId, policyCid: draft.policyCid, delegationCid: request.scope.delegationCid, authorityMaterialHandle: request.scope.authorityMaterialHandle, authorityMaterialDigest: request.scope.authorityMaterialDigest, targetOrigin: request.scope.targetOrigin, nodeAudience: request.scope.nodeAudience, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, recipientEmail: draft.email, documentName: request.scope.documentName, shareExpiresAt: draft.envelope.expiry } as const;
-        for (const [key, value] of Object.entries(expected)) {
-          const actual = (authorized.authorization as unknown as Record<string, unknown>)[key];
-          if (typeof value === "object" ? canonicalize(actual) !== canonicalize(value) : actual !== value) {
-            throw new Error("invitation-authorization-mismatch");
-          }
-        }
+        const share: ShareArtifact = await createShareLink({
+          email: request.email,
+          source: request.source,
+          scope: request.scope,
+          shareId: request.shareId,
+          expiresAt: request.expiresAt,
+          adapters: { uploadEnvelope: input.uploadEnvelope, ...(input.publishBinding === undefined ? {} : { publishBinding: input.publishBinding }) },
+        });
         setState({ state: "requesting" });
-        const accepted = await input.transport.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl });
-        setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: draft.envelope.shareId, resource: request.source.path });
+        const accepted = await sendShareEmail({ share, scope: request.scope, adapters: input.transport });
+        setState({ state: "requested", retryAfterSeconds: accepted.retryAfterSeconds, shareId: share.shareId, resource: request.source.path });
       } catch (error) {
         const failure = mapTransportFailure(error);
         setState({ state: failure.code === "capability-unavailable" ? "unavailable" : failure.code === "invalid" ? "invalid" : "delivery-failed", retryable: failure.retryable, code: failure.code, ...(failure.code === "invalid" ? { message: "Check the email and resource details, then try again." } : {}) } as SenderState);

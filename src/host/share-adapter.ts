@@ -334,7 +334,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
-        const { shareCid: _shareCid, ...binding } = body.binding as Record<string, unknown>;
+        const { shareCid: _shareCid, capabilityId: _capabilityId, ...binding } = body.binding as Record<string, unknown>;
         const selected = selectedCapability(request, session, capabilityId);
         const recipient = canonicalEmail(binding.recipientEmail);
         if (selected.scope.recipientEmail !== undefined && recipient !== canonicalEmail(selected.scope.recipientEmail)) return generic(403);
