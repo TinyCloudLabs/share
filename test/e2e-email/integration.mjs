@@ -383,7 +383,7 @@ async function installInterception(page, targets, fixtureConfig = {}) {
         const mismatches = Object.keys(expected).filter((key) => body?.[key] !== expected[key]);
         if (JSON.stringify(body?.contentSource) !== JSON.stringify(binding.contentSource)) mismatches.push("contentSource");
         if (mismatches.length > 0) {
-          fixtureConfig.bindingMismatch = { fields: mismatches };
+          fixtureConfig.bindingMismatch = { fields: mismatches, requestKeys: Object.keys(body ?? {}).sort() };
           void request.abort("blockedbyclient");
           return;
         }
