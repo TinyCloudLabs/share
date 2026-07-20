@@ -104,6 +104,7 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
 }
 
 export function loadTrustBundle(env: NodeJS.ProcessEnv = process.env): ShareTrustBundle {
+  if (env.SHARE_TRUST_BUNDLE !== undefined && env.SHARE_TRUST_BUNDLE_FILE !== undefined) throw new Error("configure exactly one Share trust bundle source");
   const raw = env.SHARE_TRUST_BUNDLE ?? (env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
   if (raw === undefined || raw.length === 0) throw new Error("SHARE_TRUST_BUNDLE is required");
   let value: unknown;

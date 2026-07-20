@@ -6,6 +6,7 @@ import { createShareHostFromEnv } from "./share-adapter.js";
 import { loadTrustBundle, securityHeadersForPath } from "./trust-bundle.js";
 
 const root = fileURLToPath(new URL("../../dist/", import.meta.url));
+if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
 const bundle = loadTrustBundle();
 const host = createShareHostFromEnv();
 const dynamic = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/");

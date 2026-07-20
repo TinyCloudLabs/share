@@ -227,8 +227,8 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const sessions = new Map<string, ShareSession>();
   const capability = options.capability;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
-  const selectedCapability = (request: Request, session: ShareSession): { scope: Record<string, unknown>; source: ContentSource } => {
-    const requested = new URL(request.url).searchParams.get("capabilityId");
+  const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource } => {
+    const requested = requestedCapabilityId ?? new URL(request.url).searchParams.get("capabilityId");
     const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
     if (requested !== null) {
       const selected = candidates.find((candidate) => (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.capabilityId === requested);
@@ -273,7 +273,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request);
         const capabilityId = safeString(body.capabilityId, "capabilityId");
-        const selected = selectedCapability(request, session);
+        const selected = selectedCapability(request, session, capabilityId);
         const signer = (selected.scope.signingCapability as Record<string, unknown>);
         if (capabilityId !== signer.capabilityId || (body.purpose !== "envelope" && body.purpose !== "inviteAuthorization")) return generic(403);
         const message = safeString(body.message, "message");
@@ -295,10 +295,10 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname === "/api/share/bindings" && request.method === "POST") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid");
+        const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
         const { shareCid: _shareCid, ...binding } = body.binding as Record<string, unknown>;
-        const selected = selectedCapability(request, session);
+        const selected = selectedCapability(request, session, capabilityId);
         if (binding.recipientEmail !== selected.scope.recipientEmail || binding.contentSourceDigest !== sourceDigest(selected.source) || binding.action !== selected.source.action || binding.resource !== selected.source.path) return generic(403);
         await options.bindingStore.put(cid, binding); return response(201, { status: "stored" });
       }

@@ -510,18 +510,29 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 async function mountedGate() {
   const owned = [];
   const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-share-production-"));
+  try {
   const scopePath = required(arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE, "SHARE_EMAIL_SCOPE_FILE");
   const mailArtifact = required(arg("mail-artifact") ?? process.env.SHARE_EMAIL_MAIL_ARTIFACT, "SHARE_EMAIL_MAIL_ARTIFACT");
   const nodeUrl = required(arg("node-url") ?? process.env.TINYCLOUD_NODE_URL, "TINYCLOUD_NODE_URL");
   const credentialsUrl = required(arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL, "OPENCREDENTIALS_URL");
   const deployEnvFile = required(process.env.SHARE_DEPLOY_ENV_FILE, "SHARE_DEPLOY_ENV_FILE");
   const deployEnv = Object.fromEntries((await readFile(deployEnvFile, "utf8")).split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("#")).map((line) => { const at = line.indexOf("="); if (at <= 0) throw new Error("invalid Share deployment env file"); return [line.slice(0, at), line.slice(at + 1)]; }));
-  if (Object.keys(deployEnv).some((key) => key === "SHARE_TRUST_BUNDLE_ALLOW_TEST" || key === "SHARE_TEST_BINDINGS_JSON" || key === "SHARE_SESSION_SECRET")) throw new Error("production Share env contains a fixture-only control");
   const port = await freePort();
-  const host = spawnOwned("npm run start:deploy", shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port), SHARE_BINDING_STORE_PATH: join(tempRoot, "bindings.ndjson") });
+  const effectiveDeployEnv = { ...process.env, ...deployEnv, SHARE_BINDING_STORE_PATH: join(tempRoot, "bindings.ndjson") };
+  if (effectiveDeployEnv.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true" || effectiveDeployEnv.SHARE_TEST_BINDINGS_JSON !== undefined || effectiveDeployEnv.SHARE_SESSION_SECRET !== undefined) throw new Error("production Share env contains a fixture-only control");
+  await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, effectiveDeployEnv);
+  const host = spawnOwned("npm run start:deploy", shareRoot, { ...effectiveDeployEnv, HOST: "127.0.0.1", PORT: String(port) });
   owned.push(host);
   const shareUrl = `http://127.0.0.1:${port}`;
   await waitForPort(port, "production Share host");
+  const validShareCid = `bafkrei${"a".repeat(52)}`;
+  for (const path of ["/share", "/share.html", "/viewer", "/viewer.html", `/s/${validShareCid}`]) {
+    const response = await fetch(`${shareUrl}${path}`);
+    if (response.status !== 200) throw new Error(`production Share rewrite failed for ${path}: ${response.status}`);
+    const headers = Object.fromEntries(response.headers);
+    if (headers["cache-control"] !== "no-store" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
+    if ((path === "/share" || path === "/share.html" || path === "/viewer" || path === "/viewer.html" || path.startsWith("/s/")) && !headers["content-security-policy"]?.includes("connect-src")) throw new Error(`production Share trust-derived CSP missing for ${path}`);
+  }
   const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
   const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
   if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");

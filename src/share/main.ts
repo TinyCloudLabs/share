@@ -77,7 +77,7 @@ async function bootstrap(): Promise<void> {
       void cid;
     };
     const publishBinding = async (binding: Record<string, unknown>): Promise<void> => {
-      const response = await fetch("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ shareCid: binding.shareCid, binding }) });
+      const response = await fetch("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ shareCid: binding.shareCid, capabilityId: capability.scope.signingCapability.capabilityId, binding }) });
       if (!response.ok) throw new Error("public share binding unavailable");
     };
     mountSender(root as HTMLElement, { transport, scope: capability.scope, defaultSource: capability.source, uploadEnvelope, publishBinding });

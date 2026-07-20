@@ -2,6 +2,8 @@
 
 import { readFileSync } from "node:fs";
 
+if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden for deploy configuration");
+if (process.env.SHARE_TRUST_BUNDLE !== undefined && process.env.SHARE_TRUST_BUNDLE_FILE !== undefined) throw new Error("configure exactly one Share trust bundle source");
 const raw = process.env.SHARE_TRUST_BUNDLE ?? (process.env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(process.env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
 if (raw === undefined || raw.length === 0) throw new Error("SHARE_TRUST_BUNDLE or SHARE_TRUST_BUNDLE_FILE is required for deploy configuration");
 let value;

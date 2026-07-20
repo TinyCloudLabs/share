@@ -136,7 +136,7 @@ function shareHostAdapter(): Plugin {
     configureServer: serve,
     configurePreviewServer: serve,
     generateBundle() {
-      if (process.env.SHARE_TRUST_BUNDLE === undefined) {
+      if (process.env.SHARE_TRUST_BUNDLE === undefined && process.env.SHARE_TRUST_BUNDLE_FILE === undefined) {
         if (process.env.SHARE_DEPLOY_BUILD === "true") throw new Error("SHARE_TRUST_BUNDLE is required for deploy builds");
         return;
       }
