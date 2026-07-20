@@ -223,10 +223,11 @@ function parseRead(value: unknown): ReadResponse {
   return { ...object, contentSource, proof: parseProof(object.proof) } as unknown as ReadResponse;
 }
 
-export function createHttpTransport(input: { readonly nodeOrigin: string; readonly credentialsOrigin: string; readonly fetchFn?: typeof fetch }): ShareTransport {
+export function createHttpTransport(input: { readonly nodeOrigin: string; readonly credentialsOrigin: string; readonly allowLoopbackTransport?: boolean; readonly fetchFn?: typeof fetch }): ShareTransport {
   for (const origin of [input.nodeOrigin, input.credentialsOrigin]) {
     const parsed = new URL(origin);
-    if (parsed.protocol !== "https:" || parsed.origin !== origin) throw new TypeError("Trusted service origins must be canonical HTTPS origins.");
+    const loopback = input.allowLoopbackTransport === true && parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+    if ((parsed.protocol !== "https:" && !loopback) || parsed.origin !== origin) throw new TypeError("Trusted service origins must be canonical HTTPS origins or an explicit loopback transport.");
   }
   const fetchFn = input.fetchFn ?? globalThis.fetch.bind(globalThis);
   const postNode = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.nodeOrigin, path, { method: "POST", body: JSON.stringify(body) });

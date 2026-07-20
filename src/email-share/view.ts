@@ -77,7 +77,7 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   const statement = element(doc, "label", "field-label", "Statement name"); const statementInput = element(doc, "input", "field-input") as HTMLInputElement; statementInput.name = "statement"; statementInput.placeholder = "shared_document_by_id"; statement.append(statementInput);
   const args = element(doc, "label", "field-label", "Fixed arguments (JSON integers only)"); const argsInput = element(doc, "textarea", "field-input") as HTMLTextAreaElement; argsInput.name = "arguments"; argsInput.value = "{}"; argsInput.rows = 2; args.append(argsInput); sqlFields.append(database, statement, args);
   kind.addEventListener("change", () => { sqlFields.hidden = kind.value !== "sql"; });
-  const expiryLabel = element(doc, "label", "field-label", "Access ends"); const expiry = element(doc, "input", "field-input") as HTMLInputElement; expiry.type = "datetime-local"; expiry.name = "expiry"; expiry.required = true; expiryLabel.append(expiry);
+  const expiryLabel = element(doc, "label", "field-label", "Access ends"); const expiry = element(doc, "input", "field-input") as HTMLInputElement; expiry.type = "datetime-local"; expiry.step = "0.001"; expiry.name = "expiry"; expiry.required = true; expiryLabel.append(expiry);
   const scopeNote = element(doc, "p", "scope-note", "Read-only. No raw SQL, folder listing, downloads, or write access are available in v1.");
   const confirmed = element(doc, "label", "field-label", "Confirm exact capability");
   const confirmation = element(doc, "input", "field-input") as HTMLInputElement; confirmation.type = "checkbox"; confirmation.name = "scope-confirmation"; confirmation.required = true;

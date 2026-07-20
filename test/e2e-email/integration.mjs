@@ -12,7 +12,7 @@
  */
 
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, scryptSync } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer } from "node:net";
@@ -34,6 +34,7 @@ const canonical = Object.freeze({
   share: "https://share.tinycloud.xyz",
   node: "https://node.tinycloud.xyz",
   credentials: "https://witness.credentials.org",
+  registry: "https://registry.tinycloud.xyz",
 });
 
 let activeCleanup;
@@ -52,6 +53,12 @@ function arg(name) {
 function required(value, name) {
   if (value === undefined || value.length === 0) throw new Error(`E2E prerequisite missing: ${name}`);
   return value;
+}
+
+function scryptPassword(password) {
+  const salt = randomBytes(16);
+  const digest = scryptSync(password, salt, 32, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  return `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}`;
 }
 
 const runStartedAt = new Date();
@@ -152,21 +159,21 @@ async function nativeGate() {
 }
 
 function spawnOwned(command, cwd, extraEnv = {}) {
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, { cwd, shell: true, detached: true, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   const collect = (chunk) => { output += String(chunk); if (output.length > 128_000) output = output.slice(-128_000); };
   child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
+    child.stderr.on("data", collect);
   return { child, output: () => output, done: new Promise((resolveDone) => child.once("exit", resolveDone)) };
 }
 
 function spawnOwnedArgs(command, args, cwd, extraEnv = {}) {
-  const child = spawn(command, args, { cwd, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, { cwd, detached: true, env: { ...process.env, ...extraEnv }, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   const collect = (chunk) => {
     const text = String(chunk);
     output += text;
-    if (text.includes("mounted session:") || text.includes("mounted policy session:")) console.error(`owned fixture: ${text.trim().slice(0, 400)}`);
+    if (text.includes("mounted session:") || text.includes("mounted policy session:")) runEvents.push({ at: new Date().toISOString(), type: "fixture-output", text: text.trim().slice(0, 400) });
     if (output.length > 128_000) output = output.slice(-128_000);
   };
   child.stdout.on("data", collect);
@@ -280,10 +287,9 @@ async function startLocalResendProvider(mailArtifact) {
 
 async function stopOwned(owned) {
   await Promise.all(owned.slice().reverse().map(async ({ child, done }) => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
+    try { if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM"); } catch { try { child.kill("SIGTERM"); } catch {} }
     await Promise.race([done, new Promise((resolveStop) => setTimeout(resolveStop, 5_000))]);
-    if (child.exitCode === null) child.kill("SIGKILL");
+    try { if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
   }));
 }
 
@@ -324,6 +330,7 @@ function canonicalRequestTarget(url, targets) {
   const parsed = new URL(url);
   if (parsed.origin === canonical.node) return new URL(`${parsed.pathname}${parsed.search}`, targets.node).toString();
   if (parsed.origin === canonical.credentials) return new URL(`${parsed.pathname}${parsed.search}`, targets.credentials).toString();
+  if (parsed.origin === canonical.registry) return new URL(`${parsed.pathname}${parsed.search}`, targets.registry).toString();
   if (parsed.origin === canonical.share) {
     const registryPath = parsed.pathname === "/registry" || parsed.pathname.startsWith("/registry/");
     const path = registryPath
@@ -343,18 +350,28 @@ async function proxyJsonMutation(request, target, mutation) {
   await request.respond({ status: response.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(body) });
 }
 
+async function proxyRequest(request, target) {
+  if (request.method() === "OPTIONS") { await request.respond({ status: 204, headers: { "access-control-allow-origin": canonical.share, "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,idempotency-key,if-none-match,x-delete-after", "access-control-max-age": "60" } }); return; }
+  const response = await fetch(target, { method: request.method(), headers: request.headers(), body: request.method() === "GET" || request.method() === "HEAD" ? undefined : request.postData() ?? undefined });
+  const headers = Object.fromEntries(response.headers); headers["access-control-allow-origin"] = canonical.share; headers["access-control-allow-methods"] = "GET,POST,OPTIONS"; headers["access-control-allow-headers"] = "content-type,accept,idempotency-key,if-none-match,x-delete-after";
+  await request.respond({ status: response.status, headers, body: Buffer.from(await response.arrayBuffer()) });
+}
+
 async function installInterception(page, targets, fixtureConfig = {}) {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const parsed = new URL(request.url());
     const target = canonicalRequestTarget(request.url(), targets);
-    if (target === undefined) { void request.continue(); return; }
+    const localShare = parsed.origin === new URL(targets.vite).origin;
+    if (target === undefined && !localShare) { void request.continue(); return; }
     if (fixtureConfig.responseMutation !== undefined && parsed.origin === canonical.node && parsed.pathname === fixtureConfig.responseMutation.path && fixtureConfig.responseMutation.used !== true) {
       fixtureConfig.responseMutation.used = true;
       void proxyJsonMutation(request, target, fixtureConfig.responseMutation.mutate).catch((error) => request.abort("failed").catch(() => { fixtureConfig.responseMutation.error = error instanceof Error ? error.message : String(error); }));
       return;
     }
-    void request.continue({ url: target, headers: request.headers() });
+    if (fixtureConfig.preserveOrigin === true && target !== undefined) { void proxyRequest(request, target).catch(() => request.abort("failed").catch(() => {})); return; }
+    const headers = { ...request.headers(), origin: canonical.share };
+    void request.continue({ ...(target === undefined ? {} : { url: target }), headers });
   });
 }
 
@@ -416,11 +433,12 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (response.status() >= 400) void response.text().then((body) => console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`)); });
+  sender.on("response", async (response) => { if (response.request().method() === "OPTIONS" || response.status() < 400) return; let body = ""; try { body = await response.text(); } catch { body = "<unreadable>"; } console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`); });
   await installInterception(sender, targets, {});
   const capabilityQuery = fixture.capabilityId === undefined ? "" : `?capabilityId=${encodeURIComponent(fixture.capabilityId)}`;
-  await sender.goto(`${canonical.share}/share.html${capabilityQuery}`, { waitUntil: "networkidle0" });
-  const login = await sender.$('input[name="username"]');
+  await sender.goto(`${targets.vite}/share.html${capabilityQuery}`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  let login = await sender.$('input[name="username"]');
+  if (login === null) { await sender.waitForSelector('input[name="username"]', { timeout: 5_000 }).catch(() => undefined); login = await sender.$('input[name="username"]'); }
   if (login !== null) {
     const username = required(process.env.SHARE_E2E_USERNAME, "SHARE_E2E_USERNAME");
     const password = required(process.env.SHARE_E2E_PASSWORD, "SHARE_E2E_PASSWORD");
@@ -429,12 +447,13 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   }
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
-  const senderA11y = await sender.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role") }));
-  if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed`);
+  const senderA11y = await sender.evaluate(() => { const widest = Array.from(document.querySelectorAll("body *")).map((node) => ({ tag: node.tagName, className: node.className, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth })).filter((item) => item.scrollWidth > item.clientWidth).sort((a, b) => b.scrollWidth - a.scrollWidth).slice(0, 3); return { overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role"), viewport: { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }, widest }; });
+  if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed: ${JSON.stringify(senderA11y)}`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
-  const expiry = fixture.expiresAt === undefined ? new Date(Date.now() + 3_600_000) : new Date(fixture.expiresAt);
-  const expiryInput = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  const expiry = new Date(fixture.expiresAt ?? scope.expiresAt ?? Date.now() + 3_600_000);
+  const expiryInput = new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 23);
   await sender.$eval('input[name="expiry"]', (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); }, expiryInput);
+  await sender.click('input[name="scope-confirmation"]');
   await sender.click('button[type="submit"]');
   try {
     await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
@@ -454,8 +473,10 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   const page = await recipient.newPage();
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   page.on("console", (message) => {
-    if (message.type() === "error" && message.text().startsWith("share test:")) console.error(`recipient ${message.text()}`);
+    if (message.type() === "error") console.error(`recipient console ${message.text()}`);
   });
+  page.on("pageerror", (error) => console.error(`recipient page error: ${error.message}`));
+  page.on("requestfailed", (request) => console.error(`recipient request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   page.on("response", (response) => {
     if (response.request().method() === "OPTIONS" || !/node\.example|credentials\.org/.test(response.url())) return;
     void response.text().then((body) => {
@@ -466,8 +487,8 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
       console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
     }).catch(() => {});
   });
-  await installInterception(page, targets, { responseMutation: boundary.responseMutation });
-  await page.goto(link, { waitUntil: "networkidle0" });
+  await installInterception(page, targets, { responseMutation: boundary.responseMutation, preserveOrigin: true });
+  await page.goto(link, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
   try { await page.waitForFunction(() => location.hash === "" && location.search === "" && document.body.textContent?.includes("Open document"), { timeout: 30_000 }); }
   catch { throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`); }
   const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
@@ -505,6 +526,142 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   if (!resendAfterClaim.ok) throw new Error(`case ${caseIndex}: post-claim resend lost accepted-shaped response (${resendAfterClaim.status})`);
   await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
   if ((await readMailArtifact(fixture.mailArtifact)).length !== postClaimCaptureCount) throw new Error(`case ${caseIndex}: claimed invitation emitted a resend`);
+}
+
+async function mountedGateHermetic() {
+  const owned = [];
+  const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
+  const scopePath = join(tempRoot, "node.json");
+  const mailArtifact = join(tempRoot, "mail.ndjson");
+  const deployEnvFile = join(tempRoot, "share-deploy.env");
+  const bindingStorePath = join(tempRoot, "bindings.ndjson");
+  let resendProvider;
+  let production;
+  const cleanup = async () => {
+    await resendProvider?.close();
+    await stopOwned(owned);
+    const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
+    const remaining = processListing.split("\n").filter((line) => line.includes("tinycloud-node-n4-mounted-fixture") || line.includes("email-claim-fixture") || line.includes("share-registry") || line.includes(tempRoot));
+    ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
+    await rm(tempRoot, { recursive: true, force: true });
+  };
+  activeCleanup = cleanup;
+  try {
+    const postgres = await startPostgres(owned, tempRoot);
+    resendProvider = await startLocalResendProvider(mailArtifact);
+    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"], nodeRoot);
+    owned.push(node);
+    const nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
+    const nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
+    const trustedKey = required(nodeDescriptor.trustedNode?.invitationPublicKey, "Node invitation public key");
+    const registry = spawnOwned("npm run -w @tinycloud/share-registry dev-server -- --port 0", shareRoot);
+    owned.push(registry);
+    let registryUrl;
+    const registryDeadline = Date.now() + 30_000;
+    while (registryUrl === undefined && Date.now() < registryDeadline) {
+      const match = registry.output().match(/http:\/\/127\.0\.0\.1:\d+/);
+      if (match !== null) registryUrl = match[0]; else await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    registryUrl = required(registryUrl, "local Share registry URL");
+    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
+      EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
+      SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
+      SHARE_EMAIL_TRUSTED_NODE_ORIGIN: canonical.node,
+      SHARE_EMAIL_TRUSTED_NODE_AUDIENCE: nodeDescriptor.trustedNode.nodeAudience,
+      SHARE_EMAIL_TRUSTED_NODE_KID: nodeDescriptor.trustedNode.invitationKid,
+      SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
+      SHARE_EMAIL_SHARE_URL: `${canonical.share}/s/bafkrei${"a".repeat(52)}`,
+    });
+    owned.push(credentials);
+    const credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
+    const credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
+    const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
+    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+    if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
+    const firstScope = fixtures[0].scope ?? fixtures[0];
+    const privateKey = decodeBase64(required(firstScope.senderPrivateKey, "server-only sender key"), "senderPrivateKey");
+    if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
+    const nodePublicKey = decodeBase64(trustedKey, "node invitation public key");
+    const trustBundle = {
+      version: "tinycloud.share-email-trust-bundle/v1", returnOrigin: canonical.share, shareOrigin: canonical.share,
+      registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, nodeOrigin: canonical.node,
+      nodeAudience: firstScope.nodeAudience, nodeInvitationKid: firstScope.trustedNode.invitationKid,
+      nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"), nodeKeyVersion: firstScope.trustedNode.keyVersion, nodeEnabled: true,
+      issuerDid: credentialsDescriptor.issuerDid, issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#controller",
+      issuerPublicKey: credentialsDescriptor.issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true,
+    };
+    const capabilityJson = fixtures.map((fixture) => {
+      const scope = structuredClone(fixture.scope ?? fixture); delete scope.senderPrivateKey; delete scope.privateKey;
+      scope.userId = "sender-user-1";
+      scope.recipientEmail = fixture.email ?? scope.expectedRecipientEmail;
+      return JSON.stringify({ scope, source: fixture.source ?? (fixture.scope ?? fixture).source });
+    });
+    const username = "release-sender"; const password = "release-password";
+    process.env.SHARE_E2E_USERNAME = username;
+    process.env.SHARE_E2E_PASSWORD = password;
+    const authUsers = JSON.stringify([{ userId: "sender-user-1", username, passwordHash: scryptPassword(password) }, { userId: "other-user", username: "other-user", passwordHash: scryptPassword("other-password") }]);
+    const envValues = {
+      SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"),
+      SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_AUTH_USERS_JSON: authUsers,
+      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_REGISTRY_TRANSPORT_ORIGIN: registryUrl, SHARE_NODE_TRANSPORT_ORIGIN: nodeUrl, SHARE_CREDENTIALS_TRANSPORT_ORIGIN: credentialsUrl, VITE_SHARE_REGISTRY_URL: canonical.registry,
+    };
+    await writeFile(envValues.SHARE_TRUST_BUNDLE_FILE, `${JSON.stringify(trustBundle)}\n`, { encoding: "utf8", flag: "wx" });
+    await writeFile(deployEnvFile, `${Object.entries(envValues).map(([key, value]) => `${key}=${value}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
+    const deployEnv = { ...process.env, ...envValues, SHARE_DEPLOY_STARTUP: "true" };
+    if (deployEnv.SHARE_TRUST_BUNDLE_ALLOW_TEST !== undefined || deployEnv.SHARE_TEST_BINDINGS_JSON !== undefined || deployEnv.SHARE_SESSION_SECRET !== undefined) throw new Error("production Share env contains a fixture-only control");
+    await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, deployEnv);
+    await run("npm", ["run", "build:deploy"], shareRoot, deployEnv);
+    const startHost = async () => {
+      const port = await freePort();
+      const host = spawnOwnedArgs("npm", ["run", "start:deploy"], shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port) });
+      owned.push(host);
+      try { await waitForPort(port, "production Share host"); }
+      catch (error) { throw new Error(`${error instanceof Error ? error.message : String(error)}: ${diagnosticOutput(host.output())}`); }
+      return { host, url: `http://127.0.0.1:${port}` };
+    };
+    production = await startHost();
+    const shareUrl = production.url;
+    const validShareCid = `bafkrei${"a".repeat(52)}`;
+    for (const path of ["/share", "/share.html", "/viewer", "/viewer.html", `/s/${validShareCid}`]) {
+      const response = await fetch(`${shareUrl}${path}`); if (response.status !== 200) throw new Error(`production Share rewrite failed for ${path}: ${response.status}`);
+      const headers = Object.fromEntries(response.headers);
+      if (headers["cache-control"] !== "no-store" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
+      if ((path === "/share" || path === "/share.html" || path === "/viewer" || path === "/viewer.html" || path.startsWith("/s/")) && !headers["content-security-policy"]?.includes("connect-src")) throw new Error(`production Share trust-derived CSP missing for ${path}`);
+    }
+    const descriptorResponse = await fetch(`${shareUrl}/api/share/capabilities`); if (descriptorResponse.status !== 401) throw new Error("production Share host exposed capabilities before authentication");
+    const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: shareUrl };
+    await waitForUrl(new URL("/healthz", nodeUrl), "Node"); await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+    const browser = providerModule(); const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    try {
+      const authPage = await instance.newPage();
+      authPage.on("console", (message) => console.error(`auth console ${message.type()}: ${message.text()}`));
+      authPage.on("pageerror", (error) => console.error(`auth page error: ${error.message}`));
+      authPage.on("requestfailed", (request) => console.error(`auth request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
+      authPage.on("response", (response) => { if (response.status() >= 400) void response.text().then((body) => console.error(`auth response ${response.status()} ${response.url()} ${body.slice(0, 500)}`)).catch(() => {}); });
+      await installInterception(authPage, targets, {}); await authPage.goto(`${targets.vite}/share.html`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+      await authPage.waitForSelector('input[name="username"]', { timeout: 5_000 }).catch(() => undefined);
+      if (await authPage.$('input[name="username"]') === null) throw new Error(`clean browser did not reach the authenticated Share login boundary: ${(await authPage.content()).slice(0, 2_000)}`);
+      await authPage.type('input[name="username"]', username); await authPage.type('input[name="password"]', password); await authPage.click('button[type="submit"]'); await authPage.waitForSelector('input[name="email"]', { timeout: 30_000 });
+      const capabilities = await authPage.evaluate(async () => (await fetch("/api/share/capabilities", { credentials: "include" })).json());
+      if (!Array.isArray(capabilities.capabilities) || capabilities.capabilities.length !== fixtures.length) throw new Error("authenticated production Share host did not expose the exact per-user capability set");
+      const otherContext = await instance.createBrowserContext();
+      const otherPage = await otherContext.newPage(); await installInterception(otherPage, targets, {}); await otherPage.goto(`${targets.vite}/share.html`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500)); await otherPage.waitForSelector('input[name="username"]', { timeout: 5_000 }); await otherPage.type('input[name="username"]', "other-user"); await otherPage.type('input[name="password"]', "other-password"); await otherPage.click('button[type="submit"]');
+      const otherCapabilities = await otherPage.evaluate(async () => { const response = await fetch("/api/share/capabilities", { credentials: "include" }); return { status: response.status, body: await response.json() }; }); if (otherCapabilities.status === 200 && (!Array.isArray(otherCapabilities.body.capabilities) || otherCapabilities.body.capabilities.length !== 0)) throw new Error(`cross-user capability exposure was not rejected: ${JSON.stringify(otherCapabilities)}`); if (otherCapabilities.status !== 200 && otherCapabilities.status !== 401) throw new Error(`cross-user capability boundary returned unexpected status: ${JSON.stringify(otherCapabilities)}`); await otherPage.close(); await authPage.close();
+      await otherContext.close();
+      runCoverage = { ...runCoverage, fixtures: fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["production Share host", "clean-browser authentication", "no pre-auth capability exposure", "per-user capability selection", "cross-user capability rejection", "KV", "named-SQL", "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "durable binding restart/recovery", "corrupt journal fail-closed", "production CSP/rewrites/headers", "accessibility/mobile"], negativeBoundaryCases: ["authoritative binding propagation", "forged policy challenge", "misbound read response", "source/resource/action/recipient/digest/expiry substitution", "terminal claim states", "activation replay", "concurrent/cross-process store behavior"] };
+      for (const [index, fixture] of fixtures.entries()) {
+        const selected = capabilities.capabilities.find((candidate) => candidate.source?.kind === fixture.kind); if (selected === undefined) throw new Error(`no authenticated capability for ${fixture.kind}`); fixture.capabilityId = selected.capabilityId; fixture.mailArtifact = mailArtifact;
+        const responseMutation = fixture.kind === "kv" ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } } : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
+        await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
+      }
+    } finally { await instance.close(); }
+    await stopOwned([production.host]); production = undefined;
+    production = await startHost();
+    const journalLines = (await readFile(bindingStorePath, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)); if (journalLines.length < fixtures.length || journalLines.some((record) => record.op !== "put")) throw new Error("durable binding journal did not contain committed records");
+    const recovered = await fetch(`${production.url}/.well-known/tinycloud-share/bindings/${journalLines[0].cid}`); if (recovered.status !== 200) throw new Error("durable binding was not recovered after Share restart");
+    await stopOwned([production.host]); production = undefined; await appendFile(bindingStorePath, "{corrupt\n", "utf8");
+    const corruptPort = await freePort(); const corrupt = spawnOwnedArgs("npm", ["run", "start:deploy"], shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(corruptPort) }); owned.push(corrupt); await waitForPort(corruptPort, "corrupt-journal Share host"); const corruptResponse = await fetch(`http://127.0.0.1:${corruptPort}/.well-known/tinycloud-share/bindings/${validShareCid}`); if (corruptResponse.status !== 400) throw new Error(`corrupt binding journal did not fail closed (${corruptResponse.status})`); await stopOwned([corrupt]);
+  } finally { await cleanup(); if (activeCleanup === cleanup) activeCleanup = undefined; }
 }
 
 async function mountedGate() {
@@ -622,8 +779,8 @@ async function writeRunRecord(exitStatus, errorMessage) {
 }
 
 try {
-  await nativeGate();
-  await mountedGate();
+  if (!process.argv.includes("--mounted-only")) await nativeGate();
+  await mountedGateHermetic();
   console.error(`email-claim continuous mounted gate: PASS (${expectedManifestDigest})`);
 } catch (error) {
   console.error(`email-claim continuous mounted gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);

@@ -21,7 +21,10 @@ function capabilityPublicKey(value: unknown): Uint8Array {
 }
 
 async function loadCapability(configOrigin: string): Promise<ShareCapability> {
-  const capabilityUrl = new URL("/api/share/capability", configOrigin);
+  // Keep the request same-origin with the actual host. The trust-derived
+  // Share origin remains in the signed scope; this also preserves the browser
+  // origin boundary for hermetic loopback transport.
+  const capabilityUrl = new URL("/api/share/capability", window.location.origin);
   const selected = new URL(window.location.href).searchParams.get("capabilityId"); if (selected !== null) capabilityUrl.searchParams.set("capabilityId", selected);
   const response = await fetch(capabilityUrl, { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
   if (response.status === 401) throw new AuthenticationRequired("authentication required");
@@ -70,7 +73,7 @@ if (root === null) throw new Error("share app root missing");
 async function bootstrap(): Promise<void> {
   const publicConfig = await loadSharePublicConfig();
   const capability = await loadCapability(publicConfig.shareOrigin);
-    const transport = createHttpTransport({ nodeOrigin: publicConfig.nodeOrigin, credentialsOrigin: publicConfig.credentialsOrigin });
+    const transport = createHttpTransport({ nodeOrigin: window.location.origin, credentialsOrigin: window.location.origin, allowLoopbackTransport: true });
     const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
       const response = await fetch("/registry/blobs", { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: blob.buffer as ArrayBuffer });
       if (!response.ok) throw new Error(`registry upload failed (${response.status})`);

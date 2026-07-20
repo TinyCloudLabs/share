@@ -21,7 +21,7 @@ button, input, select, textarea { font: inherit; }
 .sender-kicker { margin: 0 0 12px; color: var(--share-accent); font-size: 0.78rem; font-weight: 750; letter-spacing: 0.12em; text-transform: uppercase; }
 .sender-title { margin: 0; font-size: 2.4rem; line-height: 1.1; letter-spacing: -0.025em; text-wrap: balance; }
 .sender-lede { margin: 16px 0 0; color: var(--share-muted); max-width: 64ch; }
-.sender-form { max-width: 720px; padding: 28px; background: var(--share-panel); border: 1px solid var(--share-line); border-radius: 14px; }
+.sender-form { max-width: 720px; min-width: 0; padding: 28px; background: var(--share-panel); border: 1px solid var(--share-line); border-radius: 14px; overflow-wrap: anywhere; }
 .field-label, .field-legend { display: grid; gap: 7px; margin: 0 0 18px; font-size: 0.9rem; font-weight: 700; }
 .field-input { width: 100%; min-height: 44px; border: 1px solid #b9c6d8; border-radius: 8px; padding: 9px 12px; color: var(--share-ink); background: #fff; }
 .field-input:focus-visible, .button:focus-visible { outline: 3px solid #8cb2ff; outline-offset: 2px; border-color: var(--share-accent); }
@@ -29,6 +29,7 @@ button, input, select, textarea { font: inherit; }
 .sql-fields[hidden] { display: none; }
 .field-legend { margin-bottom: 14px; }
 .scope-note { margin: 2px 0 20px; color: var(--share-muted); font-size: 0.88rem; }
+pre.scope-note { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .button { min-height: 44px; border: 1px solid transparent; border-radius: 8px; padding: 9px 16px; font-weight: 750; cursor: pointer; }
 .button, .field-input { touch-action: manipulation; }
 .button-primary { background: var(--share-accent); color: #fff; }

@@ -114,6 +114,8 @@ export interface ShareHostOptions {
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource }>;
   readonly bindingStore: BindingStore;
   readonly registryOrigin: string;
+  /** Loopback transport used by the hermetic mounted deployment. */
+  readonly registryTransportOrigin?: string;
   readonly authUsers?: readonly AuthUser[];
   readonly testMode: boolean;
 }
@@ -219,7 +221,10 @@ function assertSigningBinding(purpose: string, message: string, binding: Record<
     if (parsed.delegation !== scope.delegation || target?.origin !== scope.targetOrigin || target.nodeAudience !== scope.nodeAudience || target.spaceId !== scope.spaceId || (target.resource as Record<string, unknown>)?.path !== authorizedSource.path || (target.resource as Record<string, unknown>)?.kind !== "exact") throw new Error("envelope signing binding mismatch");
     if (authorizationTarget?.kind !== "policy" || typeof authorizationTarget.policyBytes !== "string") throw new Error("envelope signing target mismatch");
     if (policy?.recipientEmail !== recipientEmail || policy?.action !== authorizedSource.action || policy?.resource !== authorizedSource.path || policy?.expiresAt !== parsed.expiry || !sameJson(policy.contentSource, authorizedSource) || policy.contentSourceDigest !== expectedSourceDigest || policy.issuerDid !== scope.senderDid) throw new Error("policy signing binding mismatch");
-  } else if (parsed.senderDid !== scope.senderDid || parsed.targetOrigin !== scope.targetOrigin || parsed.nodeAudience !== scope.nodeAudience || parsed.returnOrigin !== scope.shareOrigin || parsed.delegationCid !== scope.delegationCid || parsed.authorityMaterialHandle !== scope.authorityMaterialHandle || parsed.authorityMaterialDigest !== scope.authorityMaterialDigest || parsed.documentName !== scope.documentName || parsed.senderTrust !== scope.senderTrust || parsed.recipientEmail !== recipientEmail || parsed.action !== authorizedSource.action || parsed.resource !== authorizedSource.path || !sameJson(messageSource, authorizedSource) || parsed.contentSourceDigest !== expectedSourceDigest || parsed.shareExpiresAt !== scope.expiresAt) throw new Error("authorization signing binding mismatch");
+  } else {
+    const mismatches = Object.entries({ senderDid: [parsed.senderDid, scope.senderDid], targetOrigin: [parsed.targetOrigin, scope.targetOrigin], nodeAudience: [parsed.nodeAudience, scope.nodeAudience], delegationCid: [parsed.delegationCid, scope.delegationCid], authorityMaterialHandle: [parsed.authorityMaterialHandle, scope.authorityMaterialHandle], authorityMaterialDigest: [parsed.authorityMaterialDigest, scope.authorityMaterialDigest], documentName: [parsed.documentName, scope.documentName], senderTrust: [parsed.senderTrust, scope.senderTrust], recipientEmail: [parsed.recipientEmail, recipientEmail], action: [messageSource?.action, authorizedSource.action], resource: [messageSource?.path, authorizedSource.path], contentSourceDigest: [parsed.contentSourceDigest, expectedSourceDigest], shareExpiresAt: [parsed.shareExpiresAt, scope.expiresAt] }).filter(([, values]) => values[0] !== values[1] || (values[0] !== undefined && typeof values[0] === "object" && !sameJson(values[0], values[1])));
+    if (mismatches.length !== 0 || !sameJson(messageSource, authorizedSource)) throw new Error("authorization signing binding mismatch");
+  }
 }
 
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown> } {
@@ -307,7 +312,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid)) return generic(400);
         const binding = await options.bindingStore.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
-      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin);
+      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
       return undefinedResponse();
     } catch { return generic(400); }
   }
@@ -320,8 +325,8 @@ async function boundedJson(request: Request): Promise<Record<string, unknown>> {
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("body shape"); return value as Record<string, unknown>;
 }
 
-async function proxyRegistry(request: Request, origin: string): Promise<Response> {
-  const requestUrl = new URL(request.url); const base = new URL(origin); const target = new URL(requestUrl.pathname.slice("/registry".length) || "/", base); target.search = requestUrl.search;
+async function proxyRegistry(request: Request, origin: string, transportOrigin = origin): Promise<Response> {
+  const requestUrl = new URL(request.url); const base = new URL(transportOrigin); const target = new URL(requestUrl.pathname.slice("/registry".length) || "/", base); target.search = requestUrl.search;
   const headers = new Headers(); ["accept", "content-type", "if-none-match", "x-delete-after"].forEach((name) => { const value = request.headers.get(name); if (value !== null) headers.set(name, value); });
   const result = await fetch(target, { method: request.method, headers, ...(request.method === "GET" ? {} : { body: await request.arrayBuffer() }), redirect: "error" });
   return new Response(result.body, { status: result.status, headers: result.headers });
@@ -342,8 +347,10 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
   const bindingStore = env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : (() => { throw new Error("SHARE_BINDING_STORE_PATH is required in production"); })()) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
-  const registryOrigin = bundle.environment === "production" ? bundle.public.registryOrigin : (env.SHARE_REGISTRY_ORIGIN ?? bundle.public.registryOrigin);
+  const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("SHARE_REGISTRY_ORIGIN must be a canonical HTTPS origin");
+  const registryTransportOrigin = env.SHARE_REGISTRY_TRANSPORT_ORIGIN ?? registryOrigin;
+  if (!/^https?:\/\/[^/?#:@]+(?::\d+)?$/.test(registryTransportOrigin)) throw new Error("SHARE_REGISTRY_TRANSPORT_ORIGIN must be a canonical transport origin");
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {
@@ -358,5 +365,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     });
   }
   if (bundle.environment === "production" && authUsers.length === 0) throw new Error("SHARE_AUTH_USERS_JSON is required for the authenticated Share host");
-  return createShareHostAdapter({ bundle, capability, ...(parsedCapabilities.length > 1 ? { capabilities } : {}), bindingStore, registryOrigin, authUsers, testMode: bundle.environment === "test" });
+  return createShareHostAdapter({ bundle, capability, ...(parsedCapabilities.length > 1 ? { capabilities } : {}), bindingStore, registryOrigin, registryTransportOrigin, authUsers, testMode: bundle.environment === "test" });
 }
