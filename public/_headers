@@ -1,17 +1,5 @@
-# Cloudflare Pages production headers. The deploy build emits the public trust
-# config only from SHARE_TRUST_BUNDLE; this file contains no trust material.
-/*
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  Cache-Control: no-store
-/share.html
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://node.tinycloud.xyz https://witness.credentials.org https://registry.tinycloud.xyz; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'
-/viewer.html
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://node.tinycloud.xyz https://witness.credentials.org https://registry.tinycloud.xyz; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'
-/s/*
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  Cache-Control: no-store
+# Replaced by the deploy build from the validated SHARE_TRUST_BUNDLE.
+# Source assets contain no production origins or trust material.
 /mermaid-sandbox.html
   Content-Security-Policy: frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN

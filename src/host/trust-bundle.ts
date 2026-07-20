@@ -110,3 +110,23 @@ export function loadTrustBundle(env: NodeJS.ProcessEnv = process.env): ShareTrus
   try { value = JSON.parse(raw); } catch { throw new Error("SHARE_TRUST_BUNDLE is not valid JSON"); }
   return validateTrustBundle(value, env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true", senderSecret(env));
 }
+
+export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: string): Record<string, string> {
+  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin].join(" ");
+  const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+  const isViewer = pathname === "/viewer.html" || pathname === "/viewer" || pathname === "/s/*" || /^\/s\/[a-z2-7]+$/.test(pathname);
+  const isShare = pathname === "/share.html" || pathname === "/share";
+  if (!isViewer && !isShare) return common;
+  const csp = isViewer
+    ? `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${connect}; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'`
+    : `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ${connect}; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'`;
+  return { ...common, "Content-Security-Policy": csp, "Content-Type": "text/html; charset=UTF-8" };
+}
+
+export function cloudflareHeaders(bundle: ShareTrustBundle): string {
+  const render = (path: string): string => {
+    const headers = securityHeadersForPath(bundle, path);
+    return `${path}\n${Object.entries(headers).map(([name, value]) => `  ${name}: ${value}`).join("\n")}`;
+  };
+  return [render("/*"), render("/share"), render("/share.html"), render("/s/*"), render("/viewer.html"), "/mermaid-sandbox.html\n  Content-Security-Policy: frame-ancestors 'self'\n  X-Frame-Options: SAMEORIGIN\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Cache-Control: no-store"].join("\n") + "\n";
+}

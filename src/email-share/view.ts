@@ -31,6 +31,12 @@ function sourceFromForm(form: HTMLFormElement, authorized: ContentSource | undef
   return { kind: "kv", space, path, action: "tinycloud.kv/get" };
 }
 
+function sourceSummary(source: ContentSource): string {
+  return source.kind === "kv"
+    ? `Resource: ${source.space}/${source.path}\nAction: ${source.action}`
+    : `Resource: ${source.space}/${source.database}/${source.path}\nAction: ${source.action}\nNamed statement: ${source.statement}\nArguments: ${JSON.stringify(source.arguments)}`;
+}
+
 function renderState(root: HTMLElement, state: SenderState, submit?: () => void): void {
   const status = root.querySelector<HTMLElement>("[data-sender-status]");
   if (status === null) return;
@@ -60,6 +66,8 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   form.noValidate = true;
   const emailLabel = element(doc, "label", "field-label", "Recipient email");
   const email = element(doc, "input", "field-input") as HTMLInputElement; email.type = "email"; email.name = "email"; email.autocomplete = "email"; email.required = true; email.placeholder = "name@example.com"; emailLabel.append(email);
+  const authorizedRecipient = (options.scope as (SenderScope & { readonly recipientEmail?: unknown }) | undefined)?.recipientEmail;
+  if (typeof authorizedRecipient === "string") { email.value = authorizedRecipient; email.readOnly = true; emailLabel.append(element(doc, "span", "scope-note", "The authenticated capability fixes the recipient.")); }
   const kindLabel = element(doc, "label", "field-label", "Source");
   const kind = element(doc, "select", "field-input") as HTMLSelectElement; kind.name = "source-kind"; kind.append(new Option("TinyCloud KV · exact path", "kv"), new Option("Named SQL · one constrained statement", "sql")); kindLabel.append(kind);
   const spaceLabel = element(doc, "label", "field-label", "Space"); const space = element(doc, "input", "field-input") as HTMLInputElement; space.name = "space"; space.required = true; space.placeholder = "did:pkh:…"; spaceLabel.append(space);
@@ -71,13 +79,17 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   kind.addEventListener("change", () => { sqlFields.hidden = kind.value !== "sql"; });
   const expiryLabel = element(doc, "label", "field-label", "Access ends"); const expiry = element(doc, "input", "field-input") as HTMLInputElement; expiry.type = "datetime-local"; expiry.name = "expiry"; expiry.required = true; expiryLabel.append(expiry);
   const scopeNote = element(doc, "p", "scope-note", "Read-only. No raw SQL, folder listing, downloads, or write access are available in v1.");
+  const confirmed = element(doc, "label", "field-label", "Confirm exact capability");
+  const confirmation = element(doc, "input", "field-input") as HTMLInputElement; confirmation.type = "checkbox"; confirmation.name = "scope-confirmation"; confirmation.required = true;
+  const exactScope = element(doc, "pre", "scope-note"); exactScope.textContent = options.defaultSource === undefined ? "Choose the exact source and action above." : sourceSummary(options.defaultSource);
+  confirmed.prepend(confirmation); confirmed.append(" I confirm this exact resource and read action.");
   if (options.defaultSource !== undefined) {
     kindLabel.hidden = true; spaceLabel.hidden = true; pathLabel.hidden = true; sqlFields.hidden = true;
-    scopeNote.textContent = "The host supplied a pre-authorized read-only source. Resource scope cannot be edited in this page.";
+    scopeNote.textContent = "The host supplied this pre-authorized read-only capability. Confirming it is required before an invitation can be requested.";
   }
   const submit = element(doc, "button", "button button-primary", "Request invitation"); submit.type = "submit";
   const status = element(doc, "div", "sender-status"); status.dataset.senderStatus = "true";
-  form.append(emailLabel, kindLabel, spaceLabel, pathLabel, sqlFields, expiryLabel, scopeNote, submit, status);
+  form.append(emailLabel, kindLabel, spaceLabel, pathLabel, sqlFields, expiryLabel, scopeNote, exactScope, confirmed, submit, status);
   shell.append(form);
   const explainer = element(doc, "section", "sender-explainer"); explainer.append(element(doc, "h2", "What happens next"), element(doc, "p", "sender-explainer-copy", "A signed envelope binds the exact email, source, method, node, and expiry. OpenCredentials only sends after TinyCloud authorizes that exact bundle. The recipient then explicitly opens the document before the one-use claim is redeemed."));
   const diagram = element(doc, "div", "sender-diagram"); diagram.setAttribute("aria-live", "polite"); const fallback = element(doc, "ol", "sender-diagram-fallback"); ["Verify scope locally", "Authorize with TinyCloud", "Request OpenCredentials delivery", "Recipient confirms and reads once"].forEach((item) => fallback.append(element(doc, "li", "", item))); diagram.append(fallback); explainer.append(diagram); shell.append(explainer); root.append(shell);
@@ -90,6 +102,7 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
     event.preventDefault();
     if (options.scope === undefined) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
     try {
+      if (!confirmation.checked) throw new TypeError("Confirm the exact capability.");
       const source = sourceFromForm(form, options.defaultSource); const expiryValue = String(new FormData(form).get("expiry") ?? ""); const expiresAt = new Date(expiryValue).toISOString();
       const request = { email: email.value, source, scope: options.scope, shareId: `share-${crypto.randomUUID()}`, expiresAt };
       lastRequest = request; void controller.request(request);

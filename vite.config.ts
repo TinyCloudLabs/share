@@ -15,7 +15,7 @@ import {
   buildMermaidSandboxHtml,
 } from "./src/viewer/mermaid-frame.ts";
 import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
-import { loadTrustBundle } from "./src/host/trust-bundle.ts";
+import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
 
 /**
  * Serve viewer.html on /s/<cid> routes (dev + preview). The spec site stays
@@ -27,7 +27,10 @@ function shareRouteRewrite(): Plugin {
     const path = (url ?? "").split("?")[0] ?? "";
     // Fragment (#k=…) never reaches the server, so matching the path only
     // is exact. CID charset per the link codec: lowercase base32.
-    return /^\/s\/[a-z2-7]+$/.test(path) ? "/viewer.html" : undefined;
+    if (/^\/s\/[a-z2-7]+$/.test(path)) return "/viewer.html";
+    if (path === "/share") return "/share.html";
+    if (path === "/viewer") return "/viewer.html";
+    return undefined;
   };
   return {
     name: "share-route-rewrite",
@@ -89,10 +92,6 @@ function mermaidSandboxHtml(): Plugin {
     name: "mermaid-sandbox-html",
     configureServer: serve,
     configurePreviewServer: serve,
-    transformIndexHtml(html, context) {
-      if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" || (context.path !== "/share.html" && context.path !== "/viewer.html")) return html;
-      return html.replaceAll("https://node.tinycloud.xyz", loadTrustBundle().public.nodeOrigin);
-    },
     generateBundle() {
       this.emitFile({
         type: "asset",
@@ -105,7 +104,7 @@ function mermaidSandboxHtml(): Plugin {
 
 function shareHostAdapter(): Plugin {
   let adapter: ReturnType<typeof createShareHostFromEnv> | undefined;
-  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/capability" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/");
+  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/");
   const ensure = (): ReturnType<typeof createShareHostFromEnv> | undefined => {
     if (adapter !== undefined) return adapter;
     try { adapter = createShareHostFromEnv(); return adapter; }
@@ -144,15 +143,33 @@ function shareHostAdapter(): Plugin {
       const bundle = loadTrustBundle();
       const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: bundle.public.shareOrigin, registryOrigin: bundle.public.registryOrigin, nodeOrigin: bundle.public.nodeOrigin, credentialsOrigin: bundle.public.credentialsOrigin, nodeAudience: bundle.public.nodeAudience, issuerDid: bundle.public.issuerDid, issuerVct: bundle.public.issuerVct, nodeInvitationKid: bundle.public.nodeInvitationKid, nodeInvitationPublicKey: bundle.public.nodeInvitationPublicKey, nodeKeyVersion: bundle.public.nodeKeyVersion, issuerKeyVersion: bundle.public.issuerKeyVersion, issuerPublicKey: bundle.public.issuerPublicKey };
       this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify(publicConfig)}\n` });
+      this.emitFile({ type: "asset", fileName: "_headers", source: cloudflareHeaders(bundle) });
     },
   };
+}
+
+function securityHeaders(): Plugin {
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    server.middlewares.use((req, res, next) => {
+      try {
+        const bundle = loadTrustBundle();
+        const path = (req.url ?? "").split("?")[0] ?? "";
+        for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) res.setHeader(name, value);
+      } catch (error) {
+        if (process.env.SHARE_DEPLOY_STARTUP === "true") { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); return; }
+        void error;
+      }
+      next();
+    });
+  };
+  return { name: "share-security-headers", configureServer: serve, configurePreviewServer: serve };
 }
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 
 export default defineConfig({
   base: "/",
-  plugins: [shareRouteRewrite(), mermaidSandboxHtml(), shareHostAdapter()],
+  plugins: [shareRouteRewrite(), securityHeaders(), mermaidSandboxHtml(), shareHostAdapter()],
   build: {
     rollupOptions: {
       input: {

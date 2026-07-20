@@ -417,9 +417,16 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("response", (response) => { if (response.request().method() === "OPTIONS") return; if (response.status() >= 400) void response.text().then((body) => console.error(`sender response: ${response.request().method()} ${response.status()} ${response.url()} ${body.slice(0, 1000)}`)); });
-  await sender.setCookie({ name: "share_session", value: "fixture-session", domain: "share.tinycloud.xyz", path: "/" }, { name: "share_case", value: String(caseIndex % 2), domain: "share.tinycloud.xyz", path: "/" });
   await installInterception(sender, targets, {});
-  await sender.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
+  const capabilityQuery = fixture.capabilityId === undefined ? "" : `?capabilityId=${encodeURIComponent(fixture.capabilityId)}`;
+  await sender.goto(`${canonical.share}/share.html${capabilityQuery}`, { waitUntil: "networkidle0" });
+  const login = await sender.$('input[name="username"]');
+  if (login !== null) {
+    const username = required(process.env.SHARE_E2E_USERNAME, "SHARE_E2E_USERNAME");
+    const password = required(process.env.SHARE_E2E_PASSWORD, "SHARE_E2E_PASSWORD");
+    await sender.type('input[name="username"]', username); await sender.type('input[name="password"]', password); await sender.click('button[type="submit"]');
+    await sender.waitForSelector('input[name="email"]', { timeout: 30_000 });
+  }
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
   const senderA11y = await sender.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role") }));
@@ -502,127 +509,60 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
 async function mountedGate() {
   const owned = [];
-  const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
-  const scopePath = arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE ?? join(tempRoot, "node.json");
-  const mailArtifact = arg("mail-artifact") ?? process.env.SHARE_EMAIL_MAIL_ARTIFACT ?? join(tempRoot, "mail.ndjson");
-  let resendProvider;
-  let postgres;
-  let nodeUrl = arg("node-url") ?? process.env.TINYCLOUD_NODE_URL;
-  let credentialsUrl = arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL;
-  let nodeDescriptor;
-  let credentialsDescriptor;
-  const cleanup = async () => {
-    await resendProvider?.close();
-    await stopOwned(owned);
-    const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
-    const remaining = processListing.split("\n").filter((line) => line.includes("tinycloud-node-n4-mounted-fixture") || line.includes("email-claim-fixture") || line.includes(tempRoot));
-    ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
-    await rm(tempRoot, { recursive: true, force: true });
-  };
-  activeCleanup = cleanup;
+  const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-share-production-"));
+  const scopePath = required(arg("scope-file") ?? process.env.SHARE_EMAIL_SCOPE_FILE, "SHARE_EMAIL_SCOPE_FILE");
+  const mailArtifact = required(arg("mail-artifact") ?? process.env.SHARE_EMAIL_MAIL_ARTIFACT, "SHARE_EMAIL_MAIL_ARTIFACT");
+  const nodeUrl = required(arg("node-url") ?? process.env.TINYCLOUD_NODE_URL, "TINYCLOUD_NODE_URL");
+  const credentialsUrl = required(arg("credentials-url") ?? process.env.OPENCREDENTIALS_URL, "OPENCREDENTIALS_URL");
+  const deployEnvFile = required(process.env.SHARE_DEPLOY_ENV_FILE, "SHARE_DEPLOY_ENV_FILE");
+  const deployEnv = Object.fromEntries((await readFile(deployEnvFile, "utf8")).split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("#")).map((line) => { const at = line.indexOf("="); if (at <= 0) throw new Error("invalid Share deployment env file"); return [line.slice(0, at), line.slice(at + 1)]; }));
+  if (Object.keys(deployEnv).some((key) => key === "SHARE_TRUST_BUNDLE_ALLOW_TEST" || key === "SHARE_TEST_BINDINGS_JSON" || key === "SHARE_SESSION_SECRET")) throw new Error("production Share env contains a fixture-only control");
+  const port = await freePort();
+  const host = spawnOwned("npm run start:deploy", shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port), SHARE_BINDING_STORE_PATH: join(tempRoot, "bindings.ndjson") });
+  owned.push(host);
+  const shareUrl = `http://127.0.0.1:${port}`;
+  await waitForPort(port, "production Share host");
+  const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
+  const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+  if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
+  const descriptorResponse = await fetch(`${shareUrl}/api/share/capabilities`);
+  if (descriptorResponse.status !== 401) throw new Error("production Share host exposed capabilities before authentication");
+  const targets = { node: nodeUrl, credentials: credentialsUrl, registry: new URL(deployEnv.SHARE_REGISTRY_ORIGIN), vite: shareUrl };
+  await waitForUrl(new URL("/healthz", nodeUrl), "Node");
+  await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
+  const browser = providerModule();
+  const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
   try {
-    if (nodeUrl === undefined) {
-      const node = arg("node-command") === undefined
-        ? spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-n4-mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY"], nodeRoot)
-        : spawnOwned(arg("node-command"), nodeRoot);
-      owned.push(node);
-      nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
-      nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
-    } else nodeDescriptor = JSON.parse(await readFile(scopePath, "utf8"));
-    const trustedKey = nodeDescriptor.trustedNode?.invitationPublicKey;
-    if (typeof trustedKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(trustedKey)) throw new Error(`mounted Node enrollment key is missing or non-canonical: ${trustedKey ?? "missing"}`);
-    if (credentialsUrl === undefined) {
-      postgres = await startPostgres(owned, tempRoot);
-      resendProvider = await startLocalResendProvider(mailArtifact);
-      const credentials = arg("credentials-command") === undefined
-        ? spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
-        EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
-        SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
-        SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
-        })
-        : spawnOwned(arg("credentials-command"), credentialsRustRoot, {
-          EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url,
-          SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
-          SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
-        });
-      owned.push(credentials);
-      credentialsDescriptor = await waitForDescriptor(credentials, "OpenCredentials");
-      credentialsUrl = required(credentialsDescriptor.url, "OpenCredentials descriptor URL");
-    }
-    if (!existsSync(scopePath)) throw new Error(`scope fixture is missing: ${scopePath}`);
-    const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
-    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
-    if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
-    const firstScope = fixtures[0].scope ?? fixtures[0];
-    const privateKey = typeof firstScope.senderPrivateKey === "string" ? decodeBase64(firstScope.senderPrivateKey, "senderPrivateKey") : new Uint8Array(firstScope.senderPrivateKey ?? []);
-    if (privateKey.length !== 32) throw new Error("fixture sender key is not a 32-byte server-only key");
-    const nodePublicKey = typeof firstScope.trustedNode.invitationPublicKey === "string" ? decodeBase64(firstScope.trustedNode.invitationPublicKey, "node invitation public key") : new Uint8Array(firstScope.trustedNode.invitationPublicKey ?? []);
-    const trustBundle = {
-      version: "tinycloud.share-email-trust-bundle/v1",
-      returnOrigin: canonical.share,
-      shareOrigin: canonical.share,
-      registryOrigin: "https://registry.tinycloud.xyz",
-      credentialsOrigin: canonical.credentials,
-      nodeOrigin: canonical.node,
-      nodeAudience: firstScope.nodeAudience,
-      nodeInvitationKid: firstScope.trustedNode.invitationKid,
-      nodeInvitationPublicKey: Buffer.from(nodePublicKey).toString("base64url"),
-      nodeKeyVersion: firstScope.trustedNode.keyVersion,
-      nodeEnabled: true,
-      issuerDid: "did:web:issuer.credentials.org",
-      issuerVct: "opencredentials.email/v1",
-      issuerKid: "did:web:issuer.credentials.org#controller",
-      issuerPublicKey: credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey,
-      issuerKeyVersion: 1,
-      issuerEnabled: true,
-    };
-    const capabilityJson = fixtures.map((fixture) => {
-      const scope = structuredClone(fixture.scope ?? fixture);
-      delete scope.senderPrivateKey;
-      delete scope.privateKey;
-      return JSON.stringify({ scope, source: fixture.source ?? (fixture.scope ?? fixture).source });
-    });
-    const bindings = Object.fromEntries(fixtures.flatMap((fixture) => (fixture.authoritativeBindings ?? [fixture.authoritativeBinding]).filter(Boolean).map((binding) => [binding.shareCid ?? fixture.shareCid, binding])));
-    let registryUrl = arg("registry-url") ?? process.env.SHARE_REGISTRY_URL;
-    if (registryUrl === undefined) {
-      const registryProcess = arg("registry-command") === undefined
-        ? spawnOwned("npm run -w @tinycloud/share-registry dev-server -- --port 0", shareRoot)
-        : spawnOwned(arg("registry-command"), shareRoot);
-      owned.push(registryProcess);
-      const deadline = Date.now() + 30_000;
-      while (registryUrl === undefined && Date.now() < deadline) { const match = registryProcess.output().match(/http:\/\/127\.0\.0\.1:\d+/); if (match) registryUrl = match[0]; else await new Promise((resolveWait) => setTimeout(resolveWait, 100)); }
-      if (registryUrl === undefined) throw new Error("Share registry did not publish a bound URL");
-    }
-    registryUrl = required(registryUrl, "registry URL");
-    let vite;
-    if (arg("vite-command") === undefined) {
-      const hostEnv = { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" };
-      await run("npm", ["run", "build"], shareRoot, hostEnv);
-      vite = spawnOwned("npm run preview -- --host 127.0.0.1 --port 0", shareRoot, hostEnv);
-    } else vite = spawnOwned(arg("vite-command"), shareRoot, { VITE_SHARE_REGISTRY_URL: `${canonical.share}/registry`, SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_TEST_BINDINGS_JSON: JSON.stringify(bindings), SHARE_REGISTRY_ORIGIN: registryUrl, SHARE_SESSION_SECRET: "fixture-session" });
-    owned.push(vite);
-    const viteMatch = await (async () => { const deadline = Date.now() + 30_000; while (Date.now() < deadline) { const match = vite.output().match(/https?:\/\/127\.0\.0\.1:\d+/); if (match) return match[0]; await new Promise((resolveWait) => setTimeout(resolveWait, 100)); } throw new Error("Share Vite fixture did not publish a bound URL"); })();
-    const targets = { node: nodeUrl, credentials: credentialsUrl, registry: registryUrl, vite: viteMatch };
-    await waitForUrl(new URL("/healthz", nodeUrl), "Node");
-    await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
-    const browser = providerModule();
-    const instance = await browser.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), ignoreHTTPSErrors: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
-    try {
-      runCoverage = { ...runCoverage, fixtures: fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["KV", "named-SQL", "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "post-claim resend suppression", "accessibility/mobile"], negativeBoundaryCases: ["authoritative binding propagation", "forged policy challenge", "misbound read response", "terminal claim states", "activation replay"] };
+      const authPage = await instance.newPage();
+      await installInterception(authPage, targets, {});
+      await authPage.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle0" });
+      if (await authPage.$('input[name="username"]') === null) throw new Error("clean browser did not reach the authenticated Share login boundary");
+      await authPage.type('input[name="username"]', required(process.env.SHARE_E2E_USERNAME, "SHARE_E2E_USERNAME"));
+      await authPage.type('input[name="password"]', required(process.env.SHARE_E2E_PASSWORD, "SHARE_E2E_PASSWORD"));
+      await authPage.click('button[type="submit"]'); await authPage.waitForSelector('input[name="email"]', { timeout: 30_000 });
+      const capabilities = await authPage.evaluate(async () => (await fetch("/api/share/capabilities", { credentials: "include" })).json());
+      await authPage.close();
+      const issuerPublicKey = decodeBase64(required(deployEnv.SHARE_ISSUER_PUBLIC_KEY, "SHARE_ISSUER_PUBLIC_KEY"), "issuer public key");
+      runCoverage = { ...runCoverage, fixtures: fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["production Share host", "clean-browser authentication", "per-user capability selection", "KV", "named-SQL", "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "durable binding restart/recovery", "production CSP/rewrites/headers", "accessibility/mobile"], negativeBoundaryCases: ["cross-user capability selection", "authoritative binding propagation", "forged policy challenge", "misbound read response", "terminal claim states", "activation replay"] };
+      if (!Array.isArray(capabilities.capabilities) || capabilities.capabilities.length < 2) throw new Error("authenticated production Share host did not expose both per-user capabilities");
       for (const [index, fixture] of fixtures.entries()) {
+        const selected = capabilities.capabilities.find((candidate) => candidate.source?.kind === fixture.kind);
+        if (selected === undefined) throw new Error(`no authenticated capability for ${fixture.kind}`);
+        fixture.capabilityId = selected.capabilityId;
         fixture.mailArtifact = mailArtifact;
-        const issuerPublicKey = credentialsDescriptor?.issuerPublicKey ?? nodeDescriptor.issuerPublicKey;
         const responseMutation = fixture.kind === "kv"
           ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } }
           : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
-        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0);
-        await runBrowserCase(instance, targets, fixture, decodeBase64(issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1);
+        await runBrowserCase(instance, targets, fixture, issuerPublicKey, index, { responseMutation, expectReject: true }, 0);
+        await runBrowserCase(instance, targets, fixture, issuerPublicKey, index + fixtures.length, {}, 1);
       }
     } catch (error) { throw error; }
     finally { await instance.close(); }
   } finally {
-    await cleanup();
-    if (activeCleanup === cleanup) activeCleanup = undefined;
+    await stopOwned(owned);
+    ownedProcessCleanup = { stopped: owned.length, remaining: [], complete: true };
+    await rm(tempRoot, { recursive: true, force: true });
+    activeCleanup = undefined;
   }
 }
 

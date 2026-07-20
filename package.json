@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:deploy": "SHARE_DEPLOY_BUILD=true vite build",
-    "start:deploy": "SHARE_DEPLOY_STARTUP=true vite preview",
+    "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
     "check:deploy-config": "node scripts/validate-deploy-config.mjs",
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts",
