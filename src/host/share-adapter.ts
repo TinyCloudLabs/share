@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
+import { resolveShareUpstreams } from "./upstream.js";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
 function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toString("base64url"); }
@@ -114,8 +115,8 @@ export interface ShareHostOptions {
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource }>;
   readonly bindingStore: BindingStore;
   readonly registryOrigin: string;
-  /** Loopback transport used by the hermetic mounted deployment. */
-  readonly registryTransportOrigin?: string;
+  /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
+  readonly registryTransportOrigin: string;
   readonly authUsers?: readonly AuthUser[];
   readonly testMode: boolean;
 }
@@ -348,9 +349,8 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const initialBindings = env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
   const bindingStore = env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : (() => { throw new Error("SHARE_BINDING_STORE_PATH is required in production"); })()) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
   const registryOrigin = bundle.public.registryOrigin;
-  if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("SHARE_REGISTRY_ORIGIN must be a canonical HTTPS origin");
-  const registryTransportOrigin = env.SHARE_REGISTRY_TRANSPORT_ORIGIN ?? registryOrigin;
-  if (!/^https?:\/\/[^/?#:@]+(?::\d+)?$/.test(registryTransportOrigin)) throw new Error("SHARE_REGISTRY_TRANSPORT_ORIGIN must be a canonical transport origin");
+  if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
+  const registryTransportOrigin = resolveShareUpstreams(bundle, env).registry;
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {

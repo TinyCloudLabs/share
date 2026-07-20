@@ -4,6 +4,7 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createShareHostFromEnv } from "./share-adapter.js";
 import { loadTrustBundle, securityHeadersForPath } from "./trust-bundle.js";
+import { upstreamForPath } from "./upstream.js";
 
 const root = fileURLToPath(new URL("../../dist/", import.meta.url));
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
@@ -23,10 +24,10 @@ createServer((request, response) => {
   void (async () => {
     const path = (request.url ?? "/").split("?")[0] ?? "/";
     for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) response.setHeader(name, value);
-    const proxyOrigin = path.startsWith("/share/v1/") ? process.env.SHARE_NODE_TRANSPORT_ORIGIN : path.startsWith("/v1/share-email/") ? process.env.SHARE_CREDENTIALS_TRANSPORT_ORIGIN : undefined;
-    if (proxyOrigin !== undefined) {
+    const upstream = upstreamForPath(bundle, path);
+    if (upstream !== undefined && (upstream.service === "node" || upstream.service === "credentials")) {
       const bytes = await body(request);
-      const target = new URL(request.url ?? path, proxyOrigin);
+      const target = new URL(request.url ?? path, upstream.origin);
       const init: RequestInit & { duplex?: "half" } = { method: request.method ?? "GET", headers: Object.fromEntries(Object.entries(request.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")), ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer, duplex: "half" }) };
       const result = await fetch(target, init); response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer())); return;
     }

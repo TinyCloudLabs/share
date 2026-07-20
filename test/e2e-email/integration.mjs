@@ -146,6 +146,7 @@ async function nativeGate() {
   await run("cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], nodeRoot);
   await run("cargo", ["fmt", "--check"], credentialsRustRoot);
   await run("cargo", ["test", "--bin", "opencredentials-witness"], credentialsRustRoot);
+  await run("cargo", ["test", "--bin", "opencredentials-witness", "share_email::trust"], credentialsRustRoot);
   await run("cargo", ["test", "--test", "share_email_postgres"], credentialsRustRoot);
   await run("cargo", ["test", "--features", "dstack"], credentialsRustRoot);
   await run("cargo", ["test", "--features", "dstack", "--test", "share_email_postgres"], credentialsRustRoot);
@@ -156,6 +157,7 @@ async function nativeGate() {
   await run("cargo", ["clippy", "--", "-D", "warnings"], sdJwtRoot);
   await run("node", ["scripts/oi-share-email/verify-readiness-contract.mjs"], credentialsRoot);
   await run("node", ["scripts/oi-share-email/verify-key-separation.mjs"], credentialsRoot);
+  await run("node", ["scripts/oi-share-email/verify-production-compose.mjs"], credentialsRoot);
 }
 
 function spawnOwned(command, cwd, extraEnv = {}) {
@@ -603,14 +605,15 @@ async function mountedGateHermetic() {
     const envValues = {
       SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"),
       SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_AUTH_USERS_JSON: authUsers,
-      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_REGISTRY_TRANSPORT_ORIGIN: registryUrl, SHARE_NODE_TRANSPORT_ORIGIN: nodeUrl, SHARE_CREDENTIALS_TRANSPORT_ORIGIN: credentialsUrl, VITE_SHARE_REGISTRY_URL: canonical.registry,
+      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true", SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: nodeUrl }, credentials: { origin: canonical.credentials, transportOrigin: credentialsUrl }, registry: { origin: canonical.registry, transportOrigin: registryUrl } }), VITE_SHARE_REGISTRY_URL: canonical.registry,
     };
     await writeFile(envValues.SHARE_TRUST_BUNDLE_FILE, `${JSON.stringify(trustBundle)}\n`, { encoding: "utf8", flag: "wx" });
     await writeFile(deployEnvFile, `${Object.entries(envValues).map(([key, value]) => `${key}=${value}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
     const deployEnv = { ...process.env, ...envValues, SHARE_DEPLOY_STARTUP: "true" };
     if (deployEnv.SHARE_TRUST_BUNDLE_ALLOW_TEST !== undefined || deployEnv.SHARE_TEST_BINDINGS_JSON !== undefined || deployEnv.SHARE_SESSION_SECRET !== undefined) throw new Error("production Share env contains a fixture-only control");
-    await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, deployEnv);
-    await run("npm", ["run", "build:deploy"], shareRoot, deployEnv);
+    const validationEnv = { ...deployEnv }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
+    await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, validationEnv);
+    await run("npm", ["run", "build:deploy"], shareRoot, validationEnv);
     const startHost = async () => {
       const port = await freePort();
       const host = spawnOwnedArgs("npm", ["run", "start:deploy"], shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port) });
@@ -695,7 +698,7 @@ async function mountedGate() {
   if (fixtures.length < 2) throw new Error("mounted gate requires both KV and named-SQL cases");
   const descriptorResponse = await fetch(`${shareUrl}/api/share/capabilities`);
   if (descriptorResponse.status !== 401) throw new Error("production Share host exposed capabilities before authentication");
-  const targets = { node: nodeUrl, credentials: credentialsUrl, registry: new URL(deployEnv.SHARE_REGISTRY_ORIGIN), vite: shareUrl };
+  const targets = { node: nodeUrl, credentials: credentialsUrl, registry: new URL(canonical.registry), vite: shareUrl };
   await waitForUrl(new URL("/healthz", nodeUrl), "Node");
   await waitForUrl(new URL("/health", credentialsUrl), "OpenCredentials");
   const browser = providerModule();

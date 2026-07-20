@@ -24,8 +24,13 @@ Required production variables:
 - `SHARE_BINDING_STORE_PATH`: durable, private path or mounted durable store for
   public binding records. An in-memory store is permitted only for the explicit
   hermetic fixture composition.
-- `SHARE_REGISTRY_ORIGIN`: canonical HTTPS registry origin, normally
-  `https://registry.tinycloud.xyz`.
+
+The Node, OpenCredentials, and registry upstream destinations are not separate
+deployment variables. They are derived directly from `nodeOrigin`,
+`credentialsOrigin`, and `registryOrigin` in the validated trust bundle. Legacy
+`*_TRANSPORT_ORIGIN` overrides are rejected. The only alternate routing shape
+is the explicit hermetic test resolver described below; it must name the exact
+bundle origin and may target loopback only.
 
 Run the deploy checks and build with the secret manager injected:
 
@@ -43,8 +48,10 @@ user records, durable binding storage, or registry configuration disables the
 capability. Sessions are opaque, per-user, Secure, HttpOnly, SameSite, path-
 scoped, and expiring.
 
-For local tests, use only the composition owned by `test/e2e-email`: set
-`SHARE_TRUST_BUNDLE_ALLOW_TEST=true`, use a generated `environment: "test"`
-bundle, point `SHARE_REGISTRY_ORIGIN` at the ephemeral registry listener, and
-use the loopback Resend provider. Do not put those values in `public/`, a
-production bundle, or a committed fixture.
+For local tests, use only the composition owned by `test/e2e-email`. It may set
+`SHARE_HERMETIC_COMPOSITION=true` and provide
+`SHARE_HERMETIC_UPSTREAMS_JSON` with `{origin, transportOrigin}` entries bound
+to the validated Node, OpenCredentials, and registry origins. This is the
+canonical-DNS-to-loopback resolver boundary; it is rejected by deploy
+validation and cannot be supplied by a production process. Do not put those
+values in `public/`, a production bundle, or a committed fixture.

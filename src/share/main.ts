@@ -73,7 +73,7 @@ if (root === null) throw new Error("share app root missing");
 async function bootstrap(): Promise<void> {
   const publicConfig = await loadSharePublicConfig();
   const capability = await loadCapability(publicConfig.shareOrigin);
-    const transport = createHttpTransport({ nodeOrigin: window.location.origin, credentialsOrigin: window.location.origin, allowLoopbackTransport: true });
+    const transport = createHttpTransport({ nodeOrigin: window.location.origin, credentialsOrigin: window.location.origin });
     const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
       const response = await fetch("/registry/blobs", { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: blob.buffer as ArrayBuffer });
       if (!response.ok) throw new Error(`registry upload failed (${response.status})`);

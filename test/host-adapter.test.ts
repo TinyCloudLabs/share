@@ -7,6 +7,7 @@ import { didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelo
 import { validateSharePublicConfig } from "../src/email-share/config.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
 import { createShareHostFromEnv, TransactionalBindingStore } from "../src/host/share-adapter.js";
+import { resolveShareUpstreams, upstreamForPath } from "../src/host/upstream.js";
 
 function bundle(environment: "production" | "test" = "test"): Record<string, unknown> {
   const privateKey = new Uint8Array(32).fill(9);
@@ -43,6 +44,35 @@ function sourceDigest(source: Record<string, unknown>): string {
 }
 
 describe("production trust and host boundaries", () => {
+  it("derives every sensitive upstream from the authoritative trust tuple when overrides are omitted", () => {
+    const value = validateTrustBundle(bundle("production"), false);
+    expect(resolveShareUpstreams(value, {})).toEqual({ node: value.public.nodeOrigin, credentials: value.public.credentialsOrigin, registry: value.public.registryOrigin });
+    expect(upstreamForPath(value, "/share/v1/read", {})).toEqual({ service: "node", origin: value.public.nodeOrigin });
+    expect(upstreamForPath(value, "/v1/share-email/claims/redeem", {})).toEqual({ service: "credentials", origin: value.public.credentialsOrigin });
+    expect(upstreamForPath(value, "/registry/blobs", {})).toEqual({ service: "registry", origin: value.public.registryOrigin });
+  });
+
+  it.each([
+    ["omitted hermetic flag", JSON.stringify({ node: { origin: "https://node.tinycloud.xyz", transportOrigin: "http://127.0.0.1:8000" }, credentials: { origin: "https://witness.credentials.org", transportOrigin: "http://127.0.0.1:8001" }, registry: { origin: "https://registry.tinycloud.xyz", transportOrigin: "http://127.0.0.1:8002" } }), {}],
+    ["malformed JSON", "{", { SHARE_HERMETIC_COMPOSITION: "true" }],
+    ["loopback placeholder", JSON.stringify({ node: { origin: "https://node.tinycloud.xyz", transportOrigin: "http://localhost:8000" }, credentials: { origin: "https://witness.credentials.org", transportOrigin: "http://127.0.0.1:8001" }, registry: { origin: "https://registry.tinycloud.xyz", transportOrigin: "http://127.0.0.1:8002" } }), { SHARE_HERMETIC_COMPOSITION: "true" }],
+    ["bundle-inconsistent origin", JSON.stringify({ node: { origin: "https://node.other.example", transportOrigin: "http://127.0.0.1:8000" }, credentials: { origin: "https://witness.credentials.org", transportOrigin: "http://127.0.0.1:8001" }, registry: { origin: "https://registry.tinycloud.xyz", transportOrigin: "http://127.0.0.1:8002" } }), { SHARE_HERMETIC_COMPOSITION: "true" }],
+  ])("rejects %s hermetic upstream composition", (_label, raw, env) => {
+    const value = validateTrustBundle(bundle("production"), false);
+    expect(() => resolveShareUpstreams(value, { ...env, SHARE_HERMETIC_UPSTREAMS_JSON: raw })).toThrow();
+  });
+
+  it("rejects legacy transport overrides even when they point at a valid loopback", () => {
+    const value = validateTrustBundle(bundle("production"), false);
+    expect(() => resolveShareUpstreams(value, { SHARE_NODE_TRANSPORT_ORIGIN: "http://127.0.0.1:8000" })).toThrow(/legacy/);
+  });
+
+  it("accepts only exact trust-bound hermetic routes", () => {
+    const value = validateTrustBundle(bundle("production"), false);
+    const env = { SHARE_HERMETIC_COMPOSITION: "true", SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: value.public.nodeOrigin, transportOrigin: "http://127.0.0.1:8000" }, credentials: { origin: value.public.credentialsOrigin, transportOrigin: "http://127.0.0.1:8001" }, registry: { origin: value.public.registryOrigin, transportOrigin: "http://127.0.0.1:8002" } }) };
+    expect(resolveShareUpstreams(value, env)).toEqual({ node: "http://127.0.0.1:8000", credentials: "http://127.0.0.1:8001", registry: "http://127.0.0.1:8002" });
+  });
+
   it("rejects a byte-for-byte sender public/private mismatch", () => {
     const value = bundle();
     value.issuerPublicKey = toBase64Url(new Uint8Array(32).fill(8));
