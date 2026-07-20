@@ -1,10 +1,10 @@
 {
   "schema": "tinycloud.share-email-claim/release-evidence-v2",
-  "generatedAt": "2026-07-20T04:52:36.745Z",
+  "generatedAt": "2026-07-20T06:52:35.936Z",
   "heads": {
-    "share": "184f5a7423ffeef5fe04035efa63fbd730b1d03e",
-    "node": "afed9261a67adb2c1ea0e6edad2ba3daeddfcd46",
-    "opencredentials": "a7c075ca5ed9f7e2784586b7a8a896804ef3788d"
+    "share": "a4ca8f659c598a90a5dcaa57d2468ec31952fab9",
+    "node": "a756d2bfc6df44015a2a209cf9e1933fc01412e8",
+    "opencredentials": "91eef1d268d0a528cbfff39e438639df45b557ad"
   },
   "contract": {
     "commit": "36f6c4303eca3bee917692c77237c264b4dfa342",
@@ -35,14 +35,14 @@
   },
   "runs": [
     {
-      "runId": "round32-gate-1-repair",
-      "start": "2026-07-20T04:46:50.081Z",
-      "end": "2026-07-20T04:48:11.272Z",
-      "durationMs": 81191,
+      "runId": "round34-full-joined-1",
+      "start": "2026-07-20T06:47:00.753Z",
+      "end": "2026-07-20T06:48:39.086Z",
+      "durationMs": 98333,
       "exitStatus": 0,
       "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
-      "logDigest": "4321afa9a4333c0e6ebe2a3ba02c47ae8642f22d2edfa4b32a1ba72d4ce117c9",
-      "artifactHash": "d923726a7c48072341648411ad0ec2f842577869c4a92f94c501f3e7ff60c16b",
+      "logDigest": "885e142a15b2d6637f22eed1ec628cd832ae28b26dee49089bd6978129dfd2e3",
+      "artifactHash": "b55cc9a425723863e11beccd0fb89a1a977c0777582881627f93ed547f449598",
       "toolVersions": {
         "node": "v20.19.4",
         "npm": "10.8.2",
@@ -57,40 +57,49 @@
           "sql"
         ],
         "browser": [
+          "production Share host",
+          "clean-browser authentication",
+          "no pre-auth capability exposure",
+          "per-user capability selection",
+          "cross-user capability rejection",
           "KV",
           "named-SQL",
           "scanner-safe inert GET",
           "explicit activation",
           "non-extractable holder key",
           "signed challenge/session/read verification",
-          "post-claim resend suppression",
+          "durable binding restart/recovery",
+          "corrupt journal fail-closed",
+          "production CSP/rewrites/headers",
           "accessibility/mobile"
         ],
         "negativeBoundaryCases": [
           "authoritative binding propagation",
           "forged policy challenge",
           "misbound read response",
+          "source/resource/action/recipient/digest/expiry substitution",
           "terminal claim states",
-          "activation replay"
+          "activation replay",
+          "concurrent/cross-process store behavior"
         ],
         "binding": "independent-provisioned"
       },
       "cleanup": {
-        "stopped": 5,
+        "stopped": 7,
         "remaining": [],
         "complete": true
       },
-      "recordDigest": "46f3b0c390ac7e01110d25f69d0396ad3616aa21bfcc9faef1a4e9772f3681a2"
+      "recordDigest": "c0d0fc0cb6f16f09405be7bcbe87baa80d2f2fb0e127920369fbf17c82fcd6bc"
     },
     {
-      "runId": "round32-gate-2-repair",
-      "start": "2026-07-20T04:48:35.108Z",
-      "end": "2026-07-20T04:49:45.093Z",
-      "durationMs": 69985,
+      "runId": "round34-full-joined-2",
+      "start": "2026-07-20T06:49:08.420Z",
+      "end": "2026-07-20T06:51:24.677Z",
+      "durationMs": 136257,
       "exitStatus": 0,
       "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
-      "logDigest": "75d352bcf4f55547398ff3678de0b9a81da5a43e48189c87489aa11bb4ae72a2",
-      "artifactHash": "12d8e70a351e8f0569f22c04d568fa3fde1784efa3097a5e4b2aa39f1d7daa71",
+      "logDigest": "26275628502af4e75155a0bc78bb596821e648c4b02fa6cb95bcf0795123be8f",
+      "artifactHash": "e66dc4cfd81d4ec801c164647eec49d906360e3b66e31fafb8705bf4f257be12",
       "toolVersions": {
         "node": "v20.19.4",
         "npm": "10.8.2",
@@ -105,30 +114,39 @@
           "sql"
         ],
         "browser": [
+          "production Share host",
+          "clean-browser authentication",
+          "no pre-auth capability exposure",
+          "per-user capability selection",
+          "cross-user capability rejection",
           "KV",
           "named-SQL",
           "scanner-safe inert GET",
           "explicit activation",
           "non-extractable holder key",
           "signed challenge/session/read verification",
-          "post-claim resend suppression",
+          "durable binding restart/recovery",
+          "corrupt journal fail-closed",
+          "production CSP/rewrites/headers",
           "accessibility/mobile"
         ],
         "negativeBoundaryCases": [
           "authoritative binding propagation",
           "forged policy challenge",
           "misbound read response",
+          "source/resource/action/recipient/digest/expiry substitution",
           "terminal claim states",
-          "activation replay"
+          "activation replay",
+          "concurrent/cross-process store behavior"
         ],
         "binding": "independent-provisioned"
       },
       "cleanup": {
-        "stopped": 5,
+        "stopped": 7,
         "remaining": [],
         "complete": true
       },
-      "recordDigest": "dfb0a051e7509d979fa936e8b46d7c0a83ac496ebbb06d7e55d9b8183d6c7449"
+      "recordDigest": "dc1f099952f2b84528c5d9e86391ef1cc0104dc67d4d96aa269c6fd9ffecf96b"
     }
   ],
   "results": {
@@ -146,7 +164,7 @@
       },
       "originMainHead": "a78e94d893c805869911b31900597ffadb29bc5b",
       "featureHead": "afed9261a67adb2c1ea0e6edad2ba3daeddfcd46",
-      "command": "cargo 1.97.0 (c980f4866 2026-06-30); see .context/email-claim-siwe-round32-provenance.json; origin/main and feature-head both exit 101 with 8/9 tests passed and verification1 failure"
+      "command": "cargo test --manifest-path dependencies/siwe/Cargo.toml (immutable .context/email-claim-siwe-round32-provenance.json)"
     }
   },
   "toolVersions": {
@@ -159,20 +177,20 @@
   "artifactHashes": {
     "manifest": "3e6b8975938693be08847b86286030cd7920cb89774d673126f44ac2c4e2ce2f",
     "packageLock": "36ccc2857b2e140e167bd0170be73b209e6d0377e6e23ed47b7ab2730e50e435",
-    "releaseGate": "d76f3e78baac7f1ef944b68d22cc94dfbff77862f6f0a692a03ddfc064eff5ee",
-    "nodeDeployment": "95fa1c466a39fcdf760427bb0a02ffd03cfbd5e0656dd6394e06ecbd09042d7a",
-    "credentialsDeployment": "1a9eb26ea4a5bee0b7f5f04695b28c633fada78d03b7aa8909068a7e2f8ffae5"
+    "releaseGate": "2f507b453009df9000e8c5a0abd19510e054235e11ac2fac7d5afa52ed0483c1",
+    "nodeDeployment": "1959c81784c3108c48693a3eed816517e1c39da041547ea9b07557d47c564da2",
+    "credentialsDeployment": "6680b0bcab024459908db1b8ae5becc75b39ba37f85f9e144bc5120d2f33d93a"
   },
   "cleanup": {
     "secretsIncluded": false,
     "records": [
       {
-        "stopped": 5,
+        "stopped": 7,
         "remaining": [],
         "complete": true
       },
       {
-        "stopped": 5,
+        "stopped": 7,
         "remaining": [],
         "complete": true
       }
