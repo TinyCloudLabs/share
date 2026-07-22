@@ -1,5 +1,3 @@
-/s/* /viewer.html 200
-/share /share.html 200
-/viewer /viewer.html 200
+/s/* /viewer 200
 # Registry proxying is performed by the authenticated production host from
 # the validated trust bundle; a static origin is intentionally not committed.
