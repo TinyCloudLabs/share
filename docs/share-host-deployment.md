@@ -18,9 +18,11 @@ Required production variables:
   capability response, or browser JavaScript.
 - `SHARE_SENDER_CAPABILITY_JSON` or `SHARE_SENDER_CAPABILITIES_JSON`:
   authenticated-host capability provider output for the sender session. Each
-  entry describes only an authorized exact KV or named-SQL read and bounded
-  expiry; it does not pre-bind a recipient email and contains no signing
-  secret.
+  entry describes an authorized exact KV or named-SQL read and includes the
+  policy material already bound to one recipient email and bounded expiry. It
+  contains no signing secret. Supporting a new arbitrary recipient requires
+  the policy service to prepare a new capability; the Share host never weakens
+  or rewrites an existing policy in the browser.
 - Each production capability's `policyOwnerDid` must be the OpenKey-controlled
   `did:pkh:eip155:<chain>:<address>` for its user. The Share host verifies a
   single-use OpenKey signature, resolves that DID to the capability's `userId`,
