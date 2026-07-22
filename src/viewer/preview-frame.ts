@@ -68,33 +68,29 @@ export const PREVIEW_FRAME_CSP =
  * typography. Fixed content — must never interpolate untrusted input.
  */
 const PREVIEW_STYLES = `
-:root { color-scheme: light dark; }
+:root { color-scheme: light; }
 body {
   margin: 0;
-  color: #131312;
+  padding: 1.25rem;
+  color: #000000;
   background: transparent;
-  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 16px;
-  line-height: 1.6;
+  line-height: 1.55;
 }
 pre {
-  background: #ffffff;
-  border: 1px solid #dcdcd7;
-  border-radius: 8px;
-  padding: 0.9rem 1.1rem;
+  background: #f3f3f3;
+  border: 1px solid #000000;
+  border-radius: 0;
+  padding: 1rem;
   overflow-x: auto;
 }
-code { font-family: ui-monospace, Menlo, monospace; font-size: 0.86em; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
 table { border-collapse: collapse; }
-th, td { border: 1px solid #dcdcd7; padding: 0.4rem 0.7rem; }
+th, td { border: 1px solid #000000; padding: 0.45rem 0.65rem; }
 img { max-width: 100%; }
 .viewer-mermaid { margin: 1rem 0; overflow-x: auto; }
 .viewer-mermaid svg { max-width: 100%; height: auto; }
-@media (prefers-color-scheme: dark) {
-  body { color: #eceae5; }
-  pre { background: #171716; border-color: #2e2e2b; }
-  th, td { border-color: #2e2e2b; }
-}
 `;
 
 /**
