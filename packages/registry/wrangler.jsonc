@@ -1,0 +1,1 @@
+{ "name": "tinycloud-share-registry", "main": "src/worker.ts", "compatibility_date": "2026-07-22", "r2_buckets": [{ "binding": "REGISTRY", "bucket_name": "tinycloud-share-registry" }], "routes": [{ "pattern": "registry.tinycloud.xyz", "custom_domain": true }] }
