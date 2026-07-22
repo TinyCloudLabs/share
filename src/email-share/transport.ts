@@ -205,7 +205,9 @@ function parseAuthorization(value: unknown): AuthorizedInvitation {
 
 function parsePolicyChallenge(value: unknown): { readonly challenge: Record<string, unknown>; readonly proof: SignedProof } {
   const object = exact(value, ["challenge", "proof"]);
-  return { challenge: exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "requestBodyDigest", "issuedAt", "expiresAt"]), proof: parseProof(object.proof) };
+  const challenge = exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "requestBodyDigest", "issuedAt", "expiresAt", "enforcerDid"]);
+  text(challenge.enforcerDid);
+  return { challenge, proof: parseProof(object.proof) };
 }
 
 function parsePolicySession(value: unknown): { readonly session: Record<string, unknown>; readonly proof: SignedProof } {

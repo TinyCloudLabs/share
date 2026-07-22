@@ -68,6 +68,12 @@ let runCoverage = { fixtures: 0, sources: [], browser: [], negativeBoundaryCases
 let ownedProcessCleanup = { stopped: 0, remaining: [], complete: false };
 
 function digestBytes(value) { return createHash("sha256").update(value).digest("hex"); }
+function digestBase64Url(value) { return createHash("sha256").update(value).digest("base64url"); }
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+}
 function recordRunEvent(event) { runEvents.push({ at: new Date().toISOString(), ...event }); }
 function commandLabel(command, args) { return [command, ...args].join(" "); }
 
@@ -105,11 +111,11 @@ async function assertContractCommit(repo) {
   if (contract !== expectedContractCommit) throw new Error(`Share contract commit is unavailable: ${expectedContractCommit}`);
 }
 
-function runCapture(command, args, cwd) {
+function runCapture(command, args, cwd, extraEnv = {}) {
   const label = commandLabel(command, args);
   const started = Date.now();
   recordRunEvent({ type: "capture-start", command: label });
-  const child = spawn(command, args, { cwd, env: process.env });
+  const child = spawn(command, args, { cwd, env: { ...process.env, ...extraEnv } });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -202,7 +208,7 @@ async function waitForFileJson(path, label, process) {
   while (Date.now() < deadline) {
     try { return JSON.parse(await readFile(path, "utf8")); }
     catch (error) { lastError = error instanceof Error ? error.message : String(error); }
-    if (process?.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor: ${diagnosticOutput(process.output())}`);
+    if (process?.child.exitCode !== null) throw new Error(`${label} exited before publishing a descriptor:\n${process.output().slice(-8_000)}`);
     await new Promise((resolveWait) => setTimeout(resolveWait, 250));
   }
   throw new Error(`${label} descriptor was not published: ${lastError}`);
@@ -300,6 +306,15 @@ async function startPostgres(owned, tempRoot) {
   owned.push(server);
   await waitForPort(port, "PostgreSQL");
   return { url: `postgres://email_claim@db.localhost:${port}/postgres?sslmode=verify-full`, dataDir, caCert };
+}
+
+async function assertFocusedOutbox(postgres) {
+  if (!(await commandAvailable("psql"))) throw new Error("focused KV loop requires local PostgreSQL psql");
+  const database = new URL(postgres.url);
+  const result = await runCapture("psql", ["--no-psqlrc", "--tuples-only", "--no-align", "--command", "SELECT (SELECT count(*) FROM email_claim_delivery_outbox) || '|' || (SELECT count(*) FROM email_claim_delivery_outbox WHERE state = 'PROVIDER_ACCEPTED') || '|' || (SELECT count(*) FROM email_claim_provider_events);"], shareRoot, {
+    PGHOST: "127.0.0.1", PGPORT: database.port, PGUSER: "email_claim", PGDATABASE: "postgres", PGSSLMODE: "disable",
+  });
+  if (result.trim() !== "1|1|1") throw new Error("focused KV loop did not leave one committed provider-accepted outbox row and one provider event");
 }
 
 async function startLocalResendProvider(mailArtifact) {
@@ -426,7 +441,7 @@ async function proxyJsonMutation(request, target, mutation) {
 async function proxyRequest(request, target) {
   if (request.method() === "OPTIONS") { await request.respond({ status: 204, headers: { "access-control-allow-origin": canonical.share, "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,idempotency-key,if-none-match,x-delete-after", "access-control-max-age": "60" } }); return; }
   const response = await fetch(target, { method: request.method(), headers: request.headers(), body: request.method() === "GET" || request.method() === "HEAD" ? undefined : request.postData() ?? undefined });
-  const headers = Object.fromEntries(response.headers); headers["access-control-allow-origin"] = canonical.share; headers["access-control-allow-methods"] = "GET,POST,OPTIONS"; headers["access-control-allow-headers"] = "content-type,accept,idempotency-key,if-none-match,x-delete-after";
+  const headers = Object.fromEntries([...response.headers].filter(([name]) => ["cache-control", "content-type", "etag", "vary"].includes(name.toLowerCase()))); headers["access-control-allow-origin"] = canonical.share; headers["access-control-allow-methods"] = "GET,POST,OPTIONS"; headers["access-control-allow-headers"] = "content-type,accept,idempotency-key,if-none-match,x-delete-after";
   await request.respond({ status: response.status, headers, body: Buffer.from(await response.arrayBuffer()) });
 }
 
@@ -500,14 +515,21 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   const before = provider === undefined ? (await readMailArtifact(fixture.mailArtifact)).length : provider.captureCount();
 
   const sender = await browser.newPage();
+  const invitationStatuses = [];
   await sender.evaluateOnNewDocument((uuid) => {
     Object.defineProperty(crypto, "randomUUID", { configurable: false, value: () => uuid });
   }, deterministicUuid);
   await sender.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await sender.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
   sender.on("console", (message) => { if (message.type() === "error") console.error(`sender console: ${message.text()}`); });
   sender.on("pageerror", (error) => console.error(`sender page error: ${error.message}`));
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
-  sender.on("response", (response) => { if (response.request().method() === "OPTIONS" || (response.status() < 400 && !response.url().includes("/v1/share-email/invitations") && !response.url().includes("/share/v1/invitations/authorize"))) return; console.error(`sender response: ${response.request().method()} ${response.status()} ${new URL(response.url()).pathname}`); });
+  sender.on("response", (response) => {
+    const responseUrl = new URL(response.url());
+    if (response.request().method() === "POST" && responseUrl.pathname === "/v1/share-email/invitations") invitationStatuses.push(response.status());
+    if (response.request().method() === "OPTIONS" || (response.status() < 400 && !responseUrl.pathname.includes("/v1/share-email/invitations") && !responseUrl.pathname.includes("/share/v1/invitations/authorize"))) return;
+    console.error(`sender response: ${response.request().method()} ${response.status()} ${responseUrl.pathname}`);
+  });
   await installInterception(sender, targets, {});
   const capabilityQuery = fixture.capabilityId === undefined ? "" : `?capabilityId=${encodeURIComponent(fixture.capabilityId)}`;
   await sender.goto(`${targets.vite}/share.html${capabilityQuery}`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500));
@@ -521,7 +543,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   }
   const emailInput = await sender.$('input[name="email"]');
   if (emailInput === null) throw new Error(`case ${caseIndex}: sender did not mount at ${sender.url()} (${await sender.content().catch(() => "no document")})`);
-  const senderA11y = await sender.evaluate(() => { const widest = Array.from(document.querySelectorAll("body *")).map((node) => ({ tag: node.tagName, className: node.className, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth })).filter((item) => item.scrollWidth > item.clientWidth).sort((a, b) => b.scrollWidth - a.scrollWidth).slice(0, 3); return { overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input,select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role"), viewport: { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }, widest }; });
+  const senderA11y = await sender.evaluate(() => { const widest = Array.from(document.querySelectorAll("body *")).map((node) => ({ tag: node.tagName, className: node.className, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth })).filter((item) => item.scrollWidth > item.clientWidth).sort((a, b) => b.scrollWidth - a.scrollWidth).slice(0, 3); return { overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, labelled: Array.from(document.querySelectorAll("input:not([type=hidden]),select,textarea")).every((input) => input.id !== "" || input.closest("label") !== null), status: document.querySelector("[data-sender-status]")?.getAttribute("role"), viewport: { scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }, widest }; });
   if (senderA11y.overflow || !senderA11y.labelled || senderA11y.status !== "status") throw new Error(`case ${caseIndex}: sender accessibility/mobile assertion failed: ${JSON.stringify(senderA11y)}`);
   await sender.type('input[name="email"]', scope.expectedRecipientEmail);
   const expiry = new Date(fixture.expiresAt ?? scope.expiresAt ?? Date.now() + 3_600_000);
@@ -532,20 +554,57 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   try {
     await sender.waitForFunction(() => document.querySelector("[data-sender-status]")?.getAttribute("data-state") === "requested", { timeout: 30_000 });
   } catch {
-    throw new Error(`case ${caseIndex}: sender status ${await sender.$eval("[data-sender-status]", (node) => node.outerHTML).catch(() => "missing")}`);
+    throw new Error(`case ${caseIndex}: sender status did not reach requested`);
   }
+  const senderStatus = await sender.evaluate(() => ({
+    text: document.querySelector("[data-sender-status]")?.textContent ?? "",
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    buttons: Array.from(document.querySelectorAll("button")).map((button) => {
+      const rect = button.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, focusable: button.tabIndex >= 0 };
+    }),
+    overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  }));
+  if (!senderStatus.text.includes("does not claim that an email has arrived") || /email sent|delivered successfully/i.test(senderStatus.text)) throw new Error(`case ${caseIndex}: sender delivery copy was not truthful`);
+  if (!senderStatus.reducedMotion || senderStatus.overflow || senderStatus.buttons.some((button) => button.width < 44 || button.height < 44 || !button.focusable)) throw new Error(`case ${caseIndex}: sender keyboard/touch/reduced-motion assertion failed`);
+  await sender.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+  if (await sender.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) throw new Error(`case ${caseIndex}: sender desktop layout overflows horizontally`);
+  if (invitationStatuses.length !== 1 || invitationStatuses[0] !== 200) throw new Error(`case ${caseIndex}: invitation HTTP status was not exactly one 200 response`);
   await sender.close();
 
   const captured = await waitForDelivery(provider ?? fixture.mailArtifact, before);
   const link = captured.href;
   const mailbox = bodyFromLink(link);
   if (mailbox.invitationId === null || mailbox.claimSecret === null) throw new Error(`case ${caseIndex}: malformed provider-delivered link`);
-  const inert = await fetch(new URL(`/v1/share-email/claims/activate?invitationId=${mailbox.invitationId}&claimSecret=${mailbox.claimSecret}`, targets.credentials), { headers: { origin: canonical.share } });
-  if (inert.status !== 200) throw new Error(`case ${caseIndex}: inert scanner GET was not accepted as read-only (${inert.status})`);
+  const inertUrl = canonicalRequestTarget(link, targets) ?? link;
+  const inert = await fetch(inertUrl, { redirect: "manual", referrerPolicy: "no-referrer" });
+  if (inert.status !== 200 || inert.headers.get("content-type")?.split(";", 1)[0] !== "text/html") throw new Error(`case ${caseIndex}: scanner GET did not return the inert recipient entry (${inert.status})`);
 
   const recipient = await browser.createBrowserContext();
   const page = await recipient.newPage();
   await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  await page.evaluateOnNewDocument(() => {
+    const audit = { networkBeforeScrub: 0, scrubbedHistory: false };
+    Object.defineProperty(window, "__emailClaimAudit", { configurable: false, value: audit });
+    const replaceState = history.replaceState.bind(history);
+    Object.defineProperty(history, "replaceState", { configurable: true, value: (state, title, url) => {
+      const safeUrl = typeof url === "string" ? url : "";
+      audit.scrubbedHistory = safeUrl.includes("#") === false && safeUrl.includes("?") === false;
+      return replaceState(state, title, url);
+    } });
+    const fetchFn = window.fetch.bind(window);
+    Object.defineProperty(window, "fetch", { configurable: true, value: (input, init) => {
+      if (location.hash !== "" || location.search !== "") audit.networkBeforeScrub += 1;
+      return fetchFn(input, init);
+    } });
+  });
+  let claimMaterialInRequestUrl = false;
+  page.on("request", (request) => {
+    const parsedRequestUrl = new URL(request.url());
+    const requestUrl = `${parsedRequestUrl.origin}${parsedRequestUrl.pathname}${parsedRequestUrl.search}`;
+    if (requestUrl.includes(mailbox.invitationId) || requestUrl.includes(mailbox.claimSecret)) claimMaterialInRequestUrl = true;
+  });
   page.on("console", (message) => {
     if (message.type() === "error") console.error(`recipient console ${message.text()}`);
   });
@@ -563,7 +622,7 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
       try { parsed = JSON.parse(body); } catch { parsed = undefined; }
       const errorCode = parsed?.error?.code;
       const keys = parsed !== undefined && typeof parsed === "object" && parsed !== null ? Object.keys(parsed).sort().join(",") : "non-json";
-      console.error(`recipient response: ${response.request().method()} ${response.url()} ${response.status()} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
+      console.error(`recipient response: ${response.request().method()} ${response.status()} ${responsePath} keys=${keys}${typeof errorCode === "string" ? ` error=${errorCode}` : ""}`);
     }).catch(() => {});
   });
   await installInterception(page, targets, { responseMutation: boundary.responseMutation, preserveOrigin: true });
@@ -572,13 +631,33 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   catch {
     const shareCid = new URL(link).pathname.slice("/s/".length);
     const bindingProbe = await page.evaluate(async (cid) => { try { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { credentials: "omit", cache: "no-store" }); return response.status; } catch { return "fetch-error"; } }, shareCid);
-    throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${page.url().split(/[?#]/)[0]} binding-status=${bindingProbe}: ${(await page.evaluate(() => document.body.textContent ?? "")).slice(0, 600)}`);
+    throw new Error(`case ${caseIndex}: recipient did not reach explicit activation state at ${new URL(page.url()).pathname} binding-status=${bindingProbe}`);
   }
   const scrubbed = await page.evaluate(() => ({ href: location.href, body: document.body.textContent ?? "" }));
   if (scrubbed.href.includes("#") || scrubbed.href.includes("?")) throw new Error(`case ${caseIndex}: invitation URL was not scrubbed synchronously`);
-  const recipientA11y = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth, live: document.querySelector("[aria-live]") !== null, primary: document.querySelector("button.viewer-primary-action")?.textContent }));
-  if (recipientA11y.overflow || !recipientA11y.live || recipientA11y.primary !== "Open document") throw new Error(`case ${caseIndex}: recipient accessibility/mobile assertion failed`);
-  await page.click("button.viewer-primary-action");
+  const recipientAudit = await page.evaluate(() => ({
+    audit: (window.__emailClaimAudit ?? { networkBeforeScrub: -1, scrubbedHistory: false }),
+    referrer: document.referrer,
+    storage: `${localStorage.length}:${sessionStorage.length}`,
+    historyState: history.state,
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    text: document.body.textContent ?? "",
+    controls: Array.from(document.querySelectorAll("button, input")).map((control) => {
+      const rect = control.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, focusable: control.tabIndex >= 0 };
+    }),
+    overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    live: document.querySelector("[aria-live][role=status]") !== null,
+    primary: document.querySelector("button.recipient-primary-action")?.textContent,
+  }));
+  if (recipientAudit.audit.networkBeforeScrub !== 0 || !recipientAudit.audit.scrubbedHistory || recipientAudit.referrer !== "" || recipientAudit.storage !== "0:0" || recipientAudit.historyState !== null || recipientAudit.overflow || !recipientAudit.reducedMotion || !recipientAudit.live || recipientAudit.primary !== "Open document" || claimMaterialInRequestUrl || recipientAudit.controls.some((control) => control.width < 44 || control.height < 44 || !control.focusable)) throw new Error(`case ${caseIndex}: recipient privacy/accessibility/mobile assertion failed`);
+  if (/sign in|wallet|openkey|connect account/i.test(recipientAudit.text)) throw new Error(`case ${caseIndex}: recipient rendered an account or wallet ceremony`);
+  await page.keyboard.press("Tab");
+  if (!(await page.evaluate(() => document.activeElement?.matches("button.recipient-primary-action") && document.querySelector("button.recipient-primary-action")?.matches(":focus-visible")))) throw new Error(`case ${caseIndex}: recipient primary action was not keyboard focus-visible`);
+  await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+  if (await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)) throw new Error(`case ${caseIndex}: recipient desktop layout overflows horizontally`);
+  await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+  await page.click("button.recipient-primary-action");
   if (boundary.expectReject === true) {
     try {
       await page.waitForFunction(() => document.body.textContent?.includes("couldn't finish the invitation") || document.body.textContent?.includes("Ask the sender"), { timeout: 30_000 });
@@ -589,17 +668,36 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   }
   try {
     await page.waitForFunction((marker) => {
-      const renderedMarker = marker.replace(/^#+\s*/, "").trim();
-      if ((document.body.textContent ?? "").includes(renderedMarker)) return true;
+      const renderedMarker = marker.replace(/^#+\s*/, "").trim().split(/\r?\n/, 1)[0].trim().replace(/\s+/g, " ");
+      const includesMarker = (text) => text.replace(/\s+/g, " ").includes(renderedMarker);
+      if (includesMarker(document.body.textContent ?? "")) return true;
       return Array.from(document.querySelectorAll("iframe")).some((frame) => {
         try {
-          return (frame.contentDocument?.body?.textContent ?? "").includes(renderedMarker)
-            || (frame.getAttribute("srcdoc") ?? "").includes(renderedMarker);
+          return includesMarker(frame.contentDocument?.body?.textContent ?? "")
+            || includesMarker(frame.getAttribute("srcdoc") ?? "");
         } catch { return (frame.getAttribute("srcdoc") ?? "").includes(renderedMarker); }
       });
     }, { timeout: 30_000 }, fixture.expectedContent ?? source.path);
   }
-  catch { throw new Error(`case ${caseIndex}: recipient did not render content: ${(await page.evaluate(() => JSON.stringify({ body: document.body.textContent ?? "", url: location.href, secure: isSecureContext, subtle: typeof crypto?.subtle }))).slice(0, 900)}`); }
+  catch {
+    const renderProbe = await page.evaluate((marker) => {
+      const renderedMarker = marker.replace(/^#+\s*/, "").trim().split(/\r?\n/, 1)[0].trim().replace(/\s+/g, " ");
+      const includesMarker = (text) => text.replace(/\s+/g, " ").includes(renderedMarker);
+      return {
+        bodyHasMarker: includesMarker(document.body.textContent ?? ""),
+        contentPresent: document.querySelector(".viewer-content") !== null,
+        frameCount: document.querySelectorAll("iframe").length,
+        frameHasMarker: Array.from(document.querySelectorAll("iframe")).some((frame) => includesMarker(frame.getAttribute("srcdoc") ?? "")),
+        title: document.querySelector(".viewer-state-title")?.textContent ?? null,
+      };
+    }, fixture.expectedContent ?? source.path);
+    throw new Error(`case ${caseIndex}: recipient did not render authoritative content (secure=${await page.evaluate(() => isSecureContext)}, subtle=${await page.evaluate(() => typeof crypto?.subtle)}, probe=${JSON.stringify(renderProbe)})`);
+  }
+  const contentSafety = await page.evaluate(() => ({
+    scripts: document.querySelector(".viewer-content")?.querySelectorAll("script").length ?? 0,
+    rawHtml: document.querySelector(".viewer-content")?.querySelectorAll("html, body").length ?? 0,
+  }));
+  if (contentSafety.scripts !== 0 || contentSafety.rawHtml !== 0) throw new Error(`case ${caseIndex}: rendered content escaped the hardened Markdown boundary`);
   await recipient.close();
 
   const replay = await postJson(targets.credentials, "/v1/share-email/claims/activate", mailbox);
@@ -614,6 +712,133 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
 
 async function productionGateHermetic() {
   const owned = [];
+  const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-production-"));
+  const scopePath = join(tempRoot, "node.json");
+  const deployEnvFile = join(tempRoot, "share-deploy.env");
+  const bindingStorePath = join(tempRoot, "bindings.ndjson");
+  let production;
+  const cleanup = async () => {
+    await stopOwned(owned);
+    const remaining = (await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => ""))
+      .split("\n")
+      .filter((line) => line.includes(tempRoot));
+    if (remaining.length !== 0) throw new Error(`production composition left task-owned processes: ${remaining.join(" | ")}`);
+    ownedProcessCleanup = { stopped: owned.length, remaining, complete: true };
+    await rm(tempRoot, { recursive: true, force: true });
+  };
+  activeCleanup = cleanup;
+  try {
+    const postgres = await startPostgres(owned, tempRoot);
+    // Keep the hermetic TEE deterministic without using a frozen fixture key;
+    // the default-feature Node production validator rejects fixture identities.
+    const issuerSeed = Buffer.alloc(32, 0x47);
+    const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+    const nodeKeySecret = Buffer.alloc(32, 0x09).toString("base64url");
+    const dstackSocket = await startDstackSimulator(owned, tempRoot, issuerSeed);
+    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", scopePath, "--issuer-public-key", issuerPublicKey, "--keys-secret", nodeKeySecret], nodeRoot, {
+      TINYCLOUD_KEYS_SECRET: nodeKeySecret,
+    });
+    owned.push(node);
+    const nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node production composition", node);
+    const nodeUrl = required(nodeDescriptor.url, "Node descriptor URL");
+    const trustBundle = nodeDescriptor.trustBundle;
+    if (trustBundle === undefined || trustBundle.issuerPublicKey !== issuerPublicKey) throw new Error("production Node trust bundle did not bind the dstack issuer key");
+    const capabilityCases = Array.isArray(nodeDescriptor.cases) ? nodeDescriptor.cases : [];
+    if (capabilityCases.length < 2) throw new Error("production Node composition did not publish KV and named-SQL capabilities");
+    const migrationEnv = {
+      ...process.env,
+      DATABASE_URL: postgres.url,
+      DATABASE_SSL_ROOT_CERT: postgres.caCert,
+      DATABASE_MIGRATIONS_DIR: resolve(credentialsRoot, "deploy/share-email/migrations"),
+      DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000",
+      DATABASE_RECYCLE_TIMEOUT_MS: "5000", DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000",
+      DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000", STORAGE_READINESS_FILE: join(tempRoot, "readiness.json"),
+      STORAGE_READINESS_MAX_AGE_SECONDS: "30",
+    };
+    await run("bash", [resolve(credentialsRoot, "scripts/oi-share-email/migrate.sh")], credentialsRoot, migrationEnv);
+    await run("bash", [resolve(credentialsRoot, "scripts/oi-share-email/readiness-check.sh")], credentialsRoot, migrationEnv);
+    const credentialsPort = await freePort();
+    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "dstack", "--bin", "opencredentials-witness"], credentialsRustRoot, {
+      KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: trustBundle.issuerDid,
+      BIND_ADDR: `127.0.0.1:${credentialsPort}`, CORS_ALLOWED_ORIGINS: canonical.share,
+      SHARE_EMAIL_CAPABILITY: "true", SHARE_EMAIL_TRUST_BUNDLE_JSON: JSON.stringify(trustBundle),
+      SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "hermetic-production-key", RESEND_WEBHOOK_SECRET: "hermetic-production-webhook",
+      DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
+      DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000",
+      DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
+      DATABASE_MIGRATIONS_DIR: resolve(credentialsRoot, "deploy/share-email/migrations"), STORAGE_READINESS_FILE: migrationEnv.STORAGE_READINESS_FILE,
+      STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1",
+    });
+    owned.push(credentials);
+    await waitForPort(credentialsPort, "OpenCredentials production composition");
+    const credentialsUrl = `http://127.0.0.1:${credentialsPort}`;
+    const readiness = await fetch(`${credentialsUrl}/share-email/readiness`);
+    if (readiness.status !== 200) throw new Error(`OpenCredentials production readiness failed (${readiness.status})`);
+    const capabilities = await fetch(`${credentialsUrl}/share-email/capabilities`);
+    if (capabilities.status !== 200) throw new Error(`OpenCredentials production capability failed (${capabilities.status})`);
+    const registry = spawnOwned("npm run -w @tinycloud/share-registry dev-server -- --port 0", shareRoot);
+    owned.push(registry);
+    let registryUrl;
+    const registryDeadline = Date.now() + 30_000;
+    while (registryUrl === undefined && Date.now() < registryDeadline) {
+      const match = registry.output().match(/http:\/\/127\.0\.0\.1:\d+/);
+      if (match !== null) registryUrl = match[0]; else await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+    }
+    registryUrl = required(registryUrl, "local Share registry URL");
+    const senderScope = capabilityCases[0].scope ?? capabilityCases[0];
+    const senderPrivateKey = required(senderScope.senderPrivateKey, "server-only sender key");
+    const capabilityJson = capabilityCases.map((entry) => {
+      const scope = structuredClone(entry.scope ?? entry);
+      delete scope.senderPrivateKey; delete scope.privateKey; delete scope.policy;
+      scope.userId = "production-composition-user";
+      const source = entry.source ?? scope.source;
+      const policyDocument = entry.policy ?? scope.policy;
+      const authority = entry.authorityMaterial ?? scope.authorityMaterial;
+      const policyBytes = Buffer.from(stableJson(policyDocument), "utf8").toString("base64url");
+      return JSON.stringify({ scope, source, policy: {
+        action: source.action, authorityMaterialDigest: entry.authorityMaterialDigest ?? scope.authorityMaterialDigest,
+        contentSourceDigest: policyDocument.contentSourceDigest, delegationCid: entry.delegationCid ?? scope.delegationCid,
+        expiresAt: entry.expiresAt ?? scope.expiresAt, policyAuthorityBytes: authority.policyAuthorityBytes,
+        policyAuthorityCid: authority.policyAuthorityCid, policyBytes, policyDigest: digestBase64Url(Buffer.from(stableJson(policyDocument), "utf8")),
+        policyEnforcementBytes: authority.policyEnforcementBytes, policyEnforcementCid: authority.policyEnforcementCid,
+        policyCid: entry.policyCid, recipientEmail: policyDocument.recipientEmail, resource: source.path, source,
+        target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: source.space },
+      }});
+    });
+    const envValues = {
+      SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey,
+      SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson),
+      SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "production-composition-user", username: "production-composition", passwordHash: scryptPassword("production-composition-password") }]),
+      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true",
+      SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: nodeUrl }, credentials: { origin: canonical.credentials, transportOrigin: credentialsUrl }, registry: { origin: canonical.registry, transportOrigin: registryUrl } }),
+      VITE_SHARE_REGISTRY_URL: canonical.registry,
+    };
+    await writeFile(envValues.SHARE_TRUST_BUNDLE_FILE, `${JSON.stringify(trustBundle)}\n`, { encoding: "utf8", flag: "wx" });
+    await writeFile(deployEnvFile, `${Object.entries(envValues).map(([key, value]) => `${key}=${value}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
+    const deployEnv = { ...process.env, ...envValues, SHARE_DEPLOY_STARTUP: "true" };
+    const validationEnv = { ...deployEnv }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
+    await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, validationEnv);
+    await run("npm", ["run", "build:deploy"], shareRoot, validationEnv);
+    const port = await freePort();
+    const host = spawnOwnedArgs("npm", ["run", "start:deploy"], shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port) });
+    owned.push(host);
+    try {
+      await waitForPort(port, "Share production composition");
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}: ${host.output().slice(-8_000)}`);
+    }
+    const shareHealth = await fetch(`http://127.0.0.1:${port}/share.html`);
+    if (shareHealth.status !== 200) throw new Error(`Share production composition failed (${shareHealth.status})`);
+    console.error("production OpenCredentials/Node/Share composition: PASS");
+  } finally {
+    await cleanup();
+    if (activeCleanup === cleanup) activeCleanup = undefined;
+  }
+}
+
+async function fixtureGate() {
+  const owned = [];
+  const focusedKvLoop = process.argv.includes("--kv-only");
   const tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-email-claim-"));
   const scopePath = join(tempRoot, "node.json");
   const mailArtifact = join(tempRoot, "mail.ndjson");
@@ -633,12 +858,12 @@ async function productionGateHermetic() {
   try {
     const postgres = await startPostgres(owned, tempRoot);
     resendProvider = await startLocalResendProvider(mailArtifact);
-    const issuerSeed = Buffer.alloc(32, 0x45);
+    const issuerSeed = Buffer.alloc(32, 0x43);
     const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
     const nodeKeySecret = Buffer.alloc(32, 0x09).toString("base64url");
     const dstackSocket = await startDstackSimulator(owned, tempRoot, issuerSeed);
-    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", scopePath, "--issuer-public-key", issuerPublicKey, "--keys-secret", nodeKeySecret], nodeRoot, {
-      TINYCLOUD_KEYS_SECRET: nodeKeySecret,
+    const node = spawnOwnedArgs("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", scopePath, "--issuer-public-key", issuerPublicKey, "--keys-secret", nodeKeySecret], nodeRoot, {
+      TINYCLOUD_KEYS_SECRET: nodeKeySecret, DSTACK_SIMULATOR_ENDPOINT: dstackSocket,
     });
     owned.push(node);
     const nodeDescriptor = await waitForFileJson(scopePath, "TinyCloud Node", node);
@@ -647,8 +872,9 @@ async function productionGateHermetic() {
     const trustBundle = nodeDescriptor.trustBundle;
     if (trustBundle === undefined || trustBundle.nodeInvitationPublicKey !== trustedKey || trustBundle.issuerPublicKey !== issuerPublicKey) throw new Error("production Node did not publish the exact JSON trust bundle used at startup");
     const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));
-    const fixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
-    if (fixtures.length < 2) throw new Error("production gate requires both KV and named-SQL cases");
+    const allFixtures = Array.isArray(fixtureValue) ? fixtureValue : (fixtureValue.cases ?? [fixtureValue]);
+    const fixtures = focusedKvLoop ? allFixtures.filter((fixture) => (fixture.kind ?? (fixture.source ?? {}).kind) === "kv") : allFixtures;
+    if (focusedKvLoop ? fixtures.length !== 1 : fixtures.length < 2) throw new Error(focusedKvLoop ? "focused KV loop requires exactly one KV case" : "production gate requires both KV and named-SQL cases");
     const firstScope = fixtures[0].scope ?? fixtures[0];
     const privateKey = decodeBase64(required(firstScope.senderPrivateKey, "server-only sender key"), "senderPrivateKey");
     if (privateKey.length !== 32) throw new Error("sender key is not a 32-byte server-only key");
@@ -674,21 +900,22 @@ async function productionGateHermetic() {
     }
     registryUrl = required(registryUrl, "local Share registry URL");
     const credentialsPort = await freePort();
-    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "dstack", "--bin", "opencredentials-witness"], credentialsRustRoot, {
-      KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: "did:web:issuer.credentials.org", BIND_ADDR: `127.0.0.1:${credentialsPort}`,
-      CORS_ALLOWED_ORIGINS: canonical.share, SHARE_EMAIL_CAPABILITY: "true", RESEND_API_KEY: "hermetic-provider-key", RESEND_WEBHOOK_SECRET: "hermetic-webhook-secret",
-      RESEND_HERMETIC_ENDPOINT: resendProvider.endpoint, DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
+    const credentials = spawnOwnedArgs("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRustRoot, "Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-fixture"], credentialsRustRoot, {
+      BIND_ADDR: `127.0.0.1:${credentialsPort}`,
+      EMAIL_CLAIM_FIXTURE_DATABASE_URL: postgres.url.replace("db.localhost", "127.0.0.1").replace("?sslmode=verify-full", ""), SHARE_EMAIL_RESEND_ENDPOINT: resendProvider.endpoint,
+      SHARE_EMAIL_TRUSTED_NODE_ORIGIN: canonical.node, SHARE_EMAIL_TRUSTED_NODE_AUDIENCE: trustBundle.nodeAudience,
+      SHARE_EMAIL_TRUSTED_NODE_KID: trustBundle.nodeInvitationKid, SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: trustedKey,
+      DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
       DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000",
       DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
       DATABASE_MIGRATIONS_DIR: resolve(credentialsRoot, "deploy/share-email/migrations"), STORAGE_READINESS_FILE: migrationEnv.STORAGE_READINESS_FILE,
-      STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1", SHARE_EMAIL_SHARE_URL: `${canonical.share}/s/bafkrei${"a".repeat(52)}#k=${Buffer.alloc(32, 0x21).toString("base64url")}`,
-      SHARE_EMAIL_TRUST_BUNDLE_JSON: JSON.stringify(trustBundle),
+      STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1",
     });
     owned.push(credentials);
     try {
       await waitForPort(credentialsPort, "OpenCredentials production witness");
     } catch (error) {
-      throw new Error(`${error instanceof Error ? error.message : String(error)}: ${diagnosticOutput(credentials.output())}`);
+      throw new Error(`${error instanceof Error ? error.message : String(error)}:\n${credentials.output().slice(-8_000)}`);
     }
     const credentialsUrl = `http://127.0.0.1:${credentialsPort}`;
     const issuerResponse = await fetch(`${credentialsUrl}/issuer`); if (issuerResponse.status !== 200) throw new Error(`OpenCredentials issuer route failed (${issuerResponse.status})`);
@@ -696,10 +923,22 @@ async function productionGateHermetic() {
     const credentialsDescriptor = { issuerDid: issuerDescriptor.did, issuerPublicKey: issuerDescriptor.publicKeyJwk?.x };
     if (credentialsDescriptor.issuerDid !== trustBundle.issuerDid || credentialsDescriptor.issuerPublicKey !== issuerPublicKey) throw new Error("production witness issuer did/key does not match the single JSON trust bundle");
     const capabilityJson = fixtures.map((fixture) => {
-      const scope = structuredClone(fixture.scope ?? fixture); delete scope.senderPrivateKey; delete scope.privateKey;
+      const scope = structuredClone(fixture.scope ?? fixture); delete scope.senderPrivateKey; delete scope.privateKey; delete scope.policy;
       scope.userId = "sender-user-1";
       scope.recipientEmail = fixture.email ?? scope.expectedRecipientEmail;
-      return JSON.stringify({ scope, source: fixture.source ?? (fixture.scope ?? fixture).source });
+      const source = fixture.source ?? (fixture.scope ?? fixture).source;
+      const policyDocument = fixture.policy ?? (fixture.scope ?? fixture).policy;
+      if (policyDocument === undefined) throw new Error(`fixture ${fixture.kind ?? index} did not publish its exact policy`);
+      const authority = fixture.authorityMaterial ?? scope.authorityMaterial;
+      const policyBytes = Buffer.from(stableJson(policyDocument), "utf8").toString("base64url");
+      const policy = {
+        action: source.action, authorityMaterialDigest: fixture.authorityMaterialDigest ?? scope.authorityMaterialDigest, contentSourceDigest: policyDocument.contentSourceDigest, delegationCid: fixture.delegationCid ?? scope.delegationCid,
+        expiresAt: fixture.expiresAt ?? scope.expiresAt, policyAuthorityBytes: authority.policyAuthorityBytes, policyAuthorityCid: authority.policyAuthorityCid, policyBytes,
+        policyDigest: digestBase64Url(Buffer.from(stableJson(policyDocument), "utf8")), policyEnforcementBytes: authority.policyEnforcementBytes, policyEnforcementCid: authority.policyEnforcementCid,
+        policyCid: fixture.policyCid, recipientEmail: policyDocument.recipientEmail, resource: source.path, source,
+        target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: source.space },
+      };
+      return JSON.stringify({ scope, source, policy });
     });
     const username = "release-sender"; const password = "release-password";
     process.env.SHARE_E2E_USERNAME = username;
@@ -717,6 +956,10 @@ async function productionGateHermetic() {
     const validationEnv = { ...deployEnv }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
     await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, validationEnv);
     await run("npm", ["run", "build:deploy"], shareRoot, validationEnv);
+    // The witness readiness file is intentionally short-lived in production;
+    // refresh the sidecar result after the Share build so the controlled
+    // composition measures the live database/provider seam, not build time.
+    await run("bash", [resolve(credentialsRoot, "scripts/oi-share-email/readiness-check.sh")], credentialsRoot, migrationEnv);
     const startHost = async () => {
       const port = await freePort();
       const host = spawnOwnedArgs("npm", ["run", "start:deploy"], shareRoot, { ...deployEnv, HOST: "127.0.0.1", PORT: String(port) });
@@ -760,9 +1003,13 @@ async function productionGateHermetic() {
       const otherPage = await otherContext.newPage(); await installInterception(otherPage, targets, {}); await otherPage.goto(`${targets.vite}/share.html`, { waitUntil: "domcontentloaded" }); await new Promise((resolveWait) => setTimeout(resolveWait, 500)); await otherPage.waitForSelector('input[name="username"]', { timeout: 5_000 }); await otherPage.type('input[name="username"]', "other-user"); await otherPage.type('input[name="password"]', "other-password"); await otherPage.click('button[type="submit"]');
       const otherCapabilities = await otherPage.evaluate(async () => { const response = await fetch("/api/share/capabilities", { credentials: "include" }); return { status: response.status, body: await response.json() }; }); if (otherCapabilities.status === 200 && (!Array.isArray(otherCapabilities.body.capabilities) || otherCapabilities.body.capabilities.length !== 0)) throw new Error(`cross-user capability exposure was not rejected: ${JSON.stringify(otherCapabilities)}`); if (otherCapabilities.status !== 200 && otherCapabilities.status !== 401) throw new Error(`cross-user capability boundary returned unexpected status: ${JSON.stringify(otherCapabilities)}`); await otherPage.close(); await authPage.close();
       await otherContext.close();
-      runCoverage = { ...runCoverage, fixtures: fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["production Share host", "clean-browser authentication", "no pre-auth capability exposure", "per-user capability selection", "cross-user capability rejection", "KV", "named-SQL", "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "durable binding restart/recovery", "corrupt journal fail-closed", "production CSP/rewrites/headers", "accessibility/mobile"], negativeBoundaryCases: ["authoritative binding propagation", "forged policy challenge", "misbound read response", "source/resource/action/recipient/digest/expiry substitution", "terminal claim states", "activation replay", "concurrent/cross-process store behavior"] };
+      runCoverage = { ...runCoverage, fixtures: focusedKvLoop ? 1 : fixtures.length * 2, sources: fixtures.map((fixture) => fixture.kind), browser: ["production Share host", "clean-browser authentication", "no pre-auth capability exposure", "per-user capability selection", "cross-user capability rejection", "KV", ...(focusedKvLoop ? [] : ["named-SQL"]), "scanner-safe inert GET", "explicit activation", "non-extractable holder key", "signed challenge/session/read verification", "durable binding restart/recovery", "corrupt journal fail-closed", "production CSP/rewrites/headers", "accessibility/mobile"], negativeBoundaryCases: focusedKvLoop ? [] : ["authoritative binding propagation", "forged policy challenge", "misbound read response", "source/resource/action/recipient/digest/expiry substitution", "terminal claim states", "activation replay", "concurrent/cross-process store behavior"] };
       for (const [index, fixture] of fixtures.entries()) {
         const selected = capabilities.capabilities.find((candidate) => candidate.source?.kind === fixture.kind); if (selected === undefined) throw new Error(`no authenticated capability for ${fixture.kind}`); fixture.capabilityId = selected.capabilityId; fixture.mailArtifact = mailArtifact;
+        if (focusedKvLoop) {
+          await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, {}, 0, resendProvider);
+          continue;
+        }
         const responseMutation = fixture.kind === "kv" ? { path: "/share/v1/policy/challenges", mutate: (body) => { body.proof.signature = `${body.proof.signature.slice(0, -1)}A`; } } : { path: "/share/v1/read", mutate: (body) => { body.readJti = `${body.readJti.slice(0, -1)}A`; } };
         try {
           await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index, { responseMutation, expectReject: true }, 0, resendProvider); await runBrowserCase(instance, targets, fixture, decodeBase64(credentialsDescriptor.issuerPublicKey, "issuer public key descriptor"), index + fixtures.length, {}, 1, resendProvider);
@@ -773,6 +1020,7 @@ async function productionGateHermetic() {
         }
       }
     } finally { await instance.close(); }
+    if (focusedKvLoop) await assertFocusedOutbox(postgres);
     await stopOwned([production.host]); production = undefined;
     production = await startHost();
     const journalLines = (await readFile(bindingStorePath, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line)); if (journalLines.length < fixtures.length || journalLines.some((record) => record.op !== "put")) throw new Error("durable binding journal did not contain committed records");
@@ -897,9 +1145,14 @@ async function writeRunRecord(exitStatus, errorMessage) {
 }
 
 try {
-  if (!process.argv.includes("--mounted-only")) await nativeGate();
-  await productionGateHermetic();
-  console.error(`email-claim continuous production gate: PASS (${expectedManifestDigest})`);
+  if (process.argv.includes("--fixture-only")) {
+    await fixtureGate();
+    console.error("email-claim fixture-backed browser gate: PASS");
+  } else {
+    if (!process.argv.includes("--mounted-only") && !process.argv.includes("--hermetic-only")) await nativeGate();
+    await productionGateHermetic();
+    console.error(`email-claim continuous production gate: PASS (${expectedManifestDigest})`);
+  }
 } catch (error) {
   console.error(`email-claim continuous production gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;

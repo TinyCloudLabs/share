@@ -1,6 +1,7 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
+import { verifyMessage } from "viem";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
@@ -22,6 +23,8 @@ const MAX_BODY = 128 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
 const B64_128 = /^[A-Za-z0-9_-]{22}$/;
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const OPENKEY_NONCE_TTL_MS = 5 * 60 * 1000;
 
 export interface BindingStore {
   get(cid: string): Promise<Record<string, unknown> | undefined>;
@@ -111,8 +114,8 @@ class MemoryBindingStore implements BindingStore {
 
 export interface ShareHostOptions {
   readonly bundle: ShareTrustBundle;
-  readonly capability: { readonly scope: Record<string, unknown>; readonly source: ContentSource };
-  readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource }>;
+  readonly capability: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
+  readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
   readonly bindingStore: BindingStore;
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
@@ -150,9 +153,36 @@ function assertExpiry(scope: Record<string, unknown>, candidate: unknown): strin
   return value;
 }
 
-function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record<string, unknown>; source: ContentSource } {
+const POLICY_KEYS = ["action", "authorityMaterialDigest", "contentSourceDigest", "delegationCid", "expiresAt", "policyAuthorityBytes", "policyAuthorityCid", "policyBytes", "policyDigest", "policyEnforcementBytes", "policyEnforcementCid", "policyCid", "recipientEmail", "resource", "source", "target"] as const;
+
+function policyString(value: unknown, label: string, max = 128 * 1024): string {
+  if (typeof value !== "string" || value.length === 0 || new TextEncoder().encode(value).length > max) throw new Error(label);
+  return value;
+}
+
+function parsePolicy(value: unknown, scope: Record<string, unknown>, source: ContentSource): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("policy shape");
+  const policy = value as Record<string, unknown>;
+  if (Object.keys(policy).length !== POLICY_KEYS.length || POLICY_KEYS.some((key) => !Object.hasOwn(policy, key))) throw new Error("policy shape");
+  const policySource = validateSource(policy.source as ContentSource);
+  const target = policy.target;
+  if (!sameJson(policySource, source) || policy.action !== source.action || policy.resource !== source.path || typeof target !== "object" || target === null || Array.isArray(target)) throw new Error("policy capability binding");
+  const policyTarget = target as Record<string, unknown>;
+  if (policyTarget.origin !== scope.targetOrigin || policyTarget.nodeAudience !== scope.nodeAudience || policyTarget.spaceId !== scope.spaceId) throw new Error("policy target binding");
+  const recipientEmail = canonicalEmail(policy.recipientEmail);
+  if (scope.recipientEmail !== undefined && recipientEmail !== canonicalEmail(scope.recipientEmail)) throw new Error("policy recipient binding");
+  if (policy.delegationCid !== scope.delegationCid || policy.authorityMaterialDigest !== scope.authorityMaterialDigest) throw new Error("policy authority binding");
+  assertExpiry(scope, policy.expiresAt);
+  for (const key of ["action", "resource", "expiresAt", "policyCid", "policyDigest", "contentSourceDigest", "delegationCid", "authorityMaterialDigest", "policyAuthorityCid", "policyEnforcementCid"] as const) policyString(policy[key], `policy ${key}`);
+  policyString(policy.policyBytes, "policy bytes");
+  policyString(policy.policyAuthorityBytes, "policy authority bytes");
+  policyString(policy.policyEnforcementBytes, "policy enforcement bytes");
+  return { ...policy, source: policySource, recipientEmail };
+}
+
+function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } {
   const value = JSON.parse(raw) as Record<string, unknown>;
-  if (typeof value !== "object" || value === null || (Object.keys(value).length !== 2 && Object.keys(value).length !== 3) || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null || (value.userId !== undefined && typeof value.userId !== "string")) throw new Error("capability shape");
+  if (typeof value !== "object" || value === null || (Object.keys(value).length !== 3 && Object.keys(value).length !== 4) || !Object.hasOwn(value, "scope") || !Object.hasOwn(value, "source") || !Object.hasOwn(value, "policy") || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null || (value.userId !== undefined && typeof value.userId !== "string")) throw new Error("capability shape");
   const scope = { ...(value.scope as Record<string, unknown>) };
   if (typeof value.userId === "string") scope.userId = value.userId;
   if (scope.senderDid !== bundle.sender.senderDid || scope.targetOrigin !== bundle.public.nodeOrigin || scope.nodeAudience !== bundle.public.nodeAudience) throw new Error("capability trust binding");
@@ -167,7 +197,8 @@ function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record
   const source = validateSource(value.source as ContentSource);
   if (scope.recipientEmail !== undefined) scope.recipientEmail = canonicalEmail(scope.recipientEmail);
   for (const key of ["expiryMin", "expiryMax", "expiresAt", "expiryDefault"]) if (scope[key] !== undefined) exactExpiry(scope[key], key);
-  return { scope, source };
+  const policy = parsePolicy(value.policy, scope, source);
+  return { scope, source, policy };
 }
 
 function browserSafeScope(value: Record<string, unknown>): Record<string, unknown> {
@@ -185,6 +216,26 @@ function browserSafeScope(value: Record<string, unknown>): Record<string, unknow
 
 interface AuthUser { readonly userId: string; readonly username: string; readonly passwordHash: string; }
 interface ShareSession { readonly userId: string; readonly expiresAt: number; }
+
+function openKeyAddressFromOwnerDid(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^did:pkh:eip155:[1-9][0-9]*:(0x[0-9a-fA-F]{40})$/.exec(value);
+  return match?.[1]?.toLowerCase();
+}
+
+function openKeyMessage(origin: string, address: string, nonce: string, issuedAt: string): string {
+  return [
+    `${new URL(origin).host} wants you to sign in with your Ethereum account:`,
+    address,
+    "",
+    "Sign in to TinyCloud Share.",
+    "",
+    `URI: ${origin}`,
+    "Version: 1",
+    `Nonce: ${nonce}`,
+    `Issued At: ${issuedAt}`,
+  ].join("\n");
+}
 
 function sessionCookie(request: Request): string | undefined { return cookie(request, "share_session"); }
 
@@ -231,7 +282,7 @@ function requiredScopeString(scope: Record<string, unknown>, key: string): strin
   const value = scope[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`capability ${key} is missing`); return value;
 }
 
-function assertSigningBinding(purpose: string, message: string, binding: Record<string, unknown>, scope: Record<string, unknown>, authorizedSource: ContentSource): void {
+function assertSigningBinding(purpose: string, message: string, binding: Record<string, unknown>, scope: Record<string, unknown>, authorizedSource: ContentSource, authorizedPolicy: Record<string, unknown>): void {
   const parsed = JSON.parse(message) as Record<string, unknown>;
   const messageSource = parsed.contentSource as Record<string, unknown> | undefined;
   const authorizationTarget = parsed.authorizationTarget as Record<string, unknown> | undefined;
@@ -245,25 +296,68 @@ function assertSigningBinding(purpose: string, message: string, binding: Record<
   const expectedSourceDigest = sourceDigest(authorizedSource);
   const selectedExpiry = purpose === "envelope" ? parsed.expiry : parsed.shareExpiresAt;
   const expiresAt = assertExpiry(scope, selectedExpiry);
-  const expected = { shareId: parsed.shareId, recipientEmail, action: authorizedSource.action, resource: authorizedSource.path, expiresAt };
-  if (!sameJson(binding, expected)) throw new Error("signing binding mismatch");
+  const expected = { shareId: parsed.shareId, recipientEmail, ...(purpose === "envelope" ? { action: authorizedSource.action, resource: authorizedSource.path } : {}), expiresAt };
+  if (Object.entries(expected).some(([key, value]) => !sameJson(binding[key], value))) throw new Error("signing binding mismatch");
   if (purpose === "envelope") {
     const target = parsed.target as Record<string, unknown>;
     if (parsed.delegation !== scope.delegation || target?.origin !== scope.targetOrigin || target.nodeAudience !== scope.nodeAudience || target.spaceId !== scope.spaceId || (target.resource as Record<string, unknown>)?.path !== authorizedSource.path || (target.resource as Record<string, unknown>)?.kind !== "exact") throw new Error("envelope signing binding mismatch");
     if (authorizationTarget?.kind !== "policy" || typeof authorizationTarget.policyBytes !== "string") throw new Error("envelope signing target mismatch");
-    if (policy?.recipientEmail !== recipientEmail || policy?.action !== authorizedSource.action || policy?.resource !== authorizedSource.path || policy?.expiresAt !== parsed.expiry || !sameJson(policy.contentSource, authorizedSource) || policy.contentSourceDigest !== expectedSourceDigest || policy.issuerDid !== scope.senderDid) throw new Error("policy signing binding mismatch");
+    if (policy === undefined || authorizationTarget.policyCid !== authorizedPolicy.policyCid || authorizationTarget.policyBytes !== authorizedPolicy.policyBytes || policy.recipientEmail !== recipientEmail || policy.action !== authorizedSource.action || policy.resource !== authorizedSource.path || policy.expiresAt !== parsed.expiry || !sameJson(policy.contentSource, authorizedSource) || policy.contentSourceDigest !== expectedSourceDigest || policy.issuerDid !== scope.senderDid) throw new Error("policy signing binding mismatch");
+    const expectedBinding = {
+      ...expected,
+      policyCid: authorizedPolicy.policyCid, policyDigest: authorizedPolicy.policyDigest,
+      policyAuthorityCid: authorizedPolicy.policyAuthorityCid, policyAuthorityBytes: authorizedPolicy.policyAuthorityBytes,
+      policyEnforcementCid: authorizedPolicy.policyEnforcementCid, policyEnforcementBytes: authorizedPolicy.policyEnforcementBytes,
+      delegation: scope.delegation, targetOrigin: scope.targetOrigin, nodeAudience: scope.nodeAudience, returnOrigin: scope.shareOrigin,
+    };
+    if (!sameJson(binding, expectedBinding)) throw new Error("envelope signing binding mismatch");
   } else {
-    const mismatches = Object.entries({ senderDid: [parsed.senderDid, scope.senderDid], targetOrigin: [parsed.targetOrigin, scope.targetOrigin], nodeAudience: [parsed.nodeAudience, scope.nodeAudience], delegationCid: [parsed.delegationCid, scope.delegationCid], authorityMaterialHandle: [parsed.authorityMaterialHandle, scope.authorityMaterialHandle], authorityMaterialDigest: [parsed.authorityMaterialDigest, scope.authorityMaterialDigest], documentName: [parsed.documentName, scope.documentName], senderTrust: [parsed.senderTrust, scope.senderTrust], recipientEmail: [parsed.recipientEmail, recipientEmail], action: [messageSource?.action, authorizedSource.action], resource: [messageSource?.path, authorizedSource.path], contentSourceDigest: [parsed.contentSourceDigest, expectedSourceDigest] }).filter(([, values]) => values[0] !== values[1] || (values[0] !== undefined && typeof values[0] === "object" && !sameJson(values[0], values[1])));
+    const authorizationBody = { shareCid: parsed.shareCid, shareId: parsed.shareId, policyCid: parsed.policyCid, delegationCid: parsed.delegationCid, authorityMaterialHandle: parsed.authorityMaterialHandle, authorityMaterialDigest: parsed.authorityMaterialDigest, recipientEmail: parsed.recipientEmail, targetOrigin: parsed.targetOrigin, nodeAudience: parsed.nodeAudience, action: authorizedSource.action, resource: authorizedSource.path };
+    const requestDigest = hash(stable(authorizationBody));
+    if (parsed.jti === undefined || typeof parsed.jti !== "string" || !B64_128.test(parsed.jti) || parsed.reportAbuseToken === undefined || typeof parsed.reportAbuseToken !== "string" || !B64_128.test(parsed.reportAbuseToken) || parsed.shareCid === undefined || parsed.shareId === undefined || parsed.requestBodyDigest !== requestDigest) throw new Error("authorization request binding mismatch");
+    const mismatches = Object.entries({ senderDid: [parsed.senderDid, scope.senderDid], targetOrigin: [parsed.targetOrigin, scope.targetOrigin], nodeAudience: [parsed.nodeAudience, scope.nodeAudience], delegationCid: [parsed.delegationCid, scope.delegationCid], authorityMaterialHandle: [parsed.authorityMaterialHandle, scope.authorityMaterialHandle], authorityMaterialDigest: [parsed.authorityMaterialDigest, scope.authorityMaterialDigest], documentName: [parsed.documentName, scope.documentName], senderTrust: [parsed.senderTrust, scope.senderTrust], recipientEmail: [parsed.recipientEmail, recipientEmail], policyCid: [parsed.policyCid, authorizedPolicy.policyCid], shareExpiresAt: [parsed.shareExpiresAt, authorizedPolicy.expiresAt], action: [messageSource?.action, authorizedSource.action], resource: [messageSource?.path, authorizedSource.path], contentSourceDigest: [parsed.contentSourceDigest, expectedSourceDigest], shareId: [parsed.shareId, binding.shareId] }).filter(([, values]) => values[0] !== values[1] || (values[0] !== undefined && typeof values[0] === "object" && !sameJson(values[0], values[1])));
     if (mismatches.length !== 0 || !sameJson(messageSource, authorizedSource) || parsed.recipientEmail !== recipientEmail || parsed.shareExpiresAt !== expiresAt) throw new Error("authorization signing binding mismatch");
+    const expectedBinding = {
+      ...parsed,
+      expiresAt: parsed.shareExpiresAt,
+      policyDigest: authorizedPolicy.policyDigest, policyAuthorityCid: authorizedPolicy.policyAuthorityCid, policyAuthorityBytes: authorizedPolicy.policyAuthorityBytes,
+      policyEnforcementCid: authorizedPolicy.policyEnforcementCid, policyEnforcementBytes: authorizedPolicy.policyEnforcementBytes,
+    };
+    if (!sameJson(binding, expectedBinding)) throw new Error("authorization signing binding mismatch");
   }
+}
+
+function assertPublishedBinding(binding: Record<string, unknown>, cid: string, scope: Record<string, unknown>, source: ContentSource, policy: Record<string, unknown>): void {
+  const expected: Record<string, unknown> = {
+    policyCid: policy.policyCid,
+    policyDigest: policy.policyDigest,
+    policyBytes: policy.policyBytes,
+    recipientEmail: policy.recipientEmail,
+    expiry: policy.expiresAt,
+    delegationCid: scope.delegationCid,
+    authorityMaterialHandle: scope.authorityMaterialHandle,
+    authorityMaterialDigest: scope.authorityMaterialDigest,
+    policyAuthorityCid: policy.policyAuthorityCid,
+    policyAuthorityBytes: policy.policyAuthorityBytes,
+    policyEnforcementCid: policy.policyEnforcementCid,
+    policyEnforcementBytes: policy.policyEnforcementBytes,
+    contentSource: source,
+    contentSourceDigest: sourceDigest(source),
+    action: source.action,
+    resource: source.path,
+    target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: scope.spaceId },
+    returnOrigin: scope.shareOrigin,
+  };
+  if (binding.shareCid !== cid || Object.entries(expected).some(([key, value]) => !sameJson(binding[key], value))) throw new Error("published binding is outside the selected exact policy");
 }
 
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown> } {
   const signers = new Map<string, string>();
   const sessions = new Map<string, ShareSession>();
+  const openKeyNonces = new Map<string, number>();
   const capability = options.capability;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
-  const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource } => {
+  const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
     const requested = requestedCapabilityId ?? null;
     const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
@@ -282,6 +376,39 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     const url = new URL(request.url);
     try {
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
+      if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
+        const requestOrigin = request.headers.get("origin");
+        if (requestOrigin !== null && requestOrigin !== options.bundle.public.shareOrigin) return generic(403);
+        const now = Date.now();
+        for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+        const nonce = toBase64Url(randomBytes(24));
+        const expiresAt = now + OPENKEY_NONCE_TTL_MS;
+        openKeyNonces.set(nonce, expiresAt);
+        return response(200, { nonce, expiresAt: new Date(expiresAt).toISOString() });
+      }
+      if (url.pathname === "/api/share/auth/openkey" && request.method === "POST") {
+        if (request.headers.get("origin") !== options.bundle.public.shareOrigin) return generic(403);
+        const body = await boundedJson(request);
+        if (Object.keys(body).sort().join(",") !== "address,issuedAt,message,nonce,signature") return generic(400);
+        const address = safeString(body.address, "address");
+        const signature = safeString(body.signature, "signature");
+        const message = safeString(body.message, "message");
+        const nonce = safeString(body.nonce, "nonce");
+        const issuedAt = safeString(body.issuedAt, "issuedAt");
+        const nonceExpiry = openKeyNonces.get(nonce);
+        openKeyNonces.delete(nonce);
+        const issuedTime = Date.parse(issuedAt);
+        if (!EVM_ADDRESS.test(address) || !/^0x[0-9a-fA-F]{130}$/.test(signature) || !/^[A-Za-z0-9_-]{32}$/.test(nonce) || nonceExpiry === undefined || nonceExpiry <= Date.now() || !Number.isFinite(issuedTime) || Math.abs(Date.now() - issuedTime) > OPENKEY_NONCE_TTL_MS || message !== openKeyMessage(options.bundle.public.shareOrigin, address, nonce, issuedAt)) return generic(401);
+        const valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
+        if (!valid) return generic(401);
+        const normalizedAddress = address.toLowerCase();
+        const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === normalizedAddress);
+        const userIds = [...new Set(candidates.map((candidate) => candidate.scope.userId).filter((value): value is string => typeof value === "string" && value.length > 0))];
+        if (userIds.length !== 1) return generic(403);
+        const token = toBase64Url(randomBytes(32));
+        sessions.set(token, { userId: userIds[0]!, expiresAt: Date.now() + 1_800_000 });
+        return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800) });
+      }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
         if (!options.testMode && request.headers.get("origin") !== options.bundle.public.shareOrigin) return generic(403);
         const body = await boundedJson(request);
@@ -299,12 +426,12 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const selected = selectedCapability(request, session);
         const scope = selected.scope as Record<string, unknown>;
-        return response(200, { scope: browserSafeScope(scope), source: selected.source });
+        return response(200, { scope: browserSafeScope(scope), source: selected.source, policy: selected.policy });
       }
       if (url.pathname === "/api/share/capabilities" && request.method === "GET") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
-        return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source })) });
+        return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
       }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
@@ -315,7 +442,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (capabilityId !== signer.capabilityId || (body.purpose !== "envelope" && body.purpose !== "inviteAuthorization")) return generic(403);
         const message = safeString(body.message, "message");
         const binding = bodyBinding(body);
-        assertSigningBinding(body.purpose, message, binding, selected.scope as Record<string, unknown>, selected.source);
+        assertSigningBinding(body.purpose, message, binding, selected.scope as Record<string, unknown>, selected.source, selected.policy);
         const expected = stable({ purpose: body.purpose, message, binding });
         const idempotency = request.headers.get("idempotency-key");
         if (idempotency === null || !B64_128.test(idempotency)) return generic(400);
@@ -334,13 +461,15 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
-        const { shareCid: _shareCid, capabilityId: _capabilityId, ...binding } = body.binding as Record<string, unknown>;
+        const { shareCid: bindingShareCid, capabilityId: _capabilityId, ...binding } = body.binding as Record<string, unknown>;
         const selected = selectedCapability(request, session, capabilityId);
-        const recipient = canonicalEmail(binding.recipientEmail);
-        if (selected.scope.recipientEmail !== undefined && recipient !== canonicalEmail(selected.scope.recipientEmail)) return generic(403);
-        if (binding.contentSourceDigest !== sourceDigest(selected.source) || binding.action !== selected.source.action || binding.resource !== selected.source.path || (binding.contentSource !== undefined && !sameJson(binding.contentSource, selected.source))) return generic(403);
-        if (binding.expiry !== undefined) assertExpiry(selected.scope, binding.expiry);
-        await options.bindingStore.put(cid, binding); return response(201, { status: "stored" });
+        assertPublishedBinding({ ...binding, shareCid: bindingShareCid }, cid, selected.scope as Record<string, unknown>, selected.source, selected.policy);
+        const publicBinding = {
+          shareId: binding.shareId, policyCid: binding.policyCid, recipientEmail: binding.recipientEmail, expiry: binding.expiry,
+          delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest,
+          contentSource: binding.contentSource, contentSourceDigest: binding.contentSourceDigest, action: binding.action, resource: binding.resource,
+        };
+        await options.bindingStore.put(cid, publicBinding); return response(201, { status: "stored" });
       }
       if (url.pathname.startsWith("/.well-known/tinycloud-share/bindings/") && request.method === "GET") {
         const cid = url.pathname.slice("/.well-known/tinycloud-share/bindings/".length).replace(/\.json$/, "");
@@ -399,6 +528,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  if (bundle.environment === "production" && authUsers.length === 0) throw new Error("SHARE_AUTH_USERS_JSON is required for the authenticated Share host");
   return createShareHostAdapter({ bundle, capability, ...(parsedCapabilities.length > 1 ? { capabilities } : {}), bindingStore, registryOrigin, registryTransportOrigin, authUsers, testMode: bundle.environment === "test" });
 }

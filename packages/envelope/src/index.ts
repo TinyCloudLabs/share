@@ -54,6 +54,7 @@ export {
 } from "./schema.js";
 export { didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey } from "./didkey.js";
 export {
+  ENVELOPE_SIGNATURE_DOMAIN,
   signEnvelope,
   verifyEnvelope,
   verifyEnvelopeSignatureOnly,

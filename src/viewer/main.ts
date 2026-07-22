@@ -108,8 +108,12 @@ export async function bootDefault(launch: CapturedLaunch | undefined): Promise<v
     root.textContent = "This invitation link is incomplete. Ask the sender to resend it.";
     return;
   }
-  const result = await resolveShare(launch.shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
-  if (result.state !== "policy-email-claim-required" || launch.invite === undefined) {
+  const shareHref = launch.shareHref;
+  const invite = launch.invite;
+  launch.shareHref = "";
+  delete launch.invite;
+  const result = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
+  if (result.state !== "policy-email-claim-required" || invite === undefined) {
     await presentShare(root, result);
     return;
   }
@@ -140,8 +144,8 @@ export async function bootDefault(launch: CapturedLaunch | undefined): Promise<v
     });
     render({ state: "ready", emailHint: share.recipientHint });
     void accessSharedContent({
-      shareUrl: `${launch.shareHref}&i=${launch.invite.invitationId}&c=${launch.invite.claimSecret}`,
-      invitation: launch.invite,
+      shareUrl: `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`,
+      invitation: invite,
       confirmAccess: () => confirmation,
       dependencies: {
         registryBaseUrl: REGISTRY_BASE_URL,

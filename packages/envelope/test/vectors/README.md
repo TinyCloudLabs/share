@@ -17,8 +17,10 @@ breaking wire-format change.
 
 ## Derived outputs (the contract)
 
-- `signingJcsHex` — RFC 8785 (JCS) canonical bytes of the envelope body
-  (everything except `signature`). This is the ed25519 message.
+- `signingJcsHex` — UTF-8 bytes of the canonical envelope signing domain
+  (`xyz.tinycloud.share/envelope/v1\0`) followed by the RFC 8785 (JCS)
+  canonical bytes of the envelope body (everything except `signature`). This
+  is the ed25519 message.
 - `signatureHex` / `envelope.signature` — deterministic RFC 8032 ed25519
   signature over `signingJcsHex`; `signerDid` is the did:key of the seed's
   public key. Verification is STRICT RFC 8032 (no ZIP-215 malleability).

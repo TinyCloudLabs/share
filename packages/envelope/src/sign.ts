@@ -21,11 +21,12 @@ import {
  */
 const ED25519_VERIFY_OPTS = { zip215: false } as const;
 
-const ENVELOPE_DOMAIN = "xyz.tinycloud.share/envelope/v1\0";
+/** The one canonical envelope signing domain shared by runtime and vectors. */
+export const ENVELOPE_SIGNATURE_DOMAIN = "xyz.tinycloud.share/envelope/v1\0";
 
 /** Domain-separated JCS bytes of every envelope field except `signature`. */
 function signingBytes(unsigned: UnsignedShareEnvelope): Uint8Array {
-  const domain = utf8Bytes(ENVELOPE_DOMAIN);
+  const domain = utf8Bytes(ENVELOPE_SIGNATURE_DOMAIN);
   const body = utf8Bytes(canonicalize(unsigned));
   const bytes = new Uint8Array(domain.length + body.length);
   bytes.set(domain);

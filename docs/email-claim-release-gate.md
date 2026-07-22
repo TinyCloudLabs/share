@@ -22,6 +22,17 @@ accepts the real request and records only the provider response artifact.
 Capture delivery remains available only to lower-level fixture tests and cannot
 be selected by the mounted composition.
 
+The browser matrix also asserts that the sender reports an accepted request
+without claiming arrival, the recipient link is scrubbed before application
+network work, scanner GET is inert, **Open document** is the only magic-link
+activation, holder material is not persisted or placed in request URLs, and
+recipient failures never expose document content. It runs the sender and
+recipient at 390px and desktop widths with reduced motion, checks live-region
+and focus semantics, and verifies the hardened Markdown content boundary.
+Deterministic DOM-state coverage for OTP, resend cooldown, retry, forget, and
+terminal error states lives in `test/e2e-email/ui-contract.test.ts` and is
+included by the root Vitest configuration.
+
 The native matrix is deliberately explicit: Share vectors/tests/typecheck/build;
 Node format, focused clippy/tests, mounted/config-readiness, and the feasible
 full workspace tests/clippy; OpenCredentials normal, PostgreSQL, dstack,

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("./integration.mjs", import.meta.url), "utf8");
 const native = source.slice(source.indexOf("async function nativeGate"), source.indexOf("function spawnOwned"));
-const production = source.slice(source.indexOf("async function productionGateHermetic"), source.indexOf("async function mountedGate"));
+const production = source.slice(source.indexOf("async function productionGateHermetic"), source.indexOf("async function fixtureGate"));
 const releasePositive = `${native}\n${production}`;
 const forbidden = [
   ["tinycloud", "-node-n4-mounted-fixture"].join(""),
@@ -25,6 +25,8 @@ for (const marker of [
   "dstack",
   "opencredentials-witness",
   "waitForPort(credentialsPort",
+  "SHARE_EMAIL_TRUST_BUNDLE_JSON",
+  "RESEND_API_KEY",
 ]) {
   if (!releasePositive.includes(marker)) throw new Error(`release-positive composition is missing production startup assertion: ${marker}`);
 }

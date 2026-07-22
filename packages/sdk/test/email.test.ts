@@ -8,6 +8,7 @@ import {
 import {
   createShareLink,
   type ShareArtifact,
+  type ShareLinkPolicy,
 } from "../../share-sdk/src/index.js";
 import {SIGNATURE_DOMAINS, type SenderScope} from "../../../src/email-share/protocol.js";
 import {
@@ -55,6 +56,26 @@ const scope: SenderScope = {
     keyVersion: 1,
     enabled: true,
   },
+  authorityMaterial: {},
+};
+
+const policy: ShareLinkPolicy = {
+  recipientEmail: "Alice+Notes@example.com",
+  source,
+  action: source.action,
+  resource: source.path,
+  expiresAt: "2026-07-23T12:00:00.000Z",
+  target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: scope.spaceId },
+  policyCid: "bafkreibm6jg7u6v4g5y2qj6w6z7gqv6x4x5r7l6q6m3m6j4s5f6a7b8c9d",
+  policyDigest: "A".repeat(43),
+  contentSourceDigest: "B".repeat(43),
+  delegationCid: scope.delegationCid,
+  authorityMaterialDigest: scope.authorityMaterialDigest,
+  policyBytes: "eyJwb2xpY3kiOiJ0ZXN0In0",
+  policyAuthorityCid: "bafkr4ignn6hoctuylzuvdowj5sl3tby3kwz3s45jymriery4nzjohfcxoi",
+  policyAuthorityBytes: "AQ",
+  policyEnforcementCid: "bafkr4igdmjoclvyi3zhp3fqokhmgw7yc3twdycce2sepmwa6xw4rlgabvi",
+  policyEnforcementBytes: "Ag",
 };
 
 async function generatedShare(): Promise<ShareArtifact> {
@@ -65,6 +86,7 @@ async function generatedShare(): Promise<ShareArtifact> {
     shareId: "share-sdk-email-test",
     expiresAt: "2026-07-23T12:00:00.000Z",
     now: "2026-07-20T12:00:00.000Z",
+    policy,
     adapters: {uploadEnvelope: async () => undefined},
   });
 }

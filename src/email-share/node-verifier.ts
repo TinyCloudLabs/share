@@ -60,6 +60,10 @@ export async function digestText(value: string): Promise<string> {
   return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
 }
 
+export async function digestBytes(value: Uint8Array): Promise<string> {
+  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", value.buffer as ArrayBuffer)));
+}
+
 export function requestBodyWithoutDigest(input: Record<string, unknown>): Record<string, unknown> {
   const { requestBodyDigest: _ignored, ...body } = input;
   return body;

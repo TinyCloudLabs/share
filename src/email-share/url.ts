@@ -1,9 +1,9 @@
 export interface CapturedLaunch {
-  readonly shareHref: string;
-  readonly invite?: { readonly invitationId: string; readonly claimSecret: string };
+  shareHref: string;
+  invite?: { readonly invitationId: string; readonly claimSecret: string };
 }
 
-const LAUNCH = /^#k=([A-Za-z0-9_-]{43})(?:&i=([A-Za-z0-9_-]{22})&c=([A-Za-z0-9_-]{43}))?$/;
+const LAUNCH = /^#k=([A-Za-z0-9_-]{43})(?:&i=([A-Za-z0-9_-]{22})(?:&c=([A-Za-z0-9_-]{43}))?)?$/;
 
 export function captureAndScrubLaunch(loc: Location, history: History): CapturedLaunch | undefined {
   const href = loc.href;
@@ -18,6 +18,6 @@ export function captureAndScrubLaunch(loc: Location, history: History): Captured
   parsed.hash = `#k=${match[1]}`;
   return {
     shareHref: parsed.href,
-    ...(match[2] !== undefined && match[3] !== undefined ? { invite: Object.freeze({ invitationId: match[2], claimSecret: match[3] }) } : {}),
+    ...(match[2] !== undefined ? { invite: Object.freeze({ invitationId: match[2], claimSecret: match[3] ?? "" }) } : {}),
   };
 }

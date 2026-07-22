@@ -8,7 +8,9 @@ import { sha256 } from "multiformats/hashes/sha2";
  * Hashes the exact bytes given — no chunking, no UnixFS/dag-pb wrapping.
  */
 export async function computeCid(bytes: Uint8Array): Promise<string> {
-  const digest = await sha256.digest(bytes);
+  // Normalize cross-realm typed arrays (notably jsdom's TextEncoder output)
+  // before multiformats performs its instanceof check.
+  const digest = await sha256.digest(new Uint8Array(bytes));
   return CID.create(1, raw.code, digest).toString();
 }
 

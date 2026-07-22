@@ -21,9 +21,12 @@ Required production variables:
   entry describes only an authorized exact KV or named-SQL read and bounded
   expiry; it does not pre-bind a recipient email and contains no signing
   secret.
-- `SHARE_AUTH_USERS_JSON`: authenticated sender records with scrypt password
-  hashes. The host issues a fresh opaque session after successful login; no
-  environment secret is ever used as a cookie value.
+- Each production capability's `policyOwnerDid` must be the OpenKey-controlled
+  `did:pkh:eip155:<chain>:<address>` for its user. The Share host verifies a
+  single-use OpenKey signature, resolves that DID to the capability's `userId`,
+  and only then issues an opaque sender session. `SHARE_AUTH_USERS_JSON` is an
+  optional legacy fallback containing scrypt-password records; the product UI
+  does not request those passwords.
 - `SHARE_BINDING_STORE_PATH`: durable, private path or mounted durable store for
   public binding records. An in-memory store is permitted only for the explicit
   hermetic fixture composition.
@@ -43,14 +46,14 @@ npm run build:deploy
 HOST=0.0.0.0 PORT=8787 npm run start:deploy
 ```
 
-The production host requires the exact Share origin on login/signing requests,
+The production host requires the exact Share origin on OpenKey and signing requests,
 strict JSON/body and origin limits, an idempotency key, and a capability-bound
 signing request. The sender explicitly selects one listed capability, enters
 one canonical recipient, chooses a bounded expiry, reviews the exact
 recipient/resource/action/expiry, and confirms before sending. The server
 re-derives the selected capability from the authenticated session for every
 sign, binding, and upload request. Missing trust, signer, authenticated user
-records, durable binding storage, or registry configuration disables the
+binding, durable binding storage, or registry configuration disables the
 capability. Sessions are opaque, per-user, Secure, HttpOnly, SameSite,
 path-scoped, and expiring.
 

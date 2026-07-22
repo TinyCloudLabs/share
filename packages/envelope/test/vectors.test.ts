@@ -6,7 +6,7 @@ import { computeCid, verifyCid } from "../src/cid.js";
 import { canonicalize } from "../src/jcs.js";
 import { encodeShareUrl, parseShareUrl } from "../src/link.js";
 import { shareEnvelopeSchema } from "../src/schema.js";
-import { signEnvelope, verifyEnvelope } from "../src/sign.js";
+import { ENVELOPE_SIGNATURE_DOMAIN, signEnvelope, verifyEnvelope } from "../src/sign.js";
 import vector from "./vectors/end-to-end.json";
 
 /**
@@ -37,7 +37,7 @@ describe("frozen end-to-end interop vectors", () => {
   });
 
   it("JCS signing bytes match", () => {
-    expect(hex(utf8Bytes(canonicalize(unsigned)))).toBe(vector.signingJcsHex);
+    expect(hex(utf8Bytes(`${ENVELOPE_SIGNATURE_DOMAIN}${canonicalize(unsigned)}`))).toBe(vector.signingJcsHex);
   });
 
   it("deterministic ed25519 signature matches (strict RFC 8032 signer)", () => {

@@ -2,13 +2,14 @@ import { canonicalize, toBase64Url } from "@tinycloud/share-envelope";
 import type { ClaimMaterial } from "./claim.js";
 import type { VerifiedExactEmailShare } from "./verified-share.js";
 import type { ShareTransport } from "./transport.js";
-import { SIGNATURE_DOMAINS } from "./protocol.js";
+import { canonicalEmail, SIGNATURE_DOMAINS, type SignedArtifact } from "./protocol.js";
 import {
   assertCommonNodeBinding,
   assertCredentialDigest,
   assertNodeTime,
   assertReadResponseBinding,
   assertSourceBinding,
+  digestBytes,
   assertTrustedNodeScope,
   digest,
   digestText,
@@ -28,6 +29,71 @@ async function holderProof(material: ClaimMaterial, domain: string, value: unkno
     alg: "EdDSA",
     kid: `${material.holder.did}#${material.holder.did.slice("did:key:".length)}`,
     signature: toBase64Url(new Uint8Array(await crypto.subtle.sign("Ed25519", material.holder.privateKey, bytes))),
+  };
+}
+
+async function holderBindingArtifact(input: {
+  readonly material: ClaimMaterial;
+  readonly share: VerifiedExactEmailShare;
+  readonly challenge: Record<string, unknown>;
+  readonly credentialDigest: string;
+  readonly challengeRequestDigest: string;
+}): Promise<SignedArtifact> {
+  const now = Date.now();
+  const issuedAt = new Date(now).toISOString();
+  const expiresAt = new Date(Math.min(
+    now + READ_TTL_MS * 2,
+    Date.parse(String(input.challenge.expiresAt)),
+    Date.parse(input.share.expiry),
+    Date.parse(input.material.expiresAt),
+  )).toISOString();
+  if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now) throw new Error("holder-binding-expired");
+  const nonce = String(input.challenge.nonce);
+  const message = {
+    type: "TinyCloudEmailClaimHolderBinding",
+    version: 1,
+    redemptionId: input.share.shareId,
+    invitationId: input.share.shareCid,
+    claimNonce: nonce,
+    challengeNonce: nonce,
+    shareCid: input.share.shareCid,
+    shareId: input.share.shareId,
+    policyCid: input.share.policyCid,
+    contentSource: input.share.contentSource,
+    contentSourceDigest: input.share.contentSourceDigest,
+    emailHash: await digestText(canonicalEmail(input.share.recipientEmail)),
+    holderDid: input.material.holder.did,
+    credentialDigest: input.credentialDigest,
+    targetOrigin: input.share.nodeOrigin,
+    nodeAudience: input.share.nodeAudience,
+    audience: input.share.nodeAudience,
+    enforcerDid: input.challenge.enforcerDid,
+    requestOrigin: input.share.nodeOrigin,
+    challengeId: input.challenge.challengeId,
+    challengeRequestDigest: input.challengeRequestDigest,
+    issuedAt,
+    expiresAt,
+    jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+  };
+  const jcs = canonicalize(message);
+  const domain = SIGNATURE_DOMAINS.holderBinding;
+  const signedBytes = new TextEncoder().encode(`${domain}${jcs}`);
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign("Ed25519", input.material.holder.privateKey, signedBytes));
+  const signature = toBase64Url(signatureBytes);
+  return {
+    name: "holderBinding",
+    domain,
+    signerDid: input.material.holder.did,
+    message,
+    jcs,
+    messageDigest: await digestText(jcs),
+    signedBytesDigest: await digestBytes(signedBytes),
+    signatureDigest: await digestBytes(signatureBytes),
+    signature: {
+      alg: "EdDSA",
+      kid: `${input.material.holder.did}#${input.material.holder.did.slice("did:key:".length)}`,
+      value: signature,
+    },
   };
 }
 
@@ -69,7 +135,7 @@ export async function readClaimedShare(input: {
   const challenge = challengeResponse.challenge as Record<string, unknown>;
   await verifyNodeProof(challenge, challengeResponse.proof, input.share.trustedNode, SIGNATURE_DOMAINS.policyChallenge);
   assertCommonNodeBinding(challenge, input.share, input.claim.holder.did);
-  if (challenge.challengeId === undefined || challenge.nonce === undefined || challenge.requestBodyDigest !== requestBodyDigest) throw new Error("challenge-binding-invalid");
+  if (typeof challenge.challengeId !== "string" || typeof challenge.nonce !== "string" || typeof challenge.enforcerDid !== "string" || challenge.requestBodyDigest !== requestBodyDigest) throw new Error("challenge-binding-invalid");
   assertNodeTime(challenge.issuedAt, challenge.expiresAt, Date.now(), 120);
 
   const credentialDigest = await digestText(input.claim.credential);
@@ -89,6 +155,7 @@ export async function readClaimedShare(input: {
     holderDid: input.claim.holder.did,
     targetOrigin: input.share.nodeOrigin,
     nodeAudience: input.share.nodeAudience,
+    enforcerDid: challenge.enforcerDid,
     credentialDigest,
     action: input.share.action,
     resource: input.share.resource,
@@ -97,7 +164,14 @@ export async function readClaimedShare(input: {
     expiresAt: challenge.expiresAt,
     jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
   };
-  const sessionResponse = await input.transport.policySession({ presentation, credential: input.claim.credential, proof: await holderProof(input.claim, SIGNATURE_DOMAINS.policyPresentation, presentation) });
+  const holderBinding = await holderBindingArtifact({ material: input.claim, share: input.share, challenge, credentialDigest, challengeRequestDigest: requestBodyDigest });
+  const sessionResponse = await input.transport.policySession({
+    presentation,
+    credential: input.claim.credential,
+    proof: await holderProof(input.claim, SIGNATURE_DOMAINS.policyPresentation, presentation),
+    holderBinding,
+    readSignerDid: input.claim.holder.did,
+  });
   const session = sessionResponse.session as Record<string, unknown>;
   await verifyNodeProof(session, sessionResponse.proof, input.share.trustedNode, SIGNATURE_DOMAINS.policySession);
   assertCommonNodeBinding(session, input.share, input.claim.holder.did);

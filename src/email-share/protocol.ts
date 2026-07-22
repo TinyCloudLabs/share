@@ -2,12 +2,16 @@ import {
   canonicalize,
   computeCid,
   didKeyFromEd25519PublicKey,
+  ENVELOPE_SIGNATURE_DOMAIN,
   encodeShareUrl,
+  fromBase64Url,
   generateKey,
   seal,
+  shareEnvelopeSchema,
   toBase64Url,
   type ShareEnvelope,
   type UnsignedShareEnvelope,
+  unsignedShareEnvelopeSchema,
 } from "@tinycloud/share-envelope";
 
 export const PROTOCOL = "tinycloud.share-email-claim/v1" as const;
@@ -19,7 +23,7 @@ export const OTP_TTL_SECONDS = 600;
 export const MAX_ACCESS_TTL_SECONDS = 2_592_000;
 
 export const SIGNATURE_DOMAINS = Object.freeze({
-  envelope: "xyz.tinycloud.share/envelope/v1\0",
+  envelope: ENVELOPE_SIGNATURE_DOMAIN,
   inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0",
   holderBinding: "xyz.tinycloud.share/email-claim-holder-binding/v1\0",
   policyChallenge: "xyz.tinycloud.share/policy-challenge/v1\0",
@@ -76,7 +80,7 @@ export interface SenderScope {
   readonly expiresAt?: string;
   readonly trustedNode: TrustedNode;
   /** The authenticated authority bundle supplied by the host, never user input. */
-  readonly authorityMaterial?: Readonly<Record<string, unknown>>;
+  readonly authorityMaterial: Readonly<Record<string, unknown>>;
 }
 
 export interface SenderSigningCapability {
@@ -111,10 +115,37 @@ export interface InvitationDraft {
   readonly reportAbuseToken: string;
 }
 
+export interface AuthoritativePolicyMaterial {
+  readonly policyCid: string;
+  readonly policyBytes: string;
+  readonly policyDigest: string;
+  /** CIDs of the two owner-signed Node parent delegations bound to this policy. */
+  readonly policyAuthorityCid: string;
+  readonly policyAuthorityBytes: string;
+  readonly policyEnforcementCid: string;
+  readonly policyEnforcementBytes: string;
+}
+
 export interface SignedProof {
   readonly alg: "EdDSA";
   readonly kid: string;
   readonly signature: string;
+}
+
+export interface SignedArtifact {
+  readonly name: string;
+  readonly domain: string;
+  readonly signerDid: string;
+  readonly message: Record<string, unknown>;
+  readonly jcs: string;
+  readonly messageDigest: string;
+  readonly signedBytesDigest: string;
+  readonly signatureDigest: string;
+  readonly signature: {
+    readonly alg: "EdDSA";
+    readonly kid: string;
+    readonly value: string;
+  };
 }
 
 export interface InvitationAuthorization {
@@ -231,6 +262,7 @@ export async function createInvitationDraft(input: {
   readonly scope: SenderScope;
   readonly shareId: string;
   readonly expiresAt: string;
+  readonly policy: AuthoritativePolicyMaterial;
   readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
   readonly now?: string;
 }): Promise<InvitationDraft> {
@@ -254,26 +286,28 @@ export async function createInvitationDraft(input: {
   if (source.kind === "kv" && input.scope.authorityMaterialHandle !== "amh_kv_001") throw new TypeError("KV authority material is required.");
   if (source.kind === "sql" && input.scope.authorityMaterialHandle !== "amh_sql_001") throw new TypeError("SQL authority material is required.");
   if (input.scope.documentName.length === 0 || new TextEncoder().encode(input.scope.documentName).length > 200) throw new TypeError("Document name is too long.");
+  if (input.policy === undefined) throw new TypeError("An already-created authoritative policy is required.");
   const digest = await sourceDigest(source);
-  const policy = {
-    type: "TinyCloudSharePolicy" as const,
-    version: 1 as const,
-    recipientEmail: email,
-    contentSource: source,
-    contentSourceDigest: digest,
-    action: source.action,
-    resource: source.path,
-    expiresAt: input.expiresAt,
-    issuerDid: input.scope.senderDid,
-  };
-  const policyBytesRaw = new TextEncoder().encode(canonicalize(policy));
-  const policyCid = await computeCid(new Uint8Array(policyBytesRaw));
+  const policyBytes = input.policy.policyBytes;
+  if (typeof policyBytes !== "string" || typeof input.policy.policyCid !== "string" || typeof input.policy.policyDigest !== "string" ||
+      typeof input.policy.policyAuthorityCid !== "string" || typeof input.policy.policyAuthorityBytes !== "string" ||
+      typeof input.policy.policyEnforcementCid !== "string" || typeof input.policy.policyEnforcementBytes !== "string") {
+    throw new TypeError("The authoritative policy material is incomplete.");
+  }
+  try {
+    const policyRaw = fromBase64Url(policyBytes);
+    const policyText = new TextDecoder("utf-8", { fatal: true }).decode(policyRaw);
+    if (canonicalize(JSON.parse(policyText)) !== policyText || await computeCid(policyRaw) !== input.policy.policyCid ||
+        await canonicalDigest(JSON.parse(policyText)) !== input.policy.policyDigest) throw new Error("policy binding");
+  } catch {
+    throw new TypeError("The authoritative policy bytes are not canonical or do not match their identifiers.");
+  }
   const envelopeKey = generateKey();
   const unsigned: UnsignedShareEnvelope = {
     version: 1,
     shareId: input.shareId,
     delegation: input.scope.delegation,
-    authorizationTarget: { kind: "policy", policyCid, policyBytes: toBase64Url(policyBytesRaw) },
+    authorizationTarget: { kind: "policy", policyCid: input.policy.policyCid, policyBytes },
     target: {
       origin: input.scope.targetOrigin,
       nodeAudience: input.scope.nodeAudience,
@@ -283,10 +317,18 @@ export async function createInvitationDraft(input: {
     display: { senderName: "TinyCloud sender", filename: input.scope.documentName, recipientHint: `${email.slice(0, 1)}***@${email.split("@")[1]}` },
     expiry: input.expiresAt,
   };
+  unsignedShareEnvelopeSchema.parse(unsigned);
   const signature = await input.scope.signer.sign({
     purpose: "envelope",
     message: canonicalize(unsigned),
-    binding: { shareId: input.shareId, recipientEmail: email, action: source.action, resource: source.path, expiresAt: input.expiresAt },
+    binding: {
+      shareId: input.shareId, recipientEmail: email, action: source.action, resource: source.path, expiresAt: input.expiresAt,
+      policyCid: input.policy.policyCid, policyDigest: input.policy.policyDigest,
+      policyAuthorityCid: input.policy.policyAuthorityCid, policyAuthorityBytes: input.policy.policyAuthorityBytes,
+      policyEnforcementCid: input.policy.policyEnforcementCid, policyEnforcementBytes: input.policy.policyEnforcementBytes,
+      delegation: input.scope.delegation, targetOrigin: input.scope.targetOrigin, nodeAudience: input.scope.nodeAudience,
+      returnOrigin: input.scope.shareOrigin,
+    },
   });
   if (signature.length !== 64) throw new TypeError("Sender signer returned an invalid envelope signature.");
   const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
@@ -300,7 +342,7 @@ export async function createInvitationDraft(input: {
   const reportAbuseToken = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
   const shareUrl = encodeShareUrl({ origin: input.scope.shareOrigin, ciphertextCid: sealed.cid, key32: envelopeKey });
   envelopeKey.fill(0);
-  return { email, source, sourceDigest: digest, policyCid, policyBytes: toBase64Url(policyBytesRaw), envelope, shareCid: sealed.cid, shareUrl, invitationJti: jti, reportAbuseToken };
+  return { email, source, sourceDigest: digest, policyCid: input.policy.policyCid, policyBytes, envelope, shareCid: sealed.cid, shareUrl, invitationJti: jti, reportAbuseToken };
 }
 
 export async function signedInvitationProof(
@@ -342,7 +384,19 @@ export async function signedInvitationProof(
   };
   const signerDid = didKeyFromEd25519PublicKey(scope.signingCapability.publicKey);
   if (signerDid !== scope.senderDid) throw new TypeError("Sender proof key does not match the authorized sender.");
-  const signature = await scope.signer.sign({ purpose: "inviteAuthorization", message: canonicalize(request), binding: { shareId: draft.envelope.shareId, recipientEmail: draft.email, action: draft.source.action, resource: draft.source.path, expiresAt: draft.envelope.expiry } });
+  const signature = await scope.signer.sign({
+    purpose: "inviteAuthorization",
+    message: canonicalize(request),
+    binding: {
+      ...request,
+      expiresAt: request.shareExpiresAt,
+      policyDigest: await canonicalDigest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(draft.policyBytes)))),
+      policyAuthorityCid: scope.authorityMaterial.policyAuthorityCid,
+      policyAuthorityBytes: scope.authorityMaterial.policyAuthorityBytes,
+      policyEnforcementCid: scope.authorityMaterial.policyEnforcementCid,
+      policyEnforcementBytes: scope.authorityMaterial.policyEnforcementBytes,
+    },
+  });
   if (signature.length !== 64) throw new TypeError("Sender signer returned an invalid authorization signature.");
   return { request, proof: { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) } };
 }

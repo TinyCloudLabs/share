@@ -41,7 +41,7 @@ export interface ShareTrustBundle {
 }
 
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
-const ORIGIN = /^https:\/\/[^/?#:@]+$/;
+const ORIGIN = /^https:\/\/[^/?#@]+$/;
 const DID_WEB = /^did:web:[A-Za-z0-9.-]+$/;
 const TRUST_VERSION = "tinycloud.share-email-trust-bundle/v1" as const;
 
@@ -120,7 +120,7 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   if (!isViewer && !isShare) return common;
   const csp = isViewer
     ? `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${connect}; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'`
-    : `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ${connect}; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'`;
+    : `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src ${connect}; img-src 'self' data:; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'`;
   return { ...common, "Content-Security-Policy": csp, "Content-Type": "text/html; charset=UTF-8" };
 }
 

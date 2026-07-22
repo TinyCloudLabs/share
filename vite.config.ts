@@ -16,6 +16,7 @@ import {
 } from "./src/viewer/mermaid-frame.ts";
 import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
 import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
+import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./src/host/upstream.ts";
 
 /**
  * Serve viewer.html on /s/<cid> routes (dev + preview). The spec site stays
@@ -104,7 +105,7 @@ function mermaidSandboxHtml(): Plugin {
 
 function shareHostAdapter(): Plugin {
   let adapter: ReturnType<typeof createShareHostFromEnv> | undefined;
-  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/");
+  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
   const ensure = (): ReturnType<typeof createShareHostFromEnv> | undefined => {
     if (adapter !== undefined) return adapter;
     try { adapter = createShareHostFromEnv(); return adapter; }
@@ -124,6 +125,18 @@ function shareHostAdapter(): Plugin {
       req.on("data", (chunk: Buffer) => chunks.push(chunk));
       req.on("end", () => void (async () => {
         const body = Buffer.concat(chunks);
+        const bundle = loadTrustBundle();
+        const upstream = upstreamForPath(bundle, path);
+        if (upstream !== undefined) {
+          const method = req.method ?? "GET";
+          const headers = sanitizeUpstreamRequest(path, method, new Headers(Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))), body.length, bundle.public.shareOrigin);
+          const target = new URL(`${path}${new URL(req.url ?? path, "http://share.invalid").search}`, upstream.origin);
+          const upstreamResponse = await fetch(target, { method, headers, redirect: "error", ...(body.length === 0 ? {} : { body: body.buffer as ArrayBuffer }) });
+          const result = sanitizeUpstreamResponse(path, method, upstreamResponse);
+          res.writeHead(result.status, Object.fromEntries(result.headers));
+          res.end(Buffer.from(await result.arrayBuffer()));
+          return;
+        }
         const requestInit: RequestInit & { duplex?: "half" } = { method: req.method ?? "GET", headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")), ...(body.length === 0 ? {} : { body: new Uint8Array(body), duplex: "half" }) };
         const response = await host.handler(new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url ?? path}`, requestInit));
         res.writeHead(response.status, Object.fromEntries(response.headers));
@@ -141,7 +154,7 @@ function shareHostAdapter(): Plugin {
         return;
       }
       const bundle = loadTrustBundle();
-      const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: bundle.public.shareOrigin, registryOrigin: bundle.public.registryOrigin, nodeOrigin: bundle.public.nodeOrigin, credentialsOrigin: bundle.public.credentialsOrigin, nodeAudience: bundle.public.nodeAudience, issuerDid: bundle.public.issuerDid, issuerVct: bundle.public.issuerVct, nodeInvitationKid: bundle.public.nodeInvitationKid, nodeInvitationPublicKey: bundle.public.nodeInvitationPublicKey, nodeKeyVersion: bundle.public.nodeKeyVersion, issuerKeyVersion: bundle.public.issuerKeyVersion, issuerPublicKey: bundle.public.issuerPublicKey };
+      const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: bundle.public.shareOrigin, registryOrigin: bundle.public.registryOrigin, nodeOrigin: bundle.public.nodeOrigin, credentialsOrigin: bundle.public.credentialsOrigin, nodeAudience: bundle.public.nodeAudience, issuerDid: bundle.public.issuerDid, issuerVct: bundle.public.issuerVct, nodeInvitationKid: bundle.public.nodeInvitationKid, nodeInvitationPublicKey: bundle.public.nodeInvitationPublicKey, nodeKeyVersion: bundle.public.nodeKeyVersion, issuerKeyVersion: bundle.public.issuerKeyVersion, issuerPublicKey: bundle.public.issuerPublicKey, ...(bundle.environment === "test" ? { environment: "test" as const } : {}) };
       this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify(publicConfig)}\n` });
       this.emitFile({ type: "asset", fileName: "_headers", source: cloudflareHeaders(bundle) });
     },

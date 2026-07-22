@@ -44,9 +44,27 @@ export interface CredentialTrust {
   readonly issuerPublicKey: Uint8Array;
 }
 
+export interface IssueEmailClaimInput {
+  readonly share: VerifiedExactEmailShare;
+  readonly invitationId: string;
+  readonly mailboxProof: string;
+  readonly method: "magic" | "otp";
+  readonly holder: HolderKey;
+  readonly transport: Pick<ShareTransport, "activate" | "claimChallenge" | "claimRedeem">;
+  readonly credentialTrust: CredentialTrust;
+}
+
+export interface IssuedEmailClaim {
+  readonly format: "vc+sd-jwt";
+  readonly credential: string;
+  readonly holderDid: string;
+  readonly expiresAt: string;
+}
+
 export async function createHolder(): Promise<HolderKey> {
   if (typeof crypto?.subtle?.generateKey !== "function") throw new Error("unsupported-browser");
   const pair = await crypto.subtle.generateKey("Ed25519", false, ["sign", "verify"]);
+  if (pair.privateKey.extractable) throw new Error("holder-key-extractable");
   const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
   return { did: didKeyFromEd25519PublicKey(publicKey), privateKey: pair.privateKey };
 }
@@ -56,7 +74,11 @@ function randomB64(length: 16 | 32): string { return toBase64Url(crypto.getRando
 async function holderProof(holder: HolderKey, share: VerifiedExactEmailShare, inviteId: string, challenge: ClaimChallengeResponse, redemptionId: string): Promise<{ readonly binding: Record<string, unknown>; readonly holderProof: Record<string, string> }> {
   const issuedAtSeconds = Math.floor(Date.now() / 1000);
   const issuedAt = new Date(issuedAtSeconds * 1000).toISOString();
-  const expiresAt = new Date(Math.min((issuedAtSeconds + 120) * 1000, Date.parse(challenge.expiresAt), Date.parse(share.expiry))).toISOString();
+  const challengeExpiry = Date.parse(challenge.expiresAt);
+  const shareExpiry = Date.parse(share.expiry);
+  const expiresAtMs = Math.min((issuedAtSeconds + 120) * 1000, challengeExpiry, shareExpiry);
+  if (!Number.isFinite(challengeExpiry) || !Number.isFinite(shareExpiry) || expiresAtMs <= issuedAtSeconds * 1000) throw new Error("claim-challenge-window-unavailable");
+  const expiresAt = new Date(expiresAtMs).toISOString();
   const binding = {
     type: "TinyCloudEmailClaimHolderBinding", version: 1, redemptionId, invitationId: inviteId, claimNonce: challenge.claimNonce,
     shareCid: share.shareCid, shareId: share.shareId, policyCid: share.policyCid, delegationCid: challenge.delegationCid,
@@ -68,6 +90,21 @@ async function holderProof(holder: HolderKey, share: VerifiedExactEmailShare, in
   const message = new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${canonicalize(binding)}`);
   const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", holder.privateKey, message));
   return { binding, holderProof: { alg: "EdDSA", kid: `${holder.did}#${holder.did.slice("did:key:".length)}`, signature: toBase64Url(signature) } };
+}
+
+export async function issueEmailClaimCredential(input: IssueEmailClaimInput): Promise<IssuedEmailClaim> {
+  const activation = input.method === "magic"
+    ? await input.transport.activate({ invitationId: input.invitationId, claimSecret: input.mailboxProof })
+    : undefined;
+  const challenge = await input.transport.claimChallenge(input.method === "magic"
+    ? { invitationId: input.invitationId, method: "magic", activationId: activation!.activationId }
+    : { invitationId: input.invitationId, method: "otp", otp: input.mailboxProof });
+  assertClaimChallenge(challenge, input.share);
+  const redemptionId = randomB64(16);
+  const proof = await holderProof(input.holder, input.share, input.invitationId, challenge, redemptionId);
+  const response = await input.transport.claimRedeem({ version: "tinycloud.share-email-claim/v1", redemptionId, invitationId: input.invitationId, method: input.method, mailboxProof: input.mailboxProof, ...proof });
+  await assertCredential(response, input.holder, input.share, input.credentialTrust);
+  return response;
 }
 
 function decodeJson(segment: string): Record<string, unknown> {
@@ -186,8 +223,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
       }
       const failure = mapTransportFailure(error);
       if (failure.code === "offline" || failure.code === "capability-unavailable" || failure.code === "delivery-failed") setState({ state: "error", code: failure.code, retryable: failure.retryable, ...(failure.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: failure.retryAfterSeconds }) });
-      else if (failure.code === "denied") setState({ state: "otp", emailHint: input.share.recipientHint, message: "The link could not be verified. Enter the six-digit code from the email." });
-      else if (failure.code === "invalid") setState({ state: "error", code: "invalid", retryable: false });
+      else if (failure.code === "denied" || failure.code === "expired" || failure.code === "invalid") setState({ state: "otp", emailHint: input.share.recipientHint, message: "The link proof is unavailable. Enter the six-digit code from the email." });
       else setState(terminalFrom(failure));
     }
   });
@@ -203,6 +239,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
         try {
           setState({ state: "reading", claim: material });
           content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
+          if (content !== undefined) setState({ state: "claimed", claim: material });
         } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
       });
       return content;
@@ -239,7 +276,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
     },
     resend() {
       return run(async () => {
-        if (claimSecret === undefined || (state.state !== "otp" && state.state !== "error") || Date.now() < resendAvailableAt) return;
+        if (claimSecret === undefined || claimSecret.length === 0 || (state.state !== "otp" && state.state !== "error") || Date.now() < resendAvailableAt) return;
         setState({ state: "resending", emailHint: input.share.recipientHint });
         try {
           const accepted = await input.transport.resend({ invitationId: input.invitationId, claimSecret });

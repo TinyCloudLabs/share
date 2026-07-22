@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { canonicalize, didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { ed25519 } from "@noble/curves/ed25519";
 import { captureAndScrubLaunch } from "../src/email-share/url.js";
-import { canonicalDigest, canonicalEmail, createInvitationDraft, signedInvitationProof, type SenderScope } from "../src/email-share/protocol.js";
+import { canonicalDigest, canonicalEmail, createInvitationDraft, signedInvitationProof, type AuthoritativePolicyMaterial, type ContentSource, type SenderScope } from "../src/email-share/protocol.js";
 import { createClaimController, createHolder } from "../src/email-share/claim.js";
 import { readClaimedShare } from "../src/email-share/node-client.js";
 import { createHttpTransport, ShareTransportError, type ReadResponse, type ShareTransport } from "../src/email-share/transport.js";
 import { createSenderController } from "../src/email-share/sender.js";
+import type { ShareLinkPolicy } from "../packages/share-sdk/src/index.js";
 import { createHash } from "node:crypto";
 import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
 import { SIGNATURE_DOMAINS } from "../src/email-share/protocol.js";
@@ -16,6 +17,7 @@ const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(seed));
 const issuerSeed = new Uint8Array(32).fill(8);
 const issuerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(issuerSeed));
 const nodeSeed = new Uint8Array(32).fill(2);
+const nodeEnforcerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(nodeSeed));
 const senderSigner = {
   publicKey: ed25519.getPublicKey(seed),
   sign: async (input: { purpose: "envelope" | "inviteAuthorization"; message: string; binding: Record<string, unknown> }): Promise<Uint8Array> => {
@@ -39,7 +41,29 @@ const scope: SenderScope = {
   documentName: "Project plan.md",
   senderTrust: "verified",
   trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true },
+  authorityMaterial: {},
 };
+
+async function draftPolicy(email: string, source: ContentSource, expiresAt: string): Promise<AuthoritativePolicyMaterial> {
+  const policy = { type: "TinyCloudSharePolicy", version: 1, issuerDid: senderDid, recipientEmail: canonicalEmail(email), contentSource: source, contentSourceDigest: await canonicalDigest(source), action: source.action, resource: source.path, expiresAt };
+  const bytes = new TextEncoder().encode(canonicalize(policy));
+  return { policyCid: await computeCid(bytes), policyBytes: toBase64Url(bytes), policyDigest: await canonicalDigest(policy), policyAuthorityCid: "A".repeat(59), policyAuthorityBytes: "AQ", policyEnforcementCid: "B".repeat(59), policyEnforcementBytes: "Ag" };
+}
+
+async function sharePolicy(email: string, source: ContentSource, expiresAt: string): Promise<ShareLinkPolicy> {
+  return {
+    ...(await draftPolicy(email, source, expiresAt)),
+    recipientEmail: canonicalEmail(email),
+    source,
+    action: source.action,
+    resource: source.path,
+    expiresAt,
+    target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: scope.spaceId },
+    contentSourceDigest: await canonicalDigest(source),
+    delegationCid: scope.delegationCid,
+    authorityMaterialDigest: scope.authorityMaterialDigest,
+  };
+}
 
 function transport(overrides: Partial<ShareTransport> = {}): ShareTransport {
   return {
@@ -88,7 +112,9 @@ describe("exact-email share UI protocol boundaries", () => {
 
   it("builds a sealed policy envelope without placing its key in a query", async () => {
     let stored: Uint8Array | undefined;
-    const draft = await createInvitationDraft({ email: "Alice+Notes@EXAMPLE.COM", source: { kind: "kv", space: scope.spaceId, path: "documents/plan.md", action: "tinycloud.kv/get" }, scope, shareId: "share-test", expiresAt: new Date(Date.now() + 86_400_000).toISOString(), uploadEnvelope: async (_cid, blob) => { stored = blob; } });
+    const source = { kind: "kv" as const, space: scope.spaceId, path: "documents/plan.md", action: "tinycloud.kv/get" as const };
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    const draft = await createInvitationDraft({ email: "Alice+Notes@EXAMPLE.COM", source, scope, shareId: "share-test", expiresAt, policy: await draftPolicy("Alice+Notes@EXAMPLE.COM", source, expiresAt), uploadEnvelope: async (_cid, blob) => { stored = blob; } });
     expect(stored).toBeDefined();
     expect(draft.shareUrl).not.toContain("?");
     expect(draft.envelope.authorizationTarget.kind).toBe("policy");
@@ -96,7 +122,10 @@ describe("exact-email share UI protocol boundaries", () => {
   });
 
   it("normalizes named SQL into the frozen constrained shape and never accepts raw SQL", async () => {
-    const draft = await createInvitationDraft({ email: "bob@example.com", source: { kind: "sql", space: scope.spaceId, database: "documents", path: "shared/plan", statement: "shared_document_by_id", arguments: { document_id: 7 }, argumentsDigest: "ignored", action: "tinycloud.sql/read" }, scope: { ...scope, authorityMaterialHandle: "amh_sql_001" }, shareId: "share-sql", expiresAt: new Date(Date.now() + 86_400_000).toISOString(), uploadEnvelope: async () => {} });
+    const source = { kind: "sql" as const, space: scope.spaceId, database: "documents", path: "shared/plan", statement: "shared_document_by_id", arguments: { document_id: 7 }, argumentsDigest: "ignored", action: "tinycloud.sql/read" as const };
+    const sqlScope = { ...scope, authorityMaterialHandle: "amh_sql_001" as const };
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    const draft = await createInvitationDraft({ email: "bob@example.com", source, scope: sqlScope, shareId: "share-sql", expiresAt, policy: await draftPolicy("bob@example.com", source, expiresAt), uploadEnvelope: async () => {} });
     const target = draft.envelope.authorizationTarget;
     expect(target.kind).toBe("policy");
     if (target.kind !== "policy") throw new Error("expected policy target");
@@ -121,6 +150,7 @@ describe("exact-email share UI protocol boundaries", () => {
       shareId: "share-sql-mounted",
       expiresAt: "2026-07-23T12:00:00.000Z",
       now: "2026-07-19T12:00:00.000Z",
+      policy: await draftPolicy("Alice+Notes@example.com", source, "2026-07-23T12:00:00.000Z"),
       uploadEnvelope: async () => {},
     });
     const signed = await signedInvitationProof(draft, { ...scope, authorityMaterialHandle: "amh_sql_001" });
@@ -193,6 +223,8 @@ describe("exact-email share UI protocol boundaries", () => {
       version: 1,
       challengeId: "E".repeat(22),
       nonce: "F".repeat(43),
+      enforcerDid: nodeEnforcerDid,
+      emailHash: "A".repeat(43),
       issuedAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + 119_000).toISOString(),
     });
@@ -209,7 +241,20 @@ describe("exact-email share UI protocol boundaries", () => {
       }),
       policySession: vi.fn(async (body) => {
         const presentation = body.presentation as Record<string, unknown>;
-        const { challengeId: _challengeId, nonce: _nonce, jti: _jti, requestBodyDigest: _digest, ...sessionFields } = presentation;
+        expect(Object.keys(presentation).sort()).toEqual([
+          "action", "authorityMaterialDigest", "authorityMaterialHandle", "challengeId", "contentSource", "contentSourceDigest",
+          "credentialDigest", "delegationCid", "enforcerDid", "expiresAt", "holderDid", "issuedAt", "jti", "nodeAudience",
+          "nonce", "policyCid", "requestBodyDigest", "resource", "shareCid", "shareId", "targetOrigin", "type", "version",
+        ]);
+        expect(presentation.enforcerDid).toBe(nodeEnforcerDid);
+        const holderBinding = body.holderBinding as Record<string, unknown>;
+        const holderMessage = holderBinding.message as Record<string, unknown>;
+        expect(Object.keys(holderMessage).sort()).toEqual([
+          "audience", "challengeId", "challengeNonce", "challengeRequestDigest", "claimNonce", "contentSource", "contentSourceDigest",
+          "credentialDigest", "emailHash", "enforcerDid", "expiresAt", "holderDid", "invitationId", "issuedAt", "jti", "nodeAudience",
+          "policyCid", "redemptionId", "requestOrigin", "shareCid", "shareId", "targetOrigin", "type", "version",
+        ]);
+        const { challengeId: _challengeId, nonce: _nonce, jti: _jti, requestBodyDigest: _digest, enforcerDid: _enforcerDid, ...sessionFields } = presentation;
         const session = {
           ...sessionFields,
           type: "TinyCloudSharePolicySession",
@@ -331,7 +376,7 @@ describe("exact-email share UI protocol boundaries", () => {
       const failed = transport({ activate: vi.fn(async () => { throw new ShareTransportError(code); }) });
       const terminal = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: failed, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
       await terminal.openDocument();
-      expect(terminal.state.state).toBe(code);
+      expect(terminal.state.state).toBe(code === "expired" ? "otp" : code);
     }
   });
 
@@ -363,7 +408,7 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(t.claimRedeem).toHaveBeenCalledTimes(1);
     const now = Date.now();
     t.policyChallenge = vi.fn(async (body) => {
-      const challenge = { ...body, type: "TinyCloudSharePolicyChallenge", version: 1, challengeId: "D".repeat(43), nonce: "E".repeat(43), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString() };
+      const challenge = { ...body, type: "TinyCloudSharePolicyChallenge", version: 1, challengeId: "D".repeat(43), nonce: "E".repeat(43), enforcerDid: nodeEnforcerDid, emailHash: "A".repeat(43), issuedAt: new Date(now).toISOString(), expiresAt: new Date(now + 60_000).toISOString() };
       return { challenge, proof: { alg: "EdDSA" as const, kid: share.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.policyChallenge}${canonicalize(challenge)}`), nodeSeed)) } };
     });
     t.policySession = vi.fn(async (body) => {
@@ -381,10 +426,21 @@ describe("exact-email share UI protocol boundaries", () => {
       return { ...responseBody, proof } as any;
     });
     await controller.retry();
-    expect(controller.state.state).toBe("reading");
+    expect(controller.state.state).toBe("claimed");
     expect(t.policyChallenge).toHaveBeenCalledTimes(1);
     expect(t.policySession).toHaveBeenCalledTimes(1);
     expect(t.read).toHaveBeenCalledTimes(1);
+    const sessionRequest = (t.policySession as unknown as { readonly mock: { readonly calls: readonly (readonly [Record<string, unknown>])[] } }).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(Object.keys(sessionRequest).sort()).toEqual(["credential", "holderBinding", "presentation", "proof", "readSignerDid"]);
+    expect(sessionRequest.readSignerDid).toBe((sessionRequest.presentation as Record<string, unknown>).holderDid);
+    const artifact = sessionRequest.holderBinding as Record<string, any>;
+    expect(artifact).toMatchObject({ name: "holderBinding", domain: SIGNATURE_DOMAINS.holderBinding, signerDid: sessionRequest.readSignerDid });
+    expect(Object.keys(artifact).sort()).toEqual(["domain", "jcs", "message", "messageDigest", "name", "signature", "signatureDigest", "signedBytesDigest", "signerDid"]);
+    expect(artifact.message).toMatchObject({ redemptionId: "id", invitationId: "cid", claimNonce: "E".repeat(43), challengeNonce: "E".repeat(43), credentialDigest: createHash("sha256").update(credential).digest("base64url"), audience: share.nodeAudience, enforcerDid: nodeEnforcerDid, requestOrigin: share.nodeOrigin, challengeId: "D".repeat(43) });
+    expect(artifact.jcs).toBe(canonicalize(artifact.message));
+    expect(artifact.messageDigest).toBe(await canonicalDigest(artifact.message));
+    expect(artifact.signedBytesDigest).toBe(createHash("sha256").update(`${SIGNATURE_DOMAINS.holderBinding}${artifact.jcs}`).digest("base64url"));
+    expect(artifact.signatureDigest).toBe(createHash("sha256").update(fromBase64Url(artifact.signature.value)).digest("base64url"));
   });
 
   it("rejects forged, stale, and misbound Node responses before UI advancement", async () => {
@@ -398,11 +454,12 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(() => assertReadResponseBinding({ mediaType: "text/markdown; charset=utf-8", content: "# Plan\n", contentSourceDigest: "B".repeat(43), bodyDigest: "C".repeat(43), delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43) }, share)).toThrow();
   });
 
-  it("reports requested instead of pretending that an email was sent", async () => {
+  it("does not report delivery when the mounted policy authority is incomplete", async () => {
     const t = transport();
     const controller = createSenderController({ transport: t, uploadEnvelope: async () => {} });
-    await controller.request({ email: "bob@example.com", source: { kind: "kv", space: scope.spaceId, path: "documents/plan.md", action: "tinycloud.kv/get" }, scope, shareId: "share-requested", expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
-    expect(controller.state.state).toBe("requested");
-    expect(controller.state).toMatchObject({ retryAfterSeconds: 20 });
+    const source = { kind: "kv" as const, space: scope.spaceId, path: "documents/plan.md", action: "tinycloud.kv/get" as const };
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    await controller.request({ email: "bob@example.com", source, scope, shareId: "share-requested", expiresAt, policy: await sharePolicy("bob@example.com", source, expiresAt) });
+    expect(controller.state.state).toBe("invalid");
   });
 });
