@@ -187,6 +187,7 @@ describe("exact-email share UI protocol boundaries", () => {
 
   it("binds named-SQL reads to the same source and signed markdown body", async () => {
     const holder = await createHolder();
+    const shareExpiry = new Date(Date.now() + 86_400_000).toISOString();
     const source = {
       kind: "sql" as const,
       space: scope.spaceId,
@@ -203,7 +204,7 @@ describe("exact-email share UI protocol boundaries", () => {
       policyCid: "B".repeat(59),
       recipientEmail: "Alice+Notes@example.com",
       recipientHint: "A***@example.com",
-      expiry: "2026-07-23T12:00:00.000Z",
+      expiry: shareExpiry,
       nodeOrigin: "https://node.example",
       nodeAudience: "did:web:node.example",
       requestOrigin: "https://share.tinycloud.xyz",
