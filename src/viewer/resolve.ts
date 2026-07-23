@@ -283,7 +283,7 @@ export async function resolveShare(
     const contentKey = fromBase64Url(envelope.content.key); // schema-validated 32 bytes
     try {
       const contentBytes = await open(contentBlob, contentKey);
-      const content = new TextDecoder("utf-8", { fatal: true }).decode(contentBytes);
+      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
       return { state: "ok", envelope, senderVerified: false, content };
     } catch {
       return { state: "content-integrity-failed" };

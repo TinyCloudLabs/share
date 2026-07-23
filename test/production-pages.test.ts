@@ -205,7 +205,7 @@ describe("Cloudflare Pages API proxy", () => {
       targets.push((input instanceof Request ? input : new Request(input)).url);
       return new Response("{}", { headers: { "content-type": "application/json" } });
     });
-    for (const path of ["/registry", "/registry/", "/registry/blobs/cid"]) {
+    for (const path of ["/registry", "/registry/", "/registry/blobs/cid", "/api/share/link-only/registry/blobs"]) {
       const { context, next } = pagesContext(path);
       expect((await onRequest(context)).status).toBe(200);
       expect(next).not.toHaveBeenCalled();
@@ -215,7 +215,7 @@ describe("Cloudflare Pages API proxy", () => {
       expect(await (await onRequest(context)).text()).toBe("static asset");
       expect(next).toHaveBeenCalledOnce();
     }
-    expect(targets).toEqual([`${API_ORIGIN}/registry`, `${API_ORIGIN}/registry/`, `${API_ORIGIN}/registry/blobs/cid`]);
+    expect(targets).toEqual([`${API_ORIGIN}/registry`, `${API_ORIGIN}/registry/`, `${API_ORIGIN}/registry/blobs/cid`, `${API_ORIGIN}/api/share/link-only/registry/blobs`]);
   });
 
   it("fails closed for unsupported methods, redirects, and fetch failures", async () => {

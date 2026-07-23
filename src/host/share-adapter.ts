@@ -26,6 +26,13 @@ const B64_128 = /^[A-Za-z0-9_-]{22}$/;
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const OPENKEY_NONCE_TTL_MS = 5 * 60 * 1000;
+const LINK_ONLY_BLOB_LIMIT = 64 * 1024;
+const LINK_ONLY_REGISTRY_PREFIX = "/api/share/link-only/registry";
+const LINK_ONLY_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
+const LINK_ONLY_UPLOAD_WINDOW_MS = 5 * 60 * 1000;
+const LINK_ONLY_UPLOAD_LIMIT = 20;
+
+class PayloadTooLargeError extends Error {}
 
 export interface BindingStore {
   readonly writable: boolean;
@@ -415,6 +422,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const signers = new Map<string, string>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
+  const linkOnlyUploads = new Map<string, { count: number; windowStartedAt: number }>();
   const capability = options.capability;
   const senderReady = options.senderEnabled && options.bundle.public.nodeEnabled && capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore?.writable === true;
   const authReady = true;
@@ -543,9 +551,35 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid)) return generic(400);
         const binding = await options.bindingStore?.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
-      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
+      if (url.pathname.startsWith(`${LINK_ONLY_REGISTRY_PREFIX}/`) || url.pathname === LINK_ONLY_REGISTRY_PREFIX) {
+        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
+        if (url.pathname !== `${LINK_ONLY_REGISTRY_PREFIX}/blobs`) return undefinedResponse();
+        if (request.method !== "POST") return response(405, { error: { code: "method_not_allowed" } }, { allow: "POST" });
+        const now = Date.now();
+        const deleteAfter = Date.parse(request.headers.get("x-delete-after") ?? "");
+        if (!Number.isFinite(deleteAfter) || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS) {
+          return response(400, { error: { code: "upload_retention_invalid" } });
+        }
+        const uploadKey = sessionCookie(request) ?? session.userId;
+        const prior = linkOnlyUploads.get(uploadKey);
+        const budget = prior === undefined || now - prior.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS
+          ? { count: 0, windowStartedAt: now }
+          : prior;
+        if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
+        budget.count += 1;
+        linkOnlyUploads.set(uploadKey, budget);
+        return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin, LINK_ONLY_REGISTRY_PREFIX, LINK_ONLY_BLOB_LIMIT);
+      }
+      if ((url.pathname.startsWith("/registry/") || url.pathname === "/registry") && request.method === "POST") {
+        return response(401, { error: { code: "authentication_required" } });
+      }
+      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
       return undefinedResponse();
-    } catch (error) { if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } }); return generic(400); }
+    } catch (error) {
+      if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
+      if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } });
+      return generic(400);
+    }
   }
   return { handler, publicConfig, readiness: { authReady, senderReady } };
 }
@@ -556,12 +590,16 @@ async function boundedJson(request: Request): Promise<Record<string, unknown>> {
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("body shape"); return value as Record<string, unknown>;
 }
 
-async function proxyRegistry(request: Request, origin: string, transportOrigin = origin): Promise<Response> {
-  const requestUrl = new URL(request.url); const base = new URL(transportOrigin); const target = new URL(requestUrl.pathname.slice("/registry".length) || "/", base); target.search = requestUrl.search;
+async function proxyRegistry(request: Request, origin: string, transportOrigin = origin, routePrefix = "/registry", maxBody = MAX_BODY): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  const suffix = requestUrl.pathname.slice(routePrefix.length) || "/";
+  const policyPath = `/registry${suffix}`;
+  const base = new URL(transportOrigin); const target = new URL(suffix, base); target.search = requestUrl.search;
   const bytes = new Uint8Array(await request.arrayBuffer());
-  const headers = sanitizeUpstreamRequest(requestUrl.pathname, request.method, request.headers, bytes.length, origin);
+  if (bytes.length > maxBody) throw new PayloadTooLargeError("upload too large");
+  const headers = sanitizeUpstreamRequest(policyPath, request.method, request.headers, bytes.length, origin);
   const result = await fetch(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
-  return sanitizeUpstreamResponse(requestUrl.pathname, request.method, result);
+  return sanitizeUpstreamResponse(policyPath, request.method, result);
 }
 
 function undefinedResponse(): Response { return new Response(null, { status: 404, headers: JSON_HEADERS }); }

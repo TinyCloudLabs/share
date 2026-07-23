@@ -17,6 +17,7 @@ function dynamic(path: string): boolean {
     path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" ||
     path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" ||
     path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") ||
+    path.startsWith("/api/share/link-only/registry/") ||
     path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
 }
 
