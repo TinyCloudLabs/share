@@ -1,5 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
@@ -31,6 +31,9 @@ const LINK_ONLY_REGISTRY_PREFIX = "/api/share/link-only/registry";
 const LINK_ONLY_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
 const LINK_ONLY_UPLOAD_WINDOW_MS = 5 * 60 * 1000;
 const LINK_ONLY_UPLOAD_LIMIT = 20;
+const LINK_ONLY_AUTHORIZATION_TTL_MS = 60 * 1000;
+const REGISTRY_AUTHORIZATION_DOMAIN =
+  "xyz.tinycloud.share/registry-authorization/v1\0";
 
 class PayloadTooLargeError extends Error {}
 
@@ -179,6 +182,7 @@ export interface ShareHostOptions {
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
   readonly registryTransportOrigin: string;
   readonly authUsers?: readonly AuthUser[];
+  readonly registryUploadPrivateKey?: Uint8Array;
   readonly senderEnabled: boolean;
   readonly testMode: boolean;
 }
@@ -187,6 +191,37 @@ function response(status: number, body: unknown, headers: Record<string, string>
 function generic(status = 400): Response { return response(status, { error: { code: "capability_unavailable" } }); }
 function safeString(value: unknown, label: string): string { if (typeof value !== "string" || value.length === 0 || value.length > 4096) throw new Error(label); return value; }
 function hash(value: string): string { return createHash("sha256").update(value).digest("base64url"); }
+function hashBytes(value: Uint8Array): string { return createHash("sha256").update(value).digest("base64url"); }
+
+function registryUploadAuthorization(
+  privateKey: Uint8Array,
+  body: Uint8Array,
+  deleteAfter: string,
+  sessionToken: string,
+): string {
+  const authorization = {
+    action: "tinycloud.share/upload",
+    bodyDigest: hashBytes(body),
+    contentLength: body.byteLength,
+    deleteAfter,
+    expiresAt: new Date(Date.now() + LINK_ONLY_AUTHORIZATION_TTL_MS).toISOString(),
+    mode: "link-only",
+    resource: "registry/blobs",
+    sessionBinding: hash(sessionToken),
+    type: "TinyCloudShareRegistryAuthorization",
+    version: 1,
+  };
+  const message = new TextEncoder().encode(
+    `${REGISTRY_AUTHORIZATION_DOMAIN}${stable(authorization)}`,
+  );
+  return JSON.stringify({
+    authorization,
+    proof: {
+      alg: "EdDSA",
+      signature: toBase64Url(ed25519.sign(message, privateKey)),
+    },
+  });
+}
 
 function canonicalEmail(value: unknown): string {
   if (typeof value !== "string" || value.length < 3 || value.length > 254 || !/^[\x00-\x7f]*$/.test(value)) throw new Error("email");
@@ -506,6 +541,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
         return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
       }
+      if (url.pathname === `${LINK_ONLY_REGISTRY_PREFIX}/public-key` && request.method === "GET") {
+        if (options.registryUploadPrivateKey === undefined) return response(503, { error: { code: "registry_upload_not_ready" } });
+        return response(200, {
+          alg: "Ed25519",
+          publicKey: toBase64Url(ed25519.getPublicKey(options.registryUploadPrivateKey)),
+        });
+      }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
         if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
@@ -555,8 +597,10 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
         if (url.pathname !== `${LINK_ONLY_REGISTRY_PREFIX}/blobs`) return undefinedResponse();
         if (request.method !== "POST") return response(405, { error: { code: "method_not_allowed" } }, { allow: "POST" });
+        if (options.registryUploadPrivateKey === undefined) return response(503, { error: { code: "registry_upload_not_ready" } });
         const now = Date.now();
-        const deleteAfter = Date.parse(request.headers.get("x-delete-after") ?? "");
+        const deleteAfterHeader = request.headers.get("x-delete-after") ?? "";
+        const deleteAfter = Date.parse(deleteAfterHeader);
         if (!Number.isFinite(deleteAfter) || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS) {
           return response(400, { error: { code: "upload_retention_invalid" } });
         }
@@ -568,7 +612,24 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
         budget.count += 1;
         linkOnlyUploads.set(uploadKey, budget);
-        return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin, LINK_ONLY_REGISTRY_PREFIX, LINK_ONLY_BLOB_LIMIT);
+        const registryResponse = await proxyRegistry(
+          request,
+          options.registryOrigin,
+          options.registryTransportOrigin,
+          LINK_ONLY_REGISTRY_PREFIX,
+          LINK_ONLY_BLOB_LIMIT,
+          (bytes) =>
+            registryUploadAuthorization(
+              options.registryUploadPrivateKey!,
+              bytes,
+              deleteAfterHeader,
+              uploadKey,
+            ),
+        );
+        if (registryResponse.status === 401 || registryResponse.status === 403) {
+          return response(502, { error: { code: "registry_upload_rejected" } });
+        }
+        return registryResponse;
       }
       if ((url.pathname.startsWith("/registry/") || url.pathname === "/registry") && request.method === "POST") {
         return response(401, { error: { code: "authentication_required" } });
@@ -590,7 +651,14 @@ async function boundedJson(request: Request): Promise<Record<string, unknown>> {
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("body shape"); return value as Record<string, unknown>;
 }
 
-async function proxyRegistry(request: Request, origin: string, transportOrigin = origin, routePrefix = "/registry", maxBody = MAX_BODY): Promise<Response> {
+async function proxyRegistry(
+  request: Request,
+  origin: string,
+  transportOrigin = origin,
+  routePrefix = "/registry",
+  maxBody = MAX_BODY,
+  authorize?: (body: Uint8Array) => string,
+): Promise<Response> {
   const requestUrl = new URL(request.url);
   const suffix = requestUrl.pathname.slice(routePrefix.length) || "/";
   const policyPath = `/registry${suffix}`;
@@ -598,6 +666,9 @@ async function proxyRegistry(request: Request, origin: string, transportOrigin =
   const bytes = new Uint8Array(await request.arrayBuffer());
   if (bytes.length > maxBody) throw new PayloadTooLargeError("upload too large");
   const headers = sanitizeUpstreamRequest(policyPath, request.method, request.headers, bytes.length, origin);
+  if (authorize !== undefined) {
+    headers.set("x-tinycloud-authorization", authorize(bytes));
+  }
   const result = await fetch(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
   return sanitizeUpstreamResponse(policyPath, request.method, result);
 }
@@ -609,6 +680,59 @@ export function senderEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
   if (value === undefined || value === "false") return false;
   if (value === "true") return true;
   throw new Error("SHARE_SENDER_ENABLED must be exactly true or false");
+}
+
+function parseRegistryUploadPrivateKey(value: string): Uint8Array {
+  if (!B64_256.test(value)) throw new Error("registry upload private key is invalid");
+  const key = fromBase64Url(value);
+  if (key.byteLength !== 32 || toBase64Url(key) !== value) {
+    throw new Error("registry upload private key is invalid");
+  }
+  return key;
+}
+
+function loadRegistryUploadPrivateKey(
+  env: NodeJS.ProcessEnv,
+  environment: ShareTrustBundle["environment"],
+): Uint8Array | undefined {
+  const path = env.SHARE_REGISTRY_UPLOAD_KEY_PATH;
+  const inline = env.SHARE_REGISTRY_UPLOAD_PRIVATE_KEY;
+  if (path !== undefined && inline !== undefined) {
+    throw new Error("configure exactly one registry upload key source");
+  }
+  if (inline !== undefined) {
+    if (environment !== "test") {
+      throw new Error("inline registry upload keys are test-only");
+    }
+    return parseRegistryUploadPrivateKey(inline);
+  }
+  if (path === undefined) return undefined;
+  if (!path.startsWith("/") || path.includes("\u0000")) {
+    throw new Error("registry upload key path must be absolute");
+  }
+  const readExisting = (): Uint8Array =>
+    parseRegistryUploadPrivateKey(readFileSync(path, "utf8").trim());
+  try {
+    return readExisting();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const generated = randomBytes(32);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, "wx", 0o600);
+    writeSync(descriptor, toBase64Url(generated), undefined, "utf8");
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    return new Uint8Array(generated);
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { /* best-effort close */ }
+    }
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return readExisting();
+    throw error;
+  }
 }
 
 export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
@@ -633,6 +757,7 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = resolveShareUpstreams(bundle, env).registry;
+  const registryUploadPrivateKey = loadRegistryUploadPrivateKey(env, bundle.environment);
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {
@@ -646,5 +771,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test" });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test" });
 }

@@ -13,7 +13,13 @@ The `share-api` CVM persists `/var/lib/tinycloud/share` and pins
 that mode. Auth-only sessions may write bounded encrypted bearer-share blobs
 through `/api/share/link-only/registry/blobs`; this does not enable email,
 sender signing, policy authorization, or binding publication. Direct public
-registry writes remain closed. Deploy `compose.share-api.yml` with
+registry writes remain closed. The CVM creates one dedicated Ed25519 upload
+key at `/var/lib/tinycloud/share/registry-upload.key`, reuses it across
+restarts, and signs only short-lived authorizations bound to the authenticated
+session, ciphertext digest, size, and retention. Configure the corresponding
+public key as `REGISTRY_LINK_UPLOAD_PUBLIC_KEY` on the existing registry
+Worker; it is separate from the Node/email authorization key and cannot
+authorize bindings or reads. Deploy `compose.share-api.yml` with
 `SHARE_API_IMAGE` set to the
 exact merged-main GHCR digest, `SHARE_TRUST_BUNDLE_BASE64` set to the
 base64-encoded validated public bundle through Phala sealed environment

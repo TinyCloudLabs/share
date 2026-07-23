@@ -6,6 +6,7 @@ services:
     user: "1000:1000"
     environment:
       SHARE_SENDER_ENABLED: "false"
+      SHARE_REGISTRY_UPLOAD_KEY_PATH: /var/lib/tinycloud/share/registry-upload.key
       SHARE_TRUST_BUNDLE_BASE64: ${SHARE_TRUST_BUNDLE_BASE64:?set the base64-encoded validated public production trust bundle}
     command:
       - /bin/sh
