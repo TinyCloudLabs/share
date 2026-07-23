@@ -123,10 +123,11 @@ describe("Cloudflare Pages API proxy", () => {
     expect(response.status).toBe(200);
     expect(proxied).toBeDefined();
     expect(proxied!.url).toBe(`${API_ORIGIN}/api/share/auth/openkey?flow=callback`);
+    expect(new URL(proxied!.url).host).toBe("api.share.tinycloud.xyz");
     expect(proxied!.method).toBe("POST");
     expect(proxied!.redirect).toBe("error");
     expect(proxied!.headers.get("origin")).toBe(SHARE_ORIGIN);
-    expect(proxied!.headers.get("host")).toBe("api.share.tinycloud.xyz");
+    expect(proxied!.headers.has("host")).toBe(false);
     expect(proxied!.headers.get("cookie")).toBe("share_session=incoming");
     expect(response.headers.get("set-cookie")).toContain("share_session=opaque");
     expect(response.headers.has("server")).toBe(false);
