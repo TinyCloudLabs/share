@@ -31,6 +31,7 @@ function shareRouteRewrite(): Plugin {
     if (/^\/s\/[a-z2-7]+$/.test(path)) return "/viewer.html";
     if (path === "/share") return "/share.html";
     if (path === "/viewer") return "/viewer.html";
+    if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
   };
   return {
@@ -187,6 +188,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
+        howItWorks: fileURLToPath(new URL("how-it-works.html", import.meta.url)),
         share: fileURLToPath(new URL("share.html", import.meta.url)),
         viewer: fileURLToPath(new URL("viewer.html", import.meta.url)),
       },

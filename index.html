@@ -1,15 +1,17 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-page="landing">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Create encrypted, policy-bound links and share data without giving up control."
+      content="Share anything with anybody—and no one else. TinyCloud verifies the recipient before access."
     />
-    <meta name="theme-color" content="#ffffff" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%23000' stroke-width='2' d='m12 2 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 17l9 5 9-5'/%3E%3C/svg%3E" />
-    <title>TinyCloud | Sovereign Sharing</title>
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%232a56f6'%3E%3Ccircle cx='4' cy='4' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='20' cy='20' r='2'/%3E%3C/g%3E%3Cg fill='none' stroke='%23647187'%3E%3Ccircle cx='12' cy='4' r='1.5'/%3E%3Ccircle cx='20' cy='4' r='1.5'/%3E%3Ccircle cx='4' cy='12' r='1.5'/%3E%3Ccircle cx='20' cy='12' r='1.5'/%3E%3Ccircle cx='4' cy='20' r='1.5'/%3E%3Ccircle cx='12' cy='20' r='1.5'/%3E%3C/g%3E%3C/svg%3E" />
+    <title>TinyCloud Sharing — Share anything with anybody. And no one else.</title>
     <script type="module" src="/src/landing/main.ts"></script>
   </head>
   <body>
@@ -17,121 +19,88 @@
 
     <div class="site-shell">
       <header class="site-header">
-        <a class="wordmark micro" href="/" aria-label="TinyCloud sharing home">
-          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-            <path d="m3 12 9 5 9-5M3 17l9 5 9-5" />
-          </svg>
-          share.tinycloud.xyz
+        <a class="wordmark" href="/" aria-label="TinyCloud Sharing home">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </span>
+          <span>TinyCloud <b>Sharing</b></span>
         </a>
 
         <nav class="primary-nav micro" aria-label="Primary navigation">
-          <a href="/share">share</a>
-          <a href="#how-it-works">protocol</a>
-          <a href="https://github.com/TinyCloudLabs/share">docs</a>
+          <a href="/" aria-current="page">overview</a>
+          <a href="/how-it-works">how it works</a>
         </nav>
-
-        <span class="version micro">v.1.0</span>
       </header>
 
       <main id="main">
         <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-art" aria-hidden="true">
-            <canvas id="sovereign-canvas"></canvas>
-          </div>
-
           <div class="hero-copy">
-            <p class="eyebrow micro">encrypted · delegated · verifiable</p>
-            <h1 id="hero-title">sovereign<br />sharing.</h1>
+            <p class="eyebrow micro">encrypted · exact · private</p>
+            <h1 id="hero-title">Share anything with anybody. And no one else.</h1>
 
             <p class="hero-intro">
-              Your data stays encrypted in a space you own. Share only what you choose with
-              <span class="inline-pill">agents</span>, other
-              <span class="inline-pill">people</span>, or anyone using an identifier.
+              Start with a read-only Markdown resource and an exact email address. TinyCloud
+              encrypts the invitation and verifies the person you chose before anything opens.
             </p>
 
             <div class="hero-actions">
               <a class="pill pill-solid" href="/share">create a share</a>
-              <a class="arrow-link" href="#learn-more">
-                learn more
-                <span class="round-arrow" aria-hidden="true">↗</span>
-              </a>
+              <a class="arrow-link" href="/how-it-works">see how it works <span aria-hidden="true">→</span></a>
             </div>
           </div>
         </section>
 
-        <section class="manifesto structural-section" id="learn-more" aria-labelledby="control-title">
+        <section class="trust-section structural-section" aria-labelledby="trust-title">
           <header class="section-heading">
-            <p class="micro">01 / the model</p>
-            <h2 id="control-title">control &amp;<br />access</h2>
+            <p class="micro">before you send</p>
+            <h2 id="trust-title">Exact by design.</h2>
             <p>
-              Most sharing systems ask you to surrender control. TinyCloud creates a policy-bound
-              delegation instead. The recipient proves they satisfy your policy; only then can the
-              encrypted content be accessed.
+              The invitation is bound to the resource, recipient, access mode, and expiry you
+              choose. The recipient sees those same facts before they open anything.
             </p>
           </header>
 
-          <div class="access-grid">
-            <article class="recipient-panel">
-              <h3>universal<br />recipients</h3>
-              <div class="recipient-orbit" aria-hidden="true">
-                <span class="orbit orbit-large"></span>
-                <span class="orbit orbit-small"></span>
-                <span class="orbit-line"></span>
-                <span class="orbit-dot"></span>
+          <article class="share-specimen" aria-labelledby="specimen-title">
+            <header>
+              <div>
+                <p class="micro">share preview</p>
+                <h3 id="specimen-title">README.md</h3>
               </div>
-              <span class="pill pill-solid identity-pill">identity agnostic</span>
-            </article>
+              <span class="specimen-status"><span aria-hidden="true"></span>ready to encrypt</span>
+            </header>
 
-            <div class="recipient-list">
-              <div class="list-row"><span>share with agents</span><span aria-hidden="true">→</span></div>
-              <div class="list-row"><span>share with people</span><span aria-hidden="true">→</span></div>
-              <div class="list-row"><span>email, DID, or public key</span><span aria-hidden="true">→</span></div>
-              <div class="list-note">
-                <span class="micro">recipient experience</span>
-                <p>No TinyCloud account is required. The link carries the encrypted payload context; the recipient supplies only the proof the policy requires.</p>
-              </div>
-            </div>
-          </div>
-        </section>
+            <dl>
+              <div><dt>Recipient</dt><dd>sam@example.com</dd></div>
+              <div><dt>Access</dt><dd>Read only</dd></div>
+              <div><dt>Expires</dt><dd>Friday · 5:00 PM</dd></div>
+            </dl>
 
-        <section class="structural-section" id="how-it-works" aria-labelledby="steps-title">
-          <header class="section-heading compact">
-            <p class="micro">02 / the protocol</p>
-            <h2 id="steps-title">how it works</h2>
-          </header>
-
-          <div class="step-grid">
-            <article class="step-card">
-              <header><h3>select data</h3><span>01</span></header>
-              <p>Choose the content to share and the policy that should govern access to it.</p>
-              <span class="pill pill-solid step-badge">scope</span>
-            </article>
-
-            <article class="step-card">
-              <header><h3>create link</h3><span>02</span></header>
-              <p>Encrypt the content, bind its policy delegation, and generate a portable share link.</p>
-              <span class="round-arrow step-arrow" aria-hidden="true">+</span>
-            </article>
-
-            <article class="step-card">
-              <header><h3>prove access</h3><span>03</span></header>
-              <p>The recipient presents a credential. The policy engine verifies it before releasing content.</p>
-              <span class="pill pill-solid step-badge">verify</span>
-            </article>
-          </div>
+            <p class="specimen-note">
+              The link is not enough on its own. The named recipient must prove the matching email,
+              and an expired invitation stays closed.
+            </p>
+          </article>
         </section>
 
         <section class="final-cta" aria-labelledby="cta-title">
-          <p class="micro">your data · your policy · your keys</p>
-          <h2 id="cta-title">own your data.</h2>
+          <p class="micro">read only · exact recipient · bounded expiry</p>
+          <h2 id="cta-title">Ready to share?</h2>
           <a class="pill pill-solid large-pill" href="/share">create a share</a>
         </section>
       </main>
 
       <footer class="site-footer micro">
-        <span>© <span id="copyright-year">2026</span> TinyCloud</span>
-        <span>sovereign data infrastructure</span>
+        <span class="footer-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+            <span></span><span></span><span></span>
+          </span>
+          © <span id="copyright-year">2026</span> TinyCloud
+        </span>
+        <a href="https://github.com/TinyCloudLabs/share">protocol and source ↗</a>
       </footer>
     </div>
   </body>
