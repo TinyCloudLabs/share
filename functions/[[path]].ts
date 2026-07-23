@@ -9,9 +9,7 @@ type PagesContext<Env> = { request: Request; env: Env; next: () => Promise<Respo
 
 function routed(path: string): boolean { return EXACT.has(path) || path === "/registry" || PREFIXES.some((prefix) => path.startsWith(prefix)); }
 function origin(value: string | undefined): URL | undefined {
-  if (value === undefined || value.trim() === "") return undefined;
-  try { const url = new URL(value); const host = url.hostname.toLowerCase(); if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash || host === "localhost" || host === "::1" || /^127\.|^10\.|^192\.168\.|^169\.254\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host) || host !== "api.share.tinycloud.xyz") return undefined; return url; }
-  catch { return undefined; }
+  return value === "https://api.share.tinycloud.xyz" ? new URL(value) : undefined;
 }
 
 export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: string }>): Promise<Response> => {
@@ -25,8 +23,9 @@ export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: strin
   headers.set("host", upstream.host);
   headers.set("origin", incoming.origin);
   headers.delete("cf-connecting-ip"); headers.delete("x-forwarded-host"); headers.delete("x-forwarded-proto");
-  const init: RequestInit = { method: context.request.method, headers, redirect: "error", ...(["GET", "HEAD"].includes(context.request.method) ? {} : { body: context.request.body ?? null }) };
+  const init: RequestInit & { duplex?: "half" } = { method: context.request.method, headers, redirect: "error", ...(["GET", "HEAD"].includes(context.request.method) ? {} : { body: context.request.body ?? null, duplex: "half" }) };
   let response: Response; try { response = await fetch(new Request(target, init)); } catch { return new Response(JSON.stringify({ error: { code: "upstream_unavailable" } }), { status: 502, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
+  if (response.status >= 300 && response.status < 400) return new Response(JSON.stringify({ error: { code: "upstream_unavailable" } }), { status: 502, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   const out = new Response(response.body, response);
   out.headers.delete("server"); out.headers.delete("via");
   return out;
