@@ -1,5 +1,5 @@
 import { canonicalize, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
-import { mountSender } from "../email-share/view.js";
+import { mountSender, mountUnavailableSender } from "../email-share/view.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import { createHttpTransport, type ShareTransport } from "../email-share/transport.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
@@ -7,6 +7,7 @@ import { type TrustedNode, validateSource } from "../email-share/protocol.js";
 import { assertProductionAuthorityMaterial, assertProductionTrustedNode } from "../email-share/runtime.js";
 import { loadSharePublicConfig } from "../email-share/config.js";
 import type { OpenKeyShareSession } from "./openkey-session.js";
+import { parseCapabilityList } from "./capability-list.js";
 
 interface ShareCapability {
   readonly scope: SenderScope;
@@ -92,9 +93,8 @@ async function loadCapabilities(configOrigin: string): Promise<readonly ShareCap
   const response = await fetch(capabilityUrl, { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
   if (response.status === 401) throw new Error("OpenKey authentication required");
   if (!response.ok) throw new Error(`share capability unavailable (${response.status})`);
-  const value = await response.json() as Record<string, unknown>;
-  if (Object.keys(value).length !== 1 || !Array.isArray(value.capabilities) || value.capabilities.length === 0) throw new TypeError("share capability list is invalid");
-  return value.capabilities.map((entry) => {
+  const entries = parseCapabilityList(await response.json());
+  return entries.map((entry) => {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new TypeError("share capability shape is invalid");
     const item = entry as Record<string, unknown>;
     if (typeof item.scope !== "object" || item.scope === null || typeof item.source !== "object" || item.source === null || typeof item.policy !== "object" || item.policy === null || Array.isArray(item.policy)) throw new TypeError("share capability shape is invalid");
@@ -182,6 +182,10 @@ if (root === null) throw new Error("share app root missing");
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   const publicConfig = await loadSharePublicConfig();
   const capabilities = await loadCapabilities(publicConfig.shareOrigin);
+  if (capabilities.length === 0) {
+    mountUnavailableSender(root as HTMLElement, session.address);
+    return;
+  }
   const { createTinyCloudUploader } = await import("./openkey-session.js");
   const uploadContent = await createTinyCloudUploader(session, publicConfig, capabilities, (message) => { status.textContent = message; });
   const transport = createHttpTransport({ nodeOrigin: window.location.origin, credentialsOrigin: window.location.origin });

@@ -63,6 +63,19 @@ function renderState(root: HTMLElement, state: SenderState, submit?: () => void)
   }
 }
 
+export function mountUnavailableSender(root: HTMLElement, openKeyAddress: string): void {
+  const doc = root.ownerDocument;
+  root.replaceChildren();
+  const shell = element(doc, "main", "sender-shell");
+  const header = element(doc, "header", "sender-header");
+  header.append(element(doc, "p", "sender-kicker", `OpenKey connected · ${openKeyAddress.slice(0, 6)}…${openKeyAddress.slice(-4)}`), element(doc, "h1", "sender-title", "Sharing is not enabled yet."), element(doc, "p", "sender-lede", "Your OpenKey session is ready. This deployment does not currently provide email or document sharing capabilities."));
+  const status = element(doc, "div", "sender-status");
+  status.dataset.senderStatus = "true";
+  shell.append(header, status);
+  root.append(shell);
+  renderState(root, { state: "unavailable", code: "capability-unavailable" });
+}
+
 export function mountSender(root: HTMLElement, options: SenderMountOptions): void {
   const doc = root.ownerDocument;
   root.replaceChildren();
@@ -73,7 +86,7 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
   const form = element(doc, "form", "sender-form") as HTMLFormElement;
   form.noValidate = true;
   const capabilities = options.capabilities.filter((candidate) => candidate.source.kind === "kv");
-  if (capabilities.length === 0) { renderState(root, { state: "unavailable", code: "capability-unavailable" }); return; }
+  if (capabilities.length === 0) { mountUnavailableSender(root, options.openKeyAddress); return; }
   const progress = element(doc, "ol", "share-progress");
   for (const [number, label, state] of [["01", "Signed in", "complete"], ["02", "Upload", "current"], ["03", "Share", "upcoming"]] as const) {
     const item = element(doc, "li", ""); item.dataset.state = state; item.append(element(doc, "span", "", number), doc.createTextNode(label)); progress.append(item);

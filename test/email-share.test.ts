@@ -11,6 +11,8 @@ import type { ShareLinkPolicy } from "../packages/share-sdk/src/index.js";
 import { createHash } from "node:crypto";
 import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
 import { SIGNATURE_DOMAINS } from "../src/email-share/protocol.js";
+import { mountUnavailableSender } from "../src/email-share/view.js";
+import { parseCapabilityList } from "../src/share/capability-list.js";
 
 const seed = new Uint8Array(32).fill(7);
 const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(seed));
@@ -93,6 +95,25 @@ function transport(overrides: Partial<ShareTransport> = {}): ShareTransport {
 }
 
 describe("exact-email share UI protocol boundaries", () => {
+  it("renders the authenticated auth-only state for a valid empty capability list", () => {
+    expect(parseCapabilityList({ capabilities: [] })).toEqual([]);
+    const root = document.createElement("div");
+    mountUnavailableSender(root, "0x1111111111111111111111111111111111111111");
+    expect(root.textContent).toContain("OpenKey connected");
+    expect(root.textContent).toContain("Sharing is not enabled yet.");
+    expect(root.textContent).toContain("Exact-email sharing is unavailable until the trusted node and delivery capability are ready.");
+    expect(root.querySelector("button")).toBeNull();
+  });
+
+  it.each([
+    null,
+    {},
+    { capabilities: "none" },
+    { capabilities: [], extra: true },
+  ])("strictly rejects malformed capability list payloads (%j)", (value) => {
+    expect(() => parseCapabilityList(value)).toThrow("share capability list is invalid");
+  });
+
   it("scrubs a complete launch synchronously and rejects secret query strings", () => {
     const loc = new URL("https://share.tinycloud.xyz/s/bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4#k=" + "A".repeat(43) + "&i=" + "B".repeat(22) + "&c=" + "C".repeat(43));
     const replaceState = vi.fn();
