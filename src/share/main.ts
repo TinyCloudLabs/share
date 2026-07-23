@@ -1,4 +1,3 @@
-import "../email-share/sender.css";
 import { canonicalize, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { mountSender } from "../email-share/view.js";
 import type { SenderPolicy } from "../email-share/sender.js";
@@ -7,11 +6,7 @@ import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import { type TrustedNode, validateSource } from "../email-share/protocol.js";
 import { assertProductionAuthorityMaterial, assertProductionTrustedNode } from "../email-share/runtime.js";
 import { loadSharePublicConfig } from "../email-share/config.js";
-import {
-  authenticateWithOpenKey,
-  createTinyCloudUploader,
-  type OpenKeyShareSession,
-} from "./openkey-session.js";
+import type { OpenKeyShareSession } from "./openkey-session.js";
 
 interface ShareCapability {
   readonly scope: SenderScope;
@@ -149,6 +144,7 @@ function lockSourceSelection(root: HTMLElement, capabilities: readonly ShareCapa
 }
 
 function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>): void {
+  root.removeAttribute("aria-busy");
   root.replaceChildren();
   const shell = document.createElement("main"); shell.className = "sender-shell auth-shell";
   const header = document.createElement("header"); header.className = "sender-header auth-header";
@@ -173,8 +169,9 @@ function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareS
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
   form.addEventListener("submit", (event) => {
-    event.preventDefault(); submit.disabled = true; status.textContent = "Signing in…";
-    void authenticateWithOpenKey((message) => { status.textContent = message; })
+    event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
+    void import("./openkey-session.js")
+      .then(({ authenticateWithOpenKey }) => authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
       .catch((error) => { status.textContent = error instanceof Error ? error.message : "OpenKey sign-in could not be completed."; submit.disabled = false; });
   });
@@ -185,6 +182,7 @@ if (root === null) throw new Error("share app root missing");
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
   const publicConfig = await loadSharePublicConfig();
   const capabilities = await loadCapabilities(publicConfig.shareOrigin);
+  const { createTinyCloudUploader } = await import("./openkey-session.js");
   const uploadContent = await createTinyCloudUploader(session, publicConfig, capabilities, (message) => { status.textContent = message; });
   const transport = createHttpTransport({ nodeOrigin: window.location.origin, credentialsOrigin: window.location.origin });
   const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
