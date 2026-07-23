@@ -125,9 +125,19 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
 }
 
 export function cloudflareHeaders(bundle: ShareTrustBundle): string {
-  const render = (path: string): string => {
-    const headers = securityHeadersForPath(bundle, path);
-    return `${path}\n${Object.entries(headers).map(([name, value]) => `  ${name}: ${value}`).join("\n")}`;
-  };
-  return [render("/*"), render("/share"), render("/share.html"), render("/s/*"), render("/viewer.html"), "/mermaid-sandbox.html\n  Content-Security-Policy: frame-ancestors 'self'\n  X-Frame-Options: SAMEORIGIN\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Cache-Control: no-store"].join("\n") + "\n";
+  const render = (path: string, headers: Record<string, string>): string =>
+    `${path}\n${Object.entries(headers).map(([name, value]) => `  ${name}: ${value}`).join("\n")}`;
+  const common = securityHeadersForPath(bundle, "/*");
+  const { "Cache-Control": _cacheControl, ...nonCachingCommon } = common;
+  return [
+    render("/*", nonCachingCommon),
+    render("/share", securityHeadersForPath(bundle, "/share")),
+    render("/share.html", securityHeadersForPath(bundle, "/share.html")),
+    render("/s/*", securityHeadersForPath(bundle, "/s/*")),
+    render("/viewer", securityHeadersForPath(bundle, "/viewer")),
+    render("/viewer.html", securityHeadersForPath(bundle, "/viewer.html")),
+    render("/assets/*", { "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff" }),
+    render("/404.html", { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }),
+    "/mermaid-sandbox.html\n  Content-Security-Policy: frame-ancestors 'self'\n  X-Frame-Options: SAMEORIGIN\n  Referrer-Policy: no-referrer\n  X-Content-Type-Options: nosniff\n  Cache-Control: no-store",
+  ].join("\n") + "\n";
 }

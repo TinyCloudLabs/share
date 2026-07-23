@@ -1,5 +1,31 @@
 # Replaced by the deploy build from the validated SHARE_TRUST_BUNDLE.
 # Source assets contain no production origins or trust material.
+/share
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+/share.html
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+/s/*
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+/viewer
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+/viewer.html
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff
+/404.html
+  Cache-Control: no-store
+  X-Content-Type-Options: nosniff
 /mermaid-sandbox.html
   Content-Security-Policy: frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
