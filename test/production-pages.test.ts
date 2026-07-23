@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { toBase64Url } from "@tinycloud/share-envelope";
 import { onRequest } from "../functions/[[path]].js";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
@@ -44,6 +45,19 @@ function pagesContext(path: string, options: { readonly method?: string; readonl
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("sender page boot state", () => {
+  it("renders useful branded content before the application JavaScript loads", () => {
+    const html = readFileSync("share.html", "utf8");
+    const stylesheet = html.indexOf('<link rel="stylesheet" href="/src/email-share/sender.css">');
+    const application = html.indexOf('<script type="module" src="/src/share/main.ts"></script>');
+    expect(stylesheet).toBeGreaterThan(-1);
+    expect(application).toBeGreaterThan(stylesheet);
+    expect(html).toContain('<div id="share-app" tabindex="-1" aria-busy="true">');
+    expect(html).toContain('aria-label="Preparing secure sign-in"');
+    expect(html).toContain("Loading secure sign-in…");
+  });
 });
 
 describe("production sender route gating", () => {
