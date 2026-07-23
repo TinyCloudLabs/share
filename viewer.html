@@ -42,11 +42,42 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)">
 <meta name="robots" content="noindex">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%232a56f6'%3E%3Ccircle cx='4' cy='4' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='20' cy='20' r='2'/%3E%3C/g%3E%3Cg fill='none' stroke='%23647187'%3E%3Ccircle cx='12' cy='4' r='1.5'/%3E%3Ccircle cx='20' cy='4' r='1.5'/%3E%3Ccircle cx='4' cy='12' r='1.5'/%3E%3Ccircle cx='20' cy='12' r='1.5'/%3E%3Ccircle cx='4' cy='20' r='1.5'/%3E%3Ccircle cx='12' cy='20' r='1.5'/%3E%3C/g%3E%3C/svg%3E">
 <title>TinyCloud Share</title>
 </head>
 <body>
-<div id="viewer"></div>
+<a class="skip-link" href="#viewer">Skip to shared document</a>
+<div class="site-shell">
+  <header class="site-header">
+    <a class="wordmark" href="/" aria-label="TinyCloud Sharing home">
+      <span class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+      </span>
+      <span>TinyCloud <b>Sharing</b></span>
+    </a>
+    <nav class="primary-nav micro" aria-label="Primary navigation">
+      <a href="/">overview</a>
+      <a href="/how-it-works">how it works</a>
+    </nav>
+  </header>
+</div>
+<div id="viewer" tabindex="-1"></div>
+<footer class="site-shell app-site-footer micro">
+  <span class="footer-brand">
+    <span class="brand-mark" aria-hidden="true">
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+    </span>
+    © 2026 TinyCloud
+  </span>
+  <a href="/how-it-works">how sharing works →</a>
+</footer>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

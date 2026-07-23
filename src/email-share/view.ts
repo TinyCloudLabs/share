@@ -221,7 +221,7 @@ function recipientCopy(state: ClaimState): { readonly title: string; readonly de
 export function renderRecipientLoading(root: HTMLElement, message = "Verifying invitation…"): void {
   root.replaceChildren();
   const doc = root.ownerDocument;
-  const main = element(doc, "main", "recipient-shell");
+  const main = element(doc, "main", "recipient-shell recipient-message");
   main.append(element(doc, "p", "recipient-brand", "TinyCloud sharing"), element(doc, "h1", "recipient-title", message), element(doc, "p", "recipient-detail", "The invitation is checked before any access request can begin."));
   root.append(main);
 }
@@ -229,7 +229,7 @@ export function renderRecipientLoading(root: HTMLElement, message = "Verifying i
 export function renderRecipientInvalid(root: HTMLElement, message: string): void {
   root.replaceChildren();
   const doc = root.ownerDocument;
-  const main = element(doc, "main", "recipient-shell recipient-shell-error");
+  const main = element(doc, "main", "recipient-shell recipient-message recipient-shell-error");
   main.setAttribute("role", "alert");
   main.append(element(doc, "p", "recipient-brand", "TinyCloud sharing"), element(doc, "h1", "recipient-title", "This invitation cannot be opened"), element(doc, "p", "recipient-detail", message));
   root.append(main);

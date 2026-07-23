@@ -11,6 +11,7 @@ if (viewerRoot !== null) {
   // any dynamic import, hydration, configuration load, or network request.
   const launch = captureAndScrubLaunch(window.location, window.history);
   void import("./email-share/recipient.css");
+  void import("./viewer/viewer.css");
   void bootRecipient(viewerRoot, launch);
 } else {
   // The root site is a static product/spec page. Keep its Mermaid behavior

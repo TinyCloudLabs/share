@@ -5,12 +5,43 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://node.tinycloud.xyz; img-src 'self' data:; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'self'; object-src 'none'">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='%23000' stroke-width='2' d='m12 2 9 5-9 5-9-5 9-5Zm-9 10 9 5 9-5M3 17l9 5 9-5'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%232a56f6'%3E%3Ccircle cx='4' cy='4' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='20' cy='20' r='2'/%3E%3C/g%3E%3Cg fill='none' stroke='%23647187'%3E%3Ccircle cx='12' cy='4' r='1.5'/%3E%3Ccircle cx='20' cy='4' r='1.5'/%3E%3Ccircle cx='4' cy='12' r='1.5'/%3E%3Ccircle cx='20' cy='12' r='1.5'/%3E%3Ccircle cx='4' cy='20' r='1.5'/%3E%3Ccircle cx='12' cy='20' r='1.5'/%3E%3C/g%3E%3C/svg%3E">
 <title>TinyCloud Share</title>
 </head>
 <body>
-<div id="share-app"></div>
+<a class="skip-link" href="#share-app">Skip to sharing form</a>
+<div class="site-shell">
+  <header class="site-header">
+    <a class="wordmark" href="/" aria-label="TinyCloud Sharing home">
+      <span class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+      </span>
+      <span>TinyCloud <b>Sharing</b></span>
+    </a>
+    <nav class="primary-nav micro" aria-label="Primary navigation">
+      <a href="/">overview</a>
+      <a href="/how-it-works">how it works</a>
+    </nav>
+  </header>
+</div>
+<div id="share-app" tabindex="-1"></div>
+<footer class="site-shell app-site-footer micro">
+  <span class="footer-brand">
+    <span class="brand-mark" aria-hidden="true">
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+    </span>
+    © 2026 TinyCloud
+  </span>
+  <a href="/how-it-works">how sharing works →</a>
+</footer>
 <script type="module" src="/src/share/main.ts"></script>
 </body>
 </html>
