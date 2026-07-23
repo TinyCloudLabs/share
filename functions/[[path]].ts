@@ -11,10 +11,17 @@ function routed(path: string): boolean { return EXACT.has(path) || path === "/re
 function origin(value: string | undefined): URL | undefined {
   return value === "https://api.share.tinycloud.xyz" ? new URL(value) : undefined;
 }
+async function staticResponse(context: PagesContext<{ SHARE_API_ORIGIN?: string }>, pathname: string): Promise<Response> {
+  const response = await context.next();
+  if (pathname.startsWith("/assets/") && response.headers.get("content-type")?.startsWith("text/html")) {
+    return new Response(null, { status: 404, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+  }
+  return response;
+}
 
 export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: string }>): Promise<Response> => {
   const incoming = new URL(context.request.url);
-  if (!routed(incoming.pathname)) return context.next();
+  if (!routed(incoming.pathname)) return staticResponse(context, incoming.pathname);
   if (!METHODS.has(context.request.method)) return new Response(JSON.stringify({ error: { code: "method_not_allowed" } }), { status: 405, headers: { "content-type": "application/json; charset=utf-8", allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS", "cache-control": "no-store" } });
   const upstream = origin(context.env.SHARE_API_ORIGIN);
   if (upstream === undefined) return new Response(JSON.stringify({ error: { code: "proxy_misconfigured" } }), { status: 503, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
