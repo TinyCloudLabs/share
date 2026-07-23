@@ -4,7 +4,7 @@ import { toBase64Url } from "@tinycloud/share-envelope";
 import { onRequest } from "../functions/[[path]].js";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
 import { createProductionHandler } from "../src/host/production-server.js";
-import { validateTrustBundle } from "../src/host/trust-bundle.js";
+import { cloudflareHeaders, validateTrustBundle } from "../src/host/trust-bundle.js";
 
 const API_ORIGIN = "https://api.share.tinycloud.xyz";
 const SHARE_ORIGIN = "https://share.tinycloud.xyz";
@@ -57,6 +57,26 @@ describe("sender page boot state", () => {
     expect(html).toContain('<div id="share-app" tabindex="-1" aria-busy="true">');
     expect(html).toContain('aria-label="Preparing secure sign-in"');
     expect(html).toContain("Loading secure sign-in…");
+  });
+});
+
+describe("Cloudflare Pages static asset boundaries", () => {
+  it("ships a script-free top-level 404 page so missing modules are not rewritten to the app shell", () => {
+    const html = readFileSync("public/404.html", "utf8");
+    expect(html).toContain("<h1>Page not found.</h1>");
+    expect(html).not.toMatch(/<script\b/i);
+  });
+
+  it("keeps entry documents fresh and content-hashed assets immutable", () => {
+    for (const headers of [
+      readFileSync("public/_headers", "utf8"),
+      cloudflareHeaders(validateTrustBundle(trustBundle())),
+    ]) {
+      expect(headers).toMatch(/\/share\n(?:  .+\n)*  Cache-Control: no-store/);
+      expect(headers).toMatch(/\/share\.html\n(?:  .+\n)*  Cache-Control: no-store/);
+      expect(headers).toMatch(/\/assets\/\*\n  Cache-Control: public, max-age=31536000, immutable/);
+      expect(headers).toMatch(/\/404\.html\n  Cache-Control: no-store/);
+    }
   });
 });
 
