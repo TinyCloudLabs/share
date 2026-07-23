@@ -114,9 +114,9 @@ class MemoryBindingStore implements BindingStore {
 
 export interface ShareHostOptions {
   readonly bundle: ShareTrustBundle;
-  readonly capability: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
+  readonly capability?: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
-  readonly bindingStore: BindingStore;
+  readonly bindingStore?: BindingStore;
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
   readonly registryTransportOrigin: string;
@@ -351,16 +351,19 @@ function assertPublishedBinding(binding: Record<string, unknown>, cid: string, s
   if (binding.shareCid !== cid || Object.entries(expected).some(([key, value]) => !sameJson(binding[key], value))) throw new Error("published binding is outside the selected exact policy");
 }
 
-export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown> } {
+export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown>; readiness: Record<string, boolean> } {
   const signers = new Map<string, string>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const capability = options.capability;
+  const senderReady = capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore !== undefined;
+  const authReady = true;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
+    if (!senderReady || capability === undefined) throw new Error("sender_not_ready");
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
     const requested = requestedCapabilityId ?? null;
-    const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
     if (requested !== null) {
       const selected = candidates.find((candidate) => (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.capabilityId === requested);
       if (selected === undefined) throw new Error("capability is not authorized for this session");
@@ -375,6 +378,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   async function handler(request: Request): Promise<Response> {
     const url = new URL(request.url);
     try {
+      if ((url.pathname === "/health/readiness" || url.pathname === "/api/health/readiness") && request.method === "GET") return response(200, { authReady, senderReady });
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
@@ -402,7 +406,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
         if (!valid) return generic(401);
         const normalizedAddress = address.toLowerCase();
-        const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === normalizedAddress);
+        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === normalizedAddress);
         const userIds = [...new Set(candidates.map((candidate) => candidate.scope.userId).filter((value): value is string => typeof value === "string" && value.length > 0))];
         if (userIds.length !== 1) return generic(403);
         const token = toBase64Url(randomBytes(32));
@@ -430,10 +434,11 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname === "/api/share/capabilities" && request.method === "GET") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
         return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
       }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request);
         const capabilityId = safeString(body.capabilityId, "capabilityId");
@@ -458,6 +463,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         return response(200, { signerDid: options.bundle.sender.senderDid, signature });
       }
       if (url.pathname === "/api/share/bindings" && request.method === "POST") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
@@ -469,18 +475,18 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest,
           contentSource: binding.contentSource, contentSourceDigest: binding.contentSourceDigest, action: binding.action, resource: binding.resource,
         };
-        await options.bindingStore.put(cid, publicBinding); return response(201, { status: "stored" });
+        await options.bindingStore!.put(cid, publicBinding); return response(201, { status: "stored" });
       }
       if (url.pathname.startsWith("/.well-known/tinycloud-share/bindings/") && request.method === "GET") {
         const cid = url.pathname.slice("/.well-known/tinycloud-share/bindings/".length).replace(/\.json$/, "");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid)) return generic(400);
-        const binding = await options.bindingStore.get(cid); return binding === undefined ? generic(404) : response(200, binding);
+        const binding = await options.bindingStore?.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
       if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
       return undefinedResponse();
     } catch { return generic(400); }
   }
-  return { handler, publicConfig };
+  return { handler, publicConfig, readiness: { authReady, senderReady } };
 }
 
 async function boundedJson(request: Request): Promise<Record<string, unknown>> {
@@ -503,15 +509,14 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const bundle = loadTrustBundle(env);
   const capabilityRaw = env.SHARE_SENDER_CAPABILITY_JSON;
   const capabilityListRaw = env.SHARE_SENDER_CAPABILITIES_JSON;
-  if (capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("SHARE_SENDER_CAPABILITY_JSON is required");
-  const capabilityValues = capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
-  if (!Array.isArray(capabilityValues) || capabilityValues.length === 0 || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
-  const parsedCapabilities = capabilityValues.map((value) => parseCapability(value as string, bundle));
+  const capabilityValues = capabilityRaw === undefined && capabilityListRaw === undefined ? [] : capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
+  if (!Array.isArray(capabilityValues) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
+  const parsedCapabilities = bundle.sender.senderPrivateKey.length === 0 ? [] : capabilityValues.map((value) => parseCapability(value as string, bundle));
   if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string")) throw new Error("production capabilities require authenticated user bindings");
-  const capability = parsedCapabilities[0]!;
+  const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
-  const bindingStore = env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : (() => { throw new Error("SHARE_BINDING_STORE_PATH is required in production"); })()) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
+  const bindingStore = env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : undefined) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = resolveShareUpstreams(bundle, env).registry;
@@ -528,5 +533,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  return createShareHostAdapter({ bundle, capability, ...(parsedCapabilities.length > 1 ? { capabilities } : {}), bindingStore, registryOrigin, registryTransportOrigin, authUsers, testMode: bundle.environment === "test" });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), registryOrigin, registryTransportOrigin, authUsers, testMode: bundle.environment === "test" });
 }

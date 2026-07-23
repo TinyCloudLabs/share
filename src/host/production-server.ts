@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL("../../dist/", import.meta.url));
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
 const bundle = loadTrustBundle();
 const host = createShareHostFromEnv();
-const dynamic = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
+const dynamic = (path: string): boolean => path === "/health/readiness" || path === "/api/health/readiness" || path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
 const rewrites = (path: string): string => /^\/s\/[a-z2-7]+$/.test(path) ? "/viewer.html" : path === "/share" ? "/share.html" : path === "/viewer" ? "/viewer.html" : path;
 const contentTypes: Record<string, string> = { ".html": "text/html; charset=UTF-8", ".js": "text/javascript; charset=UTF-8", ".css": "text/css; charset=UTF-8", ".json": "application/json; charset=UTF-8", ".svg": "image/svg+xml" };
 
@@ -27,6 +27,7 @@ createServer((request, response) => {
     for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) response.setHeader(name, value);
     const upstream = upstreamForPath(bundle, path);
     if (upstream !== undefined) {
+      if (!host.readiness.senderReady && method !== "GET") { response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "sender_not_ready" } })); return; }
       const bytes = await body(request);
       const headers = sanitizeUpstreamRequest(path, method, new Headers(request.headers as HeadersInit), bytes.length, bundle.public.shareOrigin);
       const upstreamPath = upstream.service === "registry" ? path.slice("/registry".length) || "/" : path;

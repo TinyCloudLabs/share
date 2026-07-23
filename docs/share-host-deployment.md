@@ -1,5 +1,16 @@
 # Share host deployment
 
+The auth-only composition is intentional: `SHARE_SENDER_PRIVATE_KEY`, sender
+capabilities, and the binding store are optional at startup. `/health/readiness`
+reports `{ "authReady": true, "senderReady": false }` until sender material is
+mounted. Signing and binding remain fail-closed with JSON `503 sender_not_ready`.
+The Phala CVM deployment uses `Dockerfile.share-api` and
+`compose.share-api.yml`; mount secrets through the CVM secret manager and keep
+the persistent volume at `/var/lib/tinycloud/share`.
+
+Cloudflare Pages functions proxy only the exact auth/session, readiness, and
+well-known paths to `https://api.share.tinycloud.xyz`; SPA routes remain static.
+
 The deploy build is environment-only. It emits
 `/.well-known/tinycloud-share/config.json` from one validated
 `SHARE_TRUST_BUNDLE`; no trust key or signer secret is committed to the
