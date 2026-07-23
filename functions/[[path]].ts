@@ -23,7 +23,7 @@ export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: strin
   headers.delete("host");
   headers.set("origin", incoming.origin);
   headers.delete("cf-connecting-ip"); headers.delete("x-forwarded-host"); headers.delete("x-forwarded-proto");
-  const init: RequestInit & { duplex?: "half" } = { method: context.request.method, headers, redirect: "error", ...(["GET", "HEAD"].includes(context.request.method) ? {} : { body: context.request.body ?? null, duplex: "half" }) };
+  const init: RequestInit & { duplex?: "half" } = { method: context.request.method, headers, redirect: "manual", ...(["GET", "HEAD"].includes(context.request.method) ? {} : { body: context.request.body ?? null, duplex: "half" }) };
   let response: Response; try { response = await fetch(new Request(target, init)); } catch { return new Response(JSON.stringify({ error: { code: "upstream_unavailable" } }), { status: 502, headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
   if (response.status >= 300 && response.status < 400) return new Response(JSON.stringify({ error: { code: "upstream_unavailable" } }), { status: 502, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   const out = new Response(response.body, response);
