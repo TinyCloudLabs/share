@@ -78,6 +78,37 @@ describe("Cloudflare Pages static asset boundaries", () => {
       expect(headers).toMatch(/\/404\.html\n  Cache-Control: no-store/);
     }
   });
+
+  it("converts the Pages SPA fallback into a real 404 for missing build assets", async () => {
+    const { context, next } = pagesContext("/assets/missing-module.js");
+    next.mockResolvedValue(new Response("<!doctype html><title>Landing</title>", {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }));
+    const response = await onRequest(context);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await response.text()).toBe("");
+  });
+
+  it("preserves real build assets and non-asset application routes", async () => {
+    const asset = pagesContext("/assets/app.js");
+    asset.next.mockResolvedValue(new Response("export const ready = true;", {
+      headers: { "content-type": "application/javascript" },
+    }));
+    const assetResponse = await onRequest(asset.context);
+    expect(assetResponse.status).toBe(200);
+    expect(await assetResponse.text()).toBe("export const ready = true;");
+
+    const page = pagesContext("/share");
+    page.next.mockResolvedValue(new Response("<!doctype html><title>Share</title>", {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }));
+    const pageResponse = await onRequest(page.context);
+    expect(pageResponse.status).toBe(200);
+    expect(await pageResponse.text()).toContain("<title>Share</title>");
+  });
 });
 
 describe("production sender route gating", () => {
