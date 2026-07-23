@@ -179,12 +179,35 @@ export async function createLinkOnlyShare(
   }
 }
 
-async function copyWithFallback(value: string): Promise<void> {
+export async function copyWithFallback(value: string): Promise<void> {
   if (navigator.clipboard?.writeText !== undefined) {
-    await navigator.clipboard.writeText(value);
-    return;
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Clipboard permissions vary across browsers and embedded contexts.
+      // Fall through to the selection-based copy path.
+    }
   }
-  throw new Error("clipboard unavailable");
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.readOnly = true;
+  field.setAttribute("aria-hidden", "true");
+  Object.assign(field.style, {
+    position: "fixed",
+    inset: "0 auto auto -9999px",
+    opacity: "0",
+    pointerEvents: "none",
+  });
+  document.body.append(field);
+  try {
+    field.focus();
+    field.select();
+    field.setSelectionRange(0, field.value.length);
+    if (!document.execCommand("copy")) throw new Error("clipboard unavailable");
+  } finally {
+    field.remove();
+  }
 }
 
 function errorCopy(error: unknown): { kind: LinkOnlyFailureKind; message: string } {

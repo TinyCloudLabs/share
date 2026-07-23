@@ -6,6 +6,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  copyWithFallback,
   createLinkOnlyShare,
   mountLinkOnlyShare,
   type CreateShare,
@@ -60,6 +61,28 @@ afterEach(() => {
 });
 
 describe("link-only sender", () => {
+  it("falls back to a temporary selected field when Clipboard API writes are denied", async () => {
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+    });
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+
+    await copyWithFallback(LINK);
+
+    expect(execCommand).toHaveBeenCalledWith("copy");
+    expect(document.querySelector('textarea[aria-hidden="true"]')).toBeNull();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
   it("keeps Notify by email disabled, unchecked, described, and outside link creation", async () => {
     const createShare = vi.fn<CreateShare>(async () => result());
     const view = root();
