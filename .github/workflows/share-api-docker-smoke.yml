@@ -1,0 +1,20 @@
+name: Share API Docker smoke
+on:
+  pull_request:
+    paths: [Dockerfile.share-api, compose.share-api.yml, src/**, public/**, package*.json, .github/workflows/share-api-docker-smoke.yml]
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker build -f Dockerfile.share-api -t share-api-smoke .
+      - run: |
+          mkdir -p "$RUNNER_TEMP/share-state"
+          docker run -d --name share-api-smoke -p 8787:8787 -e SHARE_SENDER_ENABLED=false -e SHARE_TRUST_BUNDLE='{"version":"tinycloud.share-email-trust-bundle/v1"}' -v "$RUNNER_TEMP/share-state:/var/lib/tinycloud/share" share-api-smoke
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/health/readiness && break || sleep 2; done
+          curl -fsS http://127.0.0.1:8787/health/readiness
+          curl -fsS http://127.0.0.1:8787/api/share/auth/openkey/nonce
+          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 503
+      - if: always()
+        run: docker logs share-api-smoke || true

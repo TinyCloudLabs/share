@@ -27,13 +27,14 @@ createServer((request, response) => {
     for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) response.setHeader(name, value);
     const upstream = upstreamForPath(bundle, path);
     if (upstream !== undefined) {
-      if (!host.readiness.senderReady && method !== "GET") { response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "sender_not_ready" } })); return; }
+      const senderOperation = upstream.service === "node" && ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session"].includes(path);
+      if (!host.readiness.senderReady && senderOperation) { response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "sender_not_ready" } })); return; }
       const bytes = await body(request);
       const headers = sanitizeUpstreamRequest(path, method, new Headers(request.headers as HeadersInit), bytes.length, bundle.public.shareOrigin);
       const upstreamPath = upstream.service === "registry" ? path.slice("/registry".length) || "/" : path;
       const target = new URL(`${upstreamPath}${new URL(request.url ?? path, "https://share.invalid").search}`, upstream.origin);
       const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "error", ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer, duplex: "half" }) };
-      const result = sanitizeUpstreamResponse(path, method, await fetch(target, init)); response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer())); return;
+      let result: Response; try { result = sanitizeUpstreamResponse(path, method, await fetch(target, init)); } catch { response.writeHead(502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: { code: "upstream_unavailable" } })); return; } response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer())); return;
     }
     if (dynamic(path)) {
       const bytes = await body(request);

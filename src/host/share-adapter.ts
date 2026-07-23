@@ -1,4 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { accessSync, constants } from "node:fs";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
@@ -46,7 +47,8 @@ export class TransactionalBindingStore implements BindingStore {
   private readonly lockPath: string;
   private readonly staleLockMs = 30_000;
 
-  constructor(private readonly path: string) { this.lockPath = `${path}.lock`; }
+  readonly writable: boolean;
+  constructor(private readonly path: string) { this.lockPath = `${path}.lock`; try { accessSync(path, constants.W_OK); this.writable = true; } catch (error) { this.writable = (error as NodeJS.ErrnoException).code === "ENOENT"; } }
 
   private async readJournal(): Promise<Map<string, Record<string, unknown>>> {
     let text: string;
@@ -89,6 +91,7 @@ export class TransactionalBindingStore implements BindingStore {
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).get(cid); }
 
   async put(cid: string, binding: Record<string, unknown>): Promise<void> {
+    if (!this.writable) throw new Error("binding store is not writable");
     await this.withLock(async () => {
       const records = await this.readJournal();
       const previous = records.get(cid);
@@ -356,14 +359,14 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const capability = options.capability;
-  const senderReady = capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore !== undefined;
+  const senderReady = capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore !== undefined && (options.bindingStore as TransactionalBindingStore).writable !== false;
   const authReady = true;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
     if (!senderReady || capability === undefined) throw new Error("sender_not_ready");
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
     const requested = requestedCapabilityId ?? null;
-    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || (typeof candidate.scope.policyOwnerDid === "string" && openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === session.userId.slice(session.userId.lastIndexOf(":") + 1).toLowerCase()) || options.testMode);
     if (requested !== null) {
       const selected = candidates.find((candidate) => (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.capabilityId === requested);
       if (selected === undefined) throw new Error("capability is not authorized for this session");
@@ -512,7 +515,7 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const capabilityValues = capabilityRaw === undefined && capabilityListRaw === undefined ? [] : capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
   if (!Array.isArray(capabilityValues) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
   const parsedCapabilities = bundle.sender.senderPrivateKey.length === 0 ? [] : capabilityValues.map((value) => parseCapability(value as string, bundle));
-  if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string")) throw new Error("production capabilities require authenticated user bindings");
+  if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string" && typeof value.scope.policyOwnerDid !== "string")) throw new Error("production capabilities require authenticated user bindings");
   const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;

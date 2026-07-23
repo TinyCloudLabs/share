@@ -15,5 +15,5 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "functions", "test", "vite.config.ts", "vitest.config.ts"]
 }

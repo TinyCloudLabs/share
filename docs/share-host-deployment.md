@@ -1,7 +1,7 @@
 # Share host deployment
 
 The auth-only composition is intentional: `SHARE_SENDER_PRIVATE_KEY`, sender
-capabilities, and the binding store are optional at startup. `/health/readiness`
+capabilities, and the binding store are optional at startup. Set `SHARE_SENDER_ENABLED=false` for explicit auth-only production. `/health/readiness`
 reports `{ "authReady": true, "senderReady": false }` until sender material is
 mounted. Signing and binding remain fail-closed with JSON `503 sender_not_ready`.
 The Phala CVM deployment uses `Dockerfile.share-api` and

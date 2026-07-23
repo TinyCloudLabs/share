@@ -6,6 +6,7 @@ COPY src ./src
 COPY public ./public
 COPY index.html share.html viewer.html vite.config.* tsconfig.json ./
 RUN npm ci --ignore-scripts && npm run build
+RUN mkdir -p /var/lib/tinycloud/share && chown -R node:node /var/lib/tinycloud/share
 USER node
 ENV HOST=0.0.0.0 PORT=8787
 EXPOSE 8787

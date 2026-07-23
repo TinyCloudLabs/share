@@ -16,10 +16,11 @@ if (value?.version !== "tinycloud.share-email-trust-bundle/v1" || Object.keys(va
 for (const key of ["shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "nodeOrigin"]) { if (typeof value[key] !== "string" || !/^https:\/\/[^/?#:@]+$/.test(value[key])) throw new Error(`SHARE_TRUST_BUNDLE.${key} must be a canonical HTTPS origin`); }
 if (typeof value.nodeAudience !== "string" || value.nodeAudience !== `did:web:${new URL(value.nodeOrigin).hostname}` || typeof value.nodeInvitationKid !== "string" || !value.nodeInvitationKid.startsWith(`${value.nodeAudience}#`) || typeof value.issuerDid !== "string" || typeof value.issuerKid !== "string" || !value.issuerKid.startsWith(`${value.issuerDid}#`)) throw new Error("SHARE_TRUST_BUNDLE trust identity bindings are inconsistent");
 if (Object.values(value).some((item) => typeof item === "string" && /(?:node\.example|localhost|127\.0\.0\.1|fixture|placeholder|seed|test)/i.test(item))) throw new Error("production trust bundle contains a placeholder or loopback value");
-if (typeof process.env.SHARE_SENDER_PRIVATE_KEY !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(process.env.SHARE_SENDER_PRIVATE_KEY)) throw new Error("SHARE_SENDER_PRIVATE_KEY must be supplied separately by the secret manager");
-if (typeof process.env.SHARE_SENDER_CAPABILITY_JSON !== "string" && typeof process.env.SHARE_SENDER_CAPABILITIES_JSON !== "string") throw new Error("an authenticated sender capability is required");
+const senderEnabled = process.env.SHARE_SENDER_ENABLED !== "false";
+if (senderEnabled && (typeof process.env.SHARE_SENDER_PRIVATE_KEY !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(process.env.SHARE_SENDER_PRIVATE_KEY))) throw new Error("SHARE_SENDER_PRIVATE_KEY must be supplied separately by the secret manager");
+if (senderEnabled && typeof process.env.SHARE_SENDER_CAPABILITY_JSON !== "string" && typeof process.env.SHARE_SENDER_CAPABILITIES_JSON !== "string") throw new Error("an authenticated sender capability is required");
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
   try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
 }
-if (typeof process.env.SHARE_BINDING_STORE_PATH !== "string" || process.env.SHARE_BINDING_STORE_PATH.length === 0) throw new Error("SHARE_BINDING_STORE_PATH is required for durable production bindings");
+if (senderEnabled && (typeof process.env.SHARE_BINDING_STORE_PATH !== "string" || process.env.SHARE_BINDING_STORE_PATH.length === 0)) throw new Error("SHARE_BINDING_STORE_PATH is required for durable production bindings");
 console.log("deploy trust bundle: valid production composition");
