@@ -2,3 +2,4 @@ node_modules
 .release-evidence/
 dist
 .DS_Store
+.phala-share-api.env

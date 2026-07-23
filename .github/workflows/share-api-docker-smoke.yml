@@ -6,11 +6,24 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
+      SHARE_API_IMAGE: ghcr.io/tinycloudlabs/share-api:sha-c81b0d0d07713c1a2d045a2168c80071fb201475
+      CLOUDFLARE_TUNNEL_TOKEN: test-only-compose-token
       SHARE_SMOKE_TRUST_BUNDLE: >-
         {"version":"tinycloud.share-email-trust-bundle/v1","shareOrigin":"https://share.tinycloud.xyz","returnOrigin":"https://share.tinycloud.xyz","registryOrigin":"https://registry.tinycloud.xyz","credentialsOrigin":"https://witness.credentials.org","nodeOrigin":"https://node.tinycloud.xyz","nodeAudience":"did:web:node.tinycloud.xyz","nodeInvitationKid":"did:web:node.tinycloud.xyz#invitation-key-1","nodeInvitationPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","nodeKeyVersion":1,"nodeEnabled":true,"issuerDid":"did:web:issuer.credentials.org","issuerVct":"opencredentials.email/v1","issuerKid":"did:web:issuer.credentials.org#email-signing-key-1","issuerPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","issuerKeyVersion":1,"issuerEnabled":true}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Validate the sealed production compose shape
+        env:
+          SHARE_TRUST_BUNDLE: ${{ env.SHARE_SMOKE_TRUST_BUNDLE }}
+        run: |
+          docker compose -f compose.share-api.yml config --format json > "$RUNNER_TEMP/compose.json"
+          jq -e '
+            .services["share-api"].build == null and
+            .services["share-api"].ports == null and
+            .services["share-api"].environment.SHARE_SENDER_ENABLED == "false" and
+            .services.cloudflared.depends_on["share-api"].condition == "service_healthy"
+          ' "$RUNNER_TEMP/compose.json" >/dev/null
       - run: docker build -f Dockerfile.share-api -t share-api-smoke .
       - run: |
           mkdir -p "$RUNNER_TEMP/share-state"

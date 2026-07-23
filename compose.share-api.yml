@@ -1,19 +1,34 @@
 services:
   share-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.share-api
-    image: tinycloud/share-api:share-api-v1
+    image: ${SHARE_API_IMAGE:?set SHARE_API_IMAGE to the exact merged-main GHCR digest}
     container_name: share-api
     restart: unless-stopped
     user: "1000:1000"
-    env_file: [.env.share-api]
+    environment:
+      SHARE_SENDER_ENABLED: "false"
+      SHARE_TRUST_BUNDLE: ${SHARE_TRUST_BUNDLE:?set the validated public production trust bundle}
     volumes:
       - share-api-state:/var/lib/tinycloud/share
-    ports: ["8787:8787"]
     read_only: true
     tmpfs: [/tmp]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.0@sha256:5e49861633763e8933475477c20bae6039ed47f32c1d267a34babc347f28f0df
+    restart: unless-stopped
+    depends_on:
+      share-api:
+        condition: service_healthy
+    command: tunnel --no-autoupdate --loglevel warn --url http://share-api:8787 run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set the Cloudflare Tunnel token through Phala sealed environment storage}
+    read_only: true
+    tmpfs: [/tmp]
+
 volumes:
   share-api-state:
