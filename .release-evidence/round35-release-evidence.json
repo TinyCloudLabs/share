@@ -1,0 +1,199 @@
+{
+  "schema": "tinycloud.share-email-claim/release-evidence-v2",
+  "generatedAt": "2026-07-20T07:39:49.394Z",
+  "heads": {
+    "share": "5d296af8835031f311868eebc0f535085b297139",
+    "node": "a756d2bfc6df44015a2a209cf9e1933fc01412e8",
+    "opencredentials": "d8f11bc82eedb4b0aae3d6dbfd454a246c5874ab"
+  },
+  "contract": {
+    "commit": "36f6c4303eca3bee917692c77237c264b4dfa342",
+    "manifestDigest": "pl8-1Rpx_DYCBjOpK3hRrLfrSVDINNFssZDfFw6BMTs",
+    "manifestFiles": {
+      "positive.json": "LeUBRvznxoSqHsaSms_mGWoJiMN_LTRcgS0EpE35oWA",
+      "negative.json": "HU6oz7nYywuR9_pdPGJHr_WGhClPNVz63_-ATfHs4oI",
+      "states.json": "I5vwcw3UyGqnLUZFMONW3Mz4NB9fMYV4n8VxpjyeKDI",
+      "build.mjs": "m4fYop89RBL9cHHj268A5z1B7DqIcu7B8yZ0NttfCjk",
+      "validate.mjs": "bM9YFXiEWrTzXdLxUt33bf5_LiV40iF-QX86_fxD-9g",
+      "loader.ts": "_N-1_IjNOXrm_4p6ObsyFjWvXHcFieixqqFntyWkVkg",
+      "rust/Cargo.toml": "NMdpBiBPFtiy1N9yBltyPtR6UPUwV-WFTNf2s_dnnIU",
+      "rust/Cargo.lock": "rWXLVvO1r531D1y3-SZjjqoknzpkOb6wjqTmhcFBZ-U",
+      "rust/src/main.rs": "p5uAJFLsgCl_2oJelsCZmRqFDD-rjgwBXHEygmm7W1g",
+      "domains.json": "HIIBpz9hDgnN28isDQv9nYcq20VnhETcS3Ph6D2_uvg",
+      "schemas.json": "KfbG7RiXhkMr1C2q3BZhlaxDV4KWxhGMzoIMZ-tGyoc",
+      "authority-material.schema.json": "EYIzrAtgNmICrvYABSOssEfYXhX778ula7y9htWZ1ys",
+      "README.md": "sXnqXpmFo99s1xgyk95r1lN5v8Q7XdhW12qz7X5wgbk"
+    }
+  },
+  "commands": {
+    "vectorValidation": "node test/vectors/email-claim-v1/validate.mjs",
+    "shareTest": "npm test",
+    "shareTypecheck": "npm run typecheck",
+    "shareBuild": "npm run build",
+    "joinedBrowserRun1": "npm run test:e2e:email",
+    "joinedBrowserRun2": "npm run test:e2e:email"
+  },
+  "runs": [
+    {
+      "runId": "round35-full-joined-3-20260720",
+      "start": "2026-07-20T07:33:54.697Z",
+      "end": "2026-07-20T07:35:34.173Z",
+      "durationMs": 99476,
+      "exitStatus": 0,
+      "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
+      "logDigest": "b5bdd4abc35b86c4038a37218fb8c3019766602d7eb4173743703d02a4810707",
+      "artifactHash": "dbac8ec7e519cda1feee8cd0ef5a14a52ca1ba525df0e8b6cc934405aebd880b",
+      "toolVersions": {
+        "node": "v20.19.4",
+        "npm": "10.8.2",
+        "git": "git version 2.50.1 (Apple Git-155)",
+        "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+        "chromium": "puppeteer-managed"
+      },
+      "coverage": {
+        "fixtures": 4,
+        "sources": [
+          "kv",
+          "sql"
+        ],
+        "browser": [
+          "production Share host",
+          "clean-browser authentication",
+          "no pre-auth capability exposure",
+          "per-user capability selection",
+          "cross-user capability rejection",
+          "KV",
+          "named-SQL",
+          "scanner-safe inert GET",
+          "explicit activation",
+          "non-extractable holder key",
+          "signed challenge/session/read verification",
+          "durable binding restart/recovery",
+          "corrupt journal fail-closed",
+          "production CSP/rewrites/headers",
+          "accessibility/mobile"
+        ],
+        "negativeBoundaryCases": [
+          "authoritative binding propagation",
+          "forged policy challenge",
+          "misbound read response",
+          "source/resource/action/recipient/digest/expiry substitution",
+          "terminal claim states",
+          "activation replay",
+          "concurrent/cross-process store behavior"
+        ],
+        "binding": "independent-provisioned"
+      },
+      "cleanup": {
+        "stopped": 7,
+        "remaining": [],
+        "complete": true
+      },
+      "recordDigest": "2668241ff06d5094b73b736a6bebb9977ac7299cd06dd8369bc548921e96e5e3"
+    },
+    {
+      "runId": "round35-full-joined-4-20260720",
+      "start": "2026-07-20T07:36:01.935Z",
+      "end": "2026-07-20T07:37:29.213Z",
+      "durationMs": 87278,
+      "exitStatus": 0,
+      "command": "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/node /Users/samgbafa/conductor/workspaces/tinycloud-dev/shanghai/worktrees/share/feat/email-claim-e1-e2e/test/e2e-email/integration.mjs",
+      "logDigest": "afedaf04559e3531a2e2f17fae79718618f5dd9620337d94d3d61fd5c151bb86",
+      "artifactHash": "5ce36b895595c7fb982ce161feccf26e8a6216f347398e3f0efe3e3ec7f09e1e",
+      "toolVersions": {
+        "node": "v20.19.4",
+        "npm": "10.8.2",
+        "git": "git version 2.50.1 (Apple Git-155)",
+        "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+        "chromium": "puppeteer-managed"
+      },
+      "coverage": {
+        "fixtures": 4,
+        "sources": [
+          "kv",
+          "sql"
+        ],
+        "browser": [
+          "production Share host",
+          "clean-browser authentication",
+          "no pre-auth capability exposure",
+          "per-user capability selection",
+          "cross-user capability rejection",
+          "KV",
+          "named-SQL",
+          "scanner-safe inert GET",
+          "explicit activation",
+          "non-extractable holder key",
+          "signed challenge/session/read verification",
+          "durable binding restart/recovery",
+          "corrupt journal fail-closed",
+          "production CSP/rewrites/headers",
+          "accessibility/mobile"
+        ],
+        "negativeBoundaryCases": [
+          "authoritative binding propagation",
+          "forged policy challenge",
+          "misbound read response",
+          "source/resource/action/recipient/digest/expiry substitution",
+          "terminal claim states",
+          "activation replay",
+          "concurrent/cross-process store behavior"
+        ],
+        "binding": "independent-provisioned"
+      },
+      "cleanup": {
+        "stopped": 7,
+        "remaining": [],
+        "complete": true
+      },
+      "recordDigest": "6b37e4e4fb8127cc397d4085b4a2cddb8b13669b54dfc3f06b624117f32e50ba"
+    }
+  ],
+  "results": {
+    "status": "passed",
+    "cleanRuns": 2,
+    "generatedBy": "release:evidence",
+    "siweProvenance": {
+      "status": "supplied",
+      "toolchain": {
+        "node": "v20.19.4",
+        "npm": "10.8.2",
+        "git": "git version 2.50.1 (Apple Git-155)",
+        "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+        "chromium": "puppeteer-managed"
+      },
+      "originMainHead": "a78e94d893c805869911b31900597ffadb29bc5b",
+      "featureHead": "a756d2bfc6df44015a2a209cf9e1933fc01412e8",
+      "command": "cargo test --manifest-path dependencies/siwe/Cargo.toml; see .context/email-claim-siwe-round35-provenance.json"
+    }
+  },
+  "toolVersions": {
+    "node": "v20.19.4",
+    "npm": "10.8.2",
+    "git": "git version 2.50.1 (Apple Git-155)",
+    "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "chromium": "puppeteer-managed"
+  },
+  "artifactHashes": {
+    "manifest": "3e6b8975938693be08847b86286030cd7920cb89774d673126f44ac2c4e2ce2f",
+    "packageLock": "36ccc2857b2e140e167bd0170be73b209e6d0377e6e23ed47b7ab2730e50e435",
+    "releaseGate": "1c3ece6bba3620ecee3ee15302862082e819b2ad289d07bc9d0494e43b57281f",
+    "nodeDeployment": "1959c81784c3108c48693a3eed816517e1c39da041547ea9b07557d47c564da2",
+    "credentialsDeployment": "5f58692b71bf6158ce11d69db09da8256bc6b903ffcecd89e396d32e24ed97bd"
+  },
+  "cleanup": {
+    "secretsIncluded": false,
+    "records": [
+      {
+        "stopped": 7,
+        "remaining": [],
+        "complete": true
+      },
+      {
+        "stopped": 7,
+        "remaining": [],
+        "complete": true
+      }
+    ]
+  }
+}

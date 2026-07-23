@@ -2,16 +2,49 @@
   "name": "share",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:deploy": "SHARE_DEPLOY_BUILD=true vite build",
+    "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
+    "check:deploy-config": "node scripts/validate-deploy-config.mjs",
     "preview": "vite preview",
+    "test": "vitest run --config vitest.viewer.config.ts",
+    "test:e2e:email": "node test/e2e-email/integration.mjs",
+    "test:e2e:email:fixture": "node test/e2e-email/integration.mjs --fixture-only",
+    "test:e2e:share-payload-proof": "tsx test/e2e-email/share-payload-proof.ts",
+    "dev:manual:share-link": "tsx test/e2e-email/manual-share-link.ts",
+    "manual:email-preview": "tsx test/e2e-email/manual-email-preview.ts",
+    "smoke:manual:share-link": "tsx test/e2e-email/manual-share-link.ts --smoke --test-manual-replace",
+    "release:evidence": "node test/e2e-email/release-evidence.mjs",
+    "typecheck": "tsc --noEmit",
     "sync:wireframes": "cp wireframes/*.svg public/wireframes/"
   },
   "dependencies": {
-    "mermaid": "^11.0.0"
+    "@openkey/sdk": "^0.9.0",
+    "@tinycloud/share-envelope": "*",
+    "@tinycloud/share-registry": "*",
+    "@tinycloud/web-sdk": "^2.9.0",
+    "dompurify": "3.4.12",
+    "mermaid": "11.16.0",
+    "rehype-sanitize": "6.0.0",
+    "rehype-stringify": "10.0.1",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "unified": "11.0.5",
+    "viem": "^2.55.5"
   },
   "devDependencies": {
-    "vite": "^6.0.0"
+    "@tinycloud/share-cli": "*",
+    "@types/node": "^20.19.0",
+    "jsdom": "^26.1.0",
+    "puppeteer": "24.31.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.0.0",
+    "vitest": "^3.2.4"
   }
 }

@@ -1,0 +1,23 @@
+{
+  "name": "@tinycloud/share-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typed, independently testable exact-email sharing operations.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tinycloud/share-envelope": "*",
+    "@tinycloud/share-registry": "*"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

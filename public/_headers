@@ -1,0 +1,8 @@
+# Replaced by the deploy build from the validated SHARE_TRUST_BUNDLE.
+# Source assets contain no production origins or trust material.
+/mermaid-sandbox.html
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+  Cache-Control: no-store

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--
+  Strict CSP for the VIEWER route (viewer spec §2). This meta tag is the
+  in-document baseline; production must additionally serve these as HTTP
+  headers (meta CSP cannot express frame-ancestors) with connect-src set to
+  the deployment's registry/node allowlist. Notes:
+  - script-src 'self': every executable is bundled by Vite — no CDN scripts.
+  - connect-src: 'self' + the default dev registry (src/viewer/config.ts);
+    keep in sync with VITE_SHARE_REGISTRY_URL.
+  - style-src allows 'unsafe-inline' because mermaid's strict mode injects
+    theme <style> elements; styles are not the guarded execution vector.
+  - In `vite dev`, HMR websockets are not in connect-src — the viewer page
+    needs a manual reload during development. Deliberate: dev convenience
+    never loosens the shipped policy.
+  - frame-src 'self': the only FETCHED frame the viewer embeds is the
+    mermaid sandbox document (/mermaid-sandbox.html, served from this origin
+    and embedded with sandbox="allow-scripts" — opaque origin, own strict
+    CSP; see src/viewer/mermaid-frame.ts). The scriptless preview frame
+    (src/viewer/preview-frame.ts) is srcdoc-delivered — no fetch, so
+    frame-src never consults it.
+  - LOAD-BEARING for the preview frame: srcdoc documents INHERIT this CSP.
+    The scriptless preview iframe (sandbox="", spec §3.3) relies on this
+    policy staying strict — do not loosen script-src/img-src/connect-src
+    here without re-reading src/viewer/preview-frame.ts's module doc. (Its
+    script inertness itself comes from the sandbox attribute, not CSP, but
+    this policy is the backstop inside that frame.)
+  - Trusted Types are enforced (require-trusted-types-for 'script'): the
+    only allowed policies are the viewer's own sanitized-HTML wrapper
+    (share-viewer-html, see render.ts) and DOMPurify's internal policy
+    ('dompurify'; 'allow-duplicates' because mermaid bundles its own
+    DOMPurify instance that registers the same name). Where a browser lacks
+    Trusted Types the directives are ignored and the sanitized-string path
+    still applies. If mermaid's internal DOM writes violate enforcement,
+    its render throws and the diagram falls back to sanitized source text —
+    fail closed, never fail open.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://node.tinycloud.xyz https://witness.credentials.org https://registry.tinycloud.xyz; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
+<!-- The URL fragment is the decryption key: never leak the URL anywhere. -->
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<title>TinyCloud Share</title>
+</head>
+<body>
+<div id="viewer"></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

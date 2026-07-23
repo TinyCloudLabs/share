@@ -1,0 +1,24 @@
+{
+  "name": "@tinycloud/share-envelope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure, network-free encrypted-envelope core for TinyCloud sharing links (CID, AEAD, envelope schema, sign/verify, link codec).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.2",
+    "@noble/hashes": "^1.8.0",
+    "multiformats": "^13.3.6",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

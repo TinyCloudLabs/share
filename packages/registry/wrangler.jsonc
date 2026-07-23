@@ -1,0 +1,1 @@
+{ "name": "tinycloud-share-registry", "account_id": "9959301f03d2db1a5fcf5e004278d467", "main": "src/worker.ts", "compatibility_date": "2026-07-22", "vars": { "MAX_BLOB_BYTES": "65536" }, "r2_buckets": [{ "binding": "REGISTRY", "bucket_name": "tinycloud-share-registry" }], "routes": [{ "pattern": "registry.tinycloud.xyz/*", "zone_id": "29b3a489c28c19707f8a9dd91da9dc42" }] }
