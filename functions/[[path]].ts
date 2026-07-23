@@ -20,7 +20,7 @@ export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: strin
   if (upstream === undefined) return new Response(JSON.stringify({ error: { code: "proxy_misconfigured" } }), { status: 503, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
   const target = new URL(incoming.pathname + incoming.search, upstream);
   const headers = new Headers(context.request.headers);
-  headers.set("host", upstream.host);
+  headers.delete("host");
   headers.set("origin", incoming.origin);
   headers.delete("cf-connecting-ip"); headers.delete("x-forwarded-host"); headers.delete("x-forwarded-proto");
   const init: RequestInit & { duplex?: "half" } = { method: context.request.method, headers, redirect: "error", ...(["GET", "HEAD"].includes(context.request.method) ? {} : { body: context.request.body ?? null, duplex: "half" }) };
