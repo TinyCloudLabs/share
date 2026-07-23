@@ -14,7 +14,11 @@ An authenticated OpenKey session can still create a possession-based encrypted
 share. Its only write path is `POST /api/share/link-only/registry/blobs`: raw,
 create-only blobs up to 64 KiB, retention bounded to eight days, with a
 per-session upload budget. The Share host validates the session before
-forwarding only the protocol headers and encrypted body to the registry.
+forwarding only the protocol headers and encrypted body to the registry. A
+dedicated upload key is created once in the persistent CVM volume and signs a
+one-minute authorization bound to the session, body digest, body size, and
+retention; this key is not sender/email authority. The registry independently
+checks those bounds with `REGISTRY_LINK_UPLOAD_PUBLIC_KEY`.
 Unauthenticated writes and direct `POST /registry/blobs` requests fail closed;
 public CID reads remain available to recipients.
 

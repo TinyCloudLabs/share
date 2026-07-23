@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
@@ -217,10 +217,12 @@ describe("production trust and host boundaries", () => {
   });
 
   it("authorizes bounded encrypted registry writes with the OpenKey session while sender routes stay disabled", async () => {
+    const directory = await mkdtemp(`${tmpdir()}/share-registry-upload-`);
     const value = bundle("production");
     value.nodeEnabled = false;
     const host = createShareHostFromEnv({
       SHARE_TRUST_BUNDLE: JSON.stringify(value),
+      SHARE_REGISTRY_UPLOAD_KEY_PATH: `${directory}/registry-upload.key`,
     });
     const endpoint =
       "https://share.tinycloud.xyz/api/share/link-only/registry/blobs";
@@ -281,6 +283,37 @@ describe("production trust and host boundaries", () => {
     expect(forwarded.get("cookie")).toBeNull();
     expect(forwarded.get("origin")).toBe("https://registry.tinycloud.xyz");
     expect(forwarded.get("if-none-match")).toBe("*");
+    const registryAuthorization = JSON.parse(
+      forwarded.get("x-tinycloud-authorization") ?? "{}",
+    ) as Record<string, any>;
+    expect(registryAuthorization.authorization).toMatchObject({
+      action: "tinycloud.share/upload",
+      contentLength: 3,
+      deleteAfter,
+      mode: "link-only",
+      resource: "registry/blobs",
+      type: "TinyCloudShareRegistryAuthorization",
+      version: 1,
+    });
+    expect(registryAuthorization.authorization.sessionBinding).toMatch(
+      /^[A-Za-z0-9_-]{43}$/,
+    );
+    expect(registryAuthorization.authorization.bodyDigest).toMatch(
+      /^[A-Za-z0-9_-]{43}$/,
+    );
+    expect(registryAuthorization.proof).toMatchObject({ alg: "EdDSA" });
+    expect(registryAuthorization.proof.signature).toMatch(
+      /^[A-Za-z0-9_-]{86}$/,
+    );
+
+    upstream.mockClear();
+    upstream.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "signed-authorization-required" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect((await upload(new Uint8Array([4, 5, 6]), cookie)).status).toBe(502);
 
     upstream.mockClear();
     expect((await upload(new Uint8Array(64 * 1024 + 1), cookie)).status).toBe(413);
@@ -319,6 +352,46 @@ describe("production trust and host boundaries", () => {
         )
       ).status,
     ).toBe(503);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("creates and reuses a private registry-upload key only in the configured persistent path", async () => {
+    const directory = await mkdtemp(`${tmpdir()}/share-registry-key-`);
+    const keyPath = `${directory}/registry-upload.key`;
+    try {
+      const value = bundle("production");
+      value.nodeEnabled = false;
+      const first = createShareHostFromEnv({
+        SHARE_TRUST_BUNDLE: JSON.stringify(value),
+        SHARE_REGISTRY_UPLOAD_KEY_PATH: keyPath,
+      });
+      const firstResponse = await first.handler(
+        new Request(
+          "https://share.tinycloud.xyz/api/share/link-only/registry/public-key",
+        ),
+      );
+      expect(firstResponse.status).toBe(200);
+      const firstKey = await firstResponse.json() as {
+        alg: string;
+        publicKey: string;
+      };
+      expect(firstKey).toMatchObject({ alg: "Ed25519" });
+      expect(firstKey.publicKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
+
+      const second = createShareHostFromEnv({
+        SHARE_TRUST_BUNDLE: JSON.stringify(value),
+        SHARE_REGISTRY_UPLOAD_KEY_PATH: keyPath,
+      });
+      const secondResponse = await second.handler(
+        new Request(
+          "https://share.tinycloud.xyz/api/share/link-only/registry/public-key",
+        ),
+      );
+      expect(await secondResponse.json()).toEqual(firstKey);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects sender enablement when the trusted node is disabled", () => {
