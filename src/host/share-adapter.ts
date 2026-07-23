@@ -416,9 +416,9 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const capability = options.capability;
-  const senderReady = options.senderEnabled && capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore?.writable === true;
+  const senderReady = options.senderEnabled && options.bundle.public.nodeEnabled && capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore?.writable === true;
   const authReady = true;
-  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
+  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, nodeEnabled: options.bundle.public.nodeEnabled, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, issuerEnabled: options.bundle.public.issuerEnabled, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
     if (!senderReady || capability === undefined) throw new Error("sender_not_ready");
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
@@ -576,6 +576,7 @@ export function senderEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
 export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
   const senderEnabled = senderEnabledFromEnv(env);
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
+  if (senderEnabled && !bundle.public.nodeEnabled) throw new Error("sender requires an enabled trusted node");
   const capabilityRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITY_JSON : undefined;
   const capabilityListRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITIES_JSON : undefined;
   if (senderEnabled && capabilityRaw !== undefined && capabilityListRaw !== undefined) throw new Error("configure exactly one sender capability source");

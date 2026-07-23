@@ -99,7 +99,7 @@ export interface TrustedNode {
   readonly invitationKid: string;
   readonly invitationPublicKey: Uint8Array;
   readonly keyVersion: number;
-  readonly enabled: true;
+  readonly enabled: boolean;
 }
 
 export interface InvitationDraft {

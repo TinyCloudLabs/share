@@ -14,8 +14,10 @@ export interface SharePublicConfig {
   readonly nodeOrigin: string;
   readonly credentialsOrigin: string;
   readonly nodeAudience: string;
+  readonly nodeEnabled: boolean;
   readonly issuerDid: string;
   readonly issuerVct: "opencredentials.email/v1";
+  readonly issuerEnabled: true;
   readonly nodeInvitationKid: string;
   readonly nodeInvitationPublicKey: string;
   readonly nodeKeyVersion: number;
@@ -60,7 +62,7 @@ function publicKey(value: unknown, name: string): string {
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
   const raw = value as Record<string, unknown>;
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "issuerDid", "issuerVct", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "nodeEnabled", "issuerDid", "issuerVct", "issuerEnabled", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
   if (object.version !== CONFIG_VERSION || object.issuerVct !== "opencredentials.email/v1") throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
@@ -69,7 +71,7 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.nodeKeyVersion !== "number" || !Number.isSafeInteger(object.nodeKeyVersion) || typeof object.issuerKeyVersion !== "number" || !Number.isSafeInteger(object.issuerKeyVersion)) throw new TypeError("share config key versions are invalid");
-  if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || object.nodeAudience !== `did:web:${new URL(nodeOrigin).hostname}` || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`) || !Number.isSafeInteger(object.nodeKeyVersion) || object.nodeKeyVersion < 1 || !Number.isSafeInteger(object.issuerKeyVersion) || object.issuerKeyVersion < 1) throw new TypeError("share config trust binding is not enrolled");
+  if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || object.nodeAudience !== `did:web:${new URL(nodeOrigin).hostname}` || typeof object.nodeEnabled !== "boolean" || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || object.issuerEnabled !== true || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`) || !Number.isSafeInteger(object.nodeKeyVersion) || object.nodeKeyVersion < 1 || !Number.isSafeInteger(object.issuerKeyVersion) || object.issuerKeyVersion < 1) throw new TypeError("share config trust binding is not enrolled");
   if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
   return Object.freeze({
     version: CONFIG_VERSION,
@@ -78,8 +80,10 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
     nodeOrigin,
     credentialsOrigin,
     nodeAudience: object.nodeAudience,
+    nodeEnabled: object.nodeEnabled,
     issuerDid: object.issuerDid,
     issuerVct: "opencredentials.email/v1",
+    issuerEnabled: true,
     nodeInvitationKid: object.nodeInvitationKid,
     nodeInvitationPublicKey: publicKey(object.nodeInvitationPublicKey, "nodeInvitationPublicKey"),
     nodeKeyVersion: object.nodeKeyVersion,
@@ -90,7 +94,7 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
 }
 
 export function trustedNodeFromConfig(config: SharePublicConfig): TrustedNode {
-  return Object.freeze({ targetOrigin: config.nodeOrigin, nodeAudience: config.nodeAudience, invitationKid: config.nodeInvitationKid, invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey), keyVersion: config.nodeKeyVersion, enabled: true });
+  return Object.freeze({ targetOrigin: config.nodeOrigin, nodeAudience: config.nodeAudience, invitationKid: config.nodeInvitationKid, invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey), keyVersion: config.nodeKeyVersion, enabled: config.nodeEnabled });
 }
 
 export function credentialTrustFromConfig(config: SharePublicConfig): CredentialTrust {
