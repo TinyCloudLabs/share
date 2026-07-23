@@ -10,6 +10,7 @@ if (year) year.textContent = String(new Date().getFullYear());
 if (canvas) {
   const context = canvas.getContext("2d");
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
   let width = 0;
   let height = 0;
   let animationFrame = 0;
@@ -55,19 +56,24 @@ if (canvas) {
     context.clearRect(0, 0, width, height);
     context.lineCap = "round";
     context.lineJoin = "round";
+    const rootStyles = window.getComputedStyle(document.documentElement);
+    const lineColor = rootStyles.getPropertyValue("--canvas-line").trim() || "#2a56f6";
+    const highlightColor =
+      rootStyles.getPropertyValue("--canvas-highlight").trim() || "rgb(255 255 255 / 45%)";
 
     for (const segment of segments) {
       const depth = (segment.depth + 3.2) / 6.4;
-      const shade = Math.round(226 - depth * 90);
       context.beginPath();
       context.moveTo(centerX + segment.start.x * scale, centerY + segment.start.y * scale);
       context.lineTo(centerX + segment.end.x * scale, centerY + segment.end.y * scale);
-      context.strokeStyle = `rgb(${shade} ${shade} ${shade})`;
+      context.globalAlpha = 0.24 + depth * 0.68;
+      context.strokeStyle = lineColor;
       context.lineWidth = scale * (0.44 + depth * 0.16);
       context.stroke();
     }
 
-    context.strokeStyle = "rgb(255 255 255 / 0.3)";
+    context.globalAlpha = 1;
+    context.strokeStyle = highlightColor;
     context.lineWidth = 1;
     for (let index = 0; index < 12; index += 1) {
       const offset = index * 0.018;
@@ -81,6 +87,7 @@ if (canvas) {
       }
       context.stroke();
     }
+    context.globalAlpha = 1;
   };
 
   const animate = (time: number) => {
@@ -112,6 +119,7 @@ if (canvas) {
 
   new ResizeObserver(resize).observe(canvas);
   reducedMotion.addEventListener("change", setMotion);
+  colorScheme.addEventListener("change", () => draw(performance.now()));
   resize();
   setMotion();
 }
