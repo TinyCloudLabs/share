@@ -1,11 +1,11 @@
-FROM node:22.14.0-bookworm-slim@sha256:8b2a1f0e8d9d7c4d6b2a7f1f7d6b6a6d6c1e3c5c4e1b1e4c0a8d2c0e0b7e5a1f
+FROM node:22.14.0-bookworm-slim
 WORKDIR /app
 COPY package*.json ./
 COPY packages ./packages
 COPY src ./src
 COPY public ./public
 COPY index.html share.html viewer.html vite.config.* tsconfig.json ./
-RUN npm ci --ignore-scripts && npm run build:deploy
+RUN npm ci --ignore-scripts && npm run build
 USER node
 ENV HOST=0.0.0.0 PORT=8787
 EXPOSE 8787

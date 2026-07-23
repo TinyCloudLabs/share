@@ -406,11 +406,11 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
         if (!valid) return generic(401);
         const normalizedAddress = address.toLowerCase();
-        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === normalizedAddress);
-        const userIds = [...new Set(candidates.map((candidate) => candidate.scope.userId).filter((value): value is string => typeof value === "string" && value.length > 0))];
-        if (userIds.length !== 1) return generic(403);
         const token = toBase64Url(randomBytes(32));
-        sessions.set(token, { userId: userIds[0]!, expiresAt: Date.now() + 1_800_000 });
+        // A valid OpenKey proof is an authentication ceremony, not a sender
+        // capability lookup. Sender capabilities are checked only when a
+        // sender operation selects one below.
+        sessions.set(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000 });
         return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
@@ -434,7 +434,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname === "/api/share/capabilities" && request.method === "GET") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || (typeof candidate.scope.policyOwnerDid === "string" && openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === session.userId.slice(session.userId.lastIndexOf(":") + 1)) || options.testMode);
         return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
       }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
@@ -484,7 +484,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
       return undefinedResponse();
-    } catch { return generic(400); }
+    } catch (error) { if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } }); return generic(400); }
   }
   return { handler, publicConfig, readiness: { authReady, senderReady } };
 }
