@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
 import { didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelope";
-import { validateSharePublicConfig } from "../src/email-share/config.js";
+import { trustedNodeFromConfig, validateSharePublicConfig } from "../src/email-share/config.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
 import { createShareHostFromEnv, TransactionalBindingStore } from "../src/host/share-adapter.js";
 import { resolveShareUpstreams, upstreamForPath } from "../src/host/upstream.js";
@@ -130,7 +130,7 @@ describe("production trust and host boundaries", () => {
 
   it("rejects a committed public config containing a fixture node", () => {
     const value = bundle("test") as Record<string, unknown>;
-    const { version: _version, returnOrigin: _returnOrigin, nodeEnabled: _nodeEnabled, issuerKid: _issuerKid, issuerEnabled: _issuerEnabled, ...publicValue } = value;
+    const { version: _version, returnOrigin: _returnOrigin, issuerKid: _issuerKid, ...publicValue } = value;
     expect(() => validateSharePublicConfig({ version: "tinycloud.share-email-claim/config-v1", ...publicValue })).toThrow(/placeholder or loopback/);
   });
 
@@ -180,6 +180,7 @@ describe("production trust and host boundaries", () => {
 
   it("runs the complete OpenKey nonce, proof, callback, session, and logout flow in default auth-only mode", async () => {
     const value = bundle("production");
+    value.nodeEnabled = false;
     const account = privateKeyToAccount(`0x${"21".repeat(32)}`);
     const host = createShareHostFromEnv({
       SHARE_TRUST_BUNDLE: JSON.stringify(value),
@@ -188,6 +189,9 @@ describe("production trust and host boundaries", () => {
       SHARE_BINDING_STORE_PATH: "/missing/stale/bindings.ndjson",
     });
     expect(host.readiness).toEqual({ authReady: true, senderReady: false });
+    const publicConfig = validateSharePublicConfig(host.publicConfig);
+    expect(publicConfig.nodeEnabled).toBe(false);
+    expect(trustedNodeFromConfig(publicConfig).enabled).toBe(false);
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://evil.example" } }))).status).toBe(403);
 
     const invalidNonce = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
@@ -210,6 +214,18 @@ describe("production trust and host boundaries", () => {
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify(ceremony.body) }))).status).toBe(401);
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/logout", { method: "POST", headers: sessionHeaders }))).status).toBe(200);
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: sessionHeaders }))).status).toBe(401);
+  });
+
+  it("rejects sender enablement when the trusted node is disabled", () => {
+    const value = bundle();
+    value.nodeEnabled = false;
+    expect(() => createShareHostFromEnv({
+      SHARE_SENDER_ENABLED: "true",
+      SHARE_TRUST_BUNDLE: JSON.stringify(value),
+      SHARE_TRUST_BUNDLE_ALLOW_TEST: "true",
+      SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)),
+      SHARE_SENDER_CAPABILITY_JSON: "{}",
+    })).toThrow(/enabled trusted node/);
   });
 
   it("isolates capability listing and selection between two verified wallets", async () => {

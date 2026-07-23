@@ -23,7 +23,7 @@ export interface ShareTrustBundle {
     readonly nodeInvitationKid: string;
     readonly nodeInvitationPublicKey: string;
     readonly nodeKeyVersion: number;
-    readonly nodeEnabled: true;
+    readonly nodeEnabled: boolean;
     readonly issuerDid: string;
     readonly issuerVct: "opencredentials.email/v1";
     readonly issuerKid: string;
@@ -76,7 +76,7 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
   const root = exactObject(value, ["version", "shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "nodeOrigin", "nodeAudience", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "nodeEnabled", "issuerDid", "issuerVct", "issuerKid", "issuerPublicKey", "issuerKeyVersion", "issuerEnabled"], "trust bundle");
   const environment = allowTest ? "test" : "production";
   if (root.version !== TRUST_VERSION) throw new Error("trust bundle version is unsupported");
-  if (typeof root.nodeKeyVersion !== "number" || !Number.isSafeInteger(root.nodeKeyVersion) || typeof root.issuerKeyVersion !== "number" || !Number.isSafeInteger(root.issuerKeyVersion) || root.nodeEnabled !== true || root.issuerEnabled !== true || root.issuerVct !== "opencredentials.email/v1") throw new Error("trust bundle versions or enablement are invalid");
+  if (typeof root.nodeKeyVersion !== "number" || !Number.isSafeInteger(root.nodeKeyVersion) || typeof root.issuerKeyVersion !== "number" || !Number.isSafeInteger(root.issuerKeyVersion) || typeof root.nodeEnabled !== "boolean" || root.issuerEnabled !== true || root.issuerVct !== "opencredentials.email/v1") throw new Error("trust bundle versions or enablement are invalid");
   const publicConfig = {
     shareOrigin: origin(root.shareOrigin, "shareOrigin"),
     returnOrigin: origin(root.returnOrigin, "returnOrigin"),
@@ -87,7 +87,7 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
     nodeInvitationKid: String(root.nodeInvitationKid),
     nodeInvitationPublicKey: b64(root.nodeInvitationPublicKey, "nodeInvitationPublicKey"),
     nodeKeyVersion: root.nodeKeyVersion,
-    nodeEnabled: true,
+    nodeEnabled: root.nodeEnabled,
     issuerDid: String(root.issuerDid),
     issuerVct: "opencredentials.email/v1",
     issuerKid: String(root.issuerKid),
@@ -95,7 +95,7 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
     issuerKeyVersion: root.issuerKeyVersion,
     issuerEnabled: true,
   } as const;
-  if (!DID_WEB.test(publicConfig.nodeAudience) || publicConfig.nodeAudience !== `did:web:${new URL(publicConfig.nodeOrigin).hostname}` || !publicConfig.nodeInvitationKid.startsWith(`${publicConfig.nodeAudience}#`) || publicConfig.nodeKeyVersion !== Number(publicConfig.nodeKeyVersion) || publicConfig.nodeKeyVersion < 1 || publicConfig.nodeEnabled !== true || !DID_WEB.test(publicConfig.issuerDid) || publicConfig.issuerVct !== "opencredentials.email/v1" || !publicConfig.issuerKid.startsWith(`${publicConfig.issuerDid}#`) || publicConfig.issuerKeyVersion !== Number(publicConfig.issuerKeyVersion) || publicConfig.issuerKeyVersion < 1 || publicConfig.issuerEnabled !== true) throw new Error("trust bundle public trust binding is inconsistent");
+  if (!DID_WEB.test(publicConfig.nodeAudience) || publicConfig.nodeAudience !== `did:web:${new URL(publicConfig.nodeOrigin).hostname}` || !publicConfig.nodeInvitationKid.startsWith(`${publicConfig.nodeAudience}#`) || publicConfig.nodeKeyVersion !== Number(publicConfig.nodeKeyVersion) || publicConfig.nodeKeyVersion < 1 || !DID_WEB.test(publicConfig.issuerDid) || publicConfig.issuerVct !== "opencredentials.email/v1" || !publicConfig.issuerKid.startsWith(`${publicConfig.issuerDid}#`) || publicConfig.issuerKeyVersion !== Number(publicConfig.issuerKeyVersion) || publicConfig.issuerKeyVersion < 1 || publicConfig.issuerEnabled !== true) throw new Error("trust bundle public trust binding is inconsistent");
   if (environment === "production") Object.values(publicConfig).forEach((item) => { if (typeof item === "string") rejectProductionPlaceholders(item); });
   if (privateKey === undefined) return Object.freeze({ version: TRUST_VERSION, environment, public: Object.freeze(publicConfig), sender: Object.freeze({ senderDid: "", senderPublicKey: "", senderPrivateKey: "" }) });
   const senderPrivateKey = b64(privateKey, "senderPrivateKey");

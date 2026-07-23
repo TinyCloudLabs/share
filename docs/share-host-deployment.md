@@ -5,13 +5,16 @@ The auth-only composition is intentional and is the default:
 capabilities, and binding-store settings are ignored even if stale values remain
 in the environment. `/health/readiness` reports
 `{ "authReady": true, "senderReady": false }`, and signing and binding remain
-fail-closed with JSON `503 sender_not_ready`.
+fail-closed with JSON `503 sender_not_ready`. The trust bundle may truthfully
+set `nodeEnabled=false` while retaining the validated public node identity;
+OpenKey authentication remains ready, the public configuration preserves the
+disabled status, and no email-share authority is asserted.
 
 Set `SHARE_SENDER_ENABLED=true` only with a valid sender private key, exactly one
 non-empty capability source, and a usable durable binding-store path. The host
 probes that exact store and fails startup if any sender material is missing,
 invalid, corrupt, or unwritable; a started sender-enabled host therefore reports
-`senderReady: true`.
+`senderReady: true`. Sender enablement also requires `nodeEnabled=true`.
 The Phala CVM deployment uses `Dockerfile.share-api` and
 `compose.share-api.yml`; mount secrets through the CVM secret manager and keep
 the persistent volume at `/var/lib/tinycloud/share`.

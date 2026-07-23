@@ -320,7 +320,7 @@ async function main(): Promise<void> {
       const origin = parsed.pathname.startsWith("/share/v1/") ? nodeLocal : credentialsLocal;
       return fetch(origin + parsed.pathname, init);
     };
-    const config: SharePublicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: publicOrigin, registryOrigin: publicOrigin, nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, nodeAudience, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", nodeInvitationKid: invitationKid, nodeInvitationPublicKey: b64(fromBase64Url(scope.trustedNode.invitationPublicKey)), nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: issuerPublic, environment: "test" };
+    const config: SharePublicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: publicOrigin, registryOrigin: publicOrigin, nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, nodeAudience, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerEnabled: true, nodeInvitationKid: invitationKid, nodeInvitationPublicKey: b64(fromBase64Url(scope.trustedNode.invitationPublicKey)), nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: issuerPublic, environment: "test" };
     const resolved = await resolveShare(apiLink.shareUrl, { registryBaseUrl: registryLocal });
     if (resolved.state !== "policy-email-claim-required") throw new Error("manual share did not resolve as a policy claim");
     const binding = bindings.get(apiLink.shareCid);
