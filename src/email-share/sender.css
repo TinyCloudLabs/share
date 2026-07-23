@@ -53,6 +53,7 @@ button, input, select, textarea { touch-action: manipulation; }
   background: var(--share-panel);
   overflow-wrap: anywhere;
 }
+.link-only-form [hidden] { display: none; }
 #share-app > .sender-form { width: min(100% - 3rem, 640px); margin: 64px auto; }
 .auth-shell { min-height: min(720px, calc(100svh - 5.4rem)); }
 .auth-form { max-width: 720px; }
@@ -119,6 +120,20 @@ button, input, select, textarea { touch-action: manipulation; }
 .field-legend { margin-bottom: 16px; }
 .scope-note { max-width: 72ch; margin: 2px 0 22px; color: var(--share-muted); font-size: 0.84rem; }
 pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border-bottom: 1px dotted var(--share-line); background: var(--share-faint); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); }
+.possession-note { margin-top: -4px; }
+.notify-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 24px;
+  padding: 16px 0;
+  border-top: 1px dotted var(--share-line);
+  border-bottom: 1px dotted var(--share-line);
+}
+.notify-checkbox { width: 20px; height: 20px; flex: 0 0 20px; margin: 2px 0 0; accent-color: var(--accent); }
+.notify-checkbox:disabled { opacity: 0.55; cursor: not-allowed; }
+.notify-label { color: var(--share-ink); font-size: 0.9rem; font-weight: 650; }
+.notify-help { margin: 3px 0 0; color: var(--share-muted); font-size: 0.82rem; }
 
 .button {
   min-height: 44px;
@@ -141,11 +156,21 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .sender-status { display: grid; gap: 5px; margin-top: 24px; padding: 18px 0 0; border-top: 1px dotted var(--share-line); color: var(--share-muted); }
 .sender-status[data-state="requested"] { padding: 18px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--share-faint); color: var(--share-ink); }
 .sender-status[data-state="uploading"] { padding: 18px; border: 1px solid var(--accent-line); border-radius: 8px; color: var(--share-ink); }
+.sender-status[data-state="encrypting"] { padding: 18px; border: 1px solid var(--accent-line); border-radius: 8px; color: var(--share-ink); }
+.sender-status[data-state="created"] { gap: 12px; padding: 22px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--share-faint); color: var(--share-ink); }
 .sender-status[data-state="delivery-failed"], .sender-status[data-state="invalid"] { padding: 18px; border: 1px solid var(--share-danger); border-radius: 8px; background: var(--share-danger-bg); color: var(--share-danger); }
+.sender-status[data-state^="error-"] { padding: 18px; border: 1px solid var(--share-danger); border-radius: 8px; background: var(--share-danger-bg); color: var(--share-danger); }
 .sender-status[data-state="unavailable"] { padding: 18px; border: 1px solid var(--share-line); border-radius: 8px; background: var(--share-warning-bg); }
 .sender-status-title { color: var(--share-ink); font-weight: 650; }
 .sender-status-detail { max-width: 68ch; font-size: 0.88rem; }
-.share-result-link { display: block; max-width: 100%; margin-top: 10px; color: var(--share-ink); font: 0.76rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.result-title { font-size: 1.25rem; }
+.result-link-label { display: grid; gap: 8px; margin-top: 4px; font-size: 0.8rem; font-weight: 650; }
+.share-result-link { display: block; width: 100%; max-width: 100%; min-height: 76px; margin-top: 2px; padding: 12px; border: 1px solid var(--accent-line); border-radius: 7px; background: var(--share-panel); color: var(--share-ink); font: 0.76rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; resize: none; }
+.share-result-link:focus-visible { outline: 2px solid var(--share-focus); outline-offset: 3px; }
+.result-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
+.result-actions .button-secondary { margin: 0; }
+.copy-status { min-height: 1.3rem; color: var(--share-muted); font-size: 0.82rem; }
+.copy-status[role="alert"] { color: var(--share-danger); }
 .sender-status .button-secondary { justify-self: start; margin: 8px 0 0; }
 
 .sender-explainer {
@@ -182,6 +207,8 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
   .sender-diagram { border-top: 1px dotted var(--share-line); border-left: 0; }
   .button { width: 100%; }
   .button-secondary { margin: 8px 0 0; }
+  .result-actions { width: 100%; }
+  .result-actions .button { margin: 0; }
 }
 @media (max-width: 380px) { .sender-shell { width: min(100% - 1.5rem, 1400px); } .sender-title { font-size: 2.2rem; } .sender-form { padding: 16px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }

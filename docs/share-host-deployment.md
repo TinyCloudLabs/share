@@ -10,6 +10,14 @@ set `nodeEnabled=false` while retaining the validated public node identity;
 OpenKey authentication remains ready, the public configuration preserves the
 disabled status, and no email-share authority is asserted.
 
+An authenticated OpenKey session can still create a possession-based encrypted
+share. Its only write path is `POST /api/share/link-only/registry/blobs`: raw,
+create-only blobs up to 64 KiB, retention bounded to eight days, with a
+per-session upload budget. The Share host validates the session before
+forwarding only the protocol headers and encrypted body to the registry.
+Unauthenticated writes and direct `POST /registry/blobs` requests fail closed;
+public CID reads remain available to recipients.
+
 Set `SHARE_SENDER_ENABLED=true` only with a valid sender private key, exactly one
 non-empty capability source, and a usable durable binding-store path. The host
 probes that exact store and fails startup if any sender material is missing,

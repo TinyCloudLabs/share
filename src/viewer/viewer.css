@@ -58,10 +58,13 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-placeholder-title { margin: 0 0 8px; font-size: 1.35rem; font-weight: 500; letter-spacing: -0.02em; }
 .viewer-placeholder-detail { max-width: 65ch; margin: 7px 0; color: var(--ink-soft); overflow-wrap: anywhere; }
 
-.viewer-footer { display: grid; overflow: hidden; grid-template-columns: minmax(0, 0.35fr) minmax(0, 0.65fr); align-items: stretch; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); font-size: 0.84rem; }
+.viewer-footer { display: grid; overflow: hidden; grid-template-columns: minmax(0, 0.2fr) minmax(9rem, 0.18fr) minmax(0, 0.62fr); align-items: stretch; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); font-size: 0.84rem; }
 .viewer-expiry { padding: 18px 0; }
 .viewer-agent-hint { margin: 0; padding: 18px; border-left: 1px dotted var(--line); background: var(--surface-faint); }
 .viewer-agent-hint-text { margin: 0; }
+.viewer-download { align-self: center; justify-self: start; min-height: 40px; margin: 0 18px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
+.viewer-download:hover { text-decoration-thickness: 2px; }
+.viewer-download:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .viewer-forget-key, .viewer-footer > .recipient-secondary-action { margin: 0 0 0 18px; align-self: center; }
 .viewer-source { white-space: pre-wrap; }
 
@@ -73,6 +76,7 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
   .viewer-mode { margin-left: 0; }
   .viewer-footer { grid-template-columns: 1fr; }
   .viewer-expiry { padding: 16px 0; }
+  .viewer-download { margin: 0 0 16px; }
   .viewer-agent-hint { border-top: 1px dotted var(--line); border-left: 0; }
 }
 @media (max-width: 360px) { #viewer { width: min(100% - 1.5rem, 1120px); } .viewer-state-title { font-size: 1.8rem; } }

@@ -238,6 +238,10 @@ describe("bearer e2e: create → share → open → render", () => {
     // Chrome stays in the privileged document: filename + unverified sender
     expect(root.textContent).toContain("q3-report.md");
     expect(root.textContent).toContain("shared by Adam (unverified)");
+    const download = Array.from(root.querySelectorAll("button")).find(
+      (button) => button.textContent === "Download original",
+    );
+    expect(download).toBeDefined();
 
     // Mermaid rendered through the sandbox path, re-sanitized, in the frame
     const svgHost = body.querySelector(".viewer-mermaid");

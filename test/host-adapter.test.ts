@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -214,6 +214,111 @@ describe("production trust and host boundaries", () => {
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify(ceremony.body) }))).status).toBe(401);
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/logout", { method: "POST", headers: sessionHeaders }))).status).toBe(200);
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: sessionHeaders }))).status).toBe(401);
+  });
+
+  it("authorizes bounded encrypted registry writes with the OpenKey session while sender routes stay disabled", async () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    const host = createShareHostFromEnv({
+      SHARE_TRUST_BUNDLE: JSON.stringify(value),
+    });
+    const endpoint =
+      "https://share.tinycloud.xyz/api/share/link-only/registry/blobs";
+    const deleteAfter = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const upload = (body: Uint8Array, cookie?: string, contentType = "application/vnd.ipld.raw") =>
+      host.handler(
+        new Request(endpoint, {
+          method: "POST",
+          headers: {
+            origin: "https://share.tinycloud.xyz",
+            "content-type": contentType,
+            "if-none-match": "*",
+            "x-delete-after": deleteAfter,
+            ...(cookie === undefined ? {} : { cookie }),
+          },
+          body: body.slice().buffer as ArrayBuffer,
+        }),
+      );
+
+    expect((await upload(new Uint8Array([1]))).status).toBe(401);
+    expect(
+      (
+        await host.handler(
+          new Request("https://share.tinycloud.xyz/registry/blobs", {
+            method: "POST",
+            headers: {
+              "content-type": "application/vnd.ipld.raw",
+              "if-none-match": "*",
+              "x-delete-after": deleteAfter,
+            },
+            body: new Uint8Array([1]),
+          }),
+        )
+      ).status,
+    ).toBe(401);
+
+    const account = privateKeyToAccount(`0x${"41".repeat(32)}`);
+    const ceremony = await openKeySignIn(host, account);
+    const cookie = ceremony.cookie!;
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          cid: `bafkrei${"a".repeat(52)}`,
+          deleteAfter: "2026-07-30T00:00:00.000Z",
+        }),
+        {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const accepted = await upload(new Uint8Array([1, 2, 3]), cookie);
+    expect(accepted.status).toBe(201);
+    expect(upstream).toHaveBeenCalledOnce();
+    const [target, init] = upstream.mock.calls[0]!;
+    expect(String(target)).toBe("https://registry.tinycloud.xyz/blobs");
+    const forwarded = new Headers(init?.headers);
+    expect(forwarded.get("cookie")).toBeNull();
+    expect(forwarded.get("origin")).toBe("https://registry.tinycloud.xyz");
+    expect(forwarded.get("if-none-match")).toBe("*");
+
+    upstream.mockClear();
+    expect((await upload(new Uint8Array(64 * 1024 + 1), cookie)).status).toBe(413);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(
+      (await upload(new Uint8Array([1]), cookie, "application/json")).status,
+    ).toBe(400);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(host.readiness).toEqual({ authReady: true, senderReady: false });
+    expect(
+      (
+        await host.handler(
+          new Request(
+            "https://share.tinycloud.xyz/share/v1/invitations/authorize",
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            },
+          ),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await host.handler(
+          new Request("https://share.tinycloud.xyz/api/share/sign", {
+            method: "POST",
+            headers: {
+              origin: "https://share.tinycloud.xyz",
+              "content-type": "application/json",
+              cookie,
+            },
+            body: "{}",
+          }),
+        )
+      ).status,
+    ).toBe(503);
   });
 
   it("rejects sender enablement when the trusted node is disabled", () => {

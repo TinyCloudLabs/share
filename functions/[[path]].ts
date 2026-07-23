@@ -3,7 +3,7 @@ const EXACT = new Set([
   "/api/share/auth/openkey/nonce", "/api/share/auth/openkey", "/api/share/auth/login", "/api/share/auth/logout",
   "/api/share/capability", "/api/share/capabilities", "/api/share/sign", "/api/share/bindings",
 ]);
-const PREFIXES = ["/.well-known/tinycloud-share/bindings/", "/registry/", "/share/v1/", "/v1/share-email/"];
+const PREFIXES = ["/.well-known/tinycloud-share/bindings/", "/api/share/link-only/registry/", "/registry/", "/share/v1/", "/v1/share-email/"];
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 type PagesContext<Env> = { request: Request; env: Env; next: () => Promise<Response> };
 

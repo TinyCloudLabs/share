@@ -10,7 +10,11 @@ host are canonicalized and credential cookies are retained.
 
 The `share-api` CVM persists `/var/lib/tinycloud/share` and pins
 `SHARE_SENDER_ENABLED=false` (auth-only), ignoring stale sender settings in
-that mode. Deploy `compose.share-api.yml` with `SHARE_API_IMAGE` set to the
+that mode. Auth-only sessions may write bounded encrypted bearer-share blobs
+through `/api/share/link-only/registry/blobs`; this does not enable email,
+sender signing, policy authorization, or binding publication. Direct public
+registry writes remain closed. Deploy `compose.share-api.yml` with
+`SHARE_API_IMAGE` set to the
 exact merged-main GHCR digest, `SHARE_TRUST_BUNDLE_BASE64` set to the
 base64-encoded validated public bundle through Phala sealed environment
 storage, and `CLOUDFLARE_TUNNEL_TOKEN` injected through the same storage. The
@@ -19,7 +23,7 @@ Share API service at `api.share.tinycloud.xyz`; the API container publishes no
 host port. `authReady` means nonce, OpenKey proof, replay, origin, and session
 issuance work. `SHARE_SENDER_ENABLED=true` requires complete valid sender key,
 capability, and writable durable binding-store material or startup fails.
-Without an enabled sender, sender actions fail closed with JSON
+Without an enabled sender, email sender actions fail closed with JSON
 `503 sender_not_ready`; no authority is invented during CVM creation.
 
 Record the merged main commit and image provenance, create/update the CVM,
