@@ -496,6 +496,115 @@ h1 {
   border-top: var(--line);
 }
 
+/* ---------- simplified how-it-works page ---------- */
+
+.how-main {
+  border-bottom: var(--line);
+}
+
+.how-hero {
+  display: grid;
+  min-height: 34rem;
+  padding: clamp(5rem, 10vw, 9rem) 0;
+  border-bottom: var(--line);
+  grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.9fr);
+  grid-template-areas:
+    "label label"
+    "title copy";
+  align-items: end;
+  gap: 2rem;
+}
+
+.how-hero .micro {
+  align-self: start;
+  grid-area: label;
+}
+
+.how-hero h1 {
+  margin: 0;
+  grid-area: title;
+}
+
+.how-hero > p:last-child {
+  max-width: 29rem;
+  margin: 0 0 0.4rem;
+  grid-area: copy;
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.how-flow {
+  border-bottom: var(--line);
+}
+
+.how-step {
+  display: grid;
+  align-items: baseline;
+  min-height: 11rem;
+  padding: 2.5rem 0;
+  border-bottom: var(--line);
+  grid-template-columns: 5rem minmax(10rem, 0.65fr) minmax(18rem, 1.35fr);
+  gap: clamp(1.25rem, 4vw, 4rem);
+}
+
+.how-step:last-child {
+  border-bottom: 0;
+}
+
+.how-number {
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.how-step h2 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+}
+
+.how-step p {
+  max-width: 34rem;
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.how-principle {
+  display: grid;
+  padding: clamp(5rem, 10vw, 9rem) 0;
+  border-bottom: var(--line);
+  grid-template-columns: minmax(0, 1.2fr) minmax(17rem, 0.8fr);
+  gap: 2rem;
+}
+
+.how-principle .micro {
+  grid-column: 1 / -1;
+}
+
+.how-principle h2 {
+  margin: 0;
+  font-size: clamp(2.5rem, 5.5vw, 4.75rem);
+  letter-spacing: -0.04em;
+  line-height: 0.94;
+}
+
+.how-principle > p:last-child {
+  align-self: end;
+  max-width: 28rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.how-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 16rem;
+  gap: 1.5rem;
+}
+
 @media (max-width: 760px) {
   .site-shell {
     width: min(100% - 2rem, 1400px);
@@ -544,8 +653,45 @@ h1 {
 
   .section-heading,
   .access-grid,
-  .step-grid {
+  .step-grid,
+  .how-hero,
+  .how-principle {
     grid-template-columns: 1fr;
+  }
+
+  .how-hero {
+    min-height: auto;
+    grid-template-areas:
+      "label"
+      "title"
+      "copy";
+  }
+
+  .how-hero h1 {
+    font-size: clamp(3.75rem, 20vw, 5.5rem);
+  }
+
+  .how-step {
+    min-height: 0;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: 0.75rem 1rem;
+  }
+
+  .how-step p {
+    grid-column: 2;
+  }
+
+  .how-principle {
+    gap: 1.5rem;
+  }
+
+  .how-principle .micro {
+    grid-column: auto;
+  }
+
+  .how-action {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .section-heading {
