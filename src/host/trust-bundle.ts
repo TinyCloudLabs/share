@@ -66,9 +66,9 @@ function rejectProductionPlaceholders(value: string): void {
   if (/(?:node\.example|127\.0\.0\.1|localhost|fixture|test|seed|placeholder)/i.test(value)) throw new Error("production trust bundle contains a placeholder or loopback value");
 }
 
-function senderSecret(env: NodeJS.ProcessEnv): string {
+function senderSecret(env: NodeJS.ProcessEnv): string | undefined {
   const value = env.SHARE_SENDER_PRIVATE_KEY;
-  if (value === undefined) throw new Error("SHARE_SENDER_PRIVATE_KEY is required outside the public trust bundle");
+  if (value === undefined) return undefined;
   return b64(value, "SHARE_SENDER_PRIVATE_KEY");
 }
 

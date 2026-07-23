@@ -1,0 +1,19 @@
+services:
+  share-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.share-api
+    image: tinycloud/share-api:share-api-v1
+    container_name: share-api
+    restart: unless-stopped
+    user: "1000:1000"
+    env_file: [.env.share-api]
+    volumes:
+      - share-api-state:/var/lib/tinycloud/share
+    ports: ["8787:8787"]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+volumes:
+  share-api-state:

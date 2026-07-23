@@ -342,6 +342,7 @@ async function main(): Promise<void> {
     const capability = { scope: { ...scope, senderPrivateKey: b64(senderSeed), shareOrigin: publicOrigin, targetOrigin: publicOrigin, nodeAudience, trustedNode: { ...scope.trustedNode, targetOrigin: publicOrigin, nodeAudience, invitationKid } }, source };
     process.env.SHARE_TRUST_BUNDLE = JSON.stringify({ ...trustBundle, shareOrigin: publicOrigin, returnOrigin: publicOrigin, registryOrigin: publicOrigin, credentialsOrigin: publicOrigin, nodeOrigin: publicOrigin, nodeAudience, nodeInvitationKid: invitationKid });
     process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST = "true";
+    process.env.SHARE_SENDER_ENABLED = "true";
     process.env.SHARE_SENDER_PRIVATE_KEY = b64(senderSeed);
     process.env.SHARE_SENDER_CAPABILITY_JSON = JSON.stringify(capability);
     process.env.SHARE_TEST_BINDINGS_JSON = JSON.stringify(Object.fromEntries(bindings));

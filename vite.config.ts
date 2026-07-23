@@ -15,6 +15,7 @@ import {
   buildMermaidSandboxHtml,
 } from "./src/viewer/mermaid-frame.ts";
 import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
+import { senderOnlyRoute } from "./src/host/production-server.ts";
 import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
 import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./src/host/upstream.ts";
 
@@ -129,6 +130,11 @@ function shareHostAdapter(): Plugin {
         const bundle = loadTrustBundle();
         const upstream = upstreamForPath(bundle, path);
         if (upstream !== undefined) {
+          if (!host.readiness.senderReady && senderOnlyRoute(path)) {
+            res.writeHead(503, JSON_HEADERS);
+            res.end(JSON.stringify({ error: { code: "sender_not_ready" } }));
+            return;
+          }
           const method = req.method ?? "GET";
           const headers = sanitizeUpstreamRequest(path, method, new Headers(Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))), body.length, bundle.public.shareOrigin);
           const target = new URL(`${path}${new URL(req.url ?? path, "http://share.invalid").search}`, upstream.origin);

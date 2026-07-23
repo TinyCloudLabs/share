@@ -186,7 +186,11 @@ describe("exact-email share UI protocol boundaries", () => {
   });
 
   it("binds named-SQL reads to the same source and signed markdown body", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-07-19T12:00:00.000Z");
+    try {
     const holder = await createHolder();
+    const shareExpiry = "2026-07-23T12:00:00.000Z";
     const source = {
       kind: "sql" as const,
       space: scope.spaceId,
@@ -203,7 +207,7 @@ describe("exact-email share UI protocol boundaries", () => {
       policyCid: "B".repeat(59),
       recipientEmail: "Alice+Notes@example.com",
       recipientHint: "A***@example.com",
-      expiry: "2026-07-23T12:00:00.000Z",
+      expiry: shareExpiry,
       nodeOrigin: "https://node.example",
       nodeAudience: "did:web:node.example",
       requestOrigin: "https://share.tinycloud.xyz",
@@ -317,6 +321,9 @@ describe("exact-email share UI protocol boundaries", () => {
       resource: readRequest?.resource,
       invocation: invocationWithoutDigest,
     }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("creates a non-extractable holder key", async () => {

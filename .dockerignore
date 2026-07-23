@@ -1,0 +1,11 @@
+.env*
+!.env.example
+.git
+.gitignore
+node_modules
+dist
+.smithers
+*.log
+coverage
+test-artifacts
+task-*

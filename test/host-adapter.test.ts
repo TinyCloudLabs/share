@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
@@ -72,6 +72,17 @@ function capability(scope: Record<string, any>, source: Record<string, unknown>,
   } });
 }
 
+async function openKeySignIn(host: ReturnType<typeof createShareHostFromEnv>, account: ReturnType<typeof privateKeyToAccount>) {
+  const nonceResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
+  const { nonce } = await nonceResponse.json() as { nonce: string };
+  const issuedAt = new Date().toISOString();
+  const message = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${nonce}`, `Issued At: ${issuedAt}`].join("\n");
+  const signature = await account.signMessage({ message });
+  const body = { address: account.address, signature, message, nonce, issuedAt };
+  const response = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify(body) }));
+  return { body, response, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
+}
+
 describe("production trust and host boundaries", () => {
   it("derives every sensitive upstream from the authoritative trust tuple when overrides are omitted", () => {
     const value = validateTrustBundle(bundle("production"), false);
@@ -126,9 +137,9 @@ describe("production trust and host boundaries", () => {
   it("never includes the server-only sender key in the capability response", async () => {
     const value = bundle();
     const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
-    const scope = { senderDid, senderPrivateKey: toBase64Url(new Uint8Array(32).fill(9)), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", documentName: "doc.md", senderTrust: "verified" };
+    const scope = { userId: "fixture", senderDid, senderPrivateKey: toBase64Url(new Uint8Array(32).fill(9)), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", documentName: "doc.md", senderTrust: "verified" };
     const source = { kind: "kv", space: scope.spaceId, path: "documents/doc.md", action: "tinycloud.kv/get" };
-    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) });
+    const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) });
     const response = await host.handler(new Request("http://127.0.0.1/api/share/capability", { headers: { origin: "https://share.tinycloud.xyz" } }));
     const body = await response.json() as Record<string, unknown>;
     expect(JSON.stringify(body)).not.toContain("senderPrivateKey");
@@ -138,9 +149,9 @@ describe("production trust and host boundaries", () => {
   it("accepts the fixture session cookie when a same-origin GET omits Origin", async () => {
     const value = bundle();
     const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
-    const scope = { senderDid, senderPrivateKey: toBase64Url(new Uint8Array(32).fill(9)), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", documentName: "doc.md", senderTrust: "verified" };
+    const scope = { userId: "fixture", senderDid, senderPrivateKey: toBase64Url(new Uint8Array(32).fill(9)), targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222", documentName: "doc.md", senderTrust: "verified" };
     const source = { kind: "kv", space: scope.spaceId, path: "documents/doc.md", action: "tinycloud.kv/get" };
-    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) });
+    const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) });
     const response = await host.handler(new Request("http://share.tinycloud.xyz/api/share/capability"));
     expect(response.status).toBe(200);
   });
@@ -154,7 +165,7 @@ describe("production trust and host boundaries", () => {
     const salt = randomBytes(16); const digest = scryptSync("correct horse", salt, 32, { N: 16_384, r: 8, p: 1 });
     const root = await mkdtemp(`${tmpdir()}/share-auth-`); const storePath = `${root}/bindings.ndjson`;
     try {
-      const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
+      const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
       const login = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/login", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify({ username: "alice", password: "correct horse" }) }));
       expect(login.status).toBe(200);
       const setCookie = login.headers.get("set-cookie") ?? "";
@@ -167,6 +178,103 @@ describe("production trust and host boundaries", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("runs the complete OpenKey nonce, proof, callback, session, and logout flow in default auth-only mode", async () => {
+    const value = bundle("production");
+    const account = privateKeyToAccount(`0x${"21".repeat(32)}`);
+    const host = createShareHostFromEnv({
+      SHARE_TRUST_BUNDLE: JSON.stringify(value),
+      SHARE_SENDER_PRIVATE_KEY: "stale-invalid-secret",
+      SHARE_SENDER_CAPABILITY_JSON: "{stale-invalid-capability",
+      SHARE_BINDING_STORE_PATH: "/missing/stale/bindings.ndjson",
+    });
+    expect(host.readiness).toEqual({ authReady: true, senderReady: false });
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://evil.example" } }))).status).toBe(403);
+
+    const invalidNonce = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
+    const { nonce } = await invalidNonce.json() as { nonce: string };
+    const issuedAt = new Date().toISOString();
+    const invalidMessage = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${nonce}`, `Issued At: ${issuedAt}`].join("\n");
+    const invalid = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify({ address: account.address, signature: `0x${"00".repeat(65)}`, message: invalidMessage, nonce, issuedAt }) }));
+    expect(invalid.status).toBe(401);
+
+    const ceremony = await openKeySignIn(host, account);
+    expect(ceremony.response.status).toBe(200);
+    expect(await ceremony.response.json()).toEqual({ status: "authenticated", address: account.address.toLowerCase() });
+    expect(ceremony.cookie).toMatch(/^share_session=[A-Za-z0-9_-]{43}$/);
+    const sessionHeaders = { origin: "https://share.tinycloud.xyz", cookie: ceremony.cookie! };
+    const listed = await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: sessionHeaders }));
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({ capabilities: [] });
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: { ...sessionHeaders, origin: "https://evil.example" } }))).status).toBe(401);
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capability", { headers: sessionHeaders }))).status).toBe(503);
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify(ceremony.body) }))).status).toBe(401);
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/logout", { method: "POST", headers: sessionHeaders }))).status).toBe(200);
+    expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: sessionHeaders }))).status).toBe(401);
+  });
+
+  it("isolates capability listing and selection between two verified wallets", async () => {
+    const value = bundle("production");
+    const senderPrivateKey = toBase64Url(new Uint8Array(32).fill(9));
+    const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
+    const alice = privateKeyToAccount(`0x${"31".repeat(32)}`);
+    const bob = privateKeyToAccount(`0x${"32".repeat(32)}`);
+    const common = {
+      senderDid,
+      targetOrigin: "https://node.tinycloud.xyz",
+      nodeAudience: "did:web:node.tinycloud.xyz",
+      trustedNode: { targetOrigin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", invitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true },
+      delegation: "delegation",
+      delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4",
+      authorityMaterialHandle: "amh_kv_001",
+      authorityMaterialDigest: "A".repeat(43),
+      senderTrust: "verified",
+      expiresAt: "2026-07-24T00:00:00.000Z",
+    };
+    const aliceScope = { ...common, policyOwnerDid: `did:pkh:eip155:1:${alice.address}`, spaceId: `did:pkh:eip155:1:${alice.address}`, documentName: "alice.md" };
+    const bobScope = { ...common, policyOwnerDid: `did:pkh:eip155:1:${bob.address}`, spaceId: `did:pkh:eip155:1:${bob.address}`, documentName: "bob.md" };
+    const aliceSource = { kind: "kv", space: aliceScope.spaceId, path: "documents/alice.md", action: "tinycloud.kv/get" };
+    const bobSource = { kind: "kv", space: bobScope.spaceId, path: "documents/bob.md", action: "tinycloud.kv/get" };
+    const root = await mkdtemp(`${tmpdir()}/share-wallet-isolation-`);
+    try {
+      const host = createShareHostFromEnv({
+        SHARE_SENDER_ENABLED: "true",
+        SHARE_TRUST_BUNDLE: JSON.stringify(value),
+        SHARE_SENDER_PRIVATE_KEY: senderPrivateKey,
+        SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify([capability(aliceScope, aliceSource), capability(bobScope, bobSource)]),
+        SHARE_BINDING_STORE_PATH: `${root}/bindings.ndjson`,
+      });
+      const aliceSession = await openKeySignIn(host, alice);
+      const bobSession = await openKeySignIn(host, bob);
+      expect(aliceSession.response.status).toBe(200);
+      expect(bobSession.response.status).toBe(200);
+
+      const inspect = async (cookie: string) => {
+        const headers = { origin: "https://share.tinycloud.xyz", cookie };
+        const listedResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers }));
+        const listed = await listedResponse.json() as { capabilities: Array<{ capabilityId: string; source: Record<string, unknown> }> };
+        const selectedResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/capability", { headers }));
+        return { headers, listed, selected: await selectedResponse.json() as { source: Record<string, unknown> } };
+      };
+      const aliceView = await inspect(aliceSession.cookie!);
+      const bobView = await inspect(bobSession.cookie!);
+      expect(aliceView.listed.capabilities.map((entry) => entry.source.path)).toEqual(["documents/alice.md"]);
+      expect(aliceView.selected.source.path).toBe("documents/alice.md");
+      expect(JSON.stringify(aliceView)).not.toContain("documents/bob.md");
+      expect(bobView.listed.capabilities.map((entry) => entry.source.path)).toEqual(["documents/bob.md"]);
+      expect(bobView.selected.source.path).toBe("documents/bob.md");
+      expect(JSON.stringify(bobView)).not.toContain("documents/alice.md");
+
+      const bobCapabilityId = bobView.listed.capabilities[0]!.capabilityId;
+      const crossWalletSelection = await host.handler(new Request("https://share.tinycloud.xyz/api/share/sign", {
+        method: "POST",
+        headers: { ...aliceView.headers, "content-type": "application/json", "idempotency-key": "A".repeat(22) },
+        body: JSON.stringify({ capabilityId: bobCapabilityId, purpose: "inviteAuthorization", message: "{}", binding: {} }),
+      }));
+      expect(crossWalletSelection.status).toBe(400);
+      expect(JSON.stringify(await crossWalletSelection.json())).not.toContain("bob.md");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("authenticates an OpenKey proof only when its address owns the policy capability", async () => {
     const value = bundle("production");
     const senderPrivateKey = toBase64Url(new Uint8Array(32).fill(9));
@@ -176,7 +284,7 @@ describe("production trust and host boundaries", () => {
     const scope = { userId: "openkey-sender", senderDid, targetOrigin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", trustedNode: { targetOrigin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", invitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, policyOwnerDid: `did:pkh:eip155:1:${account.address}`, delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: source.space, documentName: "doc.md", senderTrust: "verified", expiresAt: "2026-07-23T00:00:00.000Z" };
     const root = await mkdtemp(`${tmpdir()}/share-openkey-`); const storePath = `${root}/bindings.ndjson`;
     try {
-      const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source, { expiresAt: scope.expiresAt }), SHARE_BINDING_STORE_PATH: storePath });
+      const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source, { expiresAt: scope.expiresAt }), SHARE_BINDING_STORE_PATH: storePath });
       const nonceResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
       expect(nonceResponse.status).toBe(200);
       const { nonce } = await nonceResponse.json() as { nonce: string };
@@ -206,6 +314,52 @@ describe("production trust and host boundaries", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("probes the exact binding journal and persists a successful write/read", async () => {
+    const root = await mkdtemp(`${tmpdir()}/share-binding-probe-`);
+    try {
+      const missingParent = new TransactionalBindingStore(`${root}/missing/bindings.ndjson`);
+      expect(missingParent.writable).toBe(false);
+
+      const readOnly = `${root}/read-only`;
+      await mkdir(readOnly);
+      await chmod(readOnly, 0o500);
+      const permissionDenied = new TransactionalBindingStore(`${readOnly}/bindings.ndjson`);
+      if (process.platform !== "win32" && process.getuid?.() !== 0) expect(permissionDenied.writable).toBe(false);
+      await chmod(readOnly, 0o700);
+
+      const path = `${root}/usable/bindings.ndjson`;
+      await mkdir(`${root}/usable`);
+      const store = new TransactionalBindingStore(path);
+      expect(store.writable).toBe(true);
+      expect(await store.get("cid")).toBeUndefined();
+      await store.put("cid", { value: "persisted" });
+      expect(await store.get("cid")).toEqual({ value: "persisted" });
+      expect(await new TransactionalBindingStore(path).get("cid")).toEqual({ value: "persisted" });
+    } finally {
+      await chmod(`${root}/read-only`, 0o700).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("parses sender enablement strictly and fails startup for incomplete or unusable enabled material", async () => {
+    const value = bundle("production");
+    const senderPrivateKey = toBase64Url(new Uint8Array(32).fill(9));
+    const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
+    const scope = { policyOwnerDid: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", senderDid, targetOrigin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", trustedNode: { targetOrigin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", invitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", invitationPublicKey: toBase64Url(new Uint8Array(32).fill(3)), keyVersion: 1, enabled: true }, delegation: "delegation", delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), spaceId: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111", documentName: "doc.md", senderTrust: "verified", expiresAt: "2026-07-24T00:00:00.000Z" };
+    const source = { kind: "kv", space: scope.spaceId, path: "documents/doc.md", action: "tinycloud.kv/get" };
+    const common = { SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) };
+    expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "yes" })).toThrow(/exactly true or false/);
+    expect(() => createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_ENABLED: "true" })).toThrow(/private key|capability/);
+    expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "true" })).toThrow(/binding store/);
+    expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "true", SHARE_BINDING_STORE_PATH: "/missing/share-parent/bindings.ndjson" })).toThrow(/not writable/);
+
+    const root = await mkdtemp(`${tmpdir()}/share-sender-enabled-`);
+    try {
+      const enabled = createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "true", SHARE_BINDING_STORE_PATH: `${root}/bindings.ndjson` });
+      expect(enabled.readiness).toEqual({ authReady: true, senderReady: true });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("selects the authenticated capability named by signing and binding requests", async () => {
     const value = bundle("production");
     const senderPrivateKey = toBase64Url(new Uint8Array(32).fill(9));
@@ -216,7 +370,7 @@ describe("production trust and host boundaries", () => {
     const salt = randomBytes(16); const digest = scryptSync("correct horse", salt, 32, { N: 16_384, r: 8, p: 1 });
     const root = await mkdtemp(`${tmpdir()}/share-capabilities-`); const storePath = `${root}/bindings.ndjson`;
     try {
-      const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify([capability(baseScope, firstSource), capability({ ...baseScope, documentName: "second.md" }, secondSource)]), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
+      const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify([capability(baseScope, firstSource), capability({ ...baseScope, documentName: "second.md" }, secondSource)]), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
       const login = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/login", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify({ username: "alice", password: "correct horse" }) }));
       const cookie = login.headers.get("set-cookie")!.split(";", 1)[0]!;
       const listed = await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: { origin: "https://share.tinycloud.xyz", cookie } }));
@@ -244,7 +398,7 @@ describe("production trust and host boundaries", () => {
     const salt = randomBytes(16); const digest = scryptSync("correct horse", salt, 32, { N: 16_384, r: 8, p: 1 });
     const root = await mkdtemp(`${tmpdir()}/share-selectable-`); const storePath = `${root}/bindings.ndjson`;
     try {
-      const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify([capability(scope, source, { email: "Alice+Notes@example.com", expiresAt: "2026-07-20T12:00:00.000Z" })]), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
+      const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify([capability(scope, source, { email: "Alice+Notes@example.com", expiresAt: "2026-07-20T12:00:00.000Z" })]), SHARE_BINDING_STORE_PATH: storePath, SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "sender-1", username: "alice", passwordHash: `scrypt$16384$8$1$${salt.toString("base64url")}$${digest.toString("base64url")}` }]) });
       const login = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/login", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify({ username: "alice", password: "correct horse" }) }));
       const cookie = login.headers.get("set-cookie")!.split(";", 1)[0]!;
       const listed = await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: { origin: "https://share.tinycloud.xyz", cookie } }));

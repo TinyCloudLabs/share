@@ -1,4 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
@@ -27,12 +28,32 @@ const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const OPENKEY_NONCE_TTL_MS = 5 * 60 * 1000;
 
 export interface BindingStore {
+  readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
 }
 
 function scryptAsync(password: string, salt: Uint8Array, length: number, options: { readonly N: number; readonly r: number; readonly p: number; readonly maxmem: number }): Promise<Buffer> {
   return new Promise((resolve, reject) => scrypt(password, salt, length, options, (error, derived) => error === null ? resolve(derived as Buffer) : reject(error)));
+}
+
+function parseJournal(text: string): Map<string, Record<string, unknown>> {
+  const records = new Map<string, Record<string, unknown>>();
+  if (text.length === 0) throw new Error("binding journal is empty");
+  const lines = text.split("\n");
+  for (const [lineNumber, line] of lines.entries()) {
+    if (lineNumber === lines.length - 1 && line === "") continue;
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { throw new Error("binding journal is corrupt"); }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("binding journal record is invalid");
+    const record = value as Record<string, unknown>;
+    if (record.op !== "put" || typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
+    const binding = record.binding as Record<string, unknown>;
+    const previous = records.get(record.cid);
+    if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
+    records.set(record.cid, binding);
+  }
+  return records;
 }
 
 /**
@@ -46,7 +67,49 @@ export class TransactionalBindingStore implements BindingStore {
   private readonly lockPath: string;
   private readonly staleLockMs = 30_000;
 
-  constructor(private readonly path: string) { this.lockPath = `${path}.lock`; }
+  readonly writable: boolean;
+  constructor(private readonly path: string) {
+    this.lockPath = `${path}.lock`;
+    this.writable = this.probe();
+  }
+
+  private probe(): boolean {
+    const existed = existsSync(this.path);
+    let storeDescriptor: number | undefined;
+    let lockDescriptor: number | undefined;
+    let createdStore = false;
+    let createdLock = false;
+    try {
+      if (existed) {
+        parseJournal(readFileSync(this.path, "utf8"));
+        storeDescriptor = openSync(this.path, "a", 0o600);
+      } else {
+        storeDescriptor = openSync(this.path, "wx", 0o600);
+        createdStore = true;
+      }
+      fsyncSync(storeDescriptor);
+      closeSync(storeDescriptor);
+      storeDescriptor = undefined;
+      lockDescriptor = openSync(this.lockPath, "wx", 0o600);
+      createdLock = true;
+      fsyncSync(lockDescriptor);
+      closeSync(lockDescriptor);
+      lockDescriptor = undefined;
+      unlinkSync(this.lockPath);
+      createdLock = false;
+      if (createdStore) {
+        unlinkSync(this.path);
+        createdStore = false;
+      }
+      return true;
+    } catch {
+      if (storeDescriptor !== undefined) try { closeSync(storeDescriptor); } catch { /* best-effort probe cleanup */ }
+      if (lockDescriptor !== undefined) try { closeSync(lockDescriptor); } catch { /* best-effort probe cleanup */ }
+      if (createdLock) try { unlinkSync(this.lockPath); } catch { /* best-effort probe cleanup */ }
+      if (createdStore) try { unlinkSync(this.path); } catch { /* best-effort probe cleanup */ }
+      return false;
+    }
+  }
 
   private async readJournal(): Promise<Map<string, Record<string, unknown>>> {
     let text: string;
@@ -55,21 +118,7 @@ export class TransactionalBindingStore implements BindingStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
       throw error;
     }
-    const records = new Map<string, Record<string, unknown>>();
-    if (text.length === 0) throw new Error("binding journal is empty");
-    for (const [lineNumber, line] of text.split("\n").entries()) {
-      if (lineNumber === text.split("\n").length - 1 && line === "") continue;
-      let value: unknown;
-      try { value = JSON.parse(line); } catch { throw new Error("binding journal is corrupt"); }
-      if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("binding journal record is invalid");
-      const record = value as Record<string, unknown>;
-      if (record.op !== "put" || typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
-      const binding = record.binding as Record<string, unknown>;
-      const previous = records.get(record.cid);
-      if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
-      records.set(record.cid, binding);
-    }
-    return records;
+    return parseJournal(text);
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -89,6 +138,7 @@ export class TransactionalBindingStore implements BindingStore {
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).get(cid); }
 
   async put(cid: string, binding: Record<string, unknown>): Promise<void> {
+    if (!this.writable) throw new Error("binding store is not writable");
     await this.withLock(async () => {
       const records = await this.readJournal();
       const previous = records.get(cid);
@@ -106,6 +156,7 @@ export class TransactionalBindingStore implements BindingStore {
 }
 
 class MemoryBindingStore implements BindingStore {
+  readonly writable = true;
   private readonly values = new Map<string, Record<string, unknown>>();
   constructor(initial: Record<string, Record<string, unknown>> = {}) { Object.entries(initial).forEach(([key, value]) => this.values.set(key, value)); }
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return this.values.get(cid); }
@@ -114,13 +165,14 @@ class MemoryBindingStore implements BindingStore {
 
 export interface ShareHostOptions {
   readonly bundle: ShareTrustBundle;
-  readonly capability: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
+  readonly capability?: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
-  readonly bindingStore: BindingStore;
+  readonly bindingStore?: BindingStore;
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
   readonly registryTransportOrigin: string;
   readonly authUsers?: readonly AuthUser[];
+  readonly senderEnabled: boolean;
   readonly testMode: boolean;
 }
 
@@ -221,6 +273,14 @@ function openKeyAddressFromOwnerDid(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const match = /^did:pkh:eip155:[1-9][0-9]*:(0x[0-9a-fA-F]{40})$/.exec(value);
   return match?.[1]?.toLowerCase();
+}
+
+function capabilityOwnedByPrincipal(candidate: { readonly scope: Record<string, unknown> }, principal: string): boolean {
+  const walletAddress = openKeyAddressFromOwnerDid(principal);
+  if (walletAddress !== undefined) {
+    return openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === walletAddress;
+  }
+  return typeof candidate.scope.userId === "string" && candidate.scope.userId === principal;
 }
 
 function openKeyMessage(origin: string, address: string, nonce: string, issuedAt: string): string {
@@ -351,16 +411,19 @@ function assertPublishedBinding(binding: Record<string, unknown>, cid: string, s
   if (binding.shareCid !== cid || Object.entries(expected).some(([key, value]) => !sameJson(binding[key], value))) throw new Error("published binding is outside the selected exact policy");
 }
 
-export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown> } {
+export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown>; readiness: Record<string, boolean> } {
   const signers = new Map<string, string>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const capability = options.capability;
+  const senderReady = options.senderEnabled && capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore?.writable === true;
+  const authReady = true;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
+    if (!senderReady || capability === undefined) throw new Error("sender_not_ready");
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
     const requested = requestedCapabilityId ?? null;
-    const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
     if (requested !== null) {
       const selected = candidates.find((candidate) => (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.capabilityId === requested);
       if (selected === undefined) throw new Error("capability is not authorized for this session");
@@ -375,6 +438,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   async function handler(request: Request): Promise<Response> {
     const url = new URL(request.url);
     try {
+      if ((url.pathname === "/health/readiness" || url.pathname === "/api/health/readiness") && request.method === "GET") return response(200, { authReady, senderReady });
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
@@ -399,14 +463,15 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         openKeyNonces.delete(nonce);
         const issuedTime = Date.parse(issuedAt);
         if (!EVM_ADDRESS.test(address) || !/^0x[0-9a-fA-F]{130}$/.test(signature) || !/^[A-Za-z0-9_-]{32}$/.test(nonce) || nonceExpiry === undefined || nonceExpiry <= Date.now() || !Number.isFinite(issuedTime) || Math.abs(Date.now() - issuedTime) > OPENKEY_NONCE_TTL_MS || message !== openKeyMessage(options.bundle.public.shareOrigin, address, nonce, issuedAt)) return generic(401);
-        const valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` });
+        let valid = false;
+        try { valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` }); } catch { valid = false; }
         if (!valid) return generic(401);
         const normalizedAddress = address.toLowerCase();
-        const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === normalizedAddress);
-        const userIds = [...new Set(candidates.map((candidate) => candidate.scope.userId).filter((value): value is string => typeof value === "string" && value.length > 0))];
-        if (userIds.length !== 1) return generic(403);
         const token = toBase64Url(randomBytes(32));
-        sessions.set(token, { userId: userIds[0]!, expiresAt: Date.now() + 1_800_000 });
+        // A valid OpenKey proof is an authentication ceremony, not a sender
+        // capability lookup. Sender capabilities are checked only when a
+        // sender operation selects one below.
+        sessions.set(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000 });
         return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
@@ -430,10 +495,11 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname === "/api/share/capabilities" && request.method === "GET") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const candidates = [...(options.capabilities?.values() ?? [capability])].filter((candidate) => candidate.scope.userId === undefined || candidate.scope.userId === session.userId || options.testMode);
+        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
         return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
       }
       if (url.pathname === "/api/share/sign" && request.method === "POST") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request);
         const capabilityId = safeString(body.capabilityId, "capabilityId");
@@ -458,6 +524,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         return response(200, { signerDid: options.bundle.sender.senderDid, signature });
       }
       if (url.pathname === "/api/share/bindings" && request.method === "POST") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
         const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
@@ -469,18 +536,18 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest,
           contentSource: binding.contentSource, contentSourceDigest: binding.contentSourceDigest, action: binding.action, resource: binding.resource,
         };
-        await options.bindingStore.put(cid, publicBinding); return response(201, { status: "stored" });
+        await options.bindingStore!.put(cid, publicBinding); return response(201, { status: "stored" });
       }
       if (url.pathname.startsWith("/.well-known/tinycloud-share/bindings/") && request.method === "GET") {
         const cid = url.pathname.slice("/.well-known/tinycloud-share/bindings/".length).replace(/\.json$/, "");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid)) return generic(400);
-        const binding = await options.bindingStore.get(cid); return binding === undefined ? generic(404) : response(200, binding);
+        const binding = await options.bindingStore?.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
       if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
       return undefinedResponse();
-    } catch { return generic(400); }
+    } catch (error) { if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } }); return generic(400); }
   }
-  return { handler, publicConfig };
+  return { handler, publicConfig, readiness: { authReady, senderReady } };
 }
 
 async function boundedJson(request: Request): Promise<Record<string, unknown>> {
@@ -499,19 +566,31 @@ async function proxyRegistry(request: Request, origin: string, transportOrigin =
 
 function undefinedResponse(): Response { return new Response(null, { status: 404, headers: JSON_HEADERS }); }
 
+export function senderEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  const value = env.SHARE_SENDER_ENABLED;
+  if (value === undefined || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error("SHARE_SENDER_ENABLED must be exactly true or false");
+}
+
 export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
-  const bundle = loadTrustBundle(env);
-  const capabilityRaw = env.SHARE_SENDER_CAPABILITY_JSON;
-  const capabilityListRaw = env.SHARE_SENDER_CAPABILITIES_JSON;
-  if (capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("SHARE_SENDER_CAPABILITY_JSON is required");
-  const capabilityValues = capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
-  if (!Array.isArray(capabilityValues) || capabilityValues.length === 0 || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
+  const senderEnabled = senderEnabledFromEnv(env);
+  const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
+  const capabilityRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITY_JSON : undefined;
+  const capabilityListRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITIES_JSON : undefined;
+  if (senderEnabled && capabilityRaw !== undefined && capabilityListRaw !== undefined) throw new Error("configure exactly one sender capability source");
+  if (senderEnabled && capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("sender capability material is required when SHARE_SENDER_ENABLED=true");
+  if (senderEnabled && bundle.sender.senderPrivateKey.length === 0) throw new Error("sender private key is required when SHARE_SENDER_ENABLED=true");
+  const capabilityValues = capabilityRaw === undefined && capabilityListRaw === undefined ? [] : capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
+  if (!Array.isArray(capabilityValues) || (senderEnabled && capabilityValues.length === 0) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
   const parsedCapabilities = capabilityValues.map((value) => parseCapability(value as string, bundle));
-  if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string")) throw new Error("production capabilities require authenticated user bindings");
-  const capability = parsedCapabilities[0]!;
+  if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string" && typeof value.scope.policyOwnerDid !== "string")) throw new Error("production capabilities require authenticated user bindings");
+  const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
-  const initialBindings = env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
-  const bindingStore = env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : (() => { throw new Error("SHARE_BINDING_STORE_PATH is required in production"); })()) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
+  const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
+  const bindingStore = !senderEnabled ? undefined : env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : undefined) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
+  if (senderEnabled && bindingStore === undefined) throw new Error("durable binding store is required when SHARE_SENDER_ENABLED=true");
+  if (senderEnabled && bindingStore?.writable !== true) throw new Error("binding store is not writable");
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = resolveShareUpstreams(bundle, env).registry;
@@ -528,5 +607,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  return createShareHostAdapter({ bundle, capability, ...(parsedCapabilities.length > 1 ? { capabilities } : {}), bindingStore, registryOrigin, registryTransportOrigin, authUsers, testMode: bundle.environment === "test" });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test" });
 }

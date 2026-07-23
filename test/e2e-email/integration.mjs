@@ -806,6 +806,7 @@ async function productionGateHermetic() {
       }});
     });
     const envValues = {
+      SHARE_SENDER_ENABLED: "true",
       SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey,
       SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson),
       SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "production-composition-user", username: "production-composition", passwordHash: scryptPassword("production-composition-password") }]),
@@ -945,6 +946,7 @@ async function fixtureGate() {
     process.env.SHARE_E2E_PASSWORD = password;
     const authUsers = JSON.stringify([{ userId: "sender-user-1", username, passwordHash: scryptPassword(password) }, { userId: "other-user", username: "other-user", passwordHash: scryptPassword("other-password") }]);
     const envValues = {
+      SHARE_SENDER_ENABLED: "true",
       SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: Buffer.from(privateKey).toString("base64url"),
       SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson), SHARE_AUTH_USERS_JSON: authUsers,
       SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true", SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: nodeUrl }, credentials: { origin: canonical.credentials, transportOrigin: credentialsUrl }, registry: { origin: canonical.registry, transportOrigin: registryUrl } }), VITE_SHARE_REGISTRY_URL: canonical.registry,
