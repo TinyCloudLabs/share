@@ -6,7 +6,16 @@ services:
     user: "1000:1000"
     environment:
       SHARE_SENDER_ENABLED: "false"
-      SHARE_TRUST_BUNDLE: ${SHARE_TRUST_BUNDLE:?set the validated public production trust bundle}
+      SHARE_TRUST_BUNDLE_BASE64: ${SHARE_TRUST_BUNDLE_BASE64:?set the base64-encoded validated public production trust bundle}
+    command:
+      - /bin/sh
+      - -eu
+      - -c
+      - |
+        printf '%s' "$$SHARE_TRUST_BUNDLE_BASE64" | base64 -d > /tmp/share-trust-bundle.json
+        export SHARE_TRUST_BUNDLE_FILE=/tmp/share-trust-bundle.json
+        unset SHARE_TRUST_BUNDLE_BASE64
+        exec npm run start:deploy
     volumes:
       - share-api-state:/var/lib/tinycloud/share
     read_only: true
