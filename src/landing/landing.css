@@ -17,8 +17,6 @@
   --accent-hover: #1e42c8;
   --accent-soft: rgb(42 86 246 / 5.5%);
   --accent-line: rgb(42 86 246 / 24%);
-  --canvas-line: #2a56f6;
-  --canvas-highlight: rgb(255 255 255 / 45%);
   --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -38,8 +36,6 @@
     --accent-hover: #8aa8ff;
     --accent-soft: rgb(75 123 255 / 9%);
     --accent-line: rgb(75 123 255 / 38%);
-    --canvas-line: #4b7bff;
-    --canvas-highlight: rgb(226 232 240 / 34%);
   }
 }
 
@@ -211,31 +207,22 @@ html[data-page="how"] .primary-nav a[href="/how-it-works"] {
   position: relative;
   display: flex;
   align-items: center;
-  min-height: min(820px, calc(100svh - 5.4rem));
-  overflow: hidden;
+  min-height: min(720px, calc(100svh - 5.4rem));
   border-bottom: var(--dotted-line);
 }
 
-.hero-art {
-  position: absolute;
-  inset: 0 -8% 0 23%;
-  z-index: 0;
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-#sovereign-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
 .hero-copy {
-  position: relative;
-  z-index: 1;
-  width: min(100%, 58rem);
-  padding: 6rem 0;
+  display: grid;
+  align-items: end;
+  width: 100%;
+  padding: clamp(5rem, 10vw, 8rem) 0;
   animation: page-enter 700ms var(--ease) both;
+  grid-template-columns: minmax(0, 1.1fr) minmax(18rem, 0.9fr);
+  grid-template-areas:
+    "eyebrow eyebrow"
+    "title intro"
+    "title actions";
+  gap: 1.5rem 3rem;
 }
 
 .eyebrow {
@@ -248,6 +235,7 @@ html[data-page="how"] .primary-nav a[href="/how-it-works"] {
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
+  grid-area: eyebrow;
   letter-spacing: 0.02em;
   text-transform: none;
 }
@@ -269,7 +257,7 @@ h3 {
 
 h1 {
   max-width: 9ch;
-  margin-bottom: 2.25rem;
+  margin-bottom: 0;
   font-size: clamp(4rem, 9vw, 6rem);
   letter-spacing: -0.04em;
   line-height: 0.98;
@@ -277,9 +265,10 @@ h1 {
 
 .hero-intro {
   max-width: 28rem;
-  margin: 0 0 2rem clamp(0rem, 15vw, 9rem);
+  margin: 0;
   color: var(--ink-soft);
   font-size: 0.94rem;
+  grid-area: intro;
   line-height: 1.55;
   text-wrap: pretty;
 }
@@ -306,7 +295,9 @@ h1 {
   display: flex;
   align-items: center;
   gap: 1.25rem;
-  margin-left: clamp(0rem, 15vw, 9rem);
+  margin: 0;
+  align-self: start;
+  grid-area: actions;
 }
 
 .pill {
@@ -784,14 +775,16 @@ h1 {
     min-height: calc(100svh - 4.75rem);
   }
 
-  .hero-art {
-    inset: 18% -50% 5% -10%;
-    opacity: 0.6;
-  }
-
   .hero-copy {
     align-self: stretch;
     padding: 5rem 0 3rem;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "eyebrow"
+      "title"
+      "intro"
+      "actions";
+    gap: 1.75rem;
   }
 
   .eyebrow {
@@ -809,7 +802,7 @@ h1 {
 
   .hero-intro {
     max-width: 21rem;
-    margin-top: min(28vh, 13rem);
+    margin-top: 0;
   }
 
   .section-heading,
