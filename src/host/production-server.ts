@@ -4,7 +4,7 @@ import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createShareHostFromEnv } from "./share-adapter.js";
 import { loadTrustBundle, securityHeadersForPath, type ShareTrustBundle } from "./trust-bundle.js";
-import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./upstream.js";
+import { assertSafeUpstreamQuery, sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath, upstreamPathFor } from "./upstream.js";
 
 const DEFAULT_STATIC_ROOT = resolve(process.cwd(), "dist");
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
@@ -16,13 +16,13 @@ function dynamic(path: string): boolean {
   return path === "/health/readiness" || path === "/api/health/readiness" || path === "/.well-known/tinycloud-share/config.json" ||
     path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" ||
     path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" ||
-    path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") ||
+    path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path) ||
     path.startsWith("/api/share/link-only/registry/") ||
-    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
+    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
 }
 
 function rewrite(path: string): string {
-  if (/^\/s\/[a-z2-7]+$/.test(path)) return "/viewer.html";
+  if (/^\/s\/[a-z2-7]+$/.test(path) || path === "/s/inline") return "/viewer.html";
   if (path === "/share") return "/share.html";
   if (path === "/viewer") return "/viewer.html";
   if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
@@ -57,13 +57,14 @@ export function createProductionHandler(options: { readonly bundle: ShareTrustBu
     const method = request.method;
     const upstream = upstreamForPath(options.bundle, path);
     if (upstream !== undefined) {
+      assertSafeUpstreamQuery(path, url.search);
       if (!options.host.readiness.senderReady && senderOnlyRoute(path)) return withSecurityHeaders(options.bundle, path, json(503, "sender_not_ready"));
       const body = await bytes(request);
       let result: Response;
       try {
         const headers = sanitizeUpstreamRequest(path, method, request.headers, body.length, options.bundle.public.shareOrigin);
-        const upstreamPath = upstream.service === "registry" ? path.slice("/registry".length) || "/" : path;
-        const target = new URL(`${upstreamPath}${url.search}`, upstream.origin);
+        const upstreamPath = upstream.service === "registry" ? (path.startsWith("/registry") ? path.slice("/registry".length) || "/" : upstreamPathFor(path)) : path;
+        const target = new URL(`${upstreamPath}${path.startsWith("/s/") ? "" : url.search}`, upstream.origin);
         const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "error", ...(body.length === 0 ? {} : { body: body.buffer as ArrayBuffer, duplex: "half" }) };
         result = sanitizeUpstreamResponse(path, method, await fetch(target, init));
       } catch {

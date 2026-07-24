@@ -125,6 +125,16 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(captureAndScrubLaunch(query as unknown as Location, { replaceState: vi.fn() } as unknown as History)).toBeUndefined();
   });
 
+  it("preserves a bounded inline v2 launch before the viewer imports", () => {
+    const payload = "A".repeat(256);
+    const loc = new URL(`https://share.tinycloud.xyz/s/inline#v=2&p=${payload}`);
+    const replaceState = vi.fn();
+    const launch = captureAndScrubLaunch(loc as unknown as Location, { replaceState } as unknown as History);
+    expect(launch?.shareHref).toBe(loc.href);
+    expect(launch?.invite).toBeUndefined();
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/s/inline");
+  });
+
   it("preserves the local-part and lowercases only the domain", () => {
     expect(canonicalEmail("Alice.O+Notes@EXAMPLE.COM")).toBe("Alice.O+Notes@example.com");
     expect(() => canonicalEmail(" Alice@example.com")).toThrow();

@@ -6,9 +6,13 @@ import { didKeyFromEd25519PublicKey, ed25519PublicKeyFromDidKey } from "./didkey
 import { canonicalize } from "./jcs.js";
 import {
   shareEnvelopeSchema,
+  shareEnvelopeV2Schema,
   unsignedShareEnvelopeSchema,
+  unsignedShareEnvelopeV2Schema,
   type ShareEnvelope,
+  type ShareEnvelopeV2,
   type UnsignedShareEnvelope,
+  type UnsignedShareEnvelopeV2,
 } from "./schema.js";
 
 /**
@@ -23,10 +27,20 @@ const ED25519_VERIFY_OPTS = { zip215: false } as const;
 
 /** The one canonical envelope signing domain shared by runtime and vectors. */
 export const ENVELOPE_SIGNATURE_DOMAIN = "xyz.tinycloud.share/envelope/v1\0";
+export const ENVELOPE_V2_SIGNATURE_DOMAIN = "xyz.tinycloud.share/envelope/v2\0";
 
 /** Domain-separated JCS bytes of every envelope field except `signature`. */
 function signingBytes(unsigned: UnsignedShareEnvelope): Uint8Array {
   const domain = utf8Bytes(ENVELOPE_SIGNATURE_DOMAIN);
+  const body = utf8Bytes(canonicalize(unsigned));
+  const bytes = new Uint8Array(domain.length + body.length);
+  bytes.set(domain);
+  bytes.set(body, domain.length);
+  return bytes;
+}
+
+function signingBytesV2(unsigned: UnsignedShareEnvelopeV2): Uint8Array {
+  const domain = utf8Bytes(ENVELOPE_V2_SIGNATURE_DOMAIN);
   const body = utf8Bytes(canonicalize(unsigned));
   const bytes = new Uint8Array(domain.length + body.length);
   bytes.set(domain);
@@ -53,6 +67,19 @@ export function signEnvelope(
       signerDid: didKeyFromEd25519PublicKey(publicKey),
       algorithm: "Ed25519",
       value: toBase64Url(signature),
+    },
+  };
+}
+
+export function signEnvelopeV2(envelopeWithoutSig: UnsignedShareEnvelopeV2, ed25519PrivKey: Uint8Array): ShareEnvelopeV2 {
+  const unsigned = unsignedShareEnvelopeV2Schema.parse(envelopeWithoutSig);
+  const publicKey = ed25519.getPublicKey(ed25519PrivKey);
+  return {
+    ...unsigned,
+    signature: {
+      signerDid: didKeyFromEd25519PublicKey(publicKey),
+      algorithm: "Ed25519",
+      value: toBase64Url(ed25519.sign(signingBytesV2(unsigned), ed25519PrivKey)),
     },
   };
 }
@@ -113,5 +140,18 @@ export async function verifyEnvelope(
       return false;
     }
   }
+  return true;
+}
+
+export function verifyEnvelopeV2SignatureOnly(envelope: ShareEnvelopeV2): boolean {
+  const parsed = shareEnvelopeV2Schema.parse(envelope);
+  const { signature, ...unsigned } = parsed;
+  return ed25519.verify(fromBase64Url(signature.value), signingBytesV2(unsigned), ed25519PublicKeyFromDidKey(signature.signerDid), ED25519_VERIFY_OPTS);
+}
+
+export async function verifyEnvelopeV2(envelope: ShareEnvelopeV2, options: VerifyEnvelopeOptions): Promise<boolean> {
+  const parsed = shareEnvelopeV2Schema.parse(envelope);
+  if (parsed.signature.signerDid !== options.expectedSignerDid || !verifyEnvelopeV2SignatureOnly(parsed)) return false;
+  if (parsed.authorizationTarget.kind === "policy") return (await computeCid(fromBase64Url(parsed.authorizationTarget.policyBytes))) === parsed.authorizationTarget.policyCid;
   return true;
 }

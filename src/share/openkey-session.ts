@@ -21,17 +21,18 @@ interface NonceResponse {
   readonly expiresAt: string;
 }
 
-const OPENKEY_ORIGIN = "https://openkey.so";
+const OPENKEY_ORIGIN = import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so";
+const SHARE_ORIGIN = import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin;
 const MAX_FILE_BYTES = 1_048_576;
 
 function authenticationMessage(address: string, nonce: string, issuedAt: string): string {
   return [
-    `${window.location.host} wants you to sign in with your Ethereum account:`,
+    `${new URL(SHARE_ORIGIN).host} wants you to sign in with your Ethereum account:`,
     address,
     "",
     "Sign in to TinyCloud Share.",
     "",
-    `URI: ${window.location.origin}`,
+    `URI: ${SHARE_ORIGIN}`,
     "Version: 1",
     `Nonce: ${nonce}`,
     `Issued At: ${issuedAt}`,
@@ -88,7 +89,7 @@ export async function createTinyCloudUploader(
   config: SharePublicConfig,
   capabilities: readonly UploadCapability[],
   onStatus: (message: string) => void,
-): Promise<(file: File, capability: UploadCapability) => Promise<void>> {
+): Promise<(file: File, capability: UploadCapability, resourcePath?: string) => Promise<void>> {
   const permissions = writePermissions(capabilities);
   if (permissions.length === 0) throw new Error("This account has no uploadable sharing path.");
   const manifest: Manifest = {
@@ -117,13 +118,17 @@ export async function createTinyCloudUploader(
   await tinycloud.signIn();
   onStatus("Your TinyCloud space is ready.");
 
-  return async (file, capability) => {
+  return async (file, capability, resourcePath = capability.source.path) => {
     if (capability.source.kind !== "kv") throw new Error("File uploads require an authorized TinyCloud KV path.");
     if (file.size === 0) throw new Error("Choose a non-empty document.");
     if (file.size > MAX_FILE_BYTES) throw new Error("Choose a document smaller than 1 MB.");
-    const content = await file.text();
-    if (new TextEncoder().encode(content).length > MAX_FILE_BYTES) throw new Error("Choose a document smaller than 1 MB.");
-    const stored = await tinycloud.kvForSpace(capability.source.space).put(capability.source.path, content, { contentType: "text/markdown; charset=utf-8" });
+    const content = new Uint8Array(await file.arrayBuffer());
+    if (content.byteLength > MAX_FILE_BYTES) throw new Error("Choose a document smaller than 1 MB.");
+    const contentType = file.type.trim().length > 0 ? file.type : "application/octet-stream";
+    if (resourcePath.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(resourcePath) || /[\\\u0000-\u001f\u007f]/.test(resourcePath) || resourcePath.split("/").some((segment) => segment.length === 0)) throw new Error("The upload target is not a canonical resource path.");
+    const sourcePrefix = capability.source.path.endsWith("/") ? capability.source.path : `${capability.source.path}/`;
+    if (resourcePath !== capability.source.path && !resourcePath.startsWith(sourcePrefix)) throw new Error("The upload target is outside the authenticated writable path.");
+    const stored = await tinycloud.kvForSpace(capability.source.space).put(resourcePath, content, { contentType });
     if (!stored.ok) throw new Error(stored.error.message || "TinyCloud could not store this document.");
   };
 }

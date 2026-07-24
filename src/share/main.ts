@@ -37,11 +37,13 @@ function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareS
 const root = document.getElementById("share-app");
 if (root === null) throw new Error("share app root missing");
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
-  status.textContent = "OpenKey verified. Preparing encrypted sharing…";
-  const { mountLinkOnlyShare } = await import("./link-only.js");
-  mountLinkOnlyShare(root as HTMLElement, {
+  status.textContent = "OpenKey verified. Preparing sharing…";
+  const { mountShareComposer } = await import("./composer.js");
+  mountShareComposer(root as HTMLElement, {
     openKeyAddress: session.address,
-    origin: window.location.origin,
+    session,
+    origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
+    registryOrigin: window.location.origin,
   });
 }
 

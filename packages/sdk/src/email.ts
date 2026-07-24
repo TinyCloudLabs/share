@@ -1,6 +1,7 @@
-import { canonicalize, type ShareEnvelope } from "@tinycloud/share-envelope";
+import { canonicalize, didKeyFromEd25519PublicKey, toBase64Url, type ShareEnvelope } from "@tinycloud/share-envelope";
 import {
   signedInvitationProof,
+  canonicalDigest,
   type AuthorizedInvitation,
   type SenderScope,
   SIGNATURE_DOMAINS,
@@ -8,12 +9,14 @@ import {
 import { assertTrustedNodeScope, verifyNodeProof } from "../../../src/email-share/node-verifier.js";
 import type { ShareTransport } from "../../../src/email-share/transport.js";
 import { draftForGeneratedShareLink, type GeneratedShareLink } from "./link.js";
+import { type AddressedShareLink } from "./addressed-link.js";
 
 /**
  * Opaque output of the link lane. Email delivery cannot manufacture or
  * replace this value; it can only submit the already generated artifact.
  */
 export type PreGeneratedShareLink = GeneratedShareLink;
+export type PreGeneratedAddressedShareLink = AddressedShareLink;
 
 export interface ShareEmailAdapter {
   readonly authorizeInvitation: ShareTransport["authorizeInvitation"];
@@ -56,10 +59,11 @@ function asVerifiedShare(draft: Awaited<ReturnType<typeof draftForGeneratedShare
  * OpenCredentials. The injected adapter is the only delivery boundary.
  */
 export async function sendShareEmail(input: {
-  readonly share: PreGeneratedShareLink;
+  readonly share: PreGeneratedShareLink | PreGeneratedAddressedShareLink;
   readonly scope: SenderScope;
   readonly adapters: ShareEmailAdapter;
 }): Promise<ShareEmailDeliveryReceipt> {
+  if ("recipientMatcher" in input.share) return sendAddressedShareEmail(input as { readonly share: PreGeneratedAddressedShareLink; readonly scope: SenderScope; readonly adapters: ShareEmailAdapter });
   const draft = draftForGeneratedShareLink(input.share);
   const trustedShare = asVerifiedShare(draft, input.scope);
   assertTrustedNodeScope(trustedShare, input.scope.trustedNode);
@@ -91,6 +95,31 @@ export async function sendShareEmail(input: {
     const actual = (authorized.authorization as unknown as Record<string, unknown>)[key];
     if (typeof value === "object" ? canonicalize(actual) !== canonicalize(value) : actual !== value) throw new Error("invitation-authorization-mismatch");
   }
-  const accepted = await input.adapters.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl });
+  const accepted = await input.adapters.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl, idempotencyKey: await canonicalDigest({ shareCid: draft.shareCid, recipientEmail: draft.email }) });
   return { status: "accepted", state: "queued", retryAfterSeconds: accepted.retryAfterSeconds, shareCid: draft.shareCid, shareId: draft.envelope.shareId, recipientEmail: draft.email };
+}
+
+/** The v2 path uses the same authorize → verify → delivery transaction as v1.
+ * There is intentionally no notification endpoint: delivery receives the
+ * already-generated URL and a stable idempotency key at OpenCredentials. */
+async function sendAddressedShareEmail(input: { readonly share: PreGeneratedAddressedShareLink; readonly scope: SenderScope; readonly adapters: ShareEmailAdapter }): Promise<ShareEmailDeliveryReceipt> {
+  if (input.share.deliveryEmail === undefined) throw new Error("addressed delivery email is required");
+  const request = {
+    type: "TinyCloudShareInviteAuthorization", version: 2,
+    senderDid: input.scope.senderDid, shareCid: input.share.shareCid, shareId: input.share.envelope.shareId,
+    policyCid: input.share.envelope.authorizationTarget.kind === "policy" ? input.share.envelope.authorizationTarget.policyCid : "",
+    delegationCid: input.share.envelope.delegationCid, authorityMaterialDigest: input.share.envelope.authorityMaterialDigest,
+    recipientMatcher: input.share.recipientMatcher, deliveryEmail: input.share.deliveryEmail,
+    target: input.share.envelope.target, actions: input.share.actions, resource: input.share.resource,
+    contentSource: input.share.source, contentSourceDigest: input.share.envelope.contentSourceDigest,
+    shareExpiresAt: input.share.expiresAt, returnOrigin: input.scope.shareOrigin,
+  } as const;
+  const signature = await input.scope.signer.sign({ purpose: "inviteAuthorization", message: canonicalize(request), binding: request });
+  const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
+  if (signerDid !== input.scope.senderDid || signature.length !== 64) throw new Error("sender authorization proof is invalid");
+  const proof = { alg: "EdDSA" as const, kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) };
+  const authorized = await input.adapters.authorizeInvitation({ request, proof });
+  await verifyNodeProof(authorized.authorization, authorized.proof, input.scope.trustedNode, SIGNATURE_DOMAINS.inviteAuthorization);
+  const accepted = await input.adapters.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: input.share.shareUrl, idempotencyKey: await canonicalDigest({ shareCid: input.share.shareCid, recipientEmail: input.share.deliveryEmail }) });
+  return { status: "accepted", state: "queued", retryAfterSeconds: accepted.retryAfterSeconds, shareCid: input.share.shareCid, shareId: input.share.envelope.shareId, recipientEmail: input.share.deliveryEmail };
 }

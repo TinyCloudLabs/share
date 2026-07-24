@@ -17,7 +17,7 @@ import {
 import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
 import { senderOnlyRoute } from "./src/host/production-server.ts";
 import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
-import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./src/host/upstream.ts";
+import { assertSafeUpstreamQuery, sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath, upstreamPathFor } from "./src/host/upstream.ts";
 
 /**
  * Serve viewer.html on /s/<cid> routes (dev + preview). The spec site stays
@@ -29,7 +29,7 @@ function shareRouteRewrite(): Plugin {
     const path = (url ?? "").split("?")[0] ?? "";
     // Fragment (#k=…) never reaches the server, so matching the path only
     // is exact. CID charset per the link codec: lowercase base32.
-    if (/^\/s\/[a-z2-7]+$/.test(path)) return "/viewer.html";
+    if (/^\/s\/[a-z2-7]+$/.test(path) || path === "/s/inline") return "/viewer.html";
     if (path === "/share") return "/share.html";
     if (path === "/viewer") return "/viewer.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
@@ -107,7 +107,7 @@ function mermaidSandboxHtml(): Plugin {
 
 function shareHostAdapter(): Plugin {
   let adapter: ReturnType<typeof createShareHostFromEnv> | undefined;
-  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || path.startsWith("/api/share/link-only/registry/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
+  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/[a-z2-7]+\/raw$/.test(path) || path.startsWith("/api/share/link-only/registry/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
   const ensure = (): ReturnType<typeof createShareHostFromEnv> | undefined => {
     if (adapter !== undefined) return adapter;
     try { adapter = createShareHostFromEnv(); return adapter; }
@@ -130,6 +130,7 @@ function shareHostAdapter(): Plugin {
         const bundle = loadTrustBundle();
         const upstream = upstreamForPath(bundle, path);
         if (upstream !== undefined) {
+          assertSafeUpstreamQuery(path, new URL(req.url ?? path, "http://share.invalid").search);
           if (!host.readiness.senderReady && senderOnlyRoute(path)) {
             res.writeHead(503, JSON_HEADERS);
             res.end(JSON.stringify({ error: { code: "sender_not_ready" } }));
@@ -137,7 +138,9 @@ function shareHostAdapter(): Plugin {
           }
           const method = req.method ?? "GET";
           const headers = sanitizeUpstreamRequest(path, method, new Headers(Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))), body.length, bundle.public.shareOrigin);
-          const target = new URL(`${path}${new URL(req.url ?? path, "http://share.invalid").search}`, upstream.origin);
+          const requestUrl = new URL(req.url ?? path, "http://share.invalid");
+          const targetPath = upstream.service === "registry" ? (path.startsWith("/registry") ? path.slice("/registry".length) || "/" : upstreamPathFor(path)) : path;
+          const target = new URL(`${targetPath}${path.startsWith("/s/") ? "" : requestUrl.search}`, upstream.origin);
           const upstreamResponse = await fetch(target, { method, headers, redirect: "error", ...(body.length === 0 ? {} : { body: body.buffer as ArrayBuffer }) });
           const result = sanitizeUpstreamResponse(path, method, upstreamResponse);
           res.writeHead(result.status, Object.fromEntries(result.headers));

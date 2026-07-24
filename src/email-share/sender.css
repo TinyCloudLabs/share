@@ -173,6 +173,31 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .copy-status[role="alert"] { color: var(--share-danger); }
 .sender-status .button-secondary { justify-self: start; margin: 8px 0 0; }
 
+.composer-form { max-width: 960px; }
+.composer-section { margin: 0 0 22px; padding: 18px; border: 1px solid var(--share-line); border-radius: 8px; background: var(--share-bg); }
+.composer-section[hidden], .composer-controls[hidden] { display: none; }
+.recipient-option, .permission-option, .toggle-option { display: flex; align-items: flex-start; gap: 10px; min-height: 42px; padding: 9px 0; color: var(--share-ink); cursor: pointer; }
+.recipient-option input, .permission-option input, .toggle-option input { width: 19px; min-width: 19px; height: 19px; margin: 2px 0 0; accent-color: var(--accent); }
+.recipient-option-copy, .permission-copy { color: var(--share-muted); font-size: .88rem; }
+.recipient-option:has(input:checked), .permission-option:has(input:checked) { color: var(--accent); }
+.recipient-value { margin-top: 10px; }
+.composer-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 22px; margin: 0 0 22px; }
+.composer-controls .field-label { margin: 0; }
+.composer-controls .toggle-option { align-self: end; min-height: 48px; margin: 0; padding: 10px 0; }
+.composer-note { padding: 14px 16px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--share-faint); }
+.confirm-notification { margin-top: 8px; }
+.notification-status { margin-top: 8px; }
+.viewer-editor { display: block; width: 100%; min-height: 20rem; margin: 16px 0; padding: 14px; border: 1px solid var(--share-line); border-radius: 7px; background: var(--share-panel); color: var(--share-ink); font: .88rem/1.55 var(--mono); resize: vertical; }
+.viewer-editor-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--share-danger); border-radius: 8px; background: var(--share-danger-bg); color: var(--share-danger); }
+.viewer-editor-conflict .viewer-secondary-action { margin: 0; }
+.composer-status[data-state="created"] { gap: 12px; }
+.composer-status[data-state="created"] .notify-help { margin: 10px 0 0; }
+
+@media (max-width: 620px) {
+  .composer-controls { grid-template-columns: 1fr; gap: 8px; }
+  .composer-section { padding: 14px; }
+}
+
 .sender-explainer {
   display: grid;
   grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);

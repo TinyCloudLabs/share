@@ -236,7 +236,10 @@ export function createHttpTransport(input: { readonly nodeOrigin: string; readon
   const postCredentials = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.credentialsOrigin, path, { method: "POST", body: JSON.stringify(body) });
   return {
     authorizeInvitation: async (body) => parseAuthorization(await postNode<unknown>("/share/v1/invitations/authorize", body)),
-    requestDelivery: async (body) => parseAccepted(await postCredentials("/v1/share-email/invitations", body)),
+    requestDelivery: async (body) => {
+      const { idempotencyKey, ...payload } = body;
+      return parseAccepted(await jsonRequest(fetchFn, input.credentialsOrigin, "/v1/share-email/invitations", { method: "POST", body: JSON.stringify(payload), ...(typeof idempotencyKey === "string" ? { headers: { "idempotency-key": idempotencyKey } } : {}) }));
+    },
     resend: async (body) => parseAccepted(await postCredentials("/v1/share-email/invitations/resend", body)),
     activate: async (body) => parseActivationAccepted(await postCredentials("/v1/share-email/claims/activate", body)),
     claimChallenge: async (body) => parseClaimChallenge(await postCredentials("/v1/share-email/claims/challenge", body)),

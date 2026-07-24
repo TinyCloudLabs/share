@@ -47,11 +47,15 @@
  */
 import {
   fromBase64Url,
+  computeCid,
   open,
-  parseShareUrl,
+  parseCompactOrInlineShareUrl,
   shareEnvelopeSchema,
+  shareEnvelopeV2Schema,
   verifyEnvelope,
+  verifyEnvelopeV2,
   type ShareEnvelope,
+  type ShareEnvelopeV2,
 } from "@tinycloud/share-envelope";
 import {
   CidMismatchError,
@@ -75,7 +79,7 @@ export type ResolveResult =
    * decrypted, CID-verified file text when the signed envelope carries a
    * content pointer (stage 4); absent for pointer-less envelopes.
    */
-  | { state: "ok"; access?: "bearer" | "policy"; envelope: ShareEnvelope; senderVerified: boolean; content?: string }
+  | { state: "ok"; access?: "bearer" | "policy"; envelope: ShareEnvelope; senderVerified: boolean; content?: string; contentBytes?: Uint8Array }
   /** The URL is not a well-formed /s/<cid>#k= share link. */
   | { state: "invalid-link"; detail: string }
   /** Registry unreachable / blob missing (deleted, expired, never existed). */
@@ -98,6 +102,7 @@ export type ResolveResult =
   /** Envelope expiry is in the past. */
   | { state: "expired"; envelope: ShareEnvelope }
   | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
+  | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2; shareCid: string; policy: Record<string, unknown> }
   /** Signed content pointer present, but the registry couldn't serve the blob. */
   | { state: "content-fetch-failed"; detail: string }
   /**
@@ -131,28 +136,37 @@ export async function resolveShare(
   // 1. Parse the link. The key comes from the FRAGMENT only; parseShareUrl
   //    already rejects query strings, userinfo, and non-canonical CIDs.
   let ciphertextCid: string;
-  let key32: Uint8Array;
+  let key32: Uint8Array | undefined;
+  let inlineBlob: Uint8Array | undefined;
   try {
-    ({ ciphertextCid, key32 } = parseShareUrl(href));
+    const parsed = parseCompactOrInlineShareUrl(href);
+    ciphertextCid = parsed.ciphertextCid;
+    key32 = parsed.key32;
+    if (parsed.kind === "inline") inlineBlob = parsed.ciphertext;
   } catch (error) {
-    return { state: "invalid-link", detail: message(error) };
+    return { state: "invalid-link", detail: "share link format is invalid" };
   }
-  options.onKeyParsed?.(key32);
+  if (key32 !== undefined) options.onKeyParsed?.(key32);
 
   try {
     // 2. Fetch the sealed blob. fetchBlob re-verifies the CID of every
     //    received byte (trustless gateway posture) before returning.
     let blob: Uint8Array;
     try {
-      blob = await fetchBlob(options.registryBaseUrl, ciphertextCid, {
-        ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
-      });
+      if (inlineBlob !== undefined) {
+        if (await computeCid(inlineBlob) !== ciphertextCid) return { state: "cid-mismatch" };
+        blob = inlineBlob;
+      } else {
+        blob = await fetchBlob(options.registryBaseUrl, ciphertextCid, {
+          ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
+        });
+      }
     } catch (error) {
       if (error instanceof CidMismatchError) return { state: "cid-mismatch" };
       if (error instanceof RegistryHttpError) {
         return { state: "fetch-failed", detail: `registry returned ${error.status}` };
       }
-      return { state: "fetch-failed", detail: message(error) };
+      return { state: "fetch-failed", detail: "registry unavailable" };
     }
 
     // 3. Decrypt. Any AEAD failure (wrong key, tampering that survived a
@@ -160,7 +174,7 @@ export async function resolveShare(
     //    lands here.
     let plaintext: Uint8Array;
     try {
-      plaintext = await open(blob, key32);
+      plaintext = key32 === undefined ? blob : await open(blob, key32);
     } catch {
       return { state: "decrypt-failed" };
     }
@@ -169,9 +183,26 @@ export async function resolveShare(
     //    malformed values are all rejected by the zod schema.
     let envelope: ShareEnvelope;
     try {
-      envelope = shareEnvelopeSchema.parse(
-        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)),
-      );
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)) as { readonly version?: unknown };
+      if (value.version === 2) {
+        const v2 = shareEnvelopeV2Schema.parse(value);
+        if (v2.authorizationTarget.kind !== "policy") return { state: "unsupported", reason: "recipient-did-target", envelope: v2 as unknown as ShareEnvelope };
+        let policy: Record<string, unknown>;
+        try {
+          const decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(v2.authorizationTarget.policyBytes))) as unknown;
+          if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) throw new Error("policy");
+          policy = decoded as Record<string, unknown>;
+          if (typeof policy.issuerDid !== "string") throw new Error("trusted policy issuer missing");
+        } catch {
+          return { state: "envelope-invalid" };
+        }
+        let verified = false;
+        try { verified = await verifyEnvelopeV2(v2, { expectedSignerDid: policy.issuerDid }); } catch { verified = false; }
+        if (!verified) return { state: "signature-invalid" };
+        if (Date.parse(v2.expiry) <= (options.now?.() ?? Date.now())) return { state: "expired", envelope: v2 as unknown as ShareEnvelope };
+        return { state: "policy-v2-claim-required", envelope: v2, shareCid: ciphertextCid, policy };
+      }
+      envelope = shareEnvelopeSchema.parse(value);
     } catch {
       return { state: "envelope-invalid" };
     }
@@ -250,7 +281,7 @@ export async function resolveShare(
     //    in later slices — see delegation.ts.
     const capability = checkBearerDelegation(envelope, { now: () => now });
     if (!capability.ok) {
-      return { state: "capability-invalid", detail: capability.detail };
+      return { state: "capability-invalid", detail: "signed delegation is not valid for this share" };
     }
 
     // 10. Content (stage 4, bearer slice): fetch + verify + decrypt the
@@ -278,13 +309,20 @@ export async function resolveShare(
           detail: `registry returned ${error.status}`,
         };
       }
-      return { state: "content-fetch-failed", detail: message(error) };
+      return { state: "content-fetch-failed", detail: "shared content is unavailable" };
     }
     const contentKey = fromBase64Url(envelope.content.key); // schema-validated 32 bytes
     try {
       const contentBytes = await open(contentBlob, contentKey);
-      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
-      return { state: "ok", envelope, senderVerified: false, content };
+      let content: string | undefined;
+      try {
+        content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
+      } catch {
+        // Binary content is still safe to download. It must never be forced
+        // through the Markdown/HTML renderer merely because the envelope's
+        // legacy v1 shape has no MIME field.
+      }
+      return { state: "ok", envelope, senderVerified: false, contentBytes, ...(content === undefined ? {} : { content }) };
     } catch {
       return { state: "content-integrity-failed" };
     } finally {
@@ -292,10 +330,6 @@ export async function resolveShare(
     }
   } finally {
     // Memory-only key hygiene: the fragment key is dead after decryption.
-    key32.fill(0);
+    key32?.fill(0);
   }
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

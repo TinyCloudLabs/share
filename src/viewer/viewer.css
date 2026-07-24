@@ -67,6 +67,9 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-download:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .viewer-forget-key, .viewer-footer > .recipient-secondary-action { margin: 0 0 0 18px; align-self: center; }
 .viewer-source { white-space: pre-wrap; }
+.viewer-editor { display: block; width: 100%; min-height: 20rem; margin: 16px 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg-raised); color: var(--ink); font: .88rem/1.55 var(--mono); resize: vertical; }
+.viewer-editor-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--danger); border-radius: 8px; background: var(--danger-bg); color: var(--danger); }
+.viewer-editor-conflict .viewer-secondary-action { margin: 0; }
 
 @media (max-width: 600px) {
   #viewer { width: min(100% - 2rem, 1120px); padding: 3.5rem 0 48px; }

@@ -39,6 +39,10 @@ export class LinkOnlyShareError extends Error {
 
 export interface CreateLinkOnlyShareOptions {
   readonly origin: string;
+  /** Browser transport origin used by hermetic hosts; the link origin remains canonical. */
+  readonly registryOrigin?: string;
+  /** The production composer may upload byte-preserving binary files. The legacy link-only surface remains text-only by default. */
+  readonly allowBinary?: boolean;
   readonly now?: () => number;
   readonly createShare?: CreateShare;
   readonly fetchFn?: typeof globalThis.fetch;
@@ -83,16 +87,12 @@ function readFileBytes(file: File): Promise<Uint8Array> {
   });
 }
 
-async function validateFile(file: File): Promise<Uint8Array> {
-  if (file.size === 0) {
-    throw new LinkOnlyShareError("file", "Choose a non-empty text or Markdown file.");
-  }
+async function validateFile(file: File, allowBinary = false): Promise<Uint8Array> {
+  if (file.size === 0) throw new LinkOnlyShareError("file", "Choose a non-empty file.");
   if (file.size > MAX_CONTENT_BYTES) {
-    throw new LinkOnlyShareError("file", "Choose a text or Markdown file smaller than 64 KB.");
+    throw new LinkOnlyShareError("file", allowBinary ? "Choose a file smaller than 64 KB." : "Choose a text or Markdown file smaller than 64 KB.");
   }
-  if (!/\.(?:md|markdown|txt)$/i.test(file.name)) {
-    throw new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file.");
-  }
+  if (!allowBinary && !/\.(?:md|markdown|txt)$/i.test(file.name)) throw new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file.");
   let bytes: Uint8Array;
   try {
     bytes = await readFileBytes(file);
@@ -103,14 +103,9 @@ async function validateFile(file: File): Promise<Uint8Array> {
       { cause: error },
     );
   }
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch (error) {
-    throw new LinkOnlyShareError(
-      "file",
-      "This file is not valid UTF-8 text. Choose a text or Markdown file.",
-      { cause: error },
-    );
+  if (!allowBinary) {
+    try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+    catch (error) { throw new LinkOnlyShareError("file", "This file is not valid UTF-8 text. Choose a text or Markdown file.", { cause: error }); }
   }
   return bytes;
 }
@@ -149,7 +144,7 @@ export async function createLinkOnlyShare(
   file: File,
   options: CreateLinkOnlyShareOptions,
 ): Promise<CreateBearerShareResult> {
-  const content = await validateFile(file);
+  const content = await validateFile(file, options.allowBinary);
   const now = options.now?.() ?? Date.now();
   const create = options.createShare ?? createBearerShare;
   const fetchFn = authenticatedFetch(options.fetchFn ?? globalThis.fetch);
@@ -157,7 +152,7 @@ export async function createLinkOnlyShare(
     return await create({
       content,
       filename: file.name,
-      registryBaseUrl: `${options.origin}${AUTHENTICATED_REGISTRY_PATH}`,
+      registryBaseUrl: `${options.registryOrigin ?? options.origin}${AUTHENTICATED_REGISTRY_PATH}`,
       expiresAt: new Date(now + LINK_LIFETIME_MS),
       viewerOrigin: options.origin,
       fetchFn,

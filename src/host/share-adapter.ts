@@ -3,12 +3,14 @@ import { closeSync, existsSync, fsyncSync, openSync, readFileSync, unlinkSync, w
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
+import { CID } from "multiformats/cid";
+import { sha256 } from "multiformats/hashes/sha2";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
 function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toString("base64url"); }
-const SIGNATURE_DOMAINS = { envelope: "xyz.tinycloud.share/envelope/v1\0", inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0" } as const;
+const SIGNATURE_DOMAINS = { envelope: "xyz.tinycloud.share/envelope/v1\0", envelopeV2: "xyz.tinycloud.share/envelope/v2\0", inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0" } as const;
 type ContentSource = Record<string, unknown>;
 function validateSource(value: ContentSource): ContentSource {
   if (value.kind === "kv") {
@@ -26,6 +28,7 @@ const B64_128 = /^[A-Za-z0-9_-]{22}$/;
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const OPENKEY_NONCE_TTL_MS = 5 * 60 * 1000;
+const LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1(?::\d+)?$/;
 const LINK_ONLY_BLOB_LIMIT = 64 * 1024;
 const LINK_ONLY_REGISTRY_PREFIX = "/api/share/link-only/registry";
 const LINK_ONLY_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
@@ -341,9 +344,13 @@ function openKeyMessage(origin: string, address: string, nonce: string, issuedAt
 
 function sessionCookie(request: Request): string | undefined { return cookie(request, "share_session"); }
 
+function shareOriginAllowed(origin: string | null, options: ShareHostOptions): boolean {
+  return origin === null || origin === options.bundle.public.shareOrigin || (options.testMode && LOOPBACK_ORIGIN.test(origin));
+}
+
 function sessionValid(request: Request, options: ShareHostOptions, sessions: Map<string, ShareSession>): ShareSession | undefined {
   const origin = request.headers.get("origin");
-  if (origin !== null && origin !== options.bundle.public.shareOrigin) return undefined;
+  if (!shareOriginAllowed(origin, options)) return undefined;
   const value = sessionCookie(request);
   if (value === undefined) return options.testMode ? { userId: "fixture", expiresAt: Date.now() + 300_000 } : undefined;
   const session = sessions.get(value);
@@ -384,8 +391,80 @@ function requiredScopeString(scope: Record<string, unknown>, key: string): strin
   const value = scope[key]; if (typeof value !== "string" || value.length === 0) throw new Error(`capability ${key} is missing`); return value;
 }
 
-function assertSigningBinding(purpose: string, message: string, binding: Record<string, unknown>, scope: Record<string, unknown>, authorizedSource: ContentSource, authorizedPolicy: Record<string, unknown>): void {
+function v2ResourceCovered(resource: Record<string, unknown>, source: ContentSource, scope: Record<string, unknown>): boolean {
+  if ((resource.kind !== "exact" && resource.kind !== "prefix") || typeof resource.path !== "string") return false;
+  const path = resource.path;
+  if (path.length === 0 || /[\\\u0000-\u001f\u007f]/.test(path) || /%2f|%5c|%2e/i.test(path)) return false;
+  const body = resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path;
+  if (body.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) return false;
+  if (source.path === path || source.path === body) return true;
+  const prefixes = Array.isArray(scope.prefixes) ? scope.prefixes.filter((value): value is string => typeof value === "string") : [];
+  return prefixes.some((prefix) => {
+    const normalized = prefix.endsWith("/") ? prefix : `${prefix}/`;
+    return path === prefix || path.startsWith(normalized) || body === prefix || body.startsWith(normalized);
+  });
+}
+
+async function parseV2Policy(policyCid: string, policyBytes: string): Promise<Record<string, unknown>> {
+  const bytes = fromBase64Url(policyBytes);
+  if (CID.create(1, 0x55, await sha256.digest(bytes)).toString() !== policyCid) throw new Error("v2 policy CID mismatch");
+  let value: unknown;
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new Error("v2 policy bytes"); }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("v2 policy shape");
+  const parsed = value as Record<string, unknown>;
+  if (parsed.type !== "TinyCloudSharePolicy" || parsed.version !== 2 || typeof parsed.issuerDid !== "string" || typeof parsed.expiresAt !== "string" || typeof parsed.contentSource !== "object" || parsed.contentSource === null || typeof parsed.resource !== "object" || parsed.resource === null || typeof parsed.target !== "object" || parsed.target === null || !Array.isArray(parsed.actions) || typeof parsed.recipientMatcher !== "object" || parsed.recipientMatcher === null || typeof parsed.delegationCid !== "string" || typeof parsed.authorityMaterialHandle !== "string" || typeof parsed.authorityMaterialDigest !== "string" || typeof parsed.contentSourceDigest !== "string") throw new Error("v2 policy shape");
+  return parsed;
+}
+
+async function assertV2SigningBinding(message: Record<string, unknown>, binding: Record<string, unknown>, scope: Record<string, unknown>, source: ContentSource, policy: Record<string, unknown>): Promise<void> {
+  if (message.version !== 2 || binding.version !== 2 || message.shareId !== binding.shareId || typeof message.shareId !== "string") throw new Error("v2 envelope binding");
+  const recipient = message.recipientMatcher;
+  if (typeof recipient !== "object" || recipient === null || Array.isArray(recipient)) throw new Error("v2 recipient matcher");
+  const matcher = recipient as Record<string, unknown>;
+  if ((matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "policyDigest" && matcher.kind !== "bearer") || (matcher.kind !== "bearer" && typeof matcher.value !== "string")) throw new Error("v2 recipient matcher");
+  const matcherValue = matcher.value as string | undefined;
+  if (matcher.kind === "exactEmail") canonicalEmail(matcherValue!);
+  if (matcher.kind === "emailDomain" && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(matcherValue!)) throw new Error("v2 recipient domain");
+  if (matcher.kind === "policyDigest" && !B64_256.test(matcherValue!)) throw new Error("v2 policy matcher");
+  if (stable(matcher) !== stable(binding.recipientMatcher)) throw new Error("v2 recipient binding");
+  const actions = message.actions;
+  if (!Array.isArray(actions) || actions.length === 0 || actions.length > 3 || stable(actions) !== stable(["read", "list", "edit"].filter((action) => actions.includes(action)))) throw new Error("v2 actions");
+  if (stable(actions) !== stable(binding.actions)) throw new Error("v2 action binding");
+  const target = message.target;
+  const targetObject = typeof target === "object" && target !== null && !Array.isArray(target) ? target as Record<string, unknown> : undefined;
+  const resource = message.resource;
+  if (targetObject === undefined || targetObject.origin !== scope.targetOrigin || targetObject.nodeAudience !== scope.nodeAudience || targetObject.spaceId !== scope.spaceId || typeof resource !== "object" || resource === null || Array.isArray(resource) || !v2ResourceCovered(resource as Record<string, unknown>, source, scope)) throw new Error("v2 target binding");
+  if (stable(resource) !== stable(binding.resource) || stable(message.contentSource) !== stable(binding.contentSource) || stable(binding.contentSource) !== stable(source)) throw new Error("v2 resource binding");
+  if (message.authorizationTarget === undefined || typeof message.authorizationTarget !== "object") throw new Error("v2 policy target");
+  const targetPolicy = message.authorizationTarget as Record<string, unknown>;
+  if (targetPolicy.kind !== "policy" || typeof targetPolicy.policyCid !== "string" || typeof targetPolicy.policyBytes !== "string") throw new Error("v2 policy target");
+  const authoredPolicy = await parseV2Policy(targetPolicy.policyCid, targetPolicy.policyBytes);
+  const matcherBound = matcher.kind === "policyDigest"
+    ? matcher.value === hashBytes(fromBase64Url(targetPolicy.policyBytes)) && typeof authoredPolicy.recipientMatcher === "object"
+    : sameJson(authoredPolicy.recipientMatcher, matcher);
+  if (authoredPolicy.issuerDid !== scope.senderDid || !sameJson(authoredPolicy.contentSource, source) || !sameJson(authoredPolicy.resource, resource) || !sameJson(authoredPolicy.target, { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: scope.spaceId }) || !sameJson(authoredPolicy.actions, actions) || authoredPolicy.expiresAt !== message.expiry || authoredPolicy.delegationCid !== scope.delegationCid || authoredPolicy.authorityMaterialHandle !== scope.authorityMaterialHandle || authoredPolicy.authorityMaterialDigest !== scope.authorityMaterialDigest || authoredPolicy.contentSourceDigest !== sourceDigest(source) || !matcherBound) throw new Error("v2 policy signing binding mismatch");
+  const allowedActions = Array.isArray(scope.actions) ? scope.actions.filter((value): value is string => typeof value === "string") : ["tinycloud.kv/get"];
+  if (actions.includes("list") && !allowedActions.includes("tinycloud.kv/list") && !allowedActions.includes("list")) throw new Error("v2 list action exceeds capability");
+  if (actions.includes("edit") && !allowedActions.includes("tinycloud.kv/put") && !allowedActions.includes("edit")) throw new Error("v2 edit action exceeds capability");
+  if (targetPolicy.policyCid === policy.policyCid && targetPolicy.policyBytes !== policy.policyBytes) throw new Error("v2 policy material mismatch");
+  if (message.delegationCid !== scope.delegationCid || message.authorityMaterialDigest !== scope.authorityMaterialDigest || binding.delegationCid !== scope.delegationCid || binding.authorityMaterialDigest !== scope.authorityMaterialDigest || binding.targetOrigin !== scope.targetOrigin || binding.nodeAudience !== scope.nodeAudience || binding.spaceId !== scope.spaceId) throw new Error("v2 authority binding");
+  const expiry = assertExpiry(scope, message.expiry);
+  if (binding.expiresAt !== expiry) throw new Error("v2 expiry binding");
+  if (message.encrypted !== true && matcher.kind !== "policyDigest") throw new Error("unsafe plaintext v2 policy");
+  if (message.encrypted !== true && message.content !== undefined) throw new Error("unsafe plaintext v2 content");
+  const deliveryEmail = binding.deliveryEmail;
+  if (deliveryEmail !== undefined) {
+    const email = canonicalEmail(deliveryEmail);
+    if (matcher.kind === "exactEmail" && email !== matcher.value || matcher.kind === "emailDomain" && email.slice(email.lastIndexOf("@") + 1) !== matcher.value) throw new Error("v2 delivery binding");
+  }
+}
+
+async function assertSigningBinding(purpose: string, message: string, binding: Record<string, unknown>, scope: Record<string, unknown>, authorizedSource: ContentSource, authorizedPolicy: Record<string, unknown>): Promise<void> {
   const parsed = JSON.parse(message) as Record<string, unknown>;
+  if (parsed.version === 2) {
+    await assertV2SigningBinding(parsed, binding, scope, authorizedSource, authorizedPolicy);
+    return;
+  }
   const messageSource = parsed.contentSource as Record<string, unknown> | undefined;
   const authorizationTarget = parsed.authorizationTarget as Record<string, unknown> | undefined;
   const policy = purpose === "envelope" && typeof authorizationTarget?.policyBytes === "string"
@@ -429,7 +508,13 @@ function assertSigningBinding(purpose: string, message: string, binding: Record<
   }
 }
 
-function assertPublishedBinding(binding: Record<string, unknown>, cid: string, scope: Record<string, unknown>, source: ContentSource, policy: Record<string, unknown>): void {
+async function assertPublishedBinding(binding: Record<string, unknown>, cid: string, scope: Record<string, unknown>, source: ContentSource, policy: Record<string, unknown>): Promise<void> {
+  if (binding.version === 2) {
+    if (binding.shareCid !== cid || typeof binding.policyCid !== "string" || !/^bafkrei[a-z2-7]{52}$/.test(binding.policyCid) || binding.contentSource === undefined || !sameJson(binding.contentSource, source) || binding.resource === undefined || !v2ResourceCovered(binding.resource as Record<string, unknown>, source, scope) || typeof binding.target !== "object" || binding.target === null || (binding.target as Record<string, unknown>).origin !== scope.targetOrigin || (binding.target as Record<string, unknown>).nodeAudience !== scope.nodeAudience || (binding.target as Record<string, unknown>).spaceId !== scope.spaceId || binding.delegationCid !== scope.delegationCid || binding.authorityMaterialDigest !== scope.authorityMaterialDigest) throw new Error("published v2 binding is outside the selected policy");
+    const actions = binding.actions;
+    if (!Array.isArray(actions) || actions.length === 0 || stable(actions) !== stable(["read", "list", "edit"].filter((action) => actions.includes(action)))) throw new Error("published v2 actions");
+    return;
+  }
   const expected: Record<string, unknown> = {
     policyCid: policy.policyCid,
     policyDigest: policy.policyDigest,
@@ -485,7 +570,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
-        if (requestOrigin !== null && requestOrigin !== options.bundle.public.shareOrigin) return generic(403);
+        if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
         const now = Date.now();
         for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
         const nonce = toBase64Url(randomBytes(24));
@@ -494,7 +579,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         return response(200, { nonce, expiresAt: new Date(expiresAt).toISOString() });
       }
       if (url.pathname === "/api/share/auth/openkey" && request.method === "POST") {
-        if (request.headers.get("origin") !== options.bundle.public.shareOrigin) return generic(403);
+        if (!shareOriginAllowed(request.headers.get("origin"), options)) return generic(403);
         const body = await boundedJson(request);
         if (Object.keys(body).sort().join(",") !== "address,issuedAt,message,nonce,signature") return generic(400);
         const address = safeString(body.address, "address");
@@ -558,14 +643,15 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (capabilityId !== signer.capabilityId || (body.purpose !== "envelope" && body.purpose !== "inviteAuthorization")) return generic(403);
         const message = safeString(body.message, "message");
         const binding = bodyBinding(body);
-        assertSigningBinding(body.purpose, message, binding, selected.scope as Record<string, unknown>, selected.source, selected.policy);
+        await assertSigningBinding(body.purpose, message, binding, selected.scope as Record<string, unknown>, selected.source, selected.policy);
         const expected = stable({ purpose: body.purpose, message, binding });
         const idempotency = request.headers.get("idempotency-key");
         if (idempotency === null || !B64_128.test(idempotency)) return generic(400);
         const key = hash(`${capabilityId}:${idempotency}:${expected}`);
         let signature = signers.get(key);
         if (signature === undefined) {
-          const domain = new TextEncoder().encode(SIGNATURE_DOMAINS[body.purpose === "envelope" ? "envelope" : "inviteAuthorization"]);
+          const parsedMessage = body.purpose === "envelope" ? JSON.parse(message) as Record<string, unknown> : undefined;
+          const domain = new TextEncoder().encode(body.purpose === "envelope" && parsedMessage?.version === 2 ? SIGNATURE_DOMAINS.envelopeV2 : SIGNATURE_DOMAINS[body.purpose === "envelope" ? "envelope" : "inviteAuthorization"]);
           const bytes = new TextEncoder().encode(message);
           const preimage = new Uint8Array(domain.length + bytes.length); preimage.set(domain); preimage.set(bytes, domain.length);
           signature = toBase64Url(ed25519.sign(preimage, fromBase64Url(options.bundle.sender.senderPrivateKey)));
@@ -580,11 +666,15 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
         const { shareCid: bindingShareCid, capabilityId: _capabilityId, ...binding } = body.binding as Record<string, unknown>;
         const selected = selectedCapability(request, session, capabilityId);
-        assertPublishedBinding({ ...binding, shareCid: bindingShareCid }, cid, selected.scope as Record<string, unknown>, selected.source, selected.policy);
+        await assertPublishedBinding({ ...binding, shareCid: bindingShareCid }, cid, selected.scope as Record<string, unknown>, selected.source, selected.policy);
         const publicBinding = {
-          shareId: binding.shareId, policyCid: binding.policyCid, recipientEmail: binding.recipientEmail, expiry: binding.expiry,
-          delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest,
-          contentSource: binding.contentSource, contentSourceDigest: binding.contentSourceDigest, action: binding.action, resource: binding.resource,
+          ...(binding.version === 2 ? { version: 2 } : {}),
+          shareId: binding.shareId,
+          policyCid: binding.policyCid,
+          expiry: binding.expiry,
+          contentSourceDigest: binding.contentSourceDigest,
+          actionDigest: hash(stable(binding.version === 2 ? binding.actions : binding.action)),
+          resourceDigest: hash(stable(binding.resource)),
         };
         await options.bindingStore!.put(cid, publicBinding); return response(201, { status: "stored" });
       }

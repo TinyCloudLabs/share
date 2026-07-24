@@ -177,7 +177,7 @@ export async function createShareLink(input: CreateShareLinkInput): Promise<Gene
   const validation = await validateShareAuthority({ policy: input.policy, email, source, scope: input.scope, expiresAt: input.expiresAt, now });
   if (input.target !== undefined) assertTarget(input.target, targetFor(input.scope));
   const draft = await createInvitationDraft({ email, source, scope: input.scope, shareId: input.shareId, expiresAt: input.expiresAt, policy: { policyCid: validation.policyCid, policyBytes: validation.policyBytes, policyDigest: validation.policyDigest, policyAuthorityCid: validation.policyAuthorityCid, policyAuthorityBytes: validation.policyAuthorityBytes, policyEnforcementCid: validation.policyEnforcementCid, policyEnforcementBytes: validation.policyEnforcementBytes }, uploadEnvelope: input.adapters.uploadEnvelope, now });
-  await input.adapters.publishBinding?.({ capabilityId: input.scope.signingCapability.capabilityId, shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, policyDigest: validation.policyDigest, policyBytes: validation.policyBytes, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: input.scope.delegationCid, authorityMaterialHandle: input.scope.authorityMaterialHandle, authorityMaterialDigest: input.scope.authorityMaterialDigest, policyAuthorityCid: validation.policyAuthorityCid, policyAuthorityBytes: validation.policyAuthorityBytes, policyEnforcementCid: validation.policyEnforcementCid, policyEnforcementBytes: validation.policyEnforcementBytes, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path, target: targetFor(input.scope), returnOrigin: input.scope.shareOrigin });
+  await input.adapters.publishBinding?.({ capabilityId: input.scope.signingCapability.capabilityId, shareId: draft.envelope.shareId, shareCid: draft.shareCid, policyCid: draft.policyCid, policyDigest: validation.policyDigest, policyBytes: draft.policyBytes, recipientEmail: draft.email, expiry: draft.envelope.expiry, delegationCid: input.scope.delegationCid, authorityMaterialHandle: input.scope.authorityMaterialHandle, authorityMaterialDigest: input.scope.authorityMaterialDigest, policyAuthorityCid: validation.policyAuthorityCid, policyAuthorityBytes: validation.policyAuthorityBytes, policyEnforcementCid: validation.policyEnforcementCid, policyEnforcementBytes: validation.policyEnforcementBytes, contentSource: draft.source, contentSourceDigest: draft.sourceDigest, action: draft.source.action, resource: draft.source.path, target: targetFor(input.scope), returnOrigin: input.scope.shareOrigin });
   return artifactFor(draft, input.scope, validation);
 }
 
@@ -188,3 +188,9 @@ export function draftForGeneratedShareLink(value: GeneratedShareLink): Invitatio
   if (draft === undefined || provenance === undefined) throw new TypeError("The share artifact is not a generated exact-email link.");
   return draft;
 }
+
+// v1 exact-email creation remains available for legacy invitation vectors;
+// generalized matcher/action/resource creation lives beside it and is the
+// path selected by the composer for domain, folder, and multi-action shares.
+export { createAddressedShareLink } from "./addressed-link.js";
+export type { AddressedShareLink, AddressedSharePolicy, CreateAddressedShareLinkInput } from "./addressed-link.js";
