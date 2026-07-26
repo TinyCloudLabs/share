@@ -12,7 +12,7 @@
     "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
     "check:deploy-config": "node scripts/validate-deploy-config.mjs",
     "preview": "vite preview",
-    "test": "vitest run --config vitest.viewer.config.ts",
+    "test": "vitest run --config vitest.viewer.config.ts && vitest run packages/sdk/test/email.test.ts packages/share-sdk/test/share-sdk.test.ts",
     "test:e2e:email": "node test/e2e-email/integration.mjs",
     "test:e2e:sharing": "node test/e2e-sharing/integration.mjs",
     "test:e2e:email:fixture": "node test/e2e-email/integration.mjs --fixture-only",

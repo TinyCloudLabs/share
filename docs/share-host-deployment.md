@@ -1,7 +1,9 @@
 # Share host deployment
 
 The auth-only composition is intentional and is the default:
-`SHARE_SENDER_ENABLED` is `false` when omitted. In that mode sender secrets,
+`SHARE_SENDER_ENABLED` is `false` when omitted. Compose passes through sender
+inputs and defaults `SHARE_BINDING_STORE_PATH` to the persistent
+`/var/lib/tinycloud/share/bindings.ndjson` volume path. In that mode sender secrets,
 capabilities, and binding-store settings are ignored even if stale values remain
 in the environment. `/health/readiness` reports
 `{ "authReady": true, "senderReady": false }`, and signing and binding remain
@@ -67,9 +69,15 @@ Required production variables:
   and only then issues an opaque sender session. `SHARE_AUTH_USERS_JSON` is an
   optional legacy fallback containing scrypt-password records; the product UI
   does not request those passwords.
-- `SHARE_BINDING_STORE_PATH` (sender-enabled only): durable, private path or mounted durable store for
-  public binding records. An in-memory store is permitted only for the explicit
-  hermetic fixture composition.
+- `SHARE_BINDING_STORE_ROOT` is the verified persistent mount root and is fixed
+  by the production Compose file at `/var/lib/tinycloud/share`. A separately
+  mounted durable root may be supplied only when that mount is explicitly
+  provisioned and verified before startup.
+- `SHARE_BINDING_STORE_PATH` (sender-enabled only, optional in the Compose
+  deployment) must be a normalized strict descendant of that root; traversal,
+  `/tmp`, sibling-prefix paths, and unmounted absolute paths are rejected. It
+  defaults to `/var/lib/tinycloud/share/bindings.ndjson`. An in-memory store is
+  permitted only for the explicit hermetic fixture composition.
 
 The Node, OpenCredentials, and registry upstream destinations are not separate
 deployment variables. They are derived directly from `nodeOrigin`,
@@ -77,6 +85,21 @@ deployment variables. They are derived directly from `nodeOrigin`,
 `*_TRANSPORT_ORIGIN` overrides are rejected. The only alternate routing shape
 is the explicit hermetic test resolver described below; it must name the exact
 bundle origin and may target loopback only.
+
+Atomic enablement sequence:
+
+1. Run `npm run check:deploy-config` against the canonical public bundle and
+   injected sender metadata; keep the private key and capability source in the
+   secret manager only.
+2. Start OpenCredentials with migrations and durable-storage readiness healthy,
+   but keep `SHARE_EMAIL_CAPABILITY=false` until provider, database, CA, and
+   trust-bundle inputs are complete.
+3. Set `SHARE_SENDER_ENABLED=true` and inject exactly one capability source.
+   Share must start with `{"authReady":true,"senderReady":true}`.
+4. Enable OpenCredentials through its production renderer, confirm healthy
+   storage and capability advertisement, then run the controlled E2E.
+5. If either readiness gate degrades, disable both flags and restore the last
+   known-good image/configuration before retrying.
 
 Run the deploy checks and build with the secret manager injected:
 

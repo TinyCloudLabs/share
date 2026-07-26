@@ -6,7 +6,7 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
-      SHARE_API_IMAGE: ghcr.io/tinycloudlabs/share-api:sha-c81b0d0d07713c1a2d045a2168c80071fb201475
+      SHARE_API_IMAGE: ghcr.io/tinycloudlabs/share-api@sha256:c81b0d0d07713c1a2d045a2168c80071fb201475000000000000000000000000
       CLOUDFLARE_TUNNEL_TOKEN: test-only-compose-token
       SHARE_SMOKE_TRUST_BUNDLE: >-
         {"version":"tinycloud.share-email-trust-bundle/v1","shareOrigin":"https://share.tinycloud.xyz","returnOrigin":"https://share.tinycloud.xyz","registryOrigin":"https://registry.tinycloud.xyz","credentialsOrigin":"https://witness.credentials.org","nodeOrigin":"https://node.tinycloud.xyz","nodeAudience":"did:web:node.tinycloud.xyz","nodeInvitationKid":"did:web:node.tinycloud.xyz#invitation-key-1","nodeInvitationPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","nodeKeyVersion":1,"nodeEnabled":true,"issuerDid":"did:web:issuer.credentials.org","issuerVct":"opencredentials.email/v1","issuerKid":"did:web:issuer.credentials.org#email-signing-key-1","issuerPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","issuerKeyVersion":1,"issuerEnabled":true}
@@ -22,6 +22,11 @@ jobs:
             .services["share-api"].build == null and
             .services["share-api"].ports == null and
             .services["share-api"].environment.SHARE_SENDER_ENABLED == "false" and
+            .services["share-api"].environment.SHARE_BINDING_STORE_PATH == "/var/lib/tinycloud/share/bindings.ndjson" and
+            .services["share-api"].environment.SHARE_SENDER_PRIVATE_KEY == "" and
+            .services["share-api"].environment.SHARE_SENDER_CAPABILITY_JSON == "" and
+            .services["share-api"].environment.SHARE_SENDER_CAPABILITIES_JSON == "" and
+            .services["share-api"].environment.SHARE_AUTH_USERS_JSON == "" and
             (.services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 | test("^[A-Za-z0-9+/=]+$")) and
             .services.cloudflared.depends_on["share-api"].condition == "service_healthy"
           ' "$RUNNER_TEMP/compose.json" >/dev/null
