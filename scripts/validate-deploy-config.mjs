@@ -34,5 +34,6 @@ if (senderEnabled) {
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
   try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
 }
-if (senderEnabled && (typeof process.env.SHARE_BINDING_STORE_PATH !== "string" || !process.env.SHARE_BINDING_STORE_PATH.startsWith("/"))) throw new Error("SHARE_BINDING_STORE_PATH must be an absolute durable production path");
+const bindingStorePath = process.env.SHARE_BINDING_STORE_PATH ?? "/var/lib/tinycloud/share/bindings.ndjson";
+if (senderEnabled && (!bindingStorePath.startsWith("/") || bindingStorePath.includes("\u0000"))) throw new Error("SHARE_BINDING_STORE_PATH must be an absolute durable production path");
 console.log("deploy trust bundle: valid production composition");

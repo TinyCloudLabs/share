@@ -8,9 +8,12 @@ only readiness, well-known, registry, Share API, and email-share routes. All
 other requests fall through to Pages assets/SPA. Browser origin and upstream
 host are canonicalized and credential cookies are retained.
 
-The `share-api` CVM persists `/var/lib/tinycloud/share` and pins
-`SHARE_SENDER_ENABLED=false` (auth-only), ignoring stale sender settings in
-that mode. Auth-only sessions may write bounded encrypted bearer-share blobs
+The `share-api` CVM persists `/var/lib/tinycloud/share` and defaults
+`SHARE_SENDER_ENABLED` to `false` (auth-only), ignoring stale sender settings
+in that mode. Compose passes through the sender inputs, removes empty optional
+values before startup validation, and defaults the binding journal to
+`/var/lib/tinycloud/share/bindings.ndjson` inside that persistent volume.
+Auth-only sessions may write bounded encrypted bearer-share blobs
 through `/api/share/link-only/registry/blobs`; this does not enable email,
 sender signing, policy authorization, or binding publication. Direct public
 registry writes remain closed. The CVM creates one dedicated Ed25519 upload
@@ -28,9 +31,13 @@ pinned Cloudflare Tunnel sidecar exposes only the internal
 Share API service at `api.share.tinycloud.xyz`; the API container publishes no
 host port. `authReady` means nonce, OpenKey proof, replay, origin, and session
 issuance work. `SHARE_SENDER_ENABLED=true` requires complete valid sender key,
-capability, and writable durable binding-store material or startup fails.
-Without an enabled sender, email sender actions fail closed with JSON
-`503 sender_not_ready`; no authority is invented during CVM creation.
+exactly one capability source, and writable durable binding-store material or
+startup fails. Without an enabled sender, email sender actions fail closed with
+JSON `503 sender_not_ready`; no authority is invented during CVM creation.
+Enable the OpenCredentials email capability only after its durable migrations,
+provider inputs, and readiness gate are healthy; run the controlled E2E only
+when both services advertise readiness. Roll back by disabling both flags and
+restoring the prior image/configuration. Do not send email during smoke tests.
 
 Record the merged main commit and image provenance, create/update the CVM,
 attach `api.share.tinycloud.xyz` through authenticated Cloudflare, set the
