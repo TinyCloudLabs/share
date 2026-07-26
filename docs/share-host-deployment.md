@@ -36,6 +36,15 @@ the persistent volume at `/var/lib/tinycloud/share`.
 Cloudflare Pages functions proxy only the exact auth/session, readiness, and
 well-known paths to `https://api.share.tinycloud.xyz`; SPA routes remain static.
 
+Webhook egress is a separate release boundary. The Node registration and
+dispatcher require canonical HTTPS callbacks on port 443, reject userinfo,
+fragments, and reserved/private address ranges, disable redirects, and pin a
+fresh public DNS result for each delivery. The production network policy must
+also deny loopback, link-local, private, carrier-grade NAT, multicast,
+unspecified, documentation, and other reserved IPv4/IPv6 destinations, and
+must deny all non-443 egress from the webhook process. The deployment evidence
+must retain the policy revision and its adversarial SSRF/redirect test result.
+
 The deploy build is environment-only. It emits
 `/.well-known/tinycloud-share/config.json` from one validated
 `SHARE_TRUST_BUNDLE`; no trust key or signer secret is committed to the
