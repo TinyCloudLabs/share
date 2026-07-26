@@ -34,6 +34,17 @@ describe("native Node Share forwarding", () => {
     expect(sanitizeUpstreamResponse(path, "POST", new Response("{}", { headers: { "content-type": "application/json", etag: '"new"', "set-cookie": "secret" } })).headers.get("etag")).toBe('"new"');
   });
 
+  it("preserves the v2 share media type so Node selects its dedicated route", () => {
+    const headers = sanitizeUpstreamRequest("/invoke", "POST", new Headers({ authorization: "Bearer opaque", "content-type": "application/vnd.tinycloud.share+json" }), 2, bundle.public.shareOrigin);
+    expect(headers.get("content-type")).toBe("application/vnd.tinycloud.share+json");
+  });
+
+  it("normalizes the legacy Web SDK's body-backed text/plain /invoke to JSON", () => {
+    const headers = sanitizeUpstreamRequest("/invoke", "POST", new Headers({ authorization: "Bearer opaque", "content-type": "text/plain" }), 2, bundle.public.shareOrigin);
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("authorization")).toBe("Bearer opaque");
+  });
+
   it("rejects credential-bearing query strings and unsupported native methods", () => {
     expect(() => assertSafeUpstreamQuery("/invoke", "?token=secret")).toThrow();
     expect(() => assertSafeUpstreamQuery("/invoke", "?email=alice@example.com")).toThrow();

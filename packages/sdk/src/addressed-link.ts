@@ -72,7 +72,8 @@ function assertResource(resource: ResourceSelector): void {
 function assertExpiry(value: string, scope: SenderScope): void {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || !Number.isFinite(Date.parse(value))) throw new TypeError("The addressed share expiry is invalid.");
   const expiry = Date.parse(value);
-  for (const bound of [scope.expiryMin, scope.expiryMax, scope.expiresAt]) {
+  if (scope.expiryMin !== undefined && (!Number.isFinite(Date.parse(scope.expiryMin)) || expiry < Date.parse(scope.expiryMin))) throw new TypeError("The addressed share expiry is below the authenticated capability minimum.");
+  for (const bound of [scope.expiryMax, scope.expiresAt]) {
     if (bound !== undefined && (!Number.isFinite(Date.parse(bound)) || expiry > Date.parse(bound))) throw new TypeError("The addressed share expiry exceeds the authenticated capability.");
   }
 }

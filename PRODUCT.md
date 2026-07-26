@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Two people use this surface: an OpenKey-authenticated sender who wants to share one read-only text or Markdown file through a private possession-based link, and a recipient opening that link from a clean browser. They need to understand that the complete link is the authority, that email notification is not enabled, and what action is safe next.
+An OpenKey-authenticated sender can upload or author text and binary resources, choose bearer or addressed policies, read/list/edit permissions, compact or inline formats, and optional delivery. After a share reaches its canonical state, one sender-private encrypted history entry is written in the authenticated `share` space. The sender home lists those entries with cursor pagination and can decrypt the exact link on demand to copy or open it. A recipient opening that link from a clean browser still receives the established fragment protocol and completes the addressed claim flow when required.
 
 ## Product Purpose
 
-TinyCloud Sharing encrypts one selected file in the sender's browser, stores only CID-addressed encrypted bytes, and returns a link whose fragment holds the decryption material. Success means the sender can reliably copy that link without an email capability, and a recipient can recover the original file in a clean browser while the fragment remains client-only. Exact-email policy sharing remains a separate, fail-closed capability.
+TinyCloud Sharing encrypts selected content in the sender's browser, stores CID-addressed encrypted bytes, and returns compact or inline links whose fragment holds the bearer or envelope material. The sender library stores the complete link and sender-facing metadata only inside a network-encrypted Vault value; public keys, metadata, bindings, logs, analytics, and unauthenticated responses contain no link fragment, claim secret, exact-email policy, or private authority material. Success means the sender can later recover the identical link in a fresh browser signed into the same OpenKey account. Links created before sender history was introduced are not backfilled and are recoverable only when the sender still possesses the complete URL and explicitly imports it.
 
 ## Brand Personality
 

@@ -59,6 +59,23 @@ export interface IssuedEmailClaim {
   readonly credential: string;
   readonly holderDid: string;
   readonly expiresAt: string;
+  readonly email: string;
+}
+
+async function activateWithRetry(
+  transport: Pick<ShareTransport, "activate">,
+  input: { readonly invitationId: string; readonly claimSecret: string },
+): Promise<{ readonly status: "accepted"; readonly retryAfterSeconds: number; readonly activationId: string }> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await transport.activate(input);
+    } catch (error) {
+      const failure = mapTransportFailure(error);
+      if (failure.code !== "capability-unavailable" || !failure.retryable || attempt >= 7) throw error;
+      const delayMs = Math.max(50, Math.min(5_000, (failure.retryAfterSeconds ?? 1) * 1_000));
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 export async function createHolder(): Promise<HolderKey> {
@@ -94,7 +111,7 @@ async function holderProof(holder: HolderKey, share: VerifiedExactEmailShare, in
 
 export async function issueEmailClaimCredential(input: IssueEmailClaimInput): Promise<IssuedEmailClaim> {
   const activation = input.method === "magic"
-    ? await input.transport.activate({ invitationId: input.invitationId, claimSecret: input.mailboxProof })
+    ? await activateWithRetry(input.transport, { invitationId: input.invitationId, claimSecret: input.mailboxProof })
     : undefined;
   const challenge = await input.transport.claimChallenge(input.method === "magic"
     ? { invitationId: input.invitationId, method: "magic", activationId: activation!.activationId }
@@ -103,8 +120,8 @@ export async function issueEmailClaimCredential(input: IssueEmailClaimInput): Pr
   const redemptionId = randomB64(16);
   const proof = await holderProof(input.holder, input.share, input.invitationId, challenge, redemptionId);
   const response = await input.transport.claimRedeem({ version: "tinycloud.share-email-claim/v1", redemptionId, invitationId: input.invitationId, method: input.method, mailboxProof: input.mailboxProof, ...proof });
-  await assertCredential(response, input.holder, input.share, input.credentialTrust);
-  return response;
+  const email = await assertCredential(response, input.holder, input.share, input.credentialTrust);
+  return { ...response, email };
 }
 
 function decodeJson(segment: string): Record<string, unknown> {
@@ -118,7 +135,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): voi
   if (Object.keys(value).length !== keys.length || keys.some((key) => !Object.hasOwn(value, key))) throw new Error("credential-invalid");
 }
 
-async function assertCredential(value: { format: string; credential: string; holderDid: string; expiresAt: string }, holder: HolderKey, share: VerifiedExactEmailShare, trust: CredentialTrust): Promise<void> {
+async function assertCredential(value: { format: string; credential: string; holderDid: string; expiresAt: string }, holder: HolderKey, share: VerifiedExactEmailShare, trust: CredentialTrust): Promise<string> {
   if (value.format !== "vc+sd-jwt" || value.holderDid !== holder.did || Date.parse(value.expiresAt) <= Date.now()) throw new Error("credential-invalid");
   const parts = value.credential.split("~");
   if (parts.length !== 3 || parts[2] !== "") throw new Error("credential-invalid");
@@ -146,7 +163,14 @@ async function assertCredential(value: { format: string; credential: string; hol
   try { disclosure = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(encodedDisclosure))); } catch { throw new Error("credential-invalid"); }
   if (!Array.isArray(disclosure) || disclosure.length !== 3 || typeof disclosure[0] !== "string" || disclosure[1] !== "email" || typeof disclosure[2] !== "string" || !B64_128.test(disclosure[0])) throw new Error("credential-invalid");
   if (await digestText(encodedDisclosure) !== payload._sd[0]) throw new Error("credential-invalid");
-  if (canonicalize(disclosure[2]) !== canonicalize(share.recipientEmail)) throw new Error("credential-invalid");
+  const email = disclosure[2];
+  if (share.recipientMatcher?.kind === "emailDomain") {
+    const at = email.lastIndexOf("@");
+    if (at < 1 || email.slice(at + 1) !== share.recipientMatcher.value) throw new Error("credential-invalid");
+  } else if (share.recipientMatcher?.kind === "exactEmail") {
+    if (email !== share.recipientMatcher.value) throw new Error("credential-invalid");
+  } else if (email !== share.recipientEmail) throw new Error("credential-invalid");
+  return email;
 }
 
 function assertClaimChallenge(challenge: ClaimChallengeResponse, share: VerifiedExactEmailShare): void {
@@ -188,7 +212,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
   const claim = async (mailboxProof: string, method: "magic" | "otp"): Promise<void> => {
     const key = await ensureHolder();
     if (method === "magic" && activationId === undefined) {
-      const activation = await input.transport.activate({ invitationId: input.invitationId, claimSecret: mailboxProof });
+      const activation = await activateWithRetry(input.transport, { invitationId: input.invitationId, claimSecret: mailboxProof });
       activationId = activation.activationId;
     }
     setState({ state: "challenge", emailHint: input.share.recipientHint });

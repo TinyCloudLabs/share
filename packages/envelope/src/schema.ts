@@ -307,7 +307,7 @@ export const v2TargetSchema = z.object({
 
 export const contentMetadataSchema = z.object({
   mediaType: z.string().min(1).max(128).optional(),
-  byteLength: z.number().int().nonnegative().max(1_048_576).optional(),
+  byteLength: z.number().int().nonnegative().max(100 * 1024 * 1024).optional(),
   filename: z.string().min(1).max(255).optional(),
   encoding: z.literal("utf-8").optional(),
 }).strict();

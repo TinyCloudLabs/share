@@ -193,6 +193,48 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .composer-status[data-state="created"] { gap: 12px; }
 .composer-status[data-state="created"] .notify-help { margin: 10px 0 0; }
 
+.sender-home-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: -1rem 0 2rem; }
+.sender-account { color: var(--share-muted); font: 650 .78rem/1.3 var(--mono); }
+.sender-live { min-height: 1.4rem; margin: 0 0 1rem; color: var(--share-muted); font-size: .84rem; }
+.sender-library { overflow-x: auto; }
+.sender-library-title { margin: 0 0 1rem; font-size: 1.4rem; font-weight: 550; }
+.sender-history-table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--share-line); font-size: .88rem; }
+.sender-history-table th { padding: 12px 10px; color: var(--share-muted); font: 650 .72rem/1.3 var(--mono); letter-spacing: .02em; text-align: left; }
+.sender-history-table td { padding: 16px 10px; border-top: 1px dotted var(--share-line); vertical-align: top; }
+.sender-item-cell, .sender-status-text, .sender-row-actions { display: grid; gap: 4px; }
+.sender-item-type, .status-expiry { color: var(--share-muted); font-size: .78rem; }
+.sender-status-text.ready .status-label { color: var(--accent); }
+.sender-status-text.expired .status-label, .sender-history-attention { color: var(--share-danger); }
+.sender-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sender-row-actions .button { min-height: 40px; padding: 7px 12px; font-size: .78rem; }
+.sender-empty-state, .sender-history-attention { padding: 3rem 1rem !important; }
+.sender-empty-state { display: grid; gap: .5rem; color: var(--share-muted); text-align: left; }
+.sender-empty-state strong { color: var(--share-ink); font-size: 1.05rem; }
+.sender-empty-state .button { justify-self: start; margin: .5rem 0 0; }
+.sender-history-attention { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; }
+.sender-history-attention span { color: var(--share-muted); }
+.sender-skeleton-cell { color: transparent !important; background: linear-gradient(90deg, var(--share-faint), var(--share-panel), var(--share-faint)); background-size: 200% 100%; animation: sender-skeleton 1.2s var(--ease) infinite; }
+.sender-skeleton-row td { height: 64px; }
+.sender-load-more { margin-top: 1.25rem; }
+@keyframes sender-skeleton { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+@media (max-width: 760px) {
+  .sender-home-toolbar { align-items: stretch; flex-direction: column; }
+  .sender-account { align-self: flex-start; }
+  .sender-library { overflow: visible; }
+  .sender-history-table, .sender-history-table tbody, .sender-history-table tr, .sender-history-table td { display: block; }
+  .sender-history-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .sender-history-table tr { margin: 0 0 1rem; border: 1px solid var(--share-line); border-radius: 8px; }
+  .sender-history-table td { display: grid; grid-template-columns: minmax(7rem, .42fr) minmax(0, 1fr); gap: .7rem; padding: 10px 12px; border-top: 1px dotted var(--share-line); }
+  .sender-history-table td:first-child { border-top: 0; }
+  .sender-history-table td::before { color: var(--share-muted); content: attr(data-label); font: 650 .72rem/1.3 var(--mono); }
+  .sender-history-table td.sender-empty-state, .sender-history-table td.sender-history-attention { display: block; }
+  .sender-row-actions { display: flex !important; }
+  .sender-row-actions::before { align-self: center; }
+  .sender-row-actions .button { flex: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .sender-skeleton-cell { animation: none; } }
+
 @media (max-width: 620px) {
   .composer-controls { grid-template-columns: 1fr; gap: 8px; }
   .composer-section { padding: 14px; }

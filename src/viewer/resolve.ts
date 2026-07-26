@@ -53,7 +53,6 @@ import {
   shareEnvelopeSchema,
   shareEnvelopeV2Schema,
   verifyEnvelope,
-  verifyEnvelopeV2,
   type ShareEnvelope,
   type ShareEnvelopeV2,
 } from "@tinycloud/share-envelope";
@@ -62,6 +61,7 @@ import {
   RegistryHttpError,
   fetchBlob,
 } from "@tinycloud/share-registry";
+import { parseAddressedEnvelope } from "@tinycloud/share-sdk";
 
 import { checkBearerDelegation } from "./delegation.js";
 
@@ -188,17 +188,7 @@ export async function resolveShare(
         const v2 = shareEnvelopeV2Schema.parse(value);
         if (v2.authorizationTarget.kind !== "policy") return { state: "unsupported", reason: "recipient-did-target", envelope: v2 as unknown as ShareEnvelope };
         let policy: Record<string, unknown>;
-        try {
-          const decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(v2.authorizationTarget.policyBytes))) as unknown;
-          if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) throw new Error("policy");
-          policy = decoded as Record<string, unknown>;
-          if (typeof policy.issuerDid !== "string") throw new Error("trusted policy issuer missing");
-        } catch {
-          return { state: "envelope-invalid" };
-        }
-        let verified = false;
-        try { verified = await verifyEnvelopeV2(v2, { expectedSignerDid: policy.issuerDid }); } catch { verified = false; }
-        if (!verified) return { state: "signature-invalid" };
+        try { policy = (await parseAddressedEnvelope(v2)).policy; } catch { return { state: "envelope-invalid" }; }
         if (Date.parse(v2.expiry) <= (options.now?.() ?? Date.now())) return { state: "expired", envelope: v2 as unknown as ShareEnvelope };
         return { state: "policy-v2-claim-required", envelope: v2, shareCid: ciphertextCid, policy };
       }

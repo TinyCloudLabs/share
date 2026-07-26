@@ -4,6 +4,7 @@ import type { ContentSource, SenderScope } from "./protocol.js";
 import { createSenderController, type SenderPolicy, type SenderState } from "./sender.js";
 import type { ShareTransport } from "./transport.js";
 import type { VerifiedExactEmailShare } from "./verified-share.js";
+import { copyWithFallback } from "../share/link-only.js";
 
 export interface SenderMountOptions {
   readonly capabilities: readonly { readonly scope: SenderScope; readonly source: ContentSource; readonly policy: SenderPolicy }[];
@@ -177,6 +178,8 @@ export function mountSender(root: HTMLElement, options: SenderMountOptions): voi
 export interface RecipientFacts {
   readonly envelope: ShareEnvelope;
   readonly share: VerifiedExactEmailShare;
+  /** Complete launch URL held only in memory; never rendered as text or href. */
+  readonly shareUrl?: string;
 }
 
 export interface RecipientViewActions {
@@ -284,6 +287,13 @@ export function renderRecipientState(root: HTMLElement, facts: RecipientFacts, s
   }
   if (state.state === "claimed" || state.state === "session" || state.state === "reading") {
     const forget = element(doc, "button", "recipient-secondary-action", "Forget this browser key"); forget.type = "button"; forget.setAttribute("aria-label", "Forget the private browser key for this share"); forget.addEventListener("click", actions.onForget); status.append(forget);
+  }
+  if (facts.shareUrl !== undefined) {
+    const copy = element(doc, "button", "recipient-secondary-action", "Copy link"); copy.type = "button";
+    copy.setAttribute("aria-describedby", "recipient-copy-status");
+    const copyStatus = element(doc, "span", "recipient-copy-status", ""); copyStatus.id = "recipient-copy-status"; copyStatus.setAttribute("role", "status"); copyStatus.setAttribute("aria-live", "polite");
+    copy.addEventListener("click", () => { void copyWithFallback(facts.shareUrl!).then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; }).catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; }); });
+    status.append(copy, copyStatus);
   }
   main.append(header, status);
   root.append(main);

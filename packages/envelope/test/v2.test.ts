@@ -17,6 +17,7 @@ describe("canonical v2 envelopes", () => {
       resource,
       target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: target.spaceId },
       delegationCid: "delegation-cid",
+      authorityMaterialHandle: "amh_kv_001",
       authorityMaterialDigest: "A".repeat(43),
       contentSource: source,
       contentSourceDigest: "B".repeat(43),
@@ -31,6 +32,11 @@ describe("canonical v2 envelopes", () => {
     expect(() => signEnvelopeV2({ ...envelope, actions: ["read", "read"] }, key)).toThrow();
   });
 
+  it("accepts exactly 100 MiB of content metadata and rejects one byte over", () => {
+    expect(() => signEnvelopeV2({ ...baseEnvelope(), metadata: { mediaType: "application/octet-stream", byteLength: 100 * 1024 * 1024, filename: "large.bin" } }, key)).not.toThrow();
+    expect(() => signEnvelopeV2({ ...baseEnvelope(), metadata: { mediaType: "application/octet-stream", byteLength: 100 * 1024 * 1024 + 1, filename: "too-large.bin" } }, key)).toThrow();
+  });
+
   it("rejects every content-bearing safe-plaintext envelope", () => {
     const base = {
       version: 2 as const,
@@ -40,6 +46,7 @@ describe("canonical v2 envelopes", () => {
       resource,
       target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: target.spaceId },
       delegationCid: "delegation-cid",
+      authorityMaterialHandle: "amh_kv_001",
       authorityMaterialDigest: "A".repeat(43),
       contentSource: source,
       contentSourceDigest: "B".repeat(43),
@@ -62,6 +69,7 @@ describe("canonical v2 envelopes", () => {
       resource,
       target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: target.spaceId },
       delegationCid: "delegation-cid",
+      authorityMaterialHandle: "amh_kv_001",
       authorityMaterialDigest: "A".repeat(43),
       contentSource: source,
       contentSourceDigest: "B".repeat(43),
@@ -74,3 +82,23 @@ describe("canonical v2 envelopes", () => {
     expect(() => signEnvelopeV2(value, key)).toThrow(/matcher digest/i);
   });
 });
+
+function baseEnvelope() {
+  return {
+    version: 2 as const,
+    shareId: "share-boundary",
+    recipientMatcher: { kind: "bearer" as const },
+    actions: ["read"] as const,
+    resource,
+    target,
+    delegationCid: "delegation-cid",
+    authorityMaterialHandle: "amh_kv_001",
+    authorityMaterialDigest: "A".repeat(43),
+    contentSource: source,
+    contentSourceDigest: "B".repeat(43),
+    authorizationTarget: { kind: "policy" as const, policyCid: "policy", policyBytes: toBase64Url(new TextEncoder().encode("{}")) },
+    display: { filename: "large.bin" },
+    expiry: "2026-07-25T00:00:00.000Z",
+    encrypted: true,
+  };
+}

@@ -24,6 +24,17 @@ const scope = {
 };
 
 describe("v2 addressed share creation", () => {
+  it("treats expiryMin as an inclusive lower bound", async () => {
+    const boundedScope = { ...scope, expiryMin: "2026-07-30T00:00:00.000Z", expiryMax: "2026-08-01T00:00:00.000Z" };
+    const input = {
+      matcher: { kind: "emailDomain" as const, value: "example.com" }, source, scope: boundedScope,
+      policy: { policyCid: "policy-cid", policyBytes: "cG9saWN5" }, actions: ["read" as const], resource: { kind: "exact" as const, path: source.path }, shareId: "expiry-boundary", filename: "", mediaType: "application/octet-stream", byteLength: 0, encrypted: false, format: "inline" as const, uploadEnvelope: async () => undefined,
+    };
+    await expect(createAddressedShareLink({ ...input, matcher: { kind: "policyDigest", value: "A".repeat(43) }, expiresAt: boundedScope.expiryMin })).resolves.toBeDefined();
+    await expect(createAddressedShareLink({ ...input, matcher: { kind: "policyDigest", value: "A".repeat(43) }, expiresAt: "2026-07-29T23:59:59.999Z" })).rejects.toThrow(/minimum/);
+    await expect(createAddressedShareLink({ ...input, matcher: { kind: "policyDigest", value: "A".repeat(43) }, expiresAt: boundedScope.expiryMax })).resolves.toBeDefined();
+  });
+
   it("binds domain, actions, and prefix to the signed envelope and honors inline format", async () => {
     const result = await createAddressedShareLink({
       matcher: { kind: "emailDomain", value: "example.com" },

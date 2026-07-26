@@ -5,6 +5,7 @@ import { onRequest } from "../functions/[[path]].js";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
 import { createProductionHandler } from "../src/host/production-server.js";
 import { cloudflareHeaders, validateTrustBundle } from "../src/host/trust-bundle.js";
+import { REGISTRY_UPLOAD_BODY_LIMIT } from "../src/host/upstream.js";
 
 const API_ORIGIN = "https://api.share.tinycloud.xyz";
 const SHARE_ORIGIN = "https://share.tinycloud.xyz";
@@ -148,6 +149,26 @@ describe("production sender route gating", () => {
       "/",
       "/blobs/bafkreiabc",
     ]);
+  });
+
+  it("passes the exact framed 100 MiB registry upload to the authenticated proxy and rejects one byte over", async () => {
+    const raw = trustBundle();
+    const bundle = validateTrustBundle(raw);
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(raw) });
+    const forwarded = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 201, headers: { "content-type": "application/json" } }));
+    const handler = createProductionHandler({ bundle, host });
+    const request = (size: number): Request => ({
+      url: `${SHARE_ORIGIN}/registry`,
+      method: "POST",
+      headers: new Headers({ "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": "2026-07-30T00:00:00.000Z" }),
+      arrayBuffer: async () => new Uint8Array(size).buffer,
+    } as unknown as Request);
+
+    expect((await handler(request(REGISTRY_UPLOAD_BODY_LIMIT))).status).toBe(201);
+    expect(forwarded).toHaveBeenCalledOnce();
+    forwarded.mockClear();
+    expect((await handler(request(REGISTRY_UPLOAD_BODY_LIMIT + 1))).status).toBe(413);
+    expect(forwarded).not.toHaveBeenCalled();
   });
 });
 

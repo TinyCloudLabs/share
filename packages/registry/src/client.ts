@@ -23,11 +23,14 @@ import {
 /** Trustless-gateway raw-block content type (kubo: `/ipfs/<cid>?format=raw`). */
 export const RAW_BLOCK_CONTENT_TYPE = "application/vnd.ipld.raw";
 
-/**
- * Default size cap. Envelopes are 1-2 KB (blueprint §2.1); 64 KiB leaves
- * generous headroom while keeping the registry useless as a file host.
- */
-export const DEFAULT_MAX_BLOB_BYTES = 64 * 1024;
+/** Product limit for newly uploaded plaintext files. */
+export const MAX_SHARE_CONTENT_BYTES = 100 * 1024 * 1024;
+
+/** AES-GCM sealed-blob framing: version byte, nonce, and authentication tag. */
+export const SEALED_BLOB_OVERHEAD_BYTES = 1 + 12 + 16;
+
+/** The registry cap includes framing so an exact 100 MiB file succeeds. */
+export const DEFAULT_MAX_BLOB_BYTES = MAX_SHARE_CONTENT_BYTES + SEALED_BLOB_OVERHEAD_BYTES;
 
 /**
  * Upload header carrying the retention expiry as a strict ISO-8601

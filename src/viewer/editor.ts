@@ -36,12 +36,12 @@ export function mountTextEditor(root: HTMLElement, initial: EditableDocument, cl
   const editor = new ShareEditor(initial, client); const doc = root.ownerDocument; root.replaceChildren();
   const heading = doc.createElement("h2"); heading.textContent = "Edit shared text";
   const area = doc.createElement("textarea"); area.className = "viewer-editor"; area.value = source; area.setAttribute("aria-label", "Shared text draft");
-  const save = doc.createElement("button"); save.type = "button"; save.className = "viewer-primary-action"; save.textContent = "Save changes";
+  const save = doc.createElement("button"); save.type = "button"; save.className = "viewer-primary-action viewer-editor-save"; save.textContent = "Save changes";
   const status = doc.createElement("p"); status.className = "viewer-editor-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const conflict = doc.createElement("div"); conflict.className = "viewer-editor-conflict"; conflict.hidden = true; const reload = doc.createElement("button"); reload.type = "button"; reload.className = "viewer-secondary-action"; reload.textContent = "Reload current version"; const copy = doc.createElement("button"); copy.type = "button"; copy.className = "viewer-secondary-action"; copy.textContent = "Copy my draft"; const conflictTitle = doc.createElement("strong"); conflict.append(conflictTitle, reload, copy); root.append(heading, area, save, status, conflict);
   area.addEventListener("input", () => editor.setDraft(new TextEncoder().encode(area.value)));
   save.addEventListener("click", () => { save.disabled = true; void editor.save().then(() => { status.textContent = "Saved."; }).catch((error) => { if (isPreconditionConflict(error)) { status.textContent = "This share changed elsewhere. Your draft is still here."; conflict.hidden = false; conflictTitle.textContent = "Save conflict — choose what to do next."; } else { status.textContent = "The save failed. Your draft is still here; no retry was made."; } }).finally(() => { save.disabled = false; }); });
   reload.addEventListener("click", () => { void editor.reload().then(() => { try { area.value = new TextDecoder("utf-8", { fatal: true }).decode(editor.value); } catch { status.textContent = "The current version is not editable text."; return; } conflict.hidden = true; status.textContent = "Reloaded current version."; }).catch(() => { status.textContent = "Reload failed. Your draft is still here."; }); });
-  copy.addEventListener("click", () => { void copyText(area.value).then(() => { status.textContent = "Draft copied."; }); });
+  copy.addEventListener("click", () => { void copyText(area.value).then(() => { status.textContent = "Draft copied."; }).catch(() => { status.textContent = "Copy failed. Your draft is still here; select it manually."; }); });
   return editor;
 }

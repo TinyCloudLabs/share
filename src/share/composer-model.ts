@@ -72,7 +72,7 @@ export function defaultComposerModel(): ShareComposerModel {
 
 export function projectCapabilities(model: Pick<ShareComposerModel, "resource" | "permissions">): ProjectedCapability {
   const actionOrder: readonly SharePermission[] = ["read", "list", "edit"];
-  const permissions = actionOrder.filter((action) => model.permissions.includes(action));
+  const permissions = actionOrder.filter((action) => model.permissions.includes(action) || (action === "read" && model.resource.kind === "prefix" && model.permissions.includes("list")));
   if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw new TypeError("Choose at least one supported access action.");
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");

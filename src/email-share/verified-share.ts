@@ -1,10 +1,12 @@
 import type { ContentSource, TrustedNode } from "./protocol.js";
+import type { RecipientMatcher } from "@tinycloud/share-envelope";
 
 export interface VerifiedExactEmailShare {
   readonly shareId: string;
   readonly shareCid: string;
   readonly policyCid: string;
   readonly recipientEmail: string;
+  readonly recipientMatcher?: RecipientMatcher;
   readonly recipientHint: string;
   readonly expiry: string;
   readonly nodeOrigin: string;

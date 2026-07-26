@@ -184,10 +184,10 @@ describe("link-only sender", () => {
   it.each([
     [new File([], "empty.txt", { type: "text/plain" }), /non-empty/],
     [
-      new File([new Uint8Array(64 * 1024)], "oversized.txt", {
+      new File([new Uint8Array(100 * 1024 * 1024 + 1)], "oversized.txt", {
         type: "text/plain",
       }),
-      /smaller than 64 KB/,
+      /no larger than 100 MB/,
     ],
     [new File(["plain"], "image.png", { type: "image/png" }), /\.txt/],
     [new File([new Uint8Array([0xff])], "bad.txt"), /UTF-8/],
@@ -212,6 +212,16 @@ describe("link-only sender", () => {
 });
 
 describe("link-only creation and recipient recovery", () => {
+  it("accepts an exact 100 MiB binary file and rejects 100 MiB plus one byte before upload", async () => {
+    const createShare = vi.fn<CreateShare>(async () => result());
+    const exact = await createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024)], "boundary.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare });
+    expect(exact.url).toBe(LINK);
+    expect(createShare).toHaveBeenCalledOnce();
+    createShare.mockClear();
+    await expect(createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024 + 1)], "over.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare })).rejects.toThrow(/no larger than 100 MB/);
+    expect(createShare).not.toHaveBeenCalled();
+  });
+
   it("uploads only sealed bytes through the authenticated route and recovers the marker in a fresh resolve", async () => {
     const registry: DevRegistry = createDevRegistry();
     const requests: Array<{ url: string; body: Uint8Array; init?: RequestInit }> = [];

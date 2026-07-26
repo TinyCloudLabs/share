@@ -9,6 +9,12 @@ export interface ShareUpstreamOrigins {
 }
 
 export const UPSTREAM_BODY_LIMIT = 128 * 1024;
+// Native Share KV bodies carry base64url content inside a signed JSON
+// envelope. Keep the proxy ceiling aligned with Node's encoded request
+// ceiling so an exact 100 MiB content write can cross the production-shaped
+// boundary without silently falling back to the small JSON API limit.
+export const NATIVE_SHARE_BODY_LIMIT = Math.floor((100 * 1024 * 1024 / 3) * 4) + 2_000_000;
+export const REGISTRY_UPLOAD_BODY_LIMIT = 100 * 1024 * 1024 + (1 + 12 + 16);
 const REQUEST_HEADERS = new Set([
   "accept",
   "authorization",
@@ -26,21 +32,62 @@ const REQUEST_HEADERS = new Set([
 // Share owns caching, framing, referrer, and content-sniffing policy.  An
 // upstream may provide only its protocol media type plus validators; it may
 // not rewrite the browser security boundary.
-const RESPONSE_HEADERS = new Set(["content-type", "etag", "vary", "x-tinycloud-next-cursor"]);
+const RESPONSE_HEADERS = new Set(["content-type", "etag", "vary", "x-tinycloud-next-cursor", "retry-after"]);
 
 function mediaType(value: string | null): string | undefined {
   return value?.split(";", 1)[0]?.trim().toLowerCase();
 }
 
+function peerPath(path: string): string | undefined {
+  let decoded: string;
+  try { decoded = decodeURIComponent(path); } catch { return undefined; }
+  return /^\/peer\/generate\/(?:tinycloud|did):[A-Za-z0-9._:-]+$/i.test(decoded) ? decoded : undefined;
+}
+
 function routePolicy(path: string, method: string): { readonly service: ShareUpstream; readonly requestTypes: readonly string[]; readonly responseTypes: readonly string[]; readonly maxBody: number } {
   const upper = method.toUpperCase();
+  if (path === "/info") {
+    if (upper !== "GET") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: [], responseTypes: ["application/json"], maxBody: 0 };
+  }
+  // The Web SDK stages the sender's host key before opening its first space.
+  // Keep this route limited to a single encoded TinyCloud/did space segment;
+  // arbitrary peer-management paths must never become a same-origin proxy.
+  if (peerPath(path) !== undefined) {
+    if (upper !== "GET") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: [], responseTypes: ["text/plain"], maxBody: 0 };
+  }
+  if (path === "/encryption/networks") {
+    if (upper !== "POST") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
+  }
+  if (/^\/encryption\/networks\/[^/]+$/.test(path)) {
+    if (upper !== "GET") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: [], responseTypes: ["application/json"], maxBody: 0 };
+  }
+  if (/^\/encryption\/networks\/[^/]+\/(?:decrypt|revoke)$/.test(path)) {
+    if (upper !== "POST") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: path.endsWith("/decrypt") ? ["application/json"] : [], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
+  }
+  if (/^\/.well-known\/encryption\/network\/[^/]+$/.test(path)) {
+    if (upper !== "GET") throw new Error("upstream method is not allowed");
+    return { service: "node", requestTypes: [], responseTypes: ["application/json"], maxBody: 0 };
+  }
   if (path.startsWith("/share/v1/")) {
     if (upper !== "POST" || !["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"].includes(path)) throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
   }
   if (path === "/delegate" || path === "/invoke") {
     if (upper !== "POST") throw new Error("upstream method is not allowed");
-    return { service: "node", requestTypes: ["application/json", "application/vnd.tinycloud.share+json"], responseTypes: ["application/json", "application/octet-stream", "application/vnd.tinycloud.share+json"], maxBody: UPSTREAM_BODY_LIMIT };
+    // `/delegate` normally carries the signed delegation entirely in
+    // Authorization; retain the JSON form for legacy callers and vectors.
+    if (path === "/delegate") return { service: "node", requestTypes: ["application/json", "application/vnd.tinycloud.delegation+json", "application/vnd.tinycloud.share+json"], responseTypes: ["application/json", "application/octet-stream", "application/vnd.tinycloud.delegation+json", "application/vnd.tinycloud.share+json"], maxBody: UPSTREAM_BODY_LIMIT };
+    // The legacy Web SDK sends ordinary space invocations with a JSON string
+    // body but no explicit media type. Fetch labels that request text/plain;
+    // this is still authenticated by the native Authorization header and is
+    // normalized to Rocket's application/json route below. V2 share invokes
+    // continue to require their dedicated vendor media type.
+    return { service: "node", requestTypes: ["application/json", "text/plain", "application/vnd.tinycloud.delegation+json", "application/vnd.tinycloud.share+json"], responseTypes: ["application/json", "application/octet-stream", "application/vnd.tinycloud.delegation+json", "application/vnd.tinycloud.share+json"], maxBody: NATIVE_SHARE_BODY_LIMIT };
   }
   if (path.startsWith("/v1/share-email/")) {
     const jsonPost = ["/v1/share-email/invitations", "/v1/share-email/invitations/resend", "/v1/share-email/claims/challenge", "/v1/share-email/claims/redeem", "/v1/share-email/claims/activate", "/v1/share-email/webhooks/resend"];
@@ -58,7 +105,7 @@ function routePolicy(path: string, method: string): { readonly service: ShareUps
   }
   if (path === "/registry" || path.startsWith("/registry/")) {
     if (upper === "GET") return { service: "registry", requestTypes: [], responseTypes: ["application/vnd.ipld.raw", "application/json"], maxBody: 0 };
-    if (upper === "POST") return { service: "registry", requestTypes: ["application/vnd.ipld.raw"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
+    if (upper === "POST") return { service: "registry", requestTypes: ["application/vnd.ipld.raw"], responseTypes: ["application/json"], maxBody: REGISTRY_UPLOAD_BODY_LIMIT };
   }
   throw new Error("upstream route is not allowed");
 }
@@ -67,16 +114,25 @@ export function sanitizeUpstreamRequest(path: string, method: string, incoming: 
   const policy = routePolicy(path, method);
   if (bodyLength > policy.maxBody) throw new Error("upstream body is too large");
   const contentType = mediaType(incoming.get("content-type"));
-  if (policy.requestTypes.length > 0 && (contentType === undefined || !policy.requestTypes.includes(contentType))) throw new Error("upstream content type is not allowed");
+  const emptyNativeDelegation = path === "/delegate" && bodyLength === 0 && contentType === undefined;
+  const emptyNativeInvoke = path === "/invoke" && bodyLength === 0 && contentType === undefined;
+  if (policy.requestTypes.length > 0 && !emptyNativeDelegation && !emptyNativeInvoke && (contentType === undefined || !policy.requestTypes.includes(contentType))) throw new Error(`upstream content type is not allowed (${contentType ?? "missing"})`);
   if (policy.requestTypes.length === 0 && contentType !== undefined) throw new Error("unexpected upstream content type");
   const headers = new Headers();
   for (const name of REQUEST_HEADERS) {
-    if (name === "authorization" && path !== "/delegate" && path !== "/invoke") continue;
+    const carriesNativeAuth = path === "/delegate" || path === "/invoke" || path === "/encryption/networks" || /^\/encryption\/networks\/[^/]+\/(?:decrypt|revoke)$/.test(path);
+    if (name === "authorization" && !carriesNativeAuth) continue;
     const value = incoming.get(name);
     if (value !== null) headers.set(name, value);
   }
   headers.delete("host");
   headers.delete("content-length");
+  // Rocket's native JSON route requires a media type even for the signed
+  // bodyless space-list invocation; SDK capability headers intentionally do
+  // not supply one. Normalize only the legacy untyped/text form here. The
+  // share-v2 vendor media type selects the dedicated native share route on
+  // the real Node router and must reach that route unchanged.
+  if (path === "/invoke" && (emptyNativeInvoke || contentType === "text/plain" || contentType === "application/vnd.tinycloud.delegation+json")) headers.set("content-type", "application/json");
   headers.set("origin", shareOrigin);
   return headers;
 }
@@ -154,6 +210,9 @@ export function resolveShareUpstreams(bundle: ShareTrustBundle, env: NodeJS.Proc
 
 export function upstreamForPath(bundle: ShareTrustBundle, path: string, env: NodeJS.ProcessEnv = process.env): { readonly service: ShareUpstream; readonly origin: string } | undefined {
   const origins = resolveShareUpstreams(bundle, env);
+  if (path === "/info") return { service: "node", origin: origins.node };
+  if (peerPath(path) !== undefined) return { service: "node", origin: origins.node };
+  if (path === "/encryption/networks" || /^\/encryption\/networks\/[^/]+(?:\/decrypt|\/revoke)?$/.test(path) || /^\/.well-known\/encryption\/network\/[^/]+$/.test(path)) return { service: "node", origin: origins.node };
   if (path.startsWith("/share/v1/")) return { service: "node", origin: origins.node };
   if (path === "/delegate" || path === "/invoke") return { service: "node", origin: origins.node };
   if (/^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path)) return { service: "registry", origin: origins.registry };

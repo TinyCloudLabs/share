@@ -66,6 +66,7 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 function formattedSize(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   if (size < 1024) return `${size} B`;
   return `${(size / 1024).toFixed(1)} KB`;
 }
@@ -90,7 +91,7 @@ function readFileBytes(file: File): Promise<Uint8Array> {
 async function validateFile(file: File, allowBinary = false): Promise<Uint8Array> {
   if (file.size === 0) throw new LinkOnlyShareError("file", "Choose a non-empty file.");
   if (file.size > MAX_CONTENT_BYTES) {
-    throw new LinkOnlyShareError("file", allowBinary ? "Choose a file smaller than 64 KB." : "Choose a text or Markdown file smaller than 64 KB.");
+    throw new LinkOnlyShareError("file", allowBinary ? "Choose a file no larger than 100 MB." : "Choose a text or Markdown file no larger than 100 MB.");
   }
   if (!allowBinary && !/\.(?:md|markdown|txt)$/i.test(file.name)) throw new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file.");
   let bytes: Uint8Array;
@@ -263,7 +264,7 @@ export function mountLinkOnlyShare(
     doc,
     "span",
     "upload-help",
-    "Text or Markdown · smaller than 64 KB",
+    "Text or Markdown · up to 100 MB",
   );
   const fileInput = element(doc, "input", "upload-input");
   fileInput.type = "file";

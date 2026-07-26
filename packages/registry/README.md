@@ -38,7 +38,7 @@ const bytes = await fetchBlob("http://127.0.0.1:8787", cid);
 import { createDevRegistry, serveDevRegistry } from "@tinycloud/share-registry/dev-server";
 
 // In-process (tests): a web-standard (Request) => Promise<Response> handler
-const { handler, store, sweepExpired } = createDevRegistry({ maxBlobBytes: 64 * 1024 });
+const { handler, store, sweepExpired } = createDevRegistry({ maxBlobBytes: 100 * 1024 * 1024 + 29 });
 
 // Real listener (dev): node:http wrapper around the same handler
 const running = await serveDevRegistry({ port: 8787 });

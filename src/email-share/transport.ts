@@ -197,7 +197,17 @@ function parseProof(value: unknown): SignedProof {
 
 function parseAuthorization(value: unknown): AuthorizedInvitation {
   const outer = exact(value, ["authorization", "proof"]);
-  const authorization = exact(outer.authorization, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
+  const raw = record(outer.authorization);
+  if (raw.version === 2) {
+    const required = ["type", "version", "jti", "reportAbuseToken", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "recipientMatcher", "deliveryEmail", "shareUrl", "actions", "resource", "requestBodyDigest", "idempotencyKey"];
+    const optional: string[] = [];
+    if (Object.keys(raw).some((key) => !required.includes(key) && !optional.includes(key)) || required.some((key) => !Object.hasOwn(raw, key))) throw new ShareTransportError("unknown");
+    const authorization = raw;
+    if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 2 || (authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") || !Array.isArray(authorization.actions) || typeof authorization.resource !== "string" || typeof authorization.shareUrl !== "string" || typeof authorization.requestBodyDigest !== "string" || typeof authorization.idempotencyKey !== "string") throw new ShareTransportError("unknown");
+    try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
+    return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
+  }
+  const authorization = exact(raw, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
   if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 1 || authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") throw new ShareTransportError("unknown");
   try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
   return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
@@ -205,14 +215,17 @@ function parseAuthorization(value: unknown): AuthorizedInvitation {
 
 function parsePolicyChallenge(value: unknown): { readonly challenge: Record<string, unknown>; readonly proof: SignedProof } {
   const object = exact(value, ["challenge", "proof"]);
-  const challenge = exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "requestBodyDigest", "issuedAt", "expiresAt", "enforcerDid"]);
+  const challenge = exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "actions", "resource", "requestBodyDigest", "issuedAt", "expiresAt", "enforcerDid"]);
+  if (!Array.isArray(challenge.actions) || challenge.actions.length === 0 || challenge.actions.some((action) => typeof action !== "string") || challenge.actions.some((action, index, actions) => index > 0 && String(actions[index - 1]) >= String(action)) || !challenge.actions.includes(challenge.action)) throw new ShareTransportError("unknown");
   text(challenge.enforcerDid);
   return { challenge, proof: parseProof(object.proof) };
 }
 
 function parsePolicySession(value: unknown): { readonly session: Record<string, unknown>; readonly proof: SignedProof } {
   const object = exact(value, ["session", "proof"]);
-  return { session: exact(object.session, ["type", "version", "sessionId", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "resource", "credentialDigest", "issuedAt", "expiresAt"]), proof: parseProof(object.proof) };
+  const session = exact(object.session, ["type", "version", "sessionId", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "actions", "resource", "credentialDigest", "issuedAt", "expiresAt"]);
+  if (!Array.isArray(session.actions) || session.actions.length === 0 || session.actions.some((action) => typeof action !== "string") || session.actions.some((action, index, actions) => index > 0 && String(actions[index - 1]) >= String(action)) || !session.actions.includes(session.action)) throw new ShareTransportError("unknown");
+  return { session, proof: parseProof(object.proof) };
 }
 
 function parseRead(value: unknown): ReadResponse {
