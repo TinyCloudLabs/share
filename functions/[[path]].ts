@@ -3,7 +3,7 @@ const EXACT = new Set([
   "/api/share/auth/openkey/nonce", "/api/share/auth/openkey", "/api/share/auth/login", "/api/share/auth/logout",
   "/api/share/capability", "/api/share/capabilities", "/api/share/sign", "/api/share/bindings",
 ]);
-const PREFIXES = ["/.well-known/tinycloud-share/bindings/", "/api/share/link-only/registry/", "/registry/", "/share/v1/", "/v1/share-email/"];
+const PREFIXES = ["/.well-known/tinycloud-share/bindings/", "/api/share/link-only/registry/", "/registry/", "/share/v1/", "/share/v2/", "/v1/share-email/"];
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
 type PagesContext<Env> = { request: Request; env: Env; next: () => Promise<Response> };
 
@@ -22,6 +22,7 @@ async function staticResponse(context: PagesContext<{ SHARE_API_ORIGIN?: string 
 export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: string }>): Promise<Response> => {
   const incoming = new URL(context.request.url);
   if (!routed(incoming.pathname)) return staticResponse(context, incoming.pathname);
+  if (incoming.protocol !== "https:") return new Response(JSON.stringify({ error: { code: "https_required" } }), { status: 400, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "strict-transport-security": "max-age=31536000; includeSubDomains" } });
   if (!METHODS.has(context.request.method)) return new Response(JSON.stringify({ error: { code: "method_not_allowed" } }), { status: 405, headers: { "content-type": "application/json; charset=utf-8", allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS", "cache-control": "no-store" } });
   const upstream = origin(context.env.SHARE_API_ORIGIN);
   if (upstream === undefined) return new Response(JSON.stringify({ error: { code: "proxy_misconfigured" } }), { status: 503, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
@@ -35,5 +36,6 @@ export const onRequest = async (context: PagesContext<{ SHARE_API_ORIGIN?: strin
   if (response.status >= 300 && response.status < 400) return new Response(JSON.stringify({ error: { code: "upstream_unavailable" } }), { status: 502, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   const out = new Response(response.body, response);
   out.headers.delete("server"); out.headers.delete("via");
+  out.headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
   return out;
 };

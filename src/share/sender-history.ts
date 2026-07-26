@@ -62,7 +62,7 @@ function validateUrl(value: unknown): string {
   if (new TextEncoder().encode(url).byteLength > MAX_URL_BYTES) return fail();
   let parsed: URL;
   try { parsed = new URL(url); } catch { return fail(); }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return fail();
+  if (parsed.protocol !== "https:") return fail();
   if (parsed.username || parsed.password || parsed.search !== "" || parsed.hash === "") return fail();
   if (parsed.pathname === "/s/inline") {
     if (!INLINE_HASH_RE.test(parsed.hash) || new TextEncoder().encode(parsed.hash).byteLength > MAX_INLINE_HASH_BYTES) return fail();

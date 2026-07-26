@@ -44,6 +44,11 @@ require deployment secrets.
 
 Required production variables:
 
+- `SHARE_RELEASE_PROVENANCE`: a strict manifest binding the release identifier,
+  protected-merge commits for Share/Node/OpenCredentials/SDK, the exact Share
+  image digest, configuration digest, migration version, and an immutable
+  rollback image/release target. The deploy validator rejects a composition
+  without this manifest or with a mismatched Share image.
 - `SHARE_SENDER_ENABLED`: optional strict boolean string. Omitted or `false`
   selects auth-only mode; `true` enables the sender and makes all sender
   material below mandatory.

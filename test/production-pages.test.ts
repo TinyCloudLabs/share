@@ -122,6 +122,23 @@ describe("Cloudflare Pages static asset boundaries", () => {
 });
 
 describe("production sender route gating", () => {
+  it("rejects plaintext requests before sensitive handlers run", async () => {
+    const raw = trustBundle();
+    const bundle = validateTrustBundle(raw);
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(raw) });
+    const forwarded = vi.spyOn(globalThis, "fetch");
+    const handler = createProductionHandler({ bundle, host, enforceHttps: true });
+    const response = await handler(new Request("http://share.tinycloud.xyz/api/share/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "http" },
+      body: "{}",
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: { code: "https_required" } });
+    expect(forwarded).not.toHaveBeenCalled();
+    expect(response.headers.get("strict-transport-security")).toContain("max-age=");
+  });
+
   it("blocks only the sender authorization route while recipient and registry routes still proxy", async () => {
     const raw = trustBundle();
     const bundle = validateTrustBundle(raw);

@@ -67,7 +67,7 @@ async function holderBindingArtifact(input: {
     targetOrigin: input.share.nodeOrigin,
     nodeAudience: input.share.nodeAudience,
     audience: input.share.nodeAudience,
-    enforcerDid: input.challenge.enforcerDid,
+    ...(typeof input.challenge.enforcerDid === "string" ? { enforcerDid: input.challenge.enforcerDid } : {}),
     requestOrigin: input.share.nodeOrigin,
     challengeId: input.challenge.challengeId,
     challengeRequestDigest: input.challengeRequestDigest,
@@ -135,7 +135,7 @@ export async function readClaimedShare(input: {
   const challenge = challengeResponse.challenge as Record<string, unknown>;
   await verifyNodeProof(challenge, challengeResponse.proof, input.share.trustedNode, SIGNATURE_DOMAINS.policyChallenge);
   assertCommonNodeBinding(challenge, input.share, input.claim.holder.did);
-  if (typeof challenge.challengeId !== "string" || typeof challenge.nonce !== "string" || typeof challenge.enforcerDid !== "string" || challenge.requestBodyDigest !== requestBodyDigest) throw new Error("challenge-binding-invalid");
+  if (typeof challenge.challengeId !== "string" || typeof challenge.nonce !== "string" || challenge.version === 2 && typeof challenge.enforcerDid !== "string" || challenge.requestBodyDigest !== requestBodyDigest) throw new Error("challenge-binding-invalid");
   assertNodeTime(challenge.issuedAt, challenge.expiresAt, Date.now(), 120);
 
   const credentialDigest = await digestText(input.claim.credential);
@@ -155,7 +155,7 @@ export async function readClaimedShare(input: {
     holderDid: input.claim.holder.did,
     targetOrigin: input.share.nodeOrigin,
     nodeAudience: input.share.nodeAudience,
-    enforcerDid: challenge.enforcerDid,
+    ...(typeof challenge.enforcerDid === "string" ? { enforcerDid: challenge.enforcerDid } : {}),
     credentialDigest,
     action: input.share.action,
     resource: input.share.resource,

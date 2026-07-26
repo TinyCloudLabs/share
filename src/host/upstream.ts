@@ -73,8 +73,11 @@ function routePolicy(path: string, method: string): { readonly service: ShareUps
     if (upper !== "GET") throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: [], responseTypes: ["application/json"], maxBody: 0 };
   }
-  if (path.startsWith("/share/v1/")) {
-    if (upper !== "POST" || !["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"].includes(path)) throw new Error("upstream method is not allowed");
+  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/")) {
+    const allowed = path.startsWith("/share/v2/")
+      ? ["/share/v2/policies", "/share/v2/policy/challenges", "/share/v2/policy/session", "/share/v2/invoke", "/share/v2/deliveries/authorize"]
+      : ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"];
+    if (upper !== "POST" || !allowed.includes(path)) throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
   }
   if (path === "/delegate" || path === "/invoke") {
@@ -213,7 +216,7 @@ export function upstreamForPath(bundle: ShareTrustBundle, path: string, env: Nod
   if (path === "/info") return { service: "node", origin: origins.node };
   if (peerPath(path) !== undefined) return { service: "node", origin: origins.node };
   if (path === "/encryption/networks" || /^\/encryption\/networks\/[^/]+(?:\/decrypt|\/revoke)?$/.test(path) || /^\/.well-known\/encryption\/network\/[^/]+$/.test(path)) return { service: "node", origin: origins.node };
-  if (path.startsWith("/share/v1/")) return { service: "node", origin: origins.node };
+  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/")) return { service: "node", origin: origins.node };
   if (path === "/delegate" || path === "/invoke") return { service: "node", origin: origins.node };
   if (/^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path)) return { service: "registry", origin: origins.registry };
   if (path.startsWith("/v1/share-email/")) return { service: "credentials", origin: origins.credentials };

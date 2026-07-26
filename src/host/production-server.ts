@@ -20,7 +20,7 @@ function dynamic(path: string): boolean {
     path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" ||
     path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path) ||
     path.startsWith("/api/share/link-only/registry/") ||
-    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
+    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
 }
 
 function rewrite(path: string): string {
@@ -61,12 +61,28 @@ function withSecurityHeaders(bundle: ShareTrustBundle, path: string, result: Res
   return new Response(result.body, { status: result.status, statusText: result.statusText, headers });
 }
 
-export function createProductionHandler(options: { readonly bundle: ShareTrustBundle; readonly host: ShareHost; readonly staticRoot?: string }): (request: Request) => Promise<Response> {
+function requiresHttps(path: string): boolean {
+  return path.startsWith("/api/") || path === "/delegate" || path === "/invoke" || path.startsWith("/registry") || path.startsWith("/share/") || path.startsWith("/v1/");
+}
+
+function rejectPlaintext(request: Request, path: string): Response | undefined {
+  if (!requiresHttps(path)) return undefined;
+  const forwarded = request.headers.get("x-forwarded-proto");
+  const protocol = forwarded === null ? new URL(request.url).protocol.replace(":", "") : forwarded.split(",", 1)[0]!.trim().toLowerCase();
+  if (protocol === "https") return undefined;
+  return json(400, "https_required");
+}
+
+export function createProductionHandler(options: { readonly bundle: ShareTrustBundle; readonly host: ShareHost; readonly staticRoot?: string; readonly enforceHttps?: boolean }): (request: Request) => Promise<Response> {
   const staticRoot = options.staticRoot ?? DEFAULT_STATIC_ROOT;
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+    if (options.enforceHttps === true) {
+      const plaintext = rejectPlaintext(request, path);
+      if (plaintext !== undefined) return withSecurityHeaders(options.bundle, path, plaintext);
+    }
     const upstream = upstreamForPath(options.bundle, path);
     if (upstream !== undefined) {
       assertSafeUpstreamQuery(path, url.search);
@@ -158,7 +174,7 @@ export function startProductionServer(env: NodeJS.ProcessEnv = process.env): Ret
   if (env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
   const bundle = loadTrustBundle(env.SHARE_SENDER_ENABLED === "true" ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
   const host = createShareHostFromEnv(env);
-  const handler = createProductionHandler({ bundle, host });
+  const handler = createProductionHandler({ bundle, host, enforceHttps: true });
   const server = createServer((request, response) => {
     void incomingRequest(request).then(handler).then((result) => send(response, result)).catch((error) => {
       console.error(`share-host stage=request-error path=${(request.url ?? "/").split("?")[0] ?? "/"}`);

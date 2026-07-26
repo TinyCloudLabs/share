@@ -27,6 +27,7 @@ describe("sender history records", () => {
     expect(() => validateSenderHistoryRecord({ ...base, type: "future", version: 1, urlDigest: "x" })).toThrow(/invalid/i);
     expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", createdAt: "not-a-time" })).toThrow(/invalid/i);
     expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", recipient: { kind: "exactEmail", value: "" } })).toThrow(/invalid/i);
+    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", url: base.url.replace("https:", "http:") })).toThrow(/invalid/i);
   });
 
   it("bounds oversized URLs before persistence", () => {

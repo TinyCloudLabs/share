@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
 const immutableImage = /^[a-z0-9](?:[a-z0-9./_-]*[a-z0-9])?@sha256:[0-9a-f]{64}$/;
+const commit = /^[0-9a-f]{40}$/;
+const digest = /^sha256:[0-9a-f]{64}$/;
 if (typeof process.env.SHARE_API_IMAGE !== "string" || !immutableImage.test(process.env.SHARE_API_IMAGE)) throw new Error("SHARE_API_IMAGE must be an immutable registry digest reference");
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden for deploy configuration");
 for (const name of ["SHARE_NODE_TRANSPORT_ORIGIN", "SHARE_CREDENTIALS_TRANSPORT_ORIGIN", "SHARE_REGISTRY_TRANSPORT_ORIGIN", "SHARE_HERMETIC_UPSTREAMS_JSON", "SHARE_HERMETIC_COMPOSITION"]) {
@@ -37,6 +39,12 @@ if (senderEnabled) {
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
   try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
 }
+const provenanceRaw = process.env.SHARE_RELEASE_PROVENANCE;
+if (typeof provenanceRaw !== "string" || provenanceRaw.length === 0) throw new Error("SHARE_RELEASE_PROVENANCE is required for deploy configuration");
+let provenance;
+try { provenance = JSON.parse(provenanceRaw); } catch { throw new Error("SHARE_RELEASE_PROVENANCE must be JSON"); }
+const provenanceKeys = ["releaseId", "shareCommit", "nodeCommit", "openCredentialsCommit", "sdkCommit", "shareApiImage", "configurationDigest", "migrationVersion", "rollbackImage", "rollbackReleaseId"];
+if (typeof provenance !== "object" || provenance === null || Array.isArray(provenance) || Object.keys(provenance).length !== provenanceKeys.length || provenanceKeys.some((key) => !Object.hasOwn(provenance, key)) || typeof provenance.releaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.releaseId) || !commit.test(provenance.shareCommit) || !commit.test(provenance.nodeCommit) || !commit.test(provenance.openCredentialsCommit) || !commit.test(provenance.sdkCommit) || provenance.shareApiImage !== process.env.SHARE_API_IMAGE || !digest.test(provenance.configurationDigest) || typeof provenance.migrationVersion !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(provenance.migrationVersion) || !immutableImage.test(provenance.rollbackImage) || typeof provenance.rollbackReleaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.rollbackReleaseId)) throw new Error("SHARE_RELEASE_PROVENANCE must bind reviewed commits, image, configuration, migration, and rollback target");
 const bindingStorePath = process.env.SHARE_BINDING_STORE_PATH ?? "/var/lib/tinycloud/share/bindings.ndjson";
 if (process.env.SHARE_BINDING_STORE_ROOT !== undefined && process.env.SHARE_BINDING_STORE_ROOT !== "/var/lib/tinycloud/share") throw new Error("SHARE_BINDING_STORE_ROOT is fixed to the named Share volume");
 if (senderEnabled) {
