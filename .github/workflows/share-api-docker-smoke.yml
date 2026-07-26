@@ -1,12 +1,14 @@
 name: Share API Docker smoke
 on:
   pull_request:
-    paths: [Dockerfile.share-api, compose.share-api.yml, src/**, public/**, package*.json, .github/workflows/share-api-docker-smoke.yml]
+    paths: [Dockerfile.share-api, compose.share-api.yml, src/**, public/**, package*.json, scripts/validate-deploy-config.mjs, .github/workflows/share-api-docker-smoke.yml]
 jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
       SHARE_API_IMAGE: ghcr.io/tinycloudlabs/share-api@sha256:c81b0d0d07713c1a2d045a2168c80071fb201475000000000000000000000000
+      SHARE_RELEASE_PROVENANCE: >-
+        {"releaseId":"ci-smoke","shareCommit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","nodeCommit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","openCredentialsCommit":"cccccccccccccccccccccccccccccccccccccccc","sdkCommit":"dddddddddddddddddddddddddddddddddddddddd","shareApiImage":"ghcr.io/tinycloudlabs/share-api@sha256:c81b0d0d07713c1a2d045a2168c80071fb201475000000000000000000000000","configurationDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","migrationVersion":"ci-smoke","rollbackImage":"ghcr.io/tinycloudlabs/share-api@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","rollbackReleaseId":"ci-previous"}
       CLOUDFLARE_TUNNEL_TOKEN: test-only-compose-token
       SHARE_SMOKE_TRUST_BUNDLE: >-
         {"version":"tinycloud.share-email-trust-bundle/v1","shareOrigin":"https://share.tinycloud.xyz","returnOrigin":"https://share.tinycloud.xyz","registryOrigin":"https://registry.tinycloud.xyz","credentialsOrigin":"https://witness.credentials.org","nodeOrigin":"https://node.tinycloud.xyz","nodeAudience":"did:web:node.tinycloud.xyz","nodeInvitationKid":"did:web:node.tinycloud.xyz#invitation-key-1","nodeInvitationPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","nodeKeyVersion":1,"nodeEnabled":true,"issuerDid":"did:web:issuer.credentials.org","issuerVct":"opencredentials.email/v1","issuerKid":"did:web:issuer.credentials.org#email-signing-key-1","issuerPublicKey":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","issuerKeyVersion":1,"issuerEnabled":true}
