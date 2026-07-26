@@ -98,7 +98,7 @@ function adapterFor(
     const request = input.request as Record<string, unknown>;
     const authorization = modifyAuthorization({
       type: "TinyCloudShareInviteAuthorization",
-      version: 1,
+      version: request.version,
       jti: request.jti,
       senderDid: request.senderDid,
       shareCid: request.shareCid,
@@ -107,7 +107,15 @@ function adapterFor(
       delegationCid: request.delegationCid,
       authorityMaterialHandle: request.authorityMaterialHandle,
       authorityMaterialDigest: request.authorityMaterialDigest,
-      recipientEmail: request.recipientEmail,
+      ...(request.version === 2 ? {
+        recipientMatcher: request.recipientMatcher,
+        deliveryEmail: request.deliveryEmail,
+        shareUrl: request.shareUrl,
+        actions: request.actions,
+        resource: request.resource,
+        requestBodyDigest: request.requestBodyDigest,
+        idempotencyKey: request.idempotencyKey,
+      } : { recipientEmail: request.recipientEmail }),
       targetOrigin: request.targetOrigin,
       nodeAudience: request.nodeAudience,
       returnOrigin: scope.shareOrigin,

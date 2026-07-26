@@ -69,12 +69,15 @@ Required production variables:
   and only then issues an opaque sender session. `SHARE_AUTH_USERS_JSON` is an
   optional legacy fallback containing scrypt-password records; the product UI
   does not request those passwords.
+- `SHARE_BINDING_STORE_ROOT` is the verified persistent mount root and is fixed
+  by the production Compose file at `/var/lib/tinycloud/share`. A separately
+  mounted durable root may be supplied only when that mount is explicitly
+  provisioned and verified before startup.
 - `SHARE_BINDING_STORE_PATH` (sender-enabled only, optional in the Compose
-  deployment): durable, private path or mounted durable store for public
-  binding records. It defaults to
-  `/var/lib/tinycloud/share/bindings.ndjson` on the persistent Share volume. An
-  in-memory store is permitted only for the explicit hermetic fixture
-  composition.
+  deployment) must be a normalized strict descendant of that root; traversal,
+  `/tmp`, sibling-prefix paths, and unmounted absolute paths are rejected. It
+  defaults to `/var/lib/tinycloud/share/bindings.ndjson`. An in-memory store is
+  permitted only for the explicit hermetic fixture composition.
 
 The Node, OpenCredentials, and registry upstream destinations are not separate
 deployment variables. They are derived directly from `nodeOrigin`,

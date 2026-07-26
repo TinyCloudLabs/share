@@ -1,6 +1,5 @@
 import { canonicalize, didKeyFromEd25519PublicKey, toBase64Url, type ShareEnvelope } from "@tinycloud/share-envelope";
 import {
-  signedInvitationProof,
   canonicalDigest,
   type AuthorizedInvitation,
   type SenderScope,
@@ -67,12 +66,14 @@ export async function sendShareEmail(input: {
   const draft = draftForGeneratedShareLink(input.share);
   const trustedShare = asVerifiedShare(draft, input.scope);
   assertTrustedNodeScope(trustedShare, input.scope.trustedNode);
-  const signed = await signedInvitationProof(draft, input.scope);
-  const authorized: AuthorizedInvitation = await input.adapters.authorizeInvitation({ request: signed.request, proof: signed.proof });
-  await verifyNodeProof(authorized.authorization, authorized.proof, input.scope.trustedNode, SIGNATURE_DOMAINS.inviteAuthorization);
-  const expected: Record<string, unknown> = {
-    type: "TinyCloudShareInviteAuthorization",
-    version: 1,
+  const recipientMatcher = { kind: "exactEmail" as const, value: draft.email };
+  const actions = [draft.source.action];
+  const resource = draft.source.path;
+  const idempotencyKey = await canonicalDigest({ shareUrl: draft.shareUrl, recipientEmail: draft.email });
+  const requestWithoutDigest = {
+    version: 2,
+    jti: draft.invitationJti,
+    reportAbuseToken: draft.reportAbuseToken,
     senderDid: input.scope.senderDid,
     shareCid: draft.shareCid,
     shareId: draft.envelope.shareId,
@@ -80,7 +81,40 @@ export async function sendShareEmail(input: {
     delegationCid: input.scope.delegationCid,
     authorityMaterialHandle: input.scope.authorityMaterialHandle,
     authorityMaterialDigest: input.scope.authorityMaterialDigest,
-    recipientEmail: draft.email,
+    recipientMatcher,
+    deliveryEmail: draft.email,
+    shareUrl: draft.shareUrl,
+    targetOrigin: input.scope.targetOrigin,
+    nodeAudience: input.scope.nodeAudience,
+    documentName: input.scope.documentName,
+    senderTrust: input.scope.senderTrust,
+    contentSource: draft.source,
+    contentSourceDigest: draft.sourceDigest,
+    actions,
+    resource,
+    shareExpiresAt: draft.envelope.expiry,
+    idempotencyKey,
+  } as const;
+  const request = { ...requestWithoutDigest, requestBodyDigest: await canonicalDigest(requestWithoutDigest) } as const;
+  const signature = await input.scope.signer.sign({ purpose: "inviteAuthorization", message: canonicalize(request), binding: request });
+  const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
+  if (signerDid !== input.scope.senderDid || signature.length !== 64) throw new Error("sender authorization proof is invalid");
+  const proof = { alg: "EdDSA" as const, kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) };
+  const authorized: AuthorizedInvitation = await input.adapters.authorizeInvitation({ request, proof });
+  await verifyNodeProof(authorized.authorization, authorized.proof, input.scope.trustedNode, SIGNATURE_DOMAINS.inviteAuthorization);
+  const expected: Record<string, unknown> = {
+    type: "TinyCloudShareInviteAuthorization",
+    version: 2,
+    senderDid: input.scope.senderDid,
+    shareCid: draft.shareCid,
+    shareId: draft.envelope.shareId,
+    policyCid: draft.policyCid,
+    delegationCid: input.scope.delegationCid,
+    authorityMaterialHandle: input.scope.authorityMaterialHandle,
+    authorityMaterialDigest: input.scope.authorityMaterialDigest,
+    recipientMatcher,
+    deliveryEmail: draft.email,
+    shareUrl: draft.shareUrl,
     targetOrigin: input.scope.targetOrigin,
     nodeAudience: input.scope.nodeAudience,
     returnOrigin: input.scope.shareOrigin,
@@ -88,14 +122,18 @@ export async function sendShareEmail(input: {
     senderTrust: input.scope.senderTrust,
     contentSource: draft.source,
     contentSourceDigest: draft.sourceDigest,
+    actions,
+    resource,
     shareExpiresAt: draft.envelope.expiry,
+    requestBodyDigest: request.requestBodyDigest,
+    idempotencyKey,
     reportAbuseToken: draft.reportAbuseToken,
   };
   for (const [key, value] of Object.entries(expected)) {
     const actual = (authorized.authorization as unknown as Record<string, unknown>)[key];
     if (typeof value === "object" ? canonicalize(actual) !== canonicalize(value) : actual !== value) throw new Error("invitation-authorization-mismatch");
   }
-  const accepted = await input.adapters.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl, idempotencyKey: await canonicalDigest({ shareCid: draft.shareCid, recipientEmail: draft.email }) });
+  const accepted = await input.adapters.requestDelivery({ authorization: authorized.authorization, proof: authorized.proof, shareUrl: draft.shareUrl, idempotencyKey });
   return { status: "accepted", state: "queued", retryAfterSeconds: accepted.retryAfterSeconds, shareCid: draft.shareCid, shareId: draft.envelope.shareId, recipientEmail: draft.email };
 }
 

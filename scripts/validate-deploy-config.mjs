@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden for deploy configuration");
 for (const name of ["SHARE_NODE_TRANSPORT_ORIGIN", "SHARE_CREDENTIALS_TRANSPORT_ORIGIN", "SHARE_REGISTRY_TRANSPORT_ORIGIN", "SHARE_HERMETIC_UPSTREAMS_JSON", "SHARE_HERMETIC_COMPOSITION"]) {
@@ -35,5 +36,11 @@ if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
   try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
 }
 const bindingStorePath = process.env.SHARE_BINDING_STORE_PATH ?? "/var/lib/tinycloud/share/bindings.ndjson";
-if (senderEnabled && (!bindingStorePath.startsWith("/") || bindingStorePath.includes("\u0000"))) throw new Error("SHARE_BINDING_STORE_PATH must be an absolute durable production path");
+if (senderEnabled) {
+  const root = "/var/lib/tinycloud/share";
+  const remainder = relative(resolve(root), resolve(bindingStorePath));
+  if (!isAbsolute(bindingStorePath) || bindingStorePath.endsWith("/") || bindingStorePath.includes("\u0000") || bindingStorePath.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..") || remainder === "" || remainder.startsWith("..") || isAbsolute(remainder)) {
+    throw new Error("SHARE_BINDING_STORE_PATH must be a normalized descendant of /var/lib/tinycloud/share");
+  }
+}
 console.log("deploy trust bundle: valid production composition");

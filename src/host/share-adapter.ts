@@ -1,10 +1,11 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rm, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
+import { isAbsolute, relative, resolve } from "node:path";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
@@ -38,6 +39,8 @@ const LINK_ONLY_UPLOAD_LIMIT = 20;
 const LINK_ONLY_AUTHORIZATION_TTL_MS = 60 * 1000;
 const REGISTRY_AUTHORIZATION_DOMAIN =
   "xyz.tinycloud.share/registry-authorization/v1\0";
+export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
+export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
 class PayloadTooLargeError extends Error {}
 
@@ -45,6 +48,31 @@ export interface BindingStore {
   readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
+}
+
+/** Production bindings must live inside the persistent Share volume. */
+export function validateProductionBindingStorePath(value: string, root = PRODUCTION_BINDING_STORE_ROOT): string {
+  if (typeof root !== "string" || !isAbsolute(root) || root.includes("\0") || root.endsWith("/")) {
+    throw new Error("binding store root must be an absolute mounted directory");
+  }
+  const rootSegments = root.split("/").slice(1);
+  if (rootSegments.some((segment) => segment === "." || segment === ".." || segment === "")) {
+    throw new Error("binding store root must be normalized and traversal-free");
+  }
+  if (typeof value !== "string" || !isAbsolute(value) || value.includes("\0") || value.endsWith("/")) {
+    throw new Error("binding store path must be an absolute path inside the persistent Share volume");
+  }
+  const segments = value.split("/");
+  if (segments.slice(1).some((segment) => segment === "." || segment === ".." || segment === "")) {
+    throw new Error("binding store path must be normalized and traversal-free");
+  }
+  const normalizedRoot = resolve(root);
+  const normalized = resolve(value);
+  const remainder = relative(normalizedRoot, normalized);
+  if (remainder === "" || remainder.startsWith("..") || isAbsolute(remainder)) {
+    throw new Error("binding store path must be a descendant of the configured persistent Share volume");
+  }
+  return normalized;
 }
 
 function scryptAsync(password: string, salt: Uint8Array, length: number, options: { readonly N: number; readonly r: number; readonly p: number; readonly maxmem: number }): Promise<Buffer> {
@@ -898,7 +926,17 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
-  const bindingStore = !senderEnabled ? undefined : env.SHARE_BINDING_STORE_PATH === undefined ? (bundle.environment === "test" ? new MemoryBindingStore(initialBindings) : undefined) : new TransactionalBindingStore(env.SHARE_BINDING_STORE_PATH);
+  const bindingRoot = env.SHARE_BINDING_STORE_ROOT ?? PRODUCTION_BINDING_STORE_ROOT;
+  const bindingPath = env.SHARE_BINDING_STORE_PATH ?? (bundle.environment === "production" ? `${bindingRoot}/bindings.ndjson` : undefined);
+  if (senderEnabled && bundle.environment === "production") {
+    validateProductionBindingStorePath(bindingPath!, bindingRoot);
+    try {
+      if (!statSync(resolve(bindingRoot)).isDirectory()) throw new Error("not a directory");
+    } catch {
+      throw new Error("binding store root must be an existing mounted directory");
+    }
+  }
+  const bindingStore = !senderEnabled ? undefined : bindingPath === undefined ? new MemoryBindingStore(initialBindings) : new TransactionalBindingStore(bindingPath);
   if (senderEnabled && bindingStore === undefined) throw new Error("durable binding store is required when SHARE_SENDER_ENABLED=true");
   if (senderEnabled && bindingStore?.writable !== true) throw new Error("binding store is not writable");
   const registryOrigin = bundle.public.registryOrigin;
