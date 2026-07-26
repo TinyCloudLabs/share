@@ -119,8 +119,16 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   const walletConnect = hermeticWallet !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticWallet) ? [hermeticWallet] : [];
   const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin, ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
   const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+  const isLanding = pathname === "/" || pathname === "/index.html" || pathname === "/how-it-works" || pathname === "/how-it-works/" || pathname === "/how-it-works.html";
   const isViewer = pathname === "/viewer.html" || pathname === "/viewer" || pathname === "/s/*" || /^\/s\/[a-z2-7]+$/.test(pathname);
   const isShare = pathname === "/share.html" || pathname === "/share";
+  if (isLanding) {
+    return {
+      ...common,
+      "Content-Security-Policy": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'",
+      "Content-Type": "text/html; charset=UTF-8",
+    };
+  }
   if (!isViewer && !isShare) return common;
   const csp = isViewer
     ? `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${connect}; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'`
@@ -135,6 +143,10 @@ export function cloudflareHeaders(bundle: ShareTrustBundle): string {
   const { "Cache-Control": _cacheControl, ...nonCachingCommon } = common;
   return [
     render("/*", nonCachingCommon),
+    render("/", securityHeadersForPath(bundle, "/")),
+    render("/index.html", securityHeadersForPath(bundle, "/index.html")),
+    render("/how-it-works", securityHeadersForPath(bundle, "/how-it-works")),
+    render("/how-it-works.html", securityHeadersForPath(bundle, "/how-it-works.html")),
     render("/share", securityHeadersForPath(bundle, "/share")),
     render("/share.html", securityHeadersForPath(bundle, "/share.html")),
     render("/s/*", securityHeadersForPath(bundle, "/s/*")),

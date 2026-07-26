@@ -80,6 +80,13 @@ describe("Cloudflare Pages static asset boundaries", () => {
     }
   });
 
+  it("ships a strict landing-page CSP and referrer boundary", () => {
+    const html = readFileSync("index.html", "utf8");
+    expect(html).toMatch(/http-equiv="Content-Security-Policy"/);
+    expect(readFileSync("public/_headers", "utf8")).toMatch(/\/\n(?:  .+\n)*  Content-Security-Policy: default-src 'none';/);
+    expect(cloudflareHeaders(validateTrustBundle(trustBundle()))).toMatch(/\/\n(?:  .+\n)*  Content-Security-Policy: default-src 'none';/);
+  });
+
   it("converts the Pages SPA fallback into a real 404 for missing build assets", async () => {
     const { context, next } = pagesContext("/assets/missing-module.js");
     next.mockResolvedValue(new Response("<!doctype html><title>Landing</title>", {
