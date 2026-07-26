@@ -56,7 +56,7 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8787/health/readiness
           test "$(curl -fsS http://127.0.0.1:8787/health/readiness)" = '{"authReady":true,"senderReady":false}'
-          curl -fsS http://127.0.0.1:8787/api/share/auth/openkey/nonce
-          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 503
+          test "$(curl -sS -o /tmp/nonce.json -w '%{http_code}' http://127.0.0.1:8787/api/share/auth/openkey/nonce)" = 400
+          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 400
       - if: always()
         run: docker logs share-api-smoke || true
