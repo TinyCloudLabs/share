@@ -1,4 +1,5 @@
-import type { OpenKeyShareSession, UploadCapability } from "./openkey-session.js";
+import type { OpenKeyShareSession } from "./openkey-session.js";
+import { loadAuthenticatedCapabilities } from "./capability-list.js";
 
 function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>): void {
   root.removeAttribute("aria-busy");
@@ -50,9 +51,7 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     import("./sender-home.js"),
   ]);
   const config = await loadSharePublicConfig();
-  const capabilitiesResponse = await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
-  if (!capabilitiesResponse.ok) throw new Error("Your sharing capabilities are unavailable. Try again later.");
-  const capabilities = ((await capabilitiesResponse.json()) as { readonly capabilities?: readonly UploadCapability[] }).capabilities ?? [];
+  const capabilities = await loadAuthenticatedCapabilities();
   const tinycloud = await createTinyCloudClient(session, config, capabilities, (message) => { status.textContent = message; });
   const history = new SenderHistoryRepository(tinycloud.vault);
   mountSenderHome(root as HTMLElement, {

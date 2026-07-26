@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
 import { SIGNATURE_DOMAINS } from "../src/email-share/protocol.js";
 import { mountUnavailableSender } from "../src/email-share/view.js";
-import { parseCapabilityList } from "../src/share/capability-list.js";
+import { loadAuthenticatedCapabilities, parseCapabilityList } from "../src/share/capability-list.js";
 
 const seed = new Uint8Array(32).fill(7);
 const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(seed));
@@ -95,6 +95,12 @@ function transport(overrides: Partial<ShareTransport> = {}): ShareTransport {
 }
 
 describe("exact-email share UI protocol boundaries", () => {
+  it("keeps the authenticated library available while sender delivery is disabled", async () => {
+    await expect(loadAuthenticatedCapabilities(async () => new Response(JSON.stringify({ error: { code: "sender_not_ready" } }), { status: 503 }))).resolves.toEqual([]);
+    await expect(loadAuthenticatedCapabilities(async () => new Response(JSON.stringify({ capabilities: [] }), { status: 200 }))).resolves.toEqual([]);
+    await expect(loadAuthenticatedCapabilities(async () => new Response("", { status: 500 }))).rejects.toThrow("sharing capabilities are unavailable");
+  });
+
   it("renders the authenticated auth-only state for a valid empty capability list", () => {
     expect(parseCapabilityList({ capabilities: [] })).toEqual([]);
     const root = document.createElement("div");
