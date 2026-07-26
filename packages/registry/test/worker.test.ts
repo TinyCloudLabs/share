@@ -77,21 +77,26 @@ function legacyAuthorization(): string {
 }
 
 function bucket(): RegistryEnv["REGISTRY"] {
-  const values = new Map<string, Uint8Array>();
+  const values = new Map<string, { bytes: Uint8Array; customMetadata?: Record<string, string> }>();
   return {
     get: async (key) => {
       const value = values.get(key);
       return value === undefined
         ? null
-        : { arrayBuffer: async () => value.slice().buffer };
+        : { arrayBuffer: async () => value.bytes.slice().buffer, ...(value.customMetadata ? { customMetadata: value.customMetadata } : {}) };
     },
-    put: async (key, value) => {
+    put: async (key, value, options) => {
+      const metadata = options as { customMetadata?: Record<string, string> } | undefined;
       values.set(
         key,
-        value instanceof Uint8Array
-          ? value.slice()
-          : new Uint8Array(value.slice(0)),
+        {
+          bytes: value instanceof Uint8Array ? value.slice() : new Uint8Array(value.slice(0)),
+          ...(metadata?.customMetadata ? { customMetadata: metadata.customMetadata } : {}),
+        },
       );
+    },
+    delete: async (keys) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key);
     },
   };
 }
@@ -212,5 +217,40 @@ describe("production link-only registry authorization", () => {
     expect(
       (await worker.fetch(linkProofOnExistingPath, existingEnv)).status,
     ).toBe(401);
+  });
+
+  it("persists the retention boundary and denies reads after expiry", async () => {
+    const bytes = new Uint8Array([6, 7, 8]);
+    const deleteAfter = new Date(Date.now() + 1_000).toISOString();
+    const registry = bucket();
+    const productionEnv = { ...env(), REGISTRY: registry };
+    const uploaded = await worker.fetch(request(bytes, deleteAfter), productionEnv);
+    expect(uploaded.status).toBe(201);
+    const cid = await computeCid(bytes);
+    const live = await worker.fetch(new Request(`${ORIGIN}/blobs/${cid}`), productionEnv);
+    expect(live.status).toBe(200);
+    expect(Number(live.headers.get("cache-control")?.match(/max-age=(\d+)/)?.[1])).toBeLessThanOrEqual(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const expired = await worker.fetch(new Request(`${ORIGIN}/blobs/${cid}`), productionEnv);
+    expect(expired.status).toBe(410);
+    expect(await worker.fetch(new Request(`${ORIGIN}/blobs/${cid}`), productionEnv)).toHaveProperty("status", 404);
+  });
+
+  it("rejects an unauthenticated oversized request before reading its body", async () => {
+    let read = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(128)); controller.close(); },
+      pull() { read = true; },
+    });
+    const response = await worker.fetch(new Request(`${ORIGIN}/blobs`, {
+      method: "POST",
+      headers: { origin: ORIGIN, [IF_NONE_MATCH_HEADER]: "*", "content-length": "999999" },
+      body,
+      // undici requires duplex for a streaming request body.
+      duplex: "half",
+    } as RequestInit), env());
+    expect(response.status).toBe(401);
+    expect(read).toBe(false);
   });
 });
