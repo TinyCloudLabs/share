@@ -975,8 +975,9 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
+  const hermeticComposition = env.SHARE_HERMETIC_COMPOSITION === "true";
   const bindingRoot = env.SHARE_BINDING_STORE_ROOT ?? PRODUCTION_BINDING_STORE_ROOT;
-  if (bundle.environment === "production" && bindingRoot !== PRODUCTION_BINDING_STORE_ROOT) throw new Error("production binding store root is fixed to the named Share volume");
+  if (bundle.environment === "production" && !hermeticComposition && bindingRoot !== PRODUCTION_BINDING_STORE_ROOT) throw new Error("production binding store root is fixed to the named Share volume");
   const bindingPath = env.SHARE_BINDING_STORE_PATH ?? (bundle.environment === "production" ? DEFAULT_PRODUCTION_BINDING_STORE_PATH : undefined);
   if (senderEnabled && bundle.environment === "production") {
     validateProductionBindingStorePath(bindingPath!, bindingRoot);
@@ -1007,5 +1008,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition: env.SHARE_HERMETIC_COMPOSITION === "true" });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition });
 }

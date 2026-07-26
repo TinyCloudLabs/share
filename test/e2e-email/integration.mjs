@@ -269,7 +269,7 @@ async function startDstackSimulator(owned, tempRoot, issuerSeed) {
   return socketPath;
 }
 
-async function waitForPort(port, label) {
+async function waitForPort(port, label, childProcess = undefined) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     try {
@@ -281,7 +281,8 @@ async function waitForPort(port, label) {
       return;
     } catch { await new Promise((resolveWait) => setTimeout(resolveWait, 250)); }
   }
-  throw new Error(`${label} did not bind 127.0.0.1:${port}`);
+  const output = childProcess?.output?.().slice(-8_000);
+  throw new Error(`${label} did not bind 127.0.0.1:${port}${output === undefined ? "" : `:\n${output}`}`);
 }
 
 async function startPostgres(owned, tempRoot) {
@@ -762,7 +763,7 @@ async function productionGateHermetic() {
       KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: trustBundle.issuerDid,
       BIND_ADDR: `127.0.0.1:${credentialsPort}`, CORS_ALLOWED_ORIGINS: canonical.share,
       SHARE_EMAIL_CAPABILITY: "true", SHARE_EMAIL_TRUST_BUNDLE_JSON: JSON.stringify(trustBundle),
-      SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "hermetic-production-key", RESEND_WEBHOOK_SECRET: "hermetic-production-webhook",
+      SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "re_hermetic_production_key_0001", RESEND_WEBHOOK_SECRET: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
       DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
       DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000",
       DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
@@ -770,7 +771,7 @@ async function productionGateHermetic() {
       STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1",
     });
     owned.push(credentials);
-    await waitForPort(credentialsPort, "OpenCredentials production composition");
+    await waitForPort(credentialsPort, "OpenCredentials production composition", credentials);
     const credentialsUrl = `http://127.0.0.1:${credentialsPort}`;
     const readiness = await fetch(`${credentialsUrl}/share-email/readiness`);
     if (readiness.status !== 200) throw new Error(`OpenCredentials production readiness failed (${readiness.status})`);
@@ -794,6 +795,9 @@ async function productionGateHermetic() {
       const source = entry.source ?? scope.source;
       const policyDocument = entry.policy ?? scope.policy;
       const authority = entry.authorityMaterial ?? scope.authorityMaterial;
+      const recipientEmail = entry.authoritativeBinding?.recipientEmail ?? entry.expectedRecipientEmail;
+      if (typeof recipientEmail !== "string") throw new Error(`production case ${entry.kind ?? "unknown"} did not publish an exact recipient email`);
+      scope.recipientEmail = recipientEmail;
       const policyBytes = Buffer.from(stableJson(policyDocument), "utf8").toString("base64url");
       return JSON.stringify({ scope, source, policy: {
         action: source.action, authorityMaterialDigest: entry.authorityMaterialDigest ?? scope.authorityMaterialDigest,
@@ -801,23 +805,23 @@ async function productionGateHermetic() {
         expiresAt: entry.expiresAt ?? scope.expiresAt, policyAuthorityBytes: authority.policyAuthorityBytes,
         policyAuthorityCid: authority.policyAuthorityCid, policyBytes, policyDigest: digestBase64Url(Buffer.from(stableJson(policyDocument), "utf8")),
         policyEnforcementBytes: authority.policyEnforcementBytes, policyEnforcementCid: authority.policyEnforcementCid,
-        policyCid: entry.policyCid, recipientEmail: policyDocument.recipientEmail, resource: source.path, source,
+        policyCid: entry.policyCid, recipientEmail, resource: source.path, source,
         target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: source.space },
       }});
     });
     const envValues = {
-      SHARE_SENDER_ENABLED: "true",
+      SHARE_API_IMAGE: process.env.SHARE_API_IMAGE ?? `ghcr.io/tinycloudlabs/share-api@sha256:${"a".repeat(64)}`, SHARE_SENDER_ENABLED: "true",
       SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey,
       SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson),
       SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "production-composition-user", username: "production-composition", passwordHash: scryptPassword("production-composition-password") }]),
-      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true",
+      SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true",
       SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: nodeUrl }, credentials: { origin: canonical.credentials, transportOrigin: credentialsUrl }, registry: { origin: canonical.registry, transportOrigin: registryUrl } }),
       VITE_SHARE_REGISTRY_URL: canonical.registry,
     };
     await writeFile(envValues.SHARE_TRUST_BUNDLE_FILE, `${JSON.stringify(trustBundle)}\n`, { encoding: "utf8", flag: "wx" });
     await writeFile(deployEnvFile, `${Object.entries(envValues).map(([key, value]) => `${key}=${value}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
     const deployEnv = { ...process.env, ...envValues, SHARE_DEPLOY_STARTUP: "true" };
-    const validationEnv = { ...deployEnv }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
+    const validationEnv = { ...deployEnv, SHARE_BINDING_STORE_ROOT: "/var/lib/tinycloud/share", SHARE_BINDING_STORE_PATH: "/var/lib/tinycloud/share/bindings.ndjson" }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
     await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, validationEnv);
     await run("npm", ["run", "build:deploy"], shareRoot, validationEnv);
     const port = await freePort();
