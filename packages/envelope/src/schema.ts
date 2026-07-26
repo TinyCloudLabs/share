@@ -305,6 +305,14 @@ export const v2TargetSchema = z.object({
   spaceId: z.string().refine(isCanonicalPathSegment, { message: "expected a canonical space id" }),
 }).strict();
 
+const ownerAuthoritySchema = z.object({
+  registrationCid: z.string().min(1),
+  shareCid: z.string().min(1),
+  envelopeCid: z.string().min(1),
+  enforcementDelegation: z.record(z.string(), z.unknown()),
+  outerEnvelope: z.record(z.string(), z.unknown()),
+}).strict();
+
 export const contentMetadataSchema = z.object({
   mediaType: z.string().min(1).max(128).optional(),
   byteLength: z.number().int().nonnegative().max(100 * 1024 * 1024).optional(),
@@ -331,6 +339,7 @@ const unsignedShareEnvelopeV2BaseSchema = z.object({
   encrypted: z.boolean(),
   content: contentPointerSchema.optional(),
   metadata: contentMetadataSchema,
+  ownerAuthority: ownerAuthoritySchema.optional(),
 }).strict();
 
 function validateV2Invariants(value: z.infer<typeof unsignedShareEnvelopeV2BaseSchema>, ctx: z.RefinementCtx): void {
