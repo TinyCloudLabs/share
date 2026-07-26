@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts",
     "test:e2e:email": "node test/e2e-email/integration.mjs",
+    "test:e2e:sharing": "node test/e2e-sharing/integration.mjs",
     "test:e2e:email:fixture": "node test/e2e-email/integration.mjs --fixture-only",
     "test:e2e:share-payload-proof": "tsx test/e2e-email/share-payload-proof.ts",
     "dev:manual:share-link": "tsx test/e2e-email/manual-share-link.ts",

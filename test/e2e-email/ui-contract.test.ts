@@ -83,4 +83,21 @@ describe("shipping exact-email recipient UI contract", () => {
     forget?.click();
     expect(callbacks.onForget).toHaveBeenCalledTimes(1);
   });
+
+  it("copies the complete in-memory URL without exposing it in recipient DOM", async () => {
+    const secretUrl = "https://share.tinycloud.xyz/s/bafkrei" + "a".repeat(52) + "#k=" + "A".repeat(43) + "&i=" + "B".repeat(22) + "&c=" + "C".repeat(43);
+    const clipboard = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboard } });
+    const copyFacts = { ...facts, shareUrl: secretUrl } as RecipientFacts;
+    const root = document.createElement("div");
+    renderRecipientState(root, copyFacts, { state: "ready", emailHint: "r***@example.com" }, actions());
+    const copy = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Copy link");
+    expect(copy).toBeDefined();
+    copy!.click();
+    await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith(secretUrl));
+    await vi.waitFor(() => expect(root.querySelector("#recipient-copy-status")?.textContent).toBe("Link copied."));
+    expect(root.textContent).not.toContain(secretUrl);
+    expect(Array.from(root.querySelectorAll<HTMLElement>("*")).every((element) => !Array.from(element.attributes).some((attribute) => attribute.value.includes(secretUrl)))).toBe(true);
+    expect(root.querySelector("a")).toBeNull();
+  });
 });

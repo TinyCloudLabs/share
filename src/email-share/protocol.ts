@@ -65,7 +65,7 @@ export interface SenderScope {
   readonly shareOrigin: string;
   readonly delegation: string;
   readonly delegationCid: string;
-  readonly authorityMaterialHandle: "amh_kv_001" | "amh_sql_001";
+  readonly authorityMaterialHandle: string;
   readonly authorityMaterialDigest: string;
   readonly targetOrigin: string;
   readonly nodeAudience: string;
@@ -90,7 +90,7 @@ export interface SenderSigningCapability {
 
 export interface SenderSigner {
   readonly publicKey: Uint8Array;
-  sign(input: { readonly purpose: "envelope" | "inviteAuthorization"; readonly message: string; readonly binding: Record<string, unknown> }): Promise<Uint8Array>;
+  sign(input: { readonly purpose: "envelope" | "inviteAuthorization" | "delegationAuthoring"; readonly message: string; readonly binding: Record<string, unknown> }): Promise<Uint8Array>;
 }
 
 export interface TrustedNode {
@@ -150,7 +150,7 @@ export interface SignedArtifact {
 
 export interface InvitationAuthorization {
   readonly type: "TinyCloudShareInviteAuthorization";
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly jti: string;
   readonly senderDid: string;
   readonly shareCid: string;
@@ -159,7 +159,12 @@ export interface InvitationAuthorization {
   readonly delegationCid: string;
   readonly authorityMaterialHandle: string;
   readonly authorityMaterialDigest: string;
-  readonly recipientEmail: string;
+  readonly recipientEmail?: string;
+  readonly recipientMatcher?: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string };
+  readonly deliveryEmail?: string;
+  readonly shareUrl?: string;
+  readonly actions?: readonly string[];
+  readonly resource?: string;
   readonly targetOrigin: string;
   readonly nodeAudience: string;
   readonly returnOrigin: string;
@@ -283,8 +288,7 @@ export async function createInvitationDraft(input: {
   const target = new URL(input.scope.targetOrigin);
   if (target.protocol !== "https:" || target.origin !== input.scope.targetOrigin) throw new TypeError("The selected node origin is not trusted.");
   if (!input.scope.policyOwnerDid.startsWith("did:pkh:") || input.scope.policyOwnerDid === input.scope.senderDid) throw new TypeError("Policy owner and invitation sender must be distinct trusted identities.");
-  if (source.kind === "kv" && input.scope.authorityMaterialHandle !== "amh_kv_001") throw new TypeError("KV authority material is required.");
-  if (source.kind === "sql" && input.scope.authorityMaterialHandle !== "amh_sql_001") throw new TypeError("SQL authority material is required.");
+  if (input.scope.authorityMaterialHandle.length === 0 || input.scope.authorityMaterialDigest.length === 0) throw new TypeError("Authenticated authority material is required.");
   if (input.scope.documentName.length === 0 || new TextEncoder().encode(input.scope.documentName).length > 200) throw new TypeError("Document name is too long.");
   if (input.policy === undefined) throw new TypeError("An already-created authoritative policy is required.");
   const digest = await sourceDigest(source);

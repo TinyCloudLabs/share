@@ -4,10 +4,12 @@ import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createShareHostFromEnv } from "./share-adapter.js";
 import { loadTrustBundle, securityHeadersForPath, type ShareTrustBundle } from "./trust-bundle.js";
-import { sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath } from "./upstream.js";
+import { assertSafeUpstreamQuery, NATIVE_SHARE_BODY_LIMIT, REGISTRY_UPLOAD_BODY_LIMIT, sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath, upstreamPathFor } from "./upstream.js";
 
 const DEFAULT_STATIC_ROOT = resolve(process.cwd(), "dist");
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
+const DEFAULT_REQUEST_BODY_LIMIT = 128 * 1024;
+class RequestTooLargeError extends Error {}
 const contentTypes: Record<string, string> = { ".html": "text/html; charset=UTF-8", ".js": "text/javascript; charset=UTF-8", ".css": "text/css; charset=UTF-8", ".json": "application/json; charset=UTF-8", ".svg": "image/svg+xml" };
 
 type ShareHost = ReturnType<typeof createShareHostFromEnv>;
@@ -16,13 +18,13 @@ function dynamic(path: string): boolean {
   return path === "/health/readiness" || path === "/api/health/readiness" || path === "/.well-known/tinycloud-share/config.json" ||
     path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" ||
     path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" ||
-    path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") ||
+    path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path) ||
     path.startsWith("/api/share/link-only/registry/") ||
-    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/v1/share-email/");
+    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
 }
 
 function rewrite(path: string): string {
-  if (/^\/s\/[a-z2-7]+$/.test(path)) return "/viewer.html";
+  if (/^\/s\/[a-z2-7]+$/.test(path) || path === "/s/inline") return "/viewer.html";
   if (path === "/share") return "/share.html";
   if (path === "/viewer") return "/viewer.html";
   if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
@@ -37,9 +39,19 @@ function json(status: number, code: string): Response {
   return new Response(JSON.stringify({ error: { code } }), { status, headers: JSON_HEADERS });
 }
 
-async function bytes(request: Request): Promise<Uint8Array> {
+function requestBodyLimit(path: string): number {
+  // Link-only uploads are authenticated and bounded again by the registry
+  // proxy. The production listener must allow the framed 100 MiB product
+  // limit to reach that gate instead of rejecting it at the generic JSON
+  // request limit.
+  if (path === "/invoke") return NATIVE_SHARE_BODY_LIMIT;
+  if (path === "/api/share/link-only/registry/blobs" || path === "/registry" || path.startsWith("/registry/")) return REGISTRY_UPLOAD_BODY_LIMIT;
+  return DEFAULT_REQUEST_BODY_LIMIT;
+}
+
+async function bytes(request: Request, maxBytes = DEFAULT_REQUEST_BODY_LIMIT): Promise<Uint8Array> {
   const value = new Uint8Array(await request.arrayBuffer());
-  if (value.length > 128 * 1024) throw new Error("request too large");
+  if (value.length > maxBytes) throw new RequestTooLargeError("request too large");
   return value;
 }
 
@@ -57,17 +69,26 @@ export function createProductionHandler(options: { readonly bundle: ShareTrustBu
     const method = request.method;
     const upstream = upstreamForPath(options.bundle, path);
     if (upstream !== undefined) {
+      assertSafeUpstreamQuery(path, url.search);
       if (!options.host.readiness.senderReady && senderOnlyRoute(path)) return withSecurityHeaders(options.bundle, path, json(503, "sender_not_ready"));
-      const body = await bytes(request);
+      let body: Uint8Array;
+      try {
+        body = await bytes(request, requestBodyLimit(path));
+      } catch (error) {
+        if (error instanceof RequestTooLargeError) return withSecurityHeaders(options.bundle, path, json(413, "request_too_large"));
+        throw error;
+      }
       let result: Response;
       try {
         const headers = sanitizeUpstreamRequest(path, method, request.headers, body.length, options.bundle.public.shareOrigin);
-        const upstreamPath = upstream.service === "registry" ? path.slice("/registry".length) || "/" : path;
-        const target = new URL(`${upstreamPath}${url.search}`, upstream.origin);
+        const upstreamPath = upstream.service === "registry" ? (path.startsWith("/registry") ? path.slice("/registry".length) || "/" : upstreamPathFor(path)) : path.startsWith("/peer/generate/") ? decodeURIComponent(path) : path;
+        const target = new URL(`${upstreamPath}${path.startsWith("/s/") ? "" : url.search}`, upstream.origin);
         const init: RequestInit & { duplex?: "half" } = { method, headers, redirect: "error", ...(body.length === 0 ? {} : { body: body.buffer as ArrayBuffer, duplex: "half" }) };
         result = sanitizeUpstreamResponse(path, method, await fetch(target, init));
-      } catch {
-        result = json(502, "upstream_unavailable");
+      } catch (error) {
+        result = error instanceof Error && (error.message === "upstream route is not allowed" || error.message === "upstream method is not allowed")
+          ? json(404, "not_found")
+          : json(502, "upstream_unavailable");
       }
       return withSecurityHeaders(options.bundle, path, result);
     }
@@ -105,10 +126,12 @@ function incomingHeaders(request: IncomingMessage): Headers {
 async function incomingRequest(request: IncomingMessage): Promise<Request> {
   const chunks: Buffer[] = [];
   let size = 0;
+  const path = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`).pathname;
+  const maxBytes = requestBodyLimit(path);
   for await (const chunk of request) {
     const value = Buffer.from(chunk as Uint8Array);
     size += value.length;
-    if (size > 128 * 1024) throw new Error("request too large");
+    if (size > maxBytes) throw new RequestTooLargeError("request too large");
     chunks.push(value);
   }
   const body = Buffer.concat(chunks);
@@ -137,8 +160,13 @@ export function startProductionServer(env: NodeJS.ProcessEnv = process.env): Ret
   const host = createShareHostFromEnv(env);
   const handler = createProductionHandler({ bundle, host });
   const server = createServer((request, response) => {
-    void incomingRequest(request).then(handler).then((result) => send(response, result)).catch(() => {
+    void incomingRequest(request).then(handler).then((result) => send(response, result)).catch((error) => {
       console.error(`share-host stage=request-error path=${(request.url ?? "/").split("?")[0] ?? "/"}`);
+      if (error instanceof RequestTooLargeError) {
+        if (!response.headersSent) response.writeHead(413, JSON_HEADERS);
+        response.end(JSON.stringify({ error: { code: "request_too_large" } }));
+        return;
+      }
       if (!response.headersSent) response.writeHead(503, JSON_HEADERS);
       response.end(JSON.stringify({ error: { code: "capability_unavailable" } }));
     });

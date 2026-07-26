@@ -125,6 +125,16 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(captureAndScrubLaunch(query as unknown as Location, { replaceState: vi.fn() } as unknown as History)).toBeUndefined();
   });
 
+  it("preserves a bounded inline v2 launch before the viewer imports", () => {
+    const payload = "A".repeat(256);
+    const loc = new URL(`https://share.tinycloud.xyz/s/inline#v=2&p=${payload}`);
+    const replaceState = vi.fn();
+    const launch = captureAndScrubLaunch(loc as unknown as Location, { replaceState } as unknown as History);
+    expect(launch?.shareHref).toBe(loc.href);
+    expect(launch?.invite).toBeUndefined();
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/s/inline");
+  });
+
   it("preserves the local-part and lowercases only the domain", () => {
     expect(canonicalEmail("Alice.O+Notes@EXAMPLE.COM")).toBe("Alice.O+Notes@example.com");
     expect(() => canonicalEmail(" Alice@example.com")).toThrow();
@@ -366,6 +376,18 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(t.claimRedeem).toHaveBeenCalledTimes(1);
     controller.forget();
     expect(controller.state.state).toBe("forgotten");
+  });
+
+  it("retries a typed activation-not-ready response without rotating claim material", async () => {
+    const activation = vi.fn()
+      .mockRejectedValueOnce(new ShareTransportError("capability-unavailable", true, 0))
+      .mockResolvedValue({ status: "accepted" as const, retryAfterSeconds: 20, activationId: "A".repeat(22) });
+    const t = transport({ activate: activation });
+    const controller = createClaimController({ share: { shareId: "id", shareCid: "cid", policyCid: "policy", recipientEmail: "Alice@example.com", recipientHint: "A***@example.com", expiry: new Date(Date.now() + 600_000).toISOString(), nodeOrigin: "https://node.example", nodeAudience: "did:web:node.example", requestOrigin: "https://share.tinycloud.xyz", delegationCid: "delegation", authorityMaterialHandle: "amh_kv_001", authorityMaterialDigest: "A".repeat(43), contentSource: { kind: "kv", space: "space", path: "doc.md", action: "tinycloud.kv/get" }, contentSourceDigest: "A".repeat(43), action: "tinycloud.kv/get", resource: "doc.md", trustedNode: { targetOrigin: "https://node.example", nodeAudience: "did:web:node.example", invitationKid: "did:web:node.example#invitation-key-1", invitationPublicKey: ed25519.getPublicKey(nodeSeed), keyVersion: 1, enabled: true } }, invitationId: "B".repeat(22), claimSecret: "C".repeat(43), transport: t, credentialTrust: { issuerDid, vct: "opencredentials.email/v1", issuerPublicKey: ed25519.getPublicKey(issuerSeed) } });
+    await controller.openDocument();
+    expect(controller.state.state).toBe("claimed");
+    expect(activation).toHaveBeenCalledTimes(2);
+    expect(activation.mock.calls[0]?.[0]).toEqual(activation.mock.calls[1]?.[0]);
   });
 
   it("uses a scanner-safe activation POST with the exact claim body", async () => {

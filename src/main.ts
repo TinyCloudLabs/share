@@ -1,18 +1,30 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
 import type { RecipientFacts, RecipientViewActions } from "./email-share/view.js";
+import { canonicalize, fromBase64Url, toBase64Url, type ContentSource } from "@tinycloud/share-envelope";
+import { SIGNATURE_DOMAINS } from "./email-share/protocol.js";
+import { digestBytes, digestText } from "./email-share/node-verifier.js";
+import type { VerifiedExactEmailShare } from "./email-share/verified-share.js";
 import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
+import { mountPolicyV2Viewer } from "./viewer/policy-v2.js";
 
 const viewerRoot = document.getElementById("viewer");
 
 if (viewerRoot !== null) {
+  if (new URLSearchParams(window.location.search).get("sender-launch") === "1") {
+    void bootSenderViewer(viewerRoot);
+  } else {
   // This is intentionally the first recipient-side operation. The complete
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
-  const launch = captureAndScrubLaunch(window.location, window.history);
+  const captured = captureAndScrubLaunch(window.location, window.history);
+  const launch = captured !== undefined && import.meta.env.VITE_SHARE_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
+    ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
+    : captured;
   void import("./email-share/recipient.css");
   void import("./viewer/viewer.css");
   void bootRecipient(viewerRoot, launch);
+  }
 } else {
   // The root site is a static product/spec page. Keep its Mermaid behavior
   // isolated from the recipient route so the recipient has no decorative or
@@ -40,6 +52,48 @@ if (viewerRoot !== null) {
   });
 }
 
+async function bootSenderViewer(root: HTMLElement): Promise<void> {
+  root.replaceChildren();
+  const loading = document.createElement("p");
+  loading.textContent = "Waiting for the private share…";
+  loading.setAttribute("role", "status");
+  root.append(loading);
+  let accepted = false;
+  let launched = false;
+  const timeout = window.setTimeout(() => {
+    if (!launched) loading.textContent = "The private share could not be opened. Close this tab and try again.";
+  }, 10_000);
+  const receive = (event: MessageEvent): void => {
+    if (accepted || event.origin !== window.location.origin || event.data?.type !== "tinycloud-sender-channel" || event.ports.length !== 1) return;
+    accepted = true;
+    window.removeEventListener("message", receive);
+    const port = event.ports[0]!;
+    port.onmessage = (message): void => {
+      if (message.data?.type !== "tinycloud-sender-launch") return;
+      const url = message.data?.url;
+      if (typeof url !== "string") return;
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("origin");
+        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history);
+        if (captured === undefined) throw new Error("launch");
+        launched = true;
+        window.clearTimeout(timeout);
+        port.close();
+        window.opener = null;
+        void import("./email-share/recipient.css");
+        void import("./viewer/viewer.css");
+        void bootRecipient(root, captured);
+      } catch {
+        loading.textContent = "The private share was invalid or expired.";
+      }
+    };
+    port.start();
+    try { port.postMessage({ type: "tinycloud-sender-ready" }); } catch { port.close(); }
+  };
+  window.addEventListener("message", receive);
+}
+
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined): Promise<void> {
   const [{ appendRecipientForgetAction, renderRecipientInvalid, renderRecipientLoading, renderRecipientState }, { createClaimController }] = await Promise.all([
     import("./email-share/view.js"),
@@ -64,6 +118,26 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const invite = launch.invite;
     delete launch.invite;
     const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
+    if (resolved.state === "policy-v2-claim-required") {
+      const publicConfig = await config.loadSharePublicConfig();
+      const { createHolder } = await import("./email-share/claim.js");
+      const holder = await createHolder();
+      const completeShareUrl = invite === undefined ? shareHref : `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`;
+      mountPolicyV2Viewer(root, resolved, {
+        nodeOrigin: publicConfig.nodeOrigin,
+        trustedNode: config.trustedNodeFromConfig(publicConfig),
+        holderDid: holder.did,
+        shareUrl: completeShareUrl,
+        buildPresentation: async ({ challenge, envelope, policy }) => {
+          // The v2 recipient adapter owns challenge binding and proof
+          // verification.  A production credential is deliberately required
+          // here; the UI must never turn an unverified email into access.
+          if (invite === undefined) throw new Error("The invitation claim fragment is missing.");
+          return buildV2Presentation({ challenge, envelope, policy, invite, publicConfig, shareCid: resolved.shareCid, holder });
+        },
+      });
+      return;
+    }
     if (resolved.state !== "policy-email-claim-required") {
       await presentShare(root, resolved);
       return;
@@ -72,6 +146,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       renderRecipientInvalid(root, "This exact-email invitation is missing its email proof. Ask the sender to resend the invitation.");
       return;
     }
+    const shareUrl = `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`;
 
     renderRecipientLoading(root, "Checking invitation scope…");
     const publicConfig = await config.loadSharePublicConfig();
@@ -84,7 +159,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       trustedNode,
     });
     const transport = (await import("./email-share/transport.js")).createHttpTransport({ nodeOrigin: publicConfig.nodeOrigin, credentialsOrigin: publicConfig.credentialsOrigin });
-    const facts: RecipientFacts = { envelope: resolved.envelope, share };
+    const facts: RecipientFacts = { envelope: resolved.envelope, share, shareUrl };
     let controller: ClaimController;
     let contentShown = false;
     const render = (state: ClaimState): void => renderRecipientState(root, facts, state, actions);
@@ -111,4 +186,25 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
+}
+
+async function buildV2Presentation(input: { readonly challenge: import("@tinycloud/share-sdk").PolicyChallenge; readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2; readonly policy: Record<string, unknown>; readonly invite: { readonly invitationId: string; readonly claimSecret: string }; readonly shareCid: string; readonly publicConfig: Awaited<ReturnType<typeof import("./email-share/config.js").loadSharePublicConfig>>; readonly holder: import("./email-share/claim.js").HolderKey }): Promise<import("@tinycloud/share-sdk").PolicyPresentationMaterial> {
+  const source = input.policy.contentSource as ContentSource;
+  const recipientEmail = input.envelope.deliveryEmail ?? "";
+  if (source.kind !== "kv" && source.kind !== "sql") throw new Error("The policy content source is invalid.");
+  const [{ issueEmailClaimCredential }, { createHttpTransport }, { credentialTrustFromConfig }] = await Promise.all([
+    import("./email-share/claim.js"), import("./email-share/transport.js"), import("./email-share/config.js"),
+  ]);
+  const transport = createHttpTransport({ nodeOrigin: input.publicConfig.nodeOrigin, credentialsOrigin: input.publicConfig.credentialsOrigin });
+  const claimShare = {
+    shareId: input.envelope.shareId, shareCid: input.shareCid, policyCid: input.envelope.authorizationTarget.kind === "policy" ? input.envelope.authorizationTarget.policyCid : "", recipientEmail, recipientMatcher: input.policy.recipientMatcher as import("@tinycloud/share-envelope").RecipientMatcher, recipientHint: recipientEmail === "" ? "verified domain mailbox" : `${recipientEmail.slice(0, 1)}***@${recipientEmail.split("@").at(-1) ?? ""}`, expiry: input.envelope.expiry, nodeOrigin: input.envelope.target.origin, nodeAudience: input.envelope.target.nodeAudience, requestOrigin: input.publicConfig.shareOrigin, delegationCid: input.envelope.delegationCid, authorityMaterialHandle: input.envelope.authorityMaterialHandle, authorityMaterialDigest: input.envelope.authorityMaterialDigest, contentSource: source, contentSourceDigest: input.envelope.contentSourceDigest, action: source.action, resource: source.path, trustedNode: { targetOrigin: input.publicConfig.nodeOrigin, nodeAudience: input.publicConfig.nodeAudience, invitationKid: input.publicConfig.nodeInvitationKid, invitationPublicKey: fromBase64Url(input.publicConfig.nodeInvitationPublicKey), keyVersion: input.publicConfig.nodeKeyVersion, enabled: input.publicConfig.nodeEnabled },
+  } as VerifiedExactEmailShare;
+  const claim = await issueEmailClaimCredential({ share: claimShare, invitationId: input.invite.invitationId, mailboxProof: input.invite.claimSecret, method: "magic", holder: input.holder, transport, credentialTrust: credentialTrustFromConfig(input.publicConfig) });
+  const credentialDigest = await digestText(claim.credential);
+  const claimantEmail = claim.email;
+  const holderBinding = { type: "TinyCloudEmailClaimHolderBinding", version: 1, redemptionId: input.envelope.shareId, invitationId: input.shareCid, claimNonce: input.challenge.nonce, challengeNonce: input.challenge.nonce, shareCid: input.shareCid, shareId: input.envelope.shareId, policyCid: claimShare.policyCid, contentSource: source, contentSourceDigest: input.envelope.contentSourceDigest, emailHash: await digestText(claimantEmail), holderDid: input.holder.did, credentialDigest, targetOrigin: input.envelope.target.origin, nodeAudience: input.envelope.target.nodeAudience, audience: input.envelope.target.nodeAudience, enforcerDid: input.challenge.enforcerDid, requestOrigin: input.envelope.target.origin, challengeId: input.challenge.challengeId, challengeRequestDigest: input.challenge.requestBodyDigest, issuedAt: new Date().toISOString(), expiresAt: input.challenge.expiresAt, jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
+  const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", input.holder.privateKey, new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${canonicalize(holderBinding)}`)));
+  const holderJcs = canonicalize(holderBinding);
+  const holderSignedBytes = new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${holderJcs}`);
+  return { holderDid: input.holder.did, credential: claim.credential, credentialDigest, holderBinding: { name: "holderBinding", domain: SIGNATURE_DOMAINS.holderBinding, signerDid: input.holder.did, message: holderBinding, jcs: holderJcs, messageDigest: await digestText(holderJcs), signedBytesDigest: await digestBytes(holderSignedBytes), signatureDigest: await digestBytes(signature), signature: { alg: "EdDSA", kid: `${input.holder.did}#${input.holder.did.slice("did:key:".length)}`, value: toBase64Url(signature) } }, proof: { alg: "EdDSA", kid: `${input.holder.did}#${input.holder.did.slice("did:key:".length)}`, signature: toBase64Url(signature) }, sign: async (bytes) => new Uint8Array(await crypto.subtle.sign("Ed25519", input.holder.privateKey, bytes as unknown as BufferSource)), email: claimantEmail };
 }

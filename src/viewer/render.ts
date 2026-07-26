@@ -251,10 +251,18 @@ export async function markdownToSanitizedHtml(markdown: string): Promise<string>
  * url()-bearing style.
  */
 export function sanitizeSvg(svg: string): string {
+  // Avoid handing an obvious element bomb to the DOM parser. The returned
+  // inert SVG keeps this helper total for callers, while upgradeMermaidBlocks
+  // rejects the original markup before it can become a preview node.
+  if (countSvgStartTags(svg) > MAX_SVG_NODES) return "<svg></svg>";
   return DOMPurify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
     FORBID_TAGS: ["script", "foreignObject", "iframe", "audio", "video"],
   });
+}
+
+function countSvgStartTags(svg: string): number {
+  return svg.match(/<\s*[a-z][^>]*>/gi)?.length ?? 0;
 }
 
 /**
@@ -377,6 +385,11 @@ async function upgradeMermaidBlocks(
           timeoutMs,
           "mermaid render",
         );
+        // This cheap preflight is deliberately before DOMPurify. It is a
+        // bounded parser guard for a renderer that returns hostile markup;
+        // sanitizeSvg still performs the complete allowlist pass for inputs
+        // within the budget.
+        if (countSvgStartTags(svg) > MAX_SVG_NODES) continue;
         const clean = sanitizeSvg(svg);
         // Node-count bound, measured DETACHED: the host joins the document
         // only if the sanitized markup is within budget.

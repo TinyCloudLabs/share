@@ -57,14 +57,14 @@ export async function verifyProductionEmailShare(input: {
   const parsedPolicy = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(policyBytes)) as unknown;
   if (canonicalize(parsedPolicy) !== canonicalize(policy)) throw new TypeError("policy bytes do not match resolved policy");
   if (await computeCid(policyBytes) !== envelope.authorizationTarget.policyCid) throw new TypeError("policy CID is invalid");
-  if (policy.type !== "TinyCloudSharePolicy" || policy.version !== 1 || typeof policy.issuerDid !== "string" || policy.issuerDid !== envelope.signature.signerDid || typeof policy.recipientEmail !== "string" || typeof policy.expiresAt !== "string" || typeof policy.action !== "string" || typeof policy.resource !== "string" || typeof policy.contentSourceDigest !== "string") throw new TypeError("policy shape is invalid");
+  if (policy.type !== "TinyCloudSharePolicy" || policy.version !== 1 || typeof policy.issuerDid !== "string" || policy.issuerDid !== envelope.signature.signerDid || typeof policy.recipientEmail !== "string" || typeof policy.expiresAt !== "string" || typeof policy.action !== "string" || typeof policy.resource !== "string" || typeof policy.contentSourceDigest !== "string" || typeof policy.authorityMaterialHandle !== "string" || policy.authorityMaterialHandle.length === 0) throw new TypeError("policy shape is invalid");
   const source = validateSource(policy.contentSource as ContentSource);
   if (source.action !== policy.action || source.path !== policy.resource || await sourceDigest(source) !== policy.contentSourceDigest) throw new TypeError("policy source binding is invalid");
   canonicalEmail(policy.recipientEmail);
   if (envelope.shareId === undefined || envelope.expiry !== policy.expiresAt || envelope.target.origin !== config.nodeOrigin || envelope.target.nodeAudience !== config.nodeAudience || envelope.target.spaceId !== source.space || envelope.target.resource.kind !== "exact" || envelope.target.resource.path !== source.path || Date.parse(envelope.expiry) <= Date.now()) throw new TypeError("envelope scope is invalid");
   if (!(await verifyEnvelope(envelope, { expectedSignerDid: policy.issuerDid }))) throw new TypeError("envelope signature is invalid");
-  if (binding.shareId !== envelope.shareId || binding.policyCid !== envelope.authorizationTarget.policyCid || binding.recipientEmail !== policy.recipientEmail || binding.expiry !== envelope.expiry || canonicalize(binding.contentSource) !== canonicalize(source) || binding.contentSourceDigest !== policy.contentSourceDigest || binding.action !== source.action || binding.resource !== source.path) throw new TypeError("public authority binding is invalid");
-  if ((source.kind === "kv" && binding.authorityMaterialHandle !== "amh_kv_001") || (source.kind === "sql" && binding.authorityMaterialHandle !== "amh_sql_001")) throw new TypeError("authority material kind is invalid");
+  const digest = async (value: unknown): Promise<string> => toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalize(value)))));
+  if (binding.shareId !== envelope.shareId || binding.policyCid !== envelope.authorizationTarget.policyCid || binding.expiry !== envelope.expiry || binding.contentSourceDigest !== policy.contentSourceDigest || binding.actionDigest !== await digest(source.action) || binding.resourceDigest !== await digest(source.path)) throw new TypeError("public authority binding is invalid");
   const trustedNode = {
     targetOrigin: config.nodeOrigin,
     nodeAudience: config.nodeAudience,
@@ -83,9 +83,9 @@ export async function verifyProductionEmailShare(input: {
     nodeOrigin: config.nodeOrigin,
     nodeAudience: config.nodeAudience,
     requestOrigin: config.shareOrigin,
-    delegationCid: binding.delegationCid,
-    authorityMaterialHandle: binding.authorityMaterialHandle,
-    authorityMaterialDigest: binding.authorityMaterialDigest,
+    delegationCid: typeof policy.delegationCid === "string" ? policy.delegationCid : "",
+    authorityMaterialHandle: policy.authorityMaterialHandle,
+    authorityMaterialDigest: typeof policy.authorityMaterialDigest === "string" ? policy.authorityMaterialDigest : "",
     contentSource: source,
     contentSourceDigest: policy.contentSourceDigest,
     action: source.action,

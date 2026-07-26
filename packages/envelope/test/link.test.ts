@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { generateKey } from "../src/aead.js";
 import { computeCid } from "../src/cid.js";
-import { encodeShareUrl, parseShareUrl } from "../src/link.js";
+import { encodeInlineShareUrl, encodeShareUrl, parseCompactOrInlineShareUrl, parseShareUrl } from "../src/link.js";
 import { utf8Bytes } from "../src/bytes.js";
 
 const ORIGIN = "https://share.tinycloud.xyz";
@@ -131,5 +131,23 @@ describe("share link codec", () => {
       key32,
     }).split("#k=")[1]!;
     expect(() => parseShareUrl(`${ORIGIN}/s/${sha512Cid}#k=${goodKeyPart}`)).toThrow(TypeError);
+  });
+
+  it("round-trips the explicit v2 inline fragment without a query string", async () => {
+    const key32 = generateKey();
+    const ciphertext = utf8Bytes("sealed envelope bytes");
+    const url = await encodeInlineShareUrl({ origin: ORIGIN, ciphertext, key32 });
+    const parsed = parseCompactOrInlineShareUrl(url);
+    expect(parsed.kind).toBe("inline");
+    if (parsed.kind !== "inline") throw new Error("expected inline");
+    expect(parsed.ciphertext).toEqual(ciphertext);
+    expect(parsed.key32).toEqual(key32);
+    expect(new URL(url).search).toBe("");
+  });
+
+  it("rejects inline payload tampering and untrusted origins", async () => {
+    const url = await encodeInlineShareUrl({ origin: ORIGIN, ciphertext: utf8Bytes("x"), key32: generateKey() });
+    expect(() => parseCompactOrInlineShareUrl(url.replace("share.tinycloud.xyz", "evil.example"), { expectedOrigin: ORIGIN })).toThrow(TypeError);
+    expect(() => parseCompactOrInlineShareUrl(url.replace(/p=./, "p=!"))).toThrow(TypeError);
   });
 });

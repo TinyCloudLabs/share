@@ -240,6 +240,9 @@ export function renderViewerState(
     case "policy-email-claim-required":
       renderErrorState(root, "This invitation needs a confirmation", "The share envelope and exact recipient policy are verified. Open the document from the invitation link to continue.");
       return null;
+    case "policy-v2-claim-required":
+      renderErrorState(root, "This addressed share needs a verified claim", "The v2 matcher, action bounds, target resource, expiry, and trusted sender signature are verified. Continue through the Node claim flow to open this share.");
+      return null;
     case "invalid-link":
       renderErrorState(
         root,

@@ -29,15 +29,10 @@ export interface SharePublicConfig {
 export interface SharePublicBinding {
   readonly shareId: string;
   readonly policyCid: string;
-  readonly recipientEmail: string;
   readonly expiry: string;
-  readonly delegationCid: string;
-  readonly authorityMaterialHandle: "amh_kv_001" | "amh_sql_001";
-  readonly authorityMaterialDigest: string;
-  readonly contentSource: Record<string, unknown>;
   readonly contentSourceDigest: string;
-  readonly action: "tinycloud.kv/get" | "tinycloud.sql/read";
-  readonly resource: string;
+  readonly actionDigest: string;
+  readonly resourceDigest: string;
 }
 
 function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -110,8 +105,8 @@ export async function loadSharePublicConfig(fetchFn: typeof fetch = globalThis.f
 }
 
 export function validateSharePublicBinding(value: unknown): SharePublicBinding {
-  const object = exactObject(value, ["shareId", "policyCid", "recipientEmail", "expiry", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "action", "resource"]);
-  if (typeof object.shareId !== "string" || object.shareId.length === 0 || typeof object.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(object.policyCid) || typeof object.recipientEmail !== "string" || typeof object.expiry !== "string" || typeof object.delegationCid !== "string" || !/^b[a-z2-7]{58}$/.test(object.delegationCid) || (object.authorityMaterialHandle !== "amh_kv_001" && object.authorityMaterialHandle !== "amh_sql_001") || typeof object.authorityMaterialDigest !== "string" || !B64_256.test(object.authorityMaterialDigest) || typeof object.contentSource !== "object" || object.contentSource === null || Array.isArray(object.contentSource) || typeof object.contentSourceDigest !== "string" || !B64_256.test(object.contentSourceDigest) || (object.action !== "tinycloud.kv/get" && object.action !== "tinycloud.sql/read") || typeof object.resource !== "string") throw new TypeError("share binding is invalid");
+  const object = exactObject(value, ["shareId", "policyCid", "expiry", "contentSourceDigest", "actionDigest", "resourceDigest"]);
+  if (typeof object.shareId !== "string" || object.shareId.length === 0 || typeof object.policyCid !== "string" || !/^b[a-z2-7]{58}$/.test(object.policyCid) || typeof object.expiry !== "string" || typeof object.contentSourceDigest !== "string" || !B64_256.test(object.contentSourceDigest) || typeof object.actionDigest !== "string" || !B64_256.test(object.actionDigest) || typeof object.resourceDigest !== "string" || !B64_256.test(object.resourceDigest)) throw new TypeError("share binding is invalid");
   return object as unknown as SharePublicBinding;
 }
 

@@ -110,6 +110,9 @@ export interface CreateBearerShareResult {
   registryDeleteAfter: string;
   /** The signed envelope, for inspection/tests. Contains the session key. */
   envelope: ShareEnvelope;
+  /** In-memory-only sealed envelope material for an explicit inline fallback. */
+  readonly inlineEnvelopeBlob?: Uint8Array;
+  readonly inlineEnvelopeKey?: Uint8Array;
 }
 
 /** One path segment: no separators, no traversal, no empty/dot names. */
@@ -272,6 +275,8 @@ export async function createBearerShare(
       expiry,
       registryDeleteAfter: envelopePut.deleteAfter,
       envelope,
+      inlineEnvelopeBlob: sealedEnvelope.blob.slice(),
+      inlineEnvelopeKey: envelopeKey.slice(),
     };
   } finally {
     // Key hygiene on EVERY exit path — seal/upload/guard failures included,

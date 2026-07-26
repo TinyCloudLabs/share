@@ -316,7 +316,7 @@ describe("production trust and host boundaries", () => {
     expect((await upload(new Uint8Array([4, 5, 6]), cookie)).status).toBe(502);
 
     upstream.mockClear();
-    expect((await upload(new Uint8Array(64 * 1024 + 1), cookie)).status).toBe(413);
+    expect((await upload(new Uint8Array(100 * 1024 * 1024 + 1 + 12 + 16 + 1), cookie)).status).toBe(413);
     expect(upstream).not.toHaveBeenCalled();
     expect(
       (await upload(new Uint8Array([1]), cookie, "application/json")).status,
@@ -580,6 +580,7 @@ describe("production trust and host boundaries", () => {
       expect(put.status).toBe(201);
       const stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${cid}`, { method: "GET" }));
       expect(stored.status).toBe(200);
+      expect(await stored.json()).not.toHaveProperty("recipientEmail");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

@@ -113,14 +113,18 @@ export function loadTrustBundle(env: NodeJS.ProcessEnv = process.env): ShareTrus
 }
 
 export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: string): Record<string, string> {
-  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin].join(" ");
+  const hermeticOpenKey = process.env.SHARE_HERMETIC_OPENKEY_ORIGIN;
+  const openKeyFrame = hermeticOpenKey !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticOpenKey) ? hermeticOpenKey : "https://openkey.so";
+  const hermeticWallet = process.env.SHARE_HERMETIC_WALLET_ORIGIN;
+  const walletConnect = hermeticWallet !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticWallet) ? [hermeticWallet] : [];
+  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin, ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
   const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
   const isViewer = pathname === "/viewer.html" || pathname === "/viewer" || pathname === "/s/*" || /^\/s\/[a-z2-7]+$/.test(pathname);
   const isShare = pathname === "/share.html" || pathname === "/share";
   if (!isViewer && !isShare) return common;
   const csp = isViewer
     ? `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ${connect}; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'`
-    : `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src ${connect}; img-src 'self' data:; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'`;
+    : `default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src ${connect}; img-src 'self' data:; font-src 'self'; frame-src 'self' ${openKeyFrame}; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'`;
   return { ...common, "Content-Security-Policy": csp, "Content-Type": "text/html; charset=UTF-8" };
 }
 

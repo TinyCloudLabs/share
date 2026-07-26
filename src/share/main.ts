@@ -1,4 +1,4 @@
-import type { OpenKeyShareSession } from "./openkey-session.js";
+import type { OpenKeyShareSession, UploadCapability } from "./openkey-session.js";
 
 function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>): void {
   root.removeAttribute("aria-busy");
@@ -30,18 +30,37 @@ function mountAuthentication(root: HTMLElement, proceed: (session: OpenKeyShareS
     void import("./openkey-session.js")
       .then(({ authenticateWithOpenKey }) => authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
-      .catch((error) => { status.textContent = error instanceof Error ? error.message : "OpenKey sign-in could not be completed."; submit.disabled = false; });
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : (typeof error === "string" ? error : ((error as { readonly message?: unknown } | null)?.message ?? "OpenKey sign-in could not be completed."));
+        if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
+        status.textContent = typeof message === "string" ? message : "OpenKey sign-in could not be completed.";
+        submit.disabled = false;
+      });
   });
 }
 
 const root = document.getElementById("share-app");
 if (root === null) throw new Error("share app root missing");
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
-  status.textContent = "OpenKey verified. Preparing encrypted sharing…";
-  const { mountLinkOnlyShare } = await import("./link-only.js");
-  mountLinkOnlyShare(root as HTMLElement, {
-    openKeyAddress: session.address,
-    origin: window.location.origin,
+  status.textContent = "OpenKey verified. Loading your encrypted share library…";
+  const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }, { mountSenderHome }] = await Promise.all([
+    import("../email-share/config.js"),
+    import("./openkey-session.js"),
+    import("./sender-history.js"),
+    import("./sender-home.js"),
+  ]);
+  const config = await loadSharePublicConfig();
+  const capabilitiesResponse = await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+  if (!capabilitiesResponse.ok) throw new Error("Your sharing capabilities are unavailable. Try again later.");
+  const capabilities = ((await capabilitiesResponse.json()) as { readonly capabilities?: readonly UploadCapability[] }).capabilities ?? [];
+  const tinycloud = await createTinyCloudClient(session, config, capabilities, (message) => { status.textContent = message; });
+  const history = new SenderHistoryRepository(tinycloud.vault);
+  mountSenderHome(root as HTMLElement, {
+    session,
+    tinycloud,
+    history,
+    capabilities,
+    composer: { origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin, registryOrigin: window.location.origin },
   });
 }
 

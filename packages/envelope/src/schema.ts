@@ -267,3 +267,99 @@ export type ShareDisplay = z.infer<typeof displaySchema>;
 export type EnvelopeSignature = z.infer<typeof signatureSchema>;
 export type UnsignedShareEnvelope = z.infer<typeof unsignedShareEnvelopeSchema>;
 export type ShareEnvelope = z.infer<typeof shareEnvelopeSchema>;
+
+/** Version 2 additions shared by the browser composer and recipient SDK. */
+export const recipientMatcherSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("exactEmail"), value: z.string().min(3).regex(/^[^@\s]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/) }).strict(),
+  z.object({ kind: z.literal("emailDomain"), value: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/) }).strict(),
+  z.object({ kind: z.literal("policyDigest"), value: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict(),
+  z.object({ kind: z.literal("bearer") }).strict(),
+]);
+
+export const shareActionSchema = z.union([z.literal("read"), z.literal("list"), z.literal("edit")]);
+
+/** The source selector is shared byte-for-byte by the envelope, policy, and
+ * native Node request.  It deliberately describes a named operation, never
+ * executable SQL or a browser-controlled URL. */
+const kvContentSourceSchema = z.object({
+  kind: z.literal("kv"),
+  space: z.string().min(1),
+  path: z.string().min(1),
+  action: z.literal("tinycloud.kv/get"),
+}).strict();
+const sqlContentSourceSchema = z.object({
+  kind: z.literal("sql"),
+  space: z.string().min(1),
+  database: z.string().min(1),
+  path: z.string().min(1),
+  statement: z.string().min(1),
+  arguments: z.record(z.string(), z.number().int()),
+  argumentsDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  action: z.literal("tinycloud.sql/read"),
+}).strict();
+export const contentSourceSchema = z.discriminatedUnion("kind", [kvContentSourceSchema, sqlContentSourceSchema]);
+
+export const v2TargetSchema = z.object({
+  origin: z.string().refine(isCanonicalHttpsOrigin, { message: "expected a canonical https origin" }),
+  nodeAudience: z.string().min(1),
+  spaceId: z.string().refine(isCanonicalPathSegment, { message: "expected a canonical space id" }),
+}).strict();
+
+export const contentMetadataSchema = z.object({
+  mediaType: z.string().min(1).max(128).optional(),
+  byteLength: z.number().int().nonnegative().max(100 * 1024 * 1024).optional(),
+  filename: z.string().min(1).max(255).optional(),
+  encoding: z.literal("utf-8").optional(),
+}).strict();
+
+const unsignedShareEnvelopeV2BaseSchema = z.object({
+  version: z.literal(2),
+  shareId: z.string().min(1),
+  recipientMatcher: recipientMatcherSchema,
+  deliveryEmail: z.string().email().optional(),
+  actions: z.array(shareActionSchema).min(1).max(3),
+  resource: resourceSelectorSchema,
+  target: v2TargetSchema,
+  delegationCid: z.string().min(1),
+  authorityMaterialHandle: z.string().min(1),
+  authorityMaterialDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  contentSource: contentSourceSchema,
+  contentSourceDigest: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  authorizationTarget: authorizationTargetSchema,
+  display: displaySchema,
+  expiry: z.string().datetime(),
+  encrypted: z.boolean(),
+  content: contentPointerSchema.optional(),
+  metadata: contentMetadataSchema,
+}).strict();
+
+function validateV2Invariants(value: z.infer<typeof unsignedShareEnvelopeV2BaseSchema>, ctx: z.RefinementCtx): void {
+  const actions = [...value.actions];
+  if (new Set(actions).size !== actions.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["actions"], message: "actions must be unique" });
+  if (actions.some((action, index) => action !== (["read", "list", "edit"] as const).filter((candidate) => actions.includes(candidate))[index])) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["actions"], message: "actions must be canonically ordered" });
+  if (!value.encrypted && value.recipientMatcher.kind !== "policyDigest") ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recipientMatcher"], message: "safe plaintext must carry only a matcher digest" });
+  if (!value.encrypted && value.authorizationTarget.kind !== "policy") ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["encrypted"], message: "unencrypted content requires a policy target" });
+  if (!value.encrypted && value.content !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "policy-only plaintext cannot carry content" });
+  if (value.encrypted && (value.metadata.mediaType === undefined || value.metadata.filename === undefined || value.metadata.byteLength === undefined)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["metadata"], message: "encrypted shares must describe their content" });
+  if (!value.encrypted && Object.keys(value.metadata).length !== 0) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["metadata"], message: "policy-only plaintext cannot describe content" });
+  if (!value.encrypted && value.metadata.encoding !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["metadata", "encoding"], message: "policy-only plaintext cannot carry content encoding" });
+  if (!value.encrypted && (value.display.senderName !== undefined || value.display.filename !== undefined || value.display.recipientHint !== undefined)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["display"], message: "policy-only plaintext cannot carry display metadata" });
+  if (!value.encrypted && value.deliveryEmail !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryEmail"], message: "policy-only plaintext cannot carry delivery metadata" });
+  if (value.recipientMatcher.kind === "exactEmail" && value.deliveryEmail !== undefined && value.deliveryEmail !== value.recipientMatcher.value) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryEmail"], message: "delivery email must match the exact matcher" });
+  if (value.recipientMatcher.kind === "emailDomain" && value.deliveryEmail !== undefined && value.deliveryEmail.toLowerCase().endsWith(`@${value.recipientMatcher.value}`) === false) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["deliveryEmail"], message: "delivery email must belong to the matcher domain" });
+  if (value.contentSource.kind === "kv" && value.contentSource.action !== "tinycloud.kv/get") ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contentSource"], message: "source action mismatch" });
+  if (value.contentSource.kind === "sql" && value.contentSource.action !== "tinycloud.sql/read") ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["contentSource"], message: "source action mismatch" });
+}
+
+export const unsignedShareEnvelopeV2Schema = unsignedShareEnvelopeV2BaseSchema.superRefine(validateV2Invariants);
+
+// Extend the unsigned object instead of intersecting two strict objects. A
+// strict intersection rejects every valid signed envelope because each side
+// treats the other side's fields as unknown.
+export const shareEnvelopeV2Schema = unsignedShareEnvelopeV2BaseSchema.extend({ signature: signatureSchema }).strict().superRefine(validateV2Invariants);
+export type RecipientMatcher = z.infer<typeof recipientMatcherSchema>;
+export type ShareAction = z.infer<typeof shareActionSchema>;
+export type ContentSource = z.infer<typeof contentSourceSchema>;
+export type ContentMetadata = z.infer<typeof contentMetadataSchema>;
+export type UnsignedShareEnvelopeV2 = z.infer<typeof unsignedShareEnvelopeV2Schema>;
+export type ShareEnvelopeV2 = z.infer<typeof shareEnvelopeV2Schema>;

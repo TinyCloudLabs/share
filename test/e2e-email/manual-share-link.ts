@@ -291,7 +291,7 @@ async function main(): Promise<void> {
           const signature = ed25519.sign(new TextEncoder().encode("xyz.tinycloud.share/invite-authorization/v1\0" + canonicalize(request)), senderSeed);
           const result = await fetch(nodeLocal + "/share/v1/invitations/authorize", { method: "POST", headers: { ...headers(), origin: publicOrigin }, body: JSON.stringify({ request, proof: { alg: "EdDSA", kid: senderDid + "#" + senderDid.slice(8), signature: b64(signature) } }) });
           if (!result.ok) { const failure = (await result.json().catch(() => ({}))) as Json; throw new Error(`mounted Node rejected ${lane} invitation authorization status=${result.status} code=${String(failure.error?.code || "unknown")} diagnostics=${nodeOutput.slice(-1200)}`); }
-          bindings.set(binding.shareCid as string, { shareId: binding.shareId, policyCid: binding.policyCid, recipientEmail: email, expiry: binding.expiry, delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest, contentSource: source, contentSourceDigest: scope.expectedContentSourceDigest, action: source.action, resource: source.path });
+          bindings.set(binding.shareCid as string, { shareId: binding.shareId, policyCid: binding.policyCid, expiry: binding.expiry, delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest, contentSource: source, contentSourceDigest: scope.expectedContentSourceDigest, action: source.action, resource: source.path });
         },
       },
     });
