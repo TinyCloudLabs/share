@@ -762,6 +762,13 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await agent(["wait", "500"]);
   const domainFormState = agentString(await agent(["eval", `JSON.stringify((function(){var option=document.querySelector('select[name=kv-source] option:checked');return {recipient:document.querySelector('input[value=emailDomain]')?.checked===true,domain:document.querySelector('input[name=recipient-value]')?.value==='mailinator.com',delivery:document.querySelector('input[name=delivery-email]')?.value===${JSON.stringify(domainDeliveryEmail)},notify:document.querySelector('input[name=notify]')?.checked===true,matcherKind:option?.dataset.recipientMatcherKind||null,matcherValue:option?.dataset.recipientMatcherValue||null};})())`]));
   if (domainFormState?.recipient !== true || domainFormState?.domain !== true || domainFormState?.delivery !== true || domainFormState?.notify !== true || domainFormState?.matcherKind !== "emailDomain" || domainFormState?.matcherValue !== "mailinator.com") throw new Error(`domain form/capability binding failed: ${JSON.stringify({ recipient: domainFormState?.recipient === true, domain: domainFormState?.domain === true, delivery: domainFormState?.delivery === true, notify: domainFormState?.notify === true, matcherKind: domainFormState?.matcherKind ?? null, matcherValue: domainFormState?.matcherValue ?? null })}`);
+  await agent(["fill", "input[name=delivery-email]", "sam@evil.example"]);
+  await agent(["click", "button.create-link-button"]);
+  await agent(["wait", "text=Check the sharing details"]);
+  const mismatchedDomainDetail = await agent(["get", "text", ".sender-status-detail"]);
+  assert.match(mismatchedDomainDetail, /must belong to the shared domain/i, "mismatched delivery domain was not denied by the shipped composer");
+  checks.push("agent-browser denied a mailinator.com policy paired with an evil.example delivery address before link creation, with the user-visible shared-domain validation error.");
+  await agent(["fill", "input[name=delivery-email]", domainDeliveryEmail]);
   await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]);
   await agent(["click", "button.confirm-notification"]);
   await agent(["wait", "text=Notification queued"]);
