@@ -1,9 +1,15 @@
+import {readFileSync} from "node:fs";
+import {createHash} from "node:crypto";
+import {blake3} from "@noble/hashes/blake3";
+import {keccak_256} from "@noble/hashes/sha3";
 import {ed25519} from "@noble/curves/ed25519";
+import {secp256k1} from "@noble/curves/secp256k1";
 import {describe, expect, it, vi} from "vitest";
 import {
   canonicalize,
   didKeyFromEd25519PublicKey,
   toBase64Url,
+  fromBase64Url,
 } from "@tinycloud/share-envelope";
 import {
   createShareLink,
@@ -16,10 +22,12 @@ import {
   type ShareEmailAdapter,
 } from "../src/email.js";
 
-const senderSeed = new Uint8Array(32).fill(7);
-const nodeSeed = new Uint8Array(32).fill(2);
+const senderSeed = new Uint8Array(32).fill(0x44);
+const nodeSeed = new Uint8Array(32).fill(0x42);
 const senderPublicKey = ed25519.getPublicKey(senderSeed);
 const senderDid = didKeyFromEd25519PublicKey(senderPublicKey);
+const vectors = JSON.parse(readFileSync(new URL("../../../test/vectors/email-claim-v1/positive.json", import.meta.url), "utf8")) as {readonly scenarios: readonly [Record<string, any>, ...Record<string, any>[]]};
+const fixture = vectors.scenarios[0];
 const source = {
   kind: "kv" as const,
   space: "did:pkh:eip155:1:0x1111111111111111111111111111111111111111",
@@ -27,8 +35,58 @@ const source = {
   action: "tinycloud.kv/get" as const,
 };
 
+const ownerPrivateKey = new Uint8Array(32).fill(1);
+const ownerPublicKey = secp256k1.getPublicKey(ownerPrivateKey, false);
+const policyOwnerDid = `did:pkh:eip155:1:0x${Array.from(keccak_256(ownerPublicKey.slice(1)).slice(-20), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+
+function nodeCid(bytes: Uint8Array): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  const data = Uint8Array.of(1, 0x55, 0x1e, 0x20, ...blake3(bytes));
+  let buffer = 0; let bits = 0; let result = "b";
+  for (const byte of data) { buffer = (buffer << 8) | byte; bits += 8; while (bits >= 5) { bits -= 5; result += alphabet[(buffer >>> bits) & 31]; } }
+  if (bits !== 0) result += alphabet[(buffer << (5 - bits)) & 31];
+  return result;
+}
+
+function standardMaterial(): {readonly material: Record<string, any>; readonly digest: string} {
+  const material = JSON.parse(JSON.stringify(fixture.authorityMaterial)) as Record<string, any>;
+  for (const key of ["policyAuthorityBytes", "policyEnforcementBytes"] as const) {
+    const parent = JSON.parse(new TextDecoder().decode(fromBase64Url(String(material[key])))) as Record<string, any>;
+    const facts = parent.facts as Record<string, unknown>;
+    facts["xyz.tinycloud.policy/ownerDid"] = policyOwnerDid;
+    parent.issuerDid = policyOwnerDid;
+    delete parent.signature; delete parent.delegationCid;
+    const unsigned = new TextEncoder().encode(canonicalize(parent));
+    const digest = new Uint8Array(createHash("sha256").update(new TextEncoder().encode("xyz.tinycloud.policy/enforcement-delegation/v1\0")).update(unsigned).digest());
+    const signature = secp256k1.sign(keccak_256(new Uint8Array([...new TextEncoder().encode("\x19Ethereum Signed Message:\n32"), ...digest])), ownerPrivateKey, {lowS: true});
+    const signed = {...parent, signature: {suite: "eip191-secp256k1-sha256-jcs-v1", value: toBase64Url(new Uint8Array([...signature.toBytes("compact"), signature.recovery]))}};
+    const parentCid = nodeCid(new TextEncoder().encode(canonicalize(signed)));
+    material[key] = toBase64Url(new TextEncoder().encode(canonicalize({...signed, delegationCid: parentCid})));
+    material[key.replace("Bytes", "Cid")] = parentCid;
+  }
+  material.policyOwnerDid = policyOwnerDid;
+  material.senderDid = senderDid;
+  material.relationship = {policyOwnerDid, senderDid, authenticated: true};
+  const mapping = material.mapping as Record<string, unknown>;
+  mapping.policyAuthorityCid = material.policyAuthorityCid; mapping.policyEnforcementCid = material.policyEnforcementCid;
+  for (const status of material.statusObservations as Array<Record<string, any>>) {
+    status.parentCid = status.parentCid === fixture.authorityMaterial.policyAuthorityCid ? material.policyAuthorityCid : material.policyEnforcementCid;
+    status.checkedAt = "2026-07-20T11:59:00.000Z"; status.freshUntil = "2026-07-20T12:04:00.000Z";
+    status.signerKid = `${didKeyFromEd25519PublicKey(ed25519.getPublicKey(nodeSeed))}#${didKeyFromEd25519PublicKey(ed25519.getPublicKey(nodeSeed)).slice("did:key:".length)}`;
+    const unsigned = {...status}; delete unsigned.signature;
+    status.signature = {alg: "EdDSA", kid: status.signerKid, value: toBase64Url(ed25519.sign(new TextEncoder().encode(`xyz.tinycloud.share/authority-status/v1\0${canonicalize(unsigned)}`), nodeSeed))};
+  }
+  const attestation = material.attestation as Record<string, any>;
+  attestation.expiresAt = "2026-07-23T12:04:00.000Z";
+  const unsignedAttestation = {...attestation}; delete unsignedAttestation.signature;
+  attestation.signature = {alg: "EdDSA", kid: String(attestation.localSignerKid), value: toBase64Url(ed25519.sign(new TextEncoder().encode(`xyz.tinycloud.share/enrollment-attestation/v1\0${canonicalize(unsignedAttestation)}`), nodeSeed))};
+  return {material, digest: createHash("sha256").update(canonicalize(material)).digest("base64url")};
+}
+
+const authority = standardMaterial();
+
 const scope: SenderScope = {
-  policyOwnerDid: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
+  policyOwnerDid,
   senderDid,
   signingCapability: {capabilityId: "A".repeat(22), publicKey: senderPublicKey},
   signer: {
@@ -40,9 +98,9 @@ const scope: SenderScope = {
   },
   shareOrigin: "https://share.tinycloud.xyz",
   delegation: "uCAESA.kv.terminal",
-  delegationCid: "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4",
+  delegationCid: fixture.delegationCid,
   authorityMaterialHandle: "amh_kv_001",
-  authorityMaterialDigest: "A".repeat(43),
+  authorityMaterialDigest: authority.digest,
   targetOrigin: "https://node.example",
   nodeAudience: "did:web:node.example",
   spaceId: source.space,
@@ -56,7 +114,7 @@ const scope: SenderScope = {
     keyVersion: 1,
     enabled: true,
   },
-  authorityMaterial: {},
+  authorityMaterial: authority.material,
 };
 
 const policy: ShareLinkPolicy = {
@@ -66,16 +124,16 @@ const policy: ShareLinkPolicy = {
   resource: source.path,
   expiresAt: "2026-07-23T12:00:00.000Z",
   target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: scope.spaceId },
-  policyCid: "bafkreibm6jg7u6v4g5y2qj6w6z7gqv6x4x5r7l6q6m3m6j4s5f6a7b8c9d",
-  policyDigest: "A".repeat(43),
-  contentSourceDigest: "B".repeat(43),
+  policyCid: fixture.policyCid,
+  policyDigest: createHash("sha256").update(fromBase64Url(fixture.policyBytes)).digest("base64url"),
+  contentSourceDigest: fixture.policy.contentSourceDigest,
   delegationCid: scope.delegationCid,
   authorityMaterialDigest: scope.authorityMaterialDigest,
-  policyBytes: "eyJwb2xpY3kiOiJ0ZXN0In0",
-  policyAuthorityCid: "bafkr4ignn6hoctuylzuvdowj5sl3tby3kwz3s45jymriery4nzjohfcxoi",
-  policyAuthorityBytes: "AQ",
-  policyEnforcementCid: "bafkr4igdmjoclvyi3zhp3fqokhmgw7yc3twdycce2sepmwa6xw4rlgabvi",
-  policyEnforcementBytes: "Ag",
+  policyBytes: fixture.policyBytes,
+  policyAuthorityCid: authority.material.policyAuthorityCid,
+  policyAuthorityBytes: authority.material.policyAuthorityBytes,
+  policyEnforcementCid: authority.material.policyEnforcementCid,
+  policyEnforcementBytes: authority.material.policyEnforcementBytes,
 };
 
 async function generatedShare(): Promise<ShareArtifact> {
@@ -173,7 +231,7 @@ describe("email SDK lane", () => {
     const delivery = adapter.deliver.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(delivery.shareUrl).toBe(share.shareUrl);
     expect(delivery.authorization).toMatchObject({
-      recipientEmail: share.recipientEmail,
+      deliveryEmail: share.recipientEmail,
       policyCid: share.policyCid,
       contentSource: source,
       targetOrigin: scope.targetOrigin,
@@ -183,7 +241,7 @@ describe("email SDK lane", () => {
   });
 
   it.each([
-    ["recipient", {recipientEmail: "other@example.com"}],
+    ["recipient", {deliveryEmail: "other@example.com"}],
     ["policy", {policyCid: "bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
     ["resource", {contentSource: {...source, path: "documents/other.md"}}],
     ["action", {contentSource: {...source, action: "tinycloud.sql/read"}}],

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { open, readFile, rm, stat, unlink } from "node:fs/promises";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { open, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
 import { CID } from "multiformats/cid";
@@ -42,6 +42,11 @@ const REGISTRY_AUTHORIZATION_DOMAIN =
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
 export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
+const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
+const SECURE_READ = constants.O_RDONLY | NO_FOLLOW;
+const SECURE_CREATE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
+const SECURE_APPEND = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | NO_FOLLOW;
+
 class PayloadTooLargeError extends Error {}
 
 export interface BindingStore {
@@ -73,6 +78,43 @@ export function validateProductionBindingStorePath(value: string, root = PRODUCT
     throw new Error("binding store path must be a descendant of the configured persistent Share volume");
   }
   return normalized;
+}
+
+function assertSecurePath(path: string, allowMissingLeaf = true): void {
+  const segments = path.split("/").slice(1);
+  let current = "";
+  for (const [index, segment] of segments.entries()) {
+    current += `/${segment}`;
+    let entry;
+    try { entry = lstatSync(current); }
+    catch (error) {
+      if (allowMissingLeaf && index === segments.length - 1 && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    // macOS exposes /var as a fixed system alias for /private/var; it is not
+    // operator-controlled and is needed for the local temp-root security tests.
+    if (entry.isSymbolicLink()) {
+      if (!(process.platform === "darwin" && current === "/var")) throw new Error("binding store path contains a symlink");
+      continue;
+    }
+    if (index < segments.length - 1 && !entry.isDirectory()) throw new Error("binding store path parent is not a directory");
+  }
+  const parent = path.slice(0, path.lastIndexOf("/"));
+  realpathSync(parent);
+}
+
+function secureReadSync(path: string): string {
+  assertSecurePath(path);
+  const descriptor = openSync(path, SECURE_READ);
+  try { return readFileSync(descriptor, "utf8"); }
+  finally { closeSync(descriptor); }
+}
+
+async function secureRead(path: string): Promise<string> {
+  assertSecurePath(path);
+  const handle = await open(path, SECURE_READ);
+  try { return await handle.readFile("utf8"); }
+  finally { await handle.close(); }
 }
 
 function scryptAsync(password: string, salt: Uint8Array, length: number, options: { readonly N: number; readonly r: number; readonly p: number; readonly maxmem: number }): Promise<Buffer> {
@@ -122,17 +164,19 @@ export class TransactionalBindingStore implements BindingStore {
     let createdStore = false;
     let createdLock = false;
     try {
+      assertSecurePath(this.path);
+      assertSecurePath(this.lockPath);
       if (existed) {
-        parseJournal(readFileSync(this.path, "utf8"));
-        storeDescriptor = openSync(this.path, "a", 0o600);
+        parseJournal(secureReadSync(this.path));
+        storeDescriptor = openSync(this.path, SECURE_APPEND, 0o600);
       } else {
-        storeDescriptor = openSync(this.path, "wx", 0o600);
+        storeDescriptor = openSync(this.path, SECURE_CREATE, 0o600);
         createdStore = true;
       }
       fsyncSync(storeDescriptor);
       closeSync(storeDescriptor);
       storeDescriptor = undefined;
-      lockDescriptor = openSync(this.lockPath, "wx", 0o600);
+      lockDescriptor = openSync(this.lockPath, SECURE_CREATE, 0o600);
       createdLock = true;
       fsyncSync(lockDescriptor);
       closeSync(lockDescriptor);
@@ -155,7 +199,7 @@ export class TransactionalBindingStore implements BindingStore {
 
   private async readJournal(): Promise<Map<string, Record<string, unknown>>> {
     let text: string;
-    try { text = await readFile(this.path, "utf8"); }
+    try { text = await secureRead(this.path); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
       throw error;
@@ -166,11 +210,15 @@ export class TransactionalBindingStore implements BindingStore {
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     for (;;) {
       try {
-        const handle = await open(this.lockPath, "wx", 0o600);
+        assertSecurePath(this.lockPath);
+        const handle = await open(this.lockPath, SECURE_CREATE, 0o600);
         try { return await operation(); } finally { await handle.close(); await unlink(this.lockPath).catch(() => undefined); }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        try { if (Date.now() - (await stat(this.lockPath)).mtimeMs > this.staleLockMs) await rm(this.lockPath, { recursive: true }); }
+        try {
+          assertSecurePath(this.lockPath, false);
+          if (Date.now() - (await stat(this.lockPath)).mtimeMs > this.staleLockMs) await unlink(this.lockPath);
+        }
         catch (statError) { if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError; }
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
@@ -188,7 +236,8 @@ export class TransactionalBindingStore implements BindingStore {
         if (stable(previous) !== stable(binding)) throw new Error("binding is immutable");
         return;
       }
-      const handle = await open(this.path, "a", 0o600);
+      assertSecurePath(this.path);
+      const handle = await open(this.path, SECURE_APPEND, 0o600);
       try {
         await handle.write(`${JSON.stringify({ op: "put", cid, binding })}\n`, undefined, "utf8");
         await handle.sync();
@@ -927,10 +976,12 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
   const bindingRoot = env.SHARE_BINDING_STORE_ROOT ?? PRODUCTION_BINDING_STORE_ROOT;
-  const bindingPath = env.SHARE_BINDING_STORE_PATH ?? (bundle.environment === "production" ? `${bindingRoot}/bindings.ndjson` : undefined);
+  if (bundle.environment === "production" && bindingRoot !== PRODUCTION_BINDING_STORE_ROOT) throw new Error("production binding store root is fixed to the named Share volume");
+  const bindingPath = env.SHARE_BINDING_STORE_PATH ?? (bundle.environment === "production" ? DEFAULT_PRODUCTION_BINDING_STORE_PATH : undefined);
   if (senderEnabled && bundle.environment === "production") {
     validateProductionBindingStorePath(bindingPath!, bindingRoot);
     try {
+      assertSecurePath(bindingPath!);
       if (!statSync(resolve(bindingRoot)).isDirectory()) throw new Error("not a directory");
     } catch {
       throw new Error("binding store root must be an existing mounted directory");

@@ -1,0 +1,27 @@
+name: Share SDK merge gates
+
+on:
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - src/email-share/**
+      - packages/sdk/**
+      - packages/share-sdk/**
+      - test/**
+      - .github/workflows/share-sdk.yml
+  push:
+    branches: [main]
+
+jobs:
+  sdk-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: node --test scripts/validate-deploy-config.test.mjs

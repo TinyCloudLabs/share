@@ -163,7 +163,11 @@ describe("@tinycloud/share-sdk", () => {
     const authorizeInvitation = vi.fn(async (input: Record<string, unknown>) => {
       const request = input.request as Record<string, unknown>;
       const authorization = {
-        type: "TinyCloudShareInviteAuthorization", version: 1, jti: request.jti, senderDid: request.senderDid, shareCid: request.shareCid, shareId: request.shareId, policyCid: request.policyCid, delegationCid: request.delegationCid, authorityMaterialHandle: request.authorityMaterialHandle, authorityMaterialDigest: request.authorityMaterialDigest, recipientEmail: request.recipientEmail, targetOrigin: request.targetOrigin, nodeAudience: request.nodeAudience, returnOrigin: scope.shareOrigin, documentName: request.documentName, senderTrust: request.senderTrust, contentSource: request.contentSource, contentSourceDigest: request.contentSourceDigest, shareExpiresAt: request.shareExpiresAt, issuedAt: "2026-07-20T12:00:00.000Z", expiresAt: "2026-07-20T12:05:00.000Z", reportAbuseToken: request.reportAbuseToken,
+        ...request,
+        type: "TinyCloudShareInviteAuthorization",
+        returnOrigin: scope.shareOrigin,
+        issuedAt: "2026-07-20T12:00:00.000Z",
+        expiresAt: "2026-07-20T12:05:00.000Z",
       };
       return { authorization: authorization as never, proof: { alg: "EdDSA" as const, kid: scope.trustedNode.invitationKid, signature: toBase64Url(ed25519.sign(new TextEncoder().encode(`${SIGNATURE_DOMAINS.inviteAuthorization}${canonicalize(authorization)}`), nodeSeed)) } };
     });
