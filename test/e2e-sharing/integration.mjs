@@ -30,6 +30,7 @@ import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs"
 import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
 import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
 import { buildDstackResponsePayload, ed25519PublicKey, parseDstackRequest, formatHttpResponse } from "./dstack-issuer.mjs";
+import { nodeEnforcerAudienceFromTrustBundle } from "./node-enforcer-audience.mjs";
 import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
@@ -379,7 +380,11 @@ async function startFixtures(tempRoot) {
   // key material, not a running server) so the canonical trust bundle can be
   // written to disk and handed to Node's own boot via
   // TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH, instead of trusting the node
-  // to describe itself after the fact.
+  // to describe itself after the fact. The exporter reports its own
+  // deployment audience (e.g. did:web:tee.node.tinycloud.xyz), which can
+  // differ from the audience actually enrolled in the trust bundle below —
+  // only nodeInvitationPublicKey is taken from it; the enforcer DID is
+  // always read back from the trust bundle Node was actually launched with.
   const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
   const nodePublic = JSON.parse(nodeDescriptorJson);
   const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
@@ -388,7 +393,8 @@ async function startFixtures(tempRoot) {
   const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
   await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
-  const nodeDescriptor = { url: nodeOrigin, nodeId: nodePublic.nodeAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
+  const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
+  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
   const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
@@ -428,6 +434,11 @@ async function startFixtures(tempRoot) {
     JSON.parse(credentialsTrustBundleJson).issuerPublicKey,
     JSON.parse(nodeTrustBundleJson).issuerPublicKey,
     "OpenCredentials trust bundle issuer key must equal the canonical Node trust bundle key",
+  );
+  assert.equal(
+    JSON.parse(credentialsTrustBundleJson).nodeAudience,
+    nodeDescriptor.nodeId,
+    "OpenCredentials trust bundle nodeAudience must equal the canonical enrolled Node enforcer audience",
   );
   const credentialsLaunchEnv = buildCredentialsLaunchEnv({
     tempRoot, credentialsPort, corsOrigin: canonical.share, dstackSocket: dstackSocketPath, didWeb: "did:web:issuer.credentials.org",
@@ -474,7 +485,13 @@ async function startShare(tempRoot, fixtures) {
   const trustPath = join(tempRoot, "trust.json");
   const registryKey = Buffer.alloc(32, 7).toString("base64url");
   const origin = `http://127.0.0.1:${port}`;
-  await writeFile(trustPath, trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey), { flag: "wx" });
+  const shareTrustBundleJson = trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey);
+  assert.equal(
+    JSON.parse(shareTrustBundleJson).nodeAudience,
+    fixtures.nodeDescriptor.nodeId,
+    "Share trust bundle nodeAudience must equal the canonical enrolled Node enforcer audience used for SHARE_NODE_ENFORCER_DID",
+  );
+  await writeFile(trustPath, shareTrustBundleJson, { flag: "wx" });
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.

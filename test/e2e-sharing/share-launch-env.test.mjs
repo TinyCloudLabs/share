@@ -101,3 +101,19 @@ test("share host launch env rejects an IPv6 loopback shareOrigin", () => {
 test("share host launch env rejects a non-string shareOrigin", () => {
   assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: undefined }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
 });
+
+test("share host launch env rejects a missing port on openKeyOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), openKeyOrigin: "http://127.0.0.1" }), /openKeyOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a zero port on walletOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), walletOrigin: "http://127.0.0.1:0" }), /walletOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a leading-zero port on shareOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: "http://127.0.0.1:04123" }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects an out-of-range port on openKeyOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), openKeyOrigin: "http://127.0.0.1:65536" }), /openKeyOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});

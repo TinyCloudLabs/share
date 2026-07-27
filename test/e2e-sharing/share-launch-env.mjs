@@ -16,20 +16,30 @@
 // origin. All three must be exact loopback origins with no credentials,
 // path, query, or fragment, or the launch is rejected before the Share host
 // can start.
-const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:\d+$/;
+const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:([0-9]+)$/;
 
+// Port digits must match src/host/share-adapter.ts's parseHermeticBrowserOrigin
+// exactly: no leading zero, no zero port, no out-of-range port. A regex-only
+// \d+ check would let "http://127.0.0.1:0" or ":07200" pass here while the
+// server's parser rejects them, so a harness-generated env could pass this
+// helper and then fail Share host startup.
 function loopbackOrigin(value, label) {
-  if (typeof value !== "string" || !LOOPBACK_ORIGIN_PATTERN.test(value)) {
-    throw new Error(`${label} must be an exact http://127.0.0.1:<port> origin`);
-  }
+  const invalid = () => { throw new Error(`${label} must be an exact http://127.0.0.1:<port> origin`); };
+  if (typeof value !== "string") return invalid();
+  const match = LOOPBACK_ORIGIN_PATTERN.exec(value);
+  if (match === null) return invalid();
+  const portText = match[1];
+  if (!/^[1-9][0-9]*$/.test(portText)) return invalid();
+  const port = Number(portText);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return invalid();
   let parsed;
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error(`${label} must be an exact http://127.0.0.1:<port> origin`);
+    return invalid();
   }
   if (parsed.origin !== value || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
-    throw new Error(`${label} must be an exact http://127.0.0.1:<port> origin`);
+    return invalid();
   }
   return value;
 }
