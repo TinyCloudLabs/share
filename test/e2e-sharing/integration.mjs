@@ -1020,6 +1020,11 @@ try {
       if (delegationFailures.length > 0) checks.push(`Failure diagnostic addressed delegation failure observed in child ${entry.child.pid}; raw output omitted after secret audit.`);
       const scopeFailures = outputLines.filter((line) => line.includes("share scope validation failed"));
       if (scopeFailures.length > 0) checks.push(`Failure diagnostic share scope failure observed in child ${entry.child.pid}; raw output omitted after secret audit.`);
+      const registrationFailures = outputLines.filter((line) => line.includes("Owner share policy registration failed:"));
+      if (registrationFailures.length > 0) {
+        const normalized = registrationFailures.map((line) => line.replace(/.*Owner share policy registration failed:\s*/, "").replace(/[^A-Za-z0-9_ :.-]/g, "").slice(0, 120));
+        checks.push(`Failure diagnostic owner policy registration result ${JSON.stringify(normalized)}.`);
+      }
       checks.push(`Failure diagnostic child ${entry.child.pid}: output omitted after secret audit; ${output.length} bytes were captured.`);
     }
   }

@@ -48,12 +48,6 @@ import {
   type SharePermission,
 } from "./composer-model.js";
 
-function decodePublicKey(value: string): Uint8Array {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
-  if (typeof atob === "function") return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-  return fromBase64Url(value);
-}
-
 export interface ComposerShareResult {
   readonly url: string;
   readonly cid: string;
@@ -316,8 +310,10 @@ async function createOwnerPolicyShare(file: File, model: ShareComposerModel, opt
     const canonicalPolicy = await sdk.canonicalOwnerSharePolicy(policyValue);
     const policyProof = toBase64Url(await shareKey.sign(canonicalPolicy.bytes));
     const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, contentSourceDigest: sourceDigest, expiresAt });
-    const invitationPublicKey = decodePublicKey(config.nodeInvitationPublicKey);
-    const registration = await (tinycloud as unknown as { registerOwnerSharePolicy(input: Record<string, unknown>): Promise<{ readonly registration: { readonly registrationCid: string } }> }).registerOwnerSharePolicy({ policy: { ...canonicalPolicy, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: didKeyFromEd25519PublicKey(invitationPublicKey), publicKey: invitationPublicKey } });
+    // The registration receipt is signed by the Node's canonical receipt key.
+    // Do not substitute the invitation key: the SDK verifies the self-describing
+    // did:key kid emitted by this exact route response.
+    const registration = await (tinycloud as unknown as { registerOwnerSharePolicy(input: Record<string, unknown>): Promise<{ readonly registration: { readonly registrationCid: string } }> }).registerOwnerSharePolicy({ policy: { ...canonicalPolicy, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest });
     const deliveryEmail = model.deliveryEmail;
     const authorityMaterialDigest = await digestBytes(fromBase64Url(enforcementDelegation.dagCbor));
     const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
