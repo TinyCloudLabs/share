@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
+import { verifyReleaseInputRepository } from "./preflight.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -52,6 +53,8 @@ const serverTraceIds = [];
 const launchInputDigests = {};
 const gateResults = { exactEmail: false, domain: false, bearer: false, editConflict: false, folder: false, notification: false, denialMatrix: false, senderLibrary: false, browser: false };
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
+const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
+let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
 let lockHeld = false;
@@ -137,15 +140,8 @@ async function assertReleaseInputs() {
     { name: "js-sdk", path: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"), branch: "feat/sharing-production-live", pr: "361" },
   ];
   for (const repository of repositories) {
-    const dirty = execFileSync("git", ["-C", repository.path, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
-    if (dirty.length > 0) throw new Error(`${repository.name} worktree is dirty; release inputs must be committed`);
-    const local = execFileSync("git", ["-C", repository.path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    const upstream = execFileSync("git", ["-C", repository.path, "rev-parse", `origin/${repository.branch}`], { encoding: "utf8" }).trim();
-    const remote = execFileSync("git", ["-C", repository.path, "ls-remote", "origin", `refs/heads/${repository.branch}`], { encoding: "utf8" }).split(/\s+/)[0];
-    const pr = JSON.parse(execFileSync("gh", ["pr", "view", repository.pr, "--json", "headRefOid"], { cwd: repository.path, encoding: "utf8" }));
-    if (local !== upstream || local !== remote || local !== pr.headRefOid) throw new Error(`${repository.name} local, upstream, remote, and PR heads differ`);
-    const tree = execFileSync("git", ["-C", repository.path, "ls-tree", "-r", "--full-tree", "HEAD"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    launchInputDigests[repository.name] = { head: local, digest: createHash("sha256").update(tree).digest("hex") };
+    const { head, digest } = await verifyReleaseInputRepository(repository, { localUnpushedMode });
+    launchInputDigests[repository.name] = { head, digest };
   }
   const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
   await runOnce("bun", ["run", "build"], sdkRoot);
@@ -156,7 +152,10 @@ async function assertReleaseInputs() {
   if (linkedWebSdk !== expectedWebSdk) throw new Error("Share web-sdk node_modules link is stale");
   await stat(join(expectedWebSdk, "dist/index.mjs"));
   launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
-  checks.push(`Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
+  if (!localUnpushedMode) releaseInputsVerified = true;
+  checks.push(localUnpushedMode
+    ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
+    : `Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
 async function waitFor(url, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -947,7 +946,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
     const digestInput = Buffer.concat([Buffer.from(commit), Buffer.from("\0"), Buffer.from(diff), Buffer.from("\0"), ...untrackedBytes.map((value) => typeof value === "string" ? Buffer.from(value) : value)]);
     repositoryDigests[name] = { commit, digest: createHash("sha256").update(digestInput).digest("hex"), untracked: files };
   }
-  const result = { status, summary, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
