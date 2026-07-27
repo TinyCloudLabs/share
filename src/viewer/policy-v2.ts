@@ -21,21 +21,25 @@ function text(doc: Document, tag: keyof HTMLElementTagNameMap, className: string
   const node = doc.createElement(tag); node.className = className; node.textContent = value; return node;
 }
 
-async function nativePayload(response: Response, expectedAction: "get" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly etag?: string }> {
+async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string }> {
   const contentType = response.headers.get("content-type");
   if (contentType !== null && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw new Error("native response media type is invalid");
   const value = await response.json() as unknown;
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("native response is invalid");
   const object = value as Record<string, unknown>;
-  const action = expectedAction === "get" ? "tinycloud.kv/get" : expectedAction === "list" ? "tinycloud.kv/list" : "tinycloud.kv/put";
+  const action = expectedAction === "get" ? "tinycloud.kv/get" : expectedAction === "metadata" ? "tinycloud.kv/metadata" : expectedAction === "list" ? "tinycloud.kv/list" : "tinycloud.kv/put";
   const allowed = expectedAction === "get"
     ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag"]
+    : expectedAction === "metadata"
+      ? ["type", "version", "action", "resource", "metadata", "etag"]
     : expectedAction === "list"
       ? ["type", "version", "action", "resource", "entries", "nextCursor"]
       : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType"];
   if (Object.keys(object).some((key) => !allowed.includes(key))) throw new Error("native response has unknown fields");
   const required = expectedAction === "get"
     ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag"]
+    : expectedAction === "metadata"
+      ? ["type", "version", "action", "resource", "metadata", "etag"]
     : expectedAction === "list"
       ? ["type", "version", "action", "resource", "entries", "nextCursor"]
       : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType"];
@@ -43,6 +47,10 @@ async function nativePayload(response: Response, expectedAction: "get" | "list" 
   if (expectedAction === "list") {
     if (!Array.isArray(object.entries) || (object.nextCursor !== null && typeof object.nextCursor !== "string")) throw new Error("native response entries are invalid");
     return { value: { entries: object.entries, nextCursor: object.nextCursor } };
+  }
+  if (expectedAction === "metadata") {
+    if (typeof object.metadata !== "object" || object.metadata === null || Array.isArray(object.metadata) || Object.entries(object.metadata).some(([key, value]) => key.length === 0 || key.length > 128 || /[\u0000-\u001f\u007f]/.test(key) || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value)) || (object.etag !== null && typeof object.etag !== "string")) throw new Error("native response metadata is invalid");
+    return { value: object, metadata: object.metadata as Record<string, string>, ...(typeof object.etag === "string" ? { etag: object.etag } : {}) };
   }
   if (typeof object.bodyDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(object.bodyDigest)) throw new Error("native response digest is invalid");
   if (expectedAction === "get") {
@@ -78,7 +86,7 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
       // The session response narrows the first operation, while the signed
       // envelope remains the authority for the complete allowed action set.
       const actions = input.envelope.actions;
-      const invoke = async (action: "list" | "get" | "put", resource: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<{ readonly response: Response; readonly payload: Awaited<ReturnType<typeof nativePayload>> }> => {
+      const invoke = async (action: "list" | "metadata" | "get" | "put", resource: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<{ readonly response: Response; readonly payload: Awaited<ReturnType<typeof nativePayload>> }> => {
         const response = await client.nativeInvoke({ action, resource, ...extra });
         if (!response.ok) throw new Error(`native ${action} denied`);
         const body = Array.isArray(extra.body) ? Uint8Array.from(extra.body as number[]) : undefined;
@@ -99,10 +107,11 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
         renderPage(normalizeFolderPage(listed.payload.value), prefix);
         return;
       }
+      const metadataResult = await invoke("metadata", session.resource);
       const loaded = await invoke("get", session.resource);
       const bytes = loaded.payload.bytes ?? new Uint8Array(await loaded.response.arrayBuffer());
-      const mediaType = loaded.payload.mediaType ?? loaded.response.headers.get("content-type") ?? "application/octet-stream";
-      const etag = loaded.payload.etag ?? loaded.response.headers.get("etag") ?? "";
+      const mediaType = loaded.payload.mediaType ?? metadataResult.payload.metadata?.["content-type"] ?? loaded.response.headers.get("content-type") ?? "application/octet-stream";
+      const etag = loaded.payload.etag ?? metadataResult.payload.etag ?? loaded.response.headers.get("etag") ?? "";
       await renderLoadedFile(session.resource.path, bytes, mediaType, etag);
     })().catch((error) => { status.textContent = error instanceof Error ? error.message : "This share could not be opened."; open.disabled = false; });
   });

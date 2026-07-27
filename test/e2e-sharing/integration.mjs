@@ -17,7 +17,8 @@ import { createServer as httpServer } from "node:http";
 import { createConnection } from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -50,6 +51,7 @@ const checks = [];
 const blockers = [];
 const flowAudits = [];
 const serverTraceIds = [];
+const launchInputDigests = {};
 const gateResults = { exactEmail: false, domain: false, bearer: false, editConflict: false, folder: false, notification: false, denialMatrix: false, senderLibrary: false, browser: false };
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 let sessionName = runId;
@@ -123,6 +125,31 @@ function run(command, args, cwd, env = {}) {
   child.stdout.on("data", collect); child.stderr.on("data", collect);
   children.push({ child, output: () => output });
   return child;
+}
+
+function assertReleaseInputs() {
+  const repositories = [
+    { name: "share", path: shareRoot, branch: "feat/sharing-production-live", pr: "27" },
+    { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
+    { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
+    { name: "js-sdk", path: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"), branch: "feat/sharing-production-live", pr: "361" },
+  ];
+  for (const repository of repositories) {
+    const dirty = execFileSync("git", ["-C", repository.path, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+    if (dirty.length > 0) throw new Error(`${repository.name} worktree is dirty; release inputs must be committed`);
+    const local = execFileSync("git", ["-C", repository.path, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    const upstream = execFileSync("git", ["-C", repository.path, "rev-parse", `origin/${repository.branch}`], { encoding: "utf8" }).trim();
+    const remote = execFileSync("git", ["-C", repository.path, "ls-remote", "origin", `refs/heads/${repository.branch}`], { encoding: "utf8" }).split(/\s+/)[0];
+    const pr = JSON.parse(execFileSync("gh", ["pr", "view", repository.pr, "--json", "headRefOid"], { cwd: repository.path, encoding: "utf8" }));
+    if (local !== upstream || local !== remote || local !== pr.headRefOid) throw new Error(`${repository.name} local, upstream, remote, and PR heads differ`);
+    const tree = execFileSync("git", ["-C", repository.path, "ls-tree", "-r", "--full-tree", "HEAD"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    launchInputDigests[repository.name] = { head: local, digest: createHash("sha256").update(tree).digest("hex") };
+  }
+  const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
+  const linkedWebSdk = realpathSync(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
+  const expectedWebSdk = realpathSync(join(sdkRoot, "packages/web-sdk"));
+  if (linkedWebSdk !== expectedWebSdk) throw new Error("Share web-sdk node_modules link is stale");
+  checks.push(`Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
 async function waitFor(url, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -199,6 +226,48 @@ function walletBootstrap(walletOrigin) {
   return `(function () {\n    var address = ${JSON.stringify(wallet.address)};\n    var provider = {\n      selectedAddress: address, chainId: "0x1",\n      request: async function (input) {\n        var method = input.method;\n        if (method === "eth_accounts" || method === "eth_requestAccounts") return [address];\n        if (method === "eth_chainId") return "0x1";\n        if (method === "wallet_getPermissions" || method === "wallet_requestPermissions") return [{ parentCapability: "eth_accounts" }];\n        if (method === "personal_sign") {\n          var params = input.params || [];\n          var raw = String(params.length > 0 ? params[0] : "");\n          var hex = raw.indexOf("0x") === 0 ? raw.slice(2) : null;\n          var octets = hex === null ? [] : (hex.match(/.{1,2}/g) || []).map(function (value) { return parseInt(value, 16); });\n          var message = hex === null ? raw : new TextDecoder().decode(new Uint8Array(octets));\n          var response = await fetch(${JSON.stringify(walletOrigin + "/sign")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: message }) });\n          if (!response.ok) throw new Error("deterministic wallet refused the signing request");\n          return (await response.json()).signature;\n        }\n        return null;\n      }, on: function () { return provider; }, removeListener: function () { return provider; }, isConnected: function () { return true; }\n    };\n    var announce = function () { window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider: provider } })); };\n    window.ethereum = provider;\n    window.addEventListener("eip6963:requestProvider", announce); announce();\n  })()`;
 }
 const openKeyWidget = `<!doctype html><meta charset="utf-8"><script>parent.postMessage({type:"openkey:ready"},"*");setTimeout(()=>parent.postMessage({type:"openkey:auth:use-external-wallet"},"*"),0);addEventListener("message",e=>{if(e.data&&e.data.type==="openkey:auth:request")parent.postMessage({type:"openkey:auth:use-external-wallet"},"*")});</script>`;
+
+function walletBootstrapScript(walletOrigin) {
+  return `(function () {
+    var address = ${JSON.stringify(wallet.address)};
+    var provider = {
+      selectedAddress: address,
+      chainId: "0x1",
+      request: async function (input) {
+        var method = input.method;
+        if (method === "eth_accounts" || method === "eth_requestAccounts") return [address];
+        if (method === "eth_chainId") return "0x1";
+        if (method === "wallet_getPermissions" || method === "wallet_requestPermissions") return [{ parentCapability: "eth_accounts" }];
+        if (method === "personal_sign") {
+          var raw = String((input.params || [])[0] || "");
+          var hex = raw.indexOf("0x") === 0 ? raw.slice(2) : null;
+          var bytes = hex === null ? [] : (hex.match(/.{1,2}/g) || []).map(function (value) { return parseInt(value, 16); });
+          var message = hex === null ? raw : new TextDecoder().decode(new Uint8Array(bytes));
+          var response = await fetch(${JSON.stringify(walletOrigin + "/sign")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: message }) });
+          if (!response.ok) throw new Error("deterministic wallet refused the signing request");
+          return (await response.json()).signature;
+        }
+        return null;
+      },
+      on: function () { return provider; },
+      removeListener: function () { return provider; },
+      isConnected: function () { return true; }
+    };
+    var announced = false;
+    var announce = function () {
+      if (announced) return;
+      announced = true;
+      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: {
+        info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" },
+        provider: provider
+      } }));
+    };
+    Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
+    window.addEventListener("eip6963:requestProvider", announce);
+    announce();
+    setTimeout(announce, 100);
+  })()`;
+}
 
 async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
@@ -277,7 +346,7 @@ async function startFixtures(tempRoot) {
   checks.push(`hermetic Postgres persistence started on 127.0.0.1:${postgresPort}.`);
 
   const nodeDescriptorPath = join(tempRoot, "node.json");
-  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", Buffer.alloc(32, 9).toString("base64url")], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: Buffer.alloc(32, 9).toString("base64url") });
+  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", Buffer.alloc(32, 9).toString("base64url")], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: Buffer.alloc(32, 9).toString("base64url") });
   const nodeDescriptor = await descriptor(nodeDescriptorPath, node, "production Node");
   checks.push(`real Node production router/persistence started at ${nodeDescriptor.url}.`);
   try {
@@ -301,8 +370,8 @@ async function startFixtures(tempRoot) {
   return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, mailOrigin: mail, mailMessages, mailReplays };
 }
 
-function senderCapabilityForFixture(fixture) {
-  if (fixture === undefined) throw new Error("mounted Node fixture did not publish a KV sharing case");
+function senderCapabilityForDescriptor(fixture) {
+  if (fixture === undefined) throw new Error("Node descriptor did not publish a KV sharing case");
   const policyBytes = canonicalJson(fixture.policy);
   const policy = {
     action: fixture.source.action,
@@ -350,16 +419,18 @@ function senderCapabilityForFixture(fixture) {
 }
 
 function senderCapability(nodeDescriptor) {
-  return senderCapabilityForFixture(nodeDescriptor.cases?.find((entry) => entry.kind === "kv"));
-}
-
-function senderCapabilities(nodeDescriptor) {
-  const cases = (nodeDescriptor.cases ?? []).filter((entry) => entry.kind === "kv" || entry.kind === "kv-domain" || entry.kind === "kv-folder-domain");
-  if (cases.length < 3) throw new Error("mounted Node fixture did not publish exact, domain, and folder KV sharing cases");
-  return JSON.stringify(cases.map(senderCapabilityForFixture));
+  return senderCapabilityForDescriptor(nodeDescriptor.cases?.find((entry) => entry.kind === "kv"));
 }
 
 async function startShare(tempRoot, fixtures) {
+  const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live");
+  const sdkLink = join(shareRoot, "node_modules/@tinycloud/web-sdk");
+  const sdkLinkStat = await lstat(sdkLink);
+  const resolvedSdkLink = await realpath(sdkLink);
+  const expectedSdkLink = await realpath(join(sdkRoot, "packages/web-sdk"));
+  if (!sdkLinkStat.isSymbolicLink() || resolvedSdkLink !== expectedSdkLink) throw new Error("Share @tinycloud/web-sdk must resolve to the exact js-sdk worktree");
+  await stat(join(expectedSdkLink, "dist/index.mjs"));
+  checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
   const bindingPath = join(tempRoot, "bindings.ndjson");
@@ -371,7 +442,7 @@ async function startShare(tempRoot, fixtures) {
   // browser CSP and the zero-external-destination audit observe the same path.
   await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: `${origin}/registry`, VITE_SHARE_HERMETIC: "true" });
   const share = run("npm", ["run", "start:deploy"], shareRoot, {
-    HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.alloc(32, 0x44).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: senderCapabilities(fixtures.nodeDescriptor), SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
+    HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.alloc(32, 0x44).toString("base64url"), SHARE_SENDER_CAPABILITY_JSON: senderCapability(fixtures.nodeDescriptor), SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
     SHARE_HERMETIC_COMPOSITION: "true", SHARE_NODE_ENFORCER_DID: fixtures.nodeDescriptor.nodeId, SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
   });
   await waitFor(`${origin}/health/readiness`);
@@ -529,7 +600,7 @@ async function browserGateLegacy(origin, walletOrigin, mailOrigin) {
   await agent(["network", "requests", "--clear"]);
   await agent(["eval", `location.href=${JSON.stringify(`${origin}/share.html`)}`]);
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", `(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:input.url;var p=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))p.then(function(r){r.clone().text().then(function(body){window.__tinycloudAuthDiagnostics.push({url:u,status:r.status,body:body.slice(0,2000)})})});return p;};})()`]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
@@ -639,7 +710,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await installBrowserTelemetry();
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
   await agent(["wait", "1000"]);
@@ -912,7 +983,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
     const digestInput = Buffer.concat([Buffer.from(commit), Buffer.from("\0"), Buffer.from(diff), Buffer.from("\0"), ...untrackedBytes.map((value) => typeof value === "string" ? Buffer.from(value) : value)]);
     repositoryDigests[name] = { commit, digest: createHash("sha256").update(digestInput).digest("hex"), untracked: files };
   }
-  const result = { status, summary, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const result = { status, summary, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
@@ -928,7 +999,7 @@ async function browserSmokeLoop(origin, walletOrigin) {
 }
 
 async function authenticateBrowserPage(walletOrigin, openComposer = true) {
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]).catch(() => undefined);
   await agent(["click", "button.auth-button"]);
   await agent(["wait", "1000"]);
@@ -960,6 +1031,7 @@ async function cleanup() {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { void cleanup().finally(() => { process.exitCode = 1; }); });
 
 try {
+  assertReleaseInputs();
   await acquireLock();
   tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-sharing-e2e-"));
   const fixtures = await startFixtures(tempRoot);

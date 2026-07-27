@@ -138,10 +138,19 @@ export interface ShareRecipientClientOptions {
   readonly buildPresentation: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
 }
 
-function nativeAction(value: ShareAction): "tinycloud.kv/get" | "tinycloud.kv/list" | "tinycloud.kv/put" {
+type NativeAction = "tinycloud.kv/get" | "tinycloud.kv/metadata" | "tinycloud.kv/list" | "tinycloud.kv/put";
+
+function nativeAction(value: ShareAction): NativeAction {
   if (value === "read") return "tinycloud.kv/get";
   if (value === "list") return "tinycloud.kv/list";
   return "tinycloud.kv/put";
+}
+
+function requestedNativeAction(value: unknown): NativeAction {
+  if (value === "metadata" || value === "tinycloud.kv/metadata") return "tinycloud.kv/metadata";
+  if (value === "list" || value === "tinycloud.kv/list") return "tinycloud.kv/list";
+  if (value === "put" || value === "tinycloud.kv/put") return "tinycloud.kv/put";
+  return "tinycloud.kv/get";
 }
 
 function uiAction(value: unknown): ShareAction {
@@ -333,11 +342,10 @@ export class ShareRecipientClient {
     const outer = authority.outerEnvelope as Record<string, unknown>;
     const target = outer.target as Record<string, unknown>;
     const source = outer.contentSource as Record<string, unknown>;
-    const selected = String(request.action ?? "get");
-    const action = selected === "list" || selected === "tinycloud.kv/list" ? "tinycloud.kv/list" : selected === "put" || selected === "tinycloud.kv/put" ? "tinycloud.kv/put" : "tinycloud.kv/get";
+    const action = requestedNativeAction(request.action);
     const selector = request.resource as Record<string, unknown> | undefined;
     const resource = typeof selector?.path === "string" ? selector.path : String(outer.resource && (outer.resource as Record<string, unknown>).path);
-    const actions = this.session.actions.map(nativeAction).sort();
+    const actions = [...new Set(this.session.actions.map(nativeAction).concat(action === "tinycloud.kv/metadata" ? ["tinycloud.kv/metadata"] : []))].sort() as NativeAction[];
     if (!actions.includes(action) || resource.length === 0) throw new Error("requested operation is outside the verified share");
     const bodyBytes = Array.isArray(request.body) ? Uint8Array.from(request.body as number[]) : undefined;
     const bodyDigest = bodyBytes === undefined ? undefined : await digestBytes(bodyBytes);
@@ -354,8 +362,7 @@ export class ShareRecipientClient {
   async nativeInvoke(request: Record<string, unknown>): Promise<Response> {
     if (this.session === undefined) throw new Error("policy session is required");
     if (this.options.envelope.ownerAuthority !== undefined) return this.nativeInvokeV2(request);
-    const requested = String(request.action ?? "get");
-    const action = requested === "list" || requested === "tinycloud.kv/list" ? "tinycloud.kv/list" : requested === "put" || requested === "tinycloud.kv/put" ? "tinycloud.kv/put" : "tinycloud.kv/get";
+    const action = requestedNativeAction(request.action);
     const requestedResource = request.resource;
     const resourceSelector = typeof requestedResource === "object" && requestedResource !== null && !Array.isArray(requestedResource) && typeof (requestedResource as Record<string, unknown>).path === "string"
       ? requestedResource as { readonly kind: "exact" | "prefix"; readonly path: string }
@@ -369,7 +376,8 @@ export class ShareRecipientClient {
     const cursor = typeof request.cursor === "string" ? request.cursor : undefined;
     const issuedAt = new Date();
     const expiresAt = new Date(Math.min(issuedAt.getTime() + 60_000, Date.parse(this.session.expiresAt))).toISOString();
-    const invocationBase = { type: "TinyCloudShareReadInvocation", version: 2, sessionId: this.session.sessionId, shareCid: this.options.shareCid, shareId: this.options.envelope.shareId, policyCid: this.options.envelope.authorizationTarget.kind === "policy" ? this.options.envelope.authorizationTarget.policyCid : "", delegationCid: this.options.envelope.delegationCid, authorityMaterialHandle: this.options.envelope.authorityMaterialHandle, authorityMaterialDigest: this.options.envelope.authorityMaterialDigest, contentSource: this.options.envelope.contentSource, contentSourceDigest: this.options.envelope.contentSourceDigest, holderDid: this.session.holderDid, targetOrigin: this.options.envelope.target.origin, nodeAudience: this.options.envelope.target.nodeAudience, action, actions: this.session.actions.map(nativeAction).sort(), resource, ...(action === "tinycloud.kv/list" ? { limit, ...(cursor === undefined ? {} : { cursor }) } : {}), ...(bodyDigest === undefined ? { } : { bodyDigest, ifMatch: request.ifMatch, contentType: request.contentType }), issuedAt: issuedAt.toISOString(), expiresAt, jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
+    const actions = [...new Set(this.session.actions.map(nativeAction).concat(action === "tinycloud.kv/metadata" ? ["tinycloud.kv/metadata"] : []))].sort() as NativeAction[];
+    const invocationBase = { type: "TinyCloudShareReadInvocation", version: 2, sessionId: this.session.sessionId, shareCid: this.options.shareCid, shareId: this.options.envelope.shareId, policyCid: this.options.envelope.authorizationTarget.kind === "policy" ? this.options.envelope.authorizationTarget.policyCid : "", delegationCid: this.options.envelope.delegationCid, authorityMaterialHandle: this.options.envelope.authorityMaterialHandle, authorityMaterialDigest: this.options.envelope.authorityMaterialDigest, contentSource: this.options.envelope.contentSource, contentSourceDigest: this.options.envelope.contentSourceDigest, holderDid: this.session.holderDid, targetOrigin: this.options.envelope.target.origin, nodeAudience: this.options.envelope.target.nodeAudience, action, actions, resource, ...(action === "tinycloud.kv/list" ? { limit, ...(cursor === undefined ? {} : { cursor }) } : {}), ...(bodyDigest === undefined ? { } : { bodyDigest, ifMatch: request.ifMatch, contentType: request.contentType }), issuedAt: issuedAt.toISOString(), expiresAt, jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
     // The Node boundary recomputes this digest from the complete signed
     // request wrapper after removing only `proof` and both digest fields.
     // Keep the outer action set in the preimage; omitting it makes an
