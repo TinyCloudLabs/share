@@ -130,21 +130,29 @@ export function safeFailedTelemetry(entries) {
   const distinctDelegateRequestBodyCount = digestStats.size;
 
   // Build authorization digest stats over all /delegate entries (failed and successful).
-  const authorizationStats = new Map(); // digest -> { count, hasSuccess }
-  for (const entry of entries) {
+  // successEntries retains array index and valid start/end interval for overlap classification.
+  const authorizationStats = new Map(); // digest -> { count, hasSuccess, successEntries: [{index, fetchStartTime, pushTime}] }
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
     if (entry === null || typeof entry !== "object") continue;
     if (safePathname(entry.url) !== "/delegate") continue;
     if (entry.authorizationDigestAvailable !== true || typeof entry.authorizationDigest !== "string") continue;
     const digest = entry.authorizationDigest;
-    if (!authorizationStats.has(digest)) authorizationStats.set(digest, { count: 0, hasSuccess: false });
+    if (!authorizationStats.has(digest)) authorizationStats.set(digest, { count: 0, hasSuccess: false, successEntries: [] });
     const stats = authorizationStats.get(digest);
     stats.count++;
-    if (typeof entry.status === "number" && entry.status >= 200 && entry.status < 300) stats.hasSuccess = true;
+    if (typeof entry.status === "number" && entry.status >= 200 && entry.status < 300) {
+      stats.hasSuccess = true;
+      const fst = typeof entry.fetchStartTime === "number" && Number.isFinite(entry.fetchStartTime) && entry.fetchStartTime >= 0 ? entry.fetchStartTime : null;
+      const pt = typeof entry.pushTime === "number" && Number.isFinite(entry.pushTime) && entry.pushTime >= 0 ? entry.pushTime : null;
+      stats.successEntries.push({ index: i, fetchStartTime: fst, pushTime: pt });
+    }
   }
   const distinctDelegateAuthorizationCount = authorizationStats.size;
 
   const failed = [];
-  for (const entry of entries) {
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
     if (entry === null || typeof entry !== "object") continue;
     const pathname = safePathname(entry.url);
     if (pathname !== "/delegate" && pathname !== "/invoke") continue;
@@ -182,9 +190,32 @@ export function safeFailedTelemetry(entries) {
         const stats = authorizationStats.get(entry.authorizationDigest);
         result.matchesSuccessfulAuthorization = stats ? stats.hasSuccess : false;
         result.sameAuthorizationCount = stats ? stats.count : 1;
+        const successEntries = stats ? stats.successEntries : [];
+        const failedFst = typeof entry.fetchStartTime === "number" && Number.isFinite(entry.fetchStartTime) && entry.fetchStartTime >= 0 ? entry.fetchStartTime : null;
+        const failedPt = typeof entry.pushTime === "number" && Number.isFinite(entry.pushTime) && entry.pushTime >= 0 ? entry.pushTime : null;
+        let beforeCount = 0, afterCount = 0, overlapCount = 0, completedBeforeStartCount = 0, startedAfterEndCount = 0;
+        for (const se of successEntries) {
+          if (se.index < i) beforeCount++;
+          else afterCount++;
+          if (failedFst !== null && failedPt !== null && se.fetchStartTime !== null && se.pushTime !== null) {
+            if (se.pushTime < failedFst) completedBeforeStartCount++;
+            else if (se.fetchStartTime > failedPt) startedAfterEndCount++;
+            else overlapCount++;
+          }
+        }
+        result.matchingSuccessfulBeforeCount = beforeCount;
+        result.matchingSuccessfulAfterCount = afterCount;
+        result.matchingSuccessfulOverlapCount = overlapCount;
+        result.matchingSuccessfulCompletedBeforeStartCount = completedBeforeStartCount;
+        result.matchingSuccessfulStartedAfterEndCount = startedAfterEndCount;
       } else {
         result.matchesSuccessfulAuthorization = false;
         result.sameAuthorizationCount = 0;
+        result.matchingSuccessfulBeforeCount = 0;
+        result.matchingSuccessfulAfterCount = 0;
+        result.matchingSuccessfulOverlapCount = 0;
+        result.matchingSuccessfulCompletedBeforeStartCount = 0;
+        result.matchingSuccessfulStartedAfterEndCount = 0;
       }
       result.distinctDelegateAuthorizationCount = distinctDelegateAuthorizationCount;
     }

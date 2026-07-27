@@ -393,3 +393,125 @@ test("safeFailedTelemetry: distinctDelegateAuthorizationCount counts unique auth
   assert.equal(result[2].matchesSuccessfulAuthorization, false, "unavailable auth does not match");
   assert.ok(!result.some((r) => "authorizationDigest" in r), "authorizationDigest must never appear in output");
 });
+
+// --- safeFailedTelemetry: matchingSuccessful* timing count fields ---
+
+const AUTH_TIMING = "ccccddddeeeeffffccccddddeeeeffffccccddddeeeeffffccccddddeeeefffff0";
+
+test("safeFailedTelemetry: matchingSuccessfulBeforeCount — success entry appears earlier by index", () => {
+  const entries = [
+    // success at index 0
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 20 },
+    // failed at index 1 — success is before
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 30, pushTime: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulBeforeCount, 1);
+  assert.equal(result[0].matchingSuccessfulAfterCount, 0);
+  assert.ok(!("fetchStartTime" in result[0]), "fetchStartTime must not appear in output");
+  assert.ok(!("pushTime" in result[0]), "pushTime must not appear in output");
+});
+
+test("safeFailedTelemetry: matchingSuccessfulAfterCount — success entry appears later by index", () => {
+  const entries = [
+    // failed at index 0
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 20 },
+    // success at index 1 — success is after
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 30, pushTime: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulBeforeCount, 0);
+  assert.equal(result[0].matchingSuccessfulAfterCount, 1);
+  assert.ok(!("fetchStartTime" in result[0]), "fetchStartTime must not appear in output");
+  assert.ok(!("pushTime" in result[0]), "pushTime must not appear in output");
+});
+
+test("safeFailedTelemetry: matchingSuccessfulCompletedBeforeStartCount — success fully completed before failed started", () => {
+  // success: [10, 20], failed: [30, 40] — success.pushTime(20) < failed.fetchStartTime(30)
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 20 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 30, pushTime: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 1);
+  assert.equal(result[0].matchingSuccessfulStartedAfterEndCount, 0);
+  assert.equal(result[0].matchingSuccessfulOverlapCount, 0);
+});
+
+test("safeFailedTelemetry: matchingSuccessfulStartedAfterEndCount — success started after failed ended", () => {
+  // failed: [10, 20], success: [30, 40] — success.fetchStartTime(30) > failed.pushTime(20)
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 20 },
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 30, pushTime: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulStartedAfterEndCount, 1);
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 0);
+  assert.equal(result[0].matchingSuccessfulOverlapCount, 0);
+});
+
+test("safeFailedTelemetry: matchingSuccessfulOverlapCount — intervals overlap", () => {
+  // success: [10, 35], failed: [25, 50] — overlapping
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 35 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 25, pushTime: 50 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulOverlapCount, 1);
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 0);
+  assert.equal(result[0].matchingSuccessfulStartedAfterEndCount, 0);
+});
+
+test("safeFailedTelemetry: missing timing on failed entry — no overlap classification, before/after counts still computed", () => {
+  // success has timing but failed does not — before/after by index still computed, no interval counts
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 10, pushTime: 20 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulBeforeCount, 1, "index-based before count still works without timing");
+  assert.equal(result[0].matchingSuccessfulAfterCount, 0);
+  assert.equal(result[0].matchingSuccessfulOverlapCount, 0, "no overlap when timing missing");
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 0, "no interval classification when timing missing");
+  assert.equal(result[0].matchingSuccessfulStartedAfterEndCount, 0, "no interval classification when timing missing");
+});
+
+test("safeFailedTelemetry: missing timing on success entry — no overlap classification, before/after counts still computed", () => {
+  // success lacks timing, failed has timing — before/after by index still computed, no interval counts
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_TIMING, authorizationDigestAvailable: true, fetchStartTime: 30, pushTime: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchingSuccessfulBeforeCount, 1, "index-based before count works even without success timing");
+  assert.equal(result[0].matchingSuccessfulAfterCount, 0);
+  assert.equal(result[0].matchingSuccessfulOverlapCount, 0, "no overlap when success timing missing");
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 0);
+  assert.equal(result[0].matchingSuccessfulStartedAfterEndCount, 0);
+});
+
+test("safeFailedTelemetry: hostile fetchStartTime/pushTime values not exposed in output", () => {
+  const HOSTILE_DIGEST = "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0";
+  const HOSTILE_TIMESTAMP = 9999999999.123456789;
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: HOSTILE_DIGEST, authorizationDigestAvailable: true, fetchStartTime: HOSTILE_TIMESTAMP, pushTime: HOSTILE_TIMESTAMP + 1 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: HOSTILE_DIGEST, authorizationDigestAvailable: true, fetchStartTime: HOSTILE_TIMESTAMP + 2, pushTime: HOSTILE_TIMESTAMP + 3 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  const serialized = JSON.stringify(result);
+  assert.ok(!serialized.includes(String(HOSTILE_TIMESTAMP)), "raw fetchStartTime must not appear in output");
+  assert.ok(!serialized.includes(HOSTILE_DIGEST), "authorizationDigest must not appear in output");
+  assert.ok(!("fetchStartTime" in result[0]), "fetchStartTime key must not appear");
+  assert.ok(!("pushTime" in result[0]), "pushTime key must not appear");
+  // Count fields are still present and safe
+  assert.equal(result[0].matchingSuccessfulBeforeCount, 1);
+  assert.equal(result[0].matchingSuccessfulCompletedBeforeStartCount, 1, "success completed before failed started");
+});
