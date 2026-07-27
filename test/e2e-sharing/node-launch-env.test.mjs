@@ -12,7 +12,8 @@ const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "wor
 test("node launch env pins the canonical datadir under the harness tempRoot, absolute and outside the Node checkout", async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), "node-launch-env-test-"));
   try {
-    const env = buildNodeLaunchEnv(tempRoot);
+    const trustBundlePath = join(resolve(tempRoot), "trust-bundle.json");
+    const env = buildNodeLaunchEnv(tempRoot, trustBundlePath);
     const datadir = env.TINYCLOUD_STORAGE__DATADIR;
 
     assert.ok(isAbsolute(datadir), "datadir must be an absolute path");
@@ -28,6 +29,35 @@ test("node launch env pins the canonical datadir under the harness tempRoot, abs
       relativeToNodeCheckout.startsWith("..") || isAbsolute(relativeToNodeCheckout),
       "datadir must not resolve to any path inside the Node checkout",
     );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("node launch env enables share-email with the exact canonical trust-bundle path and no legacy authority-material override", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "node-launch-env-test-"));
+  try {
+    const trustBundlePath = join(resolve(tempRoot), "trust-bundle.json");
+    const env = buildNodeLaunchEnv(tempRoot, trustBundlePath);
+
+    assert.equal(env.TINYCLOUD_SHARE_EMAIL__ENABLED, "true");
+    assert.equal(env.TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH, trustBundlePath);
+    assert.ok(isAbsolute(env.TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH), "trust bundle path must be absolute");
+    assert.equal(
+      Object.keys(env).some((key) => key.includes("AUTHORITY_MATERIAL")),
+      false,
+      "the v2-only launch must never set the legacy v1 authority-material env var",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("node launch env rejects a relative or out-of-tempRoot trust-bundle path", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "node-launch-env-test-"));
+  try {
+    assert.throws(() => buildNodeLaunchEnv(tempRoot, "trust-bundle.json"));
+    assert.throws(() => buildNodeLaunchEnv(tempRoot, join(tmpdir(), "elsewhere", "trust-bundle.json")));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

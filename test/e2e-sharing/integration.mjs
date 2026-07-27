@@ -356,11 +356,18 @@ async function startFixtures(tempRoot) {
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
   await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
-  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot) });
-  const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
+  // Export the public invitation descriptor before launch (it only needs the
+  // key material, not a running server) so the canonical trust bundle can be
+  // written to disk and handed to Node's own boot via
+  // TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH, instead of trusting the node
+  // to describe itself after the fact.
   const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
   const nodePublic = JSON.parse(nodeDescriptorJson);
+  const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
+  await writeFile(trustBundlePath, trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey), { flag: "wx" });
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
+  const nodeOrigin = `http://127.0.0.1:${nodePort}`;
+  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodePublic.nodeAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
