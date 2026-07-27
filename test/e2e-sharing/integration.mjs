@@ -24,6 +24,7 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
+import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -45,6 +46,7 @@ const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
 const children = [];
+const ownedPgids = new Set();
 const servers = [];
 const checks = [];
 const blockers = [];
@@ -129,6 +131,7 @@ function run(command, args, cwd, env = {}) {
   const collect = (chunk) => { output += String(chunk); if (output.length > 32_000) output = output.slice(-32_000); };
   child.stdout.on("data", collect); child.stderr.on("data", collect);
   children.push({ child, output: () => output });
+  if (typeof child.pid === "number") ownedPgids.add(child.pid);
   return child;
 }
 
@@ -350,20 +353,22 @@ async function startFixtures(tempRoot) {
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
-  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node"], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort) });
+  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
+  const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
   await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
-  const nodeDescriptorJson = execFileSync("cargo", ["run", "--quiet", "-p", "tinycloud-node", "--bin", "export-share-invitation-descriptor"], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
+  const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
   const nodePublic = JSON.parse(nodeDescriptorJson);
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodePublic.nodeAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
-  await recordArtifactDigest("nodeRuntime", join(nodeRoot, "target/debug/tinycloud"));
+  await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
-  try {
-    const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
-    checks.push(`real Node v2 readiness ${JSON.stringify({ ready: readiness.ready === true, checks: Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true])) })}.`);
-  } catch {
-    checks.push("real Node v2 readiness probe unavailable.");
+  const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
+  const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
+  if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) {
+    throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
   }
+  checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
   const credentialsPort = await freePort();
   const credentials = run("cargo", ["run", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness"], credentialsRoot, {
@@ -983,8 +988,9 @@ async function cleanup() {
   await closeAll();
   if (tempRoot !== undefined) await rm(tempRoot, { recursive: true, force: true });
   await releaseLock();
-  const remaining = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).split("\n").filter((line) => /sharing-e2e-|e2e-sharing|tinycloud-sharing-e2e-/.test(line) && !line.includes("ps -axo") && !line.trimStart().startsWith(`${process.pid} `));
-  if (remaining.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${remaining.map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean).join(",")}`);
+  const psLines = parsePsLines(execFileSync("ps", ["-axo", "pid=,pgid=,command="], { encoding: "utf8" }));
+  const surviving = findSurvivingOwnedProcesses(psLines, ownedPgids, process.pid);
+  if (surviving.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${surviving.map((entry) => entry.pid).join(",")}`);
   try {
     const sessions = execFileSync(agentBrowser, ["session", "list"], { cwd: shareRoot, encoding: "utf8", timeout: AGENT_TIMEOUT_MS });
     if (sessions.split("\n").some((line) => line.includes(sessionName))) blockers.push(`harness-owned agent-browser session remained after cleanup: ${sessionName}`);
