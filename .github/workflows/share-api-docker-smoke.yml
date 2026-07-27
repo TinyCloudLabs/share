@@ -25,9 +25,9 @@ jobs:
             .services["share-api"].ports == null and
             .services["share-api"].environment.SHARE_SENDER_ENABLED == "false" and
             .services["share-api"].environment.SHARE_BINDING_STORE_PATH == "/var/lib/tinycloud/share/bindings.ndjson" and
-            .services["share-api"].environment.SHARE_SENDER_PRIVATE_KEY == "" and
-            .services["share-api"].environment.SHARE_SENDER_CAPABILITY_JSON == "" and
-            .services["share-api"].environment.SHARE_SENDER_CAPABILITIES_JSON == "" and
+            (.services["share-api"].environment | has("SHARE_SENDER_PRIVATE_KEY") | not) and
+            (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITY_JSON") | not) and
+            (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITIES_JSON") | not) and
             .services["share-api"].environment.SHARE_AUTH_USERS_JSON == "" and
             (.services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 | test("^[A-Za-z0-9+/=]+$")) and
             .services.cloudflared.depends_on["share-api"].condition == "service_healthy"

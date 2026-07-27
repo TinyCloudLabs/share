@@ -11,7 +11,7 @@
 
 import { createRequire } from "node:module";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { existsSync } from "node:fs";
@@ -38,9 +38,48 @@ const canonical = Object.freeze({
 let activeCleanup;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.once(signal, () => {
-    if (activeCleanup === undefined) process.exit(128);
-    void activeCleanup().finally(() => process.exit(128));
+    const exit = () => { void releaseLock().finally(() => process.exit(128)); };
+    if (activeCleanup === undefined) { exit(); return; }
+    void activeCleanup().finally(exit);
   });
+}
+
+// A cross-run mkdir lock keyed to this harness so a stale or overlapping
+// invocation is refused instead of racing shared ports/tempdirs, mirroring
+// test/e2e-sharing/integration.mjs.
+const lockPath = join(tmpdir(), "tinycloud-email-claim-e2e.lock");
+let lockHeld = false;
+function featureProcess(pid) {
+  try {
+    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    return command.includes("test/e2e-email/integration.mjs");
+  } catch { return false; }
+}
+async function acquireLock() {
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    let owner;
+    try { owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")); } catch { owner = undefined; }
+    const ownerAlive = owner?.pid !== undefined && (() => { try { process.kill(owner.pid, 0); return true; } catch { return false; } })();
+    if (ownerAlive && featureProcess(owner.pid)) throw new Error(`another email-claim harness owns the scoped lock (pid ${owner.pid})`);
+    await rm(lockPath, { recursive: true, force: true });
+    await mkdir(lockPath, { mode: 0o700 });
+  }
+  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, runId }), { flag: "wx", mode: 0o600 });
+  lockHeld = true;
+}
+async function releaseLock() {
+  if (!lockHeld) return;
+  lockHeld = false;
+  await rm(lockPath, { recursive: true, force: true });
+}
+
+/** Memoizes an async cleanup so a signal race with a normal `finally` runs it exactly once. */
+function onceAsync(fn) {
+  let promise;
+  return () => { if (promise === undefined) promise = fn(); return promise; };
 }
 
 function arg(name) {
@@ -718,7 +757,7 @@ async function productionGateHermetic() {
   const deployEnvFile = join(tempRoot, "share-deploy.env");
   const bindingStorePath = join(tempRoot, "bindings.ndjson");
   let production;
-  const cleanup = async () => {
+  const cleanup = onceAsync(async () => {
     await stopOwned(owned);
     const remaining = (await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => ""))
       .split("\n")
@@ -726,7 +765,7 @@ async function productionGateHermetic() {
     if (remaining.length !== 0) throw new Error(`production composition left task-owned processes: ${remaining.join(" | ")}`);
     ownedProcessCleanup = { stopped: owned.length, remaining, complete: true };
     await rm(tempRoot, { recursive: true, force: true });
-  };
+  });
   activeCleanup = cleanup;
   try {
     const postgres = await startPostgres(owned, tempRoot);
@@ -851,14 +890,14 @@ async function fixtureGate() {
   const bindingStorePath = join(tempRoot, "bindings.ndjson");
   let resendProvider;
   let production;
-  const cleanup = async () => {
+  const cleanup = onceAsync(async () => {
     await resendProvider?.close();
     await stopOwned(owned);
     const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
     const remaining = processListing.split("\n").filter((line) => line.includes("share-registry") || line.includes(tempRoot));
     ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
     await rm(tempRoot, { recursive: true, force: true });
-  };
+  });
   activeCleanup = cleanup;
   try {
     const postgres = await startPostgres(owned, tempRoot);
@@ -1151,6 +1190,7 @@ async function writeRunRecord(exitStatus, errorMessage) {
 }
 
 try {
+  await acquireLock();
   if (process.argv.includes("--fixture-only")) {
     await fixtureGate();
     console.error("email-claim fixture-backed browser gate: PASS");
@@ -1163,6 +1203,8 @@ try {
   console.error(`email-claim continuous production gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
   await writeRunRecord(1, error instanceof Error ? error.message : String(error));
+} finally {
+  await releaseLock();
 }
 if (process.exitCode === undefined) {
   await writeRunRecord(0, null);
