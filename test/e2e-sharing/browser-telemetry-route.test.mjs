@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { routeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
+import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
 
 const NODE_ORIGIN = "https://node.tinycloud.xyz";
 const CREDENTIALS_ORIGIN = "https://credentials.org";
@@ -109,4 +109,58 @@ test("a non-canonical Request origin is never rewritten and preserves its own he
   assert.equal(routedRequest.headers.get("x-forwarded-proto"), null);
   assert.equal(routedRequest.headers.get("x-harmless-custom"), "value");
   assert.equal(await routedRequest.clone().text(), "payload");
+});
+
+// --- normalizeTelemetryFetchArgs ---
+
+test("normalizeTelemetryFetchArgs: routed Request fetchArgs returns same Request and same fetchArgs reference", async () => {
+  const req = new Request("http://127.0.0.1:4173/delegate", {
+    method: "POST",
+    body: JSON.stringify({ hello: "world" }),
+    headers: { "content-type": "application/json", "x-custom": "val" },
+    credentials: "include",
+  });
+  const fetchArgs = [req];
+  const normalized = normalizeTelemetryFetchArgs(fetchArgs);
+
+  assert.ok(normalized.request === req, "request must be the same Request object");
+  assert.ok(normalized.fetchArgs === fetchArgs, "fetchArgs must be the same array reference");
+  assert.equal(normalized.request.method, "POST");
+  assert.equal(normalized.request.credentials, "include");
+  assert.equal(normalized.request.headers.get("content-type"), "application/json");
+  assert.equal(normalized.request.headers.get("x-custom"), "val");
+  assert.equal(await normalized.request.clone().text(), JSON.stringify({ hello: "world" }), "body must be byte-exact");
+});
+
+test("normalizeTelemetryFetchArgs: string fetchArgs builds new Request and returns it in fetchArgs", async () => {
+  const url = "http://127.0.0.1:4173/delegate";
+  const init = { method: "POST", body: "text-body", headers: { "content-type": "text/plain" }, credentials: "same-origin" };
+  const normalized = normalizeTelemetryFetchArgs([url, init]);
+
+  assert.ok(normalized.request instanceof Request, "request must be a Request");
+  assert.equal(normalized.fetchArgs.length, 1, "fetchArgs must be [request]");
+  assert.ok(normalized.fetchArgs[0] === normalized.request, "fetchArgs[0] must be the same Request");
+  assert.equal(normalized.request.method, "POST");
+  assert.equal(normalized.request.credentials, "same-origin");
+  assert.equal(normalized.request.headers.get("content-type"), "text/plain");
+  assert.equal(await normalized.request.clone().text(), "text-body", "body must be byte-exact");
+});
+
+test("normalizeTelemetryFetchArgs: Uint8Array body is byte-exact", async () => {
+  const bytes = new Uint8Array([0x01, 0x02, 0x03, 0xff]);
+  const url = "http://127.0.0.1:4173/delegate";
+  const normalized = normalizeTelemetryFetchArgs([url, { method: "POST", body: bytes }]);
+
+  const buf = await normalized.request.clone().arrayBuffer();
+  assert.deepEqual(new Uint8Array(buf), bytes, "Uint8Array body must be byte-exact");
+  assert.ok(normalized.fetchArgs[0] === normalized.request, "fetchArgs[0] must be the normalized request");
+});
+
+test("normalizeTelemetryFetchArgs: ArrayBuffer body is byte-exact", async () => {
+  const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+  const url = "http://127.0.0.1:4173/delegate";
+  const normalized = normalizeTelemetryFetchArgs([url, { method: "POST", body: bytes.buffer }]);
+
+  const buf = await normalized.request.clone().arrayBuffer();
+  assert.deepEqual(new Uint8Array(buf), bytes, "ArrayBuffer body must be byte-exact");
 });

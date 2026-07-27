@@ -297,3 +297,20 @@ test("safeFailedTelemetry: /invoke entries do not get request body correlation f
   assert.ok(!("distinctDelegateRequestBodyCount" in result[0]), "invoke must not have distinctDelegateRequestBodyCount");
   assert.ok(!("requestBodyDigest" in result[0]), "invoke must not have requestBodyDigest");
 });
+
+test("safeFailedTelemetry: zero-length empty-body digest cannot match successful delegate and yields requestDigestAvailable:false", () => {
+  // SHA-256 of empty string — must never count as a valid correlatable digest
+  const EMPTY_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const entries = [
+    // A successful delegate with zero-length body — should NOT be accepted into digestStats
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: EMPTY_DIGEST, requestDigestAvailable: true, requestBodyLength: 0 },
+    // A failed delegate with zero-length body — should yield requestDigestAvailable:false
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: EMPTY_DIGEST, requestDigestAvailable: true, requestBodyLength: 0 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1, "only the failed entry is returned");
+  assert.equal(result[0].requestDigestAvailable, false, "zero-length body must yield requestDigestAvailable:false");
+  assert.equal(result[0].matchesSuccessfulRequestBody, false, "zero-length body must not match any successful request");
+  assert.equal(result[0].sameRequestBodyCount, 0, "zero-length body must yield sameRequestBodyCount:0");
+  assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not appear in output");
+});

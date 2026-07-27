@@ -77,3 +77,14 @@ export function routeTelemetryFetchArgs(input, init, context) {
   }
   return { url: routedUrl, method: method, fetchArgs: [routedUrl, requestInit] };
 }
+
+// Normalize the two fetchArgs shapes returned by routeTelemetryFetchArgs to a
+// { request, fetchArgs } pair so callers can clone request once for capture
+// and pass fetchArgs to fetch — ensuring observed and sent bytes cannot diverge.
+export function normalizeTelemetryFetchArgs(fetchArgs) {
+  if (fetchArgs.length === 1 && fetchArgs[0] instanceof Request) {
+    return { request: fetchArgs[0], fetchArgs };
+  }
+  const request = new Request(fetchArgs[0], fetchArgs[1]);
+  return { request, fetchArgs: [request] };
+}

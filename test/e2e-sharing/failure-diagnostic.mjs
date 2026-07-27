@@ -148,8 +148,9 @@ export function safeFailedTelemetry(entries) {
     };
     if (pathname === "/delegate") {
       result.requestBodyLength = typeof entry.requestBodyLength === "number" ? entry.requestBodyLength : null;
-      result.requestDigestAvailable = entry.requestDigestAvailable === true;
-      if (entry.requestDigestAvailable === true && typeof entry.requestBodyDigest === "string") {
+      const digestValid = entry.requestDigestAvailable === true && typeof entry.requestBodyDigest === "string" && typeof entry.requestBodyLength === "number" && Number.isFinite(entry.requestBodyLength) && entry.requestBodyLength > 0;
+      result.requestDigestAvailable = digestValid;
+      if (digestValid) {
         const stats = digestStats.get(entry.requestBodyDigest);
         result.matchesSuccessfulRequestBody = stats ? stats.hasSuccess : false;
         result.sameRequestBodyCount = stats ? stats.count : 1;
