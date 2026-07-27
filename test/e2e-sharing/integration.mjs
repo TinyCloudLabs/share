@@ -14,10 +14,10 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
-import { createConnection } from "node:net";
+import { createConnection, createServer as netServer } from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,6 +26,10 @@ import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
 import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
+import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
+import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
+import { buildDstackResponsePayload, ed25519PublicKey, parseDstackRequest, formatHttpResponse } from "./dstack-issuer.mjs";
+import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -42,7 +46,6 @@ const canonical = Object.freeze({
 });
 const walletPrivateKey = `0x${"55".repeat(32)}`;
 const issuerPublicKey = "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg";
-const issuerSecret = JSON.stringify({ kty: "OKP", crv: "Ed25519", x: "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg", d: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M" });
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
@@ -348,9 +351,23 @@ async function startFixtures(tempRoot) {
   const postgresData = join(tempRoot, "postgres");
   const postgresPort = await freePort();
   await runOnce("/opt/homebrew/opt/postgresql@16/bin/initdb", ["-D", postgresData, "-A", "trust", "-U", "samgbafa"], shareRoot, { LC_ALL: "C" });
-  run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1", "-p", String(postgresPort)], shareRoot, { PGUSER: "samgbafa" });
+  const postgresTlsDir = join(tempRoot, "postgres-tls");
+  await mkdir(postgresTlsDir, { recursive: true });
+  const postgresCaKeyPath = join(postgresTlsDir, "ca.key");
+  const postgresCaCertPath = join(postgresTlsDir, "ca.pem");
+  const postgresServerKeyPath = join(postgresTlsDir, "server.key");
+  const postgresServerCsrPath = join(postgresTlsDir, "server.csr");
+  const postgresServerCertPath = join(postgresTlsDir, "server.crt");
+  const postgresServerExtPath = join(postgresTlsDir, "server.ext");
+  await runOnce("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresCaKeyPath, "-out", postgresCaCertPath, "-days", "1", "-subj", "/CN=sharing-e2e-harness-ca", "-addext", "basicConstraints=critical,CA:true"], postgresTlsDir);
+  await runOnce("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresServerKeyPath, "-out", postgresServerCsrPath, "-subj", `/CN=${POSTGRES_TLS_HOSTNAME}`], postgresTlsDir);
+  await writeFile(postgresServerExtPath, postgresServerCertExtensionFile(), { flag: "wx" });
+  await runOnce("openssl", ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
+  await chmod(postgresServerKeyPath, 0o600);
+  run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: "samgbafa" });
   await waitForTcp(postgresPort);
-  checks.push(`hermetic Postgres persistence started on 127.0.0.1:${postgresPort}.`);
+  const postgresUrl = postgresConnectionUrl({ user: "samgbafa", host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
+  checks.push(`hermetic verify-full TLS Postgres persistence started on ${POSTGRES_TLS_HOSTNAME}:${postgresPort}.`);
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
@@ -378,18 +395,61 @@ async function startFixtures(tempRoot) {
   }
   checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
-  const credentialsPort = await freePort();
-  const credentials = run("cargo", ["run", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness"], credentialsRoot, {
-    TMPDIR: tempRoot,
-    BIND_ADDR: `127.0.0.1:${credentialsPort}`, CORS_ALLOWED_ORIGINS: canonical.share, DID_WEB: "did:web:issuer.credentials.org", OPENCREDENTIALS_SK: issuerSecret,
-    SHARE_EMAIL_CAPABILITY: "true", EMAIL_CLAIM_FIXTURE_DATABASE_URL: `postgres://127.0.0.1:${postgresPort}/postgres?sslmode=disable`, SHARE_EMAIL_RESEND_ENDPOINT: `${mail}/emails`,
-    SHARE_EMAIL_TRUSTED_NODE_ORIGIN: canonical.node, SHARE_EMAIL_TRUSTED_NODE_AUDIENCE: "did:web:node.tinycloud.xyz", SHARE_EMAIL_TRUSTED_NODE_KID: "did:web:node.tinycloud.xyz#invitation-key-1", SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: nodeDescriptor.trustedNode?.invitationPublicKey ?? "A".repeat(43),
-    SHARE_EMAIL_TRUST_BUNDLE_JSON: trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey), SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "hermetic-provider-key", RESEND_WEBHOOK_SECRET: "hermetic-webhook",
+  const readinessFile = join(tempRoot, "share-email-readiness.json");
+  const migrationsDir = join(credentialsRoot, "deploy/share-email/migrations");
+  const migrationEnv = buildMigrationEnv({ postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile });
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, migrationEnv);
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/readiness-check.sh"), [], credentialsRoot, migrationEnv);
+  checks.push(`share-email durable-postgres migrations applied and readiness-check.sh passed against ${migrationsDir}.`);
+
+  const dstackSocketPath = join(tempRoot, "dstack.sock");
+  const issuerSeed = Buffer.alloc(32, 0x47);
+  const dstackIssuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+  const dstackServer = netServer((socket) => {
+    let buffered = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const parsed = parseDstackRequest(buffered);
+      if (parsed === undefined) return;
+      socket.end(formatHttpResponse(buildDstackResponsePayload(parsed.path, parsed.body, issuerSeed) ?? {}));
+    });
   });
+  dstackServer.listen(dstackSocketPath);
+  await once(dstackServer, "listening");
+  servers.push(dstackServer);
+  checks.push(`harness-owned dstack Unix-socket simulator listening at ${dstackSocketPath}.`);
+
+  await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
+  const credentialsBinaryPath = join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness");
+  const credentialsPort = await freePort();
+  const canonicalTrustBundle = JSON.stringify({ ...JSON.parse(trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey)), issuerPublicKey: dstackIssuerPublicKey });
+  const credentialsLaunchEnv = buildCredentialsLaunchEnv({
+    tempRoot, credentialsPort, corsOrigin: canonical.share, dstackSocket: dstackSocketPath, didWeb: "did:web:issuer.credentials.org",
+    trustBundleJson: canonicalTrustBundle, shareUrl: canonical.share, resendApiKey: `re_${"a".repeat(32)}`, resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
+    postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
+  });
+  const credentials = run(credentialsBinaryPath, [], credentialsRoot, credentialsLaunchEnv);
   const credentialsOrigin = `http://127.0.0.1:${credentialsPort}`;
-  await recordArtifactDigest("openCredentialsRuntime", join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness"));
-  await waitFor(`${credentialsOrigin}/share-email/readiness`, 30_000);
-  checks.push(`real OpenCredentials production router/store started at ${credentialsOrigin}.`);
+  await recordArtifactDigest("openCredentialsRuntime", credentialsBinaryPath);
+  const credentialsCapabilityId = "tinycloud.share-email-claim";
+  const credentialsDeadline = Date.now() + 60_000;
+  let credentialsReady = false;
+  while (Date.now() < credentialsDeadline) {
+    try {
+      const response = await fetch(`${credentialsOrigin}/share-email/readiness`);
+      const body = await response.json().catch(() => null);
+      assertCredentialsReadinessBody(response.status, body, credentialsCapabilityId);
+      credentialsReady = true;
+      break;
+    } catch {}
+    if (credentials.exitCode !== null) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  if (!credentialsReady) {
+    const rawOutput = children.find((entry) => entry.child === credentials)?.output() ?? "";
+    throw new Error(`OpenCredentials readiness did not become ready: ${redactSecrets(rawOutput.slice(-4000), [credentialsLaunchEnv.RESEND_API_KEY, credentialsLaunchEnv.RESEND_WEBHOOK_SECRET])}`);
+  }
+  checks.push(`real OpenCredentials production router/store (dstack-derived issuer key, durable verify-full Postgres) started at ${credentialsOrigin}.`);
   return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, mailOrigin: mail, mailMessages, mailReplays };
 }
 
