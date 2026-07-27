@@ -143,6 +143,8 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   const PROVIDER_PAYLOAD = '{"provider":"google","id_token":"ya29.a0AfH6SMB...","access_token":"1//03zzz"}';
   const FAKE_RAW_REQUEST_BODY = '{"capability":"did:key:z6Mkfake","nonce":"hostile-nonce-ABCDEF","secret":"TOP_SECRET_VALUE"}';
   const FAKE_DIGEST = "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678";
+  const FAKE_AUTH_VALUE = "Bearer eyJhbGciOiJFUzI1NiJ9.HOSTILE_AUTH_PAYLOAD.sig";
+  const FAKE_AUTH_DIGEST = "aabbccdd1122334455667788aabbccdd1122334455667788aabbccdd11223344";
 
   const hostileBody = JSON.stringify({
     bearer: BEARER,
@@ -168,6 +170,9 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
     requestBodyLength: FAKE_RAW_REQUEST_BODY.length,
     requestBodyDigest: FAKE_DIGEST,
     requestDigestAvailable: true,
+    authorizationPresent: true,
+    authorizationDigestAvailable: true,
+    authorizationDigest: FAKE_AUTH_DIGEST,
   }];
 
   const result = safeFailedTelemetry(entries);
@@ -187,11 +192,14 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   assert.ok(!serialized.includes("1//03zzz"), "provider access token must not appear");
   assert.ok(!serialized.includes("trace-abc-secret"), "trace ID value must not appear");
   assert.ok(!serialized.includes("trace-xyz-789"), "response trace header value must not appear");
-  assert.ok(!serialized.includes("Authorization"), "raw Authorization key must not appear in headers");
+  assert.ok(!serialized.includes(AUTH_HEADER), "raw Authorization header value must not appear in output");
   assert.ok(!serialized.includes(FAKE_RAW_REQUEST_BODY), "raw request body must not appear");
   assert.ok(!serialized.includes(FAKE_DIGEST), "requestBodyDigest must not appear in output");
   assert.ok(!serialized.includes("TOP_SECRET_VALUE"), "request body secret value must not appear");
   assert.ok(!serialized.includes("hostile-nonce-ABCDEF"), "request body nonce must not appear");
+  assert.ok(!serialized.includes(FAKE_AUTH_VALUE), "raw Authorization header value must not appear");
+  assert.ok(!serialized.includes(FAKE_AUTH_DIGEST), "authorizationDigest must not appear in output");
+  assert.ok(!serialized.includes("HOSTILE_AUTH_PAYLOAD"), "Authorization payload fragment must not appear");
 
   // Useful safe metadata must be preserved
   assert.equal(result[0].pathname, "/delegate");
@@ -203,6 +211,9 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   assert.equal(result[0].requestBodyLength, FAKE_RAW_REQUEST_BODY.length, "requestBodyLength must be the stored length");
   assert.equal(result[0].requestDigestAvailable, true, "requestDigestAvailable must be preserved");
   assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not be present in output");
+  assert.equal(result[0].authorizationPresent, true, "authorizationPresent must be preserved");
+  assert.equal(result[0].authorizationDigestAvailable, true, "authorizationDigestAvailable must be preserved");
+  assert.ok(!("authorizationDigest" in result[0]), "authorizationDigest must not be present in output");
 });
 
 // --- safeFailedTelemetry: request body correlation fields ---
@@ -210,7 +221,7 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
 test("safeFailedTelemetry: matchesSuccessfulRequestBody true when 2xx delegate shares digest", () => {
   const DIGEST = "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
   const entries = [
-    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 64 },
     { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 64 },
   ];
   const result = safeFailedTelemetry(entries);
@@ -254,7 +265,7 @@ test("safeFailedTelemetry: requestDigestAvailable false yields zero counts and f
 test("safeFailedTelemetry: sameRequestBodyCount counts all delegate entries sharing digest", () => {
   const DIGEST = "cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444";
   const entries = [
-    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 10 },
     { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 10 },
     { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 10 },
   ];
@@ -269,7 +280,7 @@ test("safeFailedTelemetry: distinctDelegateRequestBodyCount counts unique valid 
   const D2 = "2222222222222222222222222222222222222222222222222222222222222222";
   const D3 = "3333333333333333333333333333333333333333333333333333333333333333";
   const entries = [
-    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: D1, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: D1, requestDigestAvailable: true, requestBodyLength: 10 },
     { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: D2, requestDigestAvailable: true, requestBodyLength: 20 },
     { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: D3, requestDigestAvailable: true, requestBodyLength: 30 },
     // entry without digest should not add to distinct count
@@ -312,5 +323,73 @@ test("safeFailedTelemetry: zero-length empty-body digest cannot match successful
   assert.equal(result[0].requestDigestAvailable, false, "zero-length body must yield requestDigestAvailable:false");
   assert.equal(result[0].matchesSuccessfulRequestBody, false, "zero-length body must not match any successful request");
   assert.equal(result[0].sameRequestBodyCount, 0, "zero-length body must yield sameRequestBodyCount:0");
+  assert.equal(result[0].distinctDelegateRequestBodyCount, 0, "zero-length body must yield distinctDelegateRequestBodyCount:0");
   assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not appear in output");
+});
+
+// --- safeFailedTelemetry: authorization digest correlation fields ---
+
+test("safeFailedTelemetry: matchesSuccessfulAuthorization true when 2xx delegate shares auth digest", () => {
+  const AUTH_DIGEST = "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_DIGEST, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_DIGEST, authorizationDigestAvailable: true },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].authorizationPresent, true);
+  assert.equal(result[0].authorizationDigestAvailable, true);
+  assert.equal(result[0].matchesSuccessfulAuthorization, true);
+  assert.equal(result[0].sameAuthorizationCount, 2);
+  assert.equal(result[0].distinctDelegateAuthorizationCount, 1);
+  assert.ok(!("authorizationDigest" in result[0]), "authorizationDigest must not appear in output");
+});
+
+test("safeFailedTelemetry: matchesSuccessfulAuthorization false when no 2xx delegate shares auth digest", () => {
+  const AUTH_A = "1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb";
+  const AUTH_B = "2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb3333cccc";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_A, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_B, authorizationDigestAvailable: true },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].matchesSuccessfulAuthorization, false);
+  assert.equal(result[1].matchesSuccessfulAuthorization, false);
+  assert.equal(result[0].distinctDelegateAuthorizationCount, 2);
+  assert.equal(result[1].distinctDelegateAuthorizationCount, 2);
+  assert.ok(!("authorizationDigest" in result[0]), "authorizationDigest must not appear");
+  assert.ok(!("authorizationDigest" in result[1]), "authorizationDigest must not appear");
+});
+
+test("safeFailedTelemetry: authorizationDigestAvailable false yields false/zero auth fields", () => {
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: false, authorizationDigestAvailable: false },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].authorizationPresent, false);
+  assert.equal(result[0].authorizationDigestAvailable, false);
+  assert.equal(result[0].matchesSuccessfulAuthorization, false);
+  assert.equal(result[0].sameAuthorizationCount, 0);
+  assert.equal(result[0].distinctDelegateAuthorizationCount, 0);
+  assert.ok(!("authorizationDigest" in result[0]), "authorizationDigest must not appear");
+});
+
+test("safeFailedTelemetry: distinctDelegateAuthorizationCount counts unique auth digests across all delegate entries", () => {
+  const AUTH_A = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111";
+  const AUTH_B = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, authorizationPresent: true, authorizationDigest: AUTH_A, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_A, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: true, authorizationDigest: AUTH_B, authorizationDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, authorizationPresent: false, authorizationDigestAvailable: false },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 3);
+  assert.ok(result.every((r) => r.distinctDelegateAuthorizationCount === 2), "all failed entries see 2 distinct auth digests");
+  assert.equal(result[0].matchesSuccessfulAuthorization, true, "AUTH_A matches a 2xx entry");
+  assert.equal(result[1].matchesSuccessfulAuthorization, false, "AUTH_B does not match a 2xx entry");
+  assert.equal(result[2].matchesSuccessfulAuthorization, false, "unavailable auth does not match");
+  assert.ok(!result.some((r) => "authorizationDigest" in r), "authorizationDigest must never appear in output");
 });

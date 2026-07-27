@@ -120,6 +120,7 @@ export function safeFailedTelemetry(entries) {
     if (entry === null || typeof entry !== "object") continue;
     if (safePathname(entry.url) !== "/delegate") continue;
     if (entry.requestDigestAvailable !== true || typeof entry.requestBodyDigest !== "string") continue;
+    if (typeof entry.requestBodyLength !== "number" || !Number.isFinite(entry.requestBodyLength) || entry.requestBodyLength <= 0) continue;
     const digest = entry.requestBodyDigest;
     if (!digestStats.has(digest)) digestStats.set(digest, { count: 0, hasSuccess: false });
     const stats = digestStats.get(digest);
@@ -127,6 +128,20 @@ export function safeFailedTelemetry(entries) {
     if (typeof entry.status === "number" && entry.status >= 200 && entry.status < 300) stats.hasSuccess = true;
   }
   const distinctDelegateRequestBodyCount = digestStats.size;
+
+  // Build authorization digest stats over all /delegate entries (failed and successful).
+  const authorizationStats = new Map(); // digest -> { count, hasSuccess }
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== "object") continue;
+    if (safePathname(entry.url) !== "/delegate") continue;
+    if (entry.authorizationDigestAvailable !== true || typeof entry.authorizationDigest !== "string") continue;
+    const digest = entry.authorizationDigest;
+    if (!authorizationStats.has(digest)) authorizationStats.set(digest, { count: 0, hasSuccess: false });
+    const stats = authorizationStats.get(digest);
+    stats.count++;
+    if (typeof entry.status === "number" && entry.status >= 200 && entry.status < 300) stats.hasSuccess = true;
+  }
+  const distinctDelegateAuthorizationCount = authorizationStats.size;
 
   const failed = [];
   for (const entry of entries) {
@@ -159,6 +174,19 @@ export function safeFailedTelemetry(entries) {
         result.sameRequestBodyCount = 0;
       }
       result.distinctDelegateRequestBodyCount = distinctDelegateRequestBodyCount;
+
+      result.authorizationPresent = entry.authorizationPresent === true;
+      const authDigestValid = entry.authorizationDigestAvailable === true && typeof entry.authorizationDigest === "string";
+      result.authorizationDigestAvailable = authDigestValid;
+      if (authDigestValid) {
+        const stats = authorizationStats.get(entry.authorizationDigest);
+        result.matchesSuccessfulAuthorization = stats ? stats.hasSuccess : false;
+        result.sameAuthorizationCount = stats ? stats.count : 1;
+      } else {
+        result.matchesSuccessfulAuthorization = false;
+        result.sameAuthorizationCount = 0;
+      }
+      result.distinctDelegateAuthorizationCount = distinctDelegateAuthorizationCount;
     }
     failed.push(result);
   }
