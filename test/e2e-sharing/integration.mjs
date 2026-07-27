@@ -37,12 +37,10 @@ const canonical = Object.freeze({
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
-// The mounted Node fixture's policy owner is the secp256k1 key made from 32
-// bytes of 0x55. Using that same deterministic account makes the real Share
-// OpenKey session own the capability material published by the fixture.
 const walletPrivateKey = `0x${"55".repeat(32)}`;
-const issuerPublicKey = "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY";
+const issuerPublicKey = "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg";
 const issuerSecret = JSON.stringify({ kty: "OKP", crv: "Ed25519", x: "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg", d: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M" });
+const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
 const children = [];
@@ -346,7 +344,8 @@ async function startFixtures(tempRoot) {
   checks.push(`hermetic Postgres persistence started on 127.0.0.1:${postgresPort}.`);
 
   const nodeDescriptorPath = join(tempRoot, "node.json");
-  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", Buffer.alloc(32, 9).toString("base64url")], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: Buffer.alloc(32, 9).toString("base64url") });
+  const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
+  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", nodeKeysSecretB64], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeDescriptor = await descriptor(nodeDescriptorPath, node, "production Node");
   checks.push(`real Node production router/persistence started at ${nodeDescriptor.url}.`);
   try {
