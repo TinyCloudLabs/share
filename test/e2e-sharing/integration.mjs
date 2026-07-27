@@ -25,6 +25,7 @@ import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
+import { buildShareBrowserBuildEnv } from "./share-browser-build-env.mjs";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
 import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
 import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
@@ -495,7 +496,7 @@ async function startShare(tempRoot, fixtures) {
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
-  await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: canonical.registry });
+  await runOnce("npm", ["run", "build"], shareRoot, buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin));
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);

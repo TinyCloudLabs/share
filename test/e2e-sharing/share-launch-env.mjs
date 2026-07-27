@@ -28,7 +28,7 @@ const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:([0-9]+)$/;
 // \d+ check would let "http://127.0.0.1:0" or ":07200" pass here while the
 // server's parser rejects them, so a harness-generated env could pass this
 // helper and then fail Share host startup.
-function loopbackOrigin(value, label) {
+export function loopbackOrigin(value, label) {
   const invalid = () => { throw new Error(`${label} must be an exact http://127.0.0.1:<port> origin`); };
   if (typeof value !== "string") return invalid();
   const match = LOOPBACK_ORIGIN_PATTERN.exec(value);
