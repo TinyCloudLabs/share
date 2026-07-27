@@ -15,6 +15,7 @@ export const UPSTREAM_BODY_LIMIT = 128 * 1024;
 // boundary without silently falling back to the small JSON API limit.
 export const NATIVE_SHARE_BODY_LIMIT = Math.floor((100 * 1024 * 1024 / 3) * 4) + 2_000_000;
 export const REGISTRY_UPLOAD_BODY_LIMIT = 100 * 1024 * 1024 + (1 + 12 + 16);
+export const SHARE_V2_BODY_LIMIT = 100 * 1024 * 1024;
 const REQUEST_HEADERS = new Set([
   "accept",
   "authorization",
@@ -78,7 +79,7 @@ function routePolicy(path: string, method: string): { readonly service: ShareUps
       ? ["/share/v2/policies", "/share/v2/policy/challenges", "/share/v2/policy/session", "/share/v2/invoke", "/share/v2/deliveries/authorize"]
       : ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"];
     if (upper !== "POST" || !allowed.includes(path)) throw new Error("upstream method is not allowed");
-    return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
+    return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: path === "/share/v2/invoke" ? SHARE_V2_BODY_LIMIT : UPSTREAM_BODY_LIMIT };
   }
   if (path === "/delegate" || path === "/invoke") {
     if (upper !== "POST") throw new Error("upstream method is not allowed");

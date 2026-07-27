@@ -25,8 +25,8 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-experience-e2e");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-experience-e2e");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-production-live");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-production-live");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const artifactPath = join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
 const lockPath = join(tmpdir(), "tinycloud-sharing-e2e.lock");
@@ -63,7 +63,7 @@ const CHILD_TIMEOUT_MS = 120_000;
 function featureProcess(pid) {
   try {
     const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-    return command.includes("test/e2e-sharing") && command.includes("sharing-experience-e2e");
+    return command.includes("test/e2e-sharing") && command.includes("sharing-production-live");
   } catch { return false; }
 }
 
@@ -366,7 +366,7 @@ async function startShare(tempRoot, fixtures) {
   await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: `${origin}/registry`, VITE_SHARE_HERMETIC: "true" });
   const share = run("npm", ["run", "start:deploy"], shareRoot, {
     HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.alloc(32, 0x44).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: senderCapabilities(fixtures.nodeDescriptor), SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
-    SHARE_HERMETIC_COMPOSITION: "true", SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
+    SHARE_HERMETIC_COMPOSITION: "true", SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
   });
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);

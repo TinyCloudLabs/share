@@ -45,6 +45,7 @@ function requestBodyLimit(path: string): number {
   // limit to reach that gate instead of rejecting it at the generic JSON
   // request limit.
   if (path === "/invoke") return NATIVE_SHARE_BODY_LIMIT;
+  if (path.startsWith("/share/v2/")) return 100 * 1024 * 1024;
   if (path === "/api/share/link-only/registry/blobs" || path === "/registry" || path.startsWith("/registry/")) return REGISTRY_UPLOAD_BODY_LIMIT;
   return DEFAULT_REQUEST_BODY_LIMIT;
 }
