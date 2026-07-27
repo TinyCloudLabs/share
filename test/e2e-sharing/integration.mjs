@@ -982,7 +982,10 @@ try {
   try {
     const browserNetwork = networkEntries(await agent(["network", "requests", "--json"]));
     const telemetry = await browserTelemetryEntries();
-    checks.push(`Failure diagnostic browser network ${JSON.stringify(scrubNetwork(browserNetwork).map((entry) => ({ path: entry.path, method: entry.method, status: entry.status })))}.`);
+    const sanitizedNetwork = scrubNetwork(browserNetwork);
+    checks.push(`Failure diagnostic browser network ${JSON.stringify(sanitizedNetwork.map((entry) => ({ path: entry.path, method: entry.method, status: entry.status })))}.`);
+    const policyResult = sanitizedNetwork.find((entry) => entry.path === "/share/v2/policies");
+    if (policyResult !== undefined) checks.push(`Failure diagnostic policy registration HTTP result ${JSON.stringify({ status: policyResult.status ?? null, method: policyResult.method ?? null })}.`);
     checks.push(`Failure diagnostic browser telemetry ${JSON.stringify(telemetry.map((entry) => ({ path: (() => { try { return new URL(entry.url).pathname; } catch { return null; } })(), method: entry.method ?? null, status: entry.status ?? null, errorCode: entry.errorCode ?? null })))}.`);
     checks.push("Failure diagnostic admission network captured; raw network omitted after privacy audit.");
   } catch (diagnosticError) {
