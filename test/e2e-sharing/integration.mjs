@@ -154,8 +154,8 @@ async function assertReleaseInputs() {
   const linkedWebSdk = realpathSync(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
   const expectedWebSdk = realpathSync(join(sdkRoot, "packages/web-sdk"));
   if (linkedWebSdk !== expectedWebSdk) throw new Error("Share web-sdk node_modules link is stale");
-  await stat(join(expectedWebSdk, "dist/index.js"));
-  launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.js"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.js"))).digest("hex") };
+  await stat(join(expectedWebSdk, "dist/index.mjs"));
+  launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
   checks.push(`Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
 async function waitFor(url, timeoutMs = 60_000) {
