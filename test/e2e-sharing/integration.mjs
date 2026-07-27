@@ -1069,8 +1069,8 @@ try {
     blockers.push(`Failure diagnostic auth responses unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
   }
   try {
-    const uiDiagnostics = agentString(await agent(["eval", "JSON.stringify([...document.querySelectorAll('[role=status],[role=alert],.composer-live,.composer-status,.notification-status')].map(function(node){return {className:node.className||null,state:node.dataset.state||null,text:node.textContent||'',children:[...node.children].map(function(child){return child.textContent||''})}}))"]));
-    checks.push(`Failure diagnostic UI state ${JSON.stringify(Array.isArray(uiDiagnostics) ? uiDiagnostics.map((entry) => ({ className: entry?.className ?? null, state: entry?.state ?? null, text: safeBrowserDiagnostic(entry?.text), children: Array.isArray(entry?.children) ? entry.children.map((child) => safeBrowserDiagnostic(child)) : [] })) : [])}.`);
+    const uiDiagnostics = agentString(await agent(["eval", "JSON.stringify([...document.querySelectorAll('[role=status],[role=alert],.composer-live,.composer-status,.notification-status')].map(function(node){var text=node.textContent||'';var match=text.match(/(?:failed: )([0-9]{3})(?: ([A-Za-z0-9_]+))?/);return {className:node.className||null,state:node.dataset.state||null,errorCode:match?match[1]+' '+(match[2]||''):null,text:text,children:[...node.children].map(function(child){return child.textContent||''})}}))"]));
+    checks.push(`Failure diagnostic UI state ${JSON.stringify(Array.isArray(uiDiagnostics) ? uiDiagnostics.map((entry) => ({ className: entry?.className ?? null, state: entry?.state ?? null, errorCode: entry?.errorCode ?? null, text: safeBrowserDiagnostic(entry?.text), children: Array.isArray(entry?.children) ? entry.children.map((child) => safeBrowserDiagnostic(child)) : [] })) : [])}.`);
   } catch (diagnosticError) {
     blockers.push(`Failure diagnostic UI state unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
   }
