@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
+import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
 import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
 
@@ -355,7 +356,7 @@ async function startFixtures(tempRoot) {
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
   await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
-  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort) });
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
   await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
   const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
