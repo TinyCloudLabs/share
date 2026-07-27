@@ -58,7 +58,7 @@ let lockHeld = false;
 let cleanupStarted = false;
 
 const AGENT_TIMEOUT_MS = 60_000;
-const CHILD_TIMEOUT_MS = 120_000;
+const CHILD_TIMEOUT_MS = 600_000;
 
 function featureProcess(pid) {
   try {
