@@ -53,6 +53,8 @@ export interface ComposerShareResult {
   readonly cid: string;
   readonly format: ShareLinkFormat;
   readonly expiresAt?: string;
+  /** The owner delegation CID backing this share, absent for bearer (possession-only) links. Revoking this CID revokes the share and every delegation derived from it. */
+  readonly delegationCid?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
   readonly notify?: () => Promise<void>;
 }
@@ -361,7 +363,7 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
       const result = await tinycloud.kvForSpace(spaceId).put(resourcePath, content, { contentType: (model.mediaType ?? file.type) || "application/octet-stream" });
       if (!result.ok) throw new Error(result.error.message || "TinyCloud could not store this document.");
     }
-    return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, ...(deliveryEmail === undefined ? {} : { notify: async () => {
+    return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: ownerDelegation.delegationCid, ...(deliveryEmail === undefined ? {} : { notify: async () => {
       const share = { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt } as ComposerShareResult;
       const authorize = (tinycloud as unknown as { authorizeShareDelivery?: (input: Record<string, string>) => Promise<Record<string, unknown>> }).authorizeShareDelivery;
       if (authorize === undefined) throw new Error("The authenticated Node delivery adapter is unavailable.");
@@ -374,7 +376,7 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
   }
 }
 
-async function copySelectedSource(
+export async function copySelectedSource(
   tinycloud: ShareTinyCloud,
   spaceId: string,
   sourcePath: string,
