@@ -24,6 +24,7 @@ import { join, resolve } from "node:path";
 import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
+import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
 import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
 import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
@@ -45,7 +46,8 @@ const canonical = Object.freeze({
   registry: "https://registry.tinycloud.xyz",
 });
 const walletPrivateKey = `0x${"55".repeat(32)}`;
-const issuerPublicKey = "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg";
+const issuerSeed = Buffer.alloc(32, 0x47);
+const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
@@ -381,7 +383,8 @@ async function startFixtures(tempRoot) {
   const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
   const nodePublic = JSON.parse(nodeDescriptorJson);
   const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
-  await writeFile(trustBundlePath, trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey), { flag: "wx" });
+  const nodeTrustBundleJson = trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey);
+  await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
   const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
   await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
@@ -403,8 +406,6 @@ async function startFixtures(tempRoot) {
   checks.push(`share-email durable-postgres migrations applied and readiness-check.sh passed against ${migrationsDir}.`);
 
   const dstackSocketPath = join(tempRoot, "dstack.sock");
-  const issuerSeed = Buffer.alloc(32, 0x47);
-  const dstackIssuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
   const dstackServer = netServer((socket) => {
     let buffered = Buffer.alloc(0);
     socket.on("data", (chunk) => {
@@ -422,10 +423,15 @@ async function startFixtures(tempRoot) {
   await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
   const credentialsBinaryPath = join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness");
   const credentialsPort = await freePort();
-  const canonicalTrustBundle = JSON.stringify({ ...JSON.parse(trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey)), issuerPublicKey: dstackIssuerPublicKey });
+  const credentialsTrustBundleJson = trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey);
+  assert.equal(
+    JSON.parse(credentialsTrustBundleJson).issuerPublicKey,
+    JSON.parse(nodeTrustBundleJson).issuerPublicKey,
+    "OpenCredentials trust bundle issuer key must equal the canonical Node trust bundle key",
+  );
   const credentialsLaunchEnv = buildCredentialsLaunchEnv({
     tempRoot, credentialsPort, corsOrigin: canonical.share, dstackSocket: dstackSocketPath, didWeb: "did:web:issuer.credentials.org",
-    trustBundleJson: canonicalTrustBundle, shareUrl: canonical.share, resendApiKey: `re_${"a".repeat(32)}`, resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
+    trustBundleJson: credentialsTrustBundleJson, shareUrl: canonical.share, resendApiKey: `re_${"a".repeat(32)}`, resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
     postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
   });
   const credentials = run(credentialsBinaryPath, [], credentialsRoot, credentialsLaunchEnv);
@@ -466,7 +472,6 @@ async function startShare(tempRoot, fixtures) {
   checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
-  const bindingPath = join(tempRoot, "bindings.ndjson");
   const registryKey = Buffer.alloc(32, 7).toString("base64url");
   const origin = `http://127.0.0.1:${port}`;
   await writeFile(trustPath, trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey), { flag: "wx" });
@@ -477,10 +482,9 @@ async function startShare(tempRoot, fixtures) {
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
-  const share = run("npm", ["run", "start:deploy"], shareRoot, {
-    HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "false", SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
-    SHARE_NODE_ENFORCER_DID: fixtures.nodeDescriptor.nodeId, SHARE_BINDING_STORE_ROOT: tempRoot,
-  });
+  const share = run("npm", ["run", "start:deploy"], shareRoot, buildShareHostLaunchEnv({
+    host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.nodeId,
+  }));
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
