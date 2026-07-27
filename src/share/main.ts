@@ -59,7 +59,22 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     tinycloud,
     history,
     capabilities,
-    composer: { origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin, registryOrigin: window.location.origin },
+    composer: {
+      origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
+      registryOrigin: window.location.origin,
+      notify: async ({ share, deliveryAuthorization }) => {
+        if (deliveryAuthorization === undefined) throw new Error("The Node delivery authorization is missing.");
+        const response = await fetch(`${config.credentialsOrigin}/share/v2`, {
+          method: "POST",
+          credentials: "omit",
+          redirect: "error",
+          referrerPolicy: "no-referrer",
+          headers: { accept: "application/json", "content-type": "application/json" },
+          body: JSON.stringify({ authorization: deliveryAuthorization.authorization, proof: deliveryAuthorization.proof, shareUrl: share.url }),
+        });
+        if (!response.ok) throw new Error("The credential delivery service rejected the share.");
+      },
+    },
   });
 }
 

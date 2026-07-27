@@ -69,7 +69,8 @@ function rejectProductionPlaceholders(value: string): void {
 function senderSecret(env: NodeJS.ProcessEnv): string | undefined {
   const value = env.SHARE_SENDER_PRIVATE_KEY;
   if (value === undefined) return undefined;
-  return b64(value, "SHARE_SENDER_PRIVATE_KEY");
+  if (env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") return b64(value, "SHARE_SENDER_PRIVATE_KEY");
+  throw new Error("SHARE_SENDER_PRIVATE_KEY is forbidden; authenticate through OpenKey");
 }
 
 export function validateTrustBundle(value: unknown, allowTest = false, privateKey?: string): ShareTrustBundle {

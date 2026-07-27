@@ -38,7 +38,7 @@ describe("share composer model", () => {
     ["upload", new Uint8Array([0, 255, 1, 2]), "photo.bin"],
   ] as const)("routes %s content through the canonical create callback", async (mode, content, filename) => {
     const root = document.createElement("div");
-    const received: { file?: File; model?: ShareComposerModel } = {};
+    const received: { file: File | undefined; model?: ShareComposerModel } = { file: undefined };
     mountShareComposer(root, {
       openKeyAddress: "0x1234567890abcdef",
       origin: "https://share.tinycloud.xyz",

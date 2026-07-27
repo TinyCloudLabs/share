@@ -173,7 +173,8 @@ async function send(response: ServerResponse, result: Response): Promise<void> {
 
 export function startProductionServer(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createServer> {
   if (env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden by the production Share host");
-  const bundle = loadTrustBundle(env.SHARE_SENDER_ENABLED === "true" ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
+  if (env.SHARE_SENDER_PRIVATE_KEY !== undefined || env.SHARE_SENDER_CAPABILITY_JSON !== undefined || env.SHARE_SENDER_CAPABILITIES_JSON !== undefined) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
+  const bundle = loadTrustBundle(env);
   const host = createShareHostFromEnv(env);
   const handler = createProductionHandler({ bundle, host, enforceHttps: true });
   const server = createServer((request, response) => {

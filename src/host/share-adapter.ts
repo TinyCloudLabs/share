@@ -961,17 +961,18 @@ function loadRegistryUploadPrivateKey(
 
 export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
   const senderEnabled = senderEnabledFromEnv(env);
+  if (senderEnabled && env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" && (env.SHARE_SENDER_PRIVATE_KEY !== undefined || env.SHARE_SENDER_CAPABILITY_JSON !== undefined || env.SHARE_SENDER_CAPABILITIES_JSON !== undefined)) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
   if (senderEnabled && !bundle.public.nodeEnabled) throw new Error("sender requires an enabled trusted node");
-  const capabilityRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITY_JSON : undefined;
-  const capabilityListRaw = senderEnabled ? env.SHARE_SENDER_CAPABILITIES_JSON : undefined;
-  if (senderEnabled && capabilityRaw !== undefined && capabilityListRaw !== undefined) throw new Error("configure exactly one sender capability source");
-  if (senderEnabled && capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("sender capability material is required when SHARE_SENDER_ENABLED=true");
-  if (senderEnabled && bundle.sender.senderPrivateKey.length === 0) throw new Error("sender private key is required when SHARE_SENDER_ENABLED=true");
+  const testAuthority = env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true";
+  if (senderEnabled && !testAuthority && env.SHARE_SENDER_CAPABILITY_JSON === undefined && env.SHARE_SENDER_CAPABILITIES_JSON === undefined) throw new Error("authenticated OpenKey sender capability is required");
+  const capabilityRaw = testAuthority && senderEnabled ? env.SHARE_SENDER_CAPABILITY_JSON : undefined;
+  const capabilityListRaw = testAuthority && senderEnabled ? env.SHARE_SENDER_CAPABILITIES_JSON : undefined;
+  if (testAuthority && senderEnabled && capabilityRaw !== undefined && capabilityListRaw !== undefined) throw new Error("configure exactly one sender capability source");
+  if (testAuthority && senderEnabled && capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("sender capability material is required when SHARE_SENDER_ENABLED=true");
   const capabilityValues = capabilityRaw === undefined && capabilityListRaw === undefined ? [] : capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
-  if (!Array.isArray(capabilityValues) || (senderEnabled && capabilityValues.length === 0) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("SHARE_SENDER_CAPABILITIES_JSON is invalid");
+  if (!Array.isArray(capabilityValues) || (testAuthority && senderEnabled && capabilityValues.length === 0) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("sender capability input is invalid");
   const parsedCapabilities = capabilityValues.map((value) => parseCapability(value as string, bundle));
-  if (bundle.environment === "production" && parsedCapabilities.some((value) => typeof value.scope.userId !== "string" && typeof value.scope.policyOwnerDid !== "string")) throw new Error("production capabilities require authenticated user bindings");
   const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;

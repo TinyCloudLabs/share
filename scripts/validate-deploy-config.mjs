@@ -24,18 +24,7 @@ if (Object.values(value).some((item) => typeof item === "string" && /(?:node\.ex
 if (process.env.SHARE_SENDER_ENABLED !== undefined && process.env.SHARE_SENDER_ENABLED !== "true" && process.env.SHARE_SENDER_ENABLED !== "false") throw new Error("SHARE_SENDER_ENABLED must be exactly true or false");
 const senderEnabled = process.env.SHARE_SENDER_ENABLED === "true";
 if (senderEnabled && !value.nodeEnabled) throw new Error("SHARE_SENDER_ENABLED=true requires an enabled trusted node");
-if (senderEnabled && (typeof process.env.SHARE_SENDER_PRIVATE_KEY !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(process.env.SHARE_SENDER_PRIVATE_KEY))) throw new Error("SHARE_SENDER_PRIVATE_KEY must be supplied separately by the secret manager");
-if (senderEnabled && process.env.SHARE_SENDER_CAPABILITY_JSON !== undefined && process.env.SHARE_SENDER_CAPABILITIES_JSON !== undefined) throw new Error("configure exactly one sender capability source");
-if (senderEnabled && typeof process.env.SHARE_SENDER_CAPABILITY_JSON !== "string" && typeof process.env.SHARE_SENDER_CAPABILITIES_JSON !== "string") throw new Error("an authenticated sender capability is required");
-if (senderEnabled) {
-  let capabilities;
-  try {
-    capabilities = process.env.SHARE_SENDER_CAPABILITIES_JSON === undefined
-      ? [JSON.parse(process.env.SHARE_SENDER_CAPABILITY_JSON)]
-      : JSON.parse(process.env.SHARE_SENDER_CAPABILITIES_JSON).map((item) => JSON.parse(item));
-  } catch { throw new Error("sender capabilities must be non-empty JSON capability documents"); }
-  if (!Array.isArray(capabilities) || capabilities.length === 0 || capabilities.some((item) => typeof item !== "object" || item === null || Array.isArray(item) || typeof item.scope !== "object" || typeof item.source !== "object" || typeof item.policy !== "object")) throw new Error("sender capabilities must be non-empty JSON capability documents");
-}
+if (process.env.SHARE_SENDER_PRIVATE_KEY !== undefined || process.env.SHARE_SENDER_CAPABILITY_JSON !== undefined || process.env.SHARE_SENDER_CAPABILITIES_JSON !== undefined) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
   try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
 }

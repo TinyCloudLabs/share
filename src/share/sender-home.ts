@@ -117,7 +117,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const composerOptions: ShareComposerOptions = { ...options.composer, openKeyAddress: options.session.address, session: options.session, tinycloud: options.tinycloud, loadCapabilities: async () => options.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })), persistShare: async ({ share, model, file }) => {
       const expiresAt = share.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const recipient = model.recipient.kind === "bearer" ? { kind: "bearer" as const } : { kind: model.recipient.kind, value: model.recipient.value! };
-      const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: model.filename ?? file.name, mediaType: (model.mediaType ?? file.type) || "application/octet-stream", sourceKind: model.contentMode ?? "upload", recipient, actions: model.permissions });
+      const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: model.filename ?? file?.name ?? "shared-resource", mediaType: (model.mediaType ?? file?.type) || "application/octet-stream", sourceKind: model.contentMode ?? "upload", recipient, actions: model.permissions });
       await options.history.save(record);
       await load(false);
     } };
