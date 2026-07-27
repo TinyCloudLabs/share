@@ -2,15 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildShareBrowserBuildEnv } from "./share-browser-build-env.mjs";
 
-test("share browser build env sets hermetic mode, canonical share origin, same-origin registry proxy, and the loopback OpenKey origin", () => {
+test("share browser build env sets viewer-only hermetic mode, canonical share origin, same-origin registry proxy, and the loopback OpenKey origin", () => {
   const env = buildShareBrowserBuildEnv("http://127.0.0.1:4123", "http://127.0.0.1:4200");
 
   assert.deepEqual(env, {
-    VITE_SHARE_HERMETIC: "true",
+    VITE_SHARE_VIEWER_HERMETIC: "true",
     VITE_SHARE_ORIGIN: "https://share.tinycloud.xyz",
     VITE_SHARE_REGISTRY_URL: "http://127.0.0.1:4123/registry",
     VITE_OPENKEY_ORIGIN: "http://127.0.0.1:4200",
   });
+});
+
+test("share browser build env never sets the broad VITE_SHARE_HERMETIC flag that also redirects SDK authority host construction", () => {
+  const env = buildShareBrowserBuildEnv("http://127.0.0.1:4123", "http://127.0.0.1:4200");
+
+  assert.equal(Object.prototype.hasOwnProperty.call(env, "VITE_SHARE_HERMETIC"), false);
 });
 
 test("share browser build env never points VITE_SHARE_REGISTRY_URL at the canonical public registry host", () => {

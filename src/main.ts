@@ -18,7 +18,7 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history);
-  const launch = captured !== undefined && import.meta.env.VITE_SHARE_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
+  const launch = captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
     ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
     : captured;
   void import("./email-share/recipient.css");
