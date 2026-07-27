@@ -204,7 +204,7 @@ async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
     if (request.url !== "/sign") { response.writeHead(404).end(); return; }
     const caller = request.headers.origin;
-    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", vary: "Origin" } : {};
+    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
     if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
     if (request.method !== "POST") { response.writeHead(405, cors).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => { try { const body = JSON.parse(Buffer.concat(chunks).toString()); const signature = await wallet.signMessage({ message: body.message }); response.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ address: wallet.address, signature })); } catch { response.writeHead(400, cors).end(); } });
@@ -280,6 +280,12 @@ async function startFixtures(tempRoot) {
   const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", Buffer.alloc(32, 9).toString("base64url")], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: Buffer.alloc(32, 9).toString("base64url") });
   const nodeDescriptor = await descriptor(nodeDescriptorPath, node, "production Node");
   checks.push(`real Node production router/persistence started at ${nodeDescriptor.url}.`);
+  try {
+    const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
+    checks.push(`real Node v2 readiness ${JSON.stringify({ ready: readiness.ready === true, checks: Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true])) })}.`);
+  } catch {
+    checks.push("real Node v2 readiness probe unavailable.");
+  }
 
   const credentialsPort = await freePort();
   const credentials = run("cargo", ["run", "--quiet", "--manifest-path", credentialsManifest, "--features", "email-claim-fixture", "--bin", "opencredentials-witness"], credentialsRoot, {
@@ -366,7 +372,7 @@ async function startShare(tempRoot, fixtures) {
   await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: `${origin}/registry`, VITE_SHARE_HERMETIC: "true" });
   const share = run("npm", ["run", "start:deploy"], shareRoot, {
     HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.alloc(32, 0x44).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: senderCapabilities(fixtures.nodeDescriptor), SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
-    SHARE_HERMETIC_COMPOSITION: "true", SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
+    SHARE_HERMETIC_COMPOSITION: "true", SHARE_NODE_ENFORCER_DID: fixtures.nodeDescriptor.nodeId, SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
   });
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
@@ -379,7 +385,7 @@ function networkEntries(value) {
 }
 
 async function installBrowserTelemetry() {
-  await agent(["eval", `(function(){if(window.__tinycloudTelemetryInstalled)return;var original=window.fetch;var nodeOrigin=${JSON.stringify(canonical.node)};var credentialsOrigin=${JSON.stringify(canonical.credentials)};window.__tinycloudTelemetry=[];window.__tinycloudTelemetryInstalled=true;window.fetch=async function(input,init){var url=typeof input==='string'?input:(input&&input.url)||(input&&input.href)||String(input);var method=(init&&init.method)||((typeof input!=='string'&&input&&input.method)||'GET');var browserTraceId=crypto.randomUUID();var routed=url;var requestBodyPromise=method==='POST'&&input&&typeof input.clone==='function'?input.clone().text().catch(function(){return ''; }):Promise.resolve(typeof init?.body==='string'?init.body:'');if(url.indexOf(nodeOrigin)===0||url.indexOf(credentialsOrigin)===0){var parsed=new URL(url);parsed.protocol=window.location.protocol;parsed.host=window.location.host;routed=parsed.toString();}try{var response=await original.apply(window,[routed,init]);var item={url:routed,method:method,status:response.status,requestId:browserTraceId,serverTraceId:response.headers.get('x-tinycloud-trace-id')};if(method==='POST'&&routed.endsWith('/invoke')){var bodyText=await requestBodyPromise;item.requestSpaces=[...new Set(bodyText.match(/tinycloud:[^\"' ]+/g)||[])];}if((!response.ok&&method==='POST')||(method==='POST'&&routed.endsWith('/delegate'))||(method==='POST'&&routed.endsWith('/invoke'))){try{var clone=response.clone();var text=await clone.text();if(routed.endsWith('/delegate'))item.responseBody=text.slice(0,1200);if(routed.endsWith('/invoke')){item.responseContentType=response.headers.get('content-type');item.responseBodyLength=text.length;item.responseBodyPreview=text.slice(0,240);}try{item.errorCode=JSON.parse(text).error?.code||null;}catch{item.errorCode=null;if(!response.ok)item.errorBody=text.slice(0,500);}}catch{item.errorCode=null;}}window.__tinycloudTelemetry.push(item);return response;}catch(error){window.__tinycloudTelemetry.push({url:routed,method:method,status:0,requestId:browserTraceId});throw error;}};})()`]);
+  await agent(["eval", `(function(){if(window.__tinycloudTelemetryInstalled)return;var original=window.fetch;var nodeOrigin=${JSON.stringify(canonical.node)};var credentialsOrigin=${JSON.stringify(canonical.credentials)};window.__tinycloudTelemetry=[];window.__tinycloudTelemetryInstalled=true;window.fetch=async function(input,init){var url=typeof input==='string'?input:(input&&input.url)||(input&&input.href)||String(input);var method=(init&&init.method)||((typeof input!=='string'&&input&&input.method)||'GET');var browserTraceId=crypto.randomUUID();var routed=url;var requestBodyPromise=method==='POST'&&input&&typeof input.clone==='function'?input.clone().text().catch(function(){return ''; }):Promise.resolve(typeof init?.body==='string'?init.body:'');if(url.indexOf(nodeOrigin)===0||url.indexOf(credentialsOrigin)===0){var parsed=new URL(url);parsed.protocol=window.location.protocol;parsed.host=window.location.host;routed=parsed.toString();}var requestInit=init;if(new URL(routed,window.location.href).origin===window.location.origin){var headers=new Headers(init?.headers);headers.set('x-forwarded-proto','https');requestInit={...(init||{}),headers:headers};}try{var response=await original.apply(window,[routed,requestInit]);var item={url:routed,method:method,status:response.status,requestId:browserTraceId,serverTraceId:response.headers.get('x-tinycloud-trace-id')};if(method==='POST'&&routed.endsWith('/invoke')){var bodyText=await requestBodyPromise;item.requestSpaces=[...new Set(bodyText.match(/tinycloud:[^\"' ]+/g)||[])];}if((!response.ok&&method==='POST')||(method==='POST'&&routed.endsWith('/delegate'))||(method==='POST'&&routed.endsWith('/invoke'))){try{var clone=response.clone();var text=await clone.text();if(routed.endsWith('/delegate'))item.responseBody=text.slice(0,1200);if(routed.endsWith('/invoke')){item.responseContentType=response.headers.get('content-type');item.responseBodyLength=text.length;item.responseBodyPreview=text.slice(0,240);}try{item.errorCode=JSON.parse(text).error?.code||null;}catch{item.errorCode=null;if(!response.ok)item.errorBody=text.slice(0,500);}}catch{item.errorCode=null;}}window.__tinycloudTelemetry.push(item);return response;}catch(error){window.__tinycloudTelemetry.push({url:routed,method:method,status:0,requestId:browserTraceId});throw error;}};})()`]);
 }
 
 async function browserTelemetryEntries() {
@@ -483,6 +489,36 @@ function agentString(value) {
     }
   }
   return current;
+}
+
+function safeBrowserDiagnostic(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const normalized = value.toLowerCase();
+    const category = normalized.includes("signature") ? "signature"
+      : normalized.includes("cid") ? "cid"
+      : normalized.includes("canonical") || normalized.includes("timestamp") || normalized.includes("expired") ? "canonical-registration"
+      : normalized.includes("chain") || normalized.includes("bound") ? "registration-binding"
+      : normalized.includes("policy_registration_invalid") || normalized.includes("policy") ? "policy"
+      : normalized.includes("capability") ? "capability"
+      : normalized.includes("config") ? "config"
+      : normalized.includes("auth") || normalized.includes("session") ? "auth"
+      : normalized.includes("enforcer") || normalized.includes("did:") ? "identity"
+      : normalized.includes("invoke") || normalized.includes("delegate") ? "authorization"
+      : normalized.includes("permission") ? "permission"
+      : normalized.includes("sign") ? "sign-in"
+      : normalized.includes("space") ? "space"
+      : normalized.includes("library") ? "library"
+      : normalized.includes("network") ? "network"
+      : normalized.includes("invalid") ? "invalid"
+      : normalized.includes("failed") || normalized.includes("failure") ? "failure"
+      : "other";
+    return { length: value.length, category };
+  }
+  if (typeof value !== "object") return { type: typeof value };
+  const object = value;
+  const message = typeof object.message === "string" ? object.message : typeof object.error === "string" ? object.error : undefined;
+  return { type: Array.isArray(value) ? "array" : "object", message: message === undefined ? undefined : safeBrowserDiagnostic(message) };
 }
 
 async function browserGateLegacy(origin, walletOrigin, mailOrigin) {
@@ -599,9 +635,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
   await agent(["open", `${origin}/share.html`]);
-  // agent-browser scopes extra headers to the current page origin, so set the
-  // production Share origin after navigating to the loopback production host.
-  await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]);
+  await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
   await installBrowserTelemetry();
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
@@ -864,7 +898,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
   const scopedRepositories = {
     share: shareRoot,
     node: nodeRoot,
-    jsSdk: join(workspaceRoot, "worktrees/js-sdk/feat/sharing-experience-e2e"),
+    jsSdk: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"),
     openCredentials: credentialsRoot,
   };
   const repositoryDigests = {};
@@ -894,7 +928,6 @@ async function browserSmokeLoop(origin, walletOrigin) {
 }
 
 async function authenticateBrowserPage(walletOrigin, openComposer = true) {
-  await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]);
   await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]).catch(() => undefined);
   await agent(["click", "button.auth-button"]);
@@ -917,7 +950,7 @@ async function cleanup() {
   if (tempRoot !== undefined) await rm(tempRoot, { recursive: true, force: true });
   await releaseLock();
   const remaining = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).split("\n").filter((line) => /sharing-e2e-|e2e-sharing|tinycloud-sharing-e2e-/.test(line) && !line.includes("ps -axo") && !line.trimStart().startsWith(`${process.pid} `));
-  if (remaining.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${remaining.join(" | ")}`);
+  if (remaining.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${remaining.map((line) => line.trim().split(/\s+/, 1)[0]).filter(Boolean).join(",")}`);
   try {
     const sessions = execFileSync(agentBrowser, ["session", "list"], { cwd: shareRoot, encoding: "utf8", timeout: AGENT_TIMEOUT_MS });
     if (sessions.split("\n").some((line) => line.includes(sessionName))) blockers.push(`harness-owned agent-browser session remained after cleanup: ${sessionName}`);
@@ -949,6 +982,8 @@ try {
   try {
     const browserNetwork = networkEntries(await agent(["network", "requests", "--json"]));
     const telemetry = await browserTelemetryEntries();
+    checks.push(`Failure diagnostic browser network ${JSON.stringify(scrubNetwork(browserNetwork).map((entry) => ({ path: entry.path, method: entry.method, status: entry.status })))}.`);
+    checks.push(`Failure diagnostic browser telemetry ${JSON.stringify(telemetry.map((entry) => ({ path: (() => { try { return new URL(entry.url).pathname; } catch { return null; } })(), method: entry.method ?? null, status: entry.status ?? null, errorCode: entry.errorCode ?? null })))}.`);
     checks.push("Failure diagnostic admission network captured; raw network omitted after privacy audit.");
   } catch (diagnosticError) {
     blockers.push(`Failure diagnostic admission network unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
@@ -960,7 +995,15 @@ try {
     blockers.push(`Failure diagnostic auth responses unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
   }
   try {
-    const openKeyDiagnostics = await agent(["eval", "JSON.stringify({status:document.querySelector('.auth-status')?.textContent||null,error:window.__tinycloudAuthError||null,senderHistoryError:window.__tinycloudSenderHistoryError||null,messages:window.__tinycloudOpenKeyDiagnostics||null,telemetry:(window.__tinycloudTelemetry||[]).filter(function(entry){return String(entry.url||'').endsWith('/invoke')||String(entry.url||'').endsWith('/delegate')})})"]);
+    const uiDiagnostics = agentString(await agent(["eval", "JSON.stringify([...document.querySelectorAll('[role=status],[role=alert],.composer-live,.composer-status,.notification-status')].map(function(node){return {className:node.className||null,state:node.dataset.state||null,text:node.textContent||'',children:[...node.children].map(function(child){return child.textContent||''})}}))"]));
+    checks.push(`Failure diagnostic UI state ${JSON.stringify(Array.isArray(uiDiagnostics) ? uiDiagnostics.map((entry) => ({ className: entry?.className ?? null, state: entry?.state ?? null, text: safeBrowserDiagnostic(entry?.text), children: Array.isArray(entry?.children) ? entry.children.map((child) => safeBrowserDiagnostic(child)) : [] })) : [])}.`);
+  } catch (diagnosticError) {
+    blockers.push(`Failure diagnostic UI state unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
+  }
+  try {
+    const openKeyDiagnostics = await agent(["eval", "JSON.stringify({status:document.querySelector('.auth-status')?.textContent||null,error:window.__tinycloudAuthError?.message||window.__tinycloudAuthError||null,senderHistoryError:window.__tinycloudSenderHistoryError||null,authResponses:window.__tinycloudAuthDiagnostics||null,messages:window.__tinycloudOpenKeyDiagnostics||null,telemetry:(window.__tinycloudTelemetry||[]).filter(function(entry){return String(entry.url||'').endsWith('/invoke')||String(entry.url||'').endsWith('/delegate')})})"]);
+    const parsedDiagnostics = agentString(openKeyDiagnostics);
+    checks.push(`Failure diagnostic browser state ${JSON.stringify({ status: safeBrowserDiagnostic(parsedDiagnostics?.status), authError: safeBrowserDiagnostic(parsedDiagnostics?.error), historyError: safeBrowserDiagnostic(parsedDiagnostics?.senderHistoryError), authResponseStatuses: Array.isArray(parsedDiagnostics?.authResponses) ? parsedDiagnostics.authResponses.map((entry) => ({ status: entry?.status ?? null, bodyLength: typeof entry?.body === "string" ? entry.body.length : 0, bodyKeys: (() => { try { const body = JSON.parse(entry.body); return body && typeof body === "object" ? Object.keys(body).sort() : []; } catch { return []; } })() })) : [], messageTypes: Array.isArray(parsedDiagnostics?.messages) ? parsedDiagnostics.messages.map((entry) => entry?.type ?? null).filter(Boolean) : [], telemetryCount: Array.isArray(parsedDiagnostics?.telemetry) ? parsedDiagnostics.telemetry.length : 0 })}.`);
     checks.push("Failure diagnostic OpenKey/browser auth captured; raw diagnostics omitted after secret audit.");
   } catch (diagnosticError) {
     blockers.push(`Failure diagnostic OpenKey/browser auth unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);

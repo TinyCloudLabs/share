@@ -48,6 +48,12 @@ import {
   type SharePermission,
 } from "./composer-model.js";
 
+function decodePublicKey(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  if (typeof atob === "function") return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+  return fromBase64Url(value);
+}
+
 export interface ComposerShareResult {
   readonly url: string;
   readonly cid: string;
@@ -295,7 +301,7 @@ async function createOwnerPolicyShare(file: File, model: ShareComposerModel, opt
       ownerDid: tinycloud.did,
       shareKeyDid: shareKey.did,
       recipientMatcher: matcher,
-      target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.nodeAudience, spaceId },
+      target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: "exact", path: resourcePath },
       actions: actionNames,
       contentSource: source,
@@ -305,11 +311,11 @@ async function createOwnerPolicyShare(file: File, model: ShareComposerModel, opt
     };
     const canonicalPolicy = await sdk.canonicalOwnerSharePolicy(policyValue);
     const policyProof = toBase64Url(await shareKey.sign(canonicalPolicy.bytes));
-    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.nodeAudience, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, contentSourceDigest: sourceDigest, expiresAt });
-    const registration = await (tinycloud as unknown as { registerOwnerSharePolicy(input: Record<string, unknown>): Promise<{ readonly registration: { readonly registrationCid: string } }> }).registerOwnerSharePolicy({ policy: { ...canonicalPolicy, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } });
+    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, contentSourceDigest: sourceDigest, expiresAt });
+    const registration = await (tinycloud as unknown as { registerOwnerSharePolicy(input: Record<string, unknown>): Promise<{ readonly registration: { readonly registrationCid: string } }> }).registerOwnerSharePolicy({ policy: { ...canonicalPolicy, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: decodePublicKey(config.nodeInvitationPublicKey) } });
     const deliveryEmail = model.deliveryEmail;
     const authorityMaterialDigest = await digestBytes(fromBase64Url(enforcementDelegation.dagCbor));
-    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.nodeAudience, spaceId }, resource: { kind: "exact", path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
+    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: "exact", path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
     const envelopeCid = await computeCid(new TextEncoder().encode(canonicalize(envelopeIdentity)));
     const shareCid = await computeCid(new TextEncoder().encode(canonicalize({ version: 2, shareId, policyCid: canonicalPolicy.cid, envelopeCid })));
     const outerUnsigned = {
@@ -320,7 +326,7 @@ async function createOwnerPolicyShare(file: File, model: ShareComposerModel, opt
       shareId,
       delegationCid: ownerDelegation.delegationCid,
       policyCid: canonicalPolicy.cid,
-      target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.nodeAudience, spaceId },
+      target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: "exact", path: resourcePath },
       actions: actionNames,
       contentSource: source,

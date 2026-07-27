@@ -5,6 +5,7 @@ import type { TrustedNode } from "./protocol.js";
 const CONFIG_VERSION = "tinycloud.share-email-claim/config-v1" as const;
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const DID_WEB = /^did:web:[A-Za-z0-9.-]+$/;
+const DID_KEY = /^did:key:z[1-9A-HJ-NP-Za-km-z]+$/;
 
 /** Public deployment data. No private key, mailbox secret, token, or session is legal here. */
 export interface SharePublicConfig {
@@ -14,6 +15,7 @@ export interface SharePublicConfig {
   readonly nodeOrigin: string;
   readonly credentialsOrigin: string;
   readonly nodeAudience: string;
+  readonly enforcerDid: string;
   readonly nodeEnabled: boolean;
   readonly issuerDid: string;
   readonly issuerVct: "opencredentials.email/v1";
@@ -57,16 +59,18 @@ function publicKey(value: unknown, name: string): string {
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
   const raw = value as Record<string, unknown>;
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", "nodeEnabled", "issuerDid", "issuerVct", "issuerEnabled", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", ...(Object.hasOwn(raw, "enforcerDid") ? ["enforcerDid"] : []), "nodeEnabled", "issuerDid", "issuerVct", "issuerEnabled", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
   if (object.version !== CONFIG_VERSION || object.issuerVct !== "opencredentials.email/v1") throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const nodeOrigin = httpsOrigin(object.nodeOrigin, "nodeOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
+  const enforcerDid = object.enforcerDid === undefined ? String(object.nodeAudience) : object.enforcerDid;
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.nodeKeyVersion !== "number" || !Number.isSafeInteger(object.nodeKeyVersion) || typeof object.issuerKeyVersion !== "number" || !Number.isSafeInteger(object.issuerKeyVersion)) throw new TypeError("share config key versions are invalid");
   if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || object.nodeAudience !== `did:web:${new URL(nodeOrigin).hostname}` || typeof object.nodeEnabled !== "boolean" || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || object.issuerEnabled !== true || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`) || !Number.isSafeInteger(object.nodeKeyVersion) || object.nodeKeyVersion < 1 || !Number.isSafeInteger(object.issuerKeyVersion) || object.issuerKeyVersion < 1) throw new TypeError("share config trust binding is not enrolled");
+  if ((!DID_KEY.test(enforcerDid) && enforcerDid !== object.nodeAudience)) throw new TypeError("share config enforcer binding is not enrolled");
   if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
   return Object.freeze({
     version: CONFIG_VERSION,
@@ -75,6 +79,7 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
     nodeOrigin,
     credentialsOrigin,
     nodeAudience: object.nodeAudience,
+    enforcerDid,
     nodeEnabled: object.nodeEnabled,
     issuerDid: object.issuerDid,
     issuerVct: "opencredentials.email/v1",
