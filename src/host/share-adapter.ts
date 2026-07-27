@@ -261,7 +261,7 @@ export interface ShareHostOptions {
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
   readonly bindingStore?: BindingStore;
   readonly registryOrigin: string;
-  /** Registry transport is bundle-derived, except inside the explicit hermetic resolver. */
+  /** Registry transport is bundle-derived, except inside the explicit hermetic resolver or SHARE_HERMETIC_REGISTRY_ORIGIN. */
   readonly registryTransportOrigin: string;
   readonly authUsers?: readonly AuthUser[];
   readonly registryUploadPrivateKey?: Uint8Array;
@@ -436,6 +436,29 @@ function sessionCookie(request: Request): string | undefined { return cookie(req
 function parseHermeticBrowserOrigin(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const invalid = (): never => { throw new Error("SHARE_HERMETIC_BROWSER_ORIGIN must be an exact http://127.0.0.1:<port> origin with no credentials, path, query, or fragment"); };
+  const match = HERMETIC_BROWSER_ORIGIN_PATTERN.exec(value);
+  if (match === null) return invalid();
+  const portText = match[1]!;
+  if (!/^[1-9][0-9]*$/.test(portText)) return invalid();
+  const port = Number(portText);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return invalid();
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { return invalid(); }
+  if (parsed.origin !== value || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") return invalid();
+  return value;
+}
+
+/**
+ * SHARE_HERMETIC_REGISTRY_ORIGIN authorizes exactly one dedicated local
+ * registry transport origin (never a wildcard loopback pattern); every other
+ * shape, including IPv6, aliases, credentials, path/query/fragment, and
+ * missing/zero/leading-zero/out-of-range ports, fails startup. It overrides
+ * only registryTransportOrigin: the public registryOrigin, trust bundle, and
+ * every other upstream stay canonical.
+ */
+function parseHermeticRegistryOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const invalid = (): never => { throw new Error("SHARE_HERMETIC_REGISTRY_ORIGIN must be an exact http://127.0.0.1:<port> origin with no credentials, path, query, or fragment"); };
   const match = HERMETIC_BROWSER_ORIGIN_PATTERN.exec(value);
   if (match === null) return invalid();
   const portText = match[1]!;
@@ -1029,7 +1052,7 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   if (senderEnabled && bindingStore?.writable !== true) throw new Error("binding store is not writable");
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
-  const registryTransportOrigin = resolveShareUpstreams(bundle, env).registry;
+  const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;
   const registryUploadPrivateKey = loadRegistryUploadPrivateKey(env, bundle.environment);
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];

@@ -39,7 +39,7 @@ test("requires immutable Share API deployment provenance", () => {
 });
 
 test("forbids hermetic loopback/browser-origin CSP and auth variables in production deployment configuration", () => {
-  for (const name of ["SHARE_HERMETIC_OPENKEY_ORIGIN", "SHARE_HERMETIC_WALLET_ORIGIN", "SHARE_HERMETIC_BROWSER_ORIGIN"]) {
+  for (const name of ["SHARE_HERMETIC_OPENKEY_ORIGIN", "SHARE_HERMETIC_WALLET_ORIGIN", "SHARE_HERMETIC_BROWSER_ORIGIN", "SHARE_HERMETIC_REGISTRY_ORIGIN"]) {
     assert.throws(() => run({ [name]: "http://127.0.0.1:4200" }), new RegExp(`${name} is forbidden in production deployment configuration`));
   }
 });

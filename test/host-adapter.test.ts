@@ -317,6 +317,41 @@ describe("production trust and host boundaries", () => {
     expect(proof.headers.get("set-cookie") ?? "").toContain("Secure");
   });
 
+  it("fails startup for any non-canonical SHARE_HERMETIC_REGISTRY_ORIGIN", () => {
+    const value = bundle("production");
+    for (const origin of [
+      "https://127.0.0.1:41200",
+      "http://127.0.0.1",
+      "http://127.0.0.1:0",
+      "http://127.0.0.1:65536",
+      "http://127.0.0.1:04200",
+      "http://localhost:41200",
+      "http://[::1]:41200",
+      "http://127.0.0.1:41200/blobs",
+      "http://127.0.0.1:41200?x=1",
+      "http://127.0.0.1:41200#top",
+      "http://user:pass@127.0.0.1:41200",
+      "not-a-url",
+    ]) {
+      expect(() => createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_REGISTRY_ORIGIN: origin })).toThrow(/SHARE_HERMETIC_REGISTRY_ORIGIN/);
+    }
+  });
+
+  it("routes the same-origin registry proxy to SHARE_HERMETIC_REGISTRY_ORIGIN while the public registryOrigin and trust bundle stay canonical", async () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    const hermeticRegistryOrigin = "http://127.0.0.1:41300";
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_REGISTRY_ORIGIN: hermeticRegistryOrigin });
+    expect(host.publicConfig.registryOrigin).toBe("https://registry.tinycloud.xyz");
+    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1]), { status: 200, headers: { "content-type": "application/vnd.ipld.raw" } }));
+    try {
+      const response = await host.handler(new Request(`https://share.tinycloud.xyz/registry/s/bafkrei${"a".repeat(52)}/raw`, { headers: { origin: "https://share.tinycloud.xyz" } }));
+      expect(response.status).toBe(200);
+      expect(upstream).toHaveBeenCalledOnce();
+      expect(String(upstream.mock.calls[0]![0])).toBe(`${hermeticRegistryOrigin}/s/bafkrei${"a".repeat(52)}/raw`);
+    } finally { upstream.mockRestore(); }
+  });
+
   it("authorizes bounded encrypted registry writes with the OpenKey session while sender routes stay disabled", async () => {
     const directory = await mkdtemp(`${tmpdir()}/share-registry-upload-`);
     const value = bundle("production");

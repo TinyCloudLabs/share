@@ -12,10 +12,11 @@ function baseArgs() {
     openKeyOrigin: "http://127.0.0.1:4200",
     walletOrigin: "http://127.0.0.1:4300",
     shareOrigin: "http://127.0.0.1:4123",
+    registryOrigin: "http://127.0.0.1:4400",
   };
 }
 
-test("share host launch env carries the exact host/port/trust/registry/node/hermetic-CSP/hermetic-browser-origin values with sender disabled", () => {
+test("share host launch env carries the exact host/port/trust/registry/node/hermetic-CSP/hermetic-browser-origin/hermetic-registry-origin values with sender disabled", () => {
   const env = buildShareHostLaunchEnv(baseArgs());
 
   assert.deepEqual(env, {
@@ -28,6 +29,7 @@ test("share host launch env carries the exact host/port/trust/registry/node/herm
     SHARE_HERMETIC_OPENKEY_ORIGIN: "http://127.0.0.1:4200",
     SHARE_HERMETIC_WALLET_ORIGIN: "http://127.0.0.1:4300",
     SHARE_HERMETIC_BROWSER_ORIGIN: "http://127.0.0.1:4123",
+    SHARE_HERMETIC_REGISTRY_ORIGIN: "http://127.0.0.1:4400",
   });
 });
 
@@ -116,4 +118,16 @@ test("share host launch env rejects a leading-zero port on shareOrigin", () => {
 
 test("share host launch env rejects an out-of-range port on openKeyOrigin", () => {
   assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), openKeyOrigin: "http://127.0.0.1:65536" }), /openKeyOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a non-loopback registryOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), registryOrigin: "https://registry.tinycloud.xyz" }), /registryOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a registryOrigin carrying a path", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), registryOrigin: "http://127.0.0.1:4400/blobs" }), /registryOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a non-string registryOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), registryOrigin: undefined }), /registryOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
 });

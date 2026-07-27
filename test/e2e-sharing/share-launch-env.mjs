@@ -13,7 +13,12 @@
 // createShareHostFromEnv(): it authorizes exactly the loopback page the
 // harness drives the browser to as an Origin for the OpenKey nonce/proof
 // endpoints, and lets the session cookie omit Secure only for that exact
-// origin. All three must be exact loopback origins with no credentials,
+// origin. SHARE_HERMETIC_REGISTRY_ORIGIN is the dedicated registry-transport
+// seam also read by createShareHostFromEnv(): it points the same-origin
+// authenticated registry proxy (used by the "Shared by me" composer's
+// encrypted-blob upload) at the harness's own real local
+// @tinycloud/share-registry process instead of the canonical public
+// registry. All four must be exact loopback origins with no credentials,
 // path, query, or fragment, or the launch is rejected before the Share host
 // can start.
 const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:([0-9]+)$/;
@@ -44,7 +49,7 @@ function loopbackOrigin(value, label) {
   return value;
 }
 
-export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin }) {
+export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin }) {
   return {
     HOST: host,
     PORT: String(port),
@@ -55,5 +60,6 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     SHARE_HERMETIC_OPENKEY_ORIGIN: loopbackOrigin(openKeyOrigin, "openKeyOrigin"),
     SHARE_HERMETIC_WALLET_ORIGIN: loopbackOrigin(walletOrigin, "walletOrigin"),
     SHARE_HERMETIC_BROWSER_ORIGIN: loopbackOrigin(shareOrigin, "shareOrigin"),
+    SHARE_HERMETIC_REGISTRY_ORIGIN: loopbackOrigin(registryOrigin, "registryOrigin"),
   };
 }
