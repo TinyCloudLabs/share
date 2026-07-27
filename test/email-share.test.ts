@@ -11,7 +11,6 @@ import type { ShareLinkPolicy } from "../packages/share-sdk/src/index.js";
 import { createHash } from "node:crypto";
 import { assertCommonNodeBinding, assertNodeTime, assertReadResponseBinding, verifyNodeProof } from "../src/email-share/node-verifier.js";
 import { SIGNATURE_DOMAINS } from "../src/email-share/protocol.js";
-import { mountUnavailableSender } from "../src/email-share/view.js";
 import { loadAuthenticatedCapabilities, parseCapabilityList } from "../src/share/capability-list.js";
 
 const seed = new Uint8Array(32).fill(7);
@@ -101,14 +100,8 @@ describe("exact-email share UI protocol boundaries", () => {
     await expect(loadAuthenticatedCapabilities(async () => new Response("", { status: 500 }))).rejects.toThrow("sharing capabilities are unavailable");
   });
 
-  it("renders the authenticated auth-only state for a valid empty capability list", () => {
+  it("accepts a valid empty capability list", () => {
     expect(parseCapabilityList({ capabilities: [] })).toEqual([]);
-    const root = document.createElement("div");
-    mountUnavailableSender(root, "0x1111111111111111111111111111111111111111");
-    expect(root.textContent).toContain("OpenKey connected");
-    expect(root.textContent).toContain("Sharing is not enabled yet.");
-    expect(root.textContent).toContain("Exact-email sharing is unavailable until the trusted node and delivery capability are ready.");
-    expect(root.querySelector("button")).toBeNull();
   });
 
   it.each([

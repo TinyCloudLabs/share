@@ -8,6 +8,9 @@ import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
 import { mountPolicyV2Viewer } from "./viewer/policy-v2.js";
 
+// viewer.html is the ONLY page that loads this module, and it always declares
+// <div id="viewer">. There is no non-viewer branch here on purpose: the
+// recipient route must do no decorative work before its URL secret is scrubbed.
 const viewerRoot = document.getElementById("viewer");
 
 if (viewerRoot !== null) {
@@ -25,31 +28,6 @@ if (viewerRoot !== null) {
   void import("./viewer/viewer.css");
   void bootRecipient(viewerRoot, launch);
   }
-} else {
-  // The root site is a static product/spec page. Keep its Mermaid behavior
-  // isolated from the recipient route so the recipient has no decorative or
-  // protocol work before its URL secret is scrubbed.
-  void import("mermaid").then(({ default: mermaid }) => {
-    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict", fontFamily: "system-ui, -apple-system, sans-serif" });
-    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>("nav.toc ol a[href^='#']"));
-    const map = new Map<string, HTMLAnchorElement>();
-    links.forEach((a) => map.set(a.getAttribute("href")!.slice(1), a));
-    const targets = Array.from(map.keys()).map((id) => document.getElementById(id)).filter((target): target is HTMLElement => target !== null);
-    if (!("IntersectionObserver" in window) || targets.length === 0) return;
-    let current: HTMLAnchorElement | null = null;
-    const visible = new Set<string>();
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => entry.isIntersecting ? visible.add(entry.target.id) : visible.delete(entry.target.id));
-      const first = targets.find((target) => visible.has(target.id));
-      const next = first === undefined ? null : map.get(first.id) ?? null;
-      if (next === current) return;
-      current?.classList.remove("active");
-      current = next;
-      current?.classList.add("active");
-    }, { rootMargin: "-10% 0px -60% 0px" });
-    targets.forEach((target) => observer.observe(target));
-  });
 }
 
 async function bootSenderViewer(root: HTMLElement): Promise<void> {
