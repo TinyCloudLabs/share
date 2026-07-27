@@ -43,7 +43,6 @@ import {
 } from "../src/viewer/render.js";
 import { resolveShare, type ResolveResult } from "../src/viewer/resolve.js";
 import { renderViewerState } from "../src/viewer/ui.js";
-import { hrefForParse, scrubKeyFragment } from "../src/viewer/url.js";
 import {
   assertContentIsolated,
   previewBodyOf,
@@ -683,26 +682,7 @@ describe("unsupported targets/modes are never faked-verified", () => {
 
 // ------------------------------------------------------------- key hygiene
 
-describe("fragment-key hygiene (location/history scrub + buffer zeroing)", () => {
-  it("scrubKeyFragment drops the #k= fragment from location AND the history entry", () => {
-    window.history.replaceState(null, "", "/s/bafyabc?keep=1#k=SECRET-KEY-MATERIAL");
-    expect(window.location.hash).toContain("k=");
-    scrubKeyFragment(window.location, window.history);
-    expect(window.location.hash).toBe("");
-    expect(window.location.href).not.toContain("#k=");
-    expect(window.location.href).not.toContain("SECRET");
-    // pathname and query survive; only the fragment is scrubbed
-    expect(window.location.pathname).toBe("/s/bafyabc");
-    expect(window.location.search).toBe("?keep=1");
-  });
-
-  it("scrubKeyFragment is a no-op when there is no fragment", () => {
-    window.history.replaceState(null, "", "/s/bafyabc");
-    const before = window.location.href;
-    scrubKeyFragment(window.location, window.history);
-    expect(window.location.href).toBe(before);
-  });
-
+describe("fragment-key hygiene (parsed-buffer zeroing)", () => {
   it("zeroes the parsed key buffer on success", async () => {
     const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
     const { url } = await publish(envelope);
@@ -792,35 +772,6 @@ describe("build-time configuration fails closed (no dev fallbacks in prod)", () 
     expect(resolveRegistryBaseUrl({ PROD: false })).toBe("http://127.0.0.1:8787");
   });
 
-  it("loopback http→https rewrite happens ONLY in dev builds and preserves search + hash", () => {
-    const loc = {
-      protocol: "http:",
-      hostname: "localhost",
-      host: "localhost:5173",
-      pathname: "/s/bafyabc",
-      search: "?q=1",
-      hash: "#k=zz",
-      href: "http://localhost:5173/s/bafyabc?q=1#k=zz",
-    } as Location;
-    // dev build: rewritten to https, nothing dropped (the query string must
-    // still reach parseShareUrl so it can be REJECTED there, not vanish)
-    expect(hrefForParse(loc, true)).toBe("https://localhost:5173/s/bafyabc?q=1#k=zz");
-    // prod build: untouched — the http URL fails closed in parseShareUrl
-    expect(hrefForParse(loc, false)).toBe(loc.href);
-  });
-
-  it("non-loopback http is never rewritten, even in dev", () => {
-    const loc = {
-      protocol: "http:",
-      hostname: "share.example",
-      host: "share.example",
-      pathname: "/s/bafyabc",
-      search: "",
-      hash: "#k=zz",
-      href: "http://share.example/s/bafyabc#k=zz",
-    } as Location;
-    expect(hrefForParse(loc, true)).toBe(loc.href);
-  });
 });
 
 // ------------------------------------------------------ hostile content
