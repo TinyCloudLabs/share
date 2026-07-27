@@ -8,7 +8,7 @@ const commit = /^[0-9a-f]{40}$/;
 const digest = /^sha256:[0-9a-f]{64}$/;
 if (typeof process.env.SHARE_API_IMAGE !== "string" || !immutableImage.test(process.env.SHARE_API_IMAGE)) throw new Error("SHARE_API_IMAGE must be an immutable registry digest reference");
 if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden for deploy configuration");
-for (const name of ["SHARE_NODE_TRANSPORT_ORIGIN", "SHARE_CREDENTIALS_TRANSPORT_ORIGIN", "SHARE_REGISTRY_TRANSPORT_ORIGIN", "SHARE_HERMETIC_UPSTREAMS_JSON", "SHARE_HERMETIC_COMPOSITION"]) {
+for (const name of ["SHARE_NODE_TRANSPORT_ORIGIN", "SHARE_CREDENTIALS_TRANSPORT_ORIGIN", "SHARE_REGISTRY_TRANSPORT_ORIGIN", "SHARE_HERMETIC_UPSTREAMS_JSON", "SHARE_HERMETIC_COMPOSITION", "SHARE_HERMETIC_OPENKEY_ORIGIN", "SHARE_HERMETIC_WALLET_ORIGIN", "SHARE_HERMETIC_BROWSER_ORIGIN"]) {
   if (process.env[name] !== undefined) throw new Error(`${name} is forbidden in production deployment configuration`);
 }
 if (process.env.SHARE_TRUST_BUNDLE !== undefined && process.env.SHARE_TRUST_BUNDLE_FILE !== undefined) throw new Error("configure exactly one Share trust bundle source");

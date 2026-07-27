@@ -11,10 +11,11 @@ function baseArgs() {
     nodeEnforcerDid: "did:web:node.tinycloud.xyz",
     openKeyOrigin: "http://127.0.0.1:4200",
     walletOrigin: "http://127.0.0.1:4300",
+    shareOrigin: "http://127.0.0.1:4123",
   };
 }
 
-test("share host launch env carries the exact host/port/trust/registry/node/hermetic-CSP values with sender disabled", () => {
+test("share host launch env carries the exact host/port/trust/registry/node/hermetic-CSP/hermetic-browser-origin values with sender disabled", () => {
   const env = buildShareHostLaunchEnv(baseArgs());
 
   assert.deepEqual(env, {
@@ -26,6 +27,7 @@ test("share host launch env carries the exact host/port/trust/registry/node/herm
     SHARE_NODE_ENFORCER_DID: "did:web:node.tinycloud.xyz",
     SHARE_HERMETIC_OPENKEY_ORIGIN: "http://127.0.0.1:4200",
     SHARE_HERMETIC_WALLET_ORIGIN: "http://127.0.0.1:4300",
+    SHARE_HERMETIC_BROWSER_ORIGIN: "http://127.0.0.1:4123",
   });
 });
 
@@ -82,4 +84,20 @@ test("share host launch env rejects a malformed walletOrigin", () => {
 
 test("share host launch env rejects a non-string openKeyOrigin", () => {
   assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), openKeyOrigin: undefined }), /openKeyOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a non-loopback shareOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: "https://share.tinycloud.xyz" }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a shareOrigin carrying a path", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: "http://127.0.0.1:4123/share.html" }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects an IPv6 loopback shareOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: "http://[::1]:4123" }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a non-string shareOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), shareOrigin: undefined }), /shareOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
 });

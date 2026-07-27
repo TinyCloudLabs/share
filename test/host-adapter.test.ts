@@ -241,6 +241,82 @@ describe("production trust and host boundaries", () => {
     expect((await host.handler(new Request("https://share.tinycloud.xyz/api/share/capabilities", { headers: sessionHeaders }))).status).toBe(401);
   });
 
+  it("fails startup for any non-canonical SHARE_HERMETIC_BROWSER_ORIGIN", () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    for (const origin of [
+      "https://127.0.0.1:41200",
+      "http://127.0.0.1",
+      "http://127.0.0.1:0",
+      "http://127.0.0.1:65536",
+      "http://127.0.0.1:04200",
+      "http://localhost:41200",
+      "http://[::1]:41200",
+      "http://127.0.0.1:41200/widget",
+      "http://127.0.0.1:41200?x=1",
+      "http://127.0.0.1:41200#top",
+      "http://user:pass@127.0.0.1:41200",
+      "not-a-url",
+    ]) {
+      expect(() => createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_BROWSER_ORIGIN: origin })).toThrow(/SHARE_HERMETIC_BROWSER_ORIGIN/);
+    }
+  });
+
+  it("authorizes the exact configured local browser origin for OpenKey nonce/proof and omits Secure only for that dedicated request", async () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    const localOrigin = "http://127.0.0.1:41200";
+    const account = privateKeyToAccount(`0x${"22".repeat(32)}`);
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_BROWSER_ORIGIN: localOrigin });
+
+    const nonceResponse = await host.handler(new Request(`${localOrigin}/api/share/auth/openkey/nonce`, { headers: { origin: localOrigin } }));
+    expect(nonceResponse.status).toBe(200);
+    const { nonce } = await nonceResponse.json() as { nonce: string };
+    const issuedAt = new Date().toISOString();
+    const message = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${nonce}`, `Issued At: ${issuedAt}`].join("\n");
+    const signature = await account.signMessage({ message });
+    const proof = await host.handler(new Request(`${localOrigin}/api/share/auth/openkey`, { method: "POST", headers: { origin: localOrigin, "content-type": "application/json" }, body: JSON.stringify({ address: account.address, signature, message, nonce, issuedAt }) }));
+    expect(proof.status).toBe(200);
+    const localCookie = proof.headers.get("set-cookie") ?? "";
+    expect(localCookie).toContain("HttpOnly");
+    expect(localCookie).not.toContain("Secure");
+
+    const productionNonce = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
+    expect(productionNonce.status).toBe(200);
+    const { nonce: productionNonceValue } = await productionNonce.json() as { nonce: string };
+    const productionIssuedAt = new Date().toISOString();
+    const productionMessage = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${productionNonceValue}`, `Issued At: ${productionIssuedAt}`].join("\n");
+    const productionSignature = await account.signMessage({ message: productionMessage });
+    const productionProof = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify({ address: account.address, signature: productionSignature, message: productionMessage, nonce: productionNonceValue, issuedAt: productionIssuedAt }) }));
+    expect(productionProof.status).toBe(200);
+    expect(productionProof.headers.get("set-cookie") ?? "").toContain("Secure");
+  });
+
+  it("rejects a wrong loopback origin that does not exactly match the configured local browser origin", async () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_BROWSER_ORIGIN: "http://127.0.0.1:41200" });
+    expect((await host.handler(new Request("http://127.0.0.1:41201/api/share/auth/openkey/nonce", { headers: { origin: "http://127.0.0.1:41201" } }))).status).toBe(403);
+    expect((await host.handler(new Request("http://127.0.0.1/api/share/auth/openkey/nonce", { headers: { origin: "http://127.0.0.1" } }))).status).toBe(403);
+  });
+
+  it("keeps the session cookie Secure when the Origin header matches the local browser origin but the authenticating request URL does not", async () => {
+    const value = bundle("production");
+    value.nodeEnabled = false;
+    const localOrigin = "http://127.0.0.1:41200";
+    const account = privateKeyToAccount(`0x${"23".repeat(32)}`);
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_HERMETIC_BROWSER_ORIGIN: localOrigin });
+    const nonceResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: localOrigin } }));
+    expect(nonceResponse.status).toBe(200);
+    const { nonce } = await nonceResponse.json() as { nonce: string };
+    const issuedAt = new Date().toISOString();
+    const message = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${nonce}`, `Issued At: ${issuedAt}`].join("\n");
+    const signature = await account.signMessage({ message });
+    const proof = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: localOrigin, "content-type": "application/json" }, body: JSON.stringify({ address: account.address, signature, message, nonce, issuedAt }) }));
+    expect(proof.status).toBe(200);
+    expect(proof.headers.get("set-cookie") ?? "").toContain("Secure");
+  });
+
   it("authorizes bounded encrypted registry writes with the OpenKey session while sender routes stay disabled", async () => {
     const directory = await mkdtemp(`${tmpdir()}/share-registry-upload-`);
     const value = bundle("production");

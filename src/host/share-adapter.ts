@@ -30,6 +30,7 @@ const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const OPENKEY_NONCE_TTL_MS = 5 * 60 * 1000;
 const LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1(?::\d+)?$/;
+const HERMETIC_BROWSER_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:([0-9]+)$/;
 const SEALED_BLOB_OVERHEAD_BYTES = 1 + 12 + 16;
 const LINK_ONLY_BLOB_LIMIT = 100 * 1024 * 1024 + SEALED_BLOB_OVERHEAD_BYTES;
 const LINK_ONLY_REGISTRY_PREFIX = "/api/share/link-only/registry";
@@ -268,6 +269,8 @@ export interface ShareHostOptions {
   readonly testMode: boolean;
   /** Explicit local production-shaped composition; never enabled by trust data. */
   readonly hermeticComposition?: boolean;
+  /** The single dedicated local browser origin authorized outside hermeticComposition/testMode; never a wildcard. */
+  readonly hermeticBrowserOrigin?: string;
 }
 
 function response(status: number, body: unknown, headers: Record<string, string> = {}): Response { return new Response(JSON.stringify(body), { status, headers: { ...JSON_HEADERS, ...headers } }); }
@@ -424,8 +427,29 @@ function openKeyMessage(origin: string, address: string, nonce: string, issuedAt
 
 function sessionCookie(request: Request): string | undefined { return cookie(request, "share_session"); }
 
+/**
+ * SHARE_HERMETIC_BROWSER_ORIGIN authorizes exactly one dedicated local
+ * browser origin (never a wildcard loopback pattern); every other shape,
+ * including IPv6, aliases, credentials, path/query/fragment, and
+ * missing/zero/out-of-range ports, fails startup.
+ */
+function parseHermeticBrowserOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const invalid = (): never => { throw new Error("SHARE_HERMETIC_BROWSER_ORIGIN must be an exact http://127.0.0.1:<port> origin with no credentials, path, query, or fragment"); };
+  const match = HERMETIC_BROWSER_ORIGIN_PATTERN.exec(value);
+  if (match === null) return invalid();
+  const portText = match[1]!;
+  if (!/^[1-9][0-9]*$/.test(portText)) return invalid();
+  const port = Number(portText);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) return invalid();
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { return invalid(); }
+  if (parsed.origin !== value || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") return invalid();
+  return value;
+}
+
 function shareOriginAllowed(origin: string | null, options: ShareHostOptions): boolean {
-  return origin === null || origin === options.bundle.public.shareOrigin || ((options.testMode || options.hermeticComposition === true) && LOOPBACK_ORIGIN.test(origin));
+  return origin === null || origin === options.bundle.public.shareOrigin || ((options.testMode || options.hermeticComposition === true) && LOOPBACK_ORIGIN.test(origin)) || (options.hermeticBrowserOrigin !== undefined && origin === options.hermeticBrowserOrigin);
 }
 
 function sessionValid(request: Request, options: ShareHostOptions, sessions: Map<string, ShareSession>): ShareSession | undefined {
@@ -691,7 +715,18 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     return selected;
   };
   const authUsers = options.authUsers ?? [];
-  const sessionCookieHeader = (token: string, maxAge: number): string => `share_session=${token}; HttpOnly;${options.hermeticComposition === true ? "" : " Secure;"} SameSite=Lax; Path=/; Max-Age=${maxAge}; Expires=${new Date(Date.now() + maxAge * 1000).toUTCString()}`;
+  /**
+   * Secure is omitted only for the exact configured local browser origin: the
+   * authenticating request's own URL origin and its Origin header must both
+   * equal it, so no other loopback or production request can downgrade the
+   * cookie.
+   */
+  const isDedicatedLocalBrowserRequest = (request: Request): boolean => {
+    if (options.hermeticBrowserOrigin === undefined) return false;
+    if (request.headers.get("origin") !== options.hermeticBrowserOrigin) return false;
+    return new URL(request.url).origin === options.hermeticBrowserOrigin;
+  };
+  const sessionCookieHeader = (token: string, maxAge: number, request: Request): string => `share_session=${token}; HttpOnly;${options.hermeticComposition === true || isDedicatedLocalBrowserRequest(request) ? "" : " Secure;"} SameSite=Lax; Path=/; Max-Age=${maxAge}; Expires=${new Date(Date.now() + maxAge * 1000).toUTCString()}`;
   async function handler(request: Request): Promise<Response> {
     const url = new URL(request.url);
     try {
@@ -729,7 +764,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // capability lookup. Sender capabilities are checked only when a
         // sender operation selects one below.
         sessions.set(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000 });
-        return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800) });
+        return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
         if (!shareOriginAllowed(request.headers.get("origin"), options)) return generic(403);
@@ -738,7 +773,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const user = authUsers.find((candidate) => candidate.username === username);
         if (user === undefined || !(await verifyPassword(password, user.passwordHash))) return generic(401);
         const token = toBase64Url(randomBytes(32)); sessions.set(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000 });
-        return response(200, { status: "authenticated" }, { "set-cookie": sessionCookieHeader(token, 1_800) });
+        return response(200, { status: "authenticated" }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/logout" && request.method === "POST") {
         const token = sessionCookie(request); if (token !== undefined) sessions.delete(token);
@@ -1009,5 +1044,6 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition });
+  const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
 }

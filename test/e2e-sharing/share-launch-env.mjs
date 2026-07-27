@@ -8,9 +8,14 @@
 // SHARE_HERMETIC_OPENKEY_ORIGIN/SHARE_HERMETIC_WALLET_ORIGIN are the existing
 // CSP hooks read by src/host/trust-bundle.ts's securityHeadersForPath(): they
 // widen frame-src/connect-src to admit the harness's loopback OpenKey widget
-// and deterministic wallet signer. Both must be exact loopback origins with
-// no credentials, path, query, or fragment, or the launch is rejected before
-// the Share host can start.
+// and deterministic wallet signer. SHARE_HERMETIC_BROWSER_ORIGIN is the
+// dedicated local-browser-origin seam read by src/host/share-adapter.ts's
+// createShareHostFromEnv(): it authorizes exactly the loopback page the
+// harness drives the browser to as an Origin for the OpenKey nonce/proof
+// endpoints, and lets the session cookie omit Secure only for that exact
+// origin. All three must be exact loopback origins with no credentials,
+// path, query, or fragment, or the launch is rejected before the Share host
+// can start.
 const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:\d+$/;
 
 function loopbackOrigin(value, label) {
@@ -29,7 +34,7 @@ function loopbackOrigin(value, label) {
   return value;
 }
 
-export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin }) {
+export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin }) {
   return {
     HOST: host,
     PORT: String(port),
@@ -39,5 +44,6 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     SHARE_NODE_ENFORCER_DID: nodeEnforcerDid,
     SHARE_HERMETIC_OPENKEY_ORIGIN: loopbackOrigin(openKeyOrigin, "openKeyOrigin"),
     SHARE_HERMETIC_WALLET_ORIGIN: loopbackOrigin(walletOrigin, "walletOrigin"),
+    SHARE_HERMETIC_BROWSER_ORIGIN: loopbackOrigin(shareOrigin, "shareOrigin"),
   };
 }
