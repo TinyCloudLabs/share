@@ -262,7 +262,7 @@ function walletBootstrapScript(walletOrigin) {
     };
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", announce);
-    setTimeout(announce, 1000);
+    setTimeout(announce, 10000);
   })()`;
 }
 
