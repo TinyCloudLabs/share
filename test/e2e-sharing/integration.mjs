@@ -478,12 +478,13 @@ async function startShare(tempRoot, fixtures) {
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
-  await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: "https://openkey.so", VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: canonical.registry });
+  await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: canonical.registry });
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
   const share = run("npm", ["run", "start:deploy"], shareRoot, buildShareHostLaunchEnv({
     host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.nodeId,
+    openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin,
   }));
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
