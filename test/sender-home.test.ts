@@ -70,6 +70,87 @@ describe("sender home revoke action is reload-safe", () => {
     expect(reloadedRoot.querySelector("button.sender-revoke")).toBeNull();
   });
 
+  it("revoking one addressed share leaves an unrelated share in the same library untouched, before and after reload", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const vault = fakeVault();
+    const history = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
+    const revokedRecord = await createSenderHistoryRecord({
+      id: "sender-entry-00000004",
+      url: "https://share.tinycloud.xyz/s/bafkreigdyrzt2abcde#k=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      cid: "bafybeigdyrzt5example",
+      format: "compact",
+      createdAt: "2026-07-24T12:00:00.000Z",
+      expiresAt: "2026-07-31T12:00:00.000Z",
+      name: "revoke-me.md",
+      mediaType: "text/markdown",
+      sourceKind: "upload",
+      recipient: { kind: "exactEmail", value: "reviewer@example.edu" },
+      actions: ["read"],
+      delegationCid: "bafyreidelegationrevokeme",
+      revokedAt: null,
+    });
+    const unrelatedRecord = await createSenderHistoryRecord({
+      id: "sender-entry-00000005",
+      url: "https://share.tinycloud.xyz/s/bafkreigdyrzt2fghij#k=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      cid: "bafybeigdyrzt5unrelated",
+      format: "compact",
+      createdAt: "2026-07-24T12:00:00.000Z",
+      expiresAt: "2026-07-31T12:00:00.000Z",
+      name: "unrelated.md",
+      mediaType: "text/markdown",
+      sourceKind: "upload",
+      recipient: { kind: "exactEmail", value: "other@example.edu" },
+      actions: ["read"],
+      delegationCid: "bafyreidelegationunrelated",
+      revokedAt: null,
+    });
+    await history.save(revokedRecord);
+    await history.save(unrelatedRecord);
+
+    const revokeDelegation = vi.fn(async (cid: string) => ({ ok: true as const, data: { cid, revokedAt: new Date().toISOString() } }));
+    const tinycloud = { revokeDelegation } as unknown as ShareTinyCloud;
+    const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    mountSenderHome(root, { session, tinycloud, history, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const revokeButtons = [...root.querySelectorAll<HTMLButtonElement>("button.sender-revoke")];
+    expect(revokeButtons).toHaveLength(2);
+    const targetButton = revokeButtons.find((button) => button.getAttribute("aria-label") === "Revoke revoke-me.md")!;
+    expect(targetButton).toBeDefined();
+    targetButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(revokeDelegation).toHaveBeenCalledTimes(1);
+    expect(revokeDelegation).toHaveBeenCalledWith("bafyreidelegationrevokeme");
+
+    const rows = [...root.querySelectorAll(".sender-history-row")];
+    const revokedRow = rows.find((candidate) => candidate.textContent?.includes("revoke-me.md"));
+    const unrelatedRow = rows.find((candidate) => candidate.textContent?.includes("unrelated.md"));
+    expect(revokedRow?.querySelector(".sender-status-text.revoked")).not.toBeNull();
+    expect(unrelatedRow?.querySelector(".sender-status-text.ready")).not.toBeNull();
+    expect(unrelatedRow?.querySelector("button.sender-revoke")).not.toBeNull();
+
+    // Reload-safe and isolated: a fresh mount over the same durable vault
+    // must still show exactly one revoked share and the unrelated share
+    // fully intact with its own revoke action still available.
+    const reloadedRoot = document.createElement("div");
+    document.body.append(reloadedRoot);
+    const reloadedHistory = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
+    mountSenderHome(reloadedRoot, { session, tinycloud, history: reloadedHistory, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const reloadedRows = [...reloadedRoot.querySelectorAll(".sender-history-row")];
+    const reloadedRevokedRow = reloadedRows.find((candidate) => candidate.textContent?.includes("revoke-me.md"));
+    const reloadedUnrelatedRow = reloadedRows.find((candidate) => candidate.textContent?.includes("unrelated.md"));
+    expect(reloadedRevokedRow?.querySelector(".sender-status-text.revoked")).not.toBeNull();
+    expect(reloadedRevokedRow?.querySelector("button.sender-revoke")).toBeNull();
+    expect(reloadedUnrelatedRow?.querySelector(".sender-status-text.ready")).not.toBeNull();
+    expect(reloadedUnrelatedRow?.querySelector("button.sender-revoke")).not.toBeNull();
+  });
+
   it("does not offer revoke for a bearer (possession-only) share, which carries no delegation to revoke", async () => {
     const root = document.createElement("div");
     document.body.append(root);
