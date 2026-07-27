@@ -141,6 +141,8 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   const EMAIL = "user@example.com";
   const OTP = "123456";
   const PROVIDER_PAYLOAD = '{"provider":"google","id_token":"ya29.a0AfH6SMB...","access_token":"1//03zzz"}';
+  const FAKE_RAW_REQUEST_BODY = '{"capability":"did:key:z6Mkfake","nonce":"hostile-nonce-ABCDEF","secret":"TOP_SECRET_VALUE"}';
+  const FAKE_DIGEST = "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef12345678";
 
   const hostileBody = JSON.stringify({
     bearer: BEARER,
@@ -163,6 +165,9 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
     errorBody: DID,
     traceId: "trace-abc-secret",
     responseHeaders: { "x-trace-id": "trace-xyz-789", "authorization": AUTH_HEADER },
+    requestBodyLength: FAKE_RAW_REQUEST_BODY.length,
+    requestBodyDigest: FAKE_DIGEST,
+    requestDigestAvailable: true,
   }];
 
   const result = safeFailedTelemetry(entries);
@@ -183,6 +188,10 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   assert.ok(!serialized.includes("trace-abc-secret"), "trace ID value must not appear");
   assert.ok(!serialized.includes("trace-xyz-789"), "response trace header value must not appear");
   assert.ok(!serialized.includes("Authorization"), "raw Authorization key must not appear in headers");
+  assert.ok(!serialized.includes(FAKE_RAW_REQUEST_BODY), "raw request body must not appear");
+  assert.ok(!serialized.includes(FAKE_DIGEST), "requestBodyDigest must not appear in output");
+  assert.ok(!serialized.includes("TOP_SECRET_VALUE"), "request body secret value must not appear");
+  assert.ok(!serialized.includes("hostile-nonce-ABCDEF"), "request body nonce must not appear");
 
   // Useful safe metadata must be preserved
   assert.equal(result[0].pathname, "/delegate");
@@ -191,4 +200,100 @@ test("safeFailedTelemetry: hostile text with bearer/cookie/auth header/private k
   assert.ok(typeof result[0].responseBodyLength === "number", "responseBodyLength must be a number");
   assert.ok(result[0].responseBodyLength > 0, "responseBodyLength must be positive");
   assert.equal(result[0].serverTraceIdPresent, true, "serverTraceIdPresent must be true when traceId field set");
+  assert.equal(result[0].requestBodyLength, FAKE_RAW_REQUEST_BODY.length, "requestBodyLength must be the stored length");
+  assert.equal(result[0].requestDigestAvailable, true, "requestDigestAvailable must be preserved");
+  assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not be present in output");
+});
+
+// --- safeFailedTelemetry: request body correlation fields ---
+
+test("safeFailedTelemetry: matchesSuccessfulRequestBody true when 2xx delegate shares digest", () => {
+  const DIGEST = "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 64 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].matchesSuccessfulRequestBody, true);
+  assert.equal(result[0].sameRequestBodyCount, 2);
+  assert.equal(result[0].distinctDelegateRequestBodyCount, 1);
+  assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not appear in output");
+});
+
+test("safeFailedTelemetry: matchesSuccessfulRequestBody false when no 2xx delegate shares digest", () => {
+  const DIGEST_A = "1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb";
+  const DIGEST_B = "2222bbbb3333cccc4444dddd5555eeee6666ffff1111aaaa2222bbbb3333cccc";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST_A, requestDigestAvailable: true, requestBodyLength: 32 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST_B, requestDigestAvailable: true, requestBodyLength: 48 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].matchesSuccessfulRequestBody, false);
+  assert.equal(result[1].matchesSuccessfulRequestBody, false);
+  assert.equal(result[0].distinctDelegateRequestBodyCount, 2);
+  assert.equal(result[1].distinctDelegateRequestBodyCount, 2);
+  assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not appear");
+  assert.ok(!("requestBodyDigest" in result[1]), "requestBodyDigest must not appear");
+});
+
+test("safeFailedTelemetry: requestDigestAvailable false yields zero counts and false match", () => {
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 500, ok: false, requestDigestAvailable: false, requestBodyLength: 100 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].requestDigestAvailable, false);
+  assert.equal(result[0].matchesSuccessfulRequestBody, false);
+  assert.equal(result[0].sameRequestBodyCount, 0);
+  assert.equal(result[0].distinctDelegateRequestBodyCount, 0);
+  assert.ok(!("requestBodyDigest" in result[0]), "requestBodyDigest must not appear");
+});
+
+test("safeFailedTelemetry: sameRequestBodyCount counts all delegate entries sharing digest", () => {
+  const DIGEST = "cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222cccc3333dddd4444";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: DIGEST, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 10 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: DIGEST, requestDigestAvailable: true, requestBodyLength: 10 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 2);
+  assert.equal(result[0].sameRequestBodyCount, 3);
+  assert.equal(result[1].sameRequestBodyCount, 3);
+});
+
+test("safeFailedTelemetry: distinctDelegateRequestBodyCount counts unique valid digests", () => {
+  const D1 = "1111111111111111111111111111111111111111111111111111111111111111";
+  const D2 = "2222222222222222222222222222222222222222222222222222222222222222";
+  const D3 = "3333333333333333333333333333333333333333333333333333333333333333";
+  const entries = [
+    { url: "https://node.example.com/delegate", status: 200, requestBodyDigest: D1, requestDigestAvailable: true },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: D2, requestDigestAvailable: true, requestBodyLength: 20 },
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestBodyDigest: D3, requestDigestAvailable: true, requestBodyLength: 30 },
+    // entry without digest should not add to distinct count
+    { url: "https://node.example.com/delegate", status: 403, ok: false, requestDigestAvailable: false, requestBodyLength: 40 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  // 3 failed entries
+  assert.equal(result.length, 3);
+  // distinctDelegateRequestBodyCount is 3 (D1, D2, D3), not 4
+  assert.ok(result.every((r) => r.distinctDelegateRequestBodyCount === 3), "all failed entries see 3 distinct digests");
+});
+
+test("safeFailedTelemetry: /invoke entries do not get request body correlation fields", () => {
+  const entries = [
+    { url: "https://node.example.com/invoke", status: 403, ok: false,
+      requestBodyDigest: "deadbeef".repeat(8), requestDigestAvailable: true, requestBodyLength: 99 },
+  ];
+  const result = safeFailedTelemetry(entries);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].pathname, "/invoke");
+  assert.ok(!("requestBodyLength" in result[0]), "invoke must not have requestBodyLength");
+  assert.ok(!("requestDigestAvailable" in result[0]), "invoke must not have requestDigestAvailable");
+  assert.ok(!("matchesSuccessfulRequestBody" in result[0]), "invoke must not have matchesSuccessfulRequestBody");
+  assert.ok(!("sameRequestBodyCount" in result[0]), "invoke must not have sameRequestBodyCount");
+  assert.ok(!("distinctDelegateRequestBodyCount" in result[0]), "invoke must not have distinctDelegateRequestBodyCount");
+  assert.ok(!("requestBodyDigest" in result[0]), "invoke must not have requestBodyDigest");
 });

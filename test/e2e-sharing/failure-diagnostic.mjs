@@ -113,13 +113,28 @@ function serverTraceIdPresent(entry) {
 
 export function safeFailedTelemetry(entries) {
   if (!Array.isArray(entries)) return [];
+
+  // Build digest stats over all /delegate entries (failed and successful).
+  const digestStats = new Map(); // digest -> { count, hasSuccess }
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== "object") continue;
+    if (safePathname(entry.url) !== "/delegate") continue;
+    if (entry.requestDigestAvailable !== true || typeof entry.requestBodyDigest !== "string") continue;
+    const digest = entry.requestBodyDigest;
+    if (!digestStats.has(digest)) digestStats.set(digest, { count: 0, hasSuccess: false });
+    const stats = digestStats.get(digest);
+    stats.count++;
+    if (typeof entry.status === "number" && entry.status >= 200 && entry.status < 300) stats.hasSuccess = true;
+  }
+  const distinctDelegateRequestBodyCount = digestStats.size;
+
   const failed = [];
   for (const entry of entries) {
     if (entry === null || typeof entry !== "object") continue;
     const pathname = safePathname(entry.url);
     if (pathname !== "/delegate" && pathname !== "/invoke") continue;
     if (!isFailedEntry(entry)) continue;
-    failed.push({
+    const result = {
       pathname,
       status: typeof entry.status === "number" && Number.isFinite(entry.status) ? entry.status : null,
       contentType: safeContentType(entry),
@@ -130,7 +145,21 @@ export function safeFailedTelemetry(entries) {
       responseBodyPreview: safeBrowserDiagnostic(entry.responseBodyPreview),
       errorBody: safeBrowserDiagnostic(entry.errorBody),
       serverTraceIdPresent: serverTraceIdPresent(entry),
-    });
+    };
+    if (pathname === "/delegate") {
+      result.requestBodyLength = typeof entry.requestBodyLength === "number" ? entry.requestBodyLength : null;
+      result.requestDigestAvailable = entry.requestDigestAvailable === true;
+      if (entry.requestDigestAvailable === true && typeof entry.requestBodyDigest === "string") {
+        const stats = digestStats.get(entry.requestBodyDigest);
+        result.matchesSuccessfulRequestBody = stats ? stats.hasSuccess : false;
+        result.sameRequestBodyCount = stats ? stats.count : 1;
+      } else {
+        result.matchesSuccessfulRequestBody = false;
+        result.sameRequestBodyCount = 0;
+      }
+      result.distinctDelegateRequestBodyCount = distinctDelegateRequestBodyCount;
+    }
+    failed.push(result);
   }
   return failed;
 }
