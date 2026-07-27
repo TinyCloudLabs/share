@@ -65,12 +65,12 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const nodeOrigin = httpsOrigin(object.nodeOrigin, "nodeOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
-  const enforcerDid = object.enforcerDid === undefined ? String(object.nodeAudience) : object.enforcerDid;
+  const enforcerDid = object.enforcerDid === undefined ? object.nodeAudience : object.enforcerDid;
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.nodeKeyVersion !== "number" || !Number.isSafeInteger(object.nodeKeyVersion) || typeof object.issuerKeyVersion !== "number" || !Number.isSafeInteger(object.issuerKeyVersion)) throw new TypeError("share config key versions are invalid");
   if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || object.nodeAudience !== `did:web:${new URL(nodeOrigin).hostname}` || typeof object.nodeEnabled !== "boolean" || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || object.issuerEnabled !== true || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`) || !Number.isSafeInteger(object.nodeKeyVersion) || object.nodeKeyVersion < 1 || !Number.isSafeInteger(object.issuerKeyVersion) || object.issuerKeyVersion < 1) throw new TypeError("share config trust binding is not enrolled");
-  if ((!DID_KEY.test(enforcerDid) && enforcerDid !== object.nodeAudience)) throw new TypeError("share config enforcer binding is not enrolled");
+  if (typeof enforcerDid !== "string" || (!DID_KEY.test(enforcerDid) && enforcerDid !== object.nodeAudience)) throw new TypeError("share config enforcer binding is not enrolled");
   if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
   return Object.freeze({
     version: CONFIG_VERSION,
