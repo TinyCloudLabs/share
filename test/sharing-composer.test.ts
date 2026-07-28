@@ -14,6 +14,8 @@ import {
   type ShareComposerModel,
 } from "../src/share/composer-model.js";
 import { mountShareComposer } from "../src/share/composer.js";
+import { LinkOnlyShareError } from "../src/share/link-only.js";
+import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-failure.js";
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
@@ -255,5 +257,70 @@ describe("share composer navigation", () => {
     expect(root.querySelector(".sender-status-detail")?.textContent).not.toContain("return to All shares");
     root.querySelector<HTMLButtonElement>("button.composer-done")!.click();
     expect(onBack).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("share composer sender failures", () => {
+  it("never renders raw protocol failure text", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const error = new Error("Node policy bytes is invalid: delegation envelope CID mismatch in the KV registry (bearer capability)");
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    mountShareComposer(root, { ...baseOptions(), createShare: async () => { throw error; } });
+
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("Something went wrong creating this link. Nothing was shared. Try again.");
+    expect(root.querySelector(".composer-status")?.textContent).not.toMatch(/capabilit|delegat|\bDID\b|\bspace\b|bearer|policy|envelope|\bCID\b|\bKV\b|registry|matcher|attenuat|nonce|\bclaim\b|credential|epoch|invocation|\bnode\b/i);
+    expect(debug).toHaveBeenCalledWith("tinycloud share: sender request failed", error);
+  });
+
+  it("maps tagged sender failures without rendering their developer detail", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, { ...baseOptions(), createShare: async () => { throw fail("permission", "node action bounds exceeded"); } });
+
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("You can't grant more access than you have on that file.");
+    expect(root.querySelector(".composer-status")?.textContent).not.toContain("node action bounds exceeded");
+  });
+
+  it("classifies untagged, link-only, network, and model-validation failures", () => {
+    expect(senderFailureMessage(new Error("delegation envelope CID mismatch"))).toBe(SENDER_FAILURE.internal);
+    expect(senderFailureMessage(new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file."))).toBe("Choose a .txt, .md, or .markdown file.");
+    expect(senderFailureMessage(new TypeError("Failed to fetch"))).toBe(SENDER_FAILURE.offline);
+
+    let validationError: unknown;
+    try {
+      validateComposerModel(modelWith(textContent, {
+        recipient: { kind: "emailDomain", value: "example.com" },
+        deliveryEmail: "person@other.example",
+      }));
+    } catch (error) {
+      validationError = error;
+    }
+    expect(senderFailureMessage(validationError)).toBe("The delivery address must belong to the shared domain.");
+  });
+
+  it("keeps tagged form validation copy in the composer status", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, baseOptions());
+    const domain = root.querySelector<HTMLInputElement>("input[name=recipient][value=emailDomain]")!;
+    domain.checked = true;
+    domain.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    recipient.value = "example.com";
+    recipient.dispatchEvent(new Event("input", { bubbles: true }));
+    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
+    delivery.value = "person@other.example";
+    delivery.dispatchEvent(new Event("input", { bubbles: true }));
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toContain("must belong to the shared domain");
   });
 });

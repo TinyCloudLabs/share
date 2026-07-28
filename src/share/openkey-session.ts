@@ -3,6 +3,7 @@ import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/we
 import type { SharePublicConfig } from "../email-share/config.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
+import { fail } from "./sender-failure.js";
 
 export interface OpenKeyShareSession {
   readonly address: string;
@@ -157,20 +158,20 @@ export async function createTinyCloudUploader(
   existingTinyCloud?: ShareTinyCloud,
 ): Promise<(file: File, capability: UploadCapability, resourcePath?: string) => Promise<void>> {
   const permissions = writePermissions(capabilities);
-  if (permissions.length === 0) throw new Error("This account has no uploadable sharing path.");
+  if (permissions.length === 0) throw fail("internal", "account has no uploadable sharing path");
   const tinycloud = existingTinyCloud ?? await createTinyCloudClient(session, config, capabilities, onStatus);
 
   return async (file, capability, resourcePath = capability.source.path) => {
-    if (capability.source.kind !== "kv") throw new Error("File uploads require an authorized TinyCloud KV path.");
-    if (file.size === 0) throw new Error("Choose a non-empty document.");
-    if (file.size > MAX_SHARE_FILE_BYTES) throw new Error("Choose a document no larger than 100 MB.");
+    if (capability.source.kind !== "kv") throw fail("internal", "file upload requires a KV source");
+    if (file.size === 0) throw fail("emptyFile", "uploaded document is empty");
+    if (file.size > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document exceeds 100 MB");
     const content = new Uint8Array(await file.arrayBuffer());
-    if (content.byteLength > MAX_SHARE_FILE_BYTES) throw new Error("Choose a document no larger than 100 MB.");
+    if (content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
     const contentType = file.type.trim().length > 0 ? file.type : "application/octet-stream";
-    if (resourcePath.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(resourcePath) || /[\\\u0000-\u001f\u007f]/.test(resourcePath) || resourcePath.split("/").some((segment) => segment.length === 0)) throw new Error("The upload target is not a canonical resource path.");
+    if (resourcePath.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(resourcePath) || /[\\\u0000-\u001f\u007f]/.test(resourcePath) || resourcePath.split("/").some((segment) => segment.length === 0)) throw fail("internal", "upload target is not a canonical resource path");
     const sourcePrefix = capability.source.path.endsWith("/") ? capability.source.path : `${capability.source.path}/`;
-    if (resourcePath !== capability.source.path && !resourcePath.startsWith(sourcePrefix)) throw new Error("The upload target is outside the authenticated writable path.");
+    if (resourcePath !== capability.source.path && !resourcePath.startsWith(sourcePrefix)) throw fail("internal", "upload target is outside the authenticated writable path");
     const stored = await tinycloud.kvForSpace(capability.source.space).put(resourcePath, content, { contentType });
-    if (!stored.ok) throw new Error(stored.error.message || "TinyCloud could not store this document.");
+    if (!stored.ok) throw fail("upload", stored.error.message || "TinyCloud could not store this document.");
   };
 }

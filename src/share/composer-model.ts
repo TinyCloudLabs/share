@@ -1,5 +1,10 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
 import type { ContentSource } from "../email-share/protocol.js";
+import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
+
+function validationFailure(kind: SenderFailureKind): TypeError {
+  return Object.assign(new TypeError(SENDER_FAILURE[kind]), { kind });
+}
 
 export type RecipientKind = "exactEmail" | "emailDomain" | "bearer";
 export type SharePermission = "read" | "list" | "edit";
@@ -113,17 +118,17 @@ const EMAIL = /^[^@\s]+@([^@\s]+)$/;
 export function normalizeEmailDomain(value: string): string {
   const domain = value.trim().toLowerCase();
   if (!ASCII_DOMAIN.test(domain) || domain.includes("..")) {
-    throw new TypeError("Enter a valid ASCII email domain.");
+    throw validationFailure("recipientDomain");
   }
   return domain;
 }
 
 export function normalizeEmail(value: string): string {
   if (value.trim() !== value || value.split("@").length !== 2) {
-    throw new TypeError("Enter one exact email address.");
+    throw validationFailure("recipientEmail");
   }
   const match = EMAIL.exec(value);
-  if (match === null || match[1] === undefined) throw new TypeError("Enter one exact email address.");
+  if (match === null || match[1] === undefined) throw validationFailure("recipientEmail");
   return `${value.slice(0, value.length - match[1].length).slice(0, -1)}@${normalizeEmailDomain(match[1])}`;
 }
 
@@ -151,12 +156,12 @@ export function defaultComposerModel(now: number = Date.now()): ComposerDefaults
 export function projectCapabilities(model: Pick<ShareComposerModel, "resource" | "permissions">): ProjectedCapability {
   const actionOrder: readonly SharePermission[] = ["read", "list", "edit"];
   const permissions = actionOrder.filter((action) => model.permissions.includes(action) || (action === "read" && model.resource.kind === "prefix" && model.permissions.includes("list")));
-  if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw new TypeError("Choose at least one thing they can do.");
+  if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw validationFailure("actions");
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");
   const canonicalPath = model.resource.kind === "prefix" ? `${body}/` : body;
   if (body.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(body) || /[\u0000-\u001f\u007f\\]/.test(body) || /%2f|%5c|%2e/i.test(body) || body.split("/").some((segment) => segment.length === 0)) {
-    throw new TypeError("That file name can't be shared. Rename it and try again.");
+    throw validationFailure("filename");
   }
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
 }
@@ -168,18 +173,18 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
       ? { kind: "emailDomain" as const, value: normalizeEmailDomain(model.recipient.value ?? "") }
       : { kind: "bearer" as const };
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
-  if (!Number.isFinite(Date.parse(model.expiresAt))) throw new TypeError("Choose when the link should expire.");
+  if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
-    throw new TypeError("The delivery address must match the person you're sharing with.");
+    throw validationFailure("deliveryRecipient");
   }
   if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
-    throw new TypeError("The delivery address must belong to the shared domain.");
+    throw validationFailure("deliveryDomain");
   }
   if (!model.encryption && (recipient.kind === "exactEmail" || recipient.kind === "bearer")) {
-    throw new TypeError("Link-only and single-person shares must stay encrypted.");
+    throw validationFailure("plaintext");
   }
   if (!model.encryption && recipient.kind === "emailDomain" && !model.encryptionAcknowledged) {
-    throw new TypeError("Tick the box to confirm you understand.");
+    throw validationFailure("acknowledgment");
   }
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
