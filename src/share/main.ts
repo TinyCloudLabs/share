@@ -154,8 +154,11 @@ async function detectResumableSession(): Promise<boolean> {
   const shareSession = await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" }).then((response) => response.ok).catch(() => false);
   if (!shareSession) return false;
   try {
-    const { OpenKey } = await import("@openkey/sdk");
-    return await new OpenKey({ host: import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so", appName: "TinyCloud Share", mode: "iframe" }).isConnected();
+    // OpenKey.isConnected() is exactly this read. Calling it directly keeps
+    // the multi-megabyte SDK chunk out of the first paint of every visit.
+    const response = await fetch(`${import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so"}/api/auth/session`, { credentials: "include", cache: "no-store" });
+    if (!response.ok) return false;
+    return (await response.json() as { readonly user?: unknown }).user !== undefined;
   } catch { return false; }
 }
 
