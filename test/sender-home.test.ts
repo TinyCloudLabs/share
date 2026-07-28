@@ -47,7 +47,7 @@ describe("sender home revoke action is reload-safe", () => {
     const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    mountSenderHome(root, { session, tinycloud, history, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    mountSenderHome(root, { session, tinycloud, history, onNavigate: () => undefined });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const revokeButton = root.querySelector<HTMLButtonElement>("button.sender-revoke");
@@ -64,7 +64,7 @@ describe("sender home revoke action is reload-safe", () => {
     const reloadedRoot = document.createElement("div");
     document.body.append(reloadedRoot);
     const reloadedHistory = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
-    mountSenderHome(reloadedRoot, { session, tinycloud, history: reloadedHistory, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    mountSenderHome(reloadedRoot, { session, tinycloud, history: reloadedHistory, onNavigate: () => undefined });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(reloadedRoot.querySelector("td.sender-status-text.revoked")).not.toBeNull();
     expect(reloadedRoot.querySelector("button.sender-revoke")).toBeNull();
@@ -113,7 +113,7 @@ describe("sender home revoke action is reload-safe", () => {
     const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    mountSenderHome(root, { session, tinycloud, history, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    mountSenderHome(root, { session, tinycloud, history, onNavigate: () => undefined });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const revokeButtons = [...root.querySelectorAll<HTMLButtonElement>("button.sender-revoke")];
@@ -140,7 +140,7 @@ describe("sender home revoke action is reload-safe", () => {
     const reloadedRoot = document.createElement("div");
     document.body.append(reloadedRoot);
     const reloadedHistory = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
-    mountSenderHome(reloadedRoot, { session, tinycloud, history: reloadedHistory, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    mountSenderHome(reloadedRoot, { session, tinycloud, history: reloadedHistory, onNavigate: () => undefined });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const reloadedRows = [...reloadedRoot.querySelectorAll(".sender-history-row")];
     const reloadedRevokedRow = reloadedRows.find((candidate) => candidate.textContent?.includes("revoke-me.md"));
@@ -151,7 +151,7 @@ describe("sender home revoke action is reload-safe", () => {
     expect(reloadedUnrelatedRow?.querySelector("button.sender-revoke")).not.toBeNull();
   });
 
-  it("does not offer revoke for a bearer (possession-only) share, which carries no delegation to revoke", async () => {
+  it("explains, rather than hides, why a bearer (possession-only) share cannot be revoked", async () => {
     const root = document.createElement("div");
     document.body.append(root);
     const vault = fakeVault();
@@ -175,9 +175,48 @@ describe("sender home revoke action is reload-safe", () => {
     const tinycloud = { revokeDelegation: vi.fn() } as unknown as ShareTinyCloud;
     const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
 
-    mountSenderHome(root, { session, tinycloud, history, capabilities: [], composer: { origin: "https://share.tinycloud.xyz" } });
+    mountSenderHome(root, { session, tinycloud, history, onNavigate: () => undefined });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(root.querySelector("button.sender-revoke")).toBeNull();
+    const revoke = root.querySelector<HTMLButtonElement>("button.sender-revoke");
+    expect(revoke).not.toBeNull();
+    expect(revoke!.disabled).toBe(true);
+    expect(revoke!.title).toBe("Link-only shares can't be revoked early.");
+  });
+});
+
+describe("sender home is the router's home screen", () => {
+  it("routes to the composer instead of mounting it, from the toolbar and from the empty state", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+    const onNavigate = vi.fn();
+    const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "New share")!.click();
+    expect(onNavigate).toHaveBeenCalledWith("#/new");
+    [...root.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Share a file")!.click();
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(root.querySelector(".composer-form")).toBeNull();
+  });
+
+  it("hides the table entirely on a first run and leads with sharing, not importing", async () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+    const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const empty = root.querySelector<HTMLElement>(".sender-empty-state")!;
+    expect(empty.hidden).toBe(false);
+    // The E2E harness waits on this exact string.
+    expect(empty.textContent).toContain("No shares yet");
+    expect(root.querySelector<HTMLTableElement>("table.sender-history-table")!.hidden).toBe(true);
+    expect(root.querySelector("thead")!.closest("table")!.hidden).toBe(true);
+    const buttons = [...empty.querySelectorAll("button")].map((button) => button.textContent);
+    expect(buttons).toEqual(["Share a file", "Import a link you already have"]);
   });
 });

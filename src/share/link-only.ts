@@ -18,6 +18,7 @@ export type CreateShare = (options: {
   readonly expiresAt: Date;
   readonly viewerOrigin: string;
   readonly fetchFn: typeof globalThis.fetch;
+  readonly now?: () => number;
 }) => Promise<CreateBearerShareResult>;
 
 export type LinkOnlyFailureKind =
@@ -39,6 +40,7 @@ export class LinkOnlyShareError extends Error {
 
 export interface CreateLinkOnlyShareOptions {
   readonly origin: string;
+  readonly expiresAt: Date;
   /** Browser transport origin used by hermetic hosts; the link origin remains canonical. */
   readonly registryOrigin?: string;
   /** The production composer may upload byte-preserving binary files. The legacy link-only surface remains text-only by default. */
@@ -123,7 +125,6 @@ export async function createLinkOnlyShare(
   options: CreateLinkOnlyShareOptions,
 ): Promise<CreateBearerShareResult> {
   const content = await validateFile(file, options.allowBinary);
-  const now = options.now?.() ?? Date.now();
   const create = options.createShare ?? createBearerShare;
   const fetchFn = authenticatedFetch(options.fetchFn ?? globalThis.fetch);
   try {
@@ -131,9 +132,10 @@ export async function createLinkOnlyShare(
       content,
       filename: file.name,
       registryBaseUrl: `${options.registryOrigin ?? options.origin}${AUTHENTICATED_REGISTRY_PATH}`,
-      expiresAt: new Date(now + LINK_LIFETIME_MS),
+      expiresAt: options.expiresAt,
       viewerOrigin: options.origin,
       fetchFn,
+      ...(options.now === undefined ? {} : { now: options.now }),
     });
   } catch (error) {
     if (error instanceof LinkOnlyShareError) throw error;
