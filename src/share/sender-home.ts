@@ -152,7 +152,7 @@ function openSenderViewer(url: string, live: HTMLElement): void {
   if (child === null) { live.textContent = "The viewer window was blocked. Allow pop-ups and try again."; return; }
   const channel = new MessageChannel();
   let delivered = false;
-  const timeout = window.setTimeout(() => { if (!delivered) { channel.port1.close(); live.textContent = "The viewer did not accept the private launch."; } }, 10_000);
+  const timeout = window.setTimeout(() => { if (!delivered) { channel.port1.close(); live.textContent = "The viewer didn't open. Try again."; } }, 10_000);
   channel.port1.onmessage = (event): void => {
     if (delivered || event.data?.type !== "tinycloud-sender-ready") return;
     delivered = true;

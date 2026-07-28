@@ -105,7 +105,7 @@ async function defaultCreate(file: File | undefined, model: ShareComposerModel, 
     if (model.content.kind !== "library" && file === undefined) throw new Error("Pick the file you want to share.");
     return createPolicyShare(file, model, options);
   }
-  if (file === undefined) throw new Error("A bearer share requires real content bytes.");
+  if (file === undefined) throw new Error("Pick the file you want to share.");
   const result = await createLinkOnlyShare(file, {
     origin: options.origin,
     allowBinary: true,
@@ -114,7 +114,7 @@ async function defaultCreate(file: File | undefined, model: ShareComposerModel, 
     ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
   });
   if (model.linkFormat === "inline") {
-    if (result.inlineEnvelopeBlob === undefined || result.inlineEnvelopeKey === undefined) throw new Error("The selected sharing provider cannot create an inline fallback.");
+    if (result.inlineEnvelopeBlob === undefined || result.inlineEnvelopeKey === undefined) throw new Error("This share can't be made self-contained. Use the short link instead.");
     try {
       const url = await encodeInlineShareUrl({ origin: options.origin, ciphertext: result.inlineEnvelopeBlob, key32: result.inlineEnvelopeKey });
       return { url, cid: result.envelopeCid, format: model.linkFormat, expiresAt: result.expiry };
@@ -178,7 +178,7 @@ async function createPolicyShare(file: File | undefined, model: ShareComposerMod
       async sign(input) {
         const idempotencyKey = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
         const signed = await fetch("/api/share/sign", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json", "idempotency-key": idempotencyKey }, body: JSON.stringify({ capabilityId: candidate.capabilityId, purpose: input.purpose, message: input.message, binding: input.binding }) });
-        if (!signed.ok) throw new Error("The authenticated Node signer rejected this share.");
+        if (!signed.ok) throw new Error("We couldn't create that link. Try again, or pick a different file.");
         const result = await signed.json() as { readonly signature?: unknown };
         return bytes(result.signature, "signature");
       },
@@ -217,7 +217,7 @@ async function createPolicyShare(file: File | undefined, model: ShareComposerMod
   const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
     const uploaded = await fetch(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: blob as BodyInit });
     if (!uploaded.ok) throw new Error("We couldn't save this link. Nothing was shared. Try again.");
-    if (cid.length === 0) throw new Error("The policy envelope CID is invalid.");
+    if (cid.length === 0) throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   };
   const publishBinding = async (binding: Record<string, unknown>): Promise<void> => {
     const published = await fetch("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ capabilityId: candidate.capabilityId, shareCid: binding.shareCid, binding }) });
@@ -242,7 +242,7 @@ async function createPolicyShare(file: File | undefined, model: ShareComposerMod
     const policy = { policyCid: authority.policyCid, policyBytes: authority.policyBytes, policyDigest: authority.policyDigest };
     const matcher = model.encryption ? selectedMatcher : { kind: "policyDigest" as const, value: policy.policyDigest };
     const deliveryEmail = model.deliveryEmail;
-    if (deliveryEmail === undefined) throw new Error("Addressed sharing requires a full delivery email for notification.");
+    if (deliveryEmail === undefined) throw new Error("Add the email address this should be sent to.");
     const bytes = file === undefined ? undefined : new Uint8Array(await file.arrayBuffer());
     const artifact = await createAddressedShareLink({
       matcher,
@@ -291,25 +291,25 @@ async function createPolicyShare(file: File | undefined, model: ShareComposerMod
 
 async function createOwnerPolicyShare(file: File | undefined, model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   const tinycloud = options.tinycloud;
-  if (tinycloud === undefined) throw new Error("An authenticated TinyCloud SDK session is required.");
+  if (tinycloud === undefined) throw new Error("Your session expired. Reload and sign in again.");
   const config = await loadSharePublicConfig();
   const spaceId = tinycloud.spaceId;
-  if (spaceId === undefined || spaceId.length === 0) throw new Error("The authenticated TinyCloud space is unavailable.");
+  if (spaceId === undefined || spaceId.length === 0) throw new Error("Your TinyCloud storage isn't ready yet. Reload and try again.");
   const shareId = crypto.randomUUID();
   const librarySource = contentSource(model.content);
   const selectedSource = librarySource?.kind === "kv" ? librarySource : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
   const filename = contentFilename(model.content);
   if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw new Error("That file name can't be shared. Rename it and try again.");
-  if (model.resource.kind === "prefix" && selectedSource === undefined) throw new Error("A prefix share must retain or copy an existing library folder.");
+  if (model.resource.kind === "prefix" && selectedSource === undefined) throw new Error("Pick the folder from your library to share it.");
   const resourcePath = model.resource.kind === "prefix"
     ? `shares/${shareId}`
     : (model.resource.kind === "exact" && model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
-  if (resourcePath.length === 0 || resourcePath.endsWith("/") && model.resource.kind === "exact") throw new Error("The share source is empty or not a file.");
+  if (resourcePath.length === 0 || resourcePath.endsWith("/") && model.resource.kind === "exact") throw new Error("That file name can't be shared. Rename it and try again.");
   const resourceKind = selectedSource === undefined ? "exact" as const : model.resource.kind;
   const source = { kind: "kv" as const, space: spaceId, path: resourcePath, action: "tinycloud.kv/get" as const };
   const actionNames = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort() as OwnerSharePolicyV2["actions"];
-  if (actionNames.length === 0) throw new Error("The share must grant at least one action.");
+  if (actionNames.length === 0) throw new Error("Choose at least one thing they can do.");
   // The sender chooses this in the composer (P1-2); it is no longer a hidden constant.
   const expiresAt = model.expiresAt;
   const matcher = model.recipient.kind === "exactEmail"
@@ -373,7 +373,7 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     const envelopeBytes = new TextEncoder().encode(canonicalize({ ...unsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: envelopeSignature } }));
     const key = model.encryption ? generateKey() : undefined;
     const stored = key === undefined ? { cid: await computeCid(envelopeBytes), blob: envelopeBytes } : await seal(envelopeBytes, key);
-    if (key === undefined) throw new Error("Owner policy shares must be encrypted.");
+    if (key === undefined) throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
     const shareUrl = model.linkFormat === "inline"
       ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
       : (await (async () => { const uploaded = await fetch(`${options.registryOrigin ?? config.registryOrigin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit }); if (!uploaded.ok) throw new Error("We couldn't save this link. Nothing was shared. Try again."); return encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key }); })());
@@ -382,14 +382,14 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
       if (file === undefined) throw new Error("Pick the file you want to share.");
       const content = new Uint8Array(await file.arrayBuffer());
       const result = await tinycloud.kvForSpace(spaceId).put(resourcePath, content, { contentType: contentMediaType(model.content) });
-      if (!result.ok) throw new Error(result.error.message || "TinyCloud could not store this document.");
+      if (!result.ok) throw new Error("Upload didn't go through. Nothing was shared — try again.");
     }
     return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: ownerDelegation.delegationCid, ...(deliveryEmail === undefined ? {} : { notify: async () => {
       const share = { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt } as ComposerShareResult;
       const authorize = (tinycloud as unknown as { authorizeShareDelivery?: (input: Record<string, string>) => Promise<Record<string, unknown>> }).authorizeShareDelivery;
-      if (authorize === undefined) throw new Error("The authenticated Node delivery adapter is unavailable.");
+      if (authorize === undefined) throw new Error("We couldn't send that email. The link above still works.");
       const deliveryAuthorization = await authorize({ envelopeCid, shareCid, shareId, registrationCid: registration.registration.registrationCid, policyCid: canonicalPolicy.cid, delegationCid: ownerDelegation.delegationCid, enforcementDelegationCid: enforcementDelegation.cid, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, expiresAt: new Date(Math.min(Date.parse(expiresAt), Date.now() + 5 * 60 * 1000)).toISOString() });
-      if (options.notify === undefined) throw new Error("The share notification adapter is unavailable.");
+      if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
       await options.notify({ share, recipient: deliveryEmail, matcher: model.recipient.kind, deliveryAuthorization });
     } }) };
   } finally {
@@ -407,13 +407,13 @@ export async function copySelectedSource(
   const kv = tinycloud.kvForSpace(spaceId);
   if (resourceKind === "exact") {
     const result = await kv.get<Uint8Array>(sourcePath, { binary: true });
-    if (!result.ok) throw new Error("TinyCloud could not read the selected library file.");
+    if (!result.ok) throw new Error("We couldn't copy that from your library. Try again.");
     const stored = await kv.put(targetPath, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
-    if (!stored.ok) throw new Error("TinyCloud could not copy the selected library file.");
+    if (!stored.ok) throw new Error("We couldn't copy that from your library. Try again.");
     return;
   }
   const listing = await kv.list({ path: sourcePath, limit: 1000 });
-  if (!listing.ok) throw new Error("TinyCloud could not list the selected library folder.");
+  if (!listing.ok) throw new Error("We couldn't open that folder in your library. Try again.");
   const prefix = `${sourcePath}/`;
   const directChildren = listing.data.keys.filter((candidate) => {
     if (!candidate.startsWith(prefix)) return false;
@@ -422,22 +422,22 @@ export async function copySelectedSource(
   });
   for (const childPath of directChildren) {
     const result = await kv.get<Uint8Array>(childPath, { binary: true });
-    if (!result.ok) throw new Error("TinyCloud could not read a selected library child.");
+    if (!result.ok) throw new Error("We couldn't copy that from your library. Try again.");
     const childName = childPath.slice(prefix.length);
     const stored = await kv.put(`${targetPath}/${childName}`, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
-    if (!stored.ok) throw new Error("TinyCloud could not copy a selected library child.");
+    if (!stored.ok) throw new Error("We couldn't copy that from your library. Try again.");
   }
 }
 
 async function authorAddressedDelegation(input: { readonly scope: SenderScope; readonly source: ContentSource; readonly matcher: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string }; readonly shareId: string; readonly resource: ShareComposerModel["resource"]; readonly actions: readonly SharePermission[]; readonly expiresAt: string; readonly fetchFn: typeof fetch }): Promise<{ readonly scope: SenderScope; readonly policy: { readonly policyCid: string; readonly policyBytes: string; readonly policyDigest: string } }> {
-  if (input.scope.delegation.length === 0 || input.scope.delegationCid.length === 0 || input.scope.authorityMaterialHandle.length === 0 || input.scope.authorityMaterialDigest.length === 0) throw new Error("The authenticated delegation scope is incomplete.");
+  if (input.scope.delegation.length === 0 || input.scope.delegationCid.length === 0 || input.scope.authorityMaterialHandle.length === 0 || input.scope.authorityMaterialDigest.length === 0) throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   const actions = [...new Set(input.actions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort();
   const resource = { kind: input.resource.kind, value: input.resource.path.replace(/\/$/, "") } as const;
   const requestBody = { version: 2, nonce: toBase64Url(crypto.getRandomValues(new Uint8Array(32))), jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))), senderDid: input.scope.senderDid, recipientMatcher: input.matcher, targetOrigin: input.scope.targetOrigin, nodeAudience: input.scope.nodeAudience, shareCid: input.scope.delegationCid, shareId: input.shareId, delegationCid: input.scope.delegationCid, authorityMaterialHandle: input.scope.authorityMaterialHandle, authorityMaterialDigest: input.scope.authorityMaterialDigest, contentSource: input.source, contentSourceDigest: await canonicalDigest(input.source), actions, resource, expiresAt: input.expiresAt };
   const request = { ...requestBody, requestBodyDigest: await canonicalDigest(requestBody) };
   const signature = await input.scope.signer.sign({ purpose: "delegationAuthoring", message: canonicalize(request), binding: request });
   const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
-  if (signerDid !== input.scope.senderDid || input.scope.signer.publicKey.length !== 32) throw new Error("The authenticated sender proof key is invalid.");
+  if (signerDid !== input.scope.senderDid || input.scope.signer.publicKey.length !== 32) throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   const proof = { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) };
   const response = await input.fetchFn(new URL("/delegate", input.scope.targetOrigin), { method: "POST", credentials: "omit", redirect: "error", headers: { accept: "application/json", "content-type": "application/vnd.tinycloud.delegation+json" }, body: JSON.stringify({ request, proof }) });
   if (!response.ok) {
@@ -451,14 +451,14 @@ async function authorAddressedDelegation(input: { readonly scope: SenderScope; r
   }
   const value = await response.json() as Record<string, unknown>;
   const required = ["type", "version", "nonce", "jti", "policyCid", "policyBytes", "policyDigest", "delegationCid", "delegationBytes", "delegationDigest", "authorityMaterialHandle", "authorityMaterialDigest", "actions", "resource", "expiresAt", "proof"];
-  if (Object.keys(value).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(value, key)) || value.type !== "TinyCloudShareAddressedDelegation" || value.version !== 2 || value.nonce !== request.nonce || value.jti !== request.jti || typeof value.policyCid !== "string" || typeof value.policyBytes !== "string" || typeof value.policyDigest !== "string" || typeof value.delegationCid !== "string" || typeof value.delegationBytes !== "string" || typeof value.delegationDigest !== "string" || !Array.isArray(value.actions) || typeof value.expiresAt !== "string") throw new Error("The Node delegation response is not the closed v2 contract.");
+  if (Object.keys(value).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(value, key)) || value.type !== "TinyCloudShareAddressedDelegation" || value.version !== 2 || value.nonce !== request.nonce || value.jti !== request.jti || typeof value.policyCid !== "string" || typeof value.policyBytes !== "string" || typeof value.policyDigest !== "string" || typeof value.delegationCid !== "string" || typeof value.delegationBytes !== "string" || typeof value.delegationDigest !== "string" || !Array.isArray(value.actions) || typeof value.expiresAt !== "string") throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   const responseProof = value.proof as Record<string, unknown>;
-  if (typeof responseProof !== "object" || responseProof === null || Array.isArray(responseProof) || Object.keys(responseProof).sort().join(",") !== "alg,kid,signature" || responseProof.alg !== "EdDSA" || typeof responseProof.kid !== "string" || typeof responseProof.signature !== "string") throw new Error("The Node delegation proof is not the closed v2 contract.");
+  if (typeof responseProof !== "object" || responseProof === null || Array.isArray(responseProof) || Object.keys(responseProof).sort().join(",") !== "alg,kid,signature" || responseProof.alg !== "EdDSA" || typeof responseProof.kid !== "string" || typeof responseProof.signature !== "string") throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   const signedResponse = { ...value }; delete signedResponse.proof;
   await verifyNodeProof(signedResponse, responseProof as never, input.scope.trustedNode, "xyz.tinycloud.share/delegation-authoring-response/v2\0");
   const responsePolicyBytes = strictBase64(String(value.policyBytes), "Node policy bytes");
   const responseDelegationBytes = strictBase64(String(value.delegationBytes), "Node delegation bytes");
-  if (value.authorityMaterialHandle !== input.scope.authorityMaterialHandle || value.authorityMaterialDigest !== input.scope.authorityMaterialDigest || canonicalize(value.actions) !== canonicalize(actions) || canonicalize(value.resource) !== canonicalize(resource) || value.expiresAt !== input.expiresAt || await digestBytes(responsePolicyBytes) !== value.policyDigest || await computeCid(responsePolicyBytes) !== value.policyCid || await digestBytes(responseDelegationBytes) !== value.delegationDigest) throw new Error("The Node delegation response is not bound to the request.");
+  if (value.authorityMaterialHandle !== input.scope.authorityMaterialHandle || value.authorityMaterialDigest !== input.scope.authorityMaterialDigest || canonicalize(value.actions) !== canonicalize(actions) || canonicalize(value.resource) !== canonicalize(resource) || value.expiresAt !== input.expiresAt || await digestBytes(responsePolicyBytes) !== value.policyDigest || await computeCid(responsePolicyBytes) !== value.policyCid || await digestBytes(responseDelegationBytes) !== value.delegationDigest) throw new Error("Something went wrong creating this link. Nothing was shared. Try again.");
   return { scope: { ...input.scope, delegation: String(value.delegationBytes), delegationCid: String(value.delegationCid) }, policy: { policyCid: String(value.policyCid), policyBytes: String(value.policyBytes), policyDigest: String(value.policyDigest) } };
 }
 

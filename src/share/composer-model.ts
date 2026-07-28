@@ -151,7 +151,7 @@ export function defaultComposerModel(now: number = Date.now()): ComposerDefaults
 export function projectCapabilities(model: Pick<ShareComposerModel, "resource" | "permissions">): ProjectedCapability {
   const actionOrder: readonly SharePermission[] = ["read", "list", "edit"];
   const permissions = actionOrder.filter((action) => model.permissions.includes(action) || (action === "read" && model.resource.kind === "prefix" && model.permissions.includes("list")));
-  if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw new TypeError("Choose at least one supported access action.");
+  if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw new TypeError("Choose at least one thing they can do.");
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");
   const canonicalPath = model.resource.kind === "prefix" ? `${body}/` : body;
@@ -170,13 +170,13 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw new TypeError("Choose when the link should expire.");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
-    throw new TypeError("Exact-email delivery must match the recipient.");
+    throw new TypeError("The delivery address must match the person you're sharing with.");
   }
   if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
     throw new TypeError("The delivery address must belong to the shared domain.");
   }
   if (!model.encryption && (recipient.kind === "exactEmail" || recipient.kind === "bearer")) {
-    throw new TypeError("Exact-email and bearer shares must stay encrypted.");
+    throw new TypeError("Link-only and single-person shares must stay encrypted.");
   }
   if (!model.encryption && recipient.kind === "emailDomain" && !model.encryptionAcknowledged) {
     throw new TypeError("Tick the box to confirm you understand.");

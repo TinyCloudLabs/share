@@ -98,7 +98,7 @@ describe("exact-email share UI protocol boundaries", () => {
   it("keeps the authenticated library available while sender delivery is disabled", async () => {
     await expect(loadAuthenticatedCapabilities(async () => new Response(JSON.stringify({ error: { code: "sender_not_ready" } }), { status: 503 }))).resolves.toEqual([]);
     await expect(loadAuthenticatedCapabilities(async () => new Response(JSON.stringify({ capabilities: [] }), { status: 200 }))).resolves.toEqual([]);
-    await expect(loadAuthenticatedCapabilities(async () => new Response("", { status: 500 }))).rejects.toThrow("sharing capabilities are unavailable");
+    await expect(loadAuthenticatedCapabilities(async () => new Response("", { status: 500 }))).rejects.toThrow("Sharing isn't available right now");
   });
 
   it("renders the authenticated auth-only state for a valid empty capability list", () => {
@@ -117,7 +117,7 @@ describe("exact-email share UI protocol boundaries", () => {
     { capabilities: "none" },
     { capabilities: [], extra: true },
   ])("strictly rejects malformed capability list payloads (%j)", (value) => {
-    expect(() => parseCapabilityList(value)).toThrow("share capability list is invalid");
+    expect(() => parseCapabilityList(value)).toThrow("Sharing isn't available right now");
   });
 
   it("scrubs a complete launch synchronously and rejects secret query strings", () => {
