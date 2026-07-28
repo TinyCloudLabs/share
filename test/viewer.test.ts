@@ -683,6 +683,101 @@ describe("unsupported targets/modes are never faked-verified", () => {
   });
 });
 
+// ------------------------------------------------------ announced states
+
+describe("every viewer state announces itself and takes focus (P0-4)", () => {
+  /** A root shaped like viewer.html's <div id="viewer" tabindex="-1">. */
+  function focusableRoot(): HTMLElement {
+    const root = makeRoot();
+    root.tabIndex = -1;
+    return root;
+  }
+
+  const FAILURES: readonly ResolveResult[] = [
+    { state: "invalid-link" },
+    { state: "fetch-failed" },
+    { state: "cid-mismatch" },
+    { state: "decrypt-failed" },
+    { state: "envelope-invalid" },
+    { state: "signature-invalid" },
+    { state: "capability-invalid" },
+    { state: "content-fetch-failed" },
+    { state: "content-integrity-failed" },
+    { state: "unsupported", reason: "policy-target" },
+    { state: "unsupported", reason: "recipient-did-target" },
+    { state: "unsupported", reason: "prefix-resource" },
+  ] as ResolveResult[];
+
+  it("gives every error state role=alert and moves focus to the root", () => {
+    for (const failure of FAILURES) {
+      const root = focusableRoot();
+      expect(renderViewerState(root, failure)).toBeNull();
+      const state = root.querySelector<HTMLElement>(".viewer-state");
+      expect(state?.getAttribute("role"), `${failure.state} must announce itself`).toBe("alert");
+      expect(document.activeElement, `${failure.state} must move focus`).toBe(root);
+    }
+  });
+
+  it("moves focus to the root for the opened document too", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const root = focusableRoot();
+    expect(renderViewerState(root, await resolve(url))).not.toBeNull();
+    expect(document.activeElement).toBe(root);
+  });
+
+  it("keeps the shipped copy free of protocol vocabulary and self-scolding", () => {
+    const forbidden = /delegation|capability|envelope|registry|matcher|bearer|invocation|attenuation|Refusing to show|lands in a later stage|in this build/i;
+    for (const failure of FAILURES) {
+      const root = focusableRoot();
+      renderViewerState(root, failure);
+      expect(root.textContent ?? "", `${failure.state}: ${root.textContent ?? ""}`).not.toMatch(forbidden);
+    }
+  });
+});
+
+// ------------------------------------------------- the opened view keeps a link
+
+describe("opened view exposes a working Copy link (P1-9)", () => {
+  it("copies the complete in-memory URL and never renders it", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const result = await resolve(url);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    const root = makeRoot();
+    expect(renderViewerState(root, result, { shareUrl: url })).not.toBeNull();
+    const copy = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Copy link",
+    );
+    expect(copy, "the opened view must offer Copy link").toBeDefined();
+    copy!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(url));
+    await vi.waitFor(() =>
+      expect(root.querySelector("#viewer-copy-status")?.textContent).toBe("Link copied."),
+    );
+    // §6.3: never as text, never as an href, never as any other attribute.
+    expect(root.textContent).not.toContain(url);
+    expect(root.querySelector("a")).toBeNull();
+    expect(
+      Array.from(root.querySelectorAll<HTMLElement>("*")).every(
+        (node) => !Array.from(node.attributes).some((attribute) => attribute.value.includes(url)),
+      ),
+    ).toBe(true);
+  });
+
+  it("omits the control when no URL is held in memory", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const root = makeRoot();
+    renderViewerState(root, await resolve(url));
+    expect(
+      Array.from(root.querySelectorAll("button")).some((button) => button.textContent === "Copy link"),
+    ).toBe(false);
+  });
+});
+
 // ------------------------------------------------------------- key hygiene
 
 describe("fragment-key hygiene (parsed-buffer zeroing)", () => {

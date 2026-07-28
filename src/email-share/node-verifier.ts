@@ -61,7 +61,10 @@ export async function digestText(value: string): Promise<string> {
 }
 
 export async function digestBytes(value: Uint8Array): Promise<string> {
-  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", value.buffer as ArrayBuffer)));
+  // Digest the VIEW, not `value.buffer`: a Uint8Array may be a window onto a
+  // larger buffer (a subarray, or any pooled Buffer), in which case hashing
+  // the backing store hashes the wrong bytes.
+  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", value as BufferSource)));
 }
 
 export function requestBodyWithoutDigest(input: Record<string, unknown>): Record<string, unknown> {

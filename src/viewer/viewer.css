@@ -35,7 +35,7 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 }
 .viewer-primary-action:hover { border-color: var(--accent-hover); background: var(--accent-hover); color: var(--button-ink); transform: translateY(-1px); }
 .viewer-primary-action:active { transform: translateY(1px); }
-.viewer-secondary-action { display: block; min-height: 40px; margin: 10px 0 0; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
+.viewer-secondary-action { display: block; min-height: 44px; margin: 10px 0 0; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
 .viewer-secondary-action:hover { text-decoration-thickness: 2px; }
 .viewer-secondary-action:disabled { opacity: 0.5; cursor: not-allowed; text-decoration: none; }
 .viewer-cooldown { margin: 14px 0 0; color: var(--ink-soft); font-size: 0.84rem; }
@@ -62,11 +62,33 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-expiry { padding: 18px 0; }
 .viewer-agent-hint { margin: 0; padding: 18px; border-left: 1px dotted var(--line); background: var(--surface-faint); }
 .viewer-agent-hint-text { margin: 0; }
-.viewer-download { align-self: center; justify-self: start; min-height: 40px; margin: 0 18px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
+.viewer-download { align-self: center; justify-self: start; min-height: 44px; margin: 0 18px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
 .viewer-download:hover { text-decoration-thickness: 2px; }
 .viewer-download:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .viewer-forget-key, .viewer-footer > .recipient-secondary-action { margin: 0 0 0 18px; align-self: center; }
 .viewer-source { white-space: pre-wrap; }
+
+/* Copy link in the opened view: the recipient's only safe way to keep a
+   working link once the key fragment has been scrubbed from the address bar. */
+.viewer-copy-link { align-self: center; justify-self: start; min-height: 44px; margin: 0 18px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
+.viewer-copy-link:hover { text-decoration-thickness: 2px; }
+.viewer-copy-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.viewer-copy-status { align-self: center; padding: 0 18px; color: var(--ink-soft); font-size: 0.84rem; }
+
+/* Folder browsing. The folder navigation and the opened file are siblings:
+   opening a file must never destroy the list the recipient came from. */
+.viewer-folder-panel { display: block; margin: 24px 0 0; }
+.viewer-folder { display: block; }
+.viewer-breadcrumb { margin: 0 0 10px; color: var(--ink-soft); font-size: 0.84rem; overflow-wrap: anywhere; }
+.viewer-folder-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.viewer-folder-list li { margin: 0; }
+.viewer-folder-entry { display: block; width: 100%; min-height: 44px; padding: 11px 14px; border: 0; border-bottom: 1px solid var(--line); background: var(--bg-raised); color: var(--ink); font: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.viewer-folder-list li:last-child .viewer-folder-entry { border-bottom: 0; }
+.viewer-folder-entry:hover { background: var(--surface-faint); }
+.viewer-folder-entry:focus-visible, .viewer-folder-back:focus-visible, .viewer-folder-next:focus-visible, .viewer-file-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.viewer-folder-back, .viewer-folder-next, .viewer-file-back { min-height: 44px; }
+.viewer-file-panel { display: block; }
+.viewer-file-back { display: inline-block; margin: 24px 0 0; }
 .viewer-editor { display: block; width: 100%; min-height: 20rem; margin: 16px 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg-raised); color: var(--ink); font: .88rem/1.55 var(--mono); resize: vertical; }
 .viewer-editor-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--danger); border-radius: 8px; background: var(--danger-bg); color: var(--danger); }
 .viewer-editor-conflict .viewer-secondary-action { margin: 0; }
@@ -79,7 +101,8 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
   .viewer-mode { margin-left: 0; }
   .viewer-footer { grid-template-columns: 1fr; }
   .viewer-expiry { padding: 16px 0; }
-  .viewer-download { margin: 0 0 16px; }
+  .viewer-download, .viewer-copy-link { margin: 0 0 16px; }
+  .viewer-copy-status { padding: 0 0 12px; }
   .viewer-agent-hint { border-top: 1px dotted var(--line); border-left: 0; }
 }
 @media (max-width: 360px) { #viewer { width: min(100% - 1.5rem, 1120px); } .viewer-state-title { font-size: 1.8rem; } }
