@@ -36,7 +36,7 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
   }
   const badge = document.createElement("div"); badge.className = "openkey-mark"; badge.setAttribute("aria-hidden", "true"); badge.textContent = "OK";
   const heading = document.createElement("h2"); heading.textContent = resumable ? "Welcome back" : "One key, your files";
-  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "You're still signed in to OpenKey. Continue to pick up where you left off." : "Sign in with Face ID or Touch ID. No password.";
+  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "Your sharing session on this device is still active. Continue to pick up where you left off." : "Sign in with Face ID or Touch ID. No password.";
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
@@ -146,8 +146,14 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
 }
 
 /**
- * A live sign-in is detectable without any prompt: the share session cookie
- * and the OpenKey account session are both plain credentialed reads.
+ * Resumability comes only from the server-validated share session: `sessionValid`
+ * in src/host/share-adapter.ts returns 401 for a missing, unknown, or expired
+ * cookie and deletes expired entries, so a stale cookie can never show
+ * "Welcome back". The OpenKey account cookie is deliberately not probed:
+ * both production CSP sources omit openkey.so from connect-src, and OpenKey's
+ * API restricts credentialed CORS to its own allowlist, so that read cannot
+ * succeed from this origin. Widening production CSP for copy-only presentation
+ * is not worth it.
  *
  * It is *not* enough to rebuild the session. `OpenKey.connect()` always opens
  * the OpenKey flow, `signMessage` always needs the passkey, and the Web SDK
@@ -156,15 +162,7 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
  * "Continue", never to fake a session that does not exist in this tab.
  */
 async function detectResumableSession(): Promise<boolean> {
-  const shareSession = await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" }).then((response) => response.ok).catch(() => false);
-  if (!shareSession) return false;
-  try {
-    // OpenKey.isConnected() is exactly this read. Calling it directly keeps
-    // the multi-megabyte SDK chunk out of the first paint of every visit.
-    const response = await fetch(`${import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so"}/api/auth/session`, { credentials: "include", cache: "no-store" });
-    if (!response.ok) return false;
-    return (await response.json() as { readonly user?: unknown }).user !== undefined;
-  } catch { return false; }
+  return fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" }).then((response) => response.ok).catch(() => false);
 }
 
 mountAuthentication(root, false, bootstrap);
