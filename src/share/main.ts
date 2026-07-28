@@ -61,20 +61,24 @@ if (root === null) throw new Error("share app root missing");
 const view = document.createElement("div");
 view.className = "sender-view";
 let app: SenderApp | undefined;
+/** Guards against a slow view winning a race with a newer route. */
+let renderToken = 0;
 
 function navigate(route: string): void {
   if (window.location.hash === route) { render(); return; }
   window.location.hash = route;
 }
 
-function renderLibrary(current: SenderApp): void {
+function renderLibrary(current: SenderApp, token: number): void {
   void import("./sender-home.js").then(({ mountSenderHome }) => {
+    if (token !== renderToken) return;
     mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate });
   });
 }
 
-function renderComposer(current: SenderApp): void {
+function renderComposer(current: SenderApp, token: number): void {
   void Promise.all([import("./composer.js"), import("./sender-history.js"), import("../email-share/config.js")]).then(([{ mountShareComposer }, { createSenderHistoryRecord }, { loadSharePublicConfig }]) => {
+    if (token !== renderToken) return;
     mountShareComposer(view, {
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
       registryOrigin: window.location.origin,
@@ -115,8 +119,9 @@ export function routeFor(hash: string): "library" | "composer" {
 
 function render(): void {
   if (app === undefined) return;
-  if (routeFor(window.location.hash) === "composer") renderComposer(app);
-  else renderLibrary(app);
+  const token = renderToken += 1;
+  if (routeFor(window.location.hash) === "composer") renderComposer(app, token);
+  else renderLibrary(app, token);
 }
 
 window.addEventListener("hashchange", render);
