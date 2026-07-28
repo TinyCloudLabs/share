@@ -16,7 +16,7 @@ describe("adaptive viewer adapters", () => {
     const root = document.createElement("main");
     const oversized = new Uint8Array(MAX_SAFE_CONTENT_BYTES + 1);
     expect(await renderSafeContent(root, oversized, { mediaType: "text/markdown", filename: "large.md", byteLength: 1 })).toBe("download");
-    expect(root.textContent).toContain("Preview disabled for safety");
+    expect(root.textContent).toContain("This file can't be previewed here");
     expect(await renderSafeContent(root, Uint8Array.from([0xff, 0xfe]), { mediaType: "text/plain", filename: "bad.txt", byteLength: 2 })).toBe("download");
     expect(root.querySelector("a")?.textContent).toBe("Download file");
   });

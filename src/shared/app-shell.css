@@ -283,3 +283,18 @@ textarea:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Visually hidden, still announced. `.sr-only` was used (sender-home.ts's
+   table caption) but defined in none of the five stylesheets, so the caption
+   rendered as visible text above the table. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  overflow: hidden;
+}

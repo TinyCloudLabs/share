@@ -19,6 +19,12 @@ function clearPreviousContent(container: HTMLElement): void {
   container.replaceChildren();
 }
 
+function formatBytes(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${size} bytes`;
+}
+
 function utf8(bytes: Uint8Array): string | undefined {
   try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return undefined; }
 }
@@ -67,5 +73,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = kind === "download" ? "Preview disabled for safety" : "File ready"; const detail = doc.createElement("p"); detail.textContent = `${descriptor.filename} · ${descriptor.byteLength.toLocaleString()} bytes`; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename.replace(/[\\/\u0000-\u001f\u007f]/g, "") || "shared-file"; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename.replace(/[\\/\u0000-\u001f\u007f]/g, "") || "shared-file"; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

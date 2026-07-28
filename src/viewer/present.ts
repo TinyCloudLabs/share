@@ -11,7 +11,7 @@ import {
   type RenderMarkdownOptions,
 } from "./render.js";
 import type { ResolveResult } from "./resolve.js";
-import { renderViewerState } from "./ui.js";
+import { renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { renderSafeContent } from "./content.js";
 
 function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>): string {
@@ -76,9 +76,9 @@ function appendDownloadAction(
 export async function presentShare(
   root: HTMLElement,
   result: ResolveResult,
-  options: RenderMarkdownOptions = {},
+  options: RenderMarkdownOptions & ViewerStateOptions = {},
 ): Promise<HTMLElement | null> {
-  const container = renderViewerState(root, result);
+  const container = renderViewerState(root, result, options);
   if (container === null || result.state !== "ok" || (result.content === undefined && result.contentBytes === undefined)) {
     return container;
   }
@@ -104,8 +104,8 @@ export async function presentShare(
     notice.className = "viewer-render-error";
     notice.textContent =
       error instanceof ContentTooLargeError
-        ? "This document is too large to display safely, so nothing is shown."
-        : "This document couldn't be rendered safely, so nothing is shown.";
+        ? "This document is too large to show here. Download it to read it."
+        : "We couldn't display this document. Download it to open it.";
     container.append(notice);
   }
   return container;

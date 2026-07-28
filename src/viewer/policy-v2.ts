@@ -6,6 +6,7 @@ import { renderSafeContent } from "./content.js";
 import { mountTextEditor, canEdit, type EditableDocument } from "./editor.js";
 import { normalizeFolderPage, renderFolder } from "./folder.js";
 import { copyWithFallback } from "../share/link-only.js";
+import { focusViewerRoot } from "./focus.js";
 
 export interface PolicyV2ViewerOptions {
   readonly nodeOrigin: string;
@@ -21,11 +22,44 @@ function text(doc: Document, tag: keyof HTMLElementTagNameMap, className: string
   const node = doc.createElement(tag); node.className = className; node.textContent = value; return node;
 }
 
+/**
+ * Recipient-facing failure vocabulary. The recipient NEVER sees `error.message`:
+ * every throw below is tagged with one of these four kinds, and the raw text is
+ * a developer detail that only reaches console.debug. An untagged throw (for
+ * example from ShareRecipientClient) is classified conservatively.
+ */
+export type RecipientFailureKind = "denied" | "conflict" | "malformed" | "offline";
+
+export const RECIPIENT_FAILURE: Record<RecipientFailureKind, string> = {
+  denied: "You don't have access to this. Ask the sender to share it again.",
+  conflict: "Someone else saved a change first. Reload to see the latest version.",
+  malformed: "Something went wrong opening this. Ask the sender for a fresh link.",
+  offline: "You appear to be offline. Reconnect and try again.",
+};
+
+function fail(kind: RecipientFailureKind, detail: string, extra: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(detail), { kind, ...extra });
+}
+
+export function recipientFailureKind(error: unknown): RecipientFailureKind {
+  const tagged = (typeof error === "object" && error !== null ? (error as { readonly kind?: unknown }).kind : undefined);
+  if (tagged === "denied" || tagged === "conflict" || tagged === "malformed" || tagged === "offline") return tagged;
+  // A request that never reached the node rejects with TypeError and no
+  // response; treat that (and an explicitly offline navigator) as offline.
+  if (error instanceof TypeError) return "offline";
+  if (typeof navigator === "object" && navigator !== null && navigator.onLine === false) return "offline";
+  return "malformed";
+}
+
+export function recipientFailureMessage(error: unknown): string {
+  return RECIPIENT_FAILURE[recipientFailureKind(error)];
+}
+
 async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string }> {
   const contentType = response.headers.get("content-type");
-  if (contentType !== null && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw new Error("native response media type is invalid");
+  if (contentType !== null && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw fail("malformed", "native response media type is invalid");
   const value = await response.json() as unknown;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("native response is invalid");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw fail("malformed", "native response is invalid");
   const object = value as Record<string, unknown>;
   const action = expectedAction === "get" ? "tinycloud.kv/get" : expectedAction === "metadata" ? "tinycloud.kv/metadata" : expectedAction === "list" ? "tinycloud.kv/list" : "tinycloud.kv/put";
   const allowed = expectedAction === "get"
@@ -35,7 +69,7 @@ async function nativePayload(response: Response, expectedAction: "get" | "metada
     : expectedAction === "list"
       ? ["type", "version", "action", "resource", "entries", "nextCursor"]
       : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType"];
-  if (Object.keys(object).some((key) => !allowed.includes(key))) throw new Error("native response has unknown fields");
+  if (Object.keys(object).some((key) => !allowed.includes(key))) throw fail("malformed", "native response has unknown fields");
   const required = expectedAction === "get"
     ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag"]
     : expectedAction === "metadata"
@@ -43,52 +77,119 @@ async function nativePayload(response: Response, expectedAction: "get" | "metada
     : expectedAction === "list"
       ? ["type", "version", "action", "resource", "entries", "nextCursor"]
       : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType"];
-  if (required.some((key) => !Object.hasOwn(object, key)) || object.type !== "TinyCloudShareInvokeResponse" || object.version !== 2 || object.action !== action || object.resource !== expectedResource) throw new Error("native response binding is invalid");
+  if (required.some((key) => !Object.hasOwn(object, key)) || object.type !== "TinyCloudShareInvokeResponse" || object.version !== 2 || object.action !== action || object.resource !== expectedResource) throw fail("malformed", "native response binding is invalid");
   if (expectedAction === "list") {
-    if (!Array.isArray(object.entries) || (object.nextCursor !== null && typeof object.nextCursor !== "string")) throw new Error("native response entries are invalid");
+    if (!Array.isArray(object.entries) || (object.nextCursor !== null && typeof object.nextCursor !== "string")) throw fail("malformed", "native response entries are invalid");
     return { value: { entries: object.entries, nextCursor: object.nextCursor } };
   }
   if (expectedAction === "metadata") {
-    if (typeof object.metadata !== "object" || object.metadata === null || Array.isArray(object.metadata) || Object.entries(object.metadata).some(([key, value]) => key.length === 0 || key.length > 128 || /[\u0000-\u001f\u007f]/.test(key) || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value)) || (object.etag !== null && typeof object.etag !== "string")) throw new Error("native response metadata is invalid");
+    if (typeof object.metadata !== "object" || object.metadata === null || Array.isArray(object.metadata) || Object.entries(object.metadata).some(([key, value]) => key.length === 0 || key.length > 128 || /[\u0000-\u001f\u007f]/.test(key) || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value)) || (object.etag !== null && typeof object.etag !== "string")) throw fail("malformed", "native response metadata is invalid");
     return { value: object, metadata: object.metadata as Record<string, string>, ...(typeof object.etag === "string" ? { etag: object.etag } : {}) };
   }
-  if (typeof object.bodyDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(object.bodyDigest)) throw new Error("native response digest is invalid");
+  if (typeof object.bodyDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(object.bodyDigest)) throw fail("malformed", "native response digest is invalid");
   if (expectedAction === "get") {
-    if (typeof object.mediaType !== "string" || object.mediaType.length === 0 || object.mediaType.length > 128 || /[\u0000-\u001f\u007f]/.test(object.mediaType) || typeof object.content !== "string" || !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:\s*;\s*[^\u0000-\u001f\u007f]{1,96})?$/.test(object.mediaType)) throw new Error("native response content is invalid");
+    if (typeof object.mediaType !== "string" || object.mediaType.length === 0 || object.mediaType.length > 128 || /[\u0000-\u001f\u007f]/.test(object.mediaType) || typeof object.content !== "string" || !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+(?:\s*;\s*[^\u0000-\u001f\u007f]{1,96})?$/.test(object.mediaType)) throw fail("malformed", "native response content is invalid");
     let bytes: Uint8Array;
-    try { bytes = fromBase64Url(object.content); } catch { throw new Error("native response content is invalid"); }
-    if (toBase64Url(bytes) !== object.content || bytes.length > 100 * 1024 * 1024 || object.bodyDigest !== await digestBytes(bytes) || (object.etag !== null && typeof object.etag !== "string")) throw new Error("native response content binding is invalid");
+    try { bytes = fromBase64Url(object.content); } catch { throw fail("malformed", "native response content is invalid"); }
+    if (toBase64Url(bytes) !== object.content || bytes.length > 100 * 1024 * 1024 || object.bodyDigest !== await digestBytes(bytes) || (object.etag !== null && typeof object.etag !== "string")) throw fail("malformed", "native response content binding is invalid");
     return { value: object, bytes, mediaType: object.mediaType, ...(typeof object.etag === "string" ? { etag: object.etag } : {}) };
   }
-  if (typeof object.etag !== "string" || typeof object.contentType !== "string" || (expectedBodyDigest !== undefined && object.bodyDigest !== expectedBodyDigest) || (expectedContentType !== undefined && object.contentType !== expectedContentType)) throw new Error("native response put fields are invalid");
+  if (typeof object.etag !== "string" || typeof object.contentType !== "string" || (expectedBodyDigest !== undefined && object.bodyDigest !== expectedBodyDigest) || (expectedContentType !== undefined && object.contentType !== expectedContentType)) throw fail("malformed", "native response put fields are invalid");
   return { value: object, etag: object.etag };
+}
+
+/** One recorded viewer position, restored on Back/Forward. */
+type ShareView =
+  | { readonly kind: "folder"; readonly path: string }
+  | { readonly kind: "file"; readonly path: string; readonly parent: string };
+
+const VIEW_STATE_KEY = "tinycloudShareView";
+
+function readView(state: unknown): ShareView | undefined {
+  if (typeof state !== "object" || state === null) return undefined;
+  const view = (state as Record<string, unknown>)[VIEW_STATE_KEY];
+  if (typeof view !== "object" || view === null) return undefined;
+  const candidate = view as { readonly kind?: unknown; readonly path?: unknown; readonly parent?: unknown };
+  if (typeof candidate.path !== "string") return undefined;
+  if (candidate.kind === "folder") return { kind: "folder", path: candidate.path };
+  if (candidate.kind === "file" && typeof candidate.parent === "string") return { kind: "file", path: candidate.path, parent: candidate.parent };
+  return undefined;
+}
+
+/**
+ * The address bar is deliberately key-free (email-share/url.ts scrubs `#k=`
+ * before anything else runs), so a recorded position may never touch the URL.
+ * `pathname` is what is already displayed; only the history STATE carries the
+ * folder position, which keeps Back working without putting anything about the
+ * share into history, referrers, or bookmarks.
+ */
+function recordView(history: History, location: Location, view: ShareView, replace = false): void {
+  const state = { [VIEW_STATE_KEY]: view };
+  if (replace) history.replaceState(state, "", location.pathname);
+  else history.pushState(state, "", location.pathname);
+}
+
+function folderName(path: string): string {
+  const name = path.replace(/\/+$/, "").split("/").at(-1);
+  return name === undefined || name === "" ? "the shared folder" : name;
 }
 
 export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelope: ShareEnvelopeV2; readonly shareCid: string; readonly policy: Record<string, unknown> }, options: PolicyV2ViewerOptions): void {
   const doc = root.ownerDocument;
+  const view = doc.defaultView ?? window;
   root.replaceChildren();
   const shell = doc.createElement("main"); shell.className = "viewer-state viewer-policy-v2";
-  shell.append(text(doc, "h1", "viewer-state-title", "Verify access to this share"), text(doc, "p", "viewer-state-detail", "The link is intact. The next step proves the recipient claim and binds every read, list, or edit request to the verified Node session."));
+  shell.append(text(doc, "h1", "viewer-state-title", "Open this shared document"), text(doc, "p", "viewer-state-detail", "Confirm it's you, and this document will open."));
   const open = doc.createElement("button"); open.type = "button"; open.className = "viewer-primary-action"; open.textContent = "Verify and open";
   const status = text(doc, "p", "viewer-policy-status", ""); status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const copyStatus = text(doc, "span", "viewer-policy-copy-status", ""); copyStatus.setAttribute("role", "status"); copyStatus.setAttribute("aria-live", "polite");
   const copy = doc.createElement("button"); copy.type = "button"; copy.className = "viewer-secondary-action"; copy.textContent = "Copy link";
   copy.disabled = options.shareUrl === undefined;
-  if (options.shareUrl !== undefined) copy.addEventListener("click", () => { void copyWithFallback(options.shareUrl!).then(() => { copyStatus.textContent = "Link copied."; }).catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; }); });
-  const content = doc.createElement("section"); content.className = "viewer-content"; content.setAttribute("aria-live", "polite");
-  shell.append(open, copy, copyStatus, status, content); root.append(shell);
+  if (options.shareUrl !== undefined) copy.addEventListener("click", () => { void copyWithFallback(options.shareUrl!).then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; }).catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; }); });
+  // The folder navigation and the opened file are SIBLINGS: opening a file must
+  // never destroy the list the recipient came from (P0-5).
+  const folderPanel = doc.createElement("nav"); folderPanel.className = "viewer-folder-panel"; folderPanel.hidden = true;
+  const filePanel = doc.createElement("section"); filePanel.className = "viewer-file-panel"; filePanel.hidden = true;
+  const fileBack = doc.createElement("button"); fileBack.type = "button"; fileBack.className = "viewer-secondary-action viewer-file-back"; fileBack.hidden = true;
+  // No aria-live here: the shared document is not a status update, and marking
+  // it live makes a screen reader read the whole file as one announcement.
+  const content = doc.createElement("section"); content.className = "viewer-content";
+  filePanel.append(fileBack, content);
+  shell.append(open, copy, copyStatus, status, folderPanel, filePanel); root.append(shell);
+  focusViewerRoot(root);
+
+  let restore: ((position: ShareView) => void) | undefined;
+  view.addEventListener("popstate", (event) => {
+    const position = readView((event as PopStateEvent).state);
+    if (position === undefined || restore === undefined) return;
+    restore(position);
+  });
+
+  const showFailure = (error: unknown): void => {
+    // The raw text is a developer detail — `native list denied`,
+    // `KV_PRECONDITION_FAILED`, ten `native response … is invalid` variants.
+    // It never reaches the recipient.
+    console.debug("tinycloud share: recipient request failed", error);
+    status.setAttribute("role", "alert");
+    status.textContent = recipientFailureMessage(error);
+  };
+  const showProgress = (message: string): void => {
+    status.setAttribute("role", "status");
+    status.textContent = message;
+  };
+
   open.addEventListener("click", () => {
-    open.disabled = true; status.textContent = "Checking the signed policy challenge…";
+    open.disabled = true; showProgress("Checking…");
     void (async () => {
       const client = new ShareRecipientClient({ nodeOrigin: options.nodeOrigin, trustedNode: options.trustedNode, holderDid: options.holderDid, envelope: input.envelope, shareCid: input.shareCid, buildPresentation: options.buildPresentation, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
       const session = await client.establishPolicySession();
-      status.textContent = "Verified session established.";
+      showProgress("Opening…");
       // The session response narrows the first operation, while the signed
       // envelope remains the authority for the complete allowed action set.
       const actions = input.envelope.actions;
       const invoke = async (action: "list" | "metadata" | "get" | "put", resource: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<{ readonly response: Response; readonly payload: Awaited<ReturnType<typeof nativePayload>> }> => {
         const response = await client.nativeInvoke({ action, resource, ...extra });
-        if (!response.ok) throw new Error(`native ${action} denied`);
+        if (!response.ok) throw fail(response.status === 412 ? "conflict" : "denied", `native ${action} denied`, { status: response.status });
         const body = Array.isArray(extra.body) ? Uint8Array.from(extra.body as number[]) : undefined;
         const bodyDigest = body === undefined ? undefined : await digestBytes(body);
         return { response, payload: await nativePayload(response, action, typeof resource.path === "string" ? resource.path : "", bodyDigest, typeof extra.contentType === "string" ? extra.contentType : undefined) };
@@ -98,13 +199,48 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
         if (!actions.includes("edit") || etag === "" || !canEdit(mediaType, actions)) return;
         const editorRoot = doc.createElement("section"); editorRoot.className = "viewer-editor-panel"; content.append(editorRoot);
         const editable: EditableDocument = { bytes, etag, mediaType };
-        mountTextEditor(editorRoot, editable, { save: async (next, ifMatch) => { const bodyDigest = await digestBytes(next); const saved = await client.nativeInvoke({ action: "put", resource: { kind: "exact", path }, body: Array.from(next), bodyDigest: Array.from(fromBase64Url(bodyDigest)), ifMatch, contentType: mediaType }); if (saved.status === 412) throw Object.assign(new Error("KV_PRECONDITION_FAILED"), { status: 412 }); if (!saved.ok) throw new Error("save denied"); const payload = await nativePayload(saved, "put", path, bodyDigest, mediaType); return { etag: payload.etag ?? saved.headers.get("etag") ?? "" }; }, reload: async () => { const fresh = await invoke("get", { kind: "exact", path }); const freshBytes = fresh.payload.bytes ?? new Uint8Array(await fresh.response.arrayBuffer()); return { bytes: freshBytes, etag: fresh.payload.etag ?? fresh.response.headers.get("etag") ?? "", mediaType: fresh.payload.mediaType ?? fresh.response.headers.get("content-type") ?? mediaType }; } });
+        mountTextEditor(editorRoot, editable, { save: async (next, ifMatch) => { const bodyDigest = await digestBytes(next); const saved = await client.nativeInvoke({ action: "put", resource: { kind: "exact", path }, body: Array.from(next), bodyDigest: Array.from(fromBase64Url(bodyDigest)), ifMatch, contentType: mediaType }); if (saved.status === 412) throw fail("conflict", "KV_PRECONDITION_FAILED", { status: 412 }); if (!saved.ok) throw fail("denied", "save denied", { status: saved.status }); const payload = await nativePayload(saved, "put", path, bodyDigest, mediaType); return { etag: payload.etag ?? saved.headers.get("etag") ?? "" }; }, reload: async () => { const fresh = await invoke("get", { kind: "exact", path }); const freshBytes = fresh.payload.bytes ?? new Uint8Array(await fresh.response.arrayBuffer()); return { bytes: freshBytes, etag: fresh.payload.etag ?? fresh.response.headers.get("etag") ?? "", mediaType: fresh.payload.mediaType ?? fresh.response.headers.get("content-type") ?? mediaType }; } });
       };
       if (actions.includes("list")) {
-        const listed = await invoke("list", session.resource);
-        const prefix = session.resource.kind === "prefix" ? session.resource.path : "";
-        const renderPage = (page: ReturnType<typeof normalizeFolderPage>, path: string): void => renderFolder(content, page, path, 50, (nextPath, kind) => { if (kind !== "file") { content.textContent = "Nested folders are not part of this share."; return; } void invoke("get", { kind: "exact", path: nextPath }).then(async ({ response, payload }) => { const bytes = payload.bytes ?? new Uint8Array(); await renderLoadedFile(nextPath, bytes, payload.mediaType ?? response.headers.get("content-type") ?? "application/octet-stream", payload.etag ?? response.headers.get("etag") ?? ""); }).catch(() => { content.textContent = "This shared entry could not be opened."; }); }, (cursor) => { if (cursor === undefined) return; void invoke("list", { kind: "prefix", path }, { cursor, limit: 50 }).then(({ payload }) => renderPage(normalizeFolderPage(payload.value), path)).catch(() => { content.textContent = "The next folder page could not be loaded."; }); }, (parent) => { void invoke("list", { kind: "prefix", path: parent }, { limit: 50 }).then(({ payload }) => renderPage(normalizeFolderPage(payload.value), parent)).catch(() => { content.textContent = "This folder could not be opened."; }); });
-        renderPage(normalizeFolderPage(listed.payload.value), prefix);
+        const rootPrefix = session.resource.kind === "prefix" ? session.resource.path : "";
+        let currentFolder = rootPrefix;
+        const hideFile = (): void => { fileBack.hidden = true; filePanel.hidden = true; content.replaceChildren(); };
+        const loadFolder = async (path: string, record = true, extra: Record<string, unknown> = {}): Promise<void> => {
+          const { payload } = await invoke("list", { kind: "prefix", path }, { limit: 50, ...extra });
+          currentFolder = path;
+          hideFile();
+          folderPanel.hidden = false;
+          renderFolder(folderPanel, normalizeFolderPage(payload.value), path, 50, navigate, nextPage, goToParent);
+          showProgress("");
+          if (record) recordView(view.history, view.location, { kind: "folder", path });
+        };
+        const loadFile = async (path: string, parent: string, record = true): Promise<void> => {
+          const { response, payload } = await invoke("get", { kind: "exact", path });
+          const bytes = payload.bytes ?? new Uint8Array();
+          fileBack.textContent = `← ${folderName(parent)}`;
+          fileBack.hidden = false;
+          filePanel.hidden = false;
+          await renderLoadedFile(path, bytes, payload.mediaType ?? response.headers.get("content-type") ?? "application/octet-stream", payload.etag ?? response.headers.get("etag") ?? "");
+          showProgress("");
+          if (record) recordView(view.history, view.location, { kind: "file", path, parent });
+          fileBack.focus();
+        };
+        function navigate(nextPath: string, kind: "file" | "folder"): void {
+          if (kind === "folder") { void loadFolder(nextPath).catch(showFailure); return; }
+          void loadFile(nextPath, currentFolder).catch(showFailure);
+        }
+        function nextPage(cursor: string | undefined): void {
+          if (cursor === undefined) return;
+          void loadFolder(currentFolder, true, { cursor }).catch(showFailure);
+        }
+        function goToParent(parent: string): void { void loadFolder(parent).catch(showFailure); }
+        restore = (position): void => {
+          if (position.kind === "file") { void loadFile(position.path, position.parent, false).catch(showFailure); return; }
+          void loadFolder(position.path, false).catch(showFailure);
+        };
+        fileBack.addEventListener("click", () => { view.history.back(); });
+        await loadFolder(rootPrefix, false);
+        recordView(view.history, view.location, { kind: "folder", path: rootPrefix }, true);
         return;
       }
       const metadataResult = await invoke("metadata", session.resource);
@@ -112,7 +248,9 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
       const bytes = loaded.payload.bytes ?? new Uint8Array(await loaded.response.arrayBuffer());
       const mediaType = loaded.payload.mediaType ?? metadataResult.payload.metadata?.["content-type"] ?? loaded.response.headers.get("content-type") ?? "application/octet-stream";
       const etag = loaded.payload.etag ?? metadataResult.payload.etag ?? loaded.response.headers.get("etag") ?? "";
+      filePanel.hidden = false;
       await renderLoadedFile(session.resource.path, bytes, mediaType, etag);
-    })().catch((error) => { status.textContent = error instanceof Error ? error.message : "This share could not be opened."; open.disabled = false; });
+      showProgress("");
+    })().catch((error) => { showFailure(error); open.disabled = false; });
   });
 }

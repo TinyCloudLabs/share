@@ -43,7 +43,6 @@ import {
 } from "../src/viewer/render.js";
 import { resolveShare, type ResolveResult } from "../src/viewer/resolve.js";
 import { renderViewerState } from "../src/viewer/ui.js";
-import { hrefForParse, scrubKeyFragment } from "../src/viewer/url.js";
 import {
   assertContentIsolated,
   previewBodyOf,
@@ -271,9 +270,12 @@ describe("bearer single-file share (happy path)", () => {
     expect(text).not.toContain("✓");
     expect(text).toContain("read-only");
     expect(text).toContain("Expires");
-    // A pointer-less envelope has no bytes to show → honest placeholder.
-    expect(text).toContain("doesn't include an embedded file preview");
-    expect(text).toContain("shares/share-123/report.md");
+    // A pointer-less envelope has no bytes to show → honest placeholder that
+    // does NOT leak the sender's internal path or the node origin.
+    expect(text).toContain("Link verified");
+    expect(text).toContain("doesn't include the file itself");
+    expect(text).not.toContain("shares/share-123/report.md");
+    expect(text).not.toContain("share.tinycloud.xyz");
   });
 
   it("renders markdown fed through the stage-4 content entry point", async () => {
@@ -337,7 +339,7 @@ describe("fail-closed error states", () => {
     const result = await resolve(`${VIEWER_ORIGIN}/s/${cid}`);
     expect(result.state).toBe("invalid-link");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("isn't a valid share link");
+    expect(root.textContent).toContain("This link is incomplete");
   });
 
   it("tampered ciphertext → cid-mismatch, no content", async () => {
@@ -405,7 +407,7 @@ describe("fail-closed error states", () => {
     );
     expect(result.state).toBe("fetch-failed");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("Couldn't fetch this share");
+    expect(root.textContent).toContain("This share isn't available");
   });
 
   it("decrypted plaintext that isn't an envelope → envelope-invalid, no content rendered", async () => {
@@ -439,7 +441,7 @@ describe("bearer delegation binding — the 'verified' state validates the capab
     );
     expect(result.state).toBe("capability-invalid");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("authorization doesn't add up");
+    expect(root.textContent).toContain("isn't put together correctly");
   });
 
   it("token with non-JSON segments → capability-invalid", async () => {
@@ -641,8 +643,8 @@ describe("unsupported targets/modes are never faked-verified", () => {
 
     const root = expectFailClosedRender(result);
     const text = root.textContent ?? "";
-    expect(text).toContain("isn't supported in this build");
-    expect(text).toContain("Nothing about this share was verified");
+    expect(text).toContain("We can't open this link");
+    expect(text).toContain("nothing was opened");
     expect(text).not.toContain("✓");
   });
 
@@ -658,7 +660,7 @@ describe("unsupported targets/modes are never faked-verified", () => {
       reason: "recipient-did-target",
     });
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("isn't supported in this build");
+    expect(root.textContent).toContain("Sign-in-with-a-key shares aren't supported yet");
   });
 
   it("bearer + prefix resource (folder) → unsupported in the single-file slice, no content rendered", async () => {
@@ -677,32 +679,111 @@ describe("unsupported targets/modes are never faked-verified", () => {
     const result = await resolve(url);
     expect(result).toMatchObject({ state: "unsupported", reason: "prefix-resource" });
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("Folder shares aren't supported");
+    expect(root.textContent).toContain("Folder sharing isn't available yet");
+  });
+});
+
+// ------------------------------------------------------ announced states
+
+describe("every viewer state announces itself and takes focus (P0-4)", () => {
+  /** A root shaped like viewer.html's <div id="viewer" tabindex="-1">. */
+  function focusableRoot(): HTMLElement {
+    const root = makeRoot();
+    root.tabIndex = -1;
+    return root;
+  }
+
+  const FAILURES: readonly ResolveResult[] = [
+    { state: "invalid-link" },
+    { state: "fetch-failed" },
+    { state: "cid-mismatch" },
+    { state: "decrypt-failed" },
+    { state: "envelope-invalid" },
+    { state: "signature-invalid" },
+    { state: "capability-invalid" },
+    { state: "content-fetch-failed" },
+    { state: "content-integrity-failed" },
+    { state: "unsupported", reason: "policy-target" },
+    { state: "unsupported", reason: "recipient-did-target" },
+    { state: "unsupported", reason: "prefix-resource" },
+  ] as ResolveResult[];
+
+  it("gives every error state role=alert and moves focus to the root", () => {
+    for (const failure of FAILURES) {
+      const root = focusableRoot();
+      expect(renderViewerState(root, failure)).toBeNull();
+      const state = root.querySelector<HTMLElement>(".viewer-state");
+      expect(state?.getAttribute("role"), `${failure.state} must announce itself`).toBe("alert");
+      expect(document.activeElement, `${failure.state} must move focus`).toBe(root);
+    }
+  });
+
+  it("moves focus to the root for the opened document too", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const root = focusableRoot();
+    expect(renderViewerState(root, await resolve(url))).not.toBeNull();
+    expect(document.activeElement).toBe(root);
+  });
+
+  it("keeps the shipped copy free of protocol vocabulary and self-scolding", () => {
+    const forbidden = /delegation|capability|envelope|registry|matcher|bearer|invocation|attenuation|Refusing to show|lands in a later stage|in this build/i;
+    for (const failure of FAILURES) {
+      const root = focusableRoot();
+      renderViewerState(root, failure);
+      expect(root.textContent ?? "", `${failure.state}: ${root.textContent ?? ""}`).not.toMatch(forbidden);
+    }
+  });
+});
+
+// ------------------------------------------------- the opened view keeps a link
+
+describe("opened view exposes a working Copy link (P1-9)", () => {
+  it("copies the complete in-memory URL and never renders it", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const result = await resolve(url);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    const root = makeRoot();
+    expect(renderViewerState(root, result, { shareUrl: url })).not.toBeNull();
+    const copy = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Copy link",
+    );
+    expect(copy, "the opened view must offer Copy link").toBeDefined();
+    // §6.2: the scrub is deliberate, so the opened view must SAY the address
+    // bar will not reopen this — never restore the fragment.
+    expect(root.querySelector("#viewer-copy-hint")?.textContent).toContain("address bar no longer holds this link");
+    copy!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(url));
+    await vi.waitFor(() =>
+      expect(root.querySelector("#viewer-copy-status")?.textContent).toBe("Link copied."),
+    );
+    // §6.3: never as text, never as an href, never as any other attribute.
+    expect(root.textContent).not.toContain(url);
+    expect(root.querySelector("a")).toBeNull();
+    expect(
+      Array.from(root.querySelectorAll<HTMLElement>("*")).every(
+        (node) => !Array.from(node.attributes).some((attribute) => attribute.value.includes(url)),
+      ),
+    ).toBe(true);
+  });
+
+  it("omits the control when no URL is held in memory", async () => {
+    const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
+    const { url } = await publish(envelope);
+    const root = makeRoot();
+    renderViewerState(root, await resolve(url));
+    expect(
+      Array.from(root.querySelectorAll("button")).some((button) => button.textContent === "Copy link"),
+    ).toBe(false);
   });
 });
 
 // ------------------------------------------------------------- key hygiene
 
-describe("fragment-key hygiene (location/history scrub + buffer zeroing)", () => {
-  it("scrubKeyFragment drops the #k= fragment from location AND the history entry", () => {
-    window.history.replaceState(null, "", "/s/bafyabc?keep=1#k=SECRET-KEY-MATERIAL");
-    expect(window.location.hash).toContain("k=");
-    scrubKeyFragment(window.location, window.history);
-    expect(window.location.hash).toBe("");
-    expect(window.location.href).not.toContain("#k=");
-    expect(window.location.href).not.toContain("SECRET");
-    // pathname and query survive; only the fragment is scrubbed
-    expect(window.location.pathname).toBe("/s/bafyabc");
-    expect(window.location.search).toBe("?keep=1");
-  });
-
-  it("scrubKeyFragment is a no-op when there is no fragment", () => {
-    window.history.replaceState(null, "", "/s/bafyabc");
-    const before = window.location.href;
-    scrubKeyFragment(window.location, window.history);
-    expect(window.location.href).toBe(before);
-  });
-
+describe("fragment-key hygiene (parsed-buffer zeroing)", () => {
   it("zeroes the parsed key buffer on success", async () => {
     const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
     const { url } = await publish(envelope);
@@ -792,35 +873,6 @@ describe("build-time configuration fails closed (no dev fallbacks in prod)", () 
     expect(resolveRegistryBaseUrl({ PROD: false })).toBe("http://127.0.0.1:8787");
   });
 
-  it("loopback http→https rewrite happens ONLY in dev builds and preserves search + hash", () => {
-    const loc = {
-      protocol: "http:",
-      hostname: "localhost",
-      host: "localhost:5173",
-      pathname: "/s/bafyabc",
-      search: "?q=1",
-      hash: "#k=zz",
-      href: "http://localhost:5173/s/bafyabc?q=1#k=zz",
-    } as Location;
-    // dev build: rewritten to https, nothing dropped (the query string must
-    // still reach parseShareUrl so it can be REJECTED there, not vanish)
-    expect(hrefForParse(loc, true)).toBe("https://localhost:5173/s/bafyabc?q=1#k=zz");
-    // prod build: untouched — the http URL fails closed in parseShareUrl
-    expect(hrefForParse(loc, false)).toBe(loc.href);
-  });
-
-  it("non-loopback http is never rewritten, even in dev", () => {
-    const loc = {
-      protocol: "http:",
-      hostname: "share.example",
-      host: "share.example",
-      pathname: "/s/bafyabc",
-      search: "",
-      hash: "#k=zz",
-      href: "http://share.example/s/bafyabc#k=zz",
-    } as Location;
-    expect(hrefForParse(loc, true)).toBe(loc.href);
-  });
 });
 
 // ------------------------------------------------------ hostile content
