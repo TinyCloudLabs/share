@@ -353,6 +353,7 @@ async function main(): Promise<Json> {
       nodeOrigin,
       credentialsOrigin: credentialOrigin,
       nodeAudience,
+      enforcerDid: nodeAudience,
       nodeEnabled: true,
       issuerDid: "did:web:issuer.credentials.org",
       issuerVct: "opencredentials.email/v1",

@@ -30,10 +30,14 @@ export interface SenderHistoryRecord {
   readonly recipient: SenderHistoryRecipient;
   readonly actions: readonly ("read" | "list" | "edit")[];
   readonly urlDigest: string;
+  /** The owner delegation CID backing this share, or null for bearer (possession-only) links that carry no revocable delegation. Reload-safe revoke uses this. */
+  readonly delegationCid: string | null;
+  /** Set once the node has confirmed this share's delegation is revoked. Persisted so a page reload still shows the revoked state. */
+  readonly revokedAt: string | null;
 }
 
 export type SenderHistoryItem =
-  | { readonly state: "ready" | "expired"; readonly key: string; readonly record: SenderHistoryRecord }
+  | { readonly state: "ready" | "expired" | "revoked"; readonly key: string; readonly record: SenderHistoryRecord }
   | { readonly state: "needs-attention"; readonly key: string; readonly reason: "corrupt" | "undecryptable" | "unsupported" };
 
 export interface SenderHistoryPage {
@@ -62,7 +66,7 @@ function validateUrl(value: unknown): string {
   if (new TextEncoder().encode(url).byteLength > MAX_URL_BYTES) return fail();
   let parsed: URL;
   try { parsed = new URL(url); } catch { return fail(); }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return fail();
+  if (parsed.protocol !== "https:") return fail();
   if (parsed.username || parsed.password || parsed.search !== "" || parsed.hash === "") return fail();
   if (parsed.pathname === "/s/inline") {
     if (!INLINE_HASH_RE.test(parsed.hash) || new TextEncoder().encode(parsed.hash).byteLength > MAX_INLINE_HASH_BYTES) return fail();
@@ -75,7 +79,7 @@ function validateUrl(value: unknown): string {
 export function validateSenderHistoryRecord(value: unknown): SenderHistoryRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return fail();
   const input = value as Record<string, unknown>;
-  const expected = ["type", "version", "id", "url", "cid", "format", "createdAt", "expiresAt", "name", "mediaType", "sourceKind", "recipient", "actions", "urlDigest"];
+  const expected = ["type", "version", "id", "url", "cid", "format", "createdAt", "expiresAt", "name", "mediaType", "sourceKind", "recipient", "actions", "urlDigest", "delegationCid", "revokedAt"];
   if (Object.keys(input).some((key) => !expected.includes(key)) || expected.some((key) => !Object.hasOwn(input, key))) return fail();
   if (input.type !== "TinyCloudShareSenderHistory" || input.version !== 1 || typeof input.id !== "string" || !ID_RE.test(input.id)) return fail();
   const url = validateUrl(input.url);
@@ -96,7 +100,9 @@ export function validateSenderHistoryRecord(value: unknown): SenderHistoryRecord
   } else return fail();
   if (!Array.isArray(input.actions) || input.actions.length === 0 || input.actions.some((action) => action !== "read" && action !== "list" && action !== "edit") || new Set(input.actions).size !== input.actions.length) return fail();
   if (typeof input.urlDigest !== "string" || !DIGEST_RE.test(input.urlDigest)) return fail();
-  const record = { ...input, url, createdAt, expiresAt, name, mediaType, recipient: { ...recipient }, actions: [...input.actions], id: input.id, cid: input.cid, format: input.format, sourceKind: input.sourceKind, urlDigest: input.urlDigest } as unknown as SenderHistoryRecord;
+  if (input.delegationCid !== null && (typeof input.delegationCid !== "string" || input.delegationCid.length === 0 || input.delegationCid.length > 200)) return fail();
+  if (input.revokedAt !== null) canonicalTimestamp(input.revokedAt);
+  const record = { ...input, url, createdAt, expiresAt, name, mediaType, recipient: { ...recipient }, actions: [...input.actions], id: input.id, cid: input.cid, format: input.format, sourceKind: input.sourceKind, urlDigest: input.urlDigest, delegationCid: input.delegationCid, revokedAt: input.revokedAt } as unknown as SenderHistoryRecord;
   if (new TextEncoder().encode(canonicalize(record)).byteLength > MAX_RECORD_BYTES) return fail();
   return record;
 }
@@ -143,6 +149,11 @@ export class SenderHistoryRepository {
     if (!result.ok) throw new Error("sender-history-remove-failed");
   }
 
+  /** Persists the node's confirmed revocation so a reload still shows this share as revoked. Call only after the node has accepted the revocation. */
+  async markRevoked(record: SenderHistoryRecord): Promise<void> {
+    await this.save({ ...record, revokedAt: new Date(this.now()).toISOString() });
+  }
+
   async page(cursor?: string, limit = 25): Promise<SenderHistoryPage> {
     const vault = this.vault as unknown as {
       listPage?: (options: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => Promise<{ ok: boolean; data?: { keys: string[]; truncated: boolean; nextCursor?: string } }>;
@@ -180,7 +191,7 @@ export class SenderHistoryRepository {
         const record = validateSenderHistoryRecord(value);
         if (seenDigests.has(record.urlDigest)) continue;
         seenDigests.add(record.urlDigest);
-        items.push({ key, record, state: Date.parse(record.expiresAt) <= this.now() ? "expired" : "ready" });
+        items.push({ key, record, state: record.revokedAt !== null ? "revoked" : Date.parse(record.expiresAt) <= this.now() ? "expired" : "ready" });
       } catch {
         items.push({ key, state: "needs-attention", reason: "unsupported" });
       }

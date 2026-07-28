@@ -14,19 +14,32 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer as httpServer } from "node:http";
-import { createConnection } from "node:net";
+import { createConnection, createServer as netServer } from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { privateKeyToAccount } from "viem/accounts";
+import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
+import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
+import { buildShareBrowserBuildEnv } from "./share-browser-build-env.mjs";
+import { verifyReleaseInputRepository } from "./preflight.mjs";
+import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
+import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
+import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
+import { buildDstackResponsePayload, ed25519PublicKey, parseDstackRequest, formatHttpResponse } from "./dstack-issuer.mjs";
+import { nodeEnforcerAudienceFromTrustBundle } from "./node-enforcer-audience.mjs";
+import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
+import { safeFailedTelemetry } from "./failure-diagnostic.mjs";
+import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-experience-e2e");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-experience-e2e");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-production-live");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-production-live");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const artifactPath = join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
 const lockPath = join(tmpdir(), "tinycloud-sharing-e2e.lock");
@@ -36,34 +49,36 @@ const canonical = Object.freeze({
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
-// The mounted Node fixture's policy owner is the secp256k1 key made from 32
-// bytes of 0x55. Using that same deterministic account makes the real Share
-// OpenKey session own the capability material published by the fixture.
 const walletPrivateKey = `0x${"55".repeat(32)}`;
-const issuerPublicKey = "Ivwpd5Lwtv_Av8_bftsMCqFOAlo2XsDjQuhuOCnLdLY";
-const issuerSecret = JSON.stringify({ kty: "OKP", crv: "Ed25519", x: "KN2IoJYLuoxXahdaAVOhhdnOjnRZ1S_deGwfdLsYmHg", d: "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M" });
+const issuerSeed = Buffer.alloc(32, 0x47);
+const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
 const children = [];
+const ownedPgids = new Set();
 const servers = [];
 const checks = [];
 const blockers = [];
 const flowAudits = [];
 const serverTraceIds = [];
+const launchInputDigests = {};
 const gateResults = { exactEmail: false, domain: false, bearer: false, editConflict: false, folder: false, notification: false, denialMatrix: false, senderLibrary: false, browser: false };
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
+const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
+let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
 let lockHeld = false;
 let cleanupStarted = false;
 
 const AGENT_TIMEOUT_MS = 60_000;
-const CHILD_TIMEOUT_MS = 120_000;
+const CHILD_TIMEOUT_MS = 600_000;
 
 function featureProcess(pid) {
   try {
     const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-    return command.includes("test/e2e-sharing") && command.includes("sharing-experience-e2e");
+    return command.includes("test/e2e-sharing") && command.includes("sharing-production-live");
   } catch { return false; }
 }
 
@@ -91,12 +106,16 @@ async function releaseLock() {
 
 function b64(value) { return Buffer.from(value).toString("base64url"); }
 function sha256(value) { return createHash("sha256").update(value).digest("base64url"); }
+async function recordArtifactDigest(name, path) {
+  const bytes = await readFile(path);
+  launchInputDigests[name] = { path, digest: createHash("sha256").update(bytes).digest("hex") };
+}
 function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
 }
-function fakeTrustBundle(nodePublicKey = "A".repeat(43)) {
+function trustBundleFromRuntime(nodePublicKey) {
   return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
 }
 async function freePort() {
@@ -113,7 +132,7 @@ async function loopback(label, handler) {
   await once(server, "listening");
   servers.push(server);
   const port = server.address().port;
-  checks.push(`${label} fixture listening on 127.0.0.1:${port}.`);
+  checks.push(`${label} test service listening on 127.0.0.1:${port}.`);
   return `http://127.0.0.1:${port}`;
 }
 function run(command, args, cwd, env = {}) {
@@ -122,7 +141,34 @@ function run(command, args, cwd, env = {}) {
   const collect = (chunk) => { output += String(chunk); if (output.length > 32_000) output = output.slice(-32_000); };
   child.stdout.on("data", collect); child.stderr.on("data", collect);
   children.push({ child, output: () => output });
+  if (typeof child.pid === "number") ownedPgids.add(child.pid);
   return child;
+}
+
+async function assertReleaseInputs() {
+  const repositories = [
+    { name: "share", path: shareRoot, branch: "feat/sharing-production-live", pr: "27" },
+    { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
+    { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
+    { name: "js-sdk", path: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"), branch: "feat/sharing-production-live", pr: "361" },
+  ];
+  for (const repository of repositories) {
+    const { head, digest } = await verifyReleaseInputRepository(repository, { localUnpushedMode });
+    launchInputDigests[repository.name] = { head, digest };
+  }
+  const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
+  await runOnce("bun", ["run", "build"], sdkRoot);
+  const sdkLinkStat = await lstat(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
+  if (!sdkLinkStat.isSymbolicLink()) throw new Error("Share web-sdk dependency must be a symlink to the exact js-sdk worktree");
+  const linkedWebSdk = realpathSync(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
+  const expectedWebSdk = realpathSync(join(sdkRoot, "packages/web-sdk"));
+  if (linkedWebSdk !== expectedWebSdk) throw new Error("Share web-sdk node_modules link is stale");
+  await stat(join(expectedWebSdk, "dist/index.mjs"));
+  launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
+  if (!localUnpushedMode) releaseInputsVerified = true;
+  checks.push(localUnpushedMode
+    ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
+    : `Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
 async function waitFor(url, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
@@ -198,13 +244,52 @@ function agent(args) {
 function walletBootstrap(walletOrigin) {
   return `(function () {\n    var address = ${JSON.stringify(wallet.address)};\n    var provider = {\n      selectedAddress: address, chainId: "0x1",\n      request: async function (input) {\n        var method = input.method;\n        if (method === "eth_accounts" || method === "eth_requestAccounts") return [address];\n        if (method === "eth_chainId") return "0x1";\n        if (method === "wallet_getPermissions" || method === "wallet_requestPermissions") return [{ parentCapability: "eth_accounts" }];\n        if (method === "personal_sign") {\n          var params = input.params || [];\n          var raw = String(params.length > 0 ? params[0] : "");\n          var hex = raw.indexOf("0x") === 0 ? raw.slice(2) : null;\n          var octets = hex === null ? [] : (hex.match(/.{1,2}/g) || []).map(function (value) { return parseInt(value, 16); });\n          var message = hex === null ? raw : new TextDecoder().decode(new Uint8Array(octets));\n          var response = await fetch(${JSON.stringify(walletOrigin + "/sign")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: message }) });\n          if (!response.ok) throw new Error("deterministic wallet refused the signing request");\n          return (await response.json()).signature;\n        }\n        return null;\n      }, on: function () { return provider; }, removeListener: function () { return provider; }, isConnected: function () { return true; }\n    };\n    var announce = function () { window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider: provider } })); };\n    window.ethereum = provider;\n    window.addEventListener("eip6963:requestProvider", announce); announce();\n  })()`;
 }
-const openKeyWidget = `<!doctype html><meta charset="utf-8"><script>parent.postMessage({type:"openkey:ready"},"*");setTimeout(()=>parent.postMessage({type:"openkey:auth:use-external-wallet"},"*"),0);addEventListener("message",e=>{if(e.data&&e.data.type==="openkey:auth:request")parent.postMessage({type:"openkey:auth:use-external-wallet"},"*")});</script>`;
+function walletBootstrapScript(walletOrigin) {
+  return `(function () {
+    var address = ${JSON.stringify(wallet.address)};
+    var provider = {
+      selectedAddress: address,
+      chainId: "0x1",
+      request: async function (input) {
+        var method = input.method;
+        if (method === "eth_accounts" || method === "eth_requestAccounts") return [address];
+        if (method === "eth_chainId") return "0x1";
+        if (method === "wallet_getPermissions" || method === "wallet_requestPermissions") return [{ parentCapability: "eth_accounts" }];
+        if (method === "personal_sign") {
+          var raw = String((input.params || [])[0] || "");
+          var hex = raw.indexOf("0x") === 0 ? raw.slice(2) : null;
+          var bytes = hex === null ? [] : (hex.match(/.{1,2}/g) || []).map(function (value) { return parseInt(value, 16); });
+          var message = hex === null ? raw : new TextDecoder().decode(new Uint8Array(bytes));
+          var response = await fetch(${JSON.stringify(walletOrigin + "/sign")}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: message }) });
+          if (!response.ok) throw new Error("deterministic wallet refused the signing request");
+          return (await response.json()).signature;
+        }
+        return null;
+      },
+      on: function () { return provider; },
+      removeListener: function () { return provider; },
+      isConnected: function () { return true; }
+    };
+    var announced = false;
+    var announce = function () {
+      if (announced) return;
+      announced = true;
+      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: {
+        info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" },
+        provider: provider
+    } }));
+    };
+    Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
+    window.addEventListener("eip6963:requestProvider", announce);
+    setTimeout(announce, 10000);
+  })()`;
+}
 
 async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
     if (request.url !== "/sign") { response.writeHead(404).end(); return; }
     const caller = request.headers.origin;
-    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", vary: "Origin" } : {};
+    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
     if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
     if (request.method !== "POST") { response.writeHead(405, cors).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => { try { const body = JSON.parse(Buffer.concat(chunks).toString()); const signature = await wallet.signMessage({ message: body.message }); response.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ address: wallet.address, signature })); } catch { response.writeHead(400, cors).end(); } });
@@ -272,102 +357,155 @@ async function startFixtures(tempRoot) {
   const postgresData = join(tempRoot, "postgres");
   const postgresPort = await freePort();
   await runOnce("/opt/homebrew/opt/postgresql@16/bin/initdb", ["-D", postgresData, "-A", "trust", "-U", "samgbafa"], shareRoot, { LC_ALL: "C" });
-  run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1", "-p", String(postgresPort)], shareRoot, { PGUSER: "samgbafa" });
+  const postgresTlsDir = join(tempRoot, "postgres-tls");
+  await mkdir(postgresTlsDir, { recursive: true });
+  const postgresCaKeyPath = join(postgresTlsDir, "ca.key");
+  const postgresCaCertPath = join(postgresTlsDir, "ca.pem");
+  const postgresServerKeyPath = join(postgresTlsDir, "server.key");
+  const postgresServerCsrPath = join(postgresTlsDir, "server.csr");
+  const postgresServerCertPath = join(postgresTlsDir, "server.crt");
+  const postgresServerExtPath = join(postgresTlsDir, "server.ext");
+  await runOnce("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresCaKeyPath, "-out", postgresCaCertPath, "-days", "1", "-subj", "/CN=sharing-e2e-harness-ca", "-addext", "basicConstraints=critical,CA:true"], postgresTlsDir);
+  await runOnce("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresServerKeyPath, "-out", postgresServerCsrPath, "-subj", `/CN=${POSTGRES_TLS_HOSTNAME}`], postgresTlsDir);
+  await writeFile(postgresServerExtPath, postgresServerCertExtensionFile(), { flag: "wx" });
+  await runOnce("openssl", ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
+  await chmod(postgresServerKeyPath, 0o600);
+  run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: "samgbafa" });
   await waitForTcp(postgresPort);
-  checks.push(`hermetic Postgres persistence started on 127.0.0.1:${postgresPort}.`);
+  const postgresUrl = postgresConnectionUrl({ user: "samgbafa", host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
+  checks.push(`hermetic verify-full TLS Postgres persistence started on ${POSTGRES_TLS_HOSTNAME}:${postgresPort}.`);
 
-  const nodeDescriptorPath = join(tempRoot, "node.json");
-  const node = run("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublicKey, "--keys-secret", Buffer.alloc(32, 9).toString("base64url")], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: Buffer.alloc(32, 9).toString("base64url") });
-  const nodeDescriptor = await descriptor(nodeDescriptorPath, node, "production Node");
-  checks.push(`real Node production router/persistence started at ${nodeDescriptor.url}.`);
+  const nodePort = await freePort();
+  const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
+  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
+  const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
+  // Export the public invitation descriptor before launch (it only needs the
+  // key material, not a running server) so the canonical trust bundle can be
+  // written to disk and handed to Node's own boot via
+  // TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH, instead of trusting the node
+  // to describe itself after the fact. The exporter reports its own
+  // deployment audience (e.g. did:web:tee.node.tinycloud.xyz), which can
+  // differ from the audience actually enrolled in the trust bundle below —
+  // only nodeInvitationPublicKey is taken from it; the enforcer DID is
+  // always read back from the trust bundle Node was actually launched with.
+  const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
+  const nodePublic = JSON.parse(nodeDescriptorJson);
+  const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
+  const nodeTrustBundleJson = trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey);
+  await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
+  const nodeOrigin = `http://127.0.0.1:${nodePort}`;
+  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
+  const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
+  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
+  await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
+  checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
+  const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
+  const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
+  if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) {
+    throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
+  }
+  checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
-  const credentialsPort = await freePort();
-  const credentials = run("cargo", ["run", "--quiet", "--manifest-path", credentialsManifest, "--features", "email-claim-fixture", "--bin", "opencredentials-witness"], credentialsRoot, {
-    TMPDIR: tempRoot,
-    BIND_ADDR: `127.0.0.1:${credentialsPort}`, CORS_ALLOWED_ORIGINS: canonical.share, DID_WEB: "did:web:issuer.credentials.org", OPENCREDENTIALS_SK: issuerSecret,
-    SHARE_EMAIL_CAPABILITY: "true", SHARE_HERMETIC_COMPOSITION: "true", EMAIL_CLAIM_FIXTURE_DATABASE_URL: `postgres://127.0.0.1:${postgresPort}/postgres?sslmode=disable`, SHARE_EMAIL_RESEND_ENDPOINT: `${mail}/emails`,
-    SHARE_EMAIL_TRUSTED_NODE_ORIGIN: canonical.node, SHARE_EMAIL_TRUSTED_NODE_AUDIENCE: "did:web:node.tinycloud.xyz", SHARE_EMAIL_TRUSTED_NODE_KID: "did:web:node.tinycloud.xyz#invitation-key-1", SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY: nodeDescriptor.trustedNode?.invitationPublicKey ?? "A".repeat(43),
-    SHARE_EMAIL_TRUST_BUNDLE_JSON: fakeTrustBundle(nodeDescriptor.trustedNode?.invitationPublicKey), SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "hermetic-provider-key", RESEND_WEBHOOK_SECRET: "hermetic-webhook",
+  const readinessFile = join(tempRoot, "share-email-readiness.json");
+  const migrationsDir = join(credentialsRoot, "deploy/share-email/migrations");
+  const migrationEnv = buildMigrationEnv({ postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile });
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, migrationEnv);
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/readiness-check.sh"), [], credentialsRoot, migrationEnv);
+  checks.push(`share-email durable-postgres migrations applied and readiness-check.sh passed against ${migrationsDir}.`);
+
+  const dstackSocketPath = join(tempRoot, "dstack.sock");
+  const dstackServer = netServer((socket) => {
+    let buffered = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const parsed = parseDstackRequest(buffered);
+      if (parsed === undefined) return;
+      socket.end(formatHttpResponse(buildDstackResponsePayload(parsed.path, parsed.body, issuerSeed) ?? {}));
+    });
   });
+  dstackServer.listen(dstackSocketPath);
+  await once(dstackServer, "listening");
+  servers.push(dstackServer);
+  checks.push(`harness-owned dstack Unix-socket simulator listening at ${dstackSocketPath}.`);
+
+  await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
+  const credentialsBinaryPath = join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness");
+  const credentialsPort = await freePort();
+  const credentialsTrustBundleJson = trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey);
+  assert.equal(
+    JSON.parse(credentialsTrustBundleJson).issuerPublicKey,
+    JSON.parse(nodeTrustBundleJson).issuerPublicKey,
+    "OpenCredentials trust bundle issuer key must equal the canonical Node trust bundle key",
+  );
+  assert.equal(
+    JSON.parse(credentialsTrustBundleJson).nodeAudience,
+    nodeDescriptor.nodeId,
+    "OpenCredentials trust bundle nodeAudience must equal the canonical enrolled Node enforcer audience",
+  );
+  const credentialsLaunchEnv = buildCredentialsLaunchEnv({
+    tempRoot, credentialsPort, corsOrigin: canonical.share, dstackSocket: dstackSocketPath, didWeb: "did:web:issuer.credentials.org",
+    trustBundleJson: credentialsTrustBundleJson, shareUrl: canonical.share, resendApiKey: `re_${"a".repeat(32)}`, resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
+    postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
+  });
+  const credentials = run(credentialsBinaryPath, [], credentialsRoot, credentialsLaunchEnv);
   const credentialsOrigin = `http://127.0.0.1:${credentialsPort}`;
-  await waitFor(`${credentialsOrigin}/share-email/readiness`, 30_000);
-  checks.push(`real OpenCredentials production router/store started at ${credentialsOrigin}.`);
+  await recordArtifactDigest("openCredentialsRuntime", credentialsBinaryPath);
+  const credentialsCapabilityId = "tinycloud.share-email-claim";
+  const credentialsDeadline = Date.now() + 60_000;
+  let credentialsReady = false;
+  while (Date.now() < credentialsDeadline) {
+    try {
+      const response = await fetch(`${credentialsOrigin}/share-email/readiness`);
+      const body = await response.json().catch(() => null);
+      assertCredentialsReadinessBody(response.status, body, credentialsCapabilityId);
+      credentialsReady = true;
+      break;
+    } catch {}
+    if (credentials.exitCode !== null) break;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  if (!credentialsReady) {
+    const rawOutput = children.find((entry) => entry.child === credentials)?.output() ?? "";
+    throw new Error(`OpenCredentials readiness did not become ready: ${redactSecrets(rawOutput.slice(-4000), [credentialsLaunchEnv.RESEND_API_KEY, credentialsLaunchEnv.RESEND_WEBHOOK_SECRET])}`);
+  }
+  checks.push(`real OpenCredentials production router/store (dstack-derived issuer key, durable verify-full Postgres) started at ${credentialsOrigin}.`);
   return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, mailOrigin: mail, mailMessages, mailReplays };
 }
 
-function senderCapabilityForFixture(fixture) {
-  if (fixture === undefined) throw new Error("mounted Node fixture did not publish a KV sharing case");
-  const policyBytes = canonicalJson(fixture.policy);
-  const policy = {
-    action: fixture.source.action,
-    authorityMaterialDigest: fixture.authorityMaterialDigest,
-    contentSourceDigest: fixture.expectedContentSourceDigest,
-    delegationCid: fixture.delegationCid,
-    expiresAt: fixture.expiresAt,
-    policyAuthorityBytes: fixture.authorityMaterial.policyAuthorityBytes,
-    policyAuthorityCid: fixture.authorityMaterial.policyAuthorityCid,
-    policyBytes: b64(policyBytes),
-    policyDigest: sha256(policyBytes),
-    policyEnforcementBytes: fixture.authorityMaterial.policyEnforcementBytes,
-    policyEnforcementCid: fixture.authorityMaterial.policyEnforcementCid,
-    policyCid: fixture.policyCid,
-    recipientEmail: fixture.expectedRecipientEmail,
-    resource: fixture.source.path,
-    source: fixture.source,
-    target: { origin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", spaceId: fixture.source.space },
-  };
-  return JSON.stringify({
-    scope: {
-      policyOwnerDid: fixture.policyOwnerDid,
-      senderDid: fixture.senderDid,
-      targetOrigin: canonical.node,
-      nodeAudience: "did:web:node.tinycloud.xyz",
-      spaceId: fixture.source.space,
-      delegation: fixture.delegation,
-      delegationCid: fixture.delegationCid,
-      authorityMaterialHandle: fixture.authorityMaterialHandle,
-      authorityMaterialDigest: fixture.authorityMaterialDigest,
-      documentName: fixture.documentName,
-      senderTrust: "verified",
-      trustedNode: fixture.trustedNode,
-      expiryMin: fixture.expiresAt,
-      expiryMax: fixture.expiresAt,
-      expiresAt: fixture.expiresAt,
-      actions: fixture.kind === "kv-domain" ? ["tinycloud.kv/get"] : ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"],
-      prefixes: fixture.kind === "kv-folder-domain" ? ["documents"] : [],
-      resources: fixture.kind === "kv-folder-domain" ? [{ kind: "prefix", path: "documents/" }] : [{ kind: "exact", path: fixture.source.path }],
-      authorityMaterial: fixture.authorityMaterial,
-    },
-    source: fixture.source,
-    policy,
-  });
-}
-
-function senderCapability(nodeDescriptor) {
-  return senderCapabilityForFixture(nodeDescriptor.cases?.find((entry) => entry.kind === "kv"));
-}
-
-function senderCapabilities(nodeDescriptor) {
-  const cases = (nodeDescriptor.cases ?? []).filter((entry) => entry.kind === "kv" || entry.kind === "kv-domain" || entry.kind === "kv-folder-domain");
-  if (cases.length < 3) throw new Error("mounted Node fixture did not publish exact, domain, and folder KV sharing cases");
-  return JSON.stringify(cases.map(senderCapabilityForFixture));
-}
-
 async function startShare(tempRoot, fixtures) {
+  const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live");
+  const sdkLink = join(shareRoot, "node_modules/@tinycloud/web-sdk");
+  const sdkLinkStat = await lstat(sdkLink);
+  const resolvedSdkLink = await realpath(sdkLink);
+  const expectedSdkLink = await realpath(join(sdkRoot, "packages/web-sdk"));
+  if (!sdkLinkStat.isSymbolicLink() || resolvedSdkLink !== expectedSdkLink) throw new Error("Share @tinycloud/web-sdk must resolve to the exact js-sdk worktree");
+  await runOnce("npm", ["run", "build"], sdkRoot);
+  await stat(join(expectedSdkLink, "dist/index.mjs"));
+  await recordArtifactDigest("jsSdkWebRuntime", join(expectedSdkLink, "dist/index.mjs"));
+  checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
-  const bindingPath = join(tempRoot, "bindings.ndjson");
   const registryKey = Buffer.alloc(32, 7).toString("base64url");
   const origin = `http://127.0.0.1:${port}`;
-  await writeFile(trustPath, fakeTrustBundle(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey ?? "A".repeat(43)), { flag: "wx" });
+  const shareTrustBundleJson = trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey);
+  assert.equal(
+    JSON.parse(shareTrustBundleJson).nodeAudience,
+    fixtures.nodeDescriptor.nodeId,
+    "Share trust bundle nodeAudience must equal the canonical enrolled Node enforcer audience used for SHARE_NODE_ENFORCER_DID",
+  );
+  await writeFile(trustPath, shareTrustBundleJson, { flag: "wx" });
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
-  await runOnce("npm", ["run", "build"], shareRoot, { VITE_OPENKEY_ORIGIN: fixtures.openKeyOrigin, VITE_SHARE_ORIGIN: canonical.share, VITE_SHARE_REGISTRY_URL: `${origin}/registry`, VITE_SHARE_HERMETIC: "true" });
-  const share = run("npm", ["run", "start:deploy"], shareRoot, {
-    HOST: "127.0.0.1", PORT: String(port), SHARE_TRUST_BUNDLE_FILE: trustPath, SHARE_SENDER_ENABLED: "true", SHARE_SENDER_PRIVATE_KEY: Buffer.alloc(32, 0x44).toString("base64url"), SHARE_SENDER_CAPABILITIES_JSON: senderCapabilities(fixtures.nodeDescriptor), SHARE_BINDING_STORE_PATH: bindingPath, SHARE_REGISTRY_UPLOAD_KEY_PATH: join(tempRoot, "registry-upload.key"),
-    SHARE_HERMETIC_COMPOSITION: "true", SHARE_HERMETIC_OPENKEY_ORIGIN: fixtures.openKeyOrigin, SHARE_HERMETIC_WALLET_ORIGIN: fixtures.walletOrigin, SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: fixtures.nodeOrigin }, credentials: { origin: canonical.credentials, transportOrigin: fixtures.credentialsOrigin ?? "http://127.0.0.1:9" }, registry: { origin: canonical.registry, transportOrigin: fixtures.registryOrigin } }), SHARE_E2E_MAIL_CAPTURE_ORIGIN: fixtures.mailOrigin,
-  });
+  await runOnce("npm", ["run", "build"], shareRoot, buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin));
+  const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
+  if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
+  await recordArtifactDigest("shareBundle", shareAsset);
+  const share = run("npm", ["run", "start:deploy"], shareRoot, buildShareHostLaunchEnv({
+    host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.nodeId,
+    openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
+  }));
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
@@ -379,7 +517,13 @@ function networkEntries(value) {
 }
 
 async function installBrowserTelemetry() {
-  await agent(["eval", `(function(){if(window.__tinycloudTelemetryInstalled)return;var original=window.fetch;var nodeOrigin=${JSON.stringify(canonical.node)};var credentialsOrigin=${JSON.stringify(canonical.credentials)};window.__tinycloudTelemetry=[];window.__tinycloudTelemetryInstalled=true;window.fetch=async function(input,init){var url=typeof input==='string'?input:(input&&input.url)||(input&&input.href)||String(input);var method=(init&&init.method)||((typeof input!=='string'&&input&&input.method)||'GET');var browserTraceId=crypto.randomUUID();var routed=url;var requestBodyPromise=method==='POST'&&input&&typeof input.clone==='function'?input.clone().text().catch(function(){return ''; }):Promise.resolve(typeof init?.body==='string'?init.body:'');if(url.indexOf(nodeOrigin)===0||url.indexOf(credentialsOrigin)===0){var parsed=new URL(url);parsed.protocol=window.location.protocol;parsed.host=window.location.host;routed=parsed.toString();}try{var response=await original.apply(window,[routed,init]);var item={url:routed,method:method,status:response.status,requestId:browserTraceId,serverTraceId:response.headers.get('x-tinycloud-trace-id')};if(method==='POST'&&routed.endsWith('/invoke')){var bodyText=await requestBodyPromise;item.requestSpaces=[...new Set(bodyText.match(/tinycloud:[^\"' ]+/g)||[])];}if((!response.ok&&method==='POST')||(method==='POST'&&routed.endsWith('/delegate'))||(method==='POST'&&routed.endsWith('/invoke'))){try{var clone=response.clone();var text=await clone.text();if(routed.endsWith('/delegate'))item.responseBody=text.slice(0,1200);if(routed.endsWith('/invoke')){item.responseContentType=response.headers.get('content-type');item.responseBodyLength=text.length;item.responseBodyPreview=text.slice(0,240);}try{item.errorCode=JSON.parse(text).error?.code||null;}catch{item.errorCode=null;if(!response.ok)item.errorBody=text.slice(0,500);}}catch{item.errorCode=null;}}window.__tinycloudTelemetry.push(item);return response;}catch(error){window.__tinycloudTelemetry.push({url:routed,method:method,status:0,requestId:browserTraceId});throw error;}};})()`]);
+  // The routing/Request-semantics logic below is not reimplemented here: it
+  // is injected verbatim (via Function.prototype.toString()) from
+  // routeTelemetryFetchArgs, which is unit tested directly in Node against
+  // the same fetch/Request/Headers/URL globals the browser provides.
+  const routeTelemetryFetchArgsSource = routeTelemetryFetchArgs.toString();
+  const normalizeTelemetryFetchArgsSource = normalizeTelemetryFetchArgs.toString();
+  await agent(["eval", `(function(){if(window.__tinycloudTelemetryInstalled)return;var original=window.fetch;var nodeOrigin=${JSON.stringify(canonical.node)};var credentialsOrigin=${JSON.stringify(canonical.credentials)};var routeTelemetryFetchArgs=${routeTelemetryFetchArgsSource};var normalizeTelemetryFetchArgs=${normalizeTelemetryFetchArgsSource};window.__tinycloudTelemetry=[];window.__tinycloudTelemetryInstalled=true;window.fetch=async function(input,init){var fetchStartTime=performance.now();var isRequestInput=typeof Request!=='undefined'&&input instanceof Request;var method=isRequestInput?(init&&init.method)||input.method:(init&&init.method)||'GET';var browserTraceId=crypto.randomUUID();var requestBodyPromise=method==='POST'&&input&&typeof input.clone==='function'?input.clone().text().catch(function(){return ''; }):Promise.resolve(typeof init?.body==='string'?init.body:'');var routedResult=routeTelemetryFetchArgs(input,init,{nodeOrigin:nodeOrigin,credentialsOrigin:credentialsOrigin,currentOrigin:window.location.origin});var routed=routedResult.url;var normalized=normalizeTelemetryFetchArgs(routedResult.fetchArgs);var delegateByteLength=0;var delegateDigest=null;var delegateDigestAvailable=false;if(method==='POST'&&routed.endsWith('/delegate')){try{var delegateArrayBuf=await normalized.request.clone().arrayBuffer();var delegateBytes=new Uint8Array(delegateArrayBuf);delegateByteLength=delegateBytes.byteLength;if(delegateByteLength>0){var delegateHashBuf=await crypto.subtle.digest('SHA-256',delegateBytes);delegateDigest=Array.from(new Uint8Array(delegateHashBuf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');delegateDigestAvailable=true;}}catch(e){}}var authorizationPresent=false;var authorizationDigest=null;var authorizationDigestAvailable=false;if(routed.endsWith('/delegate')){var authHeader=normalized.request.headers.get('authorization');authorizationPresent=typeof authHeader==='string'&&authHeader.length>0;if(authorizationPresent){try{var authBytes=new TextEncoder().encode(authHeader);var authHashBuf=await crypto.subtle.digest('SHA-256',authBytes);authorizationDigest=Array.from(new Uint8Array(authHashBuf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');authorizationDigestAvailable=true;}catch(e){}}}try{var response=await original.apply(window,normalized.fetchArgs);var item={url:routed,method:routedResult.method,status:response.status,requestId:browserTraceId,serverTraceId:response.headers.get('x-tinycloud-trace-id')};if(method==='POST'&&routed.endsWith('/invoke')){var bodyText=await requestBodyPromise;item.requestSpaces=[...new Set(bodyText.match(/tinycloud:[^\"' ]+/g)||[])];}if(method==='POST'&&routed.endsWith('/delegate')){item.requestBodyLength=delegateByteLength;item.requestDigestAvailable=delegateDigestAvailable;if(delegateDigestAvailable&&delegateDigest!==null){item.requestBodyDigest=delegateDigest;}item.authorizationPresent=authorizationPresent;item.authorizationDigestAvailable=authorizationDigestAvailable;if(authorizationDigestAvailable&&authorizationDigest!==null){item.authorizationDigest=authorizationDigest;}}if((!response.ok&&method==='POST')||(method==='POST'&&routed.endsWith('/delegate'))||(method==='POST'&&routed.endsWith('/invoke'))||(method==='POST'&&routed.endsWith('/policies'))){try{var clone=response.clone();var text=await clone.text();var parsedBody=null;try{parsedBody=JSON.parse(text);}catch{}if(routed.endsWith('/policies')){item.responseKeys=parsedBody&&typeof parsedBody==='object'?Object.keys(parsedBody).sort():[];item.responseErrorCode=parsedBody&&parsedBody.error&&typeof parsedBody.error==='object'?parsedBody.error.code||null:null;}if(routed.endsWith('/delegate'))item.responseBody=text.slice(0,1200);if(routed.endsWith('/invoke')){item.responseContentType=response.headers.get('content-type');item.responseBodyLength=text.length;item.responseBodyPreview=text.slice(0,240);}try{item.errorCode=parsedBody&&parsedBody.error?.code||null;}catch{item.errorCode=null;if(!response.ok)item.errorBody=text.slice(0,500);}}catch{item.errorCode=null;}}var pushTime=performance.now();item.fetchStartTime=fetchStartTime;item.pushTime=pushTime;window.__tinycloudTelemetry.push(item);return response;}catch(error){var pushTime=performance.now();window.__tinycloudTelemetry.push({url:routed,method:method,status:0,requestId:browserTraceId,fetchStartTime:fetchStartTime,pushTime:pushTime});throw error;}};})()`]);
 }
 
 async function browserTelemetryEntries() {
@@ -485,7 +629,37 @@ function agentString(value) {
   return current;
 }
 
-async function browserGateLegacy(origin, walletOrigin, mailOrigin) {
+function safeBrowserDiagnostic(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const normalized = value.toLowerCase();
+    const category = normalized.includes("signature") ? "signature"
+      : normalized.includes("cid") ? "cid"
+      : normalized.includes("canonical") || normalized.includes("timestamp") || normalized.includes("expired") ? "canonical-registration"
+      : normalized.includes("chain") || normalized.includes("bound") ? "registration-binding"
+      : normalized.includes("policy_registration_invalid") || normalized.includes("policy") ? "policy"
+      : normalized.includes("capability") ? "capability"
+      : normalized.includes("config") ? "config"
+      : normalized.includes("auth") || normalized.includes("session") ? "auth"
+      : normalized.includes("enforcer") || normalized.includes("did:") ? "identity"
+      : normalized.includes("invoke") || normalized.includes("delegate") ? "authorization"
+      : normalized.includes("permission") ? "permission"
+      : normalized.includes("sign") ? "sign-in"
+      : normalized.includes("space") ? "space"
+      : normalized.includes("library") ? "library"
+      : normalized.includes("network") ? "network"
+      : normalized.includes("invalid") ? "invalid"
+      : normalized.includes("failed") || normalized.includes("failure") ? "failure"
+      : "other";
+    return { length: value.length, category };
+  }
+  if (typeof value !== "object") return { type: typeof value };
+  const object = value;
+  const message = typeof object.message === "string" ? object.message : typeof object.error === "string" ? object.error : undefined;
+  return { type: Array.isArray(value) ? "array" : "object", message: message === undefined ? undefined : safeBrowserDiagnostic(message) };
+}
+
+async function browserGateArchive(origin, walletOrigin, mailOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   const initialMail = await (await fetch(`${mailOrigin}/emails`)).json();
   assert.deepEqual(initialMail.messages, []);
@@ -493,7 +667,7 @@ async function browserGateLegacy(origin, walletOrigin, mailOrigin) {
   await agent(["network", "requests", "--clear"]);
   await agent(["eval", `location.href=${JSON.stringify(`${origin}/share.html`)}`]);
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", `(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:input.url;var p=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))p.then(function(r){r.clone().text().then(function(body){window.__tinycloudAuthDiagnostics.push({url:u,status:r.status,body:body.slice(0,2000)})})});return p;};})()`]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
@@ -599,13 +773,12 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
   await agent(["open", `${origin}/share.html`]);
-  // agent-browser scopes extra headers to the current page origin, so set the
-  // production Share origin after navigating to the loopback production host.
-  await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]);
+  await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
   await installBrowserTelemetry();
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", "(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))result.then(function(response){window.__tinycloudAuthDiagnostics.push({path:(new URL(u,location.href)).pathname,status:response.status});});return result;};})()"]).catch(() => undefined);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
   await agent(["wait", "1000"]);
@@ -710,7 +883,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const recipientCopyEvidence = agentString(await agent(["eval", `JSON.stringify({exact:window.__recipientCopiedLink===${JSON.stringify(canonicalExactInviteUrl.href)},scrubbed:location.hash===''&&location.search==='',dom:!document.documentElement.textContent.includes(${JSON.stringify(canonicalExactInviteUrl.href)}),storage:![localStorage,sessionStorage].some(function(store){return Object.values(store).some(function(value){return String(value).includes(${JSON.stringify(canonicalExactInviteUrl.href)});});}),referrer:!document.referrer.includes(${JSON.stringify(canonicalExactInviteUrl.href)})})`]));
   if (recipientCopyEvidence?.exact !== true || recipientCopyEvidence?.scrubbed !== true || recipientCopyEvidence?.dom !== true || recipientCopyEvidence?.storage !== true || recipientCopyEvidence?.referrer !== true) throw new Error(`recipient copy/privacy boundary failed: ${JSON.stringify({ exact: recipientCopyEvidence?.exact === true, scrubbed: recipientCopyEvidence?.scrubbed === true, dom: recipientCopyEvidence?.dom === true, storage: recipientCopyEvidence?.storage === true, referrer: recipientCopyEvidence?.referrer === true })}`);
   checks.push("Production recipient Copy link copied the byte-exact complete in-memory URL, exposed accessible success feedback, and retained a scrubbed URL/privacy boundary.");
-  await agent(["eval", `(function(){var old=window.fetch;window.__tinycloudInvokeReplay=null;window.__tinycloudInterceptFirstPut=false;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var action=parsed&&parsed.request&&parsed.request.action;if(action==='tinycloud.kv/put'||action==='put'){window.__tinycloudInvokeReplay={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};if(window.__tinycloudInterceptFirstPut){window.__tinycloudInterceptFirstPut=false;var request=parsed.request||{};var invocation=request.invocation||{};var fake={type:'TinyCloudShareInvokeResponse',version:2,action:'tinycloud.kv/put',resource:request.resource,etag:invocation.ifMatch||request.ifMatch||'"blake3-'+('0'.repeat(64))+'"',bodyDigest:request.bodyDigest||invocation.bodyDigest,contentType:request.contentType||invocation.contentType};return Promise.resolve(new Response(JSON.stringify(fake),{status:200,headers:{'content-type':'application/json'}}));}}}catch{}}return old.apply(this,arguments);};})()`]);
+  await agent(["eval", `(function(){var old=window.fetch;window.__tinycloudInvokeReplay=null;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var action=parsed&&parsed.request&&parsed.request.action;if(action==='tinycloud.kv/put'||action==='put'){window.__tinycloudInvokeReplay={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};}}catch{}}return old.apply(this,arguments);};})()`]);
   const verifyButton = await agent(["get", "count", "button.viewer-primary-action:not([disabled])"]);
   if (verifyButton !== "0") await agent(["click", "button.viewer-primary-action:not([disabled])"]);
   await agent(["wait", "text=Edit shared text"]); await agent(["fill", "textarea[aria-label='Shared text draft']", "# Exact email\n\nA byte-identical stale draft."]);
@@ -805,8 +978,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const folderAudit = await auditFlow("folder", folderTrace, { mailOrigin, expectMail: true, expectMailRecipient: folderDeliveryEmail, pii: [folderDeliveryEmail] });
   const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(folderDeliveryShape?.resource, "documents"); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
   const folderInviteUrl = localShareUrl(mailShareUrl(folderAudit.capturedMail.payload), origin);
-  await agent(["open", folderInviteUrl]); await agent(["wait", "2000"]); await installBrowserTelemetry(); await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]); await agent(["eval", "(function(){var previous=window.fetch;window.__folderPutCapture=null;window.__folderInterceptFirstPut=true;window.__policyTrace=[];window.__claimTrace=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=previous.apply(this,arguments);if(u.includes('/policy/challenges')||u.includes('/policy/session')||u.includes('/v1/share-email/claims/')){result.then(function(response){response.clone().text().then(function(body){var parsed=null;try{parsed=JSON.parse(body);}catch{}var path=(new URL(u,location.href)).pathname;var target=path.includes('/claims/')?window.__claimTrace:window.__policyTrace;target.push({path:path,status:response.status,code:parsed&&parsed.error&&parsed.error.code||null,keys:parsed&&typeof parsed==='object'?Object.keys(parsed).sort():[],body:body.slice(0,400)});});});}if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var request=parsed&&parsed.request||{};var action=request.action||request.invocation&&request.invocation.action;if(action==='tinycloud.kv/put'||action==='put'){window.__folderPutCapture={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};if(window.__folderInterceptFirstPut){window.__folderInterceptFirstPut=false;var invocation=request.invocation||{};var fake={type:'TinyCloudShareInvokeResponse',version:2,action:'tinycloud.kv/put',resource:request.resource,etag:invocation.ifMatch||request.ifMatch||String.fromCharCode(34)+'blake3-'+('0'.repeat(64))+String.fromCharCode(34),bodyDigest:request.bodyDigest||invocation.bodyDigest,contentType:request.contentType||invocation.contentType};return Promise.resolve(new Response(JSON.stringify(fake),{status:200,headers:{'content-type':'application/json'}}));}}}catch{}}return result;};})()"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "3000"]);
-  await agent(["eval", "window.__folderInterceptFirstPut=false"]);
+  await agent(["open", folderInviteUrl]); await agent(["wait", "2000"]); await installBrowserTelemetry(); await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]); await agent(["eval", "(function(){var previous=window.fetch;window.__folderPutCapture=null;window.__policyTrace=[];window.__claimTrace=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=previous.apply(this,arguments);if(u.includes('/policy/challenges')||u.includes('/policy/session')||u.includes('/v1/share-email/claims/')){result.then(function(response){response.clone().text().then(function(body){var parsed=null;try{parsed=JSON.parse(body);}catch{}var path=(new URL(u,location.href)).pathname;var target=path.includes('/claims/')?window.__claimTrace:window.__policyTrace;target.push({path:path,status:response.status,code:parsed&&parsed.error&&parsed.error.code||null,keys:parsed&&typeof parsed==='object'?Object.keys(parsed).sort():[],body:body.slice(0,400)});});});}if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var request=parsed&&parsed.request||{};var action=request.action||request.invocation&&request.invocation.action;if(action==='tinycloud.kv/put'||action==='put'){window.__folderPutCapture={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};}}catch{}}return result;};})()"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "3000"]);
   const folderOpenState = agentString(await agent(["eval", "JSON.stringify({title:document.title,policy:(document.querySelector('.viewer-policy-status')?.textContent||'').slice(0,240),claim:(document.querySelector('.viewer-status')?.textContent||'').slice(0,240),trace:window.__policyTrace||[],claimTrace:window.__claimTrace||[],body:(document.body?.innerText||'').replace(/https?:\\/\\/[^\\s]+/g,'[URL]').slice(0,600)})"]));
   if (!String(folderOpenState?.body ?? "").includes("Shared folder")) throw new Error("folder authorization did not complete: " + JSON.stringify(folderOpenState));
   assert.notEqual(await agent(["get", "count", "button.viewer-folder-entry"]), "0", "folder child listing was not observed");
@@ -864,7 +1036,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
   const scopedRepositories = {
     share: shareRoot,
     node: nodeRoot,
-    jsSdk: join(workspaceRoot, "worktrees/js-sdk/feat/sharing-experience-e2e"),
+    jsSdk: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"),
     openCredentials: credentialsRoot,
   };
   const repositoryDigests = {};
@@ -878,7 +1050,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
     const digestInput = Buffer.concat([Buffer.from(commit), Buffer.from("\0"), Buffer.from(diff), Buffer.from("\0"), ...untrackedBytes.map((value) => typeof value === "string" ? Buffer.from(value) : value)]);
     repositoryDigests[name] = { commit, digest: createHash("sha256").update(digestInput).digest("hex"), untracked: files };
   }
-  const result = { status, summary, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
@@ -894,8 +1066,7 @@ async function browserSmokeLoop(origin, walletOrigin) {
 }
 
 async function authenticateBrowserPage(walletOrigin, openComposer = true) {
-  await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]);
-  await agent(["eval", "--base64", Buffer.from(walletBootstrap(walletOrigin)).toString("base64")]);
+  await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]).catch(() => undefined);
   await agent(["click", "button.auth-button"]);
   await agent(["wait", "1000"]);
@@ -916,8 +1087,9 @@ async function cleanup() {
   await closeAll();
   if (tempRoot !== undefined) await rm(tempRoot, { recursive: true, force: true });
   await releaseLock();
-  const remaining = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).split("\n").filter((line) => /sharing-e2e-|e2e-sharing|tinycloud-sharing-e2e-/.test(line) && !line.includes("ps -axo") && !line.trimStart().startsWith(`${process.pid} `));
-  if (remaining.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${remaining.join(" | ")}`);
+  const psLines = parsePsLines(execFileSync("ps", ["-axo", "pid=,pgid=,command="], { encoding: "utf8" }));
+  const surviving = findSurvivingOwnedProcesses(psLines, ownedPgids, process.pid);
+  if (surviving.length > 0) blockers.push(`harness-owned processes remained after cleanup: ${surviving.map((entry) => entry.pid).join(",")}`);
   try {
     const sessions = execFileSync(agentBrowser, ["session", "list"], { cwd: shareRoot, encoding: "utf8", timeout: AGENT_TIMEOUT_MS });
     if (sessions.split("\n").some((line) => line.includes(sessionName))) blockers.push(`harness-owned agent-browser session remained after cleanup: ${sessionName}`);
@@ -927,6 +1099,7 @@ async function cleanup() {
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, () => { void cleanup().finally(() => { process.exitCode = 1; }); });
 
 try {
+  await assertReleaseInputs();
   await acquireLock();
   tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-sharing-e2e-"));
   const fixtures = await startFixtures(tempRoot);
@@ -949,6 +1122,11 @@ try {
   try {
     const browserNetwork = networkEntries(await agent(["network", "requests", "--json"]));
     const telemetry = await browserTelemetryEntries();
+    const sanitizedNetwork = scrubNetwork(browserNetwork);
+    checks.push(`Failure diagnostic browser network ${JSON.stringify(sanitizedNetwork.map((entry) => ({ path: entry.path, method: entry.method, status: entry.status })))}.`);
+    const policyResult = sanitizedNetwork.find((entry) => entry.path === "/share/v2/policies");
+    if (policyResult !== undefined) checks.push(`Failure diagnostic policy registration HTTP result ${JSON.stringify({ status: policyResult.status ?? null, method: policyResult.method ?? null })}.`);
+    checks.push(`Failure diagnostic browser telemetry ${JSON.stringify(telemetry.map((entry) => ({ path: (() => { try { return new URL(entry.url).pathname; } catch { return null; } })(), method: entry.method ?? null, status: entry.status ?? null, errorCode: entry.errorCode ?? null })))}.`);
     checks.push("Failure diagnostic admission network captured; raw network omitted after privacy audit.");
   } catch (diagnosticError) {
     blockers.push(`Failure diagnostic admission network unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
@@ -960,7 +1138,15 @@ try {
     blockers.push(`Failure diagnostic auth responses unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
   }
   try {
-    const openKeyDiagnostics = await agent(["eval", "JSON.stringify({status:document.querySelector('.auth-status')?.textContent||null,error:window.__tinycloudAuthError||null,senderHistoryError:window.__tinycloudSenderHistoryError||null,messages:window.__tinycloudOpenKeyDiagnostics||null,telemetry:(window.__tinycloudTelemetry||[]).filter(function(entry){return String(entry.url||'').endsWith('/invoke')||String(entry.url||'').endsWith('/delegate')})})"]);
+    const uiDiagnostics = agentString(await agent(["eval", "JSON.stringify([...document.querySelectorAll('[role=status],[role=alert],.composer-live,.composer-status,.notification-status')].map(function(node){var text=node.textContent||'';var match=text.match(/(?:failed: )([0-9]{3})(?: ([A-Za-z0-9_]+))?/);return {className:node.className||null,state:node.dataset.state||null,errorCode:match?match[1]+' '+(match[2]||''):null,text:text,children:[...node.children].map(function(child){return child.textContent||''})}}))"]));
+    checks.push(`Failure diagnostic UI state ${JSON.stringify(Array.isArray(uiDiagnostics) ? uiDiagnostics.map((entry) => ({ className: entry?.className ?? null, state: entry?.state ?? null, errorCode: entry?.errorCode ?? null, text: safeBrowserDiagnostic(entry?.text), children: Array.isArray(entry?.children) ? entry.children.map((child) => safeBrowserDiagnostic(child)) : [] })) : [])}.`);
+  } catch (diagnosticError) {
+    blockers.push(`Failure diagnostic UI state unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
+  }
+  try {
+    const openKeyDiagnostics = await agent(["eval", "JSON.stringify({status:document.querySelector('.auth-status')?.textContent||null,error:window.__tinycloudAuthError?.message||window.__tinycloudAuthError||null,senderHistoryError:window.__tinycloudSenderHistoryError||null,authResponses:window.__tinycloudAuthDiagnostics||null,messages:window.__tinycloudOpenKeyDiagnostics||null,telemetry:(window.__tinycloudTelemetry||[]).filter(function(entry){return String(entry.url||'').endsWith('/invoke')||String(entry.url||'').endsWith('/delegate')})})"]);
+    const parsedDiagnostics = agentString(openKeyDiagnostics);
+    checks.push(`Failure diagnostic browser state ${JSON.stringify({ status: safeBrowserDiagnostic(parsedDiagnostics?.status), authError: safeBrowserDiagnostic(parsedDiagnostics?.error), historyError: safeBrowserDiagnostic(parsedDiagnostics?.senderHistoryError), authResponseStatuses: Array.isArray(parsedDiagnostics?.authResponses) ? parsedDiagnostics.authResponses.map((entry) => ({ status: entry?.status ?? null, bodyLength: typeof entry?.body === "string" ? entry.body.length : 0, bodyKeys: (() => { try { const body = JSON.parse(entry.body); return body && typeof body === "object" ? Object.keys(body).sort() : []; } catch { return []; } })() })) : [], messageTypes: Array.isArray(parsedDiagnostics?.messages) ? parsedDiagnostics.messages.map((entry) => entry?.type ?? null).filter(Boolean) : [], telemetry: Array.isArray(parsedDiagnostics?.telemetry) ? parsedDiagnostics.telemetry.map((entry) => ({ path: (() => { try { return new URL(entry.url).pathname; } catch { return null; } })(), status: entry?.status ?? null, errorCode: entry?.errorCode ?? null, responseErrorCode: entry?.responseErrorCode ?? null, responseKeys: Array.isArray(entry?.responseKeys) ? entry.responseKeys : [] })) : [], telemetryCount: Array.isArray(parsedDiagnostics?.telemetry) ? parsedDiagnostics.telemetry.length : 0, failedTelemetry: safeFailedTelemetry(parsedDiagnostics?.telemetry) })}.`);
     checks.push("Failure diagnostic OpenKey/browser auth captured; raw diagnostics omitted after secret audit.");
   } catch (diagnosticError) {
     blockers.push(`Failure diagnostic OpenKey/browser auth unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}`);
@@ -977,6 +1163,11 @@ try {
       if (delegationFailures.length > 0) checks.push(`Failure diagnostic addressed delegation failure observed in child ${entry.child.pid}; raw output omitted after secret audit.`);
       const scopeFailures = outputLines.filter((line) => line.includes("share scope validation failed"));
       if (scopeFailures.length > 0) checks.push(`Failure diagnostic share scope failure observed in child ${entry.child.pid}; raw output omitted after secret audit.`);
+      const registrationFailures = outputLines.filter((line) => line.includes("Owner share policy registration failed:"));
+      if (registrationFailures.length > 0) {
+        const normalized = registrationFailures.map((line) => line.replace(/.*Owner share policy registration failed:\s*/, "").replace(/[^A-Za-z0-9_ :.-]/g, "").slice(0, 120));
+        checks.push(`Failure diagnostic owner policy registration result ${JSON.stringify(normalized)}.`);
+      }
       checks.push(`Failure diagnostic child ${entry.child.pid}: output omitted after secret audit; ${output.length} bytes were captured.`);
     }
   }

@@ -69,7 +69,8 @@ function rejectProductionPlaceholders(value: string): void {
 function senderSecret(env: NodeJS.ProcessEnv): string | undefined {
   const value = env.SHARE_SENDER_PRIVATE_KEY;
   if (value === undefined) return undefined;
-  return b64(value, "SHARE_SENDER_PRIVATE_KEY");
+  if (env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") return b64(value, "SHARE_SENDER_PRIVATE_KEY");
+  throw new Error("SHARE_SENDER_PRIVATE_KEY is forbidden; authenticate through OpenKey");
 }
 
 export function validateTrustBundle(value: unknown, allowTest = false, privateKey?: string): ShareTrustBundle {
@@ -118,7 +119,7 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   const hermeticWallet = process.env.SHARE_HERMETIC_WALLET_ORIGIN;
   const walletConnect = hermeticWallet !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticWallet) ? [hermeticWallet] : [];
   const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin, ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
-  const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store" };
+  const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Strict-Transport-Security": "max-age=31536000; includeSubDomains", "Cache-Control": "no-store" };
   const isLanding = pathname === "/" || pathname === "/index.html" || pathname === "/how-it-works" || pathname === "/how-it-works/" || pathname === "/how-it-works.html";
   const isViewer = pathname === "/viewer.html" || pathname === "/viewer" || pathname === "/s/*" || /^\/s\/[a-z2-7]+$/.test(pathname);
   const isShare = pathname === "/share.html" || pathname === "/share";

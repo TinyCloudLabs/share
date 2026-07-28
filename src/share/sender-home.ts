@@ -19,11 +19,11 @@ function node<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, clas
   return item;
 }
 
-function safeName(record: Extract<SenderHistoryItem, { state: "ready" | "expired" }> ["record"]): string {
+function safeName(record: Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }> ["record"]): string {
   return record.name.length > 80 ? `${record.name.slice(0, 77)}…` : record.name;
 }
 
-function recipientSummary(item: Extract<SenderHistoryItem, { state: "ready" | "expired" }>): string {
+function recipientSummary(item: Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }>): string {
   if (item.record.recipient.kind === "bearer") return "Anyone with link";
   if (item.record.recipient.kind === "emailDomain") return `Email domain · ${item.record.recipient.value}`;
   const [local, domain] = item.record.recipient.value.split("@");
@@ -75,7 +75,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const save = node(doc, "button", "button button-primary", "Save encrypted link") as HTMLButtonElement; save.type = "submit";
     const cancel = node(doc, "button", "button button-secondary", "Cancel") as HTMLButtonElement; cancel.type = "button"; cancel.addEventListener("click", () => dialog.close());
     const message = node(doc, "p", "sender-live"); form.append(heading, help, label, save, cancel, message); dialog.append(form); root.append(dialog); dialog.showModal(); input.focus();
-    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || (!parsed.hash && parsed.pathname !== "/s/inline")) throw new Error("invalid"); const recordPromise = createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: value, cid: parsed.pathname.split("/").at(-1) ?? "inline", format: parsed.pathname === "/s/inline" ? "inline" : "compact", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), name: "Imported share", mediaType: "application/octet-stream", sourceKind: "upload", recipient: { kind: "bearer" }, actions: ["read"] }); void recordPromise.then((record) => options.history.save(record)).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete share link with its fragment."; } });
+    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || (!parsed.hash && parsed.pathname !== "/s/inline")) throw new Error("invalid"); const recordPromise = createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: value, cid: parsed.pathname.split("/").at(-1) ?? "inline", format: parsed.pathname === "/s/inline" ? "inline" : "compact", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), name: "Imported share", mediaType: "application/octet-stream", sourceKind: "upload", recipient: { kind: "bearer" }, actions: ["read"], delegationCid: null, revokedAt: null }); void recordPromise.then((record) => options.history.save(record)).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete share link with its fragment."; } });
   };
   const renderEmpty = (): void => {
     const empty = node(doc, "tr", "sender-empty-row"); const cell = node(doc, "td", "sender-empty-state"); cell.colSpan = 6; cell.append(node(doc, "strong", "", "No shares yet"), node(doc, "span", "", "Create your first encrypted share or import a link you still possess.")); const importButton = node(doc, "button", "button button-secondary", "Import existing link") as HTMLButtonElement; importButton.type = "button"; importButton.addEventListener("click", openImport); cell.append(importButton); empty.append(cell); body.append(empty); };
@@ -87,12 +87,28 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const itemCell = node(doc, "td", "sender-item-cell"); itemCell.append(node(doc, "strong", "", safeName(item.record)), node(doc, "span", "sender-item-type", item.record.mediaType));
     const recipient = node(doc, "td", "", recipientSummary(item)); recipient.dataset.label = "Recipient";
     const access = node(doc, "td", "", actionsSummary(item.record.actions)); access.dataset.label = "Access";
-    const status = node(doc, "td", `sender-status-text ${item.state}`); status.dataset.label = "Expires / status"; status.append(node(doc, "span", "status-label", item.state === "expired" ? "Expired" : "Ready"), node(doc, "span", "status-expiry", new Date(item.record.expiresAt).toLocaleDateString()));
+    const statusLabel = item.state === "revoked" ? "Revoked" : item.state === "expired" ? "Expired" : "Ready";
+    const status = node(doc, "td", `sender-status-text ${item.state}`); status.dataset.label = "Expires / status"; status.append(node(doc, "span", "status-label", statusLabel), node(doc, "span", "status-expiry", new Date(item.record.expiresAt).toLocaleDateString()));
     const created = node(doc, "td", "", new Date(item.record.createdAt).toLocaleDateString()); created.dataset.label = "Created";
     const controls = node(doc, "td", "sender-row-actions");
     const copy = node(doc, "button", "button button-secondary", "Copy link") as HTMLButtonElement; copy.type = "button"; copy.setAttribute("aria-label", `Copy link for ${safeName(item.record)}`); copy.addEventListener("click", () => { void copyWithFallback(item.record.url).then(() => { live.textContent = "Link copied."; }).catch(() => { live.textContent = "Copy failed. Try again after allowing clipboard access."; }); });
     const open = node(doc, "button", "button button-secondary", "Open") as HTMLButtonElement; open.type = "button"; open.setAttribute("aria-label", `Open ${safeName(item.record)}`); open.addEventListener("click", () => openSenderViewer(item.record.url, live));
-    itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy); row.append(itemCell, recipient, access, status, created, controls); body.append(row); pageRows.push(row);
+    itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
+    if (item.state !== "revoked" && item.record.delegationCid !== null) {
+      const revoke = node(doc, "button", "button button-secondary sender-revoke", "Revoke") as HTMLButtonElement; revoke.type = "button"; revoke.setAttribute("aria-label", `Revoke ${safeName(item.record)}`);
+      revoke.addEventListener("click", () => {
+        if (!window.confirm("Revoke this share? Anyone holding the link, including any downstream copies of its authority, immediately loses access. This cannot be undone.")) return;
+        const delegationCid = item.record.delegationCid;
+        if (delegationCid === null) return;
+        revoke.disabled = true; live.textContent = "Revoking…";
+        void options.tinycloud.revokeDelegation(delegationCid).then((result) => {
+          if (!result.ok) throw new Error(result.error.message);
+          return options.history.markRevoked(item.record);
+        }).then(() => { live.textContent = "Share revoked."; return load(false); }).catch(() => { revoke.disabled = false; live.textContent = "Revoke failed. The node did not confirm this revocation; try again."; });
+      });
+      controls.append(revoke);
+    }
+    row.append(itemCell, recipient, access, status, created, controls); body.append(row); pageRows.push(row);
   };
   const load = async (append: boolean): Promise<void> => {
     if (loading) return;
@@ -117,7 +133,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const composerOptions: ShareComposerOptions = { ...options.composer, openKeyAddress: options.session.address, session: options.session, tinycloud: options.tinycloud, loadCapabilities: async () => options.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })), persistShare: async ({ share, model, file }) => {
       const expiresAt = share.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       const recipient = model.recipient.kind === "bearer" ? { kind: "bearer" as const } : { kind: model.recipient.kind, value: model.recipient.value! };
-      const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: model.filename ?? file.name, mediaType: (model.mediaType ?? file.type) || "application/octet-stream", sourceKind: model.contentMode ?? "upload", recipient, actions: model.permissions });
+      const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: model.filename ?? file?.name ?? "shared-resource", mediaType: (model.mediaType ?? file?.type) || "application/octet-stream", sourceKind: model.contentMode ?? "upload", recipient, actions: model.permissions, delegationCid: share.delegationCid ?? null, revokedAt: null });
       await options.history.save(record);
       await load(false);
     } };

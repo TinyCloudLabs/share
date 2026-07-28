@@ -263,7 +263,7 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
         try {
           setState({ state: "reading", claim: material });
           content = await readClaimedShare({ share: input.share, claim: material, transport: input.transport });
-          if (content !== undefined) setState({ state: "claimed", claim: material });
+          if (content !== undefined) setState({ state: "reading", claim: material });
         } catch (error) { const failure = mapTransportFailure(error); setState(terminalFrom(failure)); }
       });
       return content;
@@ -280,7 +280,9 @@ export function createClaimController(input: { readonly share: VerifiedExactEmai
       // retryable Node outage must begin at the Node challenge with the
       // retained non-extractable key and verified credential, never at
       // activation or redemption.
-      if (material !== undefined) return read().then(() => undefined);
+      if (material !== undefined) return read().then((content) => {
+        if (content !== undefined && state.state === "reading") setState({ state: "claimed", claim: material! });
+      });
       setState({ state: "verifying", emailHint: input.share.recipientHint });
       return openDocument();
     },

@@ -9,7 +9,7 @@ interface R2Bucket {
   list?(options?: { prefix?: string; cursor?: string; include?: string[] }): Promise<{ objects: Array<{ key: string; customMetadata?: Record<string, string> }>; truncated: boolean; cursor?: string }>;
 }
 export interface RegistryEnv { REGISTRY: R2Bucket; REGISTRY_AUTH_PUBLIC_KEY?: string; REGISTRY_LINK_UPLOAD_PUBLIC_KEY?: string; MAX_BLOB_BYTES?: string }
-const CORS = { "access-control-allow-origin": "https://share.tinycloud.xyz", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,if-none-match,x-delete-after,x-tinycloud-authorization", "access-control-max-age": "86400", vary: "Origin" };
+const CORS = { "access-control-allow-origin": "https://share.tinycloud.xyz", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,if-none-match,x-delete-after,x-tinycloud-authorization", "access-control-max-age": "86400", "strict-transport-security": "max-age=31536000; includeSubDomains", vary: "Origin" };
 const LINK_PROXY_ORIGIN = "https://registry.tinycloud.xyz";
 const LINK_AUTHORIZATION_DOMAIN = "xyz.tinycloud.share/registry-authorization/v1\0";
 const LINK_AUTHORIZATION_TTL_MS = 2 * 60 * 1000;
@@ -143,6 +143,9 @@ function cacheHeaders(expiry: number, cid: string): HeadersInit {
 function response(body: ArrayBuffer | Uint8Array, headers: HeadersInit): Response { return new Response(body as BodyInit, { headers: { ...CORS, ...headers } }); }
 const worker = { async fetch(request: Request, env: RegistryEnv): Promise<Response> {
   const url = new URL(request.url);
+  if (url.hostname === "registry.tinycloud.xyz" && url.protocol !== "https:") {
+    return new Response(null, { status: 308, headers: { ...CORS, location: `https://${url.host}${url.pathname}${url.search}` } });
+  }
   const origin = request.headers.get("origin");
   const linkProxyUpload = (request.method === "POST" || request.method === "PUT") && url.pathname === "/blobs" && origin === LINK_PROXY_ORIGIN;
   if (origin && origin !== "https://share.tinycloud.xyz" && !linkProxyUpload) return json(403, { error: "origin-not-allowed" });

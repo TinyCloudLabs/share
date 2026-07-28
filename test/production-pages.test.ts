@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { once } from "node:events";
 import { toBase64Url } from "@tinycloud/share-envelope";
 import { onRequest } from "../functions/[[path]].js";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
-import { createProductionHandler } from "../src/host/production-server.js";
+import { createProductionHandler, startProductionServer } from "../src/host/production-server.js";
 import { cloudflareHeaders, validateTrustBundle } from "../src/host/trust-bundle.js";
 import { REGISTRY_UPLOAD_BODY_LIMIT } from "../src/host/upstream.js";
 
@@ -122,6 +123,23 @@ describe("Cloudflare Pages static asset boundaries", () => {
 });
 
 describe("production sender route gating", () => {
+  it("rejects plaintext requests before sensitive handlers run", async () => {
+    const raw = trustBundle();
+    const bundle = validateTrustBundle(raw);
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(raw) });
+    const forwarded = vi.spyOn(globalThis, "fetch");
+    const handler = createProductionHandler({ bundle, host, enforceHttps: true });
+    const response = await handler(new Request("http://share.tinycloud.xyz/api/share/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "http" },
+      body: "{}",
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: { code: "https_required" } });
+    expect(forwarded).not.toHaveBeenCalled();
+    expect(response.headers.get("strict-transport-security")).toContain("max-age=");
+  });
+
   it("blocks only the sender authorization route while recipient and registry routes still proxy", async () => {
     const raw = trustBundle();
     const bundle = validateTrustBundle(raw);
@@ -178,6 +196,32 @@ describe("production sender route gating", () => {
     forwarded.mockClear();
     expect((await handler(request(REGISTRY_UPLOAD_BODY_LIMIT + 1))).status).toBe(413);
     expect(forwarded).not.toHaveBeenCalled();
+  });
+});
+
+describe("startProductionServer legacy sender authority rejection", () => {
+  const baseEnv = () => ({ SHARE_TRUST_BUNDLE: JSON.stringify(trustBundle()) });
+
+  it.each([
+    ["SHARE_SENDER_PRIVATE_KEY", "some-value"],
+    ["SHARE_SENDER_CAPABILITY_JSON", "{}"],
+    ["SHARE_SENDER_CAPABILITIES_JSON", "[]"],
+  ])("refuses to start with %s set, unconditionally and before opening any socket", (name, value) => {
+    expect(() => startProductionServer({ ...baseEnv(), [name]: value })).toThrow(/forbidden/i);
+  });
+
+  it("rejects legacy sender authority even alongside the test-bundle escape hatch", () => {
+    expect(() => startProductionServer({ ...baseEnv(), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: "some-value" })).toThrow(/forbidden/i);
+  });
+
+  it("starts cleanly without any legacy sender authority variable set", async () => {
+    const server = startProductionServer({ ...baseEnv(), PORT: "0", HOST: "127.0.0.1" });
+    try {
+      await once(server, "listening");
+      expect(server.listening).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
   });
 });
 

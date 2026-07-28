@@ -11,7 +11,7 @@
 
 import { createRequire } from "node:module";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { existsSync } from "node:fs";
@@ -38,9 +38,48 @@ const canonical = Object.freeze({
 let activeCleanup;
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.once(signal, () => {
-    if (activeCleanup === undefined) process.exit(128);
-    void activeCleanup().finally(() => process.exit(128));
+    const exit = () => { void releaseLock().finally(() => process.exit(128)); };
+    if (activeCleanup === undefined) { exit(); return; }
+    void activeCleanup().finally(exit);
   });
+}
+
+// A cross-run mkdir lock keyed to this harness so a stale or overlapping
+// invocation is refused instead of racing shared ports/tempdirs, mirroring
+// test/e2e-sharing/integration.mjs.
+const lockPath = join(tmpdir(), "tinycloud-email-claim-e2e.lock");
+let lockHeld = false;
+function featureProcess(pid) {
+  try {
+    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+    return command.includes("test/e2e-email/integration.mjs");
+  } catch { return false; }
+}
+async function acquireLock() {
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    let owner;
+    try { owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf8")); } catch { owner = undefined; }
+    const ownerAlive = owner?.pid !== undefined && (() => { try { process.kill(owner.pid, 0); return true; } catch { return false; } })();
+    if (ownerAlive && featureProcess(owner.pid)) throw new Error(`another email-claim harness owns the scoped lock (pid ${owner.pid})`);
+    await rm(lockPath, { recursive: true, force: true });
+    await mkdir(lockPath, { mode: 0o700 });
+  }
+  await writeFile(join(lockPath, "owner.json"), JSON.stringify({ pid: process.pid, runId }), { flag: "wx", mode: 0o600 });
+  lockHeld = true;
+}
+async function releaseLock() {
+  if (!lockHeld) return;
+  lockHeld = false;
+  await rm(lockPath, { recursive: true, force: true });
+}
+
+/** Memoizes an async cleanup so a signal race with a normal `finally` runs it exactly once. */
+function onceAsync(fn) {
+  let promise;
+  return () => { if (promise === undefined) promise = fn(); return promise; };
 }
 
 function arg(name) {
@@ -269,7 +308,7 @@ async function startDstackSimulator(owned, tempRoot, issuerSeed) {
   return socketPath;
 }
 
-async function waitForPort(port, label) {
+async function waitForPort(port, label, childProcess = undefined) {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     try {
@@ -281,7 +320,8 @@ async function waitForPort(port, label) {
       return;
     } catch { await new Promise((resolveWait) => setTimeout(resolveWait, 250)); }
   }
-  throw new Error(`${label} did not bind 127.0.0.1:${port}`);
+  const output = childProcess?.output?.().slice(-8_000);
+  throw new Error(`${label} did not bind 127.0.0.1:${port}${output === undefined ? "" : `:\n${output}`}`);
 }
 
 async function startPostgres(owned, tempRoot) {
@@ -717,7 +757,7 @@ async function productionGateHermetic() {
   const deployEnvFile = join(tempRoot, "share-deploy.env");
   const bindingStorePath = join(tempRoot, "bindings.ndjson");
   let production;
-  const cleanup = async () => {
+  const cleanup = onceAsync(async () => {
     await stopOwned(owned);
     const remaining = (await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => ""))
       .split("\n")
@@ -725,7 +765,7 @@ async function productionGateHermetic() {
     if (remaining.length !== 0) throw new Error(`production composition left task-owned processes: ${remaining.join(" | ")}`);
     ownedProcessCleanup = { stopped: owned.length, remaining, complete: true };
     await rm(tempRoot, { recursive: true, force: true });
-  };
+  });
   activeCleanup = cleanup;
   try {
     const postgres = await startPostgres(owned, tempRoot);
@@ -762,7 +802,7 @@ async function productionGateHermetic() {
       KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: trustBundle.issuerDid,
       BIND_ADDR: `127.0.0.1:${credentialsPort}`, CORS_ALLOWED_ORIGINS: canonical.share,
       SHARE_EMAIL_CAPABILITY: "true", SHARE_EMAIL_TRUST_BUNDLE_JSON: JSON.stringify(trustBundle),
-      SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "hermetic-production-key", RESEND_WEBHOOK_SECRET: "hermetic-production-webhook",
+      SHARE_EMAIL_SHARE_URL: canonical.share, RESEND_API_KEY: "re_hermetic_production_key_0001", RESEND_WEBHOOK_SECRET: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
       DATABASE_URL: postgres.url, DATABASE_SSL_ROOT_CERT: postgres.caCert,
       DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000",
       DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
@@ -770,7 +810,7 @@ async function productionGateHermetic() {
       STORAGE_READINESS_MAX_AGE_SECONDS: "30", SHARE_EMAIL_KEY_DERIVATION_VERSION: "1",
     });
     owned.push(credentials);
-    await waitForPort(credentialsPort, "OpenCredentials production composition");
+    await waitForPort(credentialsPort, "OpenCredentials production composition", credentials);
     const credentialsUrl = `http://127.0.0.1:${credentialsPort}`;
     const readiness = await fetch(`${credentialsUrl}/share-email/readiness`);
     if (readiness.status !== 200) throw new Error(`OpenCredentials production readiness failed (${readiness.status})`);
@@ -794,6 +834,9 @@ async function productionGateHermetic() {
       const source = entry.source ?? scope.source;
       const policyDocument = entry.policy ?? scope.policy;
       const authority = entry.authorityMaterial ?? scope.authorityMaterial;
+      const recipientEmail = entry.authoritativeBinding?.recipientEmail ?? entry.expectedRecipientEmail;
+      if (typeof recipientEmail !== "string") throw new Error(`production case ${entry.kind ?? "unknown"} did not publish an exact recipient email`);
+      scope.recipientEmail = recipientEmail;
       const policyBytes = Buffer.from(stableJson(policyDocument), "utf8").toString("base64url");
       return JSON.stringify({ scope, source, policy: {
         action: source.action, authorityMaterialDigest: entry.authorityMaterialDigest ?? scope.authorityMaterialDigest,
@@ -801,23 +844,23 @@ async function productionGateHermetic() {
         expiresAt: entry.expiresAt ?? scope.expiresAt, policyAuthorityBytes: authority.policyAuthorityBytes,
         policyAuthorityCid: authority.policyAuthorityCid, policyBytes, policyDigest: digestBase64Url(Buffer.from(stableJson(policyDocument), "utf8")),
         policyEnforcementBytes: authority.policyEnforcementBytes, policyEnforcementCid: authority.policyEnforcementCid,
-        policyCid: entry.policyCid, recipientEmail: policyDocument.recipientEmail, resource: source.path, source,
+        policyCid: entry.policyCid, recipientEmail, resource: source.path, source,
         target: { origin: scope.targetOrigin, nodeAudience: scope.nodeAudience, spaceId: source.space },
       }});
     });
     const envValues = {
-      SHARE_SENDER_ENABLED: "true",
+      SHARE_API_IMAGE: process.env.SHARE_API_IMAGE ?? `ghcr.io/tinycloudlabs/share-api@sha256:${"a".repeat(64)}`, SHARE_SENDER_ENABLED: "true",
       SHARE_TRUST_BUNDLE_FILE: join(tempRoot, "trust-bundle.json"), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey,
       SHARE_SENDER_CAPABILITIES_JSON: JSON.stringify(capabilityJson),
       SHARE_AUTH_USERS_JSON: JSON.stringify([{ userId: "production-composition-user", username: "production-composition", passwordHash: scryptPassword("production-composition-password") }]),
-      SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true",
+      SHARE_BINDING_STORE_ROOT: tempRoot, SHARE_BINDING_STORE_PATH: bindingStorePath, SHARE_HERMETIC_COMPOSITION: "true",
       SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: { origin: canonical.node, transportOrigin: nodeUrl }, credentials: { origin: canonical.credentials, transportOrigin: credentialsUrl }, registry: { origin: canonical.registry, transportOrigin: registryUrl } }),
       VITE_SHARE_REGISTRY_URL: canonical.registry,
     };
     await writeFile(envValues.SHARE_TRUST_BUNDLE_FILE, `${JSON.stringify(trustBundle)}\n`, { encoding: "utf8", flag: "wx" });
     await writeFile(deployEnvFile, `${Object.entries(envValues).map(([key, value]) => `${key}=${value}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
     const deployEnv = { ...process.env, ...envValues, SHARE_DEPLOY_STARTUP: "true" };
-    const validationEnv = { ...deployEnv }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
+    const validationEnv = { ...deployEnv, SHARE_BINDING_STORE_ROOT: "/var/lib/tinycloud/share", SHARE_BINDING_STORE_PATH: "/var/lib/tinycloud/share/bindings.ndjson" }; delete validationEnv.SHARE_HERMETIC_COMPOSITION; delete validationEnv.SHARE_HERMETIC_UPSTREAMS_JSON;
     await run("node", ["scripts/validate-deploy-config.mjs"], shareRoot, validationEnv);
     await run("npm", ["run", "build:deploy"], shareRoot, validationEnv);
     const port = await freePort();
@@ -847,14 +890,14 @@ async function fixtureGate() {
   const bindingStorePath = join(tempRoot, "bindings.ndjson");
   let resendProvider;
   let production;
-  const cleanup = async () => {
+  const cleanup = onceAsync(async () => {
     await resendProvider?.close();
     await stopOwned(owned);
     const processListing = await runCapture("ps", ["-axo", "pid=,command="], shareRoot).catch(() => "");
     const remaining = processListing.split("\n").filter((line) => line.includes("share-registry") || line.includes(tempRoot));
     ownedProcessCleanup = { stopped: owned.length, remaining, complete: remaining.length === 0 };
     await rm(tempRoot, { recursive: true, force: true });
-  };
+  });
   activeCleanup = cleanup;
   try {
     const postgres = await startPostgres(owned, tempRoot);
@@ -1147,6 +1190,7 @@ async function writeRunRecord(exitStatus, errorMessage) {
 }
 
 try {
+  await acquireLock();
   if (process.argv.includes("--fixture-only")) {
     await fixtureGate();
     console.error("email-claim fixture-backed browser gate: PASS");
@@ -1159,6 +1203,8 @@ try {
   console.error(`email-claim continuous production gate: BLOCKED — ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
   await writeRunRecord(1, error instanceof Error ? error.message : String(error));
+} finally {
+  await releaseLock();
 }
 if (process.exitCode === undefined) {
   await writeRunRecord(0, null);

@@ -5,19 +5,13 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     environment:
-      # Sender mode stays fail-closed by default, but every enablement input
-      # is explicitly carried into the same container so the operator can
-      # atomically provision a complete composition. Empty optional values
-      # are removed by the entrypoint before startup validation.
       SHARE_SENDER_ENABLED: ${SHARE_SENDER_ENABLED:-false}
-      SHARE_SENDER_PRIVATE_KEY: ${SHARE_SENDER_PRIVATE_KEY-}
-      SHARE_SENDER_CAPABILITY_JSON: ${SHARE_SENDER_CAPABILITY_JSON-}
-      SHARE_SENDER_CAPABILITIES_JSON: ${SHARE_SENDER_CAPABILITIES_JSON-}
       SHARE_AUTH_USERS_JSON: ${SHARE_AUTH_USERS_JSON-}
       SHARE_BINDING_STORE_ROOT: /var/lib/tinycloud/share
       SHARE_BINDING_STORE_PATH: ${SHARE_BINDING_STORE_PATH:-/var/lib/tinycloud/share/bindings.ndjson}
       SHARE_REGISTRY_UPLOAD_KEY_PATH: /var/lib/tinycloud/share/registry-upload.key
       SHARE_TRUST_BUNDLE_BASE64: ${SHARE_TRUST_BUNDLE_BASE64:?set the base64-encoded validated public production trust bundle}
+      SHARE_RELEASE_PROVENANCE: ${SHARE_RELEASE_PROVENANCE:?set the immutable reviewed release provenance manifest}
     command:
       - /bin/sh
       - -eu
@@ -26,9 +20,6 @@ services:
         printf '%s' "$$SHARE_TRUST_BUNDLE_BASE64" | base64 -d > /tmp/share-trust-bundle.json
         export SHARE_TRUST_BUNDLE_FILE=/tmp/share-trust-bundle.json
         unset SHARE_TRUST_BUNDLE_BASE64
-        [ -n "$$SHARE_SENDER_PRIVATE_KEY" ] || unset SHARE_SENDER_PRIVATE_KEY
-        [ -n "$$SHARE_SENDER_CAPABILITY_JSON" ] || unset SHARE_SENDER_CAPABILITY_JSON
-        [ -n "$$SHARE_SENDER_CAPABILITIES_JSON" ] || unset SHARE_SENDER_CAPABILITIES_JSON
         [ -n "$$SHARE_AUTH_USERS_JSON" ] || unset SHARE_AUTH_USERS_JSON
         exec npm run start:deploy
     volumes:
