@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { renderRecipientState, type RecipientFacts } from "../../src/email-share/view.js";
+import { renderRecipientInvalid, renderRecipientState, type RecipientFacts } from "../../src/email-share/view.js";
 
 function actions() {
   return { onOpen: vi.fn(), onRetry: vi.fn(), onUseOtp: vi.fn(), onOtp: vi.fn(), onResend: vi.fn(), onForget: vi.fn() };
@@ -99,5 +99,43 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(root.textContent).not.toContain(secretUrl);
     expect(Array.from(root.querySelectorAll<HTMLElement>("*")).every((element) => !Array.from(element.attributes).some((attribute) => attribute.value.includes(secretUrl)))).toBe(true);
     expect(root.querySelector("a")).toBeNull();
+  });
+
+  it("announces and focuses every recipient state, and keeps the copy jargon-free (P0-4)", () => {
+    const forbidden = /delegation|capability|envelope|registry|matcher|bearer|invocation|holder|non-extractable|browser key|credential/i;
+    const claim = { holder: { did: "did:key:z6Mkholder", privateKey: {} as CryptoKey }, credential: "credential", expiresAt: "2099-01-01T00:00:00.000Z", persisted: false as const };
+    const states: Parameters<typeof renderRecipientState>[2][] = [
+      { state: "verifying", emailHint: "r***@example.com" },
+      { state: "ready", emailHint: "r***@example.com" },
+      { state: "activation", emailHint: "r***@example.com" },
+      { state: "challenge", emailHint: "r***@example.com" },
+      { state: "redeeming", emailHint: "r***@example.com" },
+      { state: "resending", emailHint: "r***@example.com" },
+      { state: "claimed", claim },
+      { state: "session", claim },
+      { state: "reading", claim },
+      { state: "forgotten" },
+      { state: "error", code: "unsupported-browser", retryable: false },
+      { state: "error", code: "capability-unavailable", retryable: false },
+    ];
+    for (const state of states) {
+      const root = document.createElement("div");
+      root.tabIndex = -1;
+      document.body.append(root);
+      renderRecipientState(root, facts, state, actions());
+      expect(document.activeElement, `${state.state} must move focus`).toBe(root);
+      expect(root.textContent ?? "", `${state.state}: ${root.textContent ?? ""}`).not.toMatch(forbidden);
+      root.remove();
+    }
+  });
+
+  it("announces and focuses the invalid-link state", () => {
+    const root = document.createElement("div");
+    root.tabIndex = -1;
+    document.body.append(root);
+    renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
+    expect(root.querySelector("[role=alert]")).not.toBeNull();
+    expect(document.activeElement).toBe(root);
+    root.remove();
   });
 });
