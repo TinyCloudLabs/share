@@ -24,6 +24,18 @@ export interface RecipientViewActions {
   readonly onForget: () => void;
 }
 
+interface Mounted {
+  readonly main: HTMLElement;
+  readonly statusSection: HTMLElement;
+  readonly liveRegion: HTMLElement;
+  readonly title: HTMLElement;
+  readonly detail: HTMLElement;
+  readonly actionsHost: HTMLElement;
+  lastState: ClaimState["state"];
+}
+
+const mountedRecipientViews = new WeakMap<HTMLElement, Mounted>();
+
 function formatExpiry(value: string): string {
   const time = Date.parse(value);
   if (!Number.isFinite(time)) return "the stated expiry";
@@ -85,55 +97,116 @@ export function renderRecipientInvalid(root: HTMLElement, message: string): void
   focusViewerRoot(root);
 }
 
-export function renderRecipientState(root: HTMLElement, facts: RecipientFacts, state: ClaimState, actions: RecipientViewActions): void {
-  root.replaceChildren();
-  const doc = root.ownerDocument;
-  const senderName = facts.envelope.display.senderName?.trim() || "Someone";
-  const copy = recipientCopy(state, senderName);
-  const main = element(doc, "main", "recipient-shell");
-  const header = element(doc, "header", "recipient-header");
-  header.append(element(doc, "p", "recipient-brand", "TinyCloud sharing"), element(doc, "h1", "recipient-title", documentName(facts)), element(doc, "p", "recipient-detail", "A read-only document shared with you."));
-  const factsList = element(doc, "dl", "recipient-facts");
-  const addFact = (label: string, value: string): void => { factsList.append(element(doc, "dt", "recipient-fact-label", label), element(doc, "dd", "recipient-fact-value", value)); };
-  addFact("Shared by", senderName);
-  addFact("Shared with", facts.share.recipientHint);
-  addFact("Access", "Read-only");
-  addFact("Available until", formatExpiry(facts.share.expiry));
-  header.append(factsList);
-  const status = element(doc, "section", "recipient-status");
-  status.setAttribute("role", copy.alert ? "alert" : "status");
-  status.setAttribute("aria-live", copy.alert ? "assertive" : "polite");
-  status.setAttribute("aria-atomic", "true");
-  status.append(element(doc, "h2", "recipient-status-title", copy.title));
-  if (copy.detail !== "") status.append(element(doc, "p", "recipient-status-detail", copy.detail));
+function cooldownCopy(state: Extract<ClaimState, { readonly state: "otp" }>): string {
+  return state.retryAfterSeconds !== undefined && state.retryAfterSeconds > 0
+    ? `You can request another code in ${state.retryAfterSeconds} seconds.`
+    : "You can request a new code if it does not arrive.";
+}
+
+function buildActions(doc: Document, facts: RecipientFacts, state: ClaimState, actions: RecipientViewActions): DocumentFragment {
+  const fragment = doc.createDocumentFragment();
   if (state.state === "ready" || state.state === "verifying") {
-    const open = element(doc, "button", "recipient-primary-action", "Open document"); open.type = "button"; open.addEventListener("click", actions.onOpen); status.append(open);
-    const otp = element(doc, "button", "recipient-secondary-action", "Use email code instead"); otp.type = "button"; otp.addEventListener("click", actions.onUseOtp); status.append(otp);
+    const open = element(doc, "button", "recipient-primary-action", "Open document"); open.type = "button"; open.addEventListener("click", actions.onOpen); fragment.append(open);
+    const otp = element(doc, "button", "recipient-secondary-action", "Use email code instead"); otp.type = "button"; otp.addEventListener("click", actions.onUseOtp); fragment.append(otp);
   }
   if (state.state === "error" && state.retryable) {
-    const retry = element(doc, "button", "recipient-primary-action", "Retry"); retry.type = "button"; retry.addEventListener("click", actions.onRetry); status.append(retry);
+    const retry = element(doc, "button", "recipient-primary-action", "Retry"); retry.type = "button"; retry.addEventListener("click", actions.onRetry); fragment.append(retry);
   }
   if (state.state === "otp") {
     const form = element(doc, "form", "recipient-otp-form") as HTMLFormElement;
     const label = element(doc, "label", "recipient-field-label", "Six-digit code");
     const input = element(doc, "input", "recipient-code") as HTMLInputElement; input.type = "text"; input.inputMode = "numeric"; input.autocomplete = "one-time-code"; input.pattern = "[0-9]{6}"; input.maxLength = 6; input.required = true; input.id = "recipient-code"; input.setAttribute("aria-describedby", "recipient-cooldown"); label.htmlFor = input.id; label.append(input);
-    const submit = element(doc, "button", "recipient-primary-action", "Verify code"); submit.type = "submit"; form.append(label, submit); form.addEventListener("submit", (event) => { event.preventDefault(); actions.onOtp(input.value); }); status.append(form);
-    const cooldown = element(doc, "p", "recipient-cooldown", state.retryAfterSeconds !== undefined && state.retryAfterSeconds > 0 ? `You can request another code in ${state.retryAfterSeconds} seconds.` : "You can request a new code if it does not arrive."); cooldown.id = "recipient-cooldown"; cooldown.setAttribute("aria-live", "polite"); status.append(cooldown);
-    const resend = element(doc, "button", "recipient-secondary-action", "Resend email"); resend.type = "button"; resend.disabled = (state.retryAfterSeconds ?? 0) > 0; resend.setAttribute("aria-disabled", String(resend.disabled)); resend.addEventListener("click", actions.onResend); status.append(resend);
+    const submit = element(doc, "button", "recipient-primary-action", "Verify code"); submit.type = "submit"; form.append(label, submit); form.addEventListener("submit", (event) => { event.preventDefault(); actions.onOtp(input.value); }); fragment.append(form);
+    const cooldown = element(doc, "p", "recipient-cooldown", cooldownCopy(state)); cooldown.id = "recipient-cooldown"; cooldown.setAttribute("aria-live", "polite"); fragment.append(cooldown);
+    const resend = element(doc, "button", "recipient-secondary-action", "Resend email"); resend.type = "button"; resend.disabled = (state.retryAfterSeconds ?? 0) > 0; resend.setAttribute("aria-disabled", String(resend.disabled)); resend.addEventListener("click", actions.onResend); fragment.append(resend);
   }
   if (state.state === "claimed" || state.state === "session" || state.state === "reading") {
-    const forget = element(doc, "button", "recipient-secondary-action", "Sign out of this share"); forget.type = "button"; forget.addEventListener("click", actions.onForget); status.append(forget);
+    const forget = element(doc, "button", "recipient-secondary-action", "Sign out of this share"); forget.type = "button"; forget.addEventListener("click", actions.onForget); fragment.append(forget);
   }
   if (facts.shareUrl !== undefined) {
+    const shareUrl = facts.shareUrl;
     const copy = element(doc, "button", "recipient-secondary-action", "Copy link"); copy.type = "button";
     copy.setAttribute("aria-describedby", "recipient-copy-status");
     const copyStatus = element(doc, "span", "recipient-copy-status", ""); copyStatus.id = "recipient-copy-status"; copyStatus.setAttribute("role", "status"); copyStatus.setAttribute("aria-live", "polite");
-    copy.addEventListener("click", () => { void copyWithFallback(facts.shareUrl!).then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; }).catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; }); });
-    status.append(copy, copyStatus);
+    copy.addEventListener("click", () => { void copyWithFallback(shareUrl).then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; }).catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; }); });
+    fragment.append(copy, copyStatus);
   }
-  main.append(header, status);
-  root.append(main);
-  focusViewerRoot(root);
+  return fragment;
+}
+
+function updateLiveRegion(mounted: Mounted, copy: ReturnType<typeof recipientCopy>): void {
+  mounted.liveRegion.setAttribute("role", copy.alert ? "alert" : "status");
+  mounted.liveRegion.setAttribute("aria-live", copy.alert ? "assertive" : "polite");
+  mounted.statusSection.classList.toggle("recipient-status-alert", copy.alert);
+}
+
+function updateStatusCopy(mounted: Mounted, copy: ReturnType<typeof recipientCopy>): void {
+  if (mounted.title.textContent !== copy.title) mounted.title.textContent = copy.title;
+  if (mounted.detail.textContent !== copy.detail) mounted.detail.textContent = copy.detail;
+  const detailHidden = copy.detail === "";
+  if (mounted.detail.hidden !== detailHidden) mounted.detail.hidden = detailHidden;
+}
+
+function updateOtpControls(actionsHost: HTMLElement, state: Extract<ClaimState, { readonly state: "otp" }>): void {
+  const cooldown = actionsHost.querySelector<HTMLElement>("#recipient-cooldown");
+  const cooldownText = cooldownCopy(state);
+  if (cooldown?.textContent !== cooldownText) cooldown!.textContent = cooldownText;
+  const resend = actionsHost.querySelector<HTMLButtonElement>("button.recipient-secondary-action");
+  if (resend !== null) {
+    const disabled = (state.retryAfterSeconds ?? 0) > 0;
+    if (resend.disabled !== disabled) resend.disabled = disabled;
+    if (resend.getAttribute("aria-disabled") !== String(disabled)) resend.setAttribute("aria-disabled", String(disabled));
+  }
+}
+
+export function renderRecipientState(root: HTMLElement, facts: RecipientFacts, state: ClaimState, actions: RecipientViewActions): void {
+  const senderName = facts.envelope.display.senderName?.trim() || "Someone";
+  const copy = recipientCopy(state, senderName);
+  let mounted = mountedRecipientViews.get(root);
+
+  if (mounted === undefined || mounted.main.parentNode !== root) {
+    const doc = root.ownerDocument;
+    const main = element(doc, "main", "recipient-shell");
+    const header = element(doc, "header", "recipient-header");
+    header.append(element(doc, "p", "recipient-brand", "TinyCloud sharing"), element(doc, "h1", "recipient-title", documentName(facts)), element(doc, "p", "recipient-detail", "A read-only document shared with you."));
+    const factsList = element(doc, "dl", "recipient-facts");
+    const addFact = (label: string, value: string): void => { factsList.append(element(doc, "dt", "recipient-fact-label", label), element(doc, "dd", "recipient-fact-value", value)); };
+    addFact("Shared by", senderName);
+    addFact("Shared with", facts.share.recipientHint);
+    addFact("Access", "Read-only");
+    addFact("Available until", formatExpiry(facts.share.expiry));
+    header.append(factsList);
+    const statusSection = element(doc, "section", "recipient-status");
+    const liveRegion = element(doc, "div", "recipient-status-live");
+    liveRegion.setAttribute("aria-atomic", "true");
+    const title = element(doc, "h2", "recipient-status-title", copy.title);
+    const detail = element(doc, "p", "recipient-status-detail", copy.detail);
+    detail.hidden = copy.detail === "";
+    liveRegion.append(title, detail);
+    const actionsHost = element(doc, "div", "recipient-actions");
+    actionsHost.append(buildActions(doc, facts, state, actions));
+    statusSection.append(liveRegion, actionsHost);
+    main.append(header, statusSection);
+    root.replaceChildren(main);
+    mounted = { main, statusSection, liveRegion, title, detail, actionsHost, lastState: state.state };
+    mountedRecipientViews.set(root, mounted);
+    updateLiveRegion(mounted, copy);
+    updateStatusCopy(mounted, copy);
+    focusViewerRoot(root);
+    return;
+  }
+
+  if (mounted.lastState !== state.state) {
+    mounted.actionsHost.replaceChildren(buildActions(root.ownerDocument, facts, state, actions));
+    updateLiveRegion(mounted, copy);
+    updateStatusCopy(mounted, copy);
+    mounted.lastState = state.state;
+    focusViewerRoot(root);
+    return;
+  }
+
+  updateStatusCopy(mounted, copy);
+  if (state.state === "otp") updateOtpControls(mounted.actionsHost, state);
 }
 
 export function appendRecipientForgetAction(root: HTMLElement, onForget: () => void): void {

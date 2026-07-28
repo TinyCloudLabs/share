@@ -61,6 +61,36 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(callbacks.onOtp).toHaveBeenCalledWith("042731");
   });
 
+  it("a cooldown tick never destroys the OTP input, its value, or focus (TC-300)", () => {
+    const root = document.createElement("div");
+    root.tabIndex = -1;
+    document.body.append(root);
+    const callbacks = actions();
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 20 }, callbacks);
+    const input = root.querySelector<HTMLInputElement>("#recipient-code");
+    const resend = root.querySelector<HTMLButtonElement>("button.recipient-secondary-action");
+    expect(input).not.toBeNull();
+    expect(resend).not.toBeNull();
+    input!.focus();
+    input!.value = "042731";
+
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 19 }, callbacks);
+    expect(root.querySelector("#recipient-code")).toBe(input);
+    expect(input!.value).toBe("042731");
+    expect(document.activeElement).toBe(input);
+    expect(root.querySelector("#recipient-cooldown")?.textContent).toContain("19 seconds");
+
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 0 }, callbacks);
+    expect(root.querySelector("#recipient-code")).toBe(input);
+    expect(input!.value).toBe("042731");
+    expect(document.activeElement).toBe(input);
+    expect(root.querySelector("button.recipient-secondary-action")).toBe(resend);
+    expect(resend!.disabled).toBe(false);
+    expect(resend!.getAttribute("aria-disabled")).toBe("false");
+    expect(root.querySelector("#recipient-cooldown")?.textContent).toBe("You can request a new code if it does not arrive.");
+    root.remove();
+  });
+
   it("makes recovery truthful and keeps terminal states free of document sinks", () => {
     const retry = render({ state: "error", code: "offline", retryable: true });
     expect(retry.root.querySelector("button.recipient-primary-action")?.textContent).toBe("Retry");
