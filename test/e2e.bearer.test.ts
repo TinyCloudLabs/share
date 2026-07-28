@@ -311,7 +311,7 @@ describe("bearer e2e: create → share → open → render", () => {
     expect(container).not.toBeNull();
     // fail closed: no preview frame, no rendered content, an honest state
     expect(container?.querySelector("iframe")).toBeNull();
-    expect(container?.textContent).toContain("too large to display");
+    expect(container?.textContent).toContain("too large to show here");
     expect(root.textContent).not.toContain("Q3 Report");
   });
 });
@@ -346,7 +346,7 @@ describe("bearer e2e: fail-closed paths", () => {
     const result = await resolve(created.url);
     expect(result).toMatchObject({ state: "content-fetch-failed" });
     const root = await expectFailClosed(result);
-    expect(root.textContent).toContain("Couldn't fetch the shared file");
+    expect(root.textContent).toContain("The file isn't available");
   });
 
   it("tampered content pointer (re-aimed at another blob) → signature-invalid", async () => {
