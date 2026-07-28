@@ -28,7 +28,8 @@ export type SenderFailureKind =
   | "deliveryRecipient"
   | "deliveryDomain"
   | "plaintext"
-  | "acknowledgment";
+  | "acknowledgment"
+  | "linkOnlyActions";
 
 export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   session: "Your session expired. Reload and sign in again.",
@@ -58,6 +59,7 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   deliveryDomain: "The delivery address must belong to the shared domain.",
   plaintext: "Link-only and single-person shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
+  linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
 };
 
 export function fail(kind: SenderFailureKind, detail: string, extra: Record<string, unknown> = {}): Error {

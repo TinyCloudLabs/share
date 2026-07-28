@@ -382,6 +382,11 @@ describe("share composer access controls", () => {
 
     await vi.waitFor(() => expect(persisted.length > 0 || root.querySelector<HTMLElement>(".composer-status")?.dataset.state === "error-invalid").toBe(true));
     expect(persisted.some(({ model }) => model.permissions.includes("edit"))).toBe(false);
+    // The guard must reach the sender as its own actionable copy. It is the one
+    // validateComposerModel throw that the sender-failure table could silently
+    // swallow into the generic "internal" message if it were left untagged.
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(SENDER_FAILURE.linkOnlyActions);
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).not.toBe(SENDER_FAILURE.internal);
   });
 });
 
