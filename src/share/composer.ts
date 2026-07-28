@@ -573,9 +573,13 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
 
   const accessFieldset = el(doc, "fieldset", "composer-section access-section");
   accessFieldset.append(el(doc, "legend", "field-legend", "What can they do?"));
+  const accessControls: Array<{ readonly value: SharePermission; readonly label: HTMLLabelElement; readonly input: HTMLInputElement }> = [];
   for (const [value, label] of [["read", "Can view — open and download"], ["list", "Can browse the folder"], ["edit", "Can edit — open, download, and save changes"]] as const) {
-    const labelNode = el(doc, "label", "permission-option"); const input = el(doc, "input", "") as HTMLInputElement; input.type = "checkbox"; input.name = "permission"; input.value = value; input.checked = value === "read"; labelNode.append(input, el(doc, "span", "permission-copy", label)); accessFieldset.append(labelNode);
+    const labelNode = el(doc, "label", "permission-option"); const input = el(doc, "input", "") as HTMLInputElement; input.type = "checkbox"; input.name = "permission"; input.value = value; input.checked = value === "read"; labelNode.append(input, el(doc, "span", "permission-copy", label)); accessControls.push({ value, label: labelNode, input }); accessFieldset.append(labelNode);
   }
+  const accessHint = el(doc, "p", "scope-note composer-access-hint", "Link-only shares are view-only. Choose a specific person to allow editing.");
+  accessHint.hidden = true;
+  accessFieldset.append(accessHint);
 
   // Advanced. Everything that is a default, not a question.
   const advanced = el(doc, "details", "composer-advanced");
@@ -645,6 +649,16 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const refreshRecipient = (): void => {
     const kind = selectedKind(); const addressed = kind !== "bearer";
     recipientInput.hidden = !addressed; deliveryLabel.hidden = !addressed;
+    for (const control of accessControls) {
+      if (control.value === "read") {
+        if (!addressed) control.input.checked = true;
+        control.input.disabled = !addressed;
+      } else {
+        control.label.hidden = !addressed;
+        if (!addressed) control.input.checked = false;
+      }
+    }
+    accessHint.hidden = addressed;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
     recipientInput.type = kind === "emailDomain" ? "text" : "email"; recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
     // Encryption is a real choice only for domain shares; everywhere else it

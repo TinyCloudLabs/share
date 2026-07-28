@@ -167,6 +167,9 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
     : model.recipient.kind === "emailDomain"
       ? { kind: "emailDomain" as const, value: normalizeEmailDomain(model.recipient.value ?? "") }
       : { kind: "bearer" as const };
+  if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
+    throw new TypeError("Link-only shares are view-only. Share with a specific person to allow editing.");
+  }
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw new TypeError("Choose when the link should expire.");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {

@@ -98,6 +98,11 @@ describe("share composer model", () => {
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: false }))).toThrow(/confirm you understand/i);
     expect(validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true, resource: { kind: "prefix", path: "docs" } }))).toMatchObject({ recipient: { value: "mailinator.com" }, resource: { kind: "prefix", path: "docs/" } });
   });
+
+  it("rejects ungranted link-only actions while allowing read", () => {
+    expect(() => validateComposerModel(modelWith(textContent, { permissions: ["read", "edit"] }))).toThrow("Link-only shares are view-only. Share with a specific person to allow editing.");
+    expect(validateComposerModel(modelWith(textContent, { permissions: ["read"] }))).toMatchObject({ recipient: { kind: "bearer" }, permissions: ["read"] });
+  });
 });
 
 describe("share composer content picker", () => {
@@ -237,6 +242,54 @@ describe("share composer access controls", () => {
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
   });
 
+  it("shows only view access for a link-only share and restores controls for a person", () => {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, baseOptions());
+    const read = root.querySelector<HTMLInputElement>("input[name=permission][value=read]")!;
+    const list = root.querySelector<HTMLInputElement>("input[name=permission][value=list]")!;
+    const edit = root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!;
+    const listRow = list.closest<HTMLLabelElement>("label")!;
+    const editRow = edit.closest<HTMLLabelElement>("label")!;
+    const hint = root.querySelector<HTMLElement>(".composer-access-hint")!;
+
+    expect(read).toMatchObject({ checked: true, disabled: true });
+    expect(list).toMatchObject({ checked: false });
+    expect(edit).toMatchObject({ checked: false });
+    expect(listRow.hidden).toBe(true);
+    expect(editRow.hidden).toBe(true);
+    expect(hint.hidden).toBe(false);
+
+    const person = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
+    person.checked = true;
+    person.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(read.disabled).toBe(false);
+    expect(listRow.hidden).toBe(false);
+    expect(editRow.hidden).toBe(false);
+    expect(hint.hidden).toBe(true);
+  });
+
+  it("persists only read for a plain link-only submit", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    let persisted: ShareComposerModel | undefined;
+    mountShareComposer(root, {
+      ...baseOptions(),
+      loadCapabilities: async () => [],
+      createShare: async ({ model }) => ({ url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }),
+      persistShare: async ({ model }) => { persisted = model; },
+    });
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["read only"], "read.txt", { type: "text/plain" })],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(persisted).toBeDefined());
+    expect(persisted!.permissions).toEqual(["read"]);
+  });
+
   it("uses the selected 24-hour expiry in the real link-only creation path", async () => {
     const fixed = Date.parse("2030-07-27T00:00:00.000Z");
     const expectedExpiry = new Date(fixed + 24 * 60 * 60 * 1000).toISOString();
@@ -288,6 +341,45 @@ describe("share composer access controls", () => {
       expect(request.url).toContain("/api/share/link-only/registry/blobs");
       expect(request.headers.get("x-delete-after")).toBe(expectedExpiry);
     }
+  });
+
+  it("a link-only share never persists an ungranted action", async () => {
+    const registry = createDevRegistry();
+    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
+      const target = new URL(
+        url.pathname.replace("/api/share/link-only/registry", ""),
+        "http://registry.local",
+      );
+      return registry.handler(new Request(target, {
+        ...init,
+        body,
+        duplex: "half",
+      } as RequestInit));
+    };
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    const persisted: Array<{ readonly share: ComposerShareResult; readonly model: ShareComposerModel }> = [];
+    mountShareComposer(root, {
+      ...baseOptions(),
+      fetchFn: authenticatedRegistryFetch,
+      loadCapabilities: async () => [],
+      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
+    });
+
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["hostile permission"], "hostile.txt", { type: "text/plain" })],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!.checked = true;
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(persisted.length > 0 || root.querySelector<HTMLElement>(".composer-status")?.dataset.state === "error-invalid").toBe(true));
+    expect(persisted.some(({ model }) => model.permissions.includes("edit"))).toBe(false);
   });
 });
 
