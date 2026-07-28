@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { renderRecipientState, type RecipientFacts } from "../../src/email-share/view.js";
+import { renderRecipientInvalid, renderRecipientState, type RecipientFacts } from "../../src/email-share/view.js";
 
 function actions() {
   return { onOpen: vi.fn(), onRetry: vi.fn(), onUseOtp: vi.fn(), onOtp: vi.fn(), onResend: vi.fn(), onForget: vi.fn() };
@@ -35,8 +35,8 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(open?.textContent).toBe("Open document");
     expect(otp?.textContent).toBe("Use email code instead");
     expect(root.querySelector(".viewer-content")).toBeNull();
-    expect(root.textContent).toContain("does not redeem it");
-    expect(root.textContent).not.toMatch(/wallet|openkey|sign in|account/i);
+    expect(root.textContent).toContain("shared this with you");
+    expect(root.textContent).not.toMatch(/wallet|openkey|account/i);
     open?.click(); otp?.click();
     expect(callbacks.onOpen).toHaveBeenCalledTimes(1);
     expect(callbacks.onUseOtp).toHaveBeenCalledTimes(1);
@@ -61,6 +61,36 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(callbacks.onOtp).toHaveBeenCalledWith("042731");
   });
 
+  it("a cooldown tick never destroys the OTP input, its value, or focus (TC-300)", () => {
+    const root = document.createElement("div");
+    root.tabIndex = -1;
+    document.body.append(root);
+    const callbacks = actions();
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 20 }, callbacks);
+    const input = root.querySelector<HTMLInputElement>("#recipient-code");
+    const resend = root.querySelector<HTMLButtonElement>("button.recipient-secondary-action");
+    expect(input).not.toBeNull();
+    expect(resend).not.toBeNull();
+    input!.focus();
+    input!.value = "042731";
+
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 19 }, callbacks);
+    expect(root.querySelector("#recipient-code")).toBe(input);
+    expect(input!.value).toBe("042731");
+    expect(document.activeElement).toBe(input);
+    expect(root.querySelector("#recipient-cooldown")?.textContent).toContain("19 seconds");
+
+    renderRecipientState(root, facts, { state: "otp", emailHint: "r***@example.com", message: "A new code was requested. Check your inbox.", retryAfterSeconds: 0 }, callbacks);
+    expect(root.querySelector("#recipient-code")).toBe(input);
+    expect(input!.value).toBe("042731");
+    expect(document.activeElement).toBe(input);
+    expect(root.querySelector("button.recipient-secondary-action")).toBe(resend);
+    expect(resend!.disabled).toBe(false);
+    expect(resend!.getAttribute("aria-disabled")).toBe("false");
+    expect(root.querySelector("#recipient-cooldown")?.textContent).toBe("You can request a new code if it does not arrive.");
+    root.remove();
+  });
+
   it("makes recovery truthful and keeps terminal states free of document sinks", () => {
     const retry = render({ state: "error", code: "offline", retryable: true });
     expect(retry.root.querySelector("button.recipient-primary-action")?.textContent).toBe("Retry");
@@ -75,11 +105,11 @@ describe("shipping exact-email recipient UI contract", () => {
     }
   });
 
-  it("labels the forget action and explains tab-only key lifetime", () => {
+  it("offers a plain-language exit from the share without protocol vocabulary", () => {
     const { root, callbacks } = render({ state: "claimed", claim: { holder: { did: "did:key:z6Mkholder", privateKey: {} as CryptoKey }, credential: "credential", expiresAt: "2099-01-01T00:00:00.000Z", persisted: false } });
     const forget = root.querySelector<HTMLButtonElement>("button.recipient-secondary-action");
-    expect(forget?.getAttribute("aria-label")).toBe("Forget the private browser key for this share");
-    expect(root.textContent).toContain("stays in this tab");
+    expect(forget?.textContent).toBe("Sign out of this share");
+    expect(root.textContent).not.toMatch(/browser key|holder|non-extractable/i);
     forget?.click();
     expect(callbacks.onForget).toHaveBeenCalledTimes(1);
   });
@@ -99,5 +129,43 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(root.textContent).not.toContain(secretUrl);
     expect(Array.from(root.querySelectorAll<HTMLElement>("*")).every((element) => !Array.from(element.attributes).some((attribute) => attribute.value.includes(secretUrl)))).toBe(true);
     expect(root.querySelector("a")).toBeNull();
+  });
+
+  it("announces and focuses every recipient state, and keeps the copy jargon-free (P0-4)", () => {
+    const forbidden = /delegation|capability|envelope|registry|matcher|bearer|invocation|holder|non-extractable|browser key|credential/i;
+    const claim = { holder: { did: "did:key:z6Mkholder", privateKey: {} as CryptoKey }, credential: "credential", expiresAt: "2099-01-01T00:00:00.000Z", persisted: false as const };
+    const states: Parameters<typeof renderRecipientState>[2][] = [
+      { state: "verifying", emailHint: "r***@example.com" },
+      { state: "ready", emailHint: "r***@example.com" },
+      { state: "activation", emailHint: "r***@example.com" },
+      { state: "challenge", emailHint: "r***@example.com" },
+      { state: "redeeming", emailHint: "r***@example.com" },
+      { state: "resending", emailHint: "r***@example.com" },
+      { state: "claimed", claim },
+      { state: "session", claim },
+      { state: "reading", claim },
+      { state: "forgotten" },
+      { state: "error", code: "unsupported-browser", retryable: false },
+      { state: "error", code: "capability-unavailable", retryable: false },
+    ];
+    for (const state of states) {
+      const root = document.createElement("div");
+      root.tabIndex = -1;
+      document.body.append(root);
+      renderRecipientState(root, facts, state, actions());
+      expect(document.activeElement, `${state.state} must move focus`).toBe(root);
+      expect(root.textContent ?? "", `${state.state}: ${root.textContent ?? ""}`).not.toMatch(forbidden);
+      root.remove();
+    }
+  });
+
+  it("announces and focuses the invalid-link state", () => {
+    const root = document.createElement("div");
+    root.tabIndex = -1;
+    document.body.append(root);
+    renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
+    expect(root.querySelector("[role=alert]")).not.toBeNull();
+    expect(document.activeElement).toBe(root);
+    root.remove();
   });
 });

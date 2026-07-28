@@ -8,6 +8,9 @@ import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
 import { mountPolicyV2Viewer } from "./viewer/policy-v2.js";
 
+// viewer.html is the ONLY page that loads this module, and it always declares
+// <div id="viewer">. There is no non-viewer branch here on purpose: the
+// recipient route must do no decorative work before its URL secret is scrubbed.
 const viewerRoot = document.getElementById("viewer");
 
 if (viewerRoot !== null) {
@@ -25,31 +28,6 @@ if (viewerRoot !== null) {
   void import("./viewer/viewer.css");
   void bootRecipient(viewerRoot, launch);
   }
-} else {
-  // The root site is a static product/spec page. Keep its Mermaid behavior
-  // isolated from the recipient route so the recipient has no decorative or
-  // protocol work before its URL secret is scrubbed.
-  void import("mermaid").then(({ default: mermaid }) => {
-    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict", fontFamily: "system-ui, -apple-system, sans-serif" });
-    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>("nav.toc ol a[href^='#']"));
-    const map = new Map<string, HTMLAnchorElement>();
-    links.forEach((a) => map.set(a.getAttribute("href")!.slice(1), a));
-    const targets = Array.from(map.keys()).map((id) => document.getElementById(id)).filter((target): target is HTMLElement => target !== null);
-    if (!("IntersectionObserver" in window) || targets.length === 0) return;
-    let current: HTMLAnchorElement | null = null;
-    const visible = new Set<string>();
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((entry) => entry.isIntersecting ? visible.add(entry.target.id) : visible.delete(entry.target.id));
-      const first = targets.find((target) => visible.has(target.id));
-      const next = first === undefined ? null : map.get(first.id) ?? null;
-      if (next === current) return;
-      current?.classList.remove("active");
-      current = next;
-      current?.classList.add("active");
-    }, { rootMargin: "-10% 0px -60% 0px" });
-    targets.forEach((target) => observer.observe(target));
-  });
 }
 
 async function bootSenderViewer(root: HTMLElement): Promise<void> {
@@ -61,7 +39,7 @@ async function bootSenderViewer(root: HTMLElement): Promise<void> {
   let accepted = false;
   let launched = false;
   const timeout = window.setTimeout(() => {
-    if (!launched) loading.textContent = "The private share could not be opened. Close this tab and try again.";
+    if (!launched) loading.textContent = "Couldn't open the preview. Close this tab and try again.";
   }, 10_000);
   const receive = (event: MessageEvent): void => {
     if (accepted || event.origin !== window.location.origin || event.data?.type !== "tinycloud-sender-channel" || event.ports.length !== 1) return;
@@ -101,7 +79,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   ]);
   renderRecipientLoading(root);
   if (launch === undefined) {
-    renderRecipientInvalid(root, "The link is incomplete. Ask the sender to resend the invitation.");
+    renderRecipientInvalid(root, "Part of this link is missing. Copy the whole link from the message you received — including everything after the # — and paste it into a new tab.");
     return;
   }
 
@@ -132,23 +110,23 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           // The v2 recipient adapter owns challenge binding and proof
           // verification.  A production credential is deliberately required
           // here; the UI must never turn an unverified email into access.
-          if (invite === undefined) throw new Error("The invitation claim fragment is missing.");
+          if (invite === undefined) throw new Error("Part of this link is missing. Ask the sender to share it again.");
           return buildV2Presentation({ challenge, envelope, policy, invite, publicConfig, shareCid: resolved.shareCid, holder });
         },
       });
       return;
     }
     if (resolved.state !== "policy-email-claim-required") {
-      await presentShare(root, resolved);
+      await presentShare(root, resolved, { shareUrl: shareHref });
       return;
     }
     if (invite === undefined) {
-      renderRecipientInvalid(root, "This exact-email invitation is missing its email proof. Ask the sender to resend the invitation.");
+      renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
       return;
     }
     const shareUrl = `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`;
 
-    renderRecipientLoading(root, "Checking invitation scope…");
+    renderRecipientLoading(root, "Checking…");
     const publicConfig = await config.loadSharePublicConfig();
     const credentialTrust = config.credentialTrustFromConfig(publicConfig);
     runtime.assertProductionCredentialTrust(credentialTrust);
@@ -166,7 +144,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const showContent = async (content: string): Promise<void> => {
       if (contentShown) return;
       contentShown = true;
-      await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, content });
+      await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, content }, { shareUrl });
       appendRecipientForgetAction(root, () => controller.forget());
     };
     const readDocument = async (): Promise<void> => {
@@ -182,7 +160,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     render({ state: "ready", emailHint: share.recipientHint });
   } catch (error) {
     const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-      ? "The trusted sharing service is unavailable. Try again later; no credential or document request was completed."
+      ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
@@ -193,7 +171,7 @@ async function buildV2Presentation(input: { readonly challenge: import("@tinyclo
   const outerSource = ownerOuter?.contentSource as Record<string, unknown> | undefined;
   const source = (outerSource === undefined ? input.policy.contentSource : { ...outerSource, action: input.challenge.action }) as ContentSource;
   const recipientEmail = input.envelope.deliveryEmail ?? "";
-  if (source.kind !== "kv" && source.kind !== "sql") throw new Error("The policy content source is invalid.");
+  if (source.kind !== "kv" && source.kind !== "sql") throw new Error("We couldn't read this share. Ask the sender for a fresh link.");
   const [{ issueEmailClaimCredential }, { createHttpTransport }, { credentialTrustFromConfig }] = await Promise.all([
     import("./email-share/claim.js"), import("./email-share/transport.js"), import("./email-share/config.js"),
   ]);

@@ -53,7 +53,6 @@ button, input, select, textarea { touch-action: manipulation; }
   background: var(--share-panel);
   overflow-wrap: anywhere;
 }
-.link-only-form [hidden] { display: none; }
 #share-app > .sender-form { width: min(100% - 3rem, 640px); margin: 64px auto; }
 .auth-shell { min-height: min(720px, calc(100svh - 5.4rem)); }
 .auth-form { max-width: 720px; }
@@ -120,19 +119,6 @@ button, input, select, textarea { touch-action: manipulation; }
 .field-legend { margin-bottom: 16px; }
 .scope-note { max-width: 72ch; margin: 2px 0 22px; color: var(--share-muted); font-size: 0.84rem; }
 pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border-bottom: 1px dotted var(--share-line); background: var(--share-faint); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); }
-.possession-note { margin-top: -4px; }
-.notify-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin: 0 0 24px;
-  padding: 16px 0;
-  border-top: 1px dotted var(--share-line);
-  border-bottom: 1px dotted var(--share-line);
-}
-.notify-checkbox { width: 20px; height: 20px; flex: 0 0 20px; margin: 2px 0 0; accent-color: var(--accent); }
-.notify-checkbox:disabled { opacity: 0.55; cursor: not-allowed; }
-.notify-label { color: var(--share-ink); font-size: 0.9rem; font-weight: 650; }
 .notify-help { margin: 3px 0 0; color: var(--share-muted); font-size: 0.82rem; }
 
 .button {
