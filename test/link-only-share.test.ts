@@ -60,29 +60,147 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("link-only sender", () => {
-  it("falls back to a temporary selected field when Clipboard API writes are denied", async () => {
+/**
+ * Every place a secret could be read out of the live document: serialized
+ * markup, every attribute value, and the live `value` property of every form
+ * control (property assignment never shows up in `outerHTML`).
+ */
+function domExposure(): string {
+  const parts: string[] = [document.documentElement.outerHTML];
+  for (const node of Array.from(document.querySelectorAll("*"))) {
+    for (const attribute of Array.from(node.attributes)) parts.push(attribute.value);
+    const value: unknown = (node as Partial<HTMLInputElement>).value;
+    if (typeof value === "string") parts.push(value);
+  }
+  return parts.join("\n");
+}
+
+describe("clipboard fallback (TC-297)", () => {
+  it("never exposes the complete share URL to the DOM while copying", async () => {
     const originalClipboard = navigator.clipboard;
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
-      value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+      value: {
+        writeText: vi.fn(async () => Promise.reject(new Error("denied"))),
+      },
     });
-    const execCommand = vi.fn(() => true);
+
+    const snapshots: string[] = [];
+    let copied: string | undefined;
+    // Stand in for the browser: `execCommand("copy")` dispatches a cancelable
+    // `copy` event synchronously, then copies whatever the handler left behind.
+    const execCommand = vi.fn((command: string) => {
+      snapshots.push(domExposure());
+      if (command !== "copy") return false;
+      const event = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        configurable: true,
+        value: {
+          setData: (format: string, data: string) => {
+            expect(format).toBe("text/plain");
+            copied = data;
+          },
+        },
+      });
+      document.dispatchEvent(event);
+      snapshots.push(domExposure());
+      return true;
+    });
     Object.defineProperty(document, "execCommand", {
       configurable: true,
       value: execCommand,
     });
 
-    await copyWithFallback(LINK);
+    try {
+      await copyWithFallback(LINK);
 
-    expect(execCommand).toHaveBeenCalledWith("copy");
-    expect(document.querySelector('textarea[aria-hidden="true"]')).toBeNull();
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: originalClipboard,
-    });
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      // No snapshot of the document ever contained the link, not even the key
+      // fragment or the envelope CID on their own.
+      expect(snapshots).not.toHaveLength(0);
+      for (const snapshot of snapshots) {
+        expect(snapshot).not.toContain(LINK);
+        expect(snapshot).not.toContain(LINK.split("#k=")[1]);
+        expect(snapshot).not.toContain("bafkreiaaaaaaaa");
+      }
+      expect(domExposure()).not.toContain(LINK);
+      // …and the clipboard still received the real link.
+      expect(copied).toBe(LINK);
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
   });
 
+  it("rejects when the copy event never delivers the payload", async () => {
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn(async () => Promise.reject(new Error("denied"))),
+      },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => true),
+    });
+
+    try {
+      await expect(copyWithFallback(LINK)).rejects.toThrow(/clipboard/i);
+      expect(document.body.textContent).not.toContain(LINK);
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("leaves no node behind and restores the caller's selection", async () => {
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: vi.fn(async () => Promise.reject(new Error("denied"))),
+      },
+    });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => {
+        const event = new Event("copy", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "clipboardData", {
+          configurable: true,
+          value: { setData: () => undefined },
+        });
+        document.dispatchEvent(event);
+        return true;
+      }),
+    });
+
+    const paragraph = document.createElement("p");
+    paragraph.textContent = "the user had selected this";
+    document.body.append(paragraph);
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+
+    try {
+      await copyWithFallback(LINK);
+      expect(document.body.children).toHaveLength(1);
+      expect(String(document.getSelection())).toBe("the user had selected this");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+});
+
+describe("link-only sender", () => {
   it("keeps Notify by email disabled, unchecked, described, and outside link creation", async () => {
     const createShare = vi.fn<CreateShare>(async () => result());
     const view = root();

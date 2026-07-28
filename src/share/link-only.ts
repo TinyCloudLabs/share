@@ -175,6 +175,44 @@ export async function createLinkOnlyShare(
   }
 }
 
+/**
+ * Copy a secret (a complete share URL, key fragment included) to the clipboard
+ * without ever materialising it in the DOM.
+ *
+ * Resolving the spec's own contradiction: the UX critique tells callers to
+ * reuse this helper for the recipient-side "Copy link" control (§3 P1-9),
+ * while §6.3 forbids rendering the complete share URL "as text, an `<a href>`,
+ * or any DOM attribute". The previous implementation violated §6.3 — it
+ * assigned the URL to a `<textarea>.value` and attached that node to
+ * `document.body`. Off-screen and `aria-hidden` are presentation, not
+ * isolation: while attached, any script on the page (an injected third party,
+ * an extension content script, a DOM-serialising error/analytics reporter, or
+ * a devtools snapshot) could read the secret back out of the live tree. Both
+ * rules can hold at once, so no exception is taken: reuse the helper, and make
+ * the helper DOM-free with respect to the secret.
+ *
+ * `document.execCommand("copy")` is deprecated and, in every engine that still
+ * implements it, refuses to act without a non-empty selection — which is why
+ * the textarea existed. But the selected node never had to be the one holding
+ * the secret: `execCommand("copy")` dispatches a cancelable `copy` event
+ * first, and a handler that calls `preventDefault()` and
+ * `clipboardData.setData()` replaces the payload wholesale. So we select a
+ * decoy node that contains one non-breaking space and substitute the real
+ * value in the event. The secret exists only as a JavaScript string and as an
+ * argument to a clipboard API.
+ *
+ * Residual risk, stated rather than hidden:
+ * - The value still reaches the system clipboard. That is the user's explicit
+ *   request and the point of the control.
+ * - A `copy` listener registered earlier in the capture phase on `window`
+ *   could observe our `clipboardData` write. Any script able to do that
+ *   already has same-origin script execution and could read the URL from
+ *   memory regardless; this is not a boundary the DOM can defend.
+ * - A one-character decoy node is attached for the duration of the synchronous
+ *   `execCommand` call. It carries no share data.
+ * - If the engine reports success but no handler delivered a payload, we throw
+ *   rather than let the decoy character land on the clipboard silently.
+ */
 export async function copyWithFallback(value: string): Promise<void> {
   if (navigator.clipboard?.writeText !== undefined) {
     try {
@@ -185,24 +223,49 @@ export async function copyWithFallback(value: string): Promise<void> {
       // Fall through to the selection-based copy path.
     }
   }
-  const field = document.createElement("textarea");
-  field.value = value;
-  field.readOnly = true;
-  field.setAttribute("aria-hidden", "true");
-  Object.assign(field.style, {
+
+  const decoy = document.createElement("span");
+  decoy.textContent = " ";
+  decoy.setAttribute("aria-hidden", "true");
+  Object.assign(decoy.style, {
     position: "fixed",
     inset: "0 auto auto -9999px",
     opacity: "0",
     pointerEvents: "none",
+    userSelect: "text",
   });
-  document.body.append(field);
+
+  let delivered = false;
+  const onCopy = (event: Event): void => {
+    const clipboardData = (event as ClipboardEvent).clipboardData;
+    if (clipboardData === null || clipboardData === undefined) return;
+    event.preventDefault();
+    clipboardData.setData("text/plain", value);
+    delivered = true;
+  };
+
+  const selection = document.getSelection();
+  const preserved: Range[] = [];
+  if (selection !== null) {
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      preserved.push(selection.getRangeAt(index));
+    }
+  }
+
+  document.addEventListener("copy", onCopy, true);
+  document.body.append(decoy);
   try {
-    field.focus();
-    field.select();
-    field.setSelectionRange(0, field.value.length);
+    const range = document.createRange();
+    range.selectNodeContents(decoy);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
     if (!document.execCommand("copy")) throw new Error("clipboard unavailable");
+    if (!delivered) throw new Error("clipboard unavailable");
   } finally {
-    field.remove();
+    document.removeEventListener("copy", onCopy, true);
+    decoy.remove();
+    selection?.removeAllRanges();
+    for (const range of preserved) selection?.addRange(range);
   }
 }
 
