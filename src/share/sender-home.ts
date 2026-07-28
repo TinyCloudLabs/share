@@ -1,15 +1,13 @@
-import type { ShareComposerModel } from "./composer-model.js";
-import { mountShareComposer, type ComposerShareResult, type ShareComposerOptions } from "./composer.js";
 import { copyWithFallback } from "./link-only.js";
 import { createSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
-import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./openkey-session.js";
+import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 
-interface SenderHomeOptions {
+export interface SenderHomeOptions {
   readonly session: OpenKeyShareSession;
   readonly tinycloud: ShareTinyCloud;
   readonly history: SenderHistoryRepository;
-  readonly capabilities: readonly UploadCapability[];
-  readonly composer: Omit<ShareComposerOptions, "openKeyAddress" | "session" | "tinycloud" | "persistShare" | "loadCapabilities">;
+  /** Hands control back to the router. The library never mounts another screen itself (P0-1). */
+  readonly onNavigate: (route: string) => void;
 }
 
 function node<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -25,13 +23,13 @@ function safeName(record: Extract<SenderHistoryItem, { state: "ready" | "expired
 
 function recipientSummary(item: Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }>): string {
   if (item.record.recipient.kind === "bearer") return "Anyone with link";
-  if (item.record.recipient.kind === "emailDomain") return `Email domain · ${item.record.recipient.value}`;
+  if (item.record.recipient.kind === "emailDomain") return `Anyone at ${item.record.recipient.value}`;
   const [local, domain] = item.record.recipient.value.split("@");
-  return `Exact email · ${(local?.slice(0, 1) ?? "•")}***@${domain ?? "…"}`;
+  return `Only ${(local?.slice(0, 1) ?? "•")}***@${domain ?? "…"}`;
 }
 
 function actionsSummary(actions: readonly string[]): string {
-  return actions.map((action) => action === "list" ? "List" : action[0]!.toUpperCase() + action.slice(1)).join(" / ");
+  return actions.map((action) => action === "list" ? "Browse" : action === "edit" ? "Edit" : "View").join(" / ");
 }
 
 export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): void {
@@ -40,7 +38,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   root.replaceChildren();
   const shell = node(doc, "main", "sender-shell sender-home");
   const header = node(doc, "header", "sender-header sender-home-header");
-  header.append(node(doc, "p", "sender-kicker", "OpenKey connected"), node(doc, "h1", "sender-title", "Shared by me."), node(doc, "p", "sender-lede", "Your encrypted share library, scoped to this sender account. Links stay private until you choose to copy or open them."));
+  header.append(node(doc, "p", "sender-kicker", "Signed in"), node(doc, "h1", "sender-title", "Shared by me."), node(doc, "p", "sender-lede", "Everything you've shared. Links stay private until you copy them."));
   const toolbar = node(doc, "div", "sender-home-toolbar");
   const newShare = node(doc, "button", "button button-primary", "New share") as HTMLButtonElement; newShare.type = "button";
   const account = node(doc, "span", "sender-account", options.session.address.length > 12 ? `${options.session.address.slice(0, 6)}…${options.session.address.slice(-4)}` : options.session.address);
@@ -54,9 +52,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   for (const label of ["Item", "Recipient", "Access", "Expires / status", "Created", "Actions"]) row.append(node(doc, "th", "", label));
   head.append(row); table.append(caption, head);
   const body = node(doc, "tbody", ""); table.append(body);
+  const empty = node(doc, "div", "sender-empty-state"); empty.hidden = true;
   const more = node(doc, "button", "button button-secondary sender-load-more", "Load more") as HTMLButtonElement; more.type = "button"; more.hidden = true;
   const error = node(doc, "div", "sender-status"); error.hidden = true; error.setAttribute("role", "alert");
-  content.append(title, table, more, error); shell.append(header, toolbar, live, content); root.append(shell);
+  content.append(title, table, empty, more, error); shell.append(header, toolbar, live, content); root.append(shell);
 
   const pageRows: HTMLElement[] = [];
   let cursor: string | undefined;
@@ -70,19 +69,26 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const dialog = node(doc, "dialog", "sender-import-dialog") as HTMLDialogElement;
     const form = node(doc, "form", "sender-form") as HTMLFormElement; form.method = "dialog";
     const heading = node(doc, "h2", "", "Import an existing link");
-    const help = node(doc, "p", "sender-status-detail", "Paste a complete link you still possess. It is validated and encrypted in this browser before it is saved.");
+    const help = node(doc, "p", "sender-status-detail", "Paste a share link you already have. It's checked and encrypted here before it's saved.");
     const label = node(doc, "label", "field-label", "Complete share link"); const input = node(doc, "input", "field-input") as HTMLInputElement; input.type = "url"; input.required = true; input.autocomplete = "off"; label.append(input);
     const save = node(doc, "button", "button button-primary", "Save encrypted link") as HTMLButtonElement; save.type = "submit";
     const cancel = node(doc, "button", "button button-secondary", "Cancel") as HTMLButtonElement; cancel.type = "button"; cancel.addEventListener("click", () => dialog.close());
     const message = node(doc, "p", "sender-live"); form.append(heading, help, label, save, cancel, message); dialog.append(form); root.append(dialog); dialog.showModal(); input.focus();
-    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || (!parsed.hash && parsed.pathname !== "/s/inline")) throw new Error("invalid"); const recordPromise = createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: value, cid: parsed.pathname.split("/").at(-1) ?? "inline", format: parsed.pathname === "/s/inline" ? "inline" : "compact", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), name: "Imported share", mediaType: "application/octet-stream", sourceKind: "upload", recipient: { kind: "bearer" }, actions: ["read"], delegationCid: null, revokedAt: null }); void recordPromise.then((record) => options.history.save(record)).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete share link with its fragment."; } });
+    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || (!parsed.hash && parsed.pathname !== "/s/inline")) throw new Error("invalid"); const recordPromise = createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: value, cid: parsed.pathname.split("/").at(-1) ?? "inline", format: parsed.pathname === "/s/inline" ? "inline" : "compact", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), name: "Imported share", mediaType: "application/octet-stream", sourceKind: "upload", recipient: { kind: "bearer" }, actions: ["read"], delegationCid: null, revokedAt: null }); void recordPromise.then((record) => options.history.save(record)).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete share link, including everything after the #."; } });
   };
+  // A first run is not a table row. The table and its six column headers stay
+  // out of the way entirely until there is something to put in them (P1-8).
   const renderEmpty = (): void => {
-    const empty = node(doc, "tr", "sender-empty-row"); const cell = node(doc, "td", "sender-empty-state"); cell.colSpan = 6; cell.append(node(doc, "strong", "", "No shares yet"), node(doc, "span", "", "Create your first encrypted share or import a link you still possess.")); const importButton = node(doc, "button", "button button-secondary", "Import existing link") as HTMLButtonElement; importButton.type = "button"; importButton.addEventListener("click", openImport); cell.append(importButton); empty.append(cell); body.append(empty); };
+    table.hidden = true; empty.hidden = false;
+    empty.replaceChildren(node(doc, "h3", "sender-empty-title", "No shares yet"), node(doc, "p", "sender-empty-copy", "Upload a file and get a private link in about ten seconds."));
+    const share = node(doc, "button", "button button-primary", "Share a file") as HTMLButtonElement; share.type = "button"; share.addEventListener("click", () => options.onNavigate("#/new"));
+    const importLink = node(doc, "button", "sender-empty-import", "Import a link you already have") as HTMLButtonElement; importLink.type = "button"; importLink.addEventListener("click", openImport);
+    empty.append(share, importLink);
+  };
   const renderItem = (item: SenderHistoryItem): void => {
     const row = node(doc, "tr", "sender-history-row");
     if (item.state === "needs-attention") {
-      const cell = node(doc, "td", "sender-history-attention"); cell.colSpan = 5; cell.append(node(doc, "strong", "", "Needs attention"), node(doc, "span", "", "This saved share could not be decrypted or validated.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); const remove = node(doc, "button", "button button-secondary", "Remove saved entry") as HTMLButtonElement; remove.type = "button"; remove.addEventListener("click", () => { if (!window.confirm("Remove this saved entry?")) return; remove.disabled = true; void options.history.remove(item.key).then(() => load(false)).catch(() => { remove.disabled = false; live.textContent = "The saved entry could not be removed. Try again."; }); }); cell.append(retry, remove); row.append(cell, node(doc, "td", "", "—")); body.append(row); return;
+      const cell = node(doc, "td", "sender-history-attention"); cell.colSpan = 5; cell.append(node(doc, "strong", "", "Needs attention"), node(doc, "span", "", "We couldn't read this saved entry.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); const remove = node(doc, "button", "button button-secondary", "Remove saved entry") as HTMLButtonElement; remove.type = "button"; remove.addEventListener("click", () => { if (!window.confirm("Remove this saved entry?")) return; remove.disabled = true; void options.history.remove(item.key).then(() => load(false)).catch(() => { remove.disabled = false; live.textContent = "The saved entry could not be removed. Try again."; }); }); cell.append(retry, remove); row.append(cell, node(doc, "td", "", "—")); body.append(row); return;
     }
     const itemCell = node(doc, "td", "sender-item-cell"); itemCell.append(node(doc, "strong", "", safeName(item.record)), node(doc, "span", "sender-item-type", item.record.mediaType));
     const recipient = node(doc, "td", "", recipientSummary(item)); recipient.dataset.label = "Recipient";
@@ -94,25 +100,32 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const copy = node(doc, "button", "button button-secondary", "Copy link") as HTMLButtonElement; copy.type = "button"; copy.setAttribute("aria-label", `Copy link for ${safeName(item.record)}`); copy.addEventListener("click", () => { void copyWithFallback(item.record.url).then(() => { live.textContent = "Link copied."; }).catch(() => { live.textContent = "Copy failed. Try again after allowing clipboard access."; }); });
     const open = node(doc, "button", "button button-secondary", "Open") as HTMLButtonElement; open.type = "button"; open.setAttribute("aria-label", `Open ${safeName(item.record)}`); open.addEventListener("click", () => openSenderViewer(item.record.url, live));
     itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
-    if (item.state !== "revoked" && item.record.delegationCid !== null) {
+    if (item.state !== "revoked") {
       const revoke = node(doc, "button", "button button-secondary sender-revoke", "Revoke") as HTMLButtonElement; revoke.type = "button"; revoke.setAttribute("aria-label", `Revoke ${safeName(item.record)}`);
-      revoke.addEventListener("click", () => {
-        if (!window.confirm("Revoke this share? Anyone holding the link, including any downstream copies of its authority, immediately loses access. This cannot be undone.")) return;
-        const delegationCid = item.record.delegationCid;
-        if (delegationCid === null) return;
-        revoke.disabled = true; live.textContent = "Revoking…";
-        void options.tinycloud.revokeDelegation(delegationCid).then((result) => {
-          if (!result.ok) throw new Error(result.error.message);
-          return options.history.markRevoked(item.record);
-        }).then(() => { live.textContent = "Share revoked."; return load(false); }).catch(() => { revoke.disabled = false; live.textContent = "Revoke failed. The node did not confirm this revocation; try again."; });
-      });
+      const delegationCid = item.record.delegationCid;
+      if (delegationCid === null) {
+        // A link-only share carries no revocable authority. Show the control
+        // disabled and say why, instead of silently dropping it (P1-3).
+        revoke.disabled = true;
+        revoke.title = "Link-only shares can't be revoked early.";
+        revoke.classList.add("sender-revoke-unavailable");
+      } else {
+        revoke.addEventListener("click", () => {
+          if (!window.confirm("Revoke this share? Everyone who has the link loses access immediately, including anyone they passed it to. This can't be undone.")) return;
+          revoke.disabled = true; live.textContent = "Revoking…";
+          void options.tinycloud.revokeDelegation(delegationCid).then((result) => {
+            if (!result.ok) throw new Error(result.error.message);
+            return options.history.markRevoked(item.record);
+          }).then(() => { live.textContent = "Share revoked."; return load(false); }).catch(() => { revoke.disabled = false; live.textContent = "Revoke didn't go through — the share is still active. Try again."; });
+        });
+      }
       controls.append(revoke);
     }
     row.append(itemCell, recipient, access, status, created, controls); body.append(row); pageRows.push(row);
   };
   const load = async (append: boolean): Promise<void> => {
     if (loading) return;
-    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; renderSkeleton(); }
+    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; renderSkeleton(); }
     try {
       const page = await options.history.page(cursor);
       if (!append) body.replaceChildren();
@@ -122,24 +135,15 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudSenderHistoryError?: string }).__tinycloudSenderHistoryError = caught instanceof Error ? caught.message : String(caught);
       if (!append && initialLoadRetries < 3) {
         initialLoadRetries += 1;
-        live.textContent = "Reconnecting to your encrypted share library…";
+        live.textContent = "Loading your shares…";
         window.setTimeout(() => { void load(false); }, 250);
         return;
       }
-      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Your encrypted library could not be reached. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); error.append(retry);
+      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); error.append(retry);
     } finally { table.removeAttribute("aria-busy"); loading = false; }
   };
-  const openComposer = (): void => {
-    const composerOptions: ShareComposerOptions = { ...options.composer, openKeyAddress: options.session.address, session: options.session, tinycloud: options.tinycloud, loadCapabilities: async () => options.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })), persistShare: async ({ share, model, file }) => {
-      const expiresAt = share.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-      const recipient = model.recipient.kind === "bearer" ? { kind: "bearer" as const } : { kind: model.recipient.kind, value: model.recipient.value! };
-      const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: model.filename ?? file?.name ?? "shared-resource", mediaType: (model.mediaType ?? file?.type) || "application/octet-stream", sourceKind: model.contentMode ?? "upload", recipient, actions: model.permissions, delegationCid: share.delegationCid ?? null, revokedAt: null });
-      await options.history.save(record);
-      await load(false);
-    } };
-    mountShareComposer(root, composerOptions);
-  };
-  newShare.addEventListener("click", openComposer); more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
+  newShare.addEventListener("click", () => options.onNavigate("#/new"));
+  more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
   void load(false);
 }
 
