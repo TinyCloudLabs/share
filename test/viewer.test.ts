@@ -752,6 +752,9 @@ describe("opened view exposes a working Copy link (P1-9)", () => {
       (button) => button.textContent === "Copy link",
     );
     expect(copy, "the opened view must offer Copy link").toBeDefined();
+    // §6.2: the scrub is deliberate, so the opened view must SAY the address
+    // bar will not reopen this — never restore the fragment.
+    expect(root.querySelector("#viewer-copy-hint")?.textContent).toContain("address bar no longer holds this link");
     copy!.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(url));
     await vi.waitFor(() =>

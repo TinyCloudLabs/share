@@ -178,15 +178,19 @@ function renderOk(
     copyStatus.id = "viewer-copy-status";
     copyStatus.setAttribute("role", "status");
     copyStatus.setAttribute("aria-live", "polite");
+    // The warning §6.2 asks for: the key fragment is scrubbed from the address
+    // bar on purpose, so the URL on screen will NOT reopen this document.
+    const hint = el(doc, "span", "viewer-copy-hint", "The address bar no longer holds this link — copy it if you need to open this again.");
+    hint.id = "viewer-copy-hint";
     const copy = el(doc, "button", "viewer-copy-link", "Copy link");
     copy.type = "button";
-    copy.setAttribute("aria-describedby", copyStatus.id);
+    copy.setAttribute("aria-describedby", `${hint.id} ${copyStatus.id}`);
     copy.addEventListener("click", () => {
       void copyWithFallback(shareUrl)
         .then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; })
         .catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; });
     });
-    footer.append(copy, copyStatus);
+    footer.append(copy, hint, copyStatus);
   }
   const hint = el(doc, "div", "viewer-agent-hint");
   hint.append(

@@ -73,7 +73,7 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-copy-link { align-self: center; justify-self: start; min-height: 44px; margin: 0 18px; padding: 6px 0; border: 0; background: transparent; color: var(--ink); font: inherit; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
 .viewer-copy-link:hover { text-decoration-thickness: 2px; }
 .viewer-copy-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-.viewer-copy-status { align-self: center; padding: 0 18px; color: var(--ink-soft); font-size: 0.84rem; }
+.viewer-copy-hint, .viewer-copy-status { align-self: center; padding: 0 18px; color: var(--ink-soft); font-size: 0.84rem; }
 
 /* Folder browsing. The folder navigation and the opened file are siblings:
    opening a file must never destroy the list the recipient came from. */
@@ -102,7 +102,7 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
   .viewer-footer { grid-template-columns: 1fr; }
   .viewer-expiry { padding: 16px 0; }
   .viewer-download, .viewer-copy-link { margin: 0 0 16px; }
-  .viewer-copy-status { padding: 0 0 12px; }
+  .viewer-copy-hint, .viewer-copy-status { padding: 0 0 12px; }
   .viewer-agent-hint { border-top: 1px dotted var(--line); border-left: 0; }
 }
 @media (max-width: 360px) { #viewer { width: min(100% - 1.5rem, 1120px); } .viewer-state-title { font-size: 1.8rem; } }
