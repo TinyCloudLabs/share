@@ -17,6 +17,8 @@
 import type { ShareEnvelope } from "@tinycloud/share-envelope";
 
 import type { ResolveResult, UnsupportedReason } from "./resolve.js";
+import { focusViewerRoot } from "./focus.js";
+import { copyWithFallback } from "../share/link-only.js";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -47,32 +49,40 @@ function formatExpiry(iso: string): string {
   });
 }
 
+/**
+ * Every error state is a whole-page swap, so it must announce itself and take
+ * focus: `role="alert"` makes assistive tech read it without waiting for
+ * focus, and focusViewerRoot gives the keyboard user somewhere to be.
+ * viewer.css already styles `.viewer-state[role="alert"]`.
+ */
 function renderErrorState(root: HTMLElement, title: string, detail: string): void {
   root.replaceChildren();
   const doc = root.ownerDocument;
   const box = el(doc, "div", "viewer-state viewer-error");
+  box.setAttribute("role", "alert");
   box.append(
     el(doc, "h1", "viewer-state-title", title),
     el(doc, "p", "viewer-state-detail", detail),
   );
   root.append(box);
+  focusViewerRoot(root);
 }
 
 const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: string }> = {
   "policy-target": {
-    title: "This share isn't supported in this build yet",
+    title: "We can't open this link",
     detail:
-      "It's an addressed share (policy target): opening it requires proving who you are, and that claim ceremony lands in a later stage. Nothing about this share was verified — this build only checked that the link decrypts.",
+      "We couldn't read who this was shared with, so nothing was opened. Ask the sender for a fresh link.",
   },
   "recipient-did-target": {
-    title: "This share isn't supported in this build yet",
+    title: "We can't open this link",
     detail:
-      "It's addressed to a specific key (recipient DID): opening it requires signing in with that key, which lands in a later stage. Nothing about this share was verified — this build only checked that the link decrypts.",
+      "Sign-in-with-a-key shares aren't supported yet. Ask the sender to share it by email instead.",
   },
   "prefix-resource": {
-    title: "Folder shares aren't supported in this build yet",
+    title: "Folder sharing isn't available yet",
     detail:
-      "This link shares a folder (prefix resource). The folder browser lands in a later stage; this build renders single-file bearer shares only.",
+      "Ask the sender to share the files individually.",
   },
 };
 
@@ -86,6 +96,7 @@ function renderOk(
   envelope: ShareEnvelope,
   hasContent: boolean,
   senderVerified = false,
+  shareUrl?: string,
 ): HTMLElement {
   root.replaceChildren();
   const doc = root.ownerDocument;
@@ -114,7 +125,7 @@ function renderOk(
       doc,
       "p",
       senderVerified ? "viewer-addressed-note" : "viewer-bearer-note",
-      senderVerified ? "This file was addressed to the verified recipient policy. The browser key and read request stay local to this tab." : "Anyone with this link can open it. The sender name above comes from the link itself and is not independently verified.",
+      senderVerified ? "Shared with you specifically. Nothing about this document leaves your browser." : "Anyone with this link can open it. We can't confirm who sent it.",
     ),
   );
 
@@ -127,25 +138,25 @@ function renderOk(
   // HONESTY CONTRACT for this copy: this build verified, client-side, that
   // the envelope is signed and intact and that its embedded delegation is
   // BOUND to this link's key and NAMES read access to the target. Whether
-  // a delegation chain actually authorizes a node read is the node's
-  // decision at fetch time (the policy/recipient-DID slices) — so the copy
-  // says "carries … naming read access", never "grants read access".
+  // a chain actually authorizes a node read is the node's decision at fetch
+  // time — so the copy says the LINK is valid, never that access is granted.
+  // The recipient is not told the sender's internal path or node origin.
   const content = el(doc, "main", "viewer-content");
   if (!hasContent) {
     const placeholder = el(doc, "div", "viewer-placeholder");
     placeholder.append(
-      el(doc, "h2", "viewer-placeholder-title", "Share link checks passed"),
+      el(doc, "h2", "viewer-placeholder-title", "Link verified"),
       el(
         doc,
         "p",
         "viewer-placeholder-detail",
-        `This link is intact and carries a delegation bound to its embedded key, naming read access to ${envelope.target.resource.path} on ${envelope.target.origin}.`,
+        "This link is valid, but it doesn't include the file itself.",
       ),
       el(
         doc,
         "p",
         "viewer-placeholder-detail",
-        "It doesn't include an embedded file preview, though — it was created without a content attachment. Ask the sender for a fresh link.",
+        "Ask the sender to share it again.",
       ),
     );
     content.append(placeholder);
@@ -158,6 +169,25 @@ function renderOk(
   footer.append(
     el(doc, "span", "viewer-expiry", `Expires ${formatExpiry(envelope.expiry)}`),
   );
+  // The opened view keeps a visible Copy link (user amendment 2026-07-24).
+  // Reloading /s/<cid> without the scrubbed `#k=` fails, so the recipient
+  // needs a safe way to keep the working link. The complete URL lives only in
+  // this closure: never as text, an href, or any other DOM attribute.
+  if (shareUrl !== undefined) {
+    const copyStatus = el(doc, "span", "viewer-copy-status", "");
+    copyStatus.id = "viewer-copy-status";
+    copyStatus.setAttribute("role", "status");
+    copyStatus.setAttribute("aria-live", "polite");
+    const copy = el(doc, "button", "viewer-copy-link", "Copy link");
+    copy.type = "button";
+    copy.setAttribute("aria-describedby", copyStatus.id);
+    copy.addEventListener("click", () => {
+      void copyWithFallback(shareUrl)
+        .then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; })
+        .catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; });
+    });
+    footer.append(copy, copyStatus);
+  }
   const hint = el(doc, "div", "viewer-agent-hint");
   hint.append(
     el(
@@ -169,6 +199,7 @@ function renderOk(
   );
   footer.append(hint);
   root.append(footer);
+  focusViewerRoot(root);
 
   return content;
 }
@@ -178,66 +209,75 @@ function renderOk(
  * state, null otherwise — the null is load-bearing: no content sink exists
  * unless every verification step passed.
  */
+export interface ViewerStateOptions {
+  /**
+   * Complete launch URL, held in memory only, for the opened view's Copy link
+   * action. Never rendered.
+   */
+  readonly shareUrl?: string;
+}
+
 export function renderViewerState(
   root: HTMLElement,
   result: ResolveResult,
+  options: ViewerStateOptions = {},
 ): HTMLElement | null {
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope, result.content !== undefined, result.senderVerified);
+      return renderOk(root, result.envelope, result.content !== undefined, result.senderVerified, options.shareUrl);
     case "policy-email-claim-required":
-      renderErrorState(root, "This invitation needs a confirmation", "The share envelope and exact recipient policy are verified. Open the document from the invitation link to continue.");
+      renderErrorState(root, "Confirm your email to open this", "Open this document from the link in the invitation email the sender asked us to send.");
       return null;
     case "policy-v2-claim-required":
-      renderErrorState(root, "This addressed share needs a verified claim", "The v2 matcher, action bounds, target resource, expiry, and trusted sender signature are verified. Continue through the Node claim flow to open this share.");
+      renderErrorState(root, "Confirm your email to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
       return null;
     case "invalid-link":
       renderErrorState(
         root,
-        "This isn't a valid share link",
-        "Share links look like /s/<cid>#k=… — check you copied the whole link, including everything after the #.",
+        "This link is incomplete",
+        "Part of the link is missing. Copy the whole thing from the message you received — it needs everything after the #.",
       );
       return null;
     case "fetch-failed":
       renderErrorState(
         root,
-        "Couldn't fetch this share",
-        "The registry didn't return the envelope — it may have been deleted, expired, or the registry is unreachable. Ask the sender for a fresh link.",
+        "This share isn't available",
+        "This share isn't available any more — it may have expired or been removed. Ask the sender to share it again.",
       );
       return null;
     case "cid-mismatch":
       renderErrorState(
         root,
         "This share failed its integrity check",
-        "The registry returned bytes whose fingerprint doesn't match this link's address (CID mismatch). Refusing to decrypt or show anything.",
+        "This share doesn't match its link. We won't open it. Ask the sender for a fresh link.",
       );
       return null;
     case "decrypt-failed":
       renderErrorState(
         root,
         "Couldn't unlock this share",
-        "The key in the link didn't decrypt the envelope — it's wrong, incomplete, or missing. Check you copied the whole link, including everything after #k=.",
+        "We couldn't unlock this. Copy the whole link from the message you received and try again.",
       );
       return null;
     case "envelope-invalid":
       renderErrorState(
         root,
         "This share can't be read",
-        "The envelope decrypted but isn't a valid share envelope. Refusing to show anything.",
+        "We couldn't read this share. Ask the sender for a fresh link.",
       );
       return null;
     case "signature-invalid":
       renderErrorState(
         root,
         "This share failed verification",
-        "The envelope's signature doesn't check out — it may have been tampered with. Refusing to show anything.",
+        "This share failed its security check — it may have been altered. We won't open it.",
       );
       return null;
     case "capability-invalid":
       renderErrorState(
         root,
-        "This share's authorization doesn't add up",
-        "The delegation inside this link can't be used by the link's own key, or doesn't cover the shared file. The link is malformed or was assembled incorrectly. Refusing to show anything.",
+        "We can't open this link",
+        "This link isn't put together correctly. Ask the sender for a fresh one.",
       );
       return null;
     case "expired":
@@ -250,15 +290,15 @@ export function renderViewerState(
     case "content-fetch-failed":
       renderErrorState(
         root,
-        "Couldn't fetch the shared file",
-        "The share link verified, but the registry didn't return the file's encrypted bytes — they may have been deleted or expired, or the registry is unreachable. Ask the sender for a fresh link.",
+        "The file isn't available",
+        "The file isn't available any more. Ask the sender to share it again.",
       );
       return null;
     case "content-integrity-failed":
       renderErrorState(
         root,
         "The shared file failed its integrity check",
-        "The registry returned bytes for this file that don't match the fingerprint signed into the share, or they couldn't be decrypted. Refusing to show anything.",
+        "This file doesn't match what was shared. We won't open it.",
       );
       return null;
     case "unsupported": {

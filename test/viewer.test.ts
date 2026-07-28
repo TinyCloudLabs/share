@@ -270,9 +270,12 @@ describe("bearer single-file share (happy path)", () => {
     expect(text).not.toContain("✓");
     expect(text).toContain("read-only");
     expect(text).toContain("Expires");
-    // A pointer-less envelope has no bytes to show → honest placeholder.
-    expect(text).toContain("doesn't include an embedded file preview");
-    expect(text).toContain("shares/share-123/report.md");
+    // A pointer-less envelope has no bytes to show → honest placeholder that
+    // does NOT leak the sender's internal path or the node origin.
+    expect(text).toContain("Link verified");
+    expect(text).toContain("doesn't include the file itself");
+    expect(text).not.toContain("shares/share-123/report.md");
+    expect(text).not.toContain("share.tinycloud.xyz");
   });
 
   it("renders markdown fed through the stage-4 content entry point", async () => {
@@ -336,7 +339,7 @@ describe("fail-closed error states", () => {
     const result = await resolve(`${VIEWER_ORIGIN}/s/${cid}`);
     expect(result.state).toBe("invalid-link");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("isn't a valid share link");
+    expect(root.textContent).toContain("This link is incomplete");
   });
 
   it("tampered ciphertext → cid-mismatch, no content", async () => {
@@ -404,7 +407,7 @@ describe("fail-closed error states", () => {
     );
     expect(result.state).toBe("fetch-failed");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("Couldn't fetch this share");
+    expect(root.textContent).toContain("This share isn't available");
   });
 
   it("decrypted plaintext that isn't an envelope → envelope-invalid, no content rendered", async () => {
@@ -438,7 +441,7 @@ describe("bearer delegation binding — the 'verified' state validates the capab
     );
     expect(result.state).toBe("capability-invalid");
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("authorization doesn't add up");
+    expect(root.textContent).toContain("isn't put together correctly");
   });
 
   it("token with non-JSON segments → capability-invalid", async () => {
@@ -640,8 +643,8 @@ describe("unsupported targets/modes are never faked-verified", () => {
 
     const root = expectFailClosedRender(result);
     const text = root.textContent ?? "";
-    expect(text).toContain("isn't supported in this build");
-    expect(text).toContain("Nothing about this share was verified");
+    expect(text).toContain("We can't open this link");
+    expect(text).toContain("nothing was opened");
     expect(text).not.toContain("✓");
   });
 
@@ -657,7 +660,7 @@ describe("unsupported targets/modes are never faked-verified", () => {
       reason: "recipient-did-target",
     });
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("isn't supported in this build");
+    expect(root.textContent).toContain("Sign-in-with-a-key shares aren't supported yet");
   });
 
   it("bearer + prefix resource (folder) → unsupported in the single-file slice, no content rendered", async () => {
@@ -676,7 +679,7 @@ describe("unsupported targets/modes are never faked-verified", () => {
     const result = await resolve(url);
     expect(result).toMatchObject({ state: "unsupported", reason: "prefix-resource" });
     const root = expectFailClosedRender(result);
-    expect(root.textContent).toContain("Folder shares aren't supported");
+    expect(root.textContent).toContain("Folder sharing isn't available yet");
   });
 });
 

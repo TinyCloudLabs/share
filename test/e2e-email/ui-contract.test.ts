@@ -35,8 +35,8 @@ describe("shipping exact-email recipient UI contract", () => {
     expect(open?.textContent).toBe("Open document");
     expect(otp?.textContent).toBe("Use email code instead");
     expect(root.querySelector(".viewer-content")).toBeNull();
-    expect(root.textContent).toContain("does not redeem it");
-    expect(root.textContent).not.toMatch(/wallet|openkey|sign in|account/i);
+    expect(root.textContent).toContain("shared this with you");
+    expect(root.textContent).not.toMatch(/wallet|openkey|account/i);
     open?.click(); otp?.click();
     expect(callbacks.onOpen).toHaveBeenCalledTimes(1);
     expect(callbacks.onUseOtp).toHaveBeenCalledTimes(1);
@@ -75,11 +75,11 @@ describe("shipping exact-email recipient UI contract", () => {
     }
   });
 
-  it("labels the forget action and explains tab-only key lifetime", () => {
+  it("offers a plain-language exit from the share without protocol vocabulary", () => {
     const { root, callbacks } = render({ state: "claimed", claim: { holder: { did: "did:key:z6Mkholder", privateKey: {} as CryptoKey }, credential: "credential", expiresAt: "2099-01-01T00:00:00.000Z", persisted: false } });
     const forget = root.querySelector<HTMLButtonElement>("button.recipient-secondary-action");
-    expect(forget?.getAttribute("aria-label")).toBe("Forget the private browser key for this share");
-    expect(root.textContent).toContain("stays in this tab");
+    expect(forget?.textContent).toBe("Sign out of this share");
+    expect(root.textContent).not.toMatch(/browser key|holder|non-extractable/i);
     forget?.click();
     expect(callbacks.onForget).toHaveBeenCalledTimes(1);
   });
