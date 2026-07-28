@@ -214,12 +214,30 @@ describe("link-only sender", () => {
 describe("link-only creation and recipient recovery", () => {
   it("accepts an exact 100 MiB binary file and rejects 100 MiB plus one byte before upload", async () => {
     const createShare = vi.fn<CreateShare>(async () => result());
-    const exact = await createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024)], "boundary.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare });
+    const expiresAt = new Date("2030-07-30T00:00:00.000Z");
+    const exact = await createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024)], "boundary.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare, expiresAt });
     expect(exact.url).toBe(LINK);
     expect(createShare).toHaveBeenCalledOnce();
     createShare.mockClear();
-    await expect(createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024 + 1)], "over.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare })).rejects.toThrow(/no larger than 100 MB/);
+    await expect(createLinkOnlyShare(new File([new Uint8Array(100 * 1024 * 1024 + 1)], "over.bin"), { origin: SHARE_ORIGIN, allowBinary: true, createShare, expiresAt })).rejects.toThrow(/no larger than 100 MB/);
     expect(createShare).not.toHaveBeenCalled();
+  });
+
+  it("forwards the supplied expiry to bearer creation verbatim", async () => {
+    const expiresAt = new Date("2030-07-30T00:00:00.000Z");
+    let received: Date | undefined;
+    const createShare: CreateShare = async (input) => {
+      received = input.expiresAt;
+      return result();
+    };
+
+    await createLinkOnlyShare(new File(["expiry"], "expiry.txt"), {
+      origin: SHARE_ORIGIN,
+      expiresAt,
+      createShare,
+    });
+
+    expect(received).toBe(expiresAt);
   });
 
   it("uploads only sealed bytes through the authenticated route and recovers the marker in a fresh resolve", async () => {
@@ -253,6 +271,7 @@ describe("link-only creation and recipient recovery", () => {
       {
         origin: SHARE_ORIGIN,
         now: () => Date.parse("2026-07-23T20:00:00.000Z"),
+        expiresAt: new Date(Date.parse("2026-07-23T20:00:00.000Z") + 7 * 24 * 60 * 60 * 1000),
         fetchFn: authenticatedRegistryFetch,
       },
     );

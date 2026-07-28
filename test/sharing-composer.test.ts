@@ -13,7 +13,8 @@ import {
   type ComposerContent,
   type ShareComposerModel,
 } from "../src/share/composer-model.js";
-import { mountShareComposer } from "../src/share/composer.js";
+import { mountShareComposer, type ComposerShareResult } from "../src/share/composer.js";
+import { createDevRegistry } from "@tinycloud/share-registry/dev-server";
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
@@ -234,6 +235,59 @@ describe("share composer access controls", () => {
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.checked = true;
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
+  });
+
+  it("uses the selected 24-hour expiry in the real link-only creation path", async () => {
+    const fixed = Date.parse("2030-07-27T00:00:00.000Z");
+    const expectedExpiry = new Date(fixed + 24 * 60 * 60 * 1000).toISOString();
+    vi.spyOn(Date, "now").mockReturnValue(fixed);
+
+    const registry = createDevRegistry();
+    const requests: Array<{ readonly url: string; readonly headers: Headers }> = [];
+    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
+      requests.push({ url: url.toString(), headers: new Headers(init?.headers) });
+      const target = new URL(
+        url.pathname.replace("/api/share/link-only/registry", ""),
+        "http://registry.local",
+      );
+      return registry.handler(new Request(target, {
+        ...init,
+        body,
+        duplex: "half",
+      } as RequestInit));
+    };
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
+    mountShareComposer(root, {
+      ...baseOptions(),
+      fetchFn: authenticatedRegistryFetch,
+      loadCapabilities: async () => [],
+      persistShare: async ({ share, model }) => { captured = { share, model }; },
+    });
+
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["selected expiry"], "expiry.txt", { type: "text/plain" })],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const expiry = root.querySelector<HTMLSelectElement>("select[name=expiry]")!;
+    expiry.value = "24h";
+    expiry.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(captured).toBeDefined());
+    expect(captured!.model.expiresAt).toBe(expectedExpiry);
+    expect(captured!.share.expiresAt).toBe(expectedExpiry);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.url).toContain("/api/share/link-only/registry/blobs");
+      expect(request.headers.get("x-delete-after")).toBe(expectedExpiry);
+    }
   });
 });
 

@@ -69,7 +69,7 @@ export interface ComposerShareResult {
   readonly notify?: () => Promise<void>;
 }
 
-export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "createShare"> {
+export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "createShare" | "expiresAt"> {
   readonly openKeyAddress: string;
   /** Leaves the composer for the library. The composer is never a one-way door (P0-1). */
   readonly onBack: () => void;
@@ -109,6 +109,7 @@ async function defaultCreate(file: File | undefined, model: ShareComposerModel, 
   const result = await createLinkOnlyShare(file, {
     origin: options.origin,
     allowBinary: true,
+    expiresAt: new Date(model.expiresAt),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.registryOrigin === undefined ? {} : { registryOrigin: options.registryOrigin }),
     ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
