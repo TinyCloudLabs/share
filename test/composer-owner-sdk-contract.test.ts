@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OWNER_SDK_PRIMITIVES, missingOwnerSdkPrimitives, mountShareComposer } from "../src/share/composer.js";
+import { OWNER_SDK_PRIMITIVES, OWNER_TINYCLOUD_DELIVERY_METHODS, OWNER_TINYCLOUD_METHODS, missingOwnerSdkPrimitives, missingTinyCloudMethods, mountShareComposer } from "../src/share/composer.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 
 // The deployment config loader is the one external boundary this file stubs.
@@ -62,6 +62,25 @@ describe("the owner-share SDK contract is checked against the installed Web SDK"
     expect(missingOwnerSdkPrimitives(sdk)).toEqual(actuallyMissing);
   });
 
+  /**
+   * TC-343. The assertion above holds in EITHER state of the package — it only
+   * says the guard reports the truth — so it stayed green through the whole
+   * outage. This one is the pin check: `package.json` must resolve an SDK that
+   * really provides the owner path's five primitives. Reverting the dependency
+   * to `^2.9.0` fails here, in `npm test`, instead of in a sender's browser.
+   */
+  it("resolves an SDK that actually provides every owner-share primitive", async () => {
+    const sdk = await import("@tinycloud/web-sdk") as unknown as Record<string, unknown>;
+    expect(missingOwnerSdkPrimitives(sdk)).toEqual([]);
+
+    // The other two are instance methods on the session, not module exports,
+    // so `missingOwnerSdkPrimitives` cannot see them. Same version skew, same
+    // runtime `is not a function`; check the class the browser constructs.
+    const prototype = (sdk.TinyCloudWeb as { prototype: Record<string, unknown> }).prototype;
+    expect(missingTinyCloudMethods(prototype, OWNER_TINYCLOUD_METHODS)).toEqual([]);
+    expect(missingTinyCloudMethods(prototype, OWNER_TINYCLOUD_DELIVERY_METHODS)).toEqual([]);
+  });
+
   it("names every primitive the owner path calls, so a new call site cannot go unchecked", async () => {
     // jsdom rewrites `import.meta.url` to an http URL, so this resolves from
     // the vitest root instead.
@@ -75,6 +94,12 @@ describe("the owner-share SDK contract is checked against the installed Web SDK"
     const called = [...new Set([...source.matchAll(/\bsdk\.([A-Za-z0-9_$]+)\s*\(/g)].map((match) => match[1]!))].sort();
 
     expect(called).toEqual([...OWNER_SDK_PRIMITIVES].sort());
+
+    // Same for the session methods (TC-343): every guarded name must still be
+    // a real call site, so a list that outlives its call site is caught here
+    // rather than silently guarding nothing.
+    const sessionCalls = new Set([...source.matchAll(/\btinycloud\.([A-Za-z0-9_$]+)\s*\(/g)].map((match) => match[1]!));
+    for (const name of [...OWNER_TINYCLOUD_METHODS, ...OWNER_TINYCLOUD_DELIVERY_METHODS]) expect(sessionCalls, name).toContain(name);
   });
 
   it("reports missing primitives by name instead of throwing an opaque TypeError", () => {

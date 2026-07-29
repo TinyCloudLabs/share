@@ -8,37 +8,31 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { createTinyCloudUploader } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, unsignedShareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
-type OwnerSharePolicyV2 = {
-  readonly type: "TinyCloudSharePolicy";
-  readonly version: 2;
-  readonly shareId: string;
-  readonly ownerDid: string;
-  readonly shareKeyDid: string;
-  readonly recipientMatcher: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string };
-  readonly target: { readonly origin: string; readonly nodeAudience: string; readonly enforcerDid: string; readonly spaceId: string };
-  readonly resource: { readonly kind: "exact" | "prefix"; readonly path: string };
-  readonly actions: readonly string[];
-  readonly contentSource: { readonly kind: "kv"; readonly space: string; readonly path: string; readonly action: "tinycloud.kv/get" };
-  readonly contentSourceDigest: string;
-  readonly ownerDelegationCid: string;
-  readonly expiresAt: string;
-};
-
-type OwnerSdk = {
-  readonly createDelegatedShareKey: (input: { readonly extractable: boolean }) => Promise<{ readonly did: string; readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>; readonly clear: () => void }>;
-  readonly canonicalOwnerSharePolicy: (policy: OwnerSharePolicyV2) => Promise<{ readonly bytes: Uint8Array; readonly cid: string; readonly digest: string }>;
-  readonly createPolicyEnforcementDelegation: (input: Record<string, unknown>) => Promise<{ readonly cid: string; readonly dagCbor: string; readonly issuerDid: string; readonly audienceDid: string; readonly facts: Record<string, unknown>; readonly signature: string }>;
-};
+type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 /**
- * The owner-share primitives `createOwnerPolicyShare` needs are not part of the
- * Web SDK's typed surface, so the import has to be widened by hand. A bare
- * `as unknown as OwnerSdk` cast made a missing primitive invisible until it was
- * called, where it surfaced as `sdk.createDelegatedShareKey is not a function`
- * with no indication of which dependency was absent (TC-338). The cast is
- * therefore checked against the module that actually loaded, and the required
- * names live in one exported list so a test can hold the check to what the
- * owner path really calls.
+ * Taken from the SDK rather than restated here. The hand-written copy of this
+ * shape typed `actions` as `readonly string[]`, which is wider than the SDK's
+ * own `OwnerShareAction` union — a mis-shaped policy would have compiled.
+ */
+type OwnerSharePolicyV2 = Parameters<WebSdkModule["canonicalOwnerSharePolicy"]>[0];
+
+/**
+ * The owner-share primitives `createOwnerPolicyShare` calls, typed by picking
+ * them off the real module type. `Pick` fails to compile if the pinned SDK
+ * stops exporting one, and every call below is checked against the SDK's own
+ * signature instead of a local restatement that can silently drift (TC-343:
+ * a hand-written `(input: Record<string, string>)` cast hid two required
+ * arguments of `authorizeShareDelivery` from the compiler entirely).
+ */
+type OwnerSdk = Pick<WebSdkModule, typeof OWNER_SDK_PRIMITIVES[number]>;
+
+/**
+ * The names in `OwnerSdk`, as values, so the runtime can report a skew by name.
+ * Types are erased at build time and the installed version is whatever npm
+ * resolved, so a `^` range that quietly resolves an SDK without these exports
+ * (TC-338/TC-343) still has to fail diagnosably rather than as
+ * `sdk.createDelegatedShareKey is not a function`.
  */
 export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerSharePolicy", "createPolicyEnforcementDelegation"] as const;
 
@@ -47,11 +41,35 @@ export function missingOwnerSdkPrimitives(module: Record<string, unknown>): read
   return OWNER_SDK_PRIMITIVES.filter((name) => typeof module[name] !== "function");
 }
 
+/**
+ * The owner-share methods the ceremony invokes on the TinyCloud session. Same
+ * failure mode as `OWNER_SDK_PRIMITIVES`, one layer over: these are instance
+ * methods on `TinyCloudWeb`, so an SDK without them fails inside the ceremony
+ * rather than at import.
+ */
+export const OWNER_TINYCLOUD_METHODS = ["createOwnerDelegation", "registerOwnerSharePolicy"] as const;
+
+/**
+ * Deliberately not in `OWNER_TINYCLOUD_METHODS`: delivery is a post-link
+ * action, so its absence must not fail share creation. The link is already
+ * stable when this is reached.
+ */
+export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
+
+/** The Node-signed delivery receipt, as the SDK returns it. `main.ts` forwards `authorization` and `proof` verbatim. */
+export type ShareDeliveryAuthorizationReceipt = Awaited<ReturnType<ShareTinyCloud["authorizeShareDelivery"]>>;
+
+/** Which of `names` the TinyCloud session does not provide as callable methods, in `names` order. */
+export function missingTinyCloudMethods(tinycloud: unknown, names: readonly string[]): readonly string[] {
+  const record = (tinycloud ?? {}) as Record<string, unknown>;
+  return names.filter((name) => typeof record[name] !== "function");
+}
+
 async function ownerSdk(): Promise<OwnerSdk> {
-  const module = await import("@tinycloud/web-sdk") as unknown as Record<string, unknown>;
-  const missing = missingOwnerSdkPrimitives(module);
+  const module = await import("@tinycloud/web-sdk");
+  const missing = missingOwnerSdkPrimitives(module as unknown as Record<string, unknown>);
   if (missing.length > 0) throw fail("internal", `the installed @tinycloud/web-sdk does not provide the owner-share primitives ${missing.join(", ")}`, { missingOwnerSdkPrimitives: missing });
-  return module as unknown as OwnerSdk;
+  return module;
 }
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { createHttpTransport } from "../email-share/transport.js";
@@ -98,7 +116,7 @@ export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "
   readonly copyText?: (value: string) => Promise<void>;
   readonly createShare?: (input: { readonly file: File | undefined; readonly model: ShareComposerModel }) => Promise<ComposerShareResult>;
   readonly loadCapabilities?: () => Promise<readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[]>;
-  readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: Record<string, unknown> }) => Promise<void>;
+  readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
   readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined }) => Promise<void>;
 }
@@ -339,13 +357,16 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
   const matcher = model.recipient.kind === "exactEmail"
     ? { kind: "exactEmail" as const, value: model.recipient.value! }
     : { kind: "emailDomain" as const, value: model.recipient.value! };
+  const deliveryEmail = model.deliveryEmail;
+  const missingMethods = missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_METHODS);
+  if (missingMethods.length > 0) throw fail("internal", `the TinyCloud session does not provide the owner-share methods ${missingMethods.join(", ")}`, { missingTinyCloudMethods: missingMethods });
   const sdk = await ownerSdk();
   const shareKey = await sdk.createDelegatedShareKey({ extractable: false });
   try {
     if (selectedSource !== undefined && sourcePath !== undefined) {
       await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
     }
-    const ownerDelegation = await (tinycloud as unknown as { createOwnerDelegation(input: Record<string, unknown>): Promise<{ readonly delegationCid: string; readonly signedDagCbor: Uint8Array }> }).createOwnerDelegation({ delegateDid: shareKey.did, spaceId, path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames, expiresAt: new Date(expiresAt) });
+    const ownerDelegation = await tinycloud.createOwnerDelegation({ delegateDid: shareKey.did, spaceId, path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames, expiresAt: new Date(expiresAt) });
     const sourceDigest = await digestBytes(new TextEncoder().encode(canonicalize(source)));
     const policyValue: OwnerSharePolicyV2 = {
       type: "TinyCloudSharePolicy",
@@ -368,8 +389,7 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     // The registration receipt is signed by the enrolled Node key. The trust
     // bundle pins both its kid and public key before the exact response bytes
     // are accepted by the SDK.
-    const registration = await (tinycloud as unknown as { registerOwnerSharePolicy(input: Record<string, unknown>): Promise<{ readonly registration: { readonly registrationCid: string } }> }).registerOwnerSharePolicy({ policy: { ...canonicalPolicy, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } });
-    const deliveryEmail = model.deliveryEmail;
+    const registration = await tinycloud.registerOwnerSharePolicy({ policy: { bytes: canonicalPolicy.bytes, cid: canonicalPolicy.cid, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } });
     const authorityMaterialDigest = await digestBytes(fromBase64Url(enforcementDelegation.dagCbor));
     const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
     const envelopeCid = await computeCid(new TextEncoder().encode(canonicalize(envelopeIdentity)));
@@ -417,9 +437,14 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     }
     return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: ownerDelegation.delegationCid, ...(deliveryEmail === undefined ? {} : { notify: async () => {
       const share = { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt } as ComposerShareResult;
-      const authorize = (tinycloud as unknown as { authorizeShareDelivery?: (input: Record<string, string>) => Promise<Record<string, unknown>> }).authorizeShareDelivery;
-      if (authorize === undefined) throw new Error("We couldn't send that email. The link above still works.");
-      const deliveryAuthorization = await authorize({ envelopeCid, shareCid, shareId, registrationCid: registration.registration.registrationCid, policyCid: canonicalPolicy.cid, delegationCid: ownerDelegation.delegationCid, enforcementDelegationCid: enforcementDelegation.cid, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, expiresAt: new Date(Math.min(Date.parse(expiresAt), Date.now() + 5 * 60 * 1000)).toISOString() });
+      if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
+      // Called as a method, not as a detached function: the SDK implementation
+      // reads `this`. `nodeProof` and `credentialsAudience` are required — the
+      // SDK verifies the Node's detached EdDSA proof over the exact response
+      // bytes and pins the witness the delivery is scoped to. The previous
+      // `(input: Record<string, string>)` cast erased both from the compiler's
+      // view, so the omission only showed up at runtime (TC-343).
+      const deliveryAuthorization = await tinycloud.authorizeShareDelivery({ envelopeCid, shareCid, shareId, registrationCid: registration.registration.registrationCid, policyCid: canonicalPolicy.cid, delegationCid: ownerDelegation.delegationCid, enforcementDelegationCid: enforcementDelegation.cid, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, expiresAt: new Date(Math.min(Date.parse(expiresAt), Date.now() + 5 * 60 * 1000)).toISOString(), nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) }, credentialsAudience: config.credentialsOrigin });
       if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
       await options.notify({ share, recipient: deliveryEmail, matcher: model.recipient.kind, deliveryAuthorization });
     } }) };
