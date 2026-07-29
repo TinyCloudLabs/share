@@ -17,8 +17,7 @@ import { createServer as httpServer } from "node:http";
 import { createConnection, createServer as netServer } from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -27,6 +26,8 @@ import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
 import { buildShareBrowserBuildEnv } from "./share-browser-build-env.mjs";
 import { verifyReleaseInputRepository } from "./preflight.mjs";
+import { assertWebSdkLink, resolveJsSdkWorktree } from "./web-sdk-link.mjs";
+import { GATE_SLICES, gateSummary, gateVerdict, parseRequiredSlices, summarizeSlices } from "./gate-slices.mjs";
 import { findSurvivingOwnedProcesses, parsePsLines } from "./process-groups.mjs";
 import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-launch-env.mjs";
 import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
@@ -73,6 +74,12 @@ const flowAudits = [];
 const serverTraceIds = [];
 const launchInputDigests = {};
 const gateResults = { exactEmail: false, domain: false, bearer: false, editConflict: false, folder: false, notification: false, denialMatrix: false, senderLibrary: false, browser: false };
+// TC-307. Per-slice bookkeeping, so "never attempted" stays distinguishable
+// from "attempted and failed" all the way into the artifact.
+const attemptedSlices = new Set();
+const sliceFailures = new Map();
+const blockedSlices = {};
+const requiredSlices = parseRequiredSlices(process.env.SHARING_E2E_REQUIRED_SLICES);
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
 let releaseInputsVerified = false;
@@ -165,7 +172,7 @@ async function assertReleaseInputs() {
     { name: "share", path: shareRoot, branch: "feat/sharing-production-live", pr: "27" },
     { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
     { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
-    { name: "js-sdk", path: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"), branch: "feat/sharing-production-live", pr: "361" },
+    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "feat/sharing-production-live", pr: "361" },
   ];
   for (const repository of repositories) {
     const { head, digest } = await verifyReleaseInputRepository(repository, { localUnpushedMode });
@@ -173,11 +180,9 @@ async function assertReleaseInputs() {
   }
   const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
   await runOnce("bun", ["run", "build"], sdkRoot);
-  const sdkLinkStat = await lstat(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
-  if (!sdkLinkStat.isSymbolicLink()) throw new Error("Share web-sdk dependency must be a symlink to the exact js-sdk worktree");
-  const linkedWebSdk = realpathSync(join(shareRoot, "node_modules/@tinycloud/web-sdk"));
-  const expectedWebSdk = realpathSync(join(sdkRoot, "packages/web-sdk"));
-  if (linkedWebSdk !== expectedWebSdk) throw new Error("Share web-sdk node_modules link is stale");
+  // TC-345. One statement of the rule, shared with startShare() and with
+  // `npm run check:web-sdk-link`; every failure names `npm run link:web-sdk`.
+  const expectedWebSdk = assertWebSdkLink(shareRoot, sdkRoot);
   await stat(join(expectedWebSdk, "dist/index.mjs"));
   launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
   if (!localUnpushedMode) releaseInputsVerified = true;
@@ -557,12 +562,8 @@ function assertLoopbackShareUpstreams(launchEnv) {
 }
 
 async function startShare(tempRoot, fixtures) {
-  const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live");
-  const sdkLink = join(shareRoot, "node_modules/@tinycloud/web-sdk");
-  const sdkLinkStat = await lstat(sdkLink);
-  const resolvedSdkLink = await realpath(sdkLink);
-  const expectedSdkLink = await realpath(join(sdkRoot, "packages/web-sdk"));
-  if (!sdkLinkStat.isSymbolicLink() || resolvedSdkLink !== expectedSdkLink) throw new Error("Share @tinycloud/web-sdk must resolve to the exact js-sdk worktree");
+  const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
+  const expectedSdkLink = assertWebSdkLink(shareRoot, sdkRoot);
   await runOnce("npm", ["run", "build"], sdkRoot);
   await stat(join(expectedSdkLink, "dist/index.mjs"));
   await recordArtifactDigest("jsSdkWebRuntime", join(expectedSdkLink, "dist/index.mjs"));
@@ -760,6 +761,41 @@ function agentString(value) {
   return current;
 }
 
+/*
+ * TC-344. Selecting a library option used to be
+ * `agent([... kv-source ...]).catch(() => undefined)`. When the select had no
+ * options the in-page `s.selectedIndex = 0` threw a TypeError on null, the
+ * agent call rejected, and the rejection was discarded — so the run continued
+ * with nothing selected and failed sixty seconds later waiting for unrelated
+ * text ("Your private link is ready"). The cause was two flows away from the
+ * symptom.
+ *
+ * Every library selection now goes through here. The select must exist, it
+ * must have options, and the chooser must match one; each is a distinct,
+ * immediate, located failure that names what the library actually offered.
+ *
+ * `chooser` is the source of a JS function `(options) => option | undefined`
+ * evaluated in the page.
+ */
+async function waitForLibraryOptions(label, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const count = agentString(await agent(["eval", "JSON.stringify((function(){var select=document.querySelector('select[name=kv-source]');return select===null?-1:select.options.length})())"]));
+    if (count === -1) throw new Error(`library select is not present while selecting ${label}; the library panel was never shown`);
+    if (typeof count === "number" && count > 0) return count;
+    if (Date.now() >= deadline) throw new Error(`library select never offered an option for ${label} within ${timeoutMs}ms: the sender's own space listing produced nothing to share`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+}
+
+async function selectLibraryOption(chooser, label) {
+  await waitForLibraryOptions(label);
+  const script = `JSON.stringify((function(){var select=document.querySelector('select[name=kv-source]');if(select===null)throw new Error('library select is not present');var options=[].slice.call(select.options);var chosen=(${chooser})(options);if(!chosen)throw new Error('the library offers no ' + ${JSON.stringify(label)} + '; options=' + JSON.stringify(options.map(function(option){return {value:option.value,kind:option.dataset.resourceKind||null}})));select.value=chosen.value;select.dispatchEvent(new Event('change',{bubbles:true}));return chosen.value})())`;
+  const value = agentString(await agent(["eval", script]));
+  if (typeof value !== "string" || value.length === 0) throw new Error(`library selection for ${label} returned no path`);
+  return value;
+}
+
 function safeBrowserDiagnostic(value) {
   if (value === null || value === undefined) return null;
   if (typeof value === "string") {
@@ -798,7 +834,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
-  await agent(["eval", "(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))result.then(function(response){window.__tinycloudAuthDiagnostics.push({path:(new URL(u,location.href)).pathname,status:response.status});});return result;};})()"]).catch(() => undefined);
+  await agent(["eval", "(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))result.then(function(response){window.__tinycloudAuthDiagnostics.push({path:(new URL(u,location.href)).pathname,status:response.status});});return result;};})()"]);
   await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
@@ -812,9 +848,10 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   checks.push("Fresh authenticated sender observed the Shared by me empty state and New share entry point.");
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='New share');if(!button)throw new Error('New share action is not present');button.click();return true;})()"]);
   await agent(["wait", "text=Share a file"]);
-  await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]).catch(() => undefined);
+  await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]);
   checks.push("agent-browser completed the real OpenKey external-wallet/SIWE authentication path with a deterministic provider.");
 
+  const runBearerSlice = async () => {
   const createBearer = async (format, contentMode, traceName) => {
     const traceId = await beginFlow(traceName);
     if (contentMode === "author") await agent(pasteIntoDropzone("# Hermetic sharing\n\nMarkdown created in the browser."));
@@ -860,11 +897,19 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   gateResults.senderLibrary = true;
   checks.push("Sender library created and persisted shares, reset the session, reloaded the populated same-sender library, copied a byte-exact complete link, rendered no secret URL, and denied signed-out access.");
   checks.push("Encrypted compact and inline bearer links were both observed; bearer creation remained link-only.");
+  };
 
+  const runAddressedSlice = async () => {
   await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
   const exactTrace = await beginFlow("exact-email");
   await agent(["click", "input[value=exactEmail]"]); await agent(["fill", "input[name=recipient-value]", "sam@tinycloud.xyz"]);
-  await agent(pickFromLibrary); await agent(["eval", "(function(){var s=document.querySelector('select[name=kv-source]');s.selectedIndex=0;s.dispatchEvent(new Event('change',{bubbles:true}));})()"]).catch(() => undefined);
+  // TC-344. The sender's library is whatever is already in the sender's own
+  // space, and at this point in the run nothing is: both bearer shares are
+  // link-only and never touch KV. So the first addressed share uploads its
+  // content — the real "share something new" entry point — which also puts
+  // `shares/<shareId>/fixture.md` in the space for the folder and domain
+  // slices below to pick from.
+  await agent(["upload", "input[name=document]", join(shareRoot, "test/e2e-sharing/fixture.md")]);
   await agent(["check", "input[name=permission][value=edit]"]); await agent(openAdvancedSettings); await agent(["fill", "input[name=delivery-email]", "sam@tinycloud.xyz"]);
   await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]);
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link' && !candidate.disabled);if(!button)throw new Error('Copy link action is not present');button.click();return true;})()"]); await agent(["wait", "text=Link copied to clipboard."]);
@@ -939,6 +984,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   checks.push("Exact-email Markdown read/edit observed a stale If-Match 412 with a byte-identical draft preserved, then recovered by reloading the current version.");
   gateResults.exactEmail = true; gateResults.notification = true;
   checks.push("Exact-email Markdown link creation, explicit delivery, and byte-identical idempotency replay were observed.");
+  };
 
   const runDomainFlow = async () => {
   await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
@@ -950,10 +996,17 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const domainDeliveryEmail = "sam@mailinator.com";
   await agent(openAdvancedSettings); await agent(["click", "input[value=emailDomain]"]); await agent(["fill", "input[name=recipient-value]", "mailinator.com"]);
   await agent(pickFromLibrary); await agent(["fill", "input[name=delivery-email]", domainDeliveryEmail]);
+  const domainLibraryPath = await selectLibraryOption("(function(options){return options.filter(function(option){return option.dataset.resourceKind==='exact'})[0]})", "library object");
+  checks.push(`Domain slice shared the library object ${domainLibraryPath} out of the sender's own space.`);
   await agent(["eval", `(function(){window.__tinycloudDomainDeliveryObserved=false;window.__tinycloudDomainDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/v1/share-email/invitations')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudDomainDeliveryShape={topKeys:Object.keys(value).sort(),authKeys:auth&&typeof auth==='object'?Object.keys(auth).sort():[],deliveryType:typeof auth.deliveryEmail,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};window.__tinycloudDomainDeliveryObserved=auth.deliveryEmail===${JSON.stringify(domainDeliveryEmail)}&&auth.recipientMatcher&&auth.recipientMatcher.kind==='emailDomain'&&auth.recipientMatcher.value==='mailinator.com';}catch{}}return old.apply(this,arguments);};})()`]);
   await agent(["wait", "500"]);
-  const domainFormState = agentString(await agent(["eval", `JSON.stringify((function(){var option=document.querySelector('select[name=kv-source] option:checked');return {recipient:document.querySelector('input[value=emailDomain]')?.checked===true,domain:document.querySelector('input[name=recipient-value]')?.value==='mailinator.com',delivery:document.querySelector('input[name=delivery-email]')?.value===${JSON.stringify(domainDeliveryEmail)},matcherKind:option?.dataset.recipientMatcherKind||null,matcherValue:option?.dataset.recipientMatcherValue||null};})())`]));
-  if (domainFormState?.recipient !== true || domainFormState?.domain !== true || domainFormState?.delivery !== true || domainFormState?.matcherKind !== "emailDomain" || domainFormState?.matcherValue !== "mailinator.com") throw new Error(`domain form/capability binding failed: ${JSON.stringify({ recipient: domainFormState?.recipient === true, domain: domainFormState?.domain === true, delivery: domainFormState?.delivery === true, matcherKind: domainFormState?.matcherKind ?? null, matcherValue: domainFormState?.matcherValue ?? null })}`);
+  const domainFormState = agentString(await agent(["eval", `JSON.stringify((function(){var option=document.querySelector('select[name=kv-source] option:checked');return {recipient:document.querySelector('input[value=emailDomain]')?.checked===true,domain:document.querySelector('input[name=recipient-value]')?.value==='mailinator.com',delivery:document.querySelector('input[name=delivery-email]')?.value===${JSON.stringify(domainDeliveryEmail)},selected:option?option.value:null,selectedKind:option?(option.dataset.resourceKind||null):null};})())`]));
+  // TC-344. The signed recipient matcher used to arrive pre-issued on the
+  // capability behind the option, so this read the option dataset. Under the
+  // owner-policy path the sender authors the matcher in the composer and the
+  // option carries none, so the binding to check is the composed form: the
+  // domain typed, the delivery address, and the library object selected.
+  if (domainFormState?.recipient !== true || domainFormState?.domain !== true || domainFormState?.delivery !== true || domainFormState?.selected !== domainLibraryPath || domainFormState?.selectedKind !== "exact") throw new Error(`domain form/library binding failed: ${JSON.stringify({ recipient: domainFormState?.recipient === true, domain: domainFormState?.domain === true, delivery: domainFormState?.delivery === true, selected: domainFormState?.selected ?? null, expected: domainLibraryPath, selectedKind: domainFormState?.selectedKind ?? null })}`);
   await agent(["fill", "input[name=delivery-email]", "sam@evil.example"]);
   await agent(["click", "button.create-link-button"]);
   await agent(["wait", "text=Check the sharing details"]);
@@ -989,20 +1042,30 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const folderTrace = await beginFlow("folder");
   const folderDeliveryEmail = "sam@mailinator.com";
   await agent(openAdvancedSettings); await agent(["click", "input[value=emailDomain]"]); await agent(["fill", "input[name=recipient-value]", "mailinator.com"]); await agent(["fill", "input[name=delivery-email]", folderDeliveryEmail]); await agent(pickFromLibrary);
-  const folderPath = agentString(await agent(["eval", "JSON.stringify((function(){var s=document.querySelector('select[name=kv-source]');var o=[...s.options].find(function(x){return x.dataset.resourceKind==='prefix'&&x.value.endsWith('/')});if(!o)throw new Error('folder capability missing');s.value=o.value;s.dispatchEvent(new Event('change',{bubbles:true}));return o.value})())"]));
-  assert.match(folderPath, /documents\/$/); await agent(["check", "input[name=permission][value=list]"]); await agent(["check", "input[name=permission][value=edit]"]);
+  // TC-344. A folder share copies the *direct children* of the chosen prefix,
+  // so the prefix has to be one that has direct file children. The sender's
+  // space contains `shares/<id>/fixture.md`, which offers both `shares/` (no
+  // direct children) and `shares/<id>/` (one). Pick the latter, and say so if
+  // the library never offered such a folder.
+  const folderPath = await selectLibraryOption("(function(options){var files=options.filter(function(option){return option.dataset.resourceKind==='exact'}).map(function(option){return option.value});return options.filter(function(option){return option.dataset.resourceKind==='prefix'&&option.value.charAt(option.value.length-1)==='/'}).find(function(option){return files.some(function(file){return file.indexOf(option.value)===0&&file.slice(option.value.length).indexOf('/')===-1})})})", "library folder with direct file children");
+  checks.push(`Folder slice shared the library folder ${folderPath} out of the sender own space.`);
+  await agent(["check", "input[name=permission][value=list]"]); await agent(["check", "input[name=permission][value=edit]"]);
   await agent(["eval", "(function(){window.__tinycloudFolderDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/v1/share-email/invitations')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudFolderDeliveryShape={actions:Array.isArray(auth.actions)?auth.actions.slice().sort():[],resource:typeof auth.resource==='string'?auth.resource:null,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};}catch{}}return old.apply(this,arguments);};})()"]);
   await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]); await agent(["click", "button.confirm-notification"]);
   await agent(["wait", "text=Email queued"]);
   const folderAudit = await auditFlow("folder", folderTrace, { mailOrigin, expectMail: true, expectMailRecipient: folderDeliveryEmail, pii: [folderDeliveryEmail] });
-  const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(folderDeliveryShape?.resource, "documents"); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
+  const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(typeof folderDeliveryShape?.resource === "string" && folderDeliveryShape.resource.length > 0 && !folderDeliveryShape.resource.endsWith("/"), true, `folder delivery did not carry a folder resource: ${JSON.stringify(folderDeliveryShape)}`); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
   const folderInviteUrl = localShareUrl(mailShareUrl(folderAudit.capturedMail.payload), origin);
   await navigate(folderInviteUrl, 2000); await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]); await agent(["eval", "(function(){var previous=window.fetch;window.__folderPutCapture=null;window.__policyTrace=[];window.__claimTrace=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=previous.apply(this,arguments);if(u.includes('/policy/challenges')||u.includes('/policy/session')||u.includes('/v1/share-email/claims/')){result.then(function(response){response.clone().text().then(function(body){var parsed=null;try{parsed=JSON.parse(body);}catch{}var path=(new URL(u,location.href)).pathname;var target=path.includes('/claims/')?window.__claimTrace:window.__policyTrace;target.push({path:path,status:response.status,code:parsed&&parsed.error&&parsed.error.code||null,keys:parsed&&typeof parsed==='object'?Object.keys(parsed).sort():[],body:body.slice(0,400)});});});}if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var request=parsed&&parsed.request||{};var action=request.action||request.invocation&&request.invocation.action;if(action==='tinycloud.kv/put'||action==='put'){window.__folderPutCapture={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};}}catch{}}return result;};})()"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "3000"]);
   const folderOpenState = agentString(await agent(["eval", "JSON.stringify({title:document.title,policy:(document.querySelector('.viewer-policy-status')?.textContent||'').slice(0,240),claim:(document.querySelector('.viewer-status')?.textContent||'').slice(0,240),trace:window.__policyTrace||[],claimTrace:window.__claimTrace||[],body:(document.body?.innerText||'').replace(/https?:\\/\\/[^\\s]+/g,'[URL]').slice(0,600)})"]));
   if (!String(folderOpenState?.body ?? "").includes("Shared folder")) throw new Error("folder authorization did not complete: " + JSON.stringify(folderOpenState));
   assert.notEqual(await agent(["get", "count", "button.viewer-folder-entry"]), "0", "folder child listing was not observed");
   const folderEntries = agentString(await agent(["eval", "JSON.stringify([...document.querySelectorAll('button.viewer-folder-entry')].map(function(button){return {path:button.dataset.path||'',label:button.textContent||''}}))"]));
-  assert.equal(Array.isArray(folderEntries) && folderEntries.length > 0 && folderEntries.every((entry) => entry.path.startsWith("documents/") && entry.path.slice("documents/".length).includes("/") === false), true, "folder list escaped direct-child scope");
+  // TC-344. The delivered prefix resource is minted per share by
+  // createOwnerPolicyShare, so the invariant is direct-child scope under the
+  // resource that was actually delivered, not a fixture folder name.
+  const folderResource = folderDeliveryShape.resource;
+  assert.equal(Array.isArray(folderEntries) && folderEntries.length > 0 && folderEntries.every((entry) => entry.path.startsWith(`${folderResource}/`) && entry.path.slice(folderResource.length + 1).includes("/") === false), true, `folder list escaped direct-child scope for ${folderResource}: ${JSON.stringify(folderEntries)}`);
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button.viewer-folder-entry')].find((candidate)=>candidate.dataset.path?.endsWith('.md'));if(!button)throw new Error('direct child file missing');button.click();return true;})()"]); await agent(["wait", "2000"]);
   assert.equal(await agent(["get", "count", ".viewer-editor-panel"]), "1", "direct child get did not expose the authorized editor");
   await agent(["fill", "textarea[aria-label='Shared text draft']", "# Folder draft\n\nA byte-identical stale folder draft."]); await agent(["click", "button.viewer-editor-save"]); await agent(["wait", "text=Saved."]);
@@ -1015,9 +1078,9 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   checks.push("Reusable mailinator.com folder flow observed direct-child list/get/put, rejected out-of-scope paths, and preserved a stale If-Match draft through 412 recovery.");
   };
 
-  await runFolderFlow();
-  await runDomainFlow();
+  const runPolicySlice = async () => { await runFolderFlow(); await runDomainFlow(); };
 
+  const runDenialSlice = async () => {
   const denialTrace = await beginFlow("denial-matrix");
   const denialCases = [
     ["signed-out-capabilities", `${origin}/api/share/capabilities`, { method: "GET" }, 401],
@@ -1044,6 +1107,28 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   await agent(["eval", "fetch('/api/share/auth/logout',{method:'POST',credentials:'include'}).then(function(r){return r.status})"]);
   assert.equal(await agent(["eval", "fetch('/api/share/capabilities',{credentials:'include'}).then(function(r){return r.status})"]), "401", "signed-out sender history boundary was not enforced");
   gateResults.denialMatrix = true; await auditFlow("denial-matrix", denialTrace, { mailOrigin }); checks.push("Enforcing boundary denial matrix observed signed-out history, wrong origin, malformed and traversal paths, forged cursor/query, removed routes, missing proof, and unauthorized get/list/put fail-closed responses.");
+  };
+
+  /*
+   * TC-307. Each slice runs behind its own boundary. A slice that throws ends
+   * that slice and nothing else, so one broken flow can no longer leave six
+   * working ones reporting `false` from never having been attempted. A slice
+   * whose declared prerequisite did not pass is skipped and recorded as
+   * not-attempted, because running it would report a cause from another slice.
+   */
+  const sliceRunners = { bearer: runBearerSlice, addressed: runAddressedSlice, policy: runPolicySlice, denial: runDenialSlice };
+  for (const slice of GATE_SLICES) {
+    const runner = sliceRunners[slice.name];
+    if (runner === undefined) throw new Error(`gate slice ${slice.name} has no runner`);
+    const blocking = slice.requires.find((name) => !attemptedSlices.has(name) || sliceFailures.has(name) || !GATE_SLICES.find((candidate) => candidate.name === name).flows.every((flow) => gateResults[flow] === true));
+    if (blocking !== undefined) { blockedSlices[slice.name] = blocking; continue; }
+    attemptedSlices.add(slice.name);
+    try {
+      await runner();
+    } catch (error) {
+      sliceFailures.set(slice.name, error instanceof Error ? error.message : String(error));
+    }
+  }
 
   const trackedRequests = networkEntries(await agent(["network", "requests", "--json"]));
   const allRequests = trackedRequests.length > 0 ? trackedRequests : await browserTelemetryEntries();
@@ -1051,11 +1136,11 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   if (externalRequests.length !== 0) blockers.push(`Browser attempted non-loopback destinations: ${JSON.stringify(externalRequests.map((entry) => entry.url).slice(0, 20))}`); else gateResults.browser = true;
 }
 
-async function writeArtifact(status, summary, extraBlockers = []) {
+async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence = {}) {
   const scopedRepositories = {
     share: shareRoot,
     node: nodeRoot,
-    jsSdk: process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live"),
+    jsSdk: resolveJsSdkWorktree(process.env, workspaceRoot),
     openCredentials: credentialsRoot,
   };
   const repositoryDigests = {};
@@ -1077,7 +1162,7 @@ async function writeArtifact(status, summary, extraBlockers = []) {
   // requires the upstream routing gate to have proven the Share host's own
   // three destinations are loopback, which is the destination set the browser
   // audit structurally cannot see.
-  const result = { status, summary, localUnpushedMode, releaseInputsVerified, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
@@ -1094,7 +1179,7 @@ async function browserSmokeLoop(origin, walletOrigin) {
 
 async function authenticateBrowserPage(walletOrigin, openComposer = true) {
   await agent(["eval", walletBootstrapScript(walletOrigin)]);
-  await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]).catch(() => undefined);
+  await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
   await agent(["click", "button.auth-button"]);
   await agent(["wait", "1000"]);
   await agent(["find", "text", "TinyCloud E2E Wallet", "click"]);
@@ -1103,7 +1188,7 @@ async function authenticateBrowserPage(walletOrigin, openComposer = true) {
     await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='New share');if(!button)throw new Error('New share action is not present');button.click();return true;})()"]);
     await agent(["wait", "text=Share a file"]);
   }
-  await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]).catch(() => undefined);
+  await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]);
 }
 
 async function cleanup() {
@@ -1202,8 +1287,24 @@ try {
   await cleanup();
 }
 
-const missingFlows = Object.entries({ exactEmail: gateResults.exactEmail, domain: gateResults.domain, bearer: gateResults.bearer, editConflict: gateResults.editConflict, folder: gateResults.folder, notification: gateResults.notification, denialMatrix: gateResults.denialMatrix }).filter(([, passed]) => !passed).map(([name]) => name);
-if (missingFlows.length > 0) blockers.push(`Browser gate did not pass required flow(s): ${missingFlows.join(", ")}.`);
-const complete = blockers.length === 0 && upstreamRoutingAudit.allLoopback && gateResults.browser && gateResults.senderLibrary && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix && externalRequests.length === 0;
-await writeArtifact(complete ? "complete" : "blocked", complete ? "Hermetic production-shaped sharing browser gate passed." : "Hermetic gate executed the real local composition and recorded the release blockers without inferring success.");
-process.exitCode = complete ? 0 : 1;
+/*
+ * TC-307. The gate is scoped to the slices named by
+ * SHARING_E2E_REQUIRED_SLICES (default: the blueprint's first slice,
+ * `bearer`), so one broken flow can no longer mask six working ones. The
+ * artifact is not scoped: it names every slice, every unproven flow, and
+ * whether a slice failed or was never attempted, and `status: "complete"` is
+ * reserved for a run that proved all of them. A scoped pass exits 0 while
+ * still reading, in the artifact and on stdout, as partial.
+ */
+const sliceReport = summarizeSlices({ slices: GATE_SLICES, flowResults: gateResults, attempted: [...attemptedSlices], failures: Object.fromEntries(sliceFailures), blockedBy: blockedSlices });
+const verdict = gateVerdict(sliceReport, requiredSlices);
+for (const slice of sliceReport) {
+  if (slice.status === "passed") continue;
+  const message = `Gate slice ${slice.name} (${slice.summary}) is ${slice.status}: ${slice.detail}.`;
+  if (verdict.failedRequiredSlices.includes(slice.name)) blockers.push(message); else checks.push(`${message} It is outside the required slice scope (${requiredSlices.join(", ")}) and is reported as unproven, not as a pass.`);
+}
+const infrastructureClean = blockers.length === 0 && upstreamRoutingAudit.allLoopback && gateResults.browser && externalRequests.length === 0;
+const gatePassed = infrastructureClean && verdict.requiredSlicesPassed;
+const complete = infrastructureClean && verdict.allSlicesPassed;
+await writeArtifact(complete ? "complete" : "blocked", gateSummary(verdict), [], { sliceReport, verdict });
+process.exitCode = gatePassed ? 0 : 1;
