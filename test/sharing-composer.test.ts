@@ -443,21 +443,74 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("keeps link plumbing and the encryption choice out of the primary form", () => {
+  it("shows all three recipient choices in the primary fieldset and keeps link plumbing in Advanced", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
+    const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
     const advanced = root.querySelector<HTMLDetailsElement>("details.composer-advanced")!;
+    const recipientOptions = Array.from(recipients.querySelectorAll<HTMLInputElement>("input[name=recipient]"));
+
+    expect(recipients.querySelector("legend")?.textContent).toBe("Who can open it");
+    expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "bearer"]);
+    expect(recipientOptions.map((input) => input.closest("label")?.textContent)).toEqual([
+      "Only this person — they'll confirm their email to open it",
+      "Anyone with an email from this domain — they'll confirm their email to open it",
+      "Anyone with the link — anyone you send it to can open it",
+    ]);
     expect(advanced.open).toBe(false);
     expect(advanced.contains(root.querySelector("select[name=format]"))).toBe(true);
     expect(advanced.contains(root.querySelector("input[name=encryption]"))).toBe(true);
     expect(advanced.contains(root.querySelector("input[name=delivery-email]"))).toBe(true);
-    expect(advanced.contains(root.querySelector("input[value=emailDomain]"))).toBe(true);
+    expect(advanced.querySelector("input[name=recipient]")).toBeNull();
+    expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
     expect(root.querySelector<HTMLSelectElement>("select[name=format]")!.options[0]!.textContent).toBe("Short link (recommended)");
     // Encryption is a real choice only for a domain share.
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(true);
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.checked = true;
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
+  });
+
+  it("labels and submits the first-class domain flow with normalized authorization and delivery", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    let selected: ShareComposerModel | undefined;
+    mountShareComposer(root, {
+      ...baseOptions(),
+      loadCapabilities: async () => [],
+      createShare: async ({ model }) => {
+        selected = model;
+        return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat };
+      },
+    });
+
+    const domain = root.querySelector<HTMLInputElement>("fieldset.recipient-section input[name=recipient][value=emailDomain]")!;
+    domain.checked = true;
+    domain.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    expect(recipient).toMatchObject({
+      hidden: false,
+      type: "text",
+      placeholder: "example.com",
+      autocomplete: "off",
+    });
+    expect(recipient.getAttribute("aria-label")).toBe("Email domain");
+    expect(root.querySelector(".composer-note")?.textContent).toContain("confirming their address");
+
+    recipient.value = "EXAMPLE.COM";
+    recipient.dispatchEvent(new Event("input", { bubbles: true }));
+    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
+    delivery.value = "reader@example.com";
+    delivery.dispatchEvent(new Event("input", { bubbles: true }));
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "domain share" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(selected).toBeDefined());
+    expect(selected).toMatchObject({
+      recipient: { kind: "emailDomain", value: "example.com" },
+      deliveryEmail: "reader@example.com",
+      encryption: true,
+      permissions: ["read"],
+    });
   });
 
   it("removes manual folder browsing and restores edit controls for a person", () => {

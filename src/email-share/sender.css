@@ -307,7 +307,6 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .composer-advanced-summary { min-height: 48px; padding: 14px 16px; color: var(--share-ink); font-size: .84rem; font-weight: 650; cursor: pointer; }
 .composer-advanced-summary:focus-visible { outline: 2px solid var(--share-focus); outline-offset: -2px; }
 .composer-advanced > *:not(summary) { margin-right: 16px; margin-left: 16px; }
-.advanced-recipient { margin-bottom: 10px; }
 .encryption-group { display: grid; margin-bottom: 10px; }
 .encryption-group[hidden], .delivery-field[hidden] { display: none; }
 

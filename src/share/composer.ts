@@ -744,7 +744,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   libraryPanel.append(sourceLabel, useUpload);
   contentSection.append(drop, chosen, textPanel, libraryPanel);
 
-  // Who can open it. The third recipient kind lives in Advanced.
+  // Who can open it. All recipient kinds are first-class choices.
   const fieldset = el(doc, "fieldset", "composer-section recipient-section");
   fieldset.append(el(doc, "legend", "field-legend", "Who can open it"));
   const recipientInput = el(doc, "input", "field-input recipient-value") as HTMLInputElement;
@@ -756,8 +756,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     parent.append(labelNode);
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
+  addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — they'll confirm their email to open it");
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
-  recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email or domain");
+  recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
   fieldset.append(recipientInput);
 
   // When it stops working. The sender was never asked before (P1-2).
@@ -789,15 +790,13 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const advanced = el(doc, "details", "composer-advanced");
   advanced.append(el(doc, "summary", "composer-advanced-summary", "Advanced settings"));
   const formatLabel = el(doc, "label", "field-label", "Link style"); const format = el(doc, "select", "field-input") as HTMLSelectElement; format.name = "format"; for (const [value, label] of [["compact", "Short link (recommended)"], ["inline", "Self-contained link — very long, works without our servers"]] as const) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; format.append(option); } formatLabel.append(format);
-  const domainGroup = el(doc, "div", "advanced-recipient");
-  addRecipientOption(domainGroup, "emailDomain", "Anyone at a company — anyone with an email at this domain");
   const encryptionGroup = el(doc, "div", "encryption-group"); encryptionGroup.hidden = true;
   const encryptionLabel = el(doc, "label", "toggle-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryptionLabel.append(encryption, el(doc, "span", "", "Hide the file name and recipient from our servers"));
   const warningLabel = el(doc, "label", "toggle-option encryption-warning"); const warning = el(doc, "input", "") as HTMLInputElement; warning.type = "checkbox"; warning.name = "encryption-acknowledgment"; warningLabel.append(warning, el(doc, "span", "", "I understand the file name and recipient domain will be visible to our servers")); warningLabel.hidden = true;
   encryptionGroup.append(encryptionLabel, warningLabel);
   const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
-  advanced.append(formatLabel, domainGroup, encryptionGroup, deliveryLabel, saveAsLabel);
+  advanced.append(formatLabel, encryptionGroup, deliveryLabel, saveAsLabel);
 
   const note = el(doc, "p", "scope-note composer-note");
   const submit = el(doc, "button", "button button-primary create-link-button", "Create link"); submit.type = "submit";
@@ -876,7 +875,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       : "Link-only shares are view-only. Choose a specific person to allow editing.";
     browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
-    recipientInput.type = kind === "emailDomain" ? "text" : "email"; recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
+    recipientInput.type = kind === "emailDomain" ? "text" : "email";
+    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
+    recipientInput.autocomplete = kind === "emailDomain" ? "off" : "email";
+    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : "Recipient email address");
     // Encryption is a real choice only for domain shares; everywhere else it
     // is required, so the control is not shown at all (P1-4).
     encryptionGroup.hidden = kind !== "emailDomain";
