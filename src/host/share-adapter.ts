@@ -8,6 +8,7 @@ import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
+import { assertSecurePath, secureReadSync, SECURE_APPEND, SECURE_CREATE, SECURE_READ } from "./secure-path.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
@@ -44,17 +45,19 @@ const REGISTRY_AUTHORIZATION_DOMAIN =
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
 export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
-const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
-const SECURE_READ = constants.O_RDONLY | NO_FOLLOW;
-const SECURE_CREATE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
-const SECURE_APPEND = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | NO_FOLLOW;
-
 class PayloadTooLargeError extends Error {}
 
 export interface BindingStore {
   readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
+}
+
+async function secureRead(path: string): Promise<string> {
+  assertSecurePath(path);
+  const handle = await open(path, SECURE_READ);
+  try { return await handle.readFile("utf8"); }
+  finally { await handle.close(); }
 }
 
 /** Production bindings must live inside the persistent Share volume. */
@@ -80,43 +83,6 @@ export function validateProductionBindingStorePath(value: string, root = PRODUCT
     throw new Error("binding store path must be a descendant of the configured persistent Share volume");
   }
   return normalized;
-}
-
-function assertSecurePath(path: string, allowMissingLeaf = true): void {
-  const segments = path.split("/").slice(1);
-  let current = "";
-  for (const [index, segment] of segments.entries()) {
-    current += `/${segment}`;
-    let entry;
-    try { entry = lstatSync(current); }
-    catch (error) {
-      if (allowMissingLeaf && index === segments.length - 1 && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    // macOS exposes /var as a fixed system alias for /private/var; it is not
-    // operator-controlled and is needed for the local temp-root security tests.
-    if (entry.isSymbolicLink()) {
-      if (!(process.platform === "darwin" && current === "/var")) throw new Error("binding store path contains a symlink");
-      continue;
-    }
-    if (index < segments.length - 1 && !entry.isDirectory()) throw new Error("binding store path parent is not a directory");
-  }
-  const parent = path.slice(0, path.lastIndexOf("/"));
-  realpathSync(parent);
-}
-
-function secureReadSync(path: string): string {
-  assertSecurePath(path);
-  const descriptor = openSync(path, SECURE_READ);
-  try { return readFileSync(descriptor, "utf8"); }
-  finally { closeSync(descriptor); }
-}
-
-async function secureRead(path: string): Promise<string> {
-  assertSecurePath(path);
-  const handle = await open(path, SECURE_READ);
-  try { return await handle.readFile("utf8"); }
-  finally { await handle.close(); }
 }
 
 function scryptAsync(password: string, salt: Uint8Array, length: number, options: { readonly N: number; readonly r: number; readonly p: number; readonly maxmem: number }): Promise<Buffer> {
@@ -417,17 +383,30 @@ interface CapabilityRecord { readonly scope: Record<string, unknown>; readonly s
 interface ShareSession { readonly userId: string; readonly expiresAt: number; readonly capabilities: Map<string, CapabilityRecord> }
 /** Bounds the per-session authority a single wallet may enroll. */
 const SESSION_CAPABILITY_LIMIT = 32;
+/**
+ * The signing idempotency cache is reachable in production now that the sender
+ * path can boot, so it is bounded in both size and time: an entry only has to
+ * outlive one client retry.
+ */
+const SIGNER_CACHE_LIMIT = 4096;
+const SIGNER_CACHE_TTL_MS = 10 * 60 * 1000;
+/** Bounds concurrently live sessions so unlimited sign-ins cannot grow the process. */
+const SESSION_LIMIT = 4096;
 
-function openKeyAddressFromOwnerDid(value: unknown): string | undefined {
+/**
+ * Ownership is the *complete* normalized DID, chain id included: a session on
+ * one EIP-155 chain must not select a capability owned on another.
+ */
+function normalizedOwnerDid(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const match = /^did:pkh:eip155:[1-9][0-9]*:(0x[0-9a-fA-F]{40})$/.exec(value);
-  return match?.[1]?.toLowerCase();
+  const match = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/.exec(value);
+  return match === null ? undefined : `did:pkh:eip155:${match[1]}:${match[2]!.toLowerCase()}`;
 }
 
 function capabilityOwnedByPrincipal(candidate: { readonly scope: Record<string, unknown> }, principal: string): boolean {
-  const walletAddress = openKeyAddressFromOwnerDid(principal);
-  if (walletAddress !== undefined) {
-    return openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === walletAddress;
+  const ownerDid = normalizedOwnerDid(principal);
+  if (ownerDid !== undefined) {
+    return normalizedOwnerDid(candidate.scope.policyOwnerDid) === ownerDid;
   }
   return typeof candidate.scope.userId === "string" && candidate.scope.userId === principal;
 }
@@ -736,11 +715,28 @@ async function assertPublishedBinding(binding: Record<string, unknown>, cid: str
 }
 
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown>; readiness: Record<string, boolean> } {
-  const signers = new Map<string, string>();
+  const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const linkOnlyUploads = new Map<string, { count: number; windowStartedAt: number }>();
   const capability = options.capability;
+  /**
+   * Drops state whose lifetime has ended. Called before issuing a session, so
+   * the cost of retaining state is paid by whoever creates it.
+   */
+  const sweep = (): void => {
+    const now = Date.now();
+    for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
+    for (const [key, entry] of signers) if (entry.expiresAt <= now) signers.delete(key);
+    for (const [key, budget] of linkOnlyUploads) if (now - budget.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS) linkOnlyUploads.delete(key);
+    for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+  };
+  const issueSession = (token: string, session: ShareSession): boolean => {
+    sweep();
+    if (sessions.size >= SESSION_LIMIT) return false;
+    sessions.set(token, session);
+    return true;
+  };
   /**
    * Readiness is a property of the sender *path*, not of one pre-issued key.
    * `senderReady` answers "is this host configured to serve a sender operation
@@ -842,7 +838,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // A valid OpenKey proof is an authentication ceremony, not a sender
         // capability lookup. Sender capabilities are checked only when a
         // sender operation selects one below.
-        sessions.set(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
+        if (!issueSession(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000, capabilities: new Map() })) return response(503, { error: { code: "session_capacity" } });
         return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
@@ -851,7 +847,8 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const username = safeString(body.username, "username"); const password = safeString(body.password, "password");
         const user = authUsers.find((candidate) => candidate.username === username);
         if (user === undefined || !(await verifyPassword(password, user.passwordHash))) return generic(401);
-        const token = toBase64Url(randomBytes(32)); sessions.set(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
+        const token = toBase64Url(randomBytes(32));
+        if (!issueSession(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000, capabilities: new Map() })) return response(503, { error: { code: "session_capacity" } });
         return response(200, { status: "authenticated" }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/logout" && request.method === "POST") {
@@ -927,14 +924,20 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // Bound to the selected capability's own signing identity, so a cached
         // signature can never be replayed across sessions or sender keys.
         const key = hash(`${selected.identity.did}:${capabilityId}:${idempotency}:${expected}`);
-        let signature = signers.get(key);
+        const cached = signers.get(key);
+        let signature = cached === undefined || cached.expiresAt <= Date.now() ? undefined : cached.signature;
         if (signature === undefined) {
           const parsedMessage = body.purpose === "envelope" ? JSON.parse(message) as Record<string, unknown> : undefined;
           const domain = new TextEncoder().encode(body.purpose === "delegationAuthoring" ? SIGNATURE_DOMAINS.delegationAuthoring : body.purpose === "envelope" && parsedMessage?.version === 2 ? SIGNATURE_DOMAINS.envelopeV2 : SIGNATURE_DOMAINS[body.purpose === "envelope" ? "envelope" : "inviteAuthorization"]);
           const bytes = new TextEncoder().encode(message);
           const preimage = new Uint8Array(domain.length + bytes.length); preimage.set(domain); preimage.set(bytes, domain.length);
           signature = toBase64Url(ed25519.sign(preimage, selected.identity.privateKey));
-          signers.set(key, signature);
+          if (signers.size >= SIGNER_CACHE_LIMIT) {
+            const now = Date.now();
+            for (const [candidate, entry] of signers) if (entry.expiresAt <= now) signers.delete(candidate);
+            while (signers.size >= SIGNER_CACHE_LIMIT) signers.delete(signers.keys().next().value as string);
+          }
+          signers.set(key, { signature, expiresAt: Date.now() + SIGNER_CACHE_TTL_MS });
         }
         return response(200, { signerDid: selected.identity.did, signature });
       }
@@ -1156,7 +1159,7 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     ? undefined
     : bundle.sender.senderPrivateKey.length > 0
       ? staticSenderIdentitySource(bundle.sender.senderPrivateKey)
-      : derivedSenderIdentitySource(loadSenderRootSeed(env, bundle.environment));
+      : derivedSenderIdentitySource(loadSenderRootSeed(env, bundle.environment, { root: bindingRoot, ...(bindingPath === undefined ? {} : { reserved: [bindingPath] }) }));
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;

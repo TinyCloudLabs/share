@@ -44,7 +44,9 @@ if (senderEnabled) {
   if (!isAbsolute(senderRootKeyPath) || senderRootKeyPath.endsWith("/") || senderRootKeyPath.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..") || seedRemainder === "" || seedRemainder.startsWith("..") || isAbsolute(seedRemainder)) {
     throw new Error("SHARE_SENDER_ROOT_KEY_PATH must be a normalized descendant of /var/lib/tinycloud/share");
   }
-  if (resolve(senderRootKeyPath) === resolve(bindingStorePath)) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with the binding journal");
+  // The binding store also owns `<path>.lock`, whose stale-lock reaper would
+  // otherwise unlink the seed and silently rotate every wallet identity.
+  if (resolve(senderRootKeyPath) === resolve(bindingStorePath) || resolve(senderRootKeyPath) === `${resolve(bindingStorePath)}.lock`) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with the binding journal or its lock");
 }
 if (senderEnabled) {
   const root = "/var/lib/tinycloud/share";

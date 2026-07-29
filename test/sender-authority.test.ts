@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
@@ -191,7 +191,26 @@ describe("wallet-rooted sender authority (TC-348)", () => {
       // There is no inline environment variant: a sender secret must never be
       // expressible in deployment configuration.
       expect(() => loadSenderRootSeed({}, "test")).toThrow(/persistent sender root key path is required/);
-      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: "relative/sender.key" }, "production")).toThrow(/must be absolute/);
+      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: "relative/sender.key" }, "production")).toThrow(/must be an absolute path/);
+      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: `${root}/../escape.key` }, "production")).toThrow(/traversal-free/);
+
+      // Confined to the verified persistent root and never colliding with the
+      // binding journal or the lock its stale-lock reaper unlinks.
+      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: `${tmpdir()}/elsewhere.key` }, "production", { root })).toThrow(/descendant of the configured persistent Share volume/);
+      for (const reservedPath of [`${root}/bindings.ndjson`, `${root}/bindings.ndjson.lock`]) {
+        expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: reservedPath }, "production", { root, reserved: [`${root}/bindings.ndjson`] })).toThrow(/must not collide/);
+      }
+
+      // A symlinked seed is refused rather than followed.
+      const linked = `${root}/linked.key`;
+      await symlink(path, linked);
+      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: linked }, "production", { root })).toThrow(/symlink/);
+
+      // Group- or world-readable key material is refused.
+      const loose = `${root}/loose.key`;
+      await writeFile(loose, toBase64Url(new Uint8Array(32).fill(5)), { encoding: "utf8", mode: 0o644 });
+      await chmod(loose, 0o644);
+      expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: loose }, "production", { root })).toThrow(/group- or world-accessible/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -295,6 +314,11 @@ describe("wallet-rooted sender authority (TC-348)", () => {
       const rejected = await enroll(host, cookie, descriptor(identity.senderDid, foreignOwner));
       expect(rejected.status).toBe(400);
       expect(await rejected.json()).toEqual({ error: { code: "capability_unavailable" } });
+      // Ownership is the complete DID: the same address on another EIP-155
+      // chain is a different principal, not a match.
+      expect((await enroll(host, cookie, descriptor(identity.senderDid, `did:pkh:eip155:137:${ALICE.address.toLowerCase()}`))).status).toBe(400);
+      // A malformed owner DID is not silently treated as unowned either.
+      expect((await enroll(host, cookie, descriptor(identity.senderDid, "did:pkh:eip155:1:not-an-address"))).status).toBe(400);
       expect((await (await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie } }))).json() as { capabilities: unknown[] }).capabilities).toEqual([]);
     } finally { await dispose(); }
   });
