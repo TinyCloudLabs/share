@@ -18,11 +18,15 @@ const DERIVATION_SALT = "xyz.tinycloud.share/sender-identity/v1";
  * characters — narrower than that would authenticate a legacy user and then
  * refuse to derive its sender identity.
  */
-function derivablePrincipal(value: string): boolean {
-  if (value.length === 0 || value.length > 256) return false;
+export function derivablePrincipal(value: string): boolean {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) return false;
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
     if (code < 0x20 || code === 0x7f) return false;
+    // TextEncoder maps every unpaired surrogate to the same U+FFFD bytes, so
+    // without this two distinct authenticated principals would derive one
+    // private key and one senderDid. The encoding must be injective.
+    if (code >= 0xd800 && code <= 0xdfff) return false;
   }
   return true;
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
-import { derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource } from "../src/host/sender-identity.js";
+import { derivablePrincipal, derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource } from "../src/host/sender-identity.js";
 
 /**
  * TC-348. `SHARE_SENDER_ENABLED=true` was unbootable in every legal production
@@ -439,6 +439,28 @@ describe("wallet-rooted sender authority (TC-348)", () => {
     expect(source.forPrincipal("alice@example.com").did).not.toBe(source.forPrincipal("alice@example.org").did);
     expect(() => source.forPrincipal("a".repeat(257))).toThrow(/principal is invalid/);
     expect(() => source.forPrincipal(`bad${String.fromCharCode(10)}principal`)).toThrow(/principal is invalid/);
+    // Unpaired surrogates all encode to the same U+FFFD bytes, so accepting
+    // them would hand two distinct principals one private key. Refuse them.
+    for (const lone of [String.fromCharCode(0xd800), String.fromCharCode(0xd801), `user${String.fromCharCode(0xdc00)}`]) {
+      expect(() => source.forPrincipal(lone)).toThrow(/principal is invalid/);
+    }
+    expect(derivablePrincipal(String.fromCharCode(0xd800))).toBe(false);
+    // Well-formed astral characters still derive, and distinctly.
+    expect(source.forPrincipal("user\u{1f600}").did).not.toBe(source.forPrincipal("user\u{1f601}").did);
+  });
+
+  it("refuses a legacy user id that could authenticate but not derive an identity", async () => {
+    const root = await mkdtemp(`${tmpdir()}/share-legacy-principal-`);
+    try {
+      const base = {
+        SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(productionBundle()), SHARE_BINDING_STORE_ROOT: root,
+        SHARE_BINDING_STORE_PATH: `${root}/bindings.ndjson`, SHARE_SENDER_ROOT_KEY_PATH: `${root}/sender-root.key`, SHARE_HERMETIC_COMPOSITION: "true",
+      };
+      const record = (userId: string) => JSON.stringify([{ userId, username: "alice", passwordHash: `scrypt$16384$8$1$${"a".repeat(22)}$${"b".repeat(43)}` }]);
+      expect(() => createShareHostFromEnv({ ...base, SHARE_AUTH_USERS_JSON: record(String.fromCharCode(0xd800)) })).toThrow(/cannot derive a sender identity/);
+      expect(() => createShareHostFromEnv({ ...base, SHARE_AUTH_USERS_JSON: record("a".repeat(257)) })).toThrow(/cannot derive a sender identity/);
+      expect(() => createShareHostFromEnv({ ...base, SHARE_AUTH_USERS_JSON: record("alice@example.com") })).not.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("bounds live sessions per principal without ever refusing to authenticate", async () => {
@@ -454,9 +476,11 @@ describe("wallet-rooted sender authority (TC-348)", () => {
       for (const cookie of cookies.slice(0, 2)) {
         expect((await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie } }))).status).toBe(401);
       }
-      // One wallet's churn does not evict another wallet's session.
+      // One wallet's churn does not evict another wallet's session. The cap is
+      // deliberately per principal only: a global cap would let a stranger's
+      // disposable-wallet churn force a live user out.
       const bobCookie = await signIn(host, BOB);
-      for (let index = 0; index < 10; index += 1) await signIn(host, ALICE);
+      for (let index = 1; index <= 40; index += 1) await signIn(host, privateKeyToAccount(`0x${index.toString(16).padStart(2, "0").repeat(32)}`));
       expect((await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie: bobCookie } }))).status).toBe(200);
     } finally { await dispose(); }
   });

@@ -7,7 +7,7 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
-import { derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
+import { derivablePrincipal, derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
 import { assertSecurePath, secureReadSync, SECURE_APPEND, SECURE_CREATE, SECURE_READ } from "./secure-path.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
@@ -391,15 +391,13 @@ const SESSION_CAPABILITY_LIMIT = 32;
 const SIGNER_CACHE_LIMIT = 4096;
 const SIGNER_CACHE_TTL_MS = 10 * 60 * 1000;
 /**
- * Bounds concurrently live sessions. A per-principal cap keeps one wallet's
- * repeated sign-ins from evicting anyone else, and the global cap evicts the
- * oldest rather than refusing to authenticate, so bounding memory never
- * becomes a login outage.
+ * Bounds concurrent sessions *per principal*, which is the only bound that is
+ * safe here: a global cap would let a stranger's disposable-wallet churn evict
+ * a live user's session, trading a memory bound for a forced logout. Total
+ * session state remains bounded the same way it was before TC-348 — by who can
+ * complete a SIWE ceremony — and expired entries are now actively swept.
  */
-const SESSION_LIMIT = 4096;
 const SESSIONS_PER_PRINCIPAL = 8;
-/** Bounds outstanding sign-in challenges against an unauthenticated flood. */
-const OPENKEY_NONCE_LIMIT = 4096;
 
 /**
  * Ownership is the *complete* normalized DID, chain id included: a session on
@@ -744,7 +742,6 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     // Map iteration is insertion order, so these drop the oldest first.
     const owned = [...sessions].filter(([, candidate]) => candidate.userId === session.userId).map(([value]) => value);
     while (owned.length >= SESSIONS_PER_PRINCIPAL) sessions.delete(owned.shift()!);
-    while (sessions.size >= SESSION_LIMIT) sessions.delete(sessions.keys().next().value as string);
     sessions.set(token, session);
   };
   /**
@@ -821,10 +818,10 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const requestOrigin = request.headers.get("origin");
         if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
         const now = Date.now();
+        // Bounded by TTL only. A hard cap here would be worse than the memory
+        // it saves: evicting the oldest live challenge lets an unauthenticated
+        // burst cancel a victim's pending sign-in before they submit it.
         for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
-        // The TTL bounds age, not request volume: cap outstanding challenges so
-        // an unauthenticated flood cannot grow the process.
-        while (openKeyNonces.size >= OPENKEY_NONCE_LIMIT) openKeyNonces.delete(openKeyNonces.keys().next().value as string);
         const nonce = toBase64Url(randomBytes(24));
         const expiresAt = now + OPENKEY_NONCE_TTL_MS;
         openKeyNonces.set(nonce, expiresAt);
@@ -1190,6 +1187,9 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) throw new Error("SHARE_AUTH_USERS_JSON is invalid");
       const user = candidate as Record<string, unknown>;
       if (typeof user.userId !== "string" || typeof user.username !== "string" || typeof user.passwordHash !== "string") throw new Error("SHARE_AUTH_USERS_JSON is invalid");
+      // Anything the host will authenticate must also be able to derive a
+      // sender identity, so this fails at startup rather than at request time.
+      if (!derivablePrincipal(user.userId)) throw new Error("SHARE_AUTH_USERS_JSON userId cannot derive a sender identity");
       parsePasswordHash(user.passwordHash);
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
