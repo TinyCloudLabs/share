@@ -61,9 +61,7 @@ import {
   RegistryHttpError,
   fetchBlob,
 } from "@tinycloud/share-registry";
-import { parseAddressedEnvelope } from "@tinycloud/share-sdk";
-
-import { checkBearerDelegation } from "./delegation.js";
+import { checkBearerDelegation, parseAddressedEnvelope } from "@tinycloud/share-sdk";
 
 /** Why a structurally valid envelope cannot be shown by THIS build. */
 export type UnsupportedReason =
@@ -136,11 +134,13 @@ export async function resolveShare(
   // 1. Parse the link. The key comes from the FRAGMENT only; parseShareUrl
   //    already rejects query strings, userinfo, and non-canonical CIDs.
   let ciphertextCid: string;
+  let linkOrigin: string;
   let key32: Uint8Array | undefined;
   let inlineBlob: Uint8Array | undefined;
   try {
     const parsed = parseCompactOrInlineShareUrl(href);
     ciphertextCid = parsed.ciphertextCid;
+    linkOrigin = new URL(href).origin;
     key32 = parsed.key32;
     if (parsed.kind === "inline") inlineBlob = parsed.ciphertext;
   } catch (error) {
@@ -235,6 +235,7 @@ export async function resolveShare(
     //    design, and the UI must render the sender as "unverified" (never a
     //    checkmark). Policy/recipient-DID targets get a real expected
     //    signer in later stages (the delegation chain's issuer).
+    // 7. Sender signature integrity is checked before any capability claim.
     let verified: boolean;
     try {
       verified = await verifyEnvelope(envelope, {
@@ -245,13 +246,20 @@ export async function resolveShare(
     }
     if (!verified) return { state: "signature-invalid" };
 
-    // 7. Single-file slice: only an exact resource selector. Folder
+    // 8. The link origin is part of the signed target binding. A valid
+    // envelope copied to another canonical Share origin must not become a
+    // valid link there, even when the caller did not provide an allowlist.
+    if (envelope.target.origin !== linkOrigin) {
+      return { state: "invalid-link", detail: "share origin does not match its signed target" };
+    }
+
+    // 9. Single-file slice: only an exact resource selector. Folder
     //    browsing (prefix + kv/list) is a later stage.
     if (envelope.target.resource.kind !== "exact") {
       return { state: "unsupported", reason: "prefix-resource", envelope };
     }
 
-    // 8. Expiry — checked BEFORE the delegation binding so a dead share
+    // 10. Expiry — checked BEFORE the delegation binding so a dead share
     //    reports "expired", not a capability failure (create aligns the
     //    delegation exp to always cover the envelope expiry, so anything
     //    past the envelope expiry is dead on both clocks).
@@ -260,21 +268,15 @@ export async function resolveShare(
       return { state: "expired", envelope };
     }
 
-    // 9. Effective-capability binding (viewer spec §1). The envelope
-    //    signature only proves the envelope wasn't altered; it says nothing
-    //    about whether the embedded delegation can authorize the embedded
-    //    key. Decode AND verify the delegation (EdDSA signature against its
-    //    own iss, required exp / optional nbf) and require (a) delegatee
-    //    == the session key's did:key and (b) a read capability covering
-    //    the signed target on canonical segment boundaries. Full CHAIN
-    //    verification against owner roots stays the node's job at read time
-    //    in later slices — see delegation.ts.
+    // 11. Effective-capability binding is shared with the canonical SDK
+    //    compatibility export; the browser adapter does not implement its
+    //    own token verifier.
     const capability = checkBearerDelegation(envelope, { now: () => now });
     if (!capability.ok) {
       return { state: "capability-invalid", detail: "signed delegation is not valid for this share" };
     }
 
-    // 10. Content (stage 4, bearer slice): fetch + verify + decrypt the
+    // 12. Content (stage 4, bearer slice): fetch + verify + decrypt the
     //     sealed content blob the SIGNED pointer names. Runs only after
     //     every check above passed. Direct registry fetch is the bearer
     //     semantics (possession of the link is the authority); later slices
