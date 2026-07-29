@@ -145,7 +145,7 @@ function historyPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v1/entries/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
 }
 
-function ownerEncryptionNetwork(address: string): string {
+export function ownerEncryptionNetwork(address: string): string {
   // Network IDs use the storage-normalized EIP-155 account spelling at the
   // signed capability boundary; the SDK still canonicalizes the space DID.
   return `urn:tinycloud:encryption:did:pkh:eip155:1:${address.toLowerCase()}:default`;

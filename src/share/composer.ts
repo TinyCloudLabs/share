@@ -5,7 +5,7 @@ import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES } from "./openkey-session.js";
+import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, unsignedShareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
 type WebSdkModule = typeof import("@tinycloud/web-sdk");
@@ -434,6 +434,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
 }
 
 async function createOwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
   const file = files.length === 1 ? files[0] : undefined;
   const tinycloud = options.tinycloud;
   if (tinycloud === undefined) throw fail("session", "owner share has no TinyCloud session");
@@ -468,7 +469,19 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
     if (selectedSource !== undefined && sourcePath !== undefined) {
       await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
     }
-    const ownerDelegation = await tinycloud.createOwnerDelegation({ delegateDid: shareKey.did, spaceId, path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames, expiresAt: new Date(expiresAt) });
+    const decryption = {
+      networkId: ownerEncryptionNetwork(options.openKeyAddress),
+      action: "tinycloud.encryption/decrypt",
+    } as const;
+    const ownerDelegation = await tinycloud.createOwnerDelegation({
+      delegateDid: shareKey.did,
+      spaceId,
+      permissions: [
+        { service: "tinycloud.kv", path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames },
+        { service: "tinycloud.encryption", path: decryption.networkId, actions: [decryption.action] },
+      ],
+      expiresAt: new Date(expiresAt),
+    });
     const sourceDigest = await digestBytes(new TextEncoder().encode(canonicalize(source)));
     const policyValue: OwnerSharePolicyV2 = {
       type: "TinyCloudSharePolicy",
@@ -480,6 +493,7 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
       target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: resourceKind, path: resourcePath },
       actions: actionNames,
+      decryption,
       contentSource: source,
       contentSourceDigest: sourceDigest,
       ownerDelegationCid: ownerDelegation.delegationCid,
@@ -487,13 +501,13 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
     };
     const canonicalPolicy = await sdk.canonicalOwnerSharePolicy(policyValue);
     const policyProof = toBase64Url(await shareKey.sign(canonicalPolicy.bytes));
-    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, contentSourceDigest: sourceDigest, expiresAt });
+    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, decryption, contentSourceDigest: sourceDigest, expiresAt });
     // The registration receipt is signed by the enrolled Node key. The trust
     // bundle pins both its kid and public key before the exact response bytes
     // are accepted by the SDK.
     const registration = await tinycloud.registerOwnerSharePolicy({ policy: { bytes: canonicalPolicy.bytes, cid: canonicalPolicy.cid, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } });
     const authorityMaterialDigest = await digestBytes(fromBase64Url(enforcementDelegation.dagCbor));
-    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
+    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, decryption, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
     const envelopeCid = await computeCid(new TextEncoder().encode(canonicalize(envelopeIdentity)));
     const shareCid = await computeCid(new TextEncoder().encode(canonicalize({ version: 2, shareId, policyCid: canonicalPolicy.cid, envelopeCid })));
     const outerUnsigned = {
@@ -507,6 +521,7 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
       target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: resourceKind, path: resourcePath },
       actions: actionNames,
+      decryption,
       contentSource: source,
       contentSourceDigest: sourceDigest,
       expiresAt,
@@ -790,18 +805,17 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const advanced = el(doc, "details", "composer-advanced");
   advanced.append(el(doc, "summary", "composer-advanced-summary", "Advanced settings"));
   const formatLabel = el(doc, "label", "field-label", "Link style"); const format = el(doc, "select", "field-input") as HTMLSelectElement; format.name = "format"; for (const [value, label] of [["compact", "Short link (recommended)"], ["inline", "Self-contained link — very long, works without our servers"]] as const) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; format.append(option); } formatLabel.append(format);
-  const encryptionGroup = el(doc, "div", "encryption-group"); encryptionGroup.hidden = true;
-  const encryptionLabel = el(doc, "label", "toggle-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryptionLabel.append(encryption, el(doc, "span", "", "Hide the file name and recipient from our servers"));
-  const warningLabel = el(doc, "label", "toggle-option encryption-warning"); const warning = el(doc, "input", "") as HTMLInputElement; warning.type = "checkbox"; warning.name = "encryption-acknowledgment"; warningLabel.append(warning, el(doc, "span", "", "I understand the file name and recipient domain will be visible to our servers")); warningLabel.hidden = true;
-  encryptionGroup.append(encryptionLabel, warningLabel);
+  const encryptionGroup = el(doc, "div", "composer-section encryption-group");
+  const encryptionLabel = el(doc, "label", "toggle-option encryption-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryption.disabled = true; encryptionLabel.append(encryption, el(doc, "span", "encryption-title", "Encrypted"));
+  encryptionGroup.append(encryptionLabel, el(doc, "p", "scope-note encryption-note", "Content and share details are encrypted before they leave this browser. Encryption is required for sharing."));
   const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
-  advanced.append(formatLabel, encryptionGroup, deliveryLabel, saveAsLabel);
+  advanced.append(formatLabel, deliveryLabel, saveAsLabel);
 
   const note = el(doc, "p", "scope-note composer-note");
   const submit = el(doc, "button", "button button-primary create-link-button", "Create link"); submit.type = "submit";
   const status = el(doc, "div", "sender-status composer-status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
-  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
+  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
 
   let created: ComposerShareResult | undefined;
   let availableCapabilities: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] = [];
@@ -879,13 +893,6 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
     recipientInput.autocomplete = kind === "emailDomain" ? "off" : "email";
     recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : "Recipient email address");
-    // Encryption is a real choice only for domain shares; everywhere else it
-    // is required, so the control is not shown at all (P1-4).
-    encryptionGroup.hidden = kind !== "emailDomain";
-    if (kind !== "emailDomain") encryption.checked = true;
-    if (kind === "emailDomain" && !encryption.checked) format.value = "inline";
-    warningLabel.hidden = kind !== "emailDomain" || encryption.checked;
-    if (warningLabel.hidden) warning.checked = false;
     // The authorized mailbox is the natural delivery address.
     if (kind === "exactEmail" && !deliveryTouched) delivery.value = recipientInput.value.trim();
     refreshNote();
@@ -893,7 +900,6 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   form.querySelectorAll<HTMLInputElement>("input[name=recipient]").forEach((input) => input.addEventListener("change", refreshRecipient));
   recipientInput.addEventListener("input", refreshRecipient);
-  encryption.addEventListener("change", refreshRecipient);
   form.querySelectorAll<HTMLInputElement>("input[name=expiry]").forEach((input) => input.addEventListener("change", refreshNote));
   delivery.addEventListener("input", () => { deliveryTouched = true; });
   refreshRecipient();
@@ -1140,7 +1146,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
               : { kind: "exact", path: uploadPath },
           linkFormat: format.value as ShareLinkFormat,
           encryption: encryption.checked,
-          encryptionAcknowledged: warning.checked,
+          encryptionAcknowledged: false,
           ...(delivery.value.length > 0 ? { deliveryEmail: delivery.value } : {}),
         };
         const model = validateComposerModel(modelInput);

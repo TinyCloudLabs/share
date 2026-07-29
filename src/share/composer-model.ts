@@ -206,12 +206,7 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
     throw validationFailure("deliveryDomain");
   }
-  if (!model.encryption && (recipient.kind === "exactEmail" || recipient.kind === "bearer")) {
-    throw validationFailure("plaintext");
-  }
-  if (!model.encryption && recipient.kind === "emailDomain" && !model.encryptionAcknowledged) {
-    throw validationFailure("acknowledgment");
-  }
+  if (!model.encryption) throw validationFailure("plaintext");
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
 }

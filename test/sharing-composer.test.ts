@@ -54,7 +54,7 @@ const EXPECTED_SENDER_COPY = {
   expiry: "Choose when the link should expire.",
   deliveryRecipient: "The delivery address must match the person you're sharing with.",
   deliveryDomain: "The delivery address must belong to the shared domain.",
-  plaintext: "Link-only and single-person shares must stay encrypted.",
+  plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
@@ -158,14 +158,14 @@ describe("share composer model", () => {
     expect(normalizeEmailDomain("MAILINATOR.COM")).toBe("mailinator.com");
     expect(emailDomainOf("Alice@mailinator.com")).toBe("mailinator.com");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "mailinator.com" }, encryption: false, encryptionAcknowledged: false }))).toThrow();
-    expect(validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toMatchObject({ recipient: { value: "mailinator.com" } });
+    expect(validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" } }))).toMatchObject({ recipient: { value: "mailinator.com" } });
   });
 
   it("rejects unsafe plaintext attempts and never permits bearer plaintext", () => {
     expect(() => validateComposerModel(modelWith(textContent, { encryption: false }))).toThrow(/must stay encrypted/i);
-    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: false }))).toThrow(/confirm you understand/i);
+    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs", action: "tinycloud.kv/get" }, resource: { kind: "prefix", path: "docs" } };
-    expect(validateComposerModel(modelWith(library, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toMatchObject({ recipient: { value: "mailinator.com" }, resource: { kind: "prefix", path: "docs/" }, permissions: ["read", "list"] });
+    expect(() => validateComposerModel(modelWith(library, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
@@ -443,7 +443,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows all three recipient choices in the primary fieldset and keeps link plumbing in Advanced", () => {
+  it("shows all three recipient choices and the required encryption state before Advanced", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -459,16 +459,22 @@ describe("share composer access controls", () => {
     ]);
     expect(advanced.open).toBe(false);
     expect(advanced.contains(root.querySelector("select[name=format]"))).toBe(true);
-    expect(advanced.contains(root.querySelector("input[name=encryption]"))).toBe(true);
+    const encryption = root.querySelector<HTMLInputElement>("input[name=encryption]")!;
+    expect(advanced.contains(encryption)).toBe(false);
+    expect(encryption.checked).toBe(true);
+    expect(encryption.disabled).toBe(true);
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encrypted");
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("required for sharing");
     expect(advanced.contains(root.querySelector("input[name=delivery-email]"))).toBe(true);
     expect(advanced.querySelector("input[name=recipient]")).toBeNull();
     expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
     expect(root.querySelector<HTMLSelectElement>("select[name=format]")!.options[0]!.textContent).toBe("Short link (recommended)");
-    // Encryption is a real choice only for a domain share.
-    expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.checked = true;
     root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
+    expect(encryption.checked).toBe(true);
+    expect(encryption.disabled).toBe(true);
   });
 
   it("labels and submits the first-class domain flow with normalized authorization and delivery", async () => {

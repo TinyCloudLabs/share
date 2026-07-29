@@ -406,12 +406,34 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     // The owner delegation is minted for exactly the chosen lifetime...
     expect(ownerDelegationInputs).toHaveLength(1);
     expect(ownerDelegationInputs[0]!.expiresAt).toEqual(new Date(EXPIRY_24H));
+    const expectedDecryption = {
+      networkId: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
+      action: "tinycloud.encryption/decrypt",
+    };
+    expect(ownerDelegationInputs[0]!.permissions).toEqual([
+      {
+        service: "tinycloud.kv",
+        path: expect.stringMatching(/^shares\/[^/]+\/notes\.txt$/),
+        actions: ["tinycloud.kv/get", "tinycloud.kv/metadata"],
+      },
+      {
+        service: "tinycloud.encryption",
+        path: expectedDecryption.networkId,
+        actions: [expectedDecryption.action],
+      },
+    ]);
+    expect(ownerDelegationInputs[0]).not.toHaveProperty("path");
+    expect(ownerDelegationInputs[0]).not.toHaveProperty("actions");
+    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("network.create");
+    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("*");
     // ...the canonical owner policy carries it...
     expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
     expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.owner.canonicalPolicies[0]!.decryption).toEqual(expectedDecryption);
     // ...and so does the policy-enforcement delegation.
     expect(hoisted.owner.enforcementInputs).toHaveLength(1);
     expect(hoisted.owner.enforcementInputs[0]!.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.owner.enforcementInputs[0]!.decryption).toEqual(expectedDecryption);
     // A hardcoded 7-day lifetime would land here.
     expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).not.toBe("2030-08-03T00:00:00.000Z");
     expect(ownerDelegationInputs[0]!.expiresAt).not.toEqual(new Date("2030-08-03T00:00:00.000Z"));
@@ -442,6 +464,9 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(parsed.expiry).toBe(EXPIRY_24H);
     expect(parsed.signature.signerDid).toBe(hoisted.shareKeyDid);
     expect(parsed.signature.algorithm).toBe("Ed25519");
+    const ownerAuthority = envelope.ownerAuthority as Record<string, unknown>;
+    const outerEnvelope = ownerAuthority.outerEnvelope as Record<string, unknown>;
+    expect(outerEnvelope.decryption).toEqual(expectedDecryption);
     // The signature covers exactly the unsigned envelope, so stripping it must
     // leave something the unsigned schema accepts. That is the pair of parses
     // the fixed code performs, checked against the bytes that actually shipped.
@@ -498,9 +523,17 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(persisted[0]!.model.permissions).toEqual(["read", "list"]);
 
     expect(ownerDelegationInputs).toHaveLength(1);
-    expect(ownerDelegationInputs[0]!.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
-    const delegatedPath = ownerDelegationInputs[0]!.path as string;
+    const permissions = ownerDelegationInputs[0]!.permissions as Array<Record<string, unknown>>;
+    expect(permissions[0]!.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
+    const delegatedPath = permissions[0]!.path as string;
     expect(delegatedPath).toMatch(/^shares\/[^/]+\/$/);
+    expect(permissions[1]).toEqual({
+      service: "tinycloud.encryption",
+      path: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
+      actions: ["tinycloud.encryption/decrypt"],
+    });
+    expect(JSON.stringify(permissions)).not.toContain("network.create");
+    expect(JSON.stringify(permissions)).not.toContain("*");
 
     expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
     const policy = hoisted.owner.canonicalPolicies[0]!;
