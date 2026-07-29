@@ -32,7 +32,7 @@
     "@tinycloud/share-cli": "*",
     "@tinycloud/share-envelope": "*",
     "@tinycloud/share-registry": "*",
-    "@tinycloud/web-sdk": "^2.9.0",
+    "@tinycloud/web-sdk": "2.10.0-beta.1",
     "dompurify": "3.4.12",
     "mermaid": "11.16.0",
     "rehype-sanitize": "6.0.0",
