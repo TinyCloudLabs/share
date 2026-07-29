@@ -12,3 +12,6 @@ export function focusViewerRoot(root: HTMLElement): void {
   if (!root.hasAttribute("tabindex")) root.tabIndex = -1;
   root.focus();
 }
+
+// TC-367 CI PROOF — temporary, reverted immediately
+export const __tc367_proof: number = "not a number";
