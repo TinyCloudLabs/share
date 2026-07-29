@@ -11,8 +11,20 @@ if (process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true") throw new Error("SHARE
 for (const name of ["SHARE_NODE_TRANSPORT_ORIGIN", "SHARE_CREDENTIALS_TRANSPORT_ORIGIN", "SHARE_REGISTRY_TRANSPORT_ORIGIN", "SHARE_HERMETIC_UPSTREAMS_JSON", "SHARE_HERMETIC_COMPOSITION", "SHARE_HERMETIC_OPENKEY_ORIGIN", "SHARE_HERMETIC_WALLET_ORIGIN", "SHARE_HERMETIC_BROWSER_ORIGIN", "SHARE_HERMETIC_REGISTRY_ORIGIN"]) {
   if (process.env[name] !== undefined) throw new Error(`${name} is forbidden in production deployment configuration`);
 }
+// The trust bundle carries no secret: five public origins, two did:web
+// identifiers, two key ids, two PUBLIC Ed25519 keys, two versions and two
+// booleans. `SHARE_TRUST_BUNDLE_SOURCE=committed` selects the reviewed
+// document that ships inside the image, so a deployment can correct it through
+// a pull request and a new image digest rather than rewriting a sealed
+// environment wholesale.
+const committedTrustBundlePath = new URL("../config/trust-bundle.production.json", import.meta.url);
+const trustBundleSource = process.env.SHARE_TRUST_BUNDLE_SOURCE;
+if (trustBundleSource !== undefined && trustBundleSource !== "committed" && trustBundleSource !== "environment") throw new Error('SHARE_TRUST_BUNDLE_SOURCE must be exactly "committed" or "environment"');
 if (process.env.SHARE_TRUST_BUNDLE !== undefined && process.env.SHARE_TRUST_BUNDLE_FILE !== undefined) throw new Error("configure exactly one Share trust bundle source");
-const raw = process.env.SHARE_TRUST_BUNDLE ?? (process.env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(process.env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
+if (trustBundleSource === "committed" && (process.env.SHARE_TRUST_BUNDLE !== undefined || process.env.SHARE_TRUST_BUNDLE_FILE !== undefined)) throw new Error("configure exactly one Share trust bundle source");
+const raw = trustBundleSource === "committed"
+  ? readFileSync(committedTrustBundlePath, "utf8")
+  : process.env.SHARE_TRUST_BUNDLE ?? (process.env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(process.env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
 if (raw === undefined || raw.length === 0) throw new Error("SHARE_TRUST_BUNDLE or SHARE_TRUST_BUNDLE_FILE is required for deploy configuration");
 let value;
 try { value = JSON.parse(raw); } catch { throw new Error("SHARE_TRUST_BUNDLE must be JSON"); }

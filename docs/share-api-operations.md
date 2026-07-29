@@ -24,9 +24,16 @@ public key as `REGISTRY_LINK_UPLOAD_PUBLIC_KEY` on the existing registry
 Worker; it is separate from the Node/email authorization key and cannot
 authorize bindings or reads. Deploy `compose.share-api.yml` with
 `SHARE_API_IMAGE` set to the
-exact merged-main GHCR digest, `SHARE_TRUST_BUNDLE_BASE64` set to the
-base64-encoded validated public bundle through Phala sealed environment
-storage, and `CLOUDFLARE_TUNNEL_TOKEN` injected through the same storage. The
+exact merged-main GHCR digest and `CLOUDFLARE_TUNNEL_TOKEN` injected through
+Phala sealed environment storage. The trust bundle comes from
+`SHARE_TRUST_BUNDLE_SOURCE`, a literal in the compose file: `environment`
+decodes `SHARE_TRUST_BUNDLE_BASE64` out of that same sealed storage, and
+`committed` uses the reviewed `config/trust-bundle.production.json` baked into
+the pinned image. Prefer `committed`. The bundle carries public keys and origins
+only, and a sealed environment can only be replaced wholesale, so updating the
+bundle through the sealed path also rewrites `CLOUDFLARE_TUNNEL_TOKEN` — which
+cannot be regenerated here. `docs/share-host-deployment.md`, "Where the trust
+bundle comes from", has the key-correction procedure. The
 pinned Cloudflare Tunnel sidecar exposes only the internal
 Share API service at `api.share.tinycloud.xyz`; the API container publishes no
 host port. `authReady` means nonce, OpenKey proof, replay, origin, and session

@@ -48,11 +48,14 @@ unspecified, documentation, and other reserved IPv4/IPv6 destinations, and
 must deny all non-443 egress from the webhook process. The deployment evidence
 must retain the policy revision and its adversarial SSRF/redirect test result.
 
-The deploy build is environment-only. It emits
-`/.well-known/tinycloud-share/config.json` from one validated
-`SHARE_TRUST_BUNDLE`; no trust key or signer secret is committed to the
-repository. A normal `npm run build` remains a source build and does not
-require deployment secrets.
+The deploy build emits `/.well-known/tinycloud-share/config.json` from exactly
+one validated trust bundle: `SHARE_TRUST_BUNDLE`, `SHARE_TRUST_BUNDLE_FILE`, or
+the reviewed `config/trust-bundle.production.json` selected by
+`SHARE_TRUST_BUNDLE_SOURCE=committed`. No signer secret is committed to the
+repository under any of them — the trust bundle carries public keys only, and
+the sender signing key is not expressible in deployment configuration at all. A
+normal `npm run build` remains a source build and does not require deployment
+secrets.
 
 Required production variables:
 
@@ -64,11 +67,15 @@ Required production variables:
 - `SHARE_SENDER_ENABLED`: optional strict boolean string. Omitted or `false`
   selects auth-only mode; `true` enables the sender and requires a healthy
   wallet-rooted authentication path and a usable durable binding store.
+- `SHARE_TRUST_BUNDLE_SOURCE`: `environment` (default) or `committed`. See
+  "Where the trust bundle comes from" below.
 - `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`: the strict
   `tinycloud.share-email-trust-bundle/v1` public document also mounted into
   tinycloud-node and OpenCredentials. It contains the Share, registry, node,
   witness, issuer, and enrollment bindings. Fixture, loopback, and
-  placeholder identities are rejected.
+  placeholder identities are rejected. Required unless
+  `SHARE_TRUST_BUNDLE_SOURCE=committed`; supplying either alongside `committed`
+  is a startup error, so a stale value can never silently win.
 - `SHARE_SENDER_PRIVATE_KEY`, `SHARE_SENDER_CAPABILITY_JSON`, and
   `SHARE_SENDER_CAPABILITIES_JSON` are legacy static sender-authority
   variables and are forbidden. `npm run check:deploy-config` and the
@@ -99,6 +106,91 @@ Required production variables:
   `/tmp`, sibling-prefix paths, and unmounted absolute paths are rejected. It
   defaults to `/var/lib/tinycloud/share/bindings.ndjson`. An in-memory store is
   permitted only for the explicit hermetic fixture composition.
+
+## Where the trust bundle comes from
+
+The trust bundle holds no secret. All seventeen fields are public: five HTTPS
+origins, two `did:web` identifiers, two key ids, two **public** Ed25519 keys,
+two key versions and two enablement booleans. Fifteen of them are already
+republished verbatim to anyone who asks at
+`/.well-known/tinycloud-share/config.json`. The two that are not are
+`returnOrigin`, which tinycloud-node requires to equal `shareOrigin`, and
+`issuerKid`, a fragment of the published `issuerDid`. The one real secret in the
+sender path is deliberately not in this document and not expressible in
+deployment configuration at all; it is derived per request from an authenticated
+OpenKey session. tinycloud-node and OpenCredentials already mount this same
+document as a plain, unsealed, read-only JSON file.
+
+Two sources are supported, selected by `SHARE_TRUST_BUNDLE_SOURCE`:
+
+- `environment` (the default, and what production runs today): the host reads
+  `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`. In the CVM,
+  `compose.share-api.yml` base64-decodes `SHARE_TRUST_BUNDLE_BASE64` out of
+  Phala sealed environment storage into `/tmp`.
+- `committed`: the host reads `config/trust-bundle.production.json`, the
+  reviewed document baked into the image. No trust material is in the
+  environment at all.
+
+`committed` exists because sealing bought nothing and cost a great deal. A Phala
+sealed environment can only be replaced wholesale, so rewriting the bundle also
+rewrites the co-sealed `CLOUDFLARE_TUNNEL_TOKEN` — which cannot be regenerated
+from here, because `CLOUDFLARE_API_TOKEN` lacks tunnel scope and the CVM has no
+SSH keys. A document of public keys was therefore effectively immutable in
+production.
+
+A reviewed file is also the stronger integrity control. It is covered by branch
+protection and pull-request review and pinned into the immutable image digest
+that `SHARE_RELEASE_PROVENANCE` already binds, unlike a fetched URL or an
+unsealed variable that anyone able to influence a request or a deploy could
+change. Independent validation still applies on both sides: this host rejects
+placeholder, loopback and fixture identities, and tinycloud-node's
+`share_v2::compose` fails closed and loudly when the configured
+`nodeInvitationPublicKey` is not the key it derives and signs with, naming both
+keys (TC-359, node commit `8c9ae2d`). A wrong bundle is a boot error, not silent
+non-delivery.
+
+### Correcting `nodeInvitationPublicKey`, or any other trust value
+
+`config/trust-bundle.production.json` pins
+`nodeInvitationPublicKey: tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI`. That is
+the known-wrong OpenCredentials development fallback production publishes today
+(TC-359), and it is pinned deliberately: switching a live CVM from `environment`
+to `committed` must change nothing observable. Correcting it is then a separate,
+visible, one-line diff.
+
+Once tinycloud-node at or after `8c9ae2d` is deployed and
+`GET /.well-known/tinycloud/node-keys` answers (TC-369):
+
+1. Read the real key. `curl -fsS
+   https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys` and take
+   `shareInvitationPublicKey`.
+2. Edit the one `"nodeInvitationPublicKey"` line in
+   `config/trust-bundle.production.json`. Change nothing else.
+3. Open a pull request. The merge gate runs `npm test`, which asserts the
+   document is a strict production bundle and that the host republishes it
+   unchanged, and `node --test scripts/validate-deploy-config.test.mjs`.
+4. Merge, let `share-api-image.yml` publish, and record the new GHCR digest.
+5. Update the CVM's **compose** with that `SHARE_API_IMAGE` digest and
+   `SHARE_TRUST_BUNDLE_SOURCE: committed`. Do not submit an environment file:
+   the sealed `CLOUDFLARE_TUNNEL_TOKEN` must not be rewritten.
+6. Verify. `curl -fsS
+   https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json` reports
+   the new key, and `/health/readiness` still reports `authReady: true`.
+
+Two other holders of the same value must move in the same change, or delivery
+still fails at the verifier:
+
+- **OpenCredentials witness.** `SHARE_EMAIL_TRUSTED_NODE_PUBLIC_KEY` defaults to
+  the same fixture literal in
+  `rust/opencredentials_witness/src/share_email/runtime.rs`. Set it explicitly.
+- **tinycloud-node.** Its own mounted `share-email-trust-bundle.json`
+  (`TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH`) carries
+  `nodeInvitationPublicKey` too. That file is already plain and read-only, so
+  this is a mount change, not a re-seal.
+
+Rolling back is the same move reversed: set `SHARE_TRUST_BUNDLE_SOURCE` back to
+`environment` in the compose and redeploy the previous image digest. The sealed
+`SHARE_TRUST_BUNDLE_BASE64` is never deleted, so the old path stays available.
 
 The Node, OpenCredentials, and registry upstream destinations are not separate
 deployment variables. They are derived directly from `nodeOrigin`,

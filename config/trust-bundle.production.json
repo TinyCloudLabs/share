@@ -1,0 +1,19 @@
+{
+  "version": "tinycloud.share-email-trust-bundle/v1",
+  "shareOrigin": "https://share.tinycloud.xyz",
+  "returnOrigin": "https://share.tinycloud.xyz",
+  "registryOrigin": "https://registry.tinycloud.xyz",
+  "credentialsOrigin": "https://witness.credentials.org",
+  "nodeOrigin": "https://tee.node.tinycloud.xyz",
+  "nodeAudience": "did:web:tee.node.tinycloud.xyz",
+  "nodeInvitationKid": "did:web:tee.node.tinycloud.xyz#invitation-key-1",
+  "nodeInvitationPublicKey": "tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI",
+  "nodeKeyVersion": 1,
+  "nodeEnabled": true,
+  "issuerDid": "did:web:issuer.credentials.org",
+  "issuerVct": "opencredentials.email/v1",
+  "issuerKid": "did:web:issuer.credentials.org#controller",
+  "issuerPublicKey": "eEJI4xEobto4HtQ7Pg9R1vBOwcpfGRTlXDG5QfqLnGQ",
+  "issuerKeyVersion": 1,
+  "issuerEnabled": true
+}
