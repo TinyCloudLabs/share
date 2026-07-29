@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSenderHistoryRecord, SenderHistoryRepository, validateSenderHistoryRecord, type SenderHistoryRecord } from "../src/share/sender-history.js";
+import { createSenderHistoryRecord, redactSenderHistoryRecord, SenderHistoryRepository, validateSenderHistoryRecord, type SenderHistoryRecord } from "../src/share/sender-history.js";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
 
 function fakeVault(): IDataVaultService {
@@ -59,6 +59,13 @@ describe("sender history records", () => {
     const record = await createSenderHistoryRecord({ ...base, delegationCid: "bafyreidelegationexample" });
     expect(record.delegationCid).toBe("bafyreidelegationexample");
     expect(validateSenderHistoryRecord(record)).toEqual(record);
+  });
+
+  it("keeps bearer links out of the default history projection", async () => {
+    const record = await createSenderHistoryRecord(base);
+    const redacted = redactSenderHistoryRecord(record);
+    expect(redacted).not.toHaveProperty("url");
+    expect(redactSenderHistoryRecord(record, true).url).toBe(record.url);
   });
 });
 

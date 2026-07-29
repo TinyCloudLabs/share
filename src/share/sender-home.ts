@@ -23,6 +23,7 @@ function safeName(record: Extract<SenderHistoryItem, { state: "ready" | "expired
 
 function recipientSummary(item: Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }>): string {
   if (item.record.recipient.kind === "bearer") return "Anyone with link";
+  if (item.record.recipient.kind === "recipientDid") return "OpenKey recipient";
   if (item.record.recipient.kind === "emailDomain") return `Anyone at ${item.record.recipient.value}`;
   const [local, domain] = item.record.recipient.value.split("@");
   return `Only ${(local?.slice(0, 1) ?? "•")}***@${domain ?? "…"}`;

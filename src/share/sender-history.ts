@@ -13,7 +13,8 @@ const MAX_INLINE_HASH_BYTES = 700_000;
 export type SenderHistoryRecipient =
   | { readonly kind: "bearer" }
   | { readonly kind: "exactEmail"; readonly value: string }
-  | { readonly kind: "emailDomain"; readonly value: string };
+  | { readonly kind: "emailDomain"; readonly value: string }
+  | { readonly kind: "recipientDid"; readonly value: string };
 
 export interface SenderHistoryRecord {
   readonly type: "TinyCloudShareSenderHistory";
@@ -44,6 +45,27 @@ export interface SenderHistoryPage {
   readonly items: readonly SenderHistoryItem[];
   readonly truncated: boolean;
   readonly nextCursor?: string;
+}
+
+/** Safe history projection. Complete bearer URLs are an explicit reveal action. */
+export interface SenderHistoryView {
+  readonly id: string;
+  readonly name: string;
+  readonly recipient: SenderHistoryRecipient;
+  readonly expiresAt: string;
+  readonly revoked: boolean;
+  readonly url?: string;
+}
+
+export function redactSenderHistoryRecord(record: SenderHistoryRecord, revealLink = false): SenderHistoryView {
+  return {
+    id: record.id,
+    name: record.name,
+    recipient: { ...record.recipient },
+    expiresAt: record.expiresAt,
+    revoked: record.revokedAt !== null,
+    ...(revealLink ? { url: record.url } : {}),
+  };
 }
 
 function fail(): never {
@@ -95,7 +117,7 @@ export function validateSenderHistoryRecord(value: unknown): SenderHistoryRecord
   const recipient = input.recipient as Record<string, unknown>;
   if (recipient.kind === "bearer") {
     if (Object.keys(recipient).length !== 1) return fail();
-  } else if (recipient.kind === "exactEmail" || recipient.kind === "emailDomain") {
+  } else if (recipient.kind === "exactEmail" || recipient.kind === "emailDomain" || recipient.kind === "recipientDid") {
     if (Object.keys(recipient).some((key) => key !== "kind" && key !== "value") || typeof recipient.value !== "string" || recipient.value.length === 0 || recipient.value.length > 320) return fail();
   } else return fail();
   if (!Array.isArray(input.actions) || input.actions.length === 0 || input.actions.some((action) => action !== "read" && action !== "list" && action !== "edit") || new Set(input.actions).size !== input.actions.length) return fail();
