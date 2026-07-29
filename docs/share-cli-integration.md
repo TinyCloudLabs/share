@@ -31,8 +31,6 @@ The CLI's bearer publisher accepts the host's existing authenticated upload
 adapter through `configureShareCommandServices`; it never invents a public
 upload credential or falls back to a plaintext production registry.
 
-=======
->>>>>>> 5dbdfd2 (TC-401: document Share CLI integration gate)
 ## Release sequencing
 
 The js-sdk packages must be built and published before this consumer can pin
