@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
@@ -104,12 +105,63 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
   return Object.freeze({ version: TRUST_VERSION, environment, public: Object.freeze(publicConfig), sender: Object.freeze({ senderDid: didKeyFromEd25519PublicKey(fromBase64Url(senderPublicKey)), senderPublicKey, senderPrivateKey }) });
 }
 
-export function loadTrustBundle(env: NodeJS.ProcessEnv = process.env): ShareTrustBundle {
+/**
+ * The reviewed, non-secret production trust document that ships inside the
+ * image.
+ *
+ * Every field of a `tinycloud.share-email-trust-bundle/v1` document is public:
+ * five HTTPS origins, two `did:web` identifiers, two key ids, two *public*
+ * Ed25519 keys, two key versions and two enablement booleans. Fifteen of the
+ * seventeen are already republished verbatim to anyone who asks, at
+ * `/.well-known/tinycloud-share/config.json`; the two that are not
+ * (`returnOrigin`, `issuerKid`) are a canonical origin the node pins equal to
+ * `shareOrigin` and a fragment of the published `issuerDid`. The one genuine
+ * secret in this system — the sender signing key — is deliberately *not* in
+ * this document: `senderSecret` rejects `SHARE_SENDER_PRIVATE_KEY` outright in
+ * production, and sender authority is derived per request from an
+ * authenticated OpenKey session.
+ *
+ * Sealing a document with no secrets in it bought no confidentiality and cost
+ * the ability to change it: a Phala sealed environment can only be rewritten
+ * wholesale, which would take the co-sealed Cloudflare Tunnel token with it.
+ * Reviewing this file in a pull request is the stronger integrity control
+ * anyway — a fetched URL or an unsealed environment variable is tamperable by
+ * anyone who can influence a request or a deploy, whereas this value is
+ * covered by branch protection and pinned into an immutable image digest.
+ *
+ * Resolved from the package root, the same assumption `production-server.ts`
+ * already makes for `dist/`. Every supported composition runs from there
+ * (`WORKDIR /app` in the image, Vite and Vitest from the repository root); any
+ * other working directory fails closed with the path in the message.
+ */
+export const COMMITTED_TRUST_BUNDLE_PATH = resolve(process.cwd(), "config/trust-bundle.production.json");
+
+/** Reads the committed document. Fails closed: never falls back to a default. */
+function readCommittedTrustBundle(path: string): string {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    throw new Error(`the committed Share trust bundle is missing or unreadable at ${path}`);
+  }
+  if (raw.trim().length === 0) throw new Error(`the committed Share trust bundle at ${path} is empty`);
+  return raw;
+}
+
+export function loadTrustBundle(env: NodeJS.ProcessEnv = process.env, committedPath: string = COMMITTED_TRUST_BUNDLE_PATH): ShareTrustBundle {
+  const source = env.SHARE_TRUST_BUNDLE_SOURCE;
+  if (source !== undefined && source !== "committed" && source !== "environment") throw new Error('SHARE_TRUST_BUNDLE_SOURCE must be exactly "committed" or "environment"');
+  // `committed` is a selector, not a fallback. An environment source alongside
+  // it is an error rather than a silent winner: a stale sealed value quietly
+  // overriding a reviewed file is precisely the failure this replaces.
   if (env.SHARE_TRUST_BUNDLE !== undefined && env.SHARE_TRUST_BUNDLE_FILE !== undefined) throw new Error("configure exactly one Share trust bundle source");
-  const raw = env.SHARE_TRUST_BUNDLE ?? (env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
+  if (source === "committed" && (env.SHARE_TRUST_BUNDLE !== undefined || env.SHARE_TRUST_BUNDLE_FILE !== undefined)) throw new Error("configure exactly one Share trust bundle source");
+  const raw = source === "committed"
+    ? readCommittedTrustBundle(committedPath)
+    : env.SHARE_TRUST_BUNDLE ?? (env.SHARE_TRUST_BUNDLE_FILE === undefined ? undefined : readFileSync(env.SHARE_TRUST_BUNDLE_FILE, "utf8"));
   if (raw === undefined || raw.length === 0) throw new Error("SHARE_TRUST_BUNDLE is required");
   let value: unknown;
-  try { value = JSON.parse(raw); } catch { throw new Error("SHARE_TRUST_BUNDLE is not valid JSON"); }
+  try { value = JSON.parse(raw); } catch { throw new Error(source === "committed" ? "the committed Share trust bundle is not valid JSON" : "SHARE_TRUST_BUNDLE is not valid JSON"); }
   return validateTrustBundle(value, env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true", senderSecret(env));
 }
 

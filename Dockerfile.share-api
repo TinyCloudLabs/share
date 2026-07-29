@@ -4,6 +4,11 @@ COPY package*.json ./
 COPY packages ./packages
 COPY src ./src
 COPY public ./public
+# The reviewed, non-secret production trust document. Baking it in pins it to
+# the image digest, so correcting a published key is a reviewed pull request
+# plus an image bump — not a wholesale rewrite of the CVM's sealed environment
+# (which would also rewrite the co-sealed Cloudflare Tunnel token).
+COPY config ./config
 COPY index.html how-it-works.html share.html viewer.html vite.config.ts tsconfig.json ./
 RUN npm ci --ignore-scripts && npm run build
 RUN mkdir -p /var/lib/tinycloud/share && chown -R node:node /var/lib/tinycloud/share
