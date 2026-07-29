@@ -7,7 +7,7 @@ import type { SenderPolicy } from "../email-share/sender.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { createTinyCloudUploader } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
-import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, unsignedShareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
 type OwnerSharePolicyV2 = {
   readonly type: "TinyCloudSharePolicy";
   readonly version: 2;
@@ -30,8 +30,28 @@ type OwnerSdk = {
   readonly createPolicyEnforcementDelegation: (input: Record<string, unknown>) => Promise<{ readonly cid: string; readonly dagCbor: string; readonly issuerDid: string; readonly audienceDid: string; readonly facts: Record<string, unknown>; readonly signature: string }>;
 };
 
+/**
+ * The owner-share primitives `createOwnerPolicyShare` needs are not part of the
+ * Web SDK's typed surface, so the import has to be widened by hand. A bare
+ * `as unknown as OwnerSdk` cast made a missing primitive invisible until it was
+ * called, where it surfaced as `sdk.createDelegatedShareKey is not a function`
+ * with no indication of which dependency was absent (TC-338). The cast is
+ * therefore checked against the module that actually loaded, and the required
+ * names live in one exported list so a test can hold the check to what the
+ * owner path really calls.
+ */
+export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerSharePolicy", "createPolicyEnforcementDelegation"] as const;
+
+/** The owner-share primitives the loaded Web SDK does not provide, in `OWNER_SDK_PRIMITIVES` order. */
+export function missingOwnerSdkPrimitives(module: Record<string, unknown>): readonly string[] {
+  return OWNER_SDK_PRIMITIVES.filter((name) => typeof module[name] !== "function");
+}
+
 async function ownerSdk(): Promise<OwnerSdk> {
-  return await import("@tinycloud/web-sdk") as unknown as OwnerSdk;
+  const module = await import("@tinycloud/web-sdk") as unknown as Record<string, unknown>;
+  const missing = missingOwnerSdkPrimitives(module);
+  if (missing.length > 0) throw fail("internal", `the installed @tinycloud/web-sdk does not provide the owner-share primitives ${missing.join(", ")}`, { missingOwnerSdkPrimitives: missing });
+  return module as unknown as OwnerSdk;
 }
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { createHttpTransport } from "../email-share/transport.js";
@@ -372,9 +392,16 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     const outerSignature = toBase64Url(await shareKey.sign(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v2\0${canonicalize(outerUnsigned)}`)));
     const ownerAuthority = { registrationCid: registration.registration.registrationCid, shareCid, envelopeCid, enforcementDelegation, outerEnvelope: { ...outerUnsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: outerSignature } } };
     const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength: file?.size ?? 0, filename }, ownerAuthority };
-    shareEnvelopeV2Schema.parse(unsigned);
+    // The signature covers `unsigned`, so `unsigned` must be checked with the
+    // unsigned schema; `shareEnvelopeV2Schema` requires `signature` and so
+    // always threw "signature Required" here (TC-338). The signed envelope is
+    // then checked with the schema recipients actually parse, so the envelope
+    // this browser emits is rejected here rather than at the viewer.
+    unsignedShareEnvelopeV2Schema.parse(unsigned);
     const envelopeSignature = toBase64Url(await shareKey.sign(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v2\0${canonicalize(unsigned)}`)));
-    const envelopeBytes = new TextEncoder().encode(canonicalize({ ...unsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: envelopeSignature } }));
+    const signedEnvelope = { ...unsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: envelopeSignature } };
+    shareEnvelopeV2Schema.parse(signedEnvelope);
+    const envelopeBytes = new TextEncoder().encode(canonicalize(signedEnvelope));
     const key = model.encryption ? generateKey() : undefined;
     const stored = key === undefined ? { cid: await computeCid(envelopeBytes), blob: envelopeBytes } : await seal(envelopeBytes, key);
     if (key === undefined) throw fail("internal", "owner share encryption key is missing");

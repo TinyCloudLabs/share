@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canonicalize, computeCid, didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, didKeyFromEd25519PublicKey, open, parseInlineShareUrl, shareEnvelopeV2Schema, toBase64Url, unsignedShareEnvelopeV2Schema } from "@tinycloud/share-envelope";
 import type { ContentSource } from "../src/email-share/protocol.js";
 import type { SenderPolicy } from "../src/email-share/sender.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
@@ -332,21 +332,19 @@ describe("addressed share creation honors the sender's expiry choice", () => {
 });
 
 /**
- * PRE-EXISTING PRODUCTION BUG (found while writing this test, NOT fixed here):
- * `createOwnerPolicyShare` calls `shareEnvelopeV2Schema.parse(unsigned)`
- * (src/share/composer.ts:375) on an envelope that has not been signed yet, but
- * `shareEnvelopeV2Schema` requires `signature`. The parse therefore always
- * throws `ZodError: signature Required`, immediately after the enforcement
- * delegation is created and before the envelope, the share URL, or the return
- * value exist. So the envelope `expiry` field and the returned/persisted
- * `share.expiresAt` are unreachable without changing production source.
+ * The bug this comment used to describe is fixed (TC-338).
+ * `createOwnerPolicyShare` validated the not-yet-signed envelope with
+ * `shareEnvelopeV2Schema`, which requires `signature`, so the parse always
+ * threw `ZodError: signature Required` right after the enforcement delegation
+ * was minted — before the envelope, the share URL, or the return value existed.
+ * The unsigned envelope is now checked with `unsignedShareEnvelopeV2Schema` and
+ * the signed one with `shareEnvelopeV2Schema`.
  *
- * Everything up to that line IS reachable and is where the sender's expiry
- * choice is actually bound, so that is what this test pins: the owner
- * delegation, the canonical owner policy, and the policy-enforcement
- * delegation. When the schema bug is fixed, extend this test with the envelope
- * and returned-share assertions; it does not assert the broken outcome, so a
- * fix will not break it.
+ * So this test now runs the owner ceremony to completion and pins the expiry
+ * everywhere it is bound: the owner delegation, the canonical owner policy, the
+ * policy-enforcement delegation, AND (as the old comment asked for) the emitted
+ * envelope plus the returned/persisted share. Reintroducing the parse bug stops
+ * the flow before `persistShare`, so the envelope assertions below fail.
  */
 describe("owner-policy share creation honors the sender's expiry choice", () => {
   it("binds the selected 24-hour expiry into the owner delegation, policy, and enforcement delegation", async () => {
@@ -368,8 +366,6 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
 
     const root = document.createElement("div");
     document.body.append(root);
-    // Present so the assertions can be extended once the schema bug above is
-    // fixed; the flow currently throws before it can be called.
     const persisted: { readonly share: ComposerShareResult; readonly model: ShareComposerModel }[] = [];
 
     mountShareComposer(root, {
@@ -413,10 +409,31 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(hoisted.owner.canonicalPolicies[0]!.ownerDelegationCid).toBe("bafkreiownerdelegationfake");
     expect(registrations).toHaveLength(1);
     expect(hoisted.owner.shareKeyClears).toBe(1);
-    // Whatever the composer ends up persisting must agree with the choice.
+    // TC-338: the ceremony now reaches the end. Before the schema fix the
+    // envelope parse threw and `persistShare` was never called, so this was a
+    // vacuous loop over an empty array.
+    expect(persisted).toHaveLength(1);
     for (const entry of persisted) {
       expect(entry.model.expiresAt).toBe(EXPIRY_24H);
       expect(entry.share.expiresAt).toBe(EXPIRY_24H);
     }
+
+    // And the envelope the sender's browser actually emitted is a SIGNED v2
+    // envelope that the schema recipients parse accepts — the property the
+    // broken `shareEnvelopeV2Schema.parse(unsigned)` claimed to check but
+    // could never reach.
+    const inline = parseInlineShareUrl(persisted[0]!.share.url, { expectedOrigin: "https://share.tinycloud.xyz" });
+    expect(inline.key32).toBeDefined();
+    const envelope = JSON.parse(new TextDecoder().decode(await open(inline.ciphertext, inline.key32!))) as Record<string, unknown>;
+
+    const parsed = shareEnvelopeV2Schema.parse(envelope);
+    expect(parsed.expiry).toBe(EXPIRY_24H);
+    expect(parsed.signature.signerDid).toBe(hoisted.shareKeyDid);
+    expect(parsed.signature.algorithm).toBe("Ed25519");
+    // The signature covers exactly the unsigned envelope, so stripping it must
+    // leave something the unsigned schema accepts. That is the pair of parses
+    // the fixed code performs, checked against the bytes that actually shipped.
+    const { signature: _signature, ...withoutSignature } = envelope;
+    expect(unsignedShareEnvelopeV2Schema.safeParse(withoutSignature).success).toBe(true);
   });
 });
