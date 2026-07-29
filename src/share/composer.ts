@@ -602,6 +602,19 @@ function shortDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+interface ClipboardReader {
+  readonly read?: () => Promise<readonly {
+    readonly types: readonly string[];
+    readonly getType: (type: string) => Promise<Blob>;
+  }[]>;
+  readonly readText?: () => Promise<string>;
+}
+
+function pastedImageFilename(mediaType: string): string {
+  const extension = mediaType === "image/jpeg" ? "jpg" : mediaType.split("/")[1]?.replace("svg+xml", "svg") || "png";
+  return `pasted-image.${extension}`;
+}
+
 export function mountShareComposer(root: HTMLElement, options: ShareComposerOptions): void {
   const doc = root.ownerDocument;
   const copyText = options.copyText ?? copyWithFallback;
@@ -630,17 +643,24 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   // The kind of content is inferred from what the sender did (P1-1).
   const contentSection = el(doc, "section", "composer-section content-section");
   const drop = el(doc, "div", "content-dropzone");
-  drop.tabIndex = 0;
-  drop.setAttribute("role", "button");
-  drop.setAttribute("aria-label", "Choose a file to share, or paste text");
-  const dropTitle = el(doc, "strong", "dropzone-title", "Drop a file here, or click to choose");
-  const dropHint = el(doc, "span", "dropzone-hint", "You can also paste text or an image");
+  drop.setAttribute("role", "group");
+  drop.setAttribute("aria-label", "Choose content to share");
+  const dropTitle = el(doc, "strong", "dropzone-title", "Drop a file here");
+  const dropHint = el(doc, "span", "dropzone-hint", "Or choose another way");
   const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB");
   const fileInput = el(doc, "input", "upload-input") as HTMLInputElement;
   fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*";
-  const libraryLink = el(doc, "button", "dropzone-library", "or pick from your library") as HTMLButtonElement;
+  const dropActions = el(doc, "div", "dropzone-actions");
+  const chooseFileButton = el(doc, "button", "dropzone-action", "Choose a file") as HTMLButtonElement;
+  chooseFileButton.type = "button";
+  const pasteButton = el(doc, "button", "dropzone-action dropzone-paste", "Paste from clipboard") as HTMLButtonElement;
+  pasteButton.type = "button";
+  const libraryLink = el(doc, "button", "dropzone-action dropzone-library", "Pick from your library") as HTMLButtonElement;
   libraryLink.type = "button";
-  drop.append(dropTitle, dropHint, dropLimit, fileInput, libraryLink);
+  dropActions.append(chooseFileButton, pasteButton, libraryLink);
+  const pasteStatus = el(doc, "span", "dropzone-paste-status");
+  pasteStatus.setAttribute("aria-live", "polite");
+  drop.append(dropTitle, dropHint, dropLimit, fileInput, dropActions, pasteStatus);
 
   const chosen = el(doc, "div", "content-chosen"); chosen.hidden = true;
   const chosenName = el(doc, "strong", "content-chosen-name");
@@ -681,11 +701,17 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   fieldset.append(recipientInput);
 
   // When it stops working. The sender was never asked before (P1-2).
-  const expiryLabel = el(doc, "label", "field-label expiry-field", "Link expires");
-  const expiry = el(doc, "select", "field-input") as HTMLSelectElement; expiry.name = "expiry";
-  for (const [value, label] of EXPIRY_CHOICES) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; expiry.append(option); }
-  expiry.value = DEFAULT_EXPIRY_CHOICE;
-  expiryLabel.append(expiry);
+  const expiryFieldset = el(doc, "fieldset", "expiry-field");
+  expiryFieldset.append(el(doc, "legend", "field-legend", "Link expires"));
+  const expiryOptions = el(doc, "div", "expiry-options");
+  for (const [value, copy] of EXPIRY_CHOICES) {
+    const label = el(doc, "label", "expiry-option");
+    const input = el(doc, "input", "") as HTMLInputElement;
+    input.type = "radio"; input.name = "expiry"; input.value = value; input.checked = value === DEFAULT_EXPIRY_CHOICE;
+    label.append(input, el(doc, "span", "expiry-option-copy", copy));
+    expiryOptions.append(label);
+  }
+  expiryFieldset.append(expiryOptions);
 
   const accessFieldset = el(doc, "fieldset", "composer-section access-section");
   accessFieldset.append(el(doc, "legend", "field-legend", "What can they do?"));
@@ -714,7 +740,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const note = el(doc, "p", "scope-note composer-note");
   const submit = el(doc, "button", "button button-primary create-link-button", "Create link"); submit.type = "submit";
   const status = el(doc, "div", "sender-status composer-status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
-  form.append(progress, contentSection, fieldset, expiryLabel, accessFieldset, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
+  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
 
   let created: ComposerShareResult | undefined;
   let availableCapabilities: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] = [];
@@ -755,7 +781,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     if (index >= 0 && source.selectedIndex !== index) { source.selectedIndex = index; source.dispatchEvent(new Event("change", { bubbles: true })); }
   };
 
-  const expiryIso = (): string => expiryFromChoice(expiry.value as ExpiryChoice);
+  const expiryIso = (): string => {
+    const choice = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value ?? DEFAULT_EXPIRY_CHOICE;
+    return expiryFromChoice(choice as ExpiryChoice);
+  };
   const refreshNote = (): void => {
     const kind = selectedKind();
     const typed = recipientInput.value.trim();
@@ -795,7 +824,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   form.querySelectorAll<HTMLInputElement>("input[name=recipient]").forEach((input) => input.addEventListener("change", refreshRecipient));
   recipientInput.addEventListener("input", refreshRecipient);
   encryption.addEventListener("change", refreshRecipient);
-  expiry.addEventListener("change", refreshNote);
+  form.querySelectorAll<HTMLInputElement>("input[name=expiry]").forEach((input) => input.addEventListener("change", refreshNote));
   delivery.addEventListener("input", () => { deliveryTouched = true; });
   refreshRecipient();
 
@@ -827,15 +856,62 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     event.preventDefault();
     chooseText(text);
   };
+  const showPasteFailure = (message: string): void => {
+    pasteStatus.textContent = message;
+    pasteStatus.setAttribute("role", "alert");
+  };
+  const readClipboard = async (): Promise<void> => {
+    pasteStatus.removeAttribute("role");
+    pasteStatus.textContent = "Reading clipboard…";
+    pasteButton.disabled = true;
+    try {
+      const clipboard = doc.defaultView?.navigator.clipboard as ClipboardReader | undefined;
+      if (clipboard === undefined || (clipboard.read === undefined && clipboard.readText === undefined)) {
+        showPasteFailure("Clipboard access isn't available here. Press Command+V or Ctrl+V to paste instead.");
+        return;
+      }
+      if (clipboard.read !== undefined) {
+        const items = await clipboard.read();
+        for (const item of items) {
+          const imageType = item.types.find((type) => type.startsWith("image/"));
+          if (imageType === undefined) continue;
+          const blob = await item.getType(imageType);
+          chooseFile(new File([blob], pastedImageFilename(blob.type || imageType), { type: blob.type || imageType }));
+          pasteStatus.textContent = "";
+          return;
+        }
+        for (const item of items) {
+          if (!item.types.includes("text/plain")) continue;
+          const text = await (await item.getType("text/plain")).text();
+          if (text.length > 0) {
+            chooseText(text);
+            pasteStatus.textContent = "";
+            return;
+          }
+        }
+      }
+      if (clipboard.readText !== undefined) {
+        const text = await clipboard.readText();
+        if (text.length > 0) {
+          chooseText(text);
+          pasteStatus.textContent = "";
+          return;
+        }
+      }
+      showPasteFailure("There's no text or image on your clipboard. Copy one, then try again.");
+    } catch {
+      showPasteFailure("Clipboard access was denied. Press Command+V or Ctrl+V to paste instead.");
+    } finally {
+      pasteButton.disabled = false;
+    }
+  };
   drop.addEventListener("click", (event) => {
     const target = event.target;
-    if (target === fileInput || target === libraryLink) return;
+    if (target === fileInput || target === chooseFileButton || target === pasteButton || target === libraryLink) return;
     fileInput.click();
   });
-  drop.addEventListener("keydown", (event) => {
-    if (event.target !== drop || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault(); fileInput.click();
-  });
+  chooseFileButton.addEventListener("click", () => fileInput.click());
+  pasteButton.addEventListener("click", () => { void readClipboard(); });
   drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.dataset.over = "true"; });
   drop.addEventListener("dragleave", () => { drop.dataset.over = "false"; });
   drop.addEventListener("drop", (event) => {
@@ -991,7 +1067,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
             return;
           }
         }
-        progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryLabel.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
+        progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
         status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your private link is ready"), el(doc, "span", "sender-status-detail", "Saved to your shares. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";

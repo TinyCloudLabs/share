@@ -61,7 +61,14 @@ const EXPECTED_SENDER_COPY = {
   signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 } as const;
 
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
+const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.restoreAllMocks();
+  if (originalClipboardDescriptor === undefined) Reflect.deleteProperty(navigator, "clipboard");
+  else Object.defineProperty(navigator, "clipboard", originalClipboardDescriptor);
+});
 
 function readFileBytes(file: File): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
@@ -92,6 +99,12 @@ function dropFile(target: Element, file: File): void {
   const event = new Event("drop", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "dataTransfer", { value: { files: [file] } });
   target.dispatchEvent(event);
+}
+
+function chooseExpiry(root: HTMLElement, value: string): void {
+  const input = root.querySelector<HTMLInputElement>(`input[name=expiry][value="${value}"]`)!;
+  input.checked = true;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function baseOptions(): { openKeyAddress: string; origin: string; onBack: () => void } {
@@ -177,6 +190,64 @@ describe("share composer content picker", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(received.model?.content).toMatchObject({ kind: "text", filename: "Hermetic-sharing.md" });
     expect(Array.from(await readFileBytes(received.file!))).toEqual(Array.from(new TextEncoder().encode("# Hermetic sharing\n\nPasted in the browser.")));
+  });
+
+  it("offers a real paste action that reads clipboard text without opening the file picker", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: vi.fn().mockResolvedValue("# Pasted with a click") },
+    });
+    mountShareComposer(root, baseOptions());
+    const fileInput = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    const filePicker = vi.spyOn(fileInput, "click");
+    const pasteButton = root.querySelector<HTMLButtonElement>(".dropzone-paste")!;
+
+    expect(pasteButton).toMatchObject({ type: "button", textContent: "Paste from clipboard" });
+    pasteButton.click();
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLTextAreaElement>("textarea[name=author-content]")!.value).toBe("# Pasted with a click"));
+    expect(filePicker).not.toHaveBeenCalled();
+    expect(root.querySelector<HTMLElement>(".content-dropzone")!.hidden).toBe(true);
+  });
+
+  it("uses a clipboard image as file content when the browser exposes clipboard items", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const image = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        read: vi.fn().mockResolvedValue([{
+          types: ["image/png"],
+          getType: vi.fn().mockResolvedValue(image),
+        }]),
+      },
+    });
+    mountShareComposer(root, baseOptions());
+
+    root.querySelector<HTMLButtonElement>(".dropzone-paste")!.click();
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".content-chosen")!.hidden).toBe(false));
+    expect(root.querySelector(".content-chosen-name")?.textContent).toBe("pasted-image.png");
+  });
+
+  it("explains the ordinary paste fallback when clipboard access is denied", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: vi.fn().mockRejectedValue(new DOMException("Denied", "NotAllowedError")) },
+    });
+    mountShareComposer(root, baseOptions());
+
+    root.querySelector<HTMLButtonElement>(".dropzone-paste")!.click();
+
+    const pasteStatus = root.querySelector<HTMLElement>(".dropzone-paste-status")!;
+    await vi.waitFor(() => expect(pasteStatus.getAttribute("role")).toBe("alert"));
+    expect(pasteStatus.textContent).toContain("Command+V or Ctrl+V");
+    expect(root.querySelector<HTMLElement>(".content-dropzone")!.hidden).toBe(false);
+
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "ordinary paste still works" });
+    expect(root.querySelector<HTMLTextAreaElement>("textarea[name=author-content]")!.value).toBe("ordinary paste still works");
   });
 
   it("restores the drop zone when the sender decides to use a file instead", () => {
@@ -267,12 +338,15 @@ describe("share composer access controls", () => {
     const root = document.createElement("div"); document.body.append(root);
     let selected: ShareComposerModel | undefined;
     mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
-    const expiry = root.querySelector<HTMLSelectElement>("select[name=expiry]")!;
-    expect(expiry.value).toBe("7d");
-    expect(Array.from(expiry.options).map((option) => option.value)).toEqual(["24h", "7d", "30d", "90d"]);
+    const expiryFieldset = root.querySelector<HTMLFieldSetElement>("fieldset.expiry-field")!;
+    const expiryInputs = Array.from(expiryFieldset.querySelectorAll<HTMLInputElement>("input[name=expiry]"));
+    expect(root.querySelector("select[name=expiry]")).toBeNull();
+    expect(expiryFieldset.querySelector("legend")?.textContent).toBe("Link expires");
+    expect(expiryInputs.map((input) => input.value)).toEqual(["24h", "7d", "30d", "90d"]);
+    expect(expiryInputs.filter((input) => input.checked).map((input) => input.value)).toEqual(["7d"]);
     expect(root.querySelector(".composer-note")?.textContent).toContain("can't be revoked early");
 
-    expiry.value = "24h"; expiry.dispatchEvent(new Event("change", { bubbles: true }));
+    chooseExpiry(root, "24h");
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -384,9 +458,7 @@ describe("share composer access controls", () => {
       value: [new File(["selected expiry"], "expiry.txt", { type: "text/plain" })],
     });
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    const expiry = root.querySelector<HTMLSelectElement>("select[name=expiry]")!;
-    expiry.value = "24h";
-    expiry.dispatchEvent(new Event("change", { bubbles: true }));
+    chooseExpiry(root, "24h");
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
     await vi.waitFor(() => expect(captured).toBeDefined());

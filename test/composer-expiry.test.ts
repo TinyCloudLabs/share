@@ -207,6 +207,12 @@ function setValue(control: HTMLInputElement | HTMLSelectElement, value: string, 
   control.dispatchEvent(new Event(eventName, { bubbles: true }));
 }
 
+function chooseExpiry(root: HTMLElement, value: string): void {
+  const input = root.querySelector<HTMLInputElement>(`input[name=expiry][value="${value}"]`)!;
+  input.checked = true;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function chooseRecipient(root: HTMLElement, kind: "exactEmail" | "emailDomain"): void {
   const radio = root.querySelector<HTMLInputElement>(`input[name=recipient][value=${kind}]`)!;
   radio.checked = true;
@@ -278,7 +284,7 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     chooseRecipient(root, "emailDomain");
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "example.com", "input");
     setValue(root.querySelector<HTMLInputElement>("input[name=delivery-email]")!, "reader@example.com", "input");
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "24h", "change");
+    chooseExpiry(root, "24h");
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
     submit(root);
 
@@ -315,7 +321,7 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "example.com", "input");
     setValue(root.querySelector<HTMLInputElement>("input[name=delivery-email]")!, "reader@example.com", "input");
     // The sender asks for 30 days; the capability only allows 6 hours.
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "30d", "change");
+    chooseExpiry(root, "30d");
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
     submit(root);
 
@@ -381,7 +387,7 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
 
     chooseRecipient(root, "exactEmail");
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "24h", "change");
+    chooseExpiry(root, "24h");
     // A self-contained link keeps the registry (and its fetch) out of the test.
     setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
     attachFile(root, new File([new Uint8Array([1, 2, 3, 4])], "notes.txt", { type: "text/plain" }));
