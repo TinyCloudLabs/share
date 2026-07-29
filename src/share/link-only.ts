@@ -247,3 +247,83 @@ export async function copyWithFallback(value: string): Promise<void> {
     for (const range of preserved) selection?.addRange(range);
   }
 }
+
+/** A live manual-copy affordance. `target` is safe to attach; it holds no share data. */
+export interface ManualCopyHandle {
+  /** The decoy node to place in the UI and keep selected. */
+  readonly target: HTMLElement;
+  /** Selects the decoy's contents so the next copy gesture applies to it. */
+  readonly select: () => void;
+  /** Removes the interception, clears the selection, and detaches the decoy. */
+  readonly disarm: () => void;
+}
+
+/**
+ * TC-334. The last-resort affordance for when `copyWithFallback` rejects —
+ * i.e. both `navigator.clipboard.writeText` and scripted `execCommand("copy")`
+ * were refused. The obvious implementation is a read-only `<input>` holding the
+ * URL for the sender to select and copy by hand; that is what the composer used
+ * to do, and it is the exposure §6.3 forbids and TC-297 removed from
+ * `copyWithFallback`.
+ *
+ * It is also unnecessary. Every manual copy gesture a sender can perform —
+ * Ctrl/Cmd+C, the context menu's Copy, the browser's Edit ▸ Copy — dispatches a
+ * cancelable `copy` event, which is exactly the interception point TC-297
+ * already uses. So the selected node never has to be the node holding the
+ * secret here either: select a decoy, substitute the real value in the event.
+ * The URL stays a JavaScript string.
+ *
+ * The one difference from `copyWithFallback` is lifetime. There, the decoy
+ * exists for the duration of a synchronous `execCommand` call. Here it must
+ * stay attached and selected until the sender presses the key, so `disarm()`
+ * is the caller's responsibility. This is the reason the affordance is kept at
+ * all rather than deleted: `execCommand("copy")` is refused for *scripted*
+ * copies in hardened configurations (Firefox with `dom.allow_cut_copy=false`,
+ * several embedded webviews) where a genuine user gesture is still honoured,
+ * and that is precisely the population that reaches this path.
+ *
+ * Residual risk, stated rather than hidden:
+ * - The interception is document-wide while armed, so it checks that the live
+ *   selection is still inside the decoy before substituting. Without that, a
+ *   sender copying unrelated text on the page would silently get the URL.
+ * - As in `copyWithFallback`, an earlier capture-phase `copy` listener could
+ *   observe the write. That attacker already has same-origin script execution.
+ */
+export function armManualCopy(value: string, onDelivered: () => void): ManualCopyHandle {
+  const target = document.createElement("span");
+  target.className = "manual-copy-target";
+  // One non-breaking space: enough for a selection to exist and be visible,
+  // and it carries no share data if some engine ignores our substitution.
+  target.textContent = " ";
+  target.setAttribute("aria-hidden", "true");
+
+  const onCopy = (event: Event): void => {
+    const clipboardData = (event as ClipboardEvent).clipboardData;
+    if (clipboardData === null || clipboardData === undefined) return;
+    const selection = document.getSelection();
+    if (selection === null || selection.rangeCount === 0) return;
+    const container = selection.getRangeAt(0).commonAncestorContainer;
+    if (container !== target && !target.contains(container)) return;
+    event.preventDefault();
+    clipboardData.setData("text/plain", value);
+    onDelivered();
+  };
+  document.addEventListener("copy", onCopy, true);
+
+  const select = (): void => {
+    const selection = document.getSelection();
+    if (selection === null) return;
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
+  const disarm = (): void => {
+    document.removeEventListener("copy", onCopy, true);
+    document.getSelection()?.removeAllRanges();
+    target.remove();
+  };
+
+  return { target, select, disarm };
+}

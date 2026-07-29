@@ -153,6 +153,16 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .result-link-label { display: grid; gap: 8px; margin-top: 4px; font-size: 0.8rem; font-weight: 650; }
 .share-result-link { display: block; width: 100%; max-width: 100%; min-height: 76px; margin-top: 2px; padding: 12px; border: 1px solid var(--accent-line); border-radius: 7px; background: var(--share-panel); color: var(--share-ink); font: 0.76rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; resize: none; }
 .share-result-link:focus-visible { outline: 2px solid var(--share-focus); outline-offset: 3px; }
+/* TC-334: the clipboard-denied affordance. The selected node is a decoy holding
+   one non-breaking space; the share URL is substituted into the sender's copy
+   event and is never rendered here. It is sized so the selection highlight is
+   visible enough to show what the keystroke will act on. */
+.manual-copy-field { display: grid; gap: 10px; justify-items: start; margin-top: 12px; padding: 14px 16px; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--share-faint); }
+.manual-copy-help { max-width: 58ch; margin: 0; color: var(--share-ink); font-size: 0.82rem; }
+.manual-copy-target { display: inline-block; min-width: 96px; padding: 8px 10px; border: 1px dashed var(--accent-line); border-radius: 6px; background: var(--share-panel); user-select: text; }
+.manual-copy-target::selection { background: var(--accent); }
+.manual-copy-field .button-secondary { margin: 0; }
+
 .result-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
 .result-actions .button-secondary { margin: 0; }
 .copy-status { min-height: 1.3rem; color: var(--share-muted); font-size: 0.82rem; }

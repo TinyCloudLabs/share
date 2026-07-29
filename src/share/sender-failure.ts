@@ -29,7 +29,9 @@ export type SenderFailureKind =
   | "deliveryDomain"
   | "plaintext"
   | "acknowledgment"
-  | "linkOnlyActions";
+  | "linkOnlyActions"
+  | "signIn"
+  | "signInService";
 
 export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   session: "Your session expired. Reload and sign in again.",
@@ -60,6 +62,8 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   plaintext: "Link-only and single-person shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  signIn: "Sign-in could not be completed. Try again.",
+  signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 };
 
 export function fail(kind: SenderFailureKind, detail: string, extra: Record<string, unknown> = {}): Error {
@@ -81,4 +85,17 @@ export function senderFailureMessage(error: unknown): string {
   // specific than its four-value kind enum. New messages must stay free of protocol vocabulary.
   if (error instanceof LinkOnlyShareError) return error.message;
   return SENDER_FAILURE[senderFailureKind(error)];
+}
+
+/**
+ * TC-335. Same classification, different default. The sign-in wall renders
+ * whatever rejects between "Continue with OpenKey" and the first library
+ * paint — `openkey-session.ts`'s own throws, the OpenKey SDK, and the entire
+ * Web SDK bootstrap. Only the first of those is tagged, so the untagged
+ * remainder must not land on `internal`, whose copy ("Nothing was shared")
+ * describes a share that does not exist yet.
+ */
+export function authFailureMessage(error: unknown): string {
+  const kind = senderFailureKind(error);
+  return SENDER_FAILURE[kind === "internal" ? "signIn" : kind];
 }
