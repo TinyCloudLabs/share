@@ -1099,11 +1099,23 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
     ["unauthorized-list", `${origin}/share/v1/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ request: { action: "tinycloud.kv/list", resource: { kind: "prefix", path: "documents/" } } }) }, undefined],
     ["unauthorized-put", `${origin}/share/v1/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ request: { action: "tinycloud.kv/put", resource: { kind: "exact", path: "documents/policy-payload.md" }, body: [1], ifMatch: null } }) }, undefined],
   ];
+  // TC-307. These host-side requests reach the loopback Share host over
+  // plaintext http, and the production entrypoint rejects any /api, /share,
+  // /v1, /invoke, /delegate or /registry request that is not forwarded as
+  // https with 400 https_required -- before it ever consults the session. So
+  // every case here was answering the transport guard rather than the
+  // authorization boundary it claims to test. The browser sets this header
+  // once per session; the host-side matrix has to set it too. The transport
+  // guard itself is now asserted as its own case rather than silently
+  // standing in for all the others.
+  const forwardedHttps = (init) => ({ ...init, headers: { ...(init.headers ?? {}), "x-forwarded-proto": "https" } });
+  const plaintextResponse = await fetch(`${origin}/api/share/capabilities`, { method: "GET" });
+  assert.equal(plaintextResponse.status, 400, "plaintext API request was not rejected by the transport guard");
   for (const [label, url, init, expected] of denialCases) {
-    const response = await fetch(url, init);
+    const response = await fetch(url, forwardedHttps(init));
     if (expected === undefined) assert.equal(response.status >= 400, true, `${label} did not fail closed`); else assert.equal(response.status, expected, `${label} denial status`);
   }
-  const evilOriginResponse = await fetch(`${origin}/api/share/capabilities`, { headers: { origin: "https://evil.example" } }); assert.equal(evilOriginResponse.status, 401, "wrong-origin capability access was accepted");
+  const evilOriginResponse = await fetch(`${origin}/api/share/capabilities`, forwardedHttps({ headers: { origin: "https://evil.example" } })); assert.equal(evilOriginResponse.status, 401, "wrong-origin capability access was accepted");
   await agent(["eval", "fetch('/api/share/auth/logout',{method:'POST',credentials:'include'}).then(function(r){return r.status})"]);
   assert.equal(await agent(["eval", "fetch('/api/share/capabilities',{credentials:'include'}).then(function(r){return r.status})"]), "401", "signed-out sender history boundary was not enforced");
   gateResults.denialMatrix = true; await auditFlow("denial-matrix", denialTrace, { mailOrigin }); checks.push("Enforcing boundary denial matrix observed signed-out history, wrong origin, malformed and traversal paths, forged cursor/query, removed routes, missing proof, and unauthorized get/list/put fail-closed responses.");
@@ -1127,6 +1139,16 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
       await runner();
     } catch (error) {
       sliceFailures.set(slice.name, error instanceof Error ? error.message : String(error));
+      // The top-level failure diagnostics only ran when a throw escaped
+      // browserGate. Now that a slice contains its own failure it has to
+      // capture what the page was showing when it ended, or a contained
+      // failure would be a quieter failure than an uncontained one.
+      try {
+        const state = agentString(await agent(["eval", "JSON.stringify({composerState:document.querySelector('.composer-status')?.dataset.state||null,title:document.querySelector('.sender-status-title')?.textContent||null,detail:document.querySelector('.sender-status-detail')?.textContent||null,libraryOptions:[].slice.call(document.querySelectorAll('select[name=kv-source] option')).map(function(option){return {value:option.value,kind:option.dataset.resourceKind||null}}),authError:(window.__tinycloudAuthError&&window.__tinycloudAuthError.message)||window.__tinycloudAuthError||null,failedTelemetry:(window.__tinycloudTelemetry||[]).filter(function(entry){return entry.status===undefined||entry.status>=400}).map(function(entry){return {path:(function(){try{return new URL(entry.url).pathname}catch(error){return null}})(),status:entry.status||null,errorCode:entry.errorCode||null}})})"]));
+        checks.push(`Gate slice ${slice.name} failure page state ${JSON.stringify(state)}.`);
+      } catch (diagnosticError) {
+        checks.push(`Gate slice ${slice.name} failure page state unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}.`);
+      }
     }
   }
 
