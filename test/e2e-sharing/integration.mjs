@@ -1158,6 +1158,17 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
       // Without this the harness could only ever report the status.
       const hostErrors = [...new Set(children.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("share-host stage=request-error"))))].slice(-10);
       if (hostErrors.length > 0) checks.push(`Gate slice ${slice.name} Share host request errors ${JSON.stringify(hostErrors)}.`);
+      // The Node answers /share/v2/* with 503 capability_unavailable when its
+      // share-v2 runtime is absent or no longer live. Readiness is checked once
+      // at launch, so a slice that dies on one of those routes has to re-read
+      // it here; otherwise "went unready mid-run" and "was never there" are
+      // the same 503.
+      try {
+        const readiness = await (await fetch(`${origin}/share/v2/readiness`, { headers: { accept: "application/json", "x-forwarded-proto": "https" } })).json();
+        checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure ${JSON.stringify(readiness)}.`);
+      } catch (readinessError) {
+        checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure unavailable: ${readinessError instanceof Error ? readinessError.message : String(readinessError)}.`);
+      }
     }
   }
 
