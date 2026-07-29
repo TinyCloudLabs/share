@@ -9,6 +9,7 @@ const bundle = validateTrustBundle({
   returnOrigin: "https://share.tinycloud.xyz",
   registryOrigin: "https://registry.tinycloud.xyz",
   credentialsOrigin: "https://witness.credentials.org",
+  emailOrigin: "https://email.tinycloud.xyz",
   nodeOrigin: "https://node.tinycloud.xyz",
   nodeAudience: "did:web:node.tinycloud.xyz",
   nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1",

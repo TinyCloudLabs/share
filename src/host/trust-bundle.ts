@@ -19,6 +19,18 @@ export interface ShareTrustBundle {
     readonly returnOrigin: string;
     readonly registryOrigin: string;
     readonly credentialsOrigin: string;
+    /**
+     * The service that turns a Node-signed delivery authorization into an
+     * email (`@tinycloud/share-email`, `POST /share/v2`).
+     *
+     * Separate from `credentialsOrigin` on purpose. The OpenCredentials
+     * witness issues the claim credential; it has never exposed `/share/v2`
+     * and answers 404 there, so the sender pointing at it could not deliver
+     * anything (TC-379). These are two different services with two different
+     * trust roles, and conflating them is what made addressed sharing look
+     * like a signature problem for eleven days.
+     */
+    readonly emailOrigin: string;
     readonly nodeOrigin: string;
     readonly nodeAudience: string;
     readonly nodeInvitationKid: string;
@@ -75,7 +87,7 @@ function senderSecret(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 export function validateTrustBundle(value: unknown, allowTest = false, privateKey?: string): ShareTrustBundle {
-  const root = exactObject(value, ["version", "shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "nodeOrigin", "nodeAudience", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "nodeEnabled", "issuerDid", "issuerVct", "issuerKid", "issuerPublicKey", "issuerKeyVersion", "issuerEnabled"], "trust bundle");
+  const root = exactObject(value, ["version", "shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "emailOrigin", "nodeOrigin", "nodeAudience", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "nodeEnabled", "issuerDid", "issuerVct", "issuerKid", "issuerPublicKey", "issuerKeyVersion", "issuerEnabled"], "trust bundle");
   const environment = allowTest ? "test" : "production";
   if (root.version !== TRUST_VERSION) throw new Error("trust bundle version is unsupported");
   if (typeof root.nodeKeyVersion !== "number" || !Number.isSafeInteger(root.nodeKeyVersion) || typeof root.issuerKeyVersion !== "number" || !Number.isSafeInteger(root.issuerKeyVersion) || typeof root.nodeEnabled !== "boolean" || root.issuerEnabled !== true || root.issuerVct !== "opencredentials.email/v1") throw new Error("trust bundle versions or enablement are invalid");
@@ -84,6 +96,7 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
     returnOrigin: origin(root.returnOrigin, "returnOrigin"),
     registryOrigin: origin(root.registryOrigin, "registryOrigin"),
     credentialsOrigin: origin(root.credentialsOrigin, "credentialsOrigin"),
+    emailOrigin: origin(root.emailOrigin, "emailOrigin"),
     nodeOrigin: origin(root.nodeOrigin, "nodeOrigin"),
     nodeAudience: String(root.nodeAudience),
     nodeInvitationKid: String(root.nodeInvitationKid),
@@ -170,7 +183,11 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   const openKeyFrame = hermeticOpenKey !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticOpenKey) ? hermeticOpenKey : "https://openkey.so";
   const hermeticWallet = process.env.SHARE_HERMETIC_WALLET_ORIGIN;
   const walletConnect = hermeticWallet !== undefined && /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(hermeticWallet) ? [hermeticWallet] : [];
-  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.registryOrigin, ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
+  // `emailOrigin` belongs here for the same reason `registryOrigin` does: the
+  // sender's `notify` fetches it directly from the page. Omit it and the send
+  // dies as a CSP violation in the console, which the composer surfaces as the
+  // same generic "We couldn't send that email" as every other failure.
+  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.emailOrigin, bundle.public.registryOrigin, ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
   const common = { "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "Strict-Transport-Security": "max-age=31536000; includeSubDomains", "Cache-Control": "no-store" };
   const isLanding = pathname === "/" || pathname === "/index.html" || pathname === "/how-it-works" || pathname === "/how-it-works/" || pathname === "/how-it-works.html";
   const isViewer = pathname === "/viewer.html" || pathname === "/viewer" || pathname === "/s/*" || /^\/s\/[a-z2-7]+$/.test(pathname);

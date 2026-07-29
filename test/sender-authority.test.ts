@@ -41,6 +41,7 @@ function productionBundle(): Record<string, unknown> {
     returnOrigin: SHARE_ORIGIN,
     registryOrigin: "https://registry.tinycloud.xyz",
     credentialsOrigin: "https://witness.credentials.org",
+    emailOrigin: "https://email.tinycloud.xyz",
     nodeOrigin: NODE_ORIGIN,
     nodeAudience: NODE_AUDIENCE,
     nodeInvitationKid: `${NODE_AUDIENCE}#invitation-key-1`,
