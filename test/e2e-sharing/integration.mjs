@@ -1085,7 +1085,11 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const denialCases = [
     ["signed-out-capabilities", `${origin}/api/share/capabilities`, { method: "GET" }, 401],
     ["signed-out-capability", `${origin}/api/share/capability`, { method: "GET" }, 401],
-    ["signed-out-bindings", `${origin}/api/share/bindings`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }, 401],
+    // The Share host runs sender-disabled, and /api/share/bindings answers
+    // 503 sender_not_ready before it consults the session, so 401 is a status
+    // this composition cannot produce. Assert what it does enforce, and do not
+    // claim to have observed an authorization decision that never happened.
+    ["sender-disabled-bindings", `${origin}/api/share/bindings`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }, 503],
     ["signed-out-registry-upload", `${origin}/api/share/link-only/registry/blobs`, { method: "POST", headers: { "content-type": "application/vnd.ipld.raw" }, body: "x" }, 401],
     ["malformed-cid", `${origin}/s/not-a-cid/raw`, { method: "GET" }, 404],
     ["removed-consume", `${origin}/share/v1/invitations/consume`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }, 404],
@@ -1149,6 +1153,11 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
       } catch (diagnosticError) {
         checks.push(`Gate slice ${slice.name} failure page state unavailable: ${diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError)}.`);
       }
+      // The Share host answers an unhandled request error with a bare 503
+      // capability_unavailable and logs the path and cause to its own stderr.
+      // Without this the harness could only ever report the status.
+      const hostErrors = [...new Set(children.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("share-host stage=request-error"))))].slice(-10);
+      if (hostErrors.length > 0) checks.push(`Gate slice ${slice.name} Share host request errors ${JSON.stringify(hostErrors)}.`);
     }
   }
 

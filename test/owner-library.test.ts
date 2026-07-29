@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OWNER_LIBRARY_LIMIT, ownerLibraryEntries } from "../src/share/composer.js";
+import { OWNER_LIBRARY_LIMIT, OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
 import { ownerSpacePermissions } from "../src/share/openkey-session.js";
 
 /**
@@ -53,6 +53,19 @@ describe("owner library entries", () => {
 
   it("bounds the listing it asks the space for", () => {
     expect(OWNER_LIBRARY_LIMIT).toBe(1000);
+  });
+
+  it("never offers the app's own vault bookkeeping as something to share", () => {
+    // The first run against a real space listing offered exactly these.
+    expect(ownerLibraryEntries([
+      "vault/sender-history/v1/entries/8214704210425/676f182b014b47cbb0daa3c8bed97dbe",
+      "vault/sender-history/v1/entries/8214704218100/7496617d69d54866b4b7dcf8985414d4",
+    ])).toEqual([]);
+    expect(OWNER_LIBRARY_RESERVED_PREFIXES).toEqual(["vault/"]);
+  });
+
+  it("still offers a sender object whose name merely starts with the reserved word", () => {
+    expect(ownerLibraryEntries(["vaults/plan.md"]).map((entry) => entry.path)).toEqual(["vaults/plan.md", "vaults/"]);
   });
 });
 

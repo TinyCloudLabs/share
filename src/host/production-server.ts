@@ -179,7 +179,11 @@ export function startProductionServer(env: NodeJS.ProcessEnv = process.env): Ret
   const handler = createProductionHandler({ bundle, host, enforceHttps: true });
   const server = createServer((request, response) => {
     void incomingRequest(request).then(handler).then((result) => send(response, result)).catch((error) => {
-      console.error(`share-host stage=request-error path=${(request.url ?? "/").split("?")[0] ?? "/"}`);
+      // A 503 with a path and no cause is unactionable: the sharing harness hit
+      // exactly this on /share/v2/policies and could say nothing beyond the
+      // status. The error class and message go to server-side stderr only;
+      // the response body is unchanged.
+      console.error(`share-host stage=request-error path=${(request.url ?? "/").split("?")[0] ?? "/"} error=${error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 200) : typeof error}`);
       if (error instanceof RequestTooLargeError) {
         if (!response.headersSent) response.writeHead(413, JSON_HEADERS);
         response.end(JSON.stringify({ error: { code: "request_too_large" } }));

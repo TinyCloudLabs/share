@@ -45,6 +45,17 @@ export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerS
 /** Upper bound on the owner-space listing that backs the library picker. */
 export const OWNER_LIBRARY_LIMIT = 1000;
 
+/**
+ * Prefixes the application owns in the sender's space. `tinycloud.vault`
+ * stores the sender history under `vault/`, and the first run with a real
+ * space listing duly offered `vault/sender-history/v1/entries/...` as things
+ * to share. Those are the app's own encrypted bookkeeping records, not the
+ * sender's library, and sharing one would hand a recipient the sender's own
+ * history. They are excluded here rather than filtered at the picker so the
+ * exclusion is stated once and testable.
+ */
+export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
+
 /** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
 function unsafeLibraryKey(value: string): boolean {
   for (const character of value) {
@@ -85,6 +96,7 @@ export function ownerLibraryEntries(keys: readonly string[]): readonly { readonl
     const segments = trimmed.split("/");
     if (trimmed.length === 0 || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) continue;
     if (unsafeLibraryKey(trimmed)) continue;
+    if (OWNER_LIBRARY_RESERVED_PREFIXES.some((prefix) => trimmed === prefix.replace(/\/$/, "") || trimmed.startsWith(prefix))) continue;
     add(trimmed, "exact");
     for (let depth = 1; depth < segments.length; depth += 1) add(`${segments.slice(0, depth).join("/")}/`, "prefix");
   }
