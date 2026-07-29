@@ -1,49 +1,10 @@
 /**
- * Stage-3 viewer resolve + verify pipeline (bearer slice).
+ * Browser orchestration for addressed policy links. Bearer links are handled
+ * by the compiled Share SDK below; this module retains only policy claim
+ * state needed by the existing recipient UI.
  *
- * Reuses the stage-1/2 packages for ALL crypto/CID/registry work — nothing
- * cryptographic is reimplemented here. The pipeline, in order, failing
- * closed at every step (specs/sharing-ux-blueprint.md §2.1: verify
- * "before sending anything anywhere"):
- *
- *   1. parseShareUrl(href)                 → { ciphertextCid, key32 }
- *   2. fetchBlob(registry, ciphertextCid)  → sealed blob (client re-verifies
- *      the CID internally; a lying gateway throws CidMismatchError)
- *   3. open(blob, key32)                   → plaintext envelope bytes
- *      (AES-256-GCM; wrong key / tampering throws)
- *   4. JSON.parse + strict schema parse    → ShareEnvelope
- *   5. switch on authorizationTarget.kind  → this stage handles ONLY
- *      "bearerKey"; policy / recipientDid are honest "unsupported" states
- *      (viewer spec §1: mode detection switches on the discriminated
- *      target before anything else)
- *   6. verifyEnvelope                      → BEARER MODE: the expected
- *      signer is the envelope's OWN signerDid — see the long note below
- *   7. resource selector                   → only { kind: "exact" } in this
- *      slice (single-file viewer); prefix/folder is a later stage
- *   8. expiry                              → fail closed on a dead share
- *      before any capability claim is evaluated
- *   9. checkBearerDelegation               → the embedded delegation must be
- *      a decodable token, EdDSA-signed by its own iss (verified), unexpired
- *      (exp required, nbf honored), whose delegatee IS the embedded session
- *      key's did:key and whose capabilities cover the signed target with
- *      read on canonical segment boundaries (viewer spec §1: mode derives
- *      from EFFECTIVE capabilities; a garbage delegation must never reach a
- *      "grants read access" UI)
- *  10. content (stage 4, bearer only)      → if the SIGNED envelope carries a
- *      `content` pointer, fetch that sealed blob from the registry (CID
- *      re-verified), decrypt it with the pointer's own key, and return the
- *      text for rendering. This direct registry fetch is a BEARER-SLICE
- *      mechanism — possession of the link is the read authority. In the
- *      policy/recipient-DID slices this step is replaced by a
- *      capability-gated read from the node named in `target`, and envelopes
- *      carry no content pointer. Fail closed: CID mismatch, AEAD failure,
- *      or non-UTF-8 plaintext all block rendering entirely.
- *
- * The fragment key exists only as an argument through steps 1-3 and is
- * zeroed on EVERY return path out of this function — success and each error
- * alike. It is never logged, stored, or sent anywhere (fragments never
- * leave the client by construction; main.ts scrubs location.hash/history
- * before this pipeline runs).
+ * The bearer resolver owns fragment hygiene and verification. This adapter
+ * never parses or decrypts bearer links itself.
  */
 import {
   fromBase64Url,
@@ -57,11 +18,12 @@ import {
   type ShareEnvelopeV2,
 } from "@tinycloud/share-envelope";
 import {
-  CidMismatchError,
-  RegistryHttpError,
-  fetchBlob,
-} from "@tinycloud/share-registry";
-import { checkBearerDelegation, parseAddressedEnvelope } from "@tinycloud/share-sdk";
+  receiveShare,
+  ShareReceiveError,
+  type ShareMetadata,
+} from "@tinycloud/share-sdk";
+import { CidMismatchError, RegistryHttpError, fetchBlob } from "@tinycloud/share-registry";
+import { parseAddressedEnvelope } from "@tinycloud/share-sdk";
 
 /** Why a structurally valid envelope cannot be shown by THIS build. */
 export type UnsupportedReason =
@@ -127,20 +89,18 @@ export interface ResolveShareOptions {
   onKeyParsed?: (key32: Uint8Array) => void;
 }
 
-export async function resolveShare(
+async function resolveAddressedShare(
   href: string,
   options: ResolveShareOptions,
 ): Promise<ResolveResult> {
   // 1. Parse the link. The key comes from the FRAGMENT only; parseShareUrl
   //    already rejects query strings, userinfo, and non-canonical CIDs.
   let ciphertextCid: string;
-  let linkOrigin: string;
   let key32: Uint8Array | undefined;
   let inlineBlob: Uint8Array | undefined;
   try {
     const parsed = parseCompactOrInlineShareUrl(href);
     ciphertextCid = parsed.ciphertextCid;
-    linkOrigin = new URL(href).origin;
     key32 = parsed.key32;
     if (parsed.kind === "inline") inlineBlob = parsed.ciphertext;
   } catch (error) {
@@ -197,10 +157,8 @@ export async function resolveShare(
       return { state: "envelope-invalid" };
     }
 
-    // 5. Mode detection: switch on the signed discriminated target FIRST
-    //    (viewer spec §1). This stage implements only the bearer path; the
-    //    others get an honest "unsupported" — we do NOT fake verification
-    //    for them (there is no expected signer to verify against yet).
+    // Addressed policy orchestration starts only after the SDK has declined
+    // this non-bearer target; no bearer verification is performed here.
     if (envelope.authorizationTarget.kind === "policy") {
       let policy: Record<string, unknown>;
       try {
@@ -221,107 +179,77 @@ export async function resolveShare(
       return { state: "unsupported", reason: "recipient-did-target", envelope };
     }
 
-    // 6. BEARER MODE VERIFICATION NOTE. verifyEnvelope requires an
-    //    expectedSignerDid the caller already trusts. For a bearer share
-    //    there is no out-of-band sender identity: trust comes from
-    //    POSSESSION OF THE LINK, not from who signed the envelope, and the
-    //    sender may legitimately be self-issued. So — for the bearer target
-    //    ONLY — we pass the envelope's own signerDid as the expected
-    //    signer. That still buys real integrity: the signature must verify
-    //    over the JCS bytes of every field, so nothing inside the envelope
-    //    (target origin, resource path, display name, expiry, the embedded
-    //    session JWK) can have been altered after signing. What it does NOT
-    //    buy is sender authenticity — bearer shares are self-asserted by
-    //    design, and the UI must render the sender as "unverified" (never a
-    //    checkmark). Policy/recipient-DID targets get a real expected
-    //    signer in later stages (the delegation chain's issuer).
-    // 7. Sender signature integrity is checked before any capability claim.
-    let verified: boolean;
-    try {
-      verified = await verifyEnvelope(envelope, {
-        expectedSignerDid: envelope.signature.signerDid,
-      });
-    } catch {
-      verified = false;
-    }
-    if (!verified) return { state: "signature-invalid" };
-
-    // 8. The link origin is part of the signed target binding. A valid
-    // envelope copied to another canonical Share origin must not become a
-    // valid link there, even when the caller did not provide an allowlist.
-    if (envelope.target.origin !== linkOrigin) {
-      return { state: "invalid-link", detail: "share origin does not match its signed target" };
-    }
-
-    // 9. Single-file slice: only an exact resource selector. Folder
-    //    browsing (prefix + kv/list) is a later stage.
-    if (envelope.target.resource.kind !== "exact") {
-      return { state: "unsupported", reason: "prefix-resource", envelope };
-    }
-
-    // 10. Expiry — checked BEFORE the delegation binding so a dead share
-    //    reports "expired", not a capability failure (create aligns the
-    //    delegation exp to always cover the envelope expiry, so anything
-    //    past the envelope expiry is dead on both clocks).
-    const now = options.now?.() ?? Date.now();
-    if (Date.parse(envelope.expiry) <= now) {
-      return { state: "expired", envelope };
-    }
-
-    // 11. Effective-capability binding is shared with the canonical SDK
-    //    compatibility export; the browser adapter does not implement its
-    //    own token verifier.
-    const capability = checkBearerDelegation(envelope, { now: () => now });
-    if (!capability.ok) {
-      return { state: "capability-invalid", detail: "signed delegation is not valid for this share" };
-    }
-
-    // 12. Content (stage 4, bearer slice): fetch + verify + decrypt the
-    //     sealed content blob the SIGNED pointer names. Runs only after
-    //     every check above passed. Direct registry fetch is the bearer
-    //     semantics (possession of the link is the authority); later slices
-    //     do a node capability-gated read here instead.
-    if (envelope.content === undefined) {
-      return { state: "ok", envelope, senderVerified: false };
-    }
-    let contentBlob: Uint8Array;
-    try {
-      contentBlob = await fetchBlob(options.registryBaseUrl, envelope.content.cid, {
-        ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
-      });
-    } catch (error) {
-      // A CID mismatch is an integrity failure (lying registry), not an
-      // availability failure — surface it as such and render NOTHING.
-      if (error instanceof CidMismatchError) {
-        return { state: "content-integrity-failed" };
-      }
-      if (error instanceof RegistryHttpError) {
-        return {
-          state: "content-fetch-failed",
-          detail: `registry returned ${error.status}`,
-        };
-      }
-      return { state: "content-fetch-failed", detail: "shared content is unavailable" };
-    }
-    const contentKey = fromBase64Url(envelope.content.key); // schema-validated 32 bytes
-    try {
-      const contentBytes = await open(contentBlob, contentKey);
-      let content: string | undefined;
-      try {
-        content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(contentBytes);
-      } catch {
-        // Binary content is still safe to download. It must never be forced
-        // through the Markdown/HTML renderer merely because the envelope's
-        // legacy v1 shape has no MIME field.
-      }
-      return { state: "ok", envelope, senderVerified: false, contentBytes, ...(content === undefined ? {} : { content }) };
-    } catch {
-      return { state: "content-integrity-failed" };
-    } finally {
-      contentKey.fill(0);
-    }
+    return { state: "unsupported", reason: envelope.target.resource.kind === "prefix" ? "prefix-resource" : "policy-target", envelope };
   } finally {
     // Memory-only key hygiene: the fragment key is dead after decryption.
     key32?.fill(0);
+  }
+}
+
+/**
+ * Resolve bearer links through the compiled headless SDK used by tc. The
+ * browser keeps only a redacted presentation envelope for rendering; keys,
+ * delegation material, and content pointers never cross this adapter.
+ * Addressed links continue through the policy claim orchestration below.
+ */
+export async function resolveShare(
+  href: string,
+  options: ResolveShareOptions,
+): Promise<ResolveResult> {
+  try {
+    const received = await receiveShare(href, {
+      registryBaseUrl: options.registryBaseUrl,
+      ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.onKeyParsed === undefined ? {} : { onKeyParsed: options.onKeyParsed }),
+    });
+    const envelope = presentationEnvelope(received.metadata);
+    return {
+      state: "ok",
+      access: "bearer",
+      envelope,
+      senderVerified: false,
+      ...(received.text === undefined ? {} : { content: received.text }),
+      ...(received.metadata.content === undefined ? {} : { contentBytes: received.bytes }),
+    };
+  } catch (error) {
+    if (error instanceof ShareReceiveError && error.code !== "unsupported-target") return mapReceiveError(error);
+  }
+  return resolveAddressedShare(href, options);
+}
+
+function presentationEnvelope(metadata: ShareMetadata, expiry = metadata.expiresAt): ShareEnvelope {
+  // This is intentionally a non-verifying presentation shape. The SDK has
+  // already verified the real envelope and content before this projection.
+  return {
+    version: 1,
+    shareId: metadata.shareId,
+    delegation: "[redacted]",
+    authorizationTarget: {
+      kind: "bearerKey",
+      sessionJwk: { kty: "OKP", crv: "Ed25519", x: "", d: "" },
+    },
+    target: metadata.target,
+    display: metadata.display,
+    expiry,
+    signature: { signerDid: "did:key:z6Mkrender-only", algorithm: "Ed25519", value: "" },
+  } as ShareEnvelope;
+}
+
+function mapReceiveError(error: ShareReceiveError): ResolveResult {
+  switch (error.code) {
+    case "invalid-link": return { state: "invalid-link", detail: "share link format is invalid" };
+    case "fetch-failed": return error.details?.stage === "content" ? { state: "content-fetch-failed", detail: "shared content is unavailable" } : { state: "fetch-failed", detail: "registry unavailable" };
+    case "max-bytes-exceeded": return { state: "content-integrity-failed" };
+    case "cid-mismatch": return { state: "cid-mismatch" };
+    case "decrypt-failed": return { state: "decrypt-failed" };
+    case "envelope-invalid": return { state: "envelope-invalid" };
+    case "origin-mismatch": return { state: "invalid-link", detail: "share origin does not match its signed target" };
+    case "signature-invalid": return { state: "signature-invalid" };
+    case "capability-invalid": return { state: "capability-invalid", detail: "signed delegation is not valid for this share" };
+    case "expired": return { state: "expired", envelope: presentationEnvelope({ protocol: "tinycloud-share", version: 1, shareId: "unknown", origin: "https://share.tinycloud.xyz", target: { origin: "https://share.tinycloud.xyz", nodeAudience: "unknown", spaceId: "unknown", resource: { kind: "exact", path: "unknown" } }, resource: { kind: "exact", path: "unknown" }, actions: ["read"], expiresAt: error.details?.expiresAt ?? new Date().toISOString(), display: {} }, error.details?.expiresAt) };
+    case "content-integrity-failed": return { state: "content-integrity-failed" };
+    case "unsupported-target": return { state: "unsupported", reason: "recipient-did-target", envelope: presentationEnvelope({ protocol: "tinycloud-share", version: 1, shareId: "unknown", origin: "https://share.tinycloud.xyz", target: { origin: "https://share.tinycloud.xyz", nodeAudience: "unknown", spaceId: "unknown", resource: { kind: "exact", path: "unknown" } }, resource: { kind: "exact", path: "unknown" }, actions: ["read"], expiresAt: new Date().toISOString(), display: {} }) };
+    default: return { state: "fetch-failed", detail: "share unavailable" };
   }
 }
