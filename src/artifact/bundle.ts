@@ -175,6 +175,14 @@ function assertClassicScript(source: string): void {
   if (UNSAFE_CLASSIC_SCRIPT.test(source)) fail("unsupported", "artifact script uses a blocked browser capability");
 }
 
+function rejectEventHandlerAttributes(doc: Document): void {
+  for (const element of doc.querySelectorAll("*")) {
+    for (const attributeName of element.getAttributeNames()) {
+      if (/^on/i.test(attributeName)) fail("unsupported", "artifact contains a blocked html feature");
+    }
+  }
+}
+
 function replaceAsync(
   input: string,
   expression: RegExp,
@@ -282,6 +290,7 @@ async function transformHtml(path: string, file: ArtifactFile, context: Transfor
   if (doc.querySelector("base, form, iframe, frame, frameset, object, embed, portal") !== null) {
     fail("unsupported", "artifact contains a blocked html feature");
   }
+  rejectEventHandlerAttributes(doc);
   const inlineStyles = [...doc.querySelectorAll<HTMLStyleElement>("style")];
   for (const meta of doc.querySelectorAll<HTMLMetaElement>("meta[http-equiv]")) {
     const directive = meta.httpEquiv.toLowerCase();
