@@ -132,3 +132,4 @@ export async function receiveShare(link: string, options: ShareFetchOptions): Pr
   }
   return { metadata: metadataFor(resolved.envelope, resolved.origin), link: { origin: resolved.origin, cid: resolved.cid, kind: resolved.kind }, bytes, ...(text === undefined ? {} : { text }) };
 }
+
