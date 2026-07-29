@@ -1,15 +1,15 @@
 name: Share SDK merge gates
 
+# No `paths:` filter on purpose. This workflow is the repository's merge gate,
+# and every previous attempt to enumerate what it depends on has been wrong:
+# `npm test` already reads index.html, share.html, viewer.html, public/_headers
+# and public/404.html (test/production-pages.test.ts) and imports all of `src/`,
+# none of which the old filter matched — so the gate silently skipped PRs it
+# would have failed on. `npm run typecheck` widens the surface again to `src`,
+# `functions`, `packages`, `test`, `vite.config.ts` and `tsconfig.json`.
+# Running unconditionally is cheaper than keeping that list correct.
 on:
   pull_request:
-    paths:
-      - package.json
-      - package-lock.json
-      - src/email-share/**
-      - packages/sdk/**
-      - packages/share-sdk/**
-      - test/**
-      - .github/workflows/share-sdk.yml
   push:
     branches: [main]
 
@@ -23,5 +23,10 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      # Fails the merge gate on a type error. `test/e2e-prod` is excluded from
+      # the root tsconfig because its `playwright` dependency is not installed
+      # by this `npm ci`; check it with `npm run typecheck` inside that
+      # directory, after `npm install` there.
+      - run: npm run typecheck
       - run: npm test
       - run: node --test scripts/validate-deploy-config.test.mjs
