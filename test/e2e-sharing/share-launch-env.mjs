@@ -49,7 +49,53 @@ export function loopbackOrigin(value, label) {
   return value;
 }
 
-export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin }) {
+export const HERMETIC_UPSTREAM_SERVICES = Object.freeze(["credentials", "node", "registry"]);
+
+// TC-306. SHARE_HERMETIC_REGISTRY_ORIGIN above only redirects the Share
+// host's *own* authenticated registry client. Everything the browser proxies
+// through the Share host — /delegate, /invoke, /info, /peer/generate/*,
+// /encryption/*, /share/v1/*, /share/v2/*, /v1/share-email/*, /registry* — is
+// resolved server-side by src/host/upstream.ts's resolveShareUpstreams, which
+// reads only SHARE_HERMETIC_UPSTREAMS_JSON. When that variable is absent it
+// returns the trust bundle's canonical *production* origins with no warning,
+// so a harness that omits it proxies the browser's traffic to
+// https://node.tinycloud.xyz while its own locally built node receives
+// nothing. Build the routes here, in the same place the rest of the launch
+// env is built, so the two can never drift apart again.
+//
+// resolveShareUpstreams accepts a route only when SHARE_HERMETIC_COMPOSITION
+// is exactly "true", the object names exactly node/credentials/registry, each
+// `origin` is byte-equal to the corresponding bundle origin, and each
+// `transportOrigin` is loopback. Anything else throws at Share host startup.
+export function hermeticUpstreamRoutes({ canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, registryTransportOrigin }) {
+  if (typeof canonicalOrigins !== "object" || canonicalOrigins === null || Array.isArray(canonicalOrigins)) throw new Error("canonicalOrigins must be an object naming exactly credentials, node, and registry");
+  const named = Object.keys(canonicalOrigins).sort();
+  if (named.length !== HERMETIC_UPSTREAM_SERVICES.length || named.some((key, index) => key !== HERMETIC_UPSTREAM_SERVICES[index])) throw new Error("canonicalOrigins must be an object naming exactly credentials, node, and registry");
+  const transportOrigins = { credentials: credentialsTransportOrigin, node: nodeTransportOrigin, registry: registryTransportOrigin };
+  const routes = {};
+  for (const service of HERMETIC_UPSTREAM_SERVICES) {
+    const origin = canonicalOrigins[service];
+    // The bundle origins are canonical https production origins; a loopback
+    // value here would mean the trust bundle itself was rewritten, which is
+    // exactly the non-production shape this harness must never test.
+    if (typeof origin !== "string" || !/^https:\/\/[a-z0-9.-]+$/.test(origin)) throw new Error(`canonicalOrigins.${service} must be the exact https trust-bundle origin`);
+    routes[service] = { origin, transportOrigin: loopbackOrigin(transportOrigins[service], `${service}TransportOrigin`) };
+  }
+  return routes;
+}
+
+export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin, canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin }) {
+  // Validated under its own label first so the SHARE_HERMETIC_REGISTRY_ORIGIN
+  // contract keeps reporting `registryOrigin` rather than the transport alias.
+  const registry = loopbackOrigin(registryOrigin, "registryOrigin");
+  const routes = hermeticUpstreamRoutes({
+    canonicalOrigins,
+    nodeTransportOrigin,
+    credentialsTransportOrigin,
+    // The registry transport is the same real local registry process the
+    // Share host's own registry client already points at.
+    registryTransportOrigin: registry,
+  });
   return {
     HOST: host,
     PORT: String(port),
@@ -60,6 +106,8 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     SHARE_HERMETIC_OPENKEY_ORIGIN: loopbackOrigin(openKeyOrigin, "openKeyOrigin"),
     SHARE_HERMETIC_WALLET_ORIGIN: loopbackOrigin(walletOrigin, "walletOrigin"),
     SHARE_HERMETIC_BROWSER_ORIGIN: loopbackOrigin(shareOrigin, "shareOrigin"),
-    SHARE_HERMETIC_REGISTRY_ORIGIN: loopbackOrigin(registryOrigin, "registryOrigin"),
+    SHARE_HERMETIC_REGISTRY_ORIGIN: registry,
+    SHARE_HERMETIC_COMPOSITION: "true",
+    SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: routes.node, credentials: routes.credentials, registry: routes.registry }),
   };
 }
