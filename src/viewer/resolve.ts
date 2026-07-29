@@ -30,7 +30,7 @@ import { parseAddressedEnvelope } from "@tinycloud/share-sdk";
 import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-app-compat";
 import { nativePayload } from "./policy-v2.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
-import { SIGNATURE_DOMAINS, type TrustedNode } from "../email-share/protocol.js";
+import { type TrustedNode } from "../email-share/protocol.js";
 
 /** Why a structurally valid envelope cannot be shown by THIS build. */
 export type UnsupportedReason =
@@ -168,13 +168,11 @@ async function resolveAddressedShare(
   // 1. Parse the link. The key comes from the FRAGMENT only; parseShareUrl
   //    already rejects query strings, userinfo, and non-canonical CIDs.
   let ciphertextCid: string;
-  let linkOrigin: string;
   let key32: Uint8Array | undefined;
   let inlineBlob: Uint8Array | undefined;
   try {
     const parsed = parseCompactOrInlineShareUrl(href);
     ciphertextCid = parsed.ciphertextCid;
-    linkOrigin = new URL(href).origin;
     key32 = parsed.key32;
     if (parsed.kind === "inline") inlineBlob = parsed.ciphertext;
   } catch (error) {
@@ -354,6 +352,7 @@ async function resolveAddressedShare(
     } finally {
       contentKey.fill(0);
     } */
+    return { state: "unsupported", reason: envelope.target.resource.kind === "prefix" ? "prefix-resource" : "policy-target", envelope };
   } finally {
     // Memory-only key hygiene: the fragment key is dead after decryption.
     key32?.fill(0);
