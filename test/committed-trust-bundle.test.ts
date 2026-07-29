@@ -25,10 +25,17 @@ import { COMMITTED_TRUST_BUNDLE_PATH, loadTrustBundle, validateTrustBundle } fro
 
 /**
  * Read from https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json
- * on 2026-07-29. `nodeInvitationPublicKey` is the known-wrong development
- * fixture from TC-359; it is pinned here deliberately, so that flipping the
- * source is provably a no-op and correcting the key is a separate, visible,
- * one-line diff (TC-369).
+ * on 2026-07-29, with `nodeInvitationPublicKey` corrected under TC-369.
+ *
+ * Every other field is what production already served, so unsealing the bundle
+ * remained observably a no-op. The one field that changed is the key: the
+ * previous value `tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI` was the
+ * OpenCredentials development fallback (TC-359), and nothing signed with it.
+ * The value below is what production's own node publishes at
+ * `GET https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys`, read
+ * from tinycloud-node 1.13.0 on 2026-07-29 — the key the CVM derives from the
+ * dstack KMS and actually signs invitations with. `share_v2::compose` fails
+ * closed if a node is ever configured with anything else.
  */
 const PUBLISHED_IN_PRODUCTION = {
   shareOrigin: "https://share.tinycloud.xyz",
@@ -41,7 +48,7 @@ const PUBLISHED_IN_PRODUCTION = {
   issuerVct: "opencredentials.email/v1",
   issuerEnabled: true,
   nodeInvitationKid: "did:web:tee.node.tinycloud.xyz#invitation-key-1",
-  nodeInvitationPublicKey: "tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI",
+  nodeInvitationPublicKey: "5gcZDCwHRoW6iEzPPGUdtiGMzWBj6aGtTlRBVERr1GI",
   nodeKeyVersion: 1,
   issuerKeyVersion: 1,
   issuerPublicKey: "eEJI4xEobto4HtQ7Pg9R1vBOwcpfGRTlXDG5QfqLnGQ",
