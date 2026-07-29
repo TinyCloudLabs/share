@@ -26,6 +26,7 @@ export interface RecipientSelection {
  */
 export type ComposerContent =
   | { readonly kind: "file"; readonly file: File }
+  | { readonly kind: "files"; readonly files: readonly File[] }
   | { readonly kind: "text"; readonly text: string; readonly filename: string }
   | { readonly kind: "library"; readonly source: ContentSource; readonly resource: ResourceSelector };
 
@@ -84,21 +85,29 @@ export function contentFile(content: ComposerContent): File | undefined {
   return undefined;
 }
 
+export function contentFiles(content: ComposerContent): readonly File[] {
+  const file = contentFile(content);
+  if (file !== undefined) return [file];
+  return content.kind === "files" ? content.files : [];
+}
+
 export function contentFilename(content: ComposerContent): string {
   if (content.kind === "file") return content.file.name;
+  if (content.kind === "files") return `${content.files.length} files`;
   if (content.kind === "text") return content.filename;
   return content.resource.path.split("/").filter(Boolean).at(-1) ?? "shared-resource";
 }
 
 export function contentMediaType(content: ComposerContent): string {
   if (content.kind === "file") return content.file.type || "application/octet-stream";
+  if (content.kind === "files") return "application/x-tinycloud-folder";
   if (content.kind === "text") return "text/markdown;charset=utf-8";
   return "application/octet-stream";
 }
 
 /** The persistence boundary keeps the stored history taxonomy stable. */
 export function contentMode(content: ComposerContent): ComposerContentMode {
-  return content.kind === "file" ? "upload" : content.kind === "text" ? "author" : "kv";
+  return content.kind === "file" || content.kind === "files" ? "upload" : content.kind === "text" ? "author" : "kv";
 }
 
 /** The library source, when the sender picked something already stored. */
@@ -155,8 +164,12 @@ export function defaultComposerModel(now: number = Date.now()): ComposerDefaults
 
 export function projectCapabilities(model: Pick<ShareComposerModel, "resource" | "permissions">): ProjectedCapability {
   const actionOrder: readonly SharePermission[] = ["read", "list", "edit"];
-  const permissions = actionOrder.filter((action) => model.permissions.includes(action) || (action === "read" && model.resource.kind === "prefix" && model.permissions.includes("list")));
-  if (permissions.length === 0 || permissions.some((value) => !["read", "list", "edit"].includes(value))) throw validationFailure("actions");
+  if (model.resource.kind === "exact" && model.permissions.includes("list")) throw validationFailure("actions");
+  const permissions = actionOrder.filter((action) =>
+    model.permissions.includes(action)
+    || (model.resource.kind === "prefix" && (action === "read" || action === "list"))
+  );
+  if (permissions.length === 0) throw validationFailure("actions");
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");
   const canonicalPath = model.resource.kind === "prefix" ? `${body}/` : body;
@@ -172,6 +185,16 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
     : model.recipient.kind === "emailDomain"
       ? { kind: "emailDomain" as const, value: normalizeEmailDomain(model.recipient.value ?? "") }
       : { kind: "bearer" as const };
+  const inferredResourceKind = model.content.kind === "files"
+    ? "prefix"
+    : model.content.kind === "library"
+      ? model.content.resource.kind
+      : "exact";
+  if (model.resource.kind !== inferredResourceKind) throw validationFailure("actions");
+  if (model.content.kind === "files" && model.content.files.length < 2) throw validationFailure("content");
+  if (recipient.kind === "bearer" && inferredResourceKind === "prefix") {
+    throw validationFailure("linkOnlyFolder");
+  }
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
   }
@@ -183,12 +206,7 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
     throw validationFailure("deliveryDomain");
   }
-  if (!model.encryption && (recipient.kind === "exactEmail" || recipient.kind === "bearer")) {
-    throw validationFailure("plaintext");
-  }
-  if (!model.encryption && recipient.kind === "emailDomain" && !model.encryptionAcknowledged) {
-    throw validationFailure("acknowledgment");
-  }
+  if (!model.encryption) throw validationFailure("plaintext");
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
 }

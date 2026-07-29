@@ -5,7 +5,7 @@ import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { createTinyCloudUploader } from "./openkey-session.js";
+import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, unsignedShareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
 type WebSdkModule = typeof import("@tinycloud/web-sdk");
@@ -137,7 +137,7 @@ import { createHttpTransport } from "../email-share/transport.js";
 import {
   canNotify,
   clampExpiry,
-  contentFile,
+  contentFiles,
   contentFilename,
   contentMediaType,
   contentSource,
@@ -175,11 +175,11 @@ export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "
   readonly onBack: () => void;
   readonly session?: OpenKeyShareSession;
   readonly copyText?: (value: string) => Promise<void>;
-  readonly createShare?: (input: { readonly file: File | undefined; readonly model: ShareComposerModel }) => Promise<ComposerShareResult>;
+  readonly createShare?: (input: { readonly file: File | undefined; readonly files: readonly File[]; readonly model: ShareComposerModel }) => Promise<ComposerShareResult>;
   readonly loadCapabilities?: () => Promise<readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[]>;
   readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
-  readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined }) => Promise<void>;
+  readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined; readonly files: readonly File[] }) => Promise<void>;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -199,12 +199,51 @@ function setStatus(node: HTMLElement, title: string, detail: string, state: stri
   node.replaceChildren(el(node.ownerDocument, "strong", "sender-status-title", title), el(node.ownerDocument, "span", "sender-status-detail", detail));
 }
 
-async function defaultCreate(file: File | undefined, model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+/**
+ * Flat browser file selections become direct children of one delegated
+ * prefix. Canonicalization happens before any policy is signed or key is
+ * written, and names that could alias another key are rejected rather than
+ * silently overwriting a sibling.
+ */
+export function canonicalUploadFiles(selected: readonly File[]): readonly File[] {
+  if (selected.length === 0) throw fail("content", "upload selection is empty");
+  const files: File[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const input of selected) {
+    const name = input.name.normalize("NFC");
+    const encodedLength = new TextEncoder().encode(name).byteLength;
+    if (
+      name.length === 0
+      || name.trim() !== name
+      || name === "."
+      || name === ".."
+      || encodedLength > 240
+      || /[\/\\\u0000-\u001f\u007f]/.test(name)
+      || /%2f|%5c|%2e/i.test(name)
+    ) {
+      throw fail("filename", "upload filename is unsafe");
+    }
+    const collisionKey = name.toLocaleLowerCase("en-US");
+    if (seen.has(collisionKey)) throw fail("filename", "upload filenames would overwrite one another");
+    seen.add(collisionKey);
+    if (input.size === 0) throw fail("emptyFile", "uploaded document is empty");
+    if (input.size > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document exceeds 100 MB");
+    total += input.size;
+    if (!Number.isSafeInteger(total) || total > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "aggregate upload exceeds 100 MB");
+    files.push(name === input.name ? input : new File([input], name, { type: input.type, lastModified: input.lastModified }));
+  }
+  return files;
+}
+
+async function defaultCreate(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  const file = files.length === 1 ? files[0] : undefined;
   if (model.recipient.kind !== "bearer") {
     if (options.session === undefined) throw fail("session", "addressed share has no session");
-    if (model.content.kind !== "library" && file === undefined) throw fail("content", "addressed share has no file");
-    return createPolicyShare(file, model, options);
+    if (model.content.kind !== "library" && files.length === 0) throw fail("content", "addressed share has no file");
+    return createPolicyShare(files, model, options);
   }
+  if (files.length !== 1) throw fail("linkOnlyFolder", "link-only sharing supports one exact file");
   if (file === undefined) throw fail("content", "link-only share has no file");
   const result = await createLinkOnlyShare(file, {
     origin: options.origin,
@@ -243,8 +282,10 @@ async function digestBytes(value: Uint8Array): Promise<string> {
   return toBase64Url(new Uint8Array(digest));
 }
 
-async function createPolicyShare(file: File | undefined, model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
-  if (options.tinycloud !== undefined) return createOwnerPolicyShare(file, model, options);
+async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  const file = files.length === 1 ? files[0] : undefined;
+  if (options.tinycloud !== undefined) return createOwnerPolicyShare(files, model, options);
+  if (files.length > 1) throw fail("linkOnlyFolder", "host-capability sharing supports one exact file");
   const response = options.loadCapabilities === undefined ? await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }) : undefined;
   if (response !== undefined && !response.ok) throw fail("account", "capability list request was rejected");
   const capabilities = options.loadCapabilities === undefined ? ((await response!.json()) as { readonly capabilities?: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] }).capabilities ?? [] : await options.loadCapabilities();
@@ -392,7 +433,9 @@ async function createPolicyShare(file: File | undefined, model: ShareComposerMod
   };
 }
 
-async function createOwnerPolicyShare(file: File | undefined, model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+async function createOwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
+  const file = files.length === 1 ? files[0] : undefined;
   const tinycloud = options.tinycloud;
   if (tinycloud === undefined) throw fail("session", "owner share has no TinyCloud session");
   const config = await loadSharePublicConfig();
@@ -404,12 +447,11 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
   const filename = contentFilename(model.content);
   if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
-  if (model.resource.kind === "prefix" && selectedSource === undefined) throw fail("folder", "owner prefix share has no selected library folder");
   const resourcePath = model.resource.kind === "prefix"
     ? `shares/${shareId}`
     : (model.resource.kind === "exact" && model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
   if (resourcePath.length === 0 || resourcePath.endsWith("/") && model.resource.kind === "exact") throw fail("filename", "owner share resource filename is invalid");
-  const resourceKind = selectedSource === undefined ? "exact" as const : model.resource.kind;
+  const resourceKind = model.resource.kind;
   const source = { kind: "kv" as const, space: spaceId, path: resourcePath, action: "tinycloud.kv/get" as const };
   const actionNames = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort() as OwnerSharePolicyV2["actions"];
   if (actionNames.length === 0) throw fail("actions", "owner share has no actions");
@@ -427,7 +469,19 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     if (selectedSource !== undefined && sourcePath !== undefined) {
       await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
     }
-    const ownerDelegation = await tinycloud.createOwnerDelegation({ delegateDid: shareKey.did, spaceId, path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames, expiresAt: new Date(expiresAt) });
+    const decryption = {
+      networkId: ownerEncryptionNetwork(options.openKeyAddress),
+      action: "tinycloud.encryption/decrypt",
+    } as const;
+    const ownerDelegation = await tinycloud.createOwnerDelegation({
+      delegateDid: shareKey.did,
+      spaceId,
+      permissions: [
+        { service: "tinycloud.kv", path: resourceKind === "prefix" ? `${resourcePath}/` : resourcePath, actions: actionNames },
+        { service: "tinycloud.encryption", path: decryption.networkId, actions: [decryption.action] },
+      ],
+      expiresAt: new Date(expiresAt),
+    });
     const sourceDigest = await digestBytes(new TextEncoder().encode(canonicalize(source)));
     const policyValue: OwnerSharePolicyV2 = {
       type: "TinyCloudSharePolicy",
@@ -439,6 +493,7 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
       target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: resourceKind, path: resourcePath },
       actions: actionNames,
+      decryption,
       contentSource: source,
       contentSourceDigest: sourceDigest,
       ownerDelegationCid: ownerDelegation.delegationCid,
@@ -446,13 +501,13 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     };
     const canonicalPolicy = await sdk.canonicalOwnerSharePolicy(policyValue);
     const policyProof = toBase64Url(await shareKey.sign(canonicalPolicy.bytes));
-    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, contentSourceDigest: sourceDigest, expiresAt });
+    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, decryption, contentSourceDigest: sourceDigest, expiresAt });
     // The registration receipt is signed by the enrolled Node key. The trust
     // bundle pins both its kid and public key before the exact response bytes
     // are accepted by the SDK.
     const registration = await tinycloud.registerOwnerSharePolicy({ policy: { bytes: canonicalPolicy.bytes, cid: canonicalPolicy.cid, proof: policyProof }, ownerDelegation, enforcementDelegation, contentSourceDigest: sourceDigest, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } });
     const authorityMaterialDigest = await digestBytes(fromBase64Url(enforcementDelegation.dagCbor));
-    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
+    const envelopeIdentity = { schema: "xyz.tinycloud.share/envelope/v2", version: 2, shareId, delegationCid: ownerDelegation.delegationCid, policyCid: canonicalPolicy.cid, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId }, resource: { kind: resourceKind, path: resourcePath }, actions: actionNames, decryption, contentSource: source, contentSourceDigest: sourceDigest, expiresAt };
     const envelopeCid = await computeCid(new TextEncoder().encode(canonicalize(envelopeIdentity)));
     const shareCid = await computeCid(new TextEncoder().encode(canonicalize({ version: 2, shareId, policyCid: canonicalPolicy.cid, envelopeCid })));
     const outerUnsigned = {
@@ -466,13 +521,15 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
       target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: resourceKind, path: resourcePath },
       actions: actionNames,
+      decryption,
       contentSource: source,
       contentSourceDigest: sourceDigest,
       expiresAt,
     };
     const outerSignature = toBase64Url(await shareKey.sign(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v2\0${canonicalize(outerUnsigned)}`)));
     const ownerAuthority = { registrationCid: registration.registration.registrationCid, shareCid, envelopeCid, enforcementDelegation, outerEnvelope: { ...outerUnsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: outerSignature } } };
-    const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength: file?.size ?? 0, filename }, ownerAuthority };
+    const byteLength = files.reduce((total, selected) => total + selected.size, 0);
+    const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength, filename }, ownerAuthority };
     // The signature covers `unsigned`, so `unsigned` must be checked with the
     // unsigned schema; `shareEnvelopeV2Schema` requires `signature` and so
     // always threw "signature Required" here (TC-338). The signed envelope is
@@ -491,10 +548,8 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
       : (await (async () => { const uploaded = await fetch(`${options.registryOrigin ?? config.registryOrigin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit }); if (!uploaded.ok) throw fail("save", "owner envelope upload was rejected"); return encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key }); })());
     key.fill(0);
     if (selectedSource === undefined && model.content.kind !== "library") {
-      if (file === undefined) throw fail("content", "owner upload has no file");
-      const content = new Uint8Array(await file.arrayBuffer());
-      const result = await tinycloud.kvForSpace(spaceId).put(resourcePath, content, { contentType: contentMediaType(model.content) });
-      if (!result.ok) throw fail("upload", "owner file upload was rejected");
+      if (files.length === 0) throw fail("content", "owner upload has no file");
+      await uploadSelectedFiles(tinycloud, spaceId, resourcePath, resourceKind, files);
     }
     return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: ownerDelegation.delegationCid, ...(deliveryEmail === undefined ? {} : { notify: async () => {
       const share = { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt } as ComposerShareResult;
@@ -511,6 +566,26 @@ async function createOwnerPolicyShare(file: File | undefined, model: ShareCompos
     } }) };
   } finally {
     shareKey.clear();
+  }
+}
+
+export async function uploadSelectedFiles(
+  tinycloud: ShareTinyCloud,
+  spaceId: string,
+  resourcePath: string,
+  resourceKind: "exact" | "prefix",
+  selected: readonly File[],
+): Promise<void> {
+  const files = canonicalUploadFiles(selected);
+  if (resourceKind === "exact" && files.length !== 1) throw fail("content", "exact upload requires one file");
+  if (resourceKind === "prefix" && files.length < 2) throw fail("content", "prefix upload requires multiple files");
+  const kv = tinycloud.kvForSpace(spaceId);
+  for (const file of files) {
+    const content = new Uint8Array(await file.arrayBuffer());
+    if (content.byteLength !== file.size || content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
+    const childPath = resourceKind === "prefix" ? `${resourcePath}/${file.name}` : resourcePath;
+    const result = await kv.put(childPath, content, { contentType: file.type.trim() || "application/octet-stream" });
+    if (!result.ok) throw fail("upload", "owner file upload was rejected");
   }
 }
 
@@ -602,6 +677,19 @@ function shortDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+interface ClipboardReader {
+  readonly read?: () => Promise<readonly {
+    readonly types: readonly string[];
+    readonly getType: (type: string) => Promise<Blob>;
+  }[]>;
+  readonly readText?: () => Promise<string>;
+}
+
+function pastedImageFilename(mediaType: string): string {
+  const extension = mediaType === "image/jpeg" ? "jpg" : mediaType.split("/")[1]?.replace("svg+xml", "svg") || "png";
+  return `pasted-image.${extension}`;
+}
+
 export function mountShareComposer(root: HTMLElement, options: ShareComposerOptions): void {
   const doc = root.ownerDocument;
   const copyText = options.copyText ?? copyWithFallback;
@@ -630,17 +718,24 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   // The kind of content is inferred from what the sender did (P1-1).
   const contentSection = el(doc, "section", "composer-section content-section");
   const drop = el(doc, "div", "content-dropzone");
-  drop.tabIndex = 0;
-  drop.setAttribute("role", "button");
-  drop.setAttribute("aria-label", "Choose a file to share, or paste text");
-  const dropTitle = el(doc, "strong", "dropzone-title", "Drop a file here, or click to choose");
-  const dropHint = el(doc, "span", "dropzone-hint", "You can also paste text or an image");
-  const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB");
+  drop.setAttribute("role", "group");
+  drop.setAttribute("aria-label", "Choose content to share");
+  const dropTitle = el(doc, "strong", "dropzone-title", "Drop files here");
+  const dropHint = el(doc, "span", "dropzone-hint", "Or choose another way");
+  const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB total");
   const fileInput = el(doc, "input", "upload-input") as HTMLInputElement;
-  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*";
-  const libraryLink = el(doc, "button", "dropzone-library", "or pick from your library") as HTMLButtonElement;
+  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*"; fileInput.multiple = true;
+  const dropActions = el(doc, "div", "dropzone-actions");
+  const chooseFileButton = el(doc, "button", "dropzone-action", "Choose files") as HTMLButtonElement;
+  chooseFileButton.type = "button";
+  const pasteButton = el(doc, "button", "dropzone-action dropzone-paste", "Paste from clipboard") as HTMLButtonElement;
+  pasteButton.type = "button";
+  const libraryLink = el(doc, "button", "dropzone-action dropzone-library", "Pick from your library") as HTMLButtonElement;
   libraryLink.type = "button";
-  drop.append(dropTitle, dropHint, dropLimit, fileInput, libraryLink);
+  dropActions.append(chooseFileButton, pasteButton, libraryLink);
+  const pasteStatus = el(doc, "span", "dropzone-paste-status");
+  pasteStatus.setAttribute("aria-live", "polite");
+  drop.append(dropTitle, dropHint, dropLimit, fileInput, dropActions, pasteStatus);
 
   const chosen = el(doc, "div", "content-chosen"); chosen.hidden = true;
   const chosenName = el(doc, "strong", "content-chosen-name");
@@ -664,7 +759,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   libraryPanel.append(sourceLabel, useUpload);
   contentSection.append(drop, chosen, textPanel, libraryPanel);
 
-  // Who can open it. The third recipient kind lives in Advanced.
+  // Who can open it. All recipient kinds are first-class choices.
   const fieldset = el(doc, "fieldset", "composer-section recipient-section");
   fieldset.append(el(doc, "legend", "field-legend", "Who can open it"));
   const recipientInput = el(doc, "input", "field-input recipient-value") as HTMLInputElement;
@@ -676,45 +771,51 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     parent.append(labelNode);
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
+  addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — they'll confirm their email to open it");
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
-  recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email or domain");
+  recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
   fieldset.append(recipientInput);
 
   // When it stops working. The sender was never asked before (P1-2).
-  const expiryLabel = el(doc, "label", "field-label expiry-field", "Link expires");
-  const expiry = el(doc, "select", "field-input") as HTMLSelectElement; expiry.name = "expiry";
-  for (const [value, label] of EXPIRY_CHOICES) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; expiry.append(option); }
-  expiry.value = DEFAULT_EXPIRY_CHOICE;
-  expiryLabel.append(expiry);
+  const expiryFieldset = el(doc, "fieldset", "expiry-field");
+  expiryFieldset.append(el(doc, "legend", "field-legend", "Link expires"));
+  const expiryOptions = el(doc, "div", "expiry-options");
+  for (const [value, copy] of EXPIRY_CHOICES) {
+    const label = el(doc, "label", "expiry-option");
+    const input = el(doc, "input", "") as HTMLInputElement;
+    input.type = "radio"; input.name = "expiry"; input.value = value; input.checked = value === DEFAULT_EXPIRY_CHOICE;
+    label.append(input, el(doc, "span", "expiry-option-copy", copy));
+    expiryOptions.append(label);
+  }
+  expiryFieldset.append(expiryOptions);
 
   const accessFieldset = el(doc, "fieldset", "composer-section access-section");
   accessFieldset.append(el(doc, "legend", "field-legend", "What can they do?"));
   const accessControls: Array<{ readonly value: SharePermission; readonly label: HTMLLabelElement; readonly input: HTMLInputElement }> = [];
-  for (const [value, label] of [["read", "Can view — open and download"], ["list", "Can browse the folder"], ["edit", "Can edit — open, download, and save changes"]] as const) {
+  for (const [value, label] of [["read", "Can view — open and download"], ["edit", "Can edit — open, download, and save changes"]] as const) {
     const labelNode = el(doc, "label", "permission-option"); const input = el(doc, "input", "") as HTMLInputElement; input.type = "checkbox"; input.name = "permission"; input.value = value; input.checked = value === "read"; labelNode.append(input, el(doc, "span", "permission-copy", label)); accessControls.push({ value, label: labelNode, input }); accessFieldset.append(labelNode);
   }
   const accessHint = el(doc, "p", "scope-note composer-access-hint", "Link-only shares are view-only. Choose a specific person to allow editing.");
   accessHint.hidden = true;
-  accessFieldset.append(accessHint);
+  const browseNotice = el(doc, "p", "scope-note composer-browse-notice", "Folder browsing is included automatically.");
+  browseNotice.hidden = true;
+  accessFieldset.append(accessHint, browseNotice);
 
   // Advanced. Everything that is a default, not a question.
   const advanced = el(doc, "details", "composer-advanced");
   advanced.append(el(doc, "summary", "composer-advanced-summary", "Advanced settings"));
   const formatLabel = el(doc, "label", "field-label", "Link style"); const format = el(doc, "select", "field-input") as HTMLSelectElement; format.name = "format"; for (const [value, label] of [["compact", "Short link (recommended)"], ["inline", "Self-contained link — very long, works without our servers"]] as const) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; format.append(option); } formatLabel.append(format);
-  const domainGroup = el(doc, "div", "advanced-recipient");
-  addRecipientOption(domainGroup, "emailDomain", "Anyone at a company — anyone with an email at this domain");
-  const encryptionGroup = el(doc, "div", "encryption-group"); encryptionGroup.hidden = true;
-  const encryptionLabel = el(doc, "label", "toggle-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryptionLabel.append(encryption, el(doc, "span", "", "Hide the file name and recipient from our servers"));
-  const warningLabel = el(doc, "label", "toggle-option encryption-warning"); const warning = el(doc, "input", "") as HTMLInputElement; warning.type = "checkbox"; warning.name = "encryption-acknowledgment"; warningLabel.append(warning, el(doc, "span", "", "I understand the file name and recipient domain will be visible to our servers")); warningLabel.hidden = true;
-  encryptionGroup.append(encryptionLabel, warningLabel);
+  const encryptionGroup = el(doc, "div", "composer-section encryption-group");
+  const encryptionLabel = el(doc, "label", "toggle-option encryption-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryption.disabled = true; encryptionLabel.append(encryption, el(doc, "span", "encryption-title", "Encrypted"));
+  encryptionGroup.append(encryptionLabel, el(doc, "p", "scope-note encryption-note", "Content and share details are encrypted before they leave this browser. Encryption is required for sharing."));
   const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
-  advanced.append(formatLabel, domainGroup, encryptionGroup, deliveryLabel, saveAsLabel);
+  advanced.append(formatLabel, deliveryLabel, saveAsLabel);
 
   const note = el(doc, "p", "scope-note composer-note");
   const submit = el(doc, "button", "button button-primary create-link-button", "Create link"); submit.type = "submit";
   const status = el(doc, "div", "sender-status composer-status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
-  form.append(progress, contentSection, fieldset, expiryLabel, accessFieldset, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
+  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
 
   let created: ComposerShareResult | undefined;
   let availableCapabilities: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] = [];
@@ -723,8 +824,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   let ownerLibrarySpaceId: string | undefined;
   // The tag mirrors the ComposerContent union: it records what the sender did,
   // it is never a control the sender has to operate.
-  let contentKind: "empty" | "file" | "text" | "library" = "empty";
-  let chosenFile: File | undefined;
+  let contentKind: "empty" | "file" | "files" | "text" | "library" = "empty";
+  let chosenFiles: readonly File[] = [];
   let deliveryTouched = false;
 
   const selectedKind = (): RecipientKind => (form.querySelector<HTMLInputElement>("input[name=recipient]:checked")?.value ?? "bearer") as RecipientKind;
@@ -755,7 +856,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     if (index >= 0 && source.selectedIndex !== index) { source.selectedIndex = index; source.dispatchEvent(new Event("change", { bubbles: true })); }
   };
 
-  const expiryIso = (): string => expiryFromChoice(expiry.value as ExpiryChoice);
+  const expiryIso = (): string => {
+    const choice = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value ?? DEFAULT_EXPIRY_CHOICE;
+    return expiryFromChoice(choice as ExpiryChoice);
+  };
   const refreshNote = (): void => {
     const kind = selectedKind();
     const typed = recipientInput.value.trim();
@@ -767,6 +871,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   const refreshRecipient = (): void => {
     const kind = selectedKind(); const addressed = kind !== "bearer";
+    const prefixSelected = contentKind === "files"
+      || (contentKind === "library" && (source.selectedOptions[0]?.dataset.resourceKind === "prefix" || source.value.endsWith("/")));
     recipientInput.hidden = !addressed; deliveryLabel.hidden = !addressed;
     for (const control of accessControls) {
       if (control.value === "read") {
@@ -778,15 +884,15 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       }
     }
     accessHint.hidden = addressed;
+    accessHint.textContent = prefixSelected
+      ? "Choose a specific person or company domain to share multiple files or a folder."
+      : "Link-only shares are view-only. Choose a specific person to allow editing.";
+    browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
-    recipientInput.type = kind === "emailDomain" ? "text" : "email"; recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
-    // Encryption is a real choice only for domain shares; everywhere else it
-    // is required, so the control is not shown at all (P1-4).
-    encryptionGroup.hidden = kind !== "emailDomain";
-    if (kind !== "emailDomain") encryption.checked = true;
-    if (kind === "emailDomain" && !encryption.checked) format.value = "inline";
-    warningLabel.hidden = kind !== "emailDomain" || encryption.checked;
-    if (warningLabel.hidden) warning.checked = false;
+    recipientInput.type = kind === "emailDomain" ? "text" : "email";
+    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
+    recipientInput.autocomplete = kind === "emailDomain" ? "off" : "email";
+    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : "Recipient email address");
     // The authorized mailbox is the natural delivery address.
     if (kind === "exactEmail" && !deliveryTouched) delivery.value = recipientInput.value.trim();
     refreshNote();
@@ -794,54 +900,115 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   form.querySelectorAll<HTMLInputElement>("input[name=recipient]").forEach((input) => input.addEventListener("change", refreshRecipient));
   recipientInput.addEventListener("input", refreshRecipient);
-  encryption.addEventListener("change", refreshRecipient);
-  expiry.addEventListener("change", refreshNote);
+  form.querySelectorAll<HTMLInputElement>("input[name=expiry]").forEach((input) => input.addEventListener("change", refreshNote));
   delivery.addEventListener("input", () => { deliveryTouched = true; });
   refreshRecipient();
 
   const showDropzone = (): void => {
-    contentKind = "empty"; chosenFile = undefined; fileInput.value = "";
+    contentKind = "empty"; chosenFiles = []; fileInput.value = ""; saveAsLabel.hidden = false;
     chosen.hidden = true; textPanel.hidden = true; libraryPanel.hidden = true; drop.hidden = false; drop.dataset.over = "false";
   };
-  const chooseFile = (file: File): void => {
-    contentKind = "file"; chosenFile = file;
+  const chooseFiles = (selected: readonly File[]): void => {
+    let files: readonly File[];
+    try {
+      files = canonicalUploadFiles(selected);
+    } catch (error) {
+      setStatus(status, "Check the selected files", senderFailureMessage(error), "error-file", true);
+      return;
+    }
+    contentKind = files.length === 1 ? "file" : "files"; chosenFiles = files;
     drop.hidden = true; textPanel.hidden = true; libraryPanel.hidden = true;
-    chosen.hidden = false; chosenName.textContent = file.name; chosenMeta.textContent = formatBytes(file.size);
+    chosen.hidden = false;
+    chosenName.textContent = files.length === 1 ? files[0]!.name : `${files.length} files`;
+    chosenMeta.textContent = files.length === 1
+      ? formatBytes(files[0]!.size)
+      : `${files.map((file) => file.name).join(", ")} · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}`;
+    saveAsLabel.hidden = files.length > 1;
+    refreshRecipient();
   };
+  const chooseFile = (file: File): void => chooseFiles([file]);
   const chooseText = (text: string): void => {
-    contentKind = "text"; chosenFile = undefined;
+    contentKind = "text"; chosenFiles = []; saveAsLabel.hidden = false;
     drop.hidden = true; chosen.hidden = true; libraryPanel.hidden = true; textPanel.hidden = false;
     author.value = text; nameChip.value = modelFilename(text);
   };
   const chooseLibrary = (): void => {
-    contentKind = "library"; chosenFile = undefined;
+    contentKind = "library"; chosenFiles = []; saveAsLabel.hidden = true;
     drop.hidden = true; chosen.hidden = true; textPanel.hidden = true; libraryPanel.hidden = false;
+    refreshRecipient();
   };
   const handlePaste = (event: ClipboardEvent): void => {
     const data = event.clipboardData;
     if (data === null || data === undefined) return;
-    const pastedFile = data.files.length > 0 ? data.files[0] : undefined;
-    if (pastedFile !== undefined) { event.preventDefault(); chooseFile(pastedFile); return; }
+    const pastedFiles = Array.from(data.files);
+    if (pastedFiles.length > 0) { event.preventDefault(); chooseFiles(pastedFiles); return; }
     const text = data.getData("text/plain");
     if (text.length === 0) return;
     event.preventDefault();
     chooseText(text);
   };
+  const showPasteFailure = (message: string): void => {
+    pasteStatus.textContent = message;
+    pasteStatus.setAttribute("role", "alert");
+  };
+  const readClipboard = async (): Promise<void> => {
+    pasteStatus.removeAttribute("role");
+    pasteStatus.textContent = "Reading clipboard…";
+    pasteButton.disabled = true;
+    try {
+      const clipboard = doc.defaultView?.navigator.clipboard as ClipboardReader | undefined;
+      if (clipboard === undefined || (clipboard.read === undefined && clipboard.readText === undefined)) {
+        showPasteFailure("Clipboard access isn't available here. Press Command+V or Ctrl+V to paste instead.");
+        return;
+      }
+      if (clipboard.read !== undefined) {
+        const items = await clipboard.read();
+        for (const item of items) {
+          const imageType = item.types.find((type) => type.startsWith("image/"));
+          if (imageType === undefined) continue;
+          const blob = await item.getType(imageType);
+          chooseFile(new File([blob], pastedImageFilename(blob.type || imageType), { type: blob.type || imageType }));
+          pasteStatus.textContent = "";
+          return;
+        }
+        for (const item of items) {
+          if (!item.types.includes("text/plain")) continue;
+          const text = await (await item.getType("text/plain")).text();
+          if (text.length > 0) {
+            chooseText(text);
+            pasteStatus.textContent = "";
+            return;
+          }
+        }
+      }
+      if (clipboard.readText !== undefined) {
+        const text = await clipboard.readText();
+        if (text.length > 0) {
+          chooseText(text);
+          pasteStatus.textContent = "";
+          return;
+        }
+      }
+      showPasteFailure("There's no text or image on your clipboard. Copy one, then try again.");
+    } catch {
+      showPasteFailure("Clipboard access was denied. Press Command+V or Ctrl+V to paste instead.");
+    } finally {
+      pasteButton.disabled = false;
+    }
+  };
   drop.addEventListener("click", (event) => {
     const target = event.target;
-    if (target === fileInput || target === libraryLink) return;
+    if (target === fileInput || target === chooseFileButton || target === pasteButton || target === libraryLink) return;
     fileInput.click();
   });
-  drop.addEventListener("keydown", (event) => {
-    if (event.target !== drop || (event.key !== "Enter" && event.key !== " ")) return;
-    event.preventDefault(); fileInput.click();
-  });
+  chooseFileButton.addEventListener("click", () => fileInput.click());
+  pasteButton.addEventListener("click", () => { void readClipboard(); });
   drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.dataset.over = "true"; });
   drop.addEventListener("dragleave", () => { drop.dataset.over = "false"; });
   drop.addEventListener("drop", (event) => {
     event.preventDefault(); drop.dataset.over = "false";
-    const dropped = event.dataTransfer?.files?.[0];
-    if (dropped !== undefined) chooseFile(dropped);
+    const dropped = Array.from(event.dataTransfer?.files ?? []);
+    if (dropped.length > 0) chooseFiles(dropped);
   });
   drop.addEventListener("paste", handlePaste);
   composerPasteScope?.abort();
@@ -853,8 +1020,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
     handlePaste(event);
   }, { signal: pasteScope.signal });
-  fileInput.addEventListener("change", () => { const picked = fileInput.files?.[0]; if (picked !== undefined) chooseFile(picked); });
+  fileInput.addEventListener("change", () => { const picked = Array.from(fileInput.files ?? []); if (picked.length > 0) chooseFiles(picked); });
   libraryLink.addEventListener("click", chooseLibrary);
+  source.addEventListener("change", refreshRecipient);
   change.addEventListener("click", () => { showDropzone(); drop.focus(); });
   useFile.addEventListener("click", () => { showDropzone(); drop.focus(); });
   useUpload.addEventListener("click", () => { showDropzone(); drop.focus(); });
@@ -869,6 +1037,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     if (capabilityId !== undefined) option.dataset.capabilityId = capabilityId;
     if (matcher !== undefined) { option.dataset.recipientMatcherKind = matcher.kind; option.dataset.recipientMatcherValue = matcher.value; }
     source.append(option);
+    if (contentKind === "library") refreshRecipient();
   };
 
   /*
@@ -951,11 +1120,15 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         } else if (contentKind === "text") {
           const text = author.value;
           if (text.length > 0) content = { kind: "text", text, filename: (override.length > 0 ? override : nameChip.value.trim()) || modelFilename(text) };
-        } else if (chosenFile !== undefined) {
-          content = { kind: "file", file: override.length > 0 && override !== chosenFile.name ? new File([chosenFile], override, { type: chosenFile.type }) : chosenFile };
+        } else if (chosenFiles.length === 1) {
+          const chosenFile = chosenFiles[0]!;
+          content = { kind: "file", file: override.length > 0 && override !== chosenFile.name ? canonicalUploadFiles([new File([chosenFile], override, { type: chosenFile.type, lastModified: chosenFile.lastModified })])[0]! : chosenFile };
+        } else if (chosenFiles.length > 1) {
+          content = { kind: "files", files: canonicalUploadFiles(chosenFiles) };
         }
         if (content === undefined) { setStatus(status, "Choose what to share", "Drop a file, paste text, or pick something from your library.", "error-file", true); return; }
-        const file = contentFile(content);
+        const files = contentFiles(content);
+        const file = files.length === 1 ? files[0] : undefined;
         const filename = contentFilename(content);
         const uploadPath = content.kind !== "library" && selectedCapability?.source.kind === "kv"
           ? selectedCapability.source.path.endsWith("/") ? `${selectedCapability.source.path}${filename}` : selectedCapability.source.path
@@ -966,18 +1139,22 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           recipient: recipientModel(kind, recipientInput.value),
           permissions: checkedValues(form, "permission") as SharePermission[],
           expiresAt: expiryIso(),
-          resource: content.kind === "library" ? content.resource : { kind: "exact", path: uploadPath },
+          resource: content.kind === "library"
+            ? content.resource
+            : content.kind === "files"
+              ? { kind: "prefix", path: "selected-files/" }
+              : { kind: "exact", path: uploadPath },
           linkFormat: format.value as ShareLinkFormat,
           encryption: encryption.checked,
-          encryptionAcknowledged: warning.checked,
+          encryptionAcknowledged: false,
           ...(delivery.value.length > 0 ? { deliveryEmail: delivery.value } : {}),
         };
         const model = validateComposerModel(modelInput);
         projectCapabilities(model);
         submit.disabled = true; setStatus(status, "Creating your link", "Encrypting in your browser. No email is being sent.", "encrypting");
-        created = options.createShare === undefined ? await defaultCreate(file, model, options) : await options.createShare({ file, model });
+        created = options.createShare === undefined ? await defaultCreate(files, model, options) : await options.createShare({ file, files, model });
         if (options.persistShare !== undefined) {
-          const save = async (): Promise<void> => options.persistShare!({ share: created!, model, file });
+          const save = async (): Promise<void> => options.persistShare!({ share: created!, model, file, files });
           try {
             await save();
           } catch {
@@ -991,7 +1168,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
             return;
           }
         }
-        progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryLabel.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
+        progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
         status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your private link is ready"), el(doc, "span", "sender-status-detail", "Saved to your shares. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";

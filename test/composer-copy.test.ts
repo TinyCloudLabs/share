@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { copySelectedSource } from "../src/share/composer.js";
+import { copySelectedSource, uploadSelectedFiles } from "../src/share/composer.js";
 import type { ShareTinyCloud } from "../src/share/openkey-session.js";
 
 interface StoredEntry {
@@ -74,5 +74,32 @@ describe("copySelectedSource (share byte-for-byte copy)", () => {
   it("does not substitute an unrelated path when the requested source is missing", async () => {
     const { tinycloud } = fakeTinyCloud({});
     await expect(copySelectedSource(tinycloud, "share", "library/missing.md", "exact", "shares/abc/missing.md")).rejects.toThrow();
+  });
+});
+
+describe("uploadSelectedFiles", () => {
+  it("stores every selected file as a distinct direct child of the delegated prefix", async () => {
+    const { tinycloud, store } = fakeTinyCloud({});
+    await uploadSelectedFiles(tinycloud, "share", "shares/folder-id", "prefix", [
+      new File([new Uint8Array([1, 2, 3])], "one.bin", { type: "application/octet-stream" }),
+      new File(["two"], "two.txt", { type: "text/plain" }),
+    ]);
+
+    expect([...store.keys()].sort()).toEqual(["shares/folder-id/one.bin", "shares/folder-id/two.txt"]);
+    expect(store.get("shares/folder-id/one.bin")?.data).toEqual(new Uint8Array([1, 2, 3]));
+    expect(Array.from(store.get("shares/folder-id/two.txt")?.data ?? [])).toEqual(Array.from(new TextEncoder().encode("two")));
+    expect(store.get("shares/folder-id/two.txt")?.contentType).toBe("text/plain");
+  });
+
+  it("keeps one-file uploads exact and refuses a multi-file exact overwrite", async () => {
+    const { tinycloud, store } = fakeTinyCloud({});
+    await uploadSelectedFiles(tinycloud, "share", "shares/exact/one.txt", "exact", [new File(["one"], "one.txt")]);
+    expect([...store.keys()]).toEqual(["shares/exact/one.txt"]);
+
+    await expect(uploadSelectedFiles(tinycloud, "share", "shares/exact/collision.txt", "exact", [
+      new File(["a"], "a.txt"),
+      new File(["b"], "b.txt"),
+    ])).rejects.toThrow();
+    expect(store.has("shares/exact/collision.txt")).toBe(false);
   });
 });

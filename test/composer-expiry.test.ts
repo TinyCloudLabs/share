@@ -207,6 +207,12 @@ function setValue(control: HTMLInputElement | HTMLSelectElement, value: string, 
   control.dispatchEvent(new Event(eventName, { bubbles: true }));
 }
 
+function chooseExpiry(root: HTMLElement, value: string): void {
+  const input = root.querySelector<HTMLInputElement>(`input[name=expiry][value="${value}"]`)!;
+  input.checked = true;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function chooseRecipient(root: HTMLElement, kind: "exactEmail" | "emailDomain"): void {
   const radio = root.querySelector<HTMLInputElement>(`input[name=recipient][value=${kind}]`)!;
   radio.checked = true;
@@ -216,6 +222,12 @@ function chooseRecipient(root: HTMLElement, kind: "exactEmail" | "emailDomain"):
 function attachFile(root: HTMLElement, file: File): void {
   const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
   Object.defineProperty(input, "files", { configurable: true, value: [file] });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function attachFiles(root: HTMLElement, files: readonly File[]): void {
+  const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+  Object.defineProperty(input, "files", { configurable: true, value: files });
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
@@ -278,7 +290,7 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     chooseRecipient(root, "emailDomain");
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "example.com", "input");
     setValue(root.querySelector<HTMLInputElement>("input[name=delivery-email]")!, "reader@example.com", "input");
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "24h", "change");
+    chooseExpiry(root, "24h");
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
     submit(root);
 
@@ -315,7 +327,7 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "example.com", "input");
     setValue(root.querySelector<HTMLInputElement>("input[name=delivery-email]")!, "reader@example.com", "input");
     // The sender asks for 30 days; the capability only allows 6 hours.
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "30d", "change");
+    chooseExpiry(root, "30d");
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
     submit(root);
 
@@ -381,7 +393,7 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
 
     chooseRecipient(root, "exactEmail");
     setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
-    setValue(root.querySelector<HTMLSelectElement>("select[name=expiry]")!, "24h", "change");
+    chooseExpiry(root, "24h");
     // A self-contained link keeps the registry (and its fetch) out of the test.
     setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
     attachFile(root, new File([new Uint8Array([1, 2, 3, 4])], "notes.txt", { type: "text/plain" }));
@@ -394,12 +406,34 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     // The owner delegation is minted for exactly the chosen lifetime...
     expect(ownerDelegationInputs).toHaveLength(1);
     expect(ownerDelegationInputs[0]!.expiresAt).toEqual(new Date(EXPIRY_24H));
+    const expectedDecryption = {
+      networkId: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
+      action: "tinycloud.encryption/decrypt",
+    };
+    expect(ownerDelegationInputs[0]!.permissions).toEqual([
+      {
+        service: "tinycloud.kv",
+        path: expect.stringMatching(/^shares\/[^/]+\/notes\.txt$/),
+        actions: ["tinycloud.kv/get", "tinycloud.kv/metadata"],
+      },
+      {
+        service: "tinycloud.encryption",
+        path: expectedDecryption.networkId,
+        actions: [expectedDecryption.action],
+      },
+    ]);
+    expect(ownerDelegationInputs[0]).not.toHaveProperty("path");
+    expect(ownerDelegationInputs[0]).not.toHaveProperty("actions");
+    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("network.create");
+    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("*");
     // ...the canonical owner policy carries it...
     expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
     expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.owner.canonicalPolicies[0]!.decryption).toEqual(expectedDecryption);
     // ...and so does the policy-enforcement delegation.
     expect(hoisted.owner.enforcementInputs).toHaveLength(1);
     expect(hoisted.owner.enforcementInputs[0]!.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.owner.enforcementInputs[0]!.decryption).toEqual(expectedDecryption);
     // A hardcoded 7-day lifetime would land here.
     expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).not.toBe("2030-08-03T00:00:00.000Z");
     expect(ownerDelegationInputs[0]!.expiresAt).not.toEqual(new Date("2030-08-03T00:00:00.000Z"));
@@ -430,10 +464,86 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(parsed.expiry).toBe(EXPIRY_24H);
     expect(parsed.signature.signerDid).toBe(hoisted.shareKeyDid);
     expect(parsed.signature.algorithm).toBe("Ed25519");
+    const ownerAuthority = envelope.ownerAuthority as Record<string, unknown>;
+    const outerEnvelope = ownerAuthority.outerEnvelope as Record<string, unknown>;
+    expect(outerEnvelope.decryption).toEqual(expectedDecryption);
     // The signature covers exactly the unsigned envelope, so stripping it must
     // leave something the unsigned schema accepts. That is the pair of parses
     // the fixed code performs, checked against the bytes that actually shipped.
     const { signature: _signature, ...withoutSignature } = envelope;
     expect(unsignedShareEnvelopeV2Schema.safeParse(withoutSignature).success).toBe(true);
+  });
+
+  it("uploads every selected file beneath one delegated prefix with inferred read and list access", async () => {
+    const ownerDelegationInputs: Record<string, unknown>[] = [];
+    const writes: Array<{ readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }> = [];
+    const tinycloud = {
+      spaceId: "space-1",
+      did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
+      createOwnerDelegation: async (input: Record<string, unknown>) => {
+        ownerDelegationInputs.push(input);
+        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
+      },
+      registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
+      kvForSpace: () => ({
+        list: async () => ({ ok: true, data: { keys: [], truncated: false } }),
+        put: async (path: string, bytes: Uint8Array, options?: { contentType?: string }) => {
+          writes.push({ path, bytes, ...(options?.contentType === undefined ? {} : { contentType: options.contentType }) });
+          return { ok: true };
+        },
+      }),
+    } as unknown as ShareTinyCloud;
+    const root = document.createElement("div");
+    document.body.append(root);
+    const persisted: { readonly share: ComposerShareResult; readonly model: ShareComposerModel }[] = [];
+
+    mountShareComposer(root, {
+      openKeyAddress: "0x1234567890abcdef",
+      origin: "https://share.tinycloud.xyz",
+      onBack: () => undefined,
+      session: {} as OpenKeyShareSession,
+      tinycloud,
+      loadCapabilities: async () => [],
+      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    chooseRecipient(root, "exactEmail");
+    setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
+    setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
+    attachFiles(root, [
+      new File([new Uint8Array([1, 2, 3])], "one.bin", { type: "application/octet-stream" }),
+      new File(["two"], "two.txt", { type: "text/plain" }),
+    ]);
+    submit(root);
+
+    expect(await settle(root)).toBe("created");
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.model.resource.kind).toBe("prefix");
+    expect(persisted[0]!.model.permissions).toEqual(["read", "list"]);
+
+    expect(ownerDelegationInputs).toHaveLength(1);
+    const permissions = ownerDelegationInputs[0]!.permissions as Array<Record<string, unknown>>;
+    expect(permissions[0]!.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
+    const delegatedPath = permissions[0]!.path as string;
+    expect(delegatedPath).toMatch(/^shares\/[^/]+\/$/);
+    expect(permissions[1]).toEqual({
+      service: "tinycloud.encryption",
+      path: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
+      actions: ["tinycloud.encryption/decrypt"],
+    });
+    expect(JSON.stringify(permissions)).not.toContain("network.create");
+    expect(JSON.stringify(permissions)).not.toContain("*");
+
+    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
+    const policy = hoisted.owner.canonicalPolicies[0]!;
+    expect(policy.resource).toEqual({ kind: "prefix", path: delegatedPath.slice(0, -1) });
+    expect(policy.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
+    expect(writes.map((write) => write.path).sort()).toEqual([
+      `${delegatedPath}one.bin`,
+      `${delegatedPath}two.txt`,
+    ]);
+    expect(Array.from(writes.find((write) => write.path.endsWith("/one.bin"))?.bytes ?? [])).toEqual([1, 2, 3]);
+    expect(Array.from(writes.find((write) => write.path.endsWith("/two.txt"))?.bytes ?? [])).toEqual(Array.from(new TextEncoder().encode("two")));
   });
 });
