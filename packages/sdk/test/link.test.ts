@@ -149,8 +149,17 @@ const authoritativePolicy = {
   policyEnforcementBytes: String(scope.authorityMaterial?.policyEnforcementBytes),
 };
 
-function request(overrides: Partial<CreateShareLinkInput> = {}): CreateShareLinkInput {
-  return {
+// Not `Partial<CreateShareLinkInput>`: under `exactOptionalPropertyTypes` that
+// forbids an explicit `undefined`, and cases below deliberately pass
+// `undefined` to prove `createShareLink` rejects a missing required field
+// before it does any network work. Only explicit `undefined` is widened here —
+// every other property keeps its exact type.
+type RequestOverrides = { [K in keyof CreateShareLinkInput]?: CreateShareLinkInput[K] | undefined };
+
+function request(overrides: RequestOverrides = {}): CreateShareLinkInput {
+  // `defaults` is annotated, so the happy-path fixture stays fully type-checked
+  // — a typo or a drifted field here is still a compile error.
+  const defaults: CreateShareLinkInput = {
     email: "Alice+Notes@EXAMPLE.COM",
     source,
     scope,
@@ -159,8 +168,12 @@ function request(overrides: Partial<CreateShareLinkInput> = {}): CreateShareLink
     now: "2026-07-20T12:00:00.000Z",
     adapters: { uploadEnvelope: vi.fn(async () => undefined) },
     policy: authoritativePolicy,
-    ...overrides,
   };
+  // The assertion is confined to the merge, which is the one place the
+  // unsoundness genuinely lives: an override may blank a required field on
+  // purpose, and the resulting value is then not a valid `CreateShareLinkInput`
+  // — which is exactly what those tests assert `createShareLink` detects.
+  return { ...defaults, ...overrides } as CreateShareLinkInput;
 }
 
 function authorityScopeWithParentMutation(mutate: (parent: Record<string, unknown>) => void): SenderScope {
@@ -373,7 +386,9 @@ describe("link-generation SDK lane", () => {
       const policy = { ...authoritativePolicy } as Record<string, unknown>;
       delete policy[field];
       const uploadEnvelope = vi.fn(async () => undefined);
-      await expect(createShareLink(request({ policy: policy as CreateShareLinkInput["policy"], adapters: { uploadEnvelope } }))).rejects.toThrow();
+      // `policy` is a deliberately malformed `Record` with one required field
+      // deleted, so the cast has to route through `unknown`.
+      await expect(createShareLink(request({ policy: policy as unknown as CreateShareLinkInput["policy"], adapters: { uploadEnvelope } }))).rejects.toThrow();
       expect(uploadEnvelope).not.toHaveBeenCalled();
     }
   });

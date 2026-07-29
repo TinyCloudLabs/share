@@ -15,7 +15,14 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "functions", "test", "vite.config.ts", "vitest.config.ts"],
+  // `packages` covers every workspace package's `src` AND `test`. Before
+  // TC-371 this list omitted it, so `packages/*/src` was reached only
+  // incidentally — as an import of something under `src`/`test` — and
+  // `packages/*/test` was reached not at all, despite `npm test` executing it.
+  // Naming the directory rather than the five packages keeps a new package
+  // covered on the day it is created; the sibling `packages/*/tsconfig.json`
+  // files exist for `npm run -w <pkg> typecheck` and are not what CI runs.
+  "include": ["src", "functions", "packages", "test", "vite.config.ts", "vitest.config.ts"],
   // `test/e2e-prod` is a nested, non-workspace package: its `playwright`
   // dependency is installed by `npm install` inside that directory, never by
   // the root `npm ci`, so type-checking it from here can only fail in CI.
