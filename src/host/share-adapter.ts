@@ -390,8 +390,16 @@ const SESSION_CAPABILITY_LIMIT = 32;
  */
 const SIGNER_CACHE_LIMIT = 4096;
 const SIGNER_CACHE_TTL_MS = 10 * 60 * 1000;
-/** Bounds concurrently live sessions so unlimited sign-ins cannot grow the process. */
+/**
+ * Bounds concurrently live sessions. A per-principal cap keeps one wallet's
+ * repeated sign-ins from evicting anyone else, and the global cap evicts the
+ * oldest rather than refusing to authenticate, so bounding memory never
+ * becomes a login outage.
+ */
 const SESSION_LIMIT = 4096;
+const SESSIONS_PER_PRINCIPAL = 8;
+/** Bounds outstanding sign-in challenges against an unauthenticated flood. */
+const OPENKEY_NONCE_LIMIT = 4096;
 
 /**
  * Ownership is the *complete* normalized DID, chain id included: a session on
@@ -731,11 +739,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     for (const [key, budget] of linkOnlyUploads) if (now - budget.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS) linkOnlyUploads.delete(key);
     for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
   };
-  const issueSession = (token: string, session: ShareSession): boolean => {
+  const issueSession = (token: string, session: ShareSession): void => {
     sweep();
-    if (sessions.size >= SESSION_LIMIT) return false;
+    // Map iteration is insertion order, so these drop the oldest first.
+    const owned = [...sessions].filter(([, candidate]) => candidate.userId === session.userId).map(([value]) => value);
+    while (owned.length >= SESSIONS_PER_PRINCIPAL) sessions.delete(owned.shift()!);
+    while (sessions.size >= SESSION_LIMIT) sessions.delete(sessions.keys().next().value as string);
     sessions.set(token, session);
-    return true;
   };
   /**
    * Readiness is a property of the sender *path*, not of one pre-issued key.
@@ -812,6 +822,9 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
         const now = Date.now();
         for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+        // The TTL bounds age, not request volume: cap outstanding challenges so
+        // an unauthenticated flood cannot grow the process.
+        while (openKeyNonces.size >= OPENKEY_NONCE_LIMIT) openKeyNonces.delete(openKeyNonces.keys().next().value as string);
         const nonce = toBase64Url(randomBytes(24));
         const expiresAt = now + OPENKEY_NONCE_TTL_MS;
         openKeyNonces.set(nonce, expiresAt);
@@ -838,7 +851,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // A valid OpenKey proof is an authentication ceremony, not a sender
         // capability lookup. Sender capabilities are checked only when a
         // sender operation selects one below.
-        if (!issueSession(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000, capabilities: new Map() })) return response(503, { error: { code: "session_capacity" } });
+        issueSession(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
         return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
@@ -848,7 +861,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const user = authUsers.find((candidate) => candidate.username === username);
         if (user === undefined || !(await verifyPassword(password, user.passwordHash))) return generic(401);
         const token = toBase64Url(randomBytes(32));
-        if (!issueSession(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000, capabilities: new Map() })) return response(503, { error: { code: "session_capacity" } });
+        issueSession(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
         return response(200, { status: "authenticated" }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/logout" && request.method === "POST") {
@@ -977,13 +990,17 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           return response(400, { error: { code: "upload_retention_invalid" } });
         }
         const uploadKey = sessionCookie(request) ?? session.userId;
-        const prior = linkOnlyUploads.get(uploadKey);
+        // The registry authorization binds to the session token, but the upload
+        // budget is keyed by the verified principal: signing out and back in
+        // must not reset the allowance or accrue a fresh accounting entry.
+        const budgetKey = session.userId;
+        const prior = linkOnlyUploads.get(budgetKey);
         const budget = prior === undefined || now - prior.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS
           ? { count: 0, windowStartedAt: now }
           : prior;
         if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
         budget.count += 1;
-        linkOnlyUploads.set(uploadKey, budget);
+        linkOnlyUploads.set(budgetKey, budget);
         const registryResponse = await proxyRegistry(
           request,
           options.registryOrigin,
@@ -1159,7 +1176,7 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     ? undefined
     : bundle.sender.senderPrivateKey.length > 0
       ? staticSenderIdentitySource(bundle.sender.senderPrivateKey)
-      : derivedSenderIdentitySource(loadSenderRootSeed(env, bundle.environment, { root: bindingRoot, ...(bindingPath === undefined ? {} : { reserved: [bindingPath] }) }));
+      : derivedSenderIdentitySource(loadSenderRootSeed(env, bundle.environment, { root: bindingRoot, reserved: [bindingPath, env.SHARE_REGISTRY_UPLOAD_KEY_PATH].filter((value): value is string => value !== undefined) }));
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;

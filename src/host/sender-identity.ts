@@ -11,8 +11,21 @@ function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toSt
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 /** Domain-separated derivation for per-principal sender signing keys. */
 const DERIVATION_SALT = "xyz.tinycloud.share/sender-identity/v1";
-/** Session principals are DIDs or configured user ids; nothing else derives a key. */
-const PRINCIPAL = /^[A-Za-z0-9:._-]+$/;
+/**
+ * Session principals are wallet DIDs or configured `SHARE_AUTH_USERS_JSON`
+ * user ids, which are arbitrary operator-chosen strings. The derivation only
+ * needs exact-byte distinctness, so the rule is bounded length and no control
+ * characters — narrower than that would authenticate a legacy user and then
+ * refuse to derive its sender identity.
+ */
+function derivablePrincipal(value: string): boolean {
+  if (value.length === 0 || value.length > 256) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
 /** Bounds the derived-identity cache so unlimited sign-ins cannot grow the process. */
 const IDENTITY_CACHE_LIMIT = 4096;
 const DERIVATION_INFO = "xyz.tinycloud.share/sender-identity/principal/v1\0";
@@ -72,7 +85,7 @@ export function derivedSenderIdentitySource(seed: Uint8Array): SenderIdentitySou
   const cache = new Map<string, SenderIdentity>();
   return {
     forPrincipal(principal: string): SenderIdentity {
-      if (typeof principal !== "string" || principal.length === 0 || principal.length > 256 || !PRINCIPAL.test(principal)) {
+      if (typeof principal !== "string" || !derivablePrincipal(principal)) {
         throw new Error("sender identity principal is invalid");
       }
       const cached = cache.get(principal);
@@ -111,7 +124,7 @@ export function loadSenderRootSeed(env: NodeJS.ProcessEnv, environment: "product
     ? assertCanonicalPath(configured, "sender root key path")
     : assertInsideRoot(configured, options.root, "sender root key path");
   for (const other of options.reserved ?? []) {
-    if (path === resolve(other) || path === `${resolve(other)}.lock`) throw new Error("sender root key path must not collide with the binding journal or its lock");
+    if (path === resolve(other) || path === `${resolve(other)}.lock`) throw new Error("sender root key path must not collide with other Share key or journal material");
   }
   const readExisting = (): Uint8Array => {
     assertSecurePath(path, false);

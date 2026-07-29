@@ -45,8 +45,11 @@ if (senderEnabled) {
     throw new Error("SHARE_SENDER_ROOT_KEY_PATH must be a normalized descendant of /var/lib/tinycloud/share");
   }
   // The binding store also owns `<path>.lock`, whose stale-lock reaper would
-  // otherwise unlink the seed and silently rotate every wallet identity.
-  if (resolve(senderRootKeyPath) === resolve(bindingStorePath) || resolve(senderRootKeyPath) === `${resolve(bindingStorePath)}.lock`) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with the binding journal or its lock");
+  // otherwise remove the seed and silently rotate every wallet identity, and
+  // the registry upload key is a separate secret with its own lifecycle.
+  for (const other of [bindingStorePath, process.env.SHARE_REGISTRY_UPLOAD_KEY_PATH ?? "/var/lib/tinycloud/share/registry-upload.key"]) {
+    if (resolve(senderRootKeyPath) === resolve(other) || resolve(senderRootKeyPath) === `${resolve(other)}.lock`) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with other Share key or journal material");
+  }
 }
 if (senderEnabled) {
   const root = "/var/lib/tinycloud/share";

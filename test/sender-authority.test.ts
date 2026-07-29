@@ -197,8 +197,8 @@ describe("wallet-rooted sender authority (TC-348)", () => {
       // Confined to the verified persistent root and never colliding with the
       // binding journal or the lock its stale-lock reaper unlinks.
       expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: `${tmpdir()}/elsewhere.key` }, "production", { root })).toThrow(/descendant of the configured persistent Share volume/);
-      for (const reservedPath of [`${root}/bindings.ndjson`, `${root}/bindings.ndjson.lock`]) {
-        expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: reservedPath }, "production", { root, reserved: [`${root}/bindings.ndjson`] })).toThrow(/must not collide/);
+      for (const reservedPath of [`${root}/bindings.ndjson`, `${root}/bindings.ndjson.lock`, `${root}/registry-upload.key`]) {
+        expect(() => loadSenderRootSeed({ SHARE_SENDER_ROOT_KEY_PATH: reservedPath }, "production", { root, reserved: [`${root}/bindings.ndjson`, `${root}/registry-upload.key`] })).toThrow(/must not collide/);
       }
 
       // A symlinked seed is refused rather than followed.
@@ -431,5 +431,33 @@ describe("wallet-rooted sender authority (TC-348)", () => {
     expect(() => source.forPrincipal("")).toThrow(/principal is invalid/);
     expect(() => derivedSenderIdentitySource(new Uint8Array(16))).toThrow(/32 bytes/);
     expect(() => staticSenderIdentitySource("not-a-key")).toThrow(/invalid/);
+    // Legacy SHARE_AUTH_USERS_JSON ids are arbitrary operator strings: anything
+    // the host authenticates must also derive an identity.
+    for (const legacy of ["alice@example.com", "sender-1", "Ops Team #2", "did:pkh:eip155:1:0x1111111111111111111111111111111111111111"]) {
+      expect(source.forPrincipal(legacy).did).toMatch(/^did:key:z/);
+    }
+    expect(source.forPrincipal("alice@example.com").did).not.toBe(source.forPrincipal("alice@example.org").did);
+    expect(() => source.forPrincipal("a".repeat(257))).toThrow(/principal is invalid/);
+    expect(() => source.forPrincipal(`bad${String.fromCharCode(10)}principal`)).toThrow(/principal is invalid/);
+  });
+
+  it("bounds live sessions per principal without ever refusing to authenticate", async () => {
+    const { host, dispose } = await productionHost();
+    try {
+      const cookies: string[] = [];
+      for (let index = 0; index < 10; index += 1) cookies.push(await signIn(host, ALICE));
+      // The newest sessions stay usable and no sign-in was refused.
+      for (const cookie of cookies.slice(-8)) {
+        expect((await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie } }))).status).toBe(200);
+      }
+      // The oldest were evicted rather than kept forever.
+      for (const cookie of cookies.slice(0, 2)) {
+        expect((await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie } }))).status).toBe(401);
+      }
+      // One wallet's churn does not evict another wallet's session.
+      const bobCookie = await signIn(host, BOB);
+      for (let index = 0; index < 10; index += 1) await signIn(host, ALICE);
+      expect((await host.handler(new Request(`${SHARE_ORIGIN}/api/share/capabilities`, { headers: { origin: SHARE_ORIGIN, cookie: bobCookie } }))).status).toBe(200);
+    } finally { await dispose(); }
   });
 });
