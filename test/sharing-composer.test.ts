@@ -57,6 +57,8 @@ const EXPECTED_SENDER_COPY = {
   plaintext: "Link-only and single-person shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  signIn: "Sign-in could not be completed. Try again.",
+  signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 } as const;
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
