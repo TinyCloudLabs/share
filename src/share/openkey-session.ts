@@ -93,6 +93,54 @@ function writePermissions(capabilities: readonly UploadCapability[]): Permission
   return permissions;
 }
 
+/*
+ * TC-344. The owner-policy path (`createOwnerPolicyShare`) is the only path
+ * the shipped app takes for an addressed share, and it works entirely inside
+ * the sender's *own* space: it lists that space to build the library picker,
+ * reads a picked object or folder, and writes the shared copy under
+ * `shares/<shareId>/`.
+ *
+ * Until now the manifest's only KV grants came from `writePermissions`, i.e.
+ * were derived from server-issued sender capabilities. No authenticated path
+ * issues those any more — `docs/share-host-deployment.md` records that the
+ * wallet-rooted capability-issuance path is not yet a supported shape, and
+ * `GET /api/share/capabilities` consequently returns `[]` for every session.
+ * So the session was built with no KV authority at all and every addressed
+ * share failed the instant it touched storage.
+ *
+ * This grant is the sender's own wallet-rooted authority over the sender's
+ * own space. It delegates nothing to the Share host and adds no server-held
+ * material; the Share host never sees this session's capabilities.
+ *
+ * The read half is deliberately "" (whole service on this space) and never
+ * "/": the recap encoder emits no path component at all for "" — `path: ""`
+ * is mapped to `None` in `SessionConfig::into_message`, so the resource is
+ * `<space>/kv`, and `ResourceId::extends` treats a `None` base as covering
+ * every requested path. "/" instead encodes as `<space>/kv//`, a byte prefix
+ * that real paths (which never start with "/") can never extend, so it
+ * silently grants nothing. The read half must stay whole-space: the library
+ * picker lists the space and the sender picks an arbitrary key out of it.
+ *
+ * TC-351. The write half is not whole-space. Every write this app makes on
+ * this grant lands under `shares/` — the composer builds its resource path as
+ * `shares/<shareId>` or `shares/<shareId>/<filename>`, and its only
+ * pass-through branch is gated on `startsWith("shares/")`. `shares/` encodes
+ * as `<space>/kv/shares/`; because that base ends in "/", `extends` reduces to
+ * a plain byte-prefix test, so it covers `shares/<shareId>` and
+ * `shares/<shareId>/<name>` alike. Sender-history writes are not affected:
+ * they go through `tinycloud.vault`, which resolves to its own
+ * `vault/sender-history/v1/entries/` KV grant in `historyPermissions`.
+ *
+ * `del` is absent on purpose. Nothing here deletes, and this grant is the
+ * sender's whole space.
+ */
+export function ownerSpacePermissions(): PermissionEntry[] {
+  return [
+    { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "list", "metadata"] },
+    { service: "tinycloud.kv", space: "share", path: "shares/", actions: ["put"] },
+  ];
+}
+
 function historyPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v1/entries/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
 }
@@ -119,6 +167,7 @@ export async function createTinyCloudClient(
     defaults: false,
     includePublicSpace: false,
     permissions: [
+      ...ownerSpacePermissions(),
       ...writePermissions(capabilities),
       ...historyPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
