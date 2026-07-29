@@ -1,4 +1,4 @@
-import { createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions } from "./link-only.js";
+import { armManualCopy, createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
 import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-sdk";
 import { canonicalDigest } from "../email-share/protocol.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
@@ -838,12 +838,22 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";
         const done = el(doc, "button", "button button-secondary composer-done", "Done") as HTMLButtonElement; done.type = "button";
         const copyStatus = el(doc, "span", "copy-status"); copyStatus.setAttribute("role", "status");
+        // TC-334: this used to put the complete URL in a read-only `<input>.value`
+        // — the same exposure §6.3 forbids and TC-297 removed from
+        // `copyWithFallback`. `armManualCopy` keeps a decoy selected instead and
+        // substitutes the real value inside the sender's own copy event, so the
+        // affordance survives without the URL ever entering the DOM.
+        let armed: ManualCopyHandle | undefined;
         const showManualCopy = (): void => {
+          if (armed !== undefined) return;
           const manual = el(doc, "div", "manual-copy-field");
-          const label = el(doc, "label", "result-link-label", "Clipboard access was denied. Copy the link from this temporary field, then close it.");
-          const field = el(doc, "input", "field-input") as HTMLInputElement; field.type = "text"; field.readOnly = true; field.autocomplete = "off"; field.value = created?.url ?? ""; label.append(field);
-          const close = el(doc, "button", "button button-secondary", "Close temporary field"); close.type = "button"; close.addEventListener("click", () => { field.value = ""; manual.remove(); copy.focus(); });
-          manual.append(label, close); status.append(manual); field.focus(); field.select();
+          // The denial itself is already announced through `copyStatus`.
+          const help = el(doc, "p", "manual-copy-help", "The link is selected below — press Ctrl+C, or ⌘C on a Mac, to copy it. For your safety it is never shown on screen.");
+          const handle = armManualCopy(created?.url ?? "", () => { copy.textContent = "Copied"; copyStatus.textContent = "Link copied."; });
+          armed = handle;
+          const close = el(doc, "button", "button button-secondary", "Dismiss") as HTMLButtonElement; close.type = "button";
+          close.addEventListener("click", () => { handle.disarm(); manual.remove(); armed = undefined; copy.focus(); });
+          manual.append(help, handle.target, close); status.append(manual); handle.select();
         };
         copy.addEventListener("click", () => { void copyText(created?.url ?? "").then(() => { copy.textContent = "Copied"; copyStatus.textContent = "Link copied to clipboard."; }).catch(() => { copyStatus.textContent = "Clipboard access was denied."; showManualCopy(); }); });
         another.addEventListener("click", () => mountShareComposer(root, options));

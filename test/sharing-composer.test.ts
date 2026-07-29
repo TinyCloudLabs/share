@@ -475,3 +475,108 @@ describe("share composer sender failures", () => {
     expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toContain("must belong to the shared domain");
   });
 });
+
+/**
+ * TC-334. The clipboard-denied fallback must not put the complete share URL in
+ * the DOM: §6.3 of the UX critique forbids rendering it "as text, an `<a
+ * href>`, or any DOM attribute", and TC-297 already removed exactly this
+ * exposure from `copyWithFallback`.
+ */
+describe("share composer clipboard-denied fallback (TC-334)", () => {
+  const SHARE_URL = "https://share.tinycloud.xyz/s/bafyexample#k=SECRET-KEY-MATERIAL";
+
+  /** Every way a string can be read back out of the live tree. */
+  function exposures(root: HTMLElement, value: string): readonly string[] {
+    const found: string[] = [];
+    for (const node of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
+      if ((node.textContent ?? "").includes(value)) found.push(`${node.nodeName}.textContent`);
+      for (const attribute of Array.from(node.attributes ?? [])) {
+        if (attribute.value.includes(value)) found.push(`${node.nodeName}[${attribute.name}]`);
+      }
+      const fieldValue = (node as Partial<HTMLInputElement>).value;
+      if (typeof fieldValue === "string" && fieldValue.includes(value)) found.push(`${node.nodeName}.value`);
+    }
+    return found;
+  }
+
+  async function denyClipboard(): Promise<HTMLElement> {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, {
+      ...baseOptions(),
+      loadCapabilities: async () => [],
+      createShare: async ({ model }) => ({ url: SHARE_URL, cid: "bafyexample", format: model.linkFormat }),
+      copyText: async () => { throw new Error("clipboard unavailable"); },
+    });
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    root.querySelector<HTMLButtonElement>(".result-actions .button-primary")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return root;
+  }
+
+  it("never writes the complete share URL into the DOM when the clipboard is denied", async () => {
+    const root = await denyClipboard();
+    expect(root.querySelector(".manual-copy-field")).not.toBeNull();
+    expect(exposures(root, SHARE_URL)).toEqual([]);
+    expect(exposures(document.body, SHARE_URL)).toEqual([]);
+  });
+
+  it("still lets the sender copy with their own keystroke, substituting the URL in the copy event", async () => {
+    const root = await denyClipboard();
+    const target = root.querySelector<HTMLElement>(".manual-copy-target")!;
+    expect(target.textContent).not.toContain("tinycloud");
+
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+
+    expect(payload).toBe(SHARE_URL);
+    expect(event.defaultPrevented).toBe(true);
+    expect(root.querySelector(".copy-status")?.textContent).toBe("Link copied.");
+  });
+
+  it("does not hijack an unrelated copy elsewhere on the page", async () => {
+    const root = await denyClipboard();
+    const elsewhere = document.createElement("p"); elsewhere.textContent = "unrelated"; document.body.append(elsewhere);
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(elsewhere);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+
+    expect(payload).toBeUndefined();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("disarms the interception once the sender dismisses the affordance", async () => {
+    const root = await denyClipboard();
+    const target = root.querySelector<HTMLElement>(".manual-copy-target")!;
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    root.querySelector<HTMLButtonElement>(".manual-copy-field .button-secondary")!.click();
+    expect(root.querySelector(".manual-copy-field")).toBeNull();
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+    expect(payload).toBeUndefined();
+  });
+});

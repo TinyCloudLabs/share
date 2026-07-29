@@ -54,13 +54,13 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
     redirect: "error",
     referrerPolicy: "no-referrer",
   });
-  if (!nonceResponse.ok) throw new Error("TinyCloud could not start the OpenKey sign-in.");
+  if (!nonceResponse.ok) throw fail("signInService", "share sign-in nonce endpoint rejected the request");
   const challenge = await nonceResponse.json() as NonceResponse;
-  if (!/^[A-Za-z0-9_-]{32}$/.test(challenge.nonce) || !Number.isFinite(Date.parse(challenge.expiresAt))) throw new Error("TinyCloud returned an invalid sign-in challenge.");
+  if (!/^[A-Za-z0-9_-]{32}$/.test(challenge.nonce) || !Number.isFinite(Date.parse(challenge.expiresAt))) throw fail("signInService", "share sign-in challenge is malformed");
   const issuedAt = new Date().toISOString();
   const message = authenticationMessage(auth.address, challenge.nonce, issuedAt);
   const signed = await openkey.signMessage({ message, keyId: auth.keyId });
-  if (signed.address.toLowerCase() !== auth.address.toLowerCase()) throw new Error("OpenKey signed with a different account.");
+  if (signed.address.toLowerCase() !== auth.address.toLowerCase()) throw fail("signIn", "OpenKey signed with a different account");
   const verified = await fetch("/api/share/auth/openkey", {
     method: "POST",
     credentials: "include",
@@ -70,7 +70,9 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify({ address: auth.address, signature: signed.signature, message, nonce: challenge.nonce, issuedAt }),
   });
-  if (!verified.ok) throw new Error("This OpenKey does not control an authorized TinyCloud sharing space.");
+  // TC-335: this used to be rendered verbatim into the sign-in wall, banned
+  // vocabulary and all. The kind is what the wall reads; the detail is for logs.
+  if (!verified.ok) throw fail("account", "OpenKey account does not control an authorized sharing space");
   onStatus("OpenKey verified.");
   return { address: auth.address, openkey, auth };
 }
@@ -136,7 +138,7 @@ export async function createTinyCloudClient(
     sessionStorageKeyPrefix: "tinycloud-share",
     manifest,
   });
-  onStatus("Connecting your encrypted TinyCloud space…");
+  onStatus("Connecting to your encrypted TinyCloud…");
   await tinycloud.signIn();
   // The Web SDK's manifest bootstrap reads the canonical account space even
   // when the application data space is named explicitly. Host that owned

@@ -2,6 +2,7 @@ import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./op
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import { contentFilename, contentMediaType, contentMode } from "./composer-model.js";
+import { authFailureMessage } from "./sender-failure.js";
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
@@ -47,9 +48,15 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
       .then(({ authenticateWithOpenKey }) => authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
       .catch((error) => {
-        const message = error instanceof Error ? error.message : (typeof error === "string" ? error : ((error as { readonly message?: unknown } | null)?.message ?? "OpenKey sign-in could not be completed."));
+        // TC-335: `error.message` used to be rendered here verbatim. Everything
+        // that can reject on this path speaks protocol vocabulary —
+        // openkey-session's own throws (now tagged), the OpenKey SDK, and the
+        // whole Web SDK bootstrap, which reaches this same catch through
+        // `proceed`. The raw text is a developer detail; only the classified
+        // message reaches the wall.
+        console.debug("tinycloud share: sign-in failed", error);
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
-        status.textContent = typeof message === "string" ? message : "OpenKey sign-in could not be completed.";
+        status.textContent = authFailureMessage(error);
         submit.disabled = false;
       });
   });
