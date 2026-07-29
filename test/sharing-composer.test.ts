@@ -18,6 +18,49 @@ import { createDevRegistry } from "@tinycloud/share-registry/dev-server";
 import { LinkOnlyShareError } from "../src/share/link-only.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-failure.js";
 
+/**
+ * The approved sender-facing copy, as LITERALS (TC-305).
+ *
+ * Assertions below compare against these, never against `SENDER_FAILURE.x`.
+ * Reading the expectation out of the table under test makes a copy regression
+ * undetectable by construction: rewrite the shipped sentence and the assertion
+ * rewrites itself with it. The one test that touches the exported table
+ * compares the whole of it to this record, so a deliberate copy change lands in
+ * exactly one place and has to be re-approved there.
+ */
+const EXPECTED_SENDER_COPY = {
+  session: "Your session expired. Reload and sign in again.",
+  content: "Pick the file you want to share.",
+  format: "This share can't be made self-contained. Use the short link instead.",
+  account: "Your account isn't set up for sharing yet. Contact support.",
+  source: "You don't have access to that file any more. Pick another one.",
+  rejected: "We couldn't create that link. Try again, or pick a different file.",
+  permission: "You can't grant more access than you have on that file.",
+  internal: "Something went wrong creating this link. Nothing was shared. Try again.",
+  save: "We couldn't save this link. Nothing was shared. Try again.",
+  delivery: "Add the email address this should be sent to.",
+  storage: "Your TinyCloud storage isn't ready yet. Reload and try again.",
+  filename: "That file name can't be shared. Rename it and try again.",
+  folder: "Pick the folder from your library to share it.",
+  actions: "Choose at least one thing they can do.",
+  upload: "Upload didn't go through. Nothing was shared — try again.",
+  libraryCopy: "We couldn't copy that from your library. Try again.",
+  libraryOpen: "We couldn't open that folder in your library. Try again.",
+  offline: "Couldn't reach TinyCloud. Check your connection and try again.",
+  emptyFile: "Choose a non-empty document.",
+  fileTooLarge: "Choose a document no larger than 100 MB.",
+  recipientDomain: "Enter a valid ASCII email domain.",
+  recipientEmail: "Enter one exact email address.",
+  expiry: "Choose when the link should expire.",
+  deliveryRecipient: "The delivery address must match the person you're sharing with.",
+  deliveryDomain: "The delivery address must belong to the shared domain.",
+  plaintext: "Link-only and single-person shares must stay encrypted.",
+  acknowledgment: "Tick the box to confirm you understand.",
+  linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  signIn: "Sign-in could not be completed. Try again.",
+  signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
+} as const;
+
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 function readFileBytes(file: File): Promise<Uint8Array> {
@@ -209,7 +252,18 @@ describe("share composer content picker", () => {
 });
 
 describe("share composer access controls", () => {
-  it("asks for the expiry it used to hardcode, and states the consequence", async () => {
+  /**
+   * FORM-LEVEL ONLY (TC-305). This injects `createShare`, so the last assertion
+   * proves the control reaches `model.expiresAt` — and nothing about the
+   * lifetime of the link production actually mints. That is precisely how
+   * TC-298 survived: choose 24 hours, get 7 days, suite green. Left in place
+   * for the control and copy it checks, renamed so it cannot be mistaken for
+   * expiry coverage. The real creation paths are covered without injection by
+   * "uses the selected 24-hour expiry in the real link-only creation path"
+   * below, and by test/composer-expiry.test.ts for the addressed and
+   * owner-policy paths.
+   */
+  it("offers the expiry control it used to hardcode, states the consequence, and carries the choice into the model", async () => {
     const root = document.createElement("div"); document.body.append(root);
     let selected: ShareComposerModel | undefined;
     mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
@@ -385,8 +439,8 @@ describe("share composer access controls", () => {
     // The guard must reach the sender as its own actionable copy. It is the one
     // validateComposerModel throw that the sender-failure table could silently
     // swallow into the generic "internal" message if it were left untagged.
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(SENDER_FAILURE.linkOnlyActions);
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).not.toBe(SENDER_FAILURE.internal);
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(EXPECTED_SENDER_COPY.linkOnlyActions);
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).not.toBe(EXPECTED_SENDER_COPY.internal);
   });
 });
 
@@ -440,9 +494,9 @@ describe("share composer sender failures", () => {
   });
 
   it("classifies untagged, link-only, network, and model-validation failures", () => {
-    expect(senderFailureMessage(new Error("delegation envelope CID mismatch"))).toBe(SENDER_FAILURE.internal);
+    expect(senderFailureMessage(new Error("delegation envelope CID mismatch"))).toBe(EXPECTED_SENDER_COPY.internal);
     expect(senderFailureMessage(new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file."))).toBe("Choose a .txt, .md, or .markdown file.");
-    expect(senderFailureMessage(new TypeError("Failed to fetch"))).toBe(SENDER_FAILURE.offline);
+    expect(senderFailureMessage(new TypeError("Failed to fetch"))).toBe(EXPECTED_SENDER_COPY.offline);
 
     let validationError: unknown;
     try {
@@ -454,6 +508,19 @@ describe("share composer sender failures", () => {
       validationError = error;
     }
     expect(senderFailureMessage(validationError)).toBe("The delivery address must belong to the shared domain.");
+  });
+
+  /**
+   * The one place the shipped table is compared to the approved copy (TC-305).
+   * Every other assertion in this file uses the literals, so a copy edit — or a
+   * new failure kind appearing with unswept protocol vocabulary in it — lands
+   * here and has to be made deliberately.
+   */
+  it("ships exactly the approved sender copy, and no string a sender can read carries protocol vocabulary", () => {
+    expect(SENDER_FAILURE).toEqual(EXPECTED_SENDER_COPY);
+    for (const message of Object.values(EXPECTED_SENDER_COPY)) {
+      expect(message).not.toMatch(/capabilit|delegat|\bDID\b|bearer|policy|envelope|\bCID\b|\bKV\b|registry|matcher|attenuat|nonce|credential|invocation/i);
+    }
   });
 
   it("keeps tagged form validation copy in the composer status", async () => {
@@ -473,5 +540,110 @@ describe("share composer sender failures", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toContain("must belong to the shared domain");
+  });
+});
+
+/**
+ * TC-334. The clipboard-denied fallback must not put the complete share URL in
+ * the DOM: §6.3 of the UX critique forbids rendering it "as text, an `<a
+ * href>`, or any DOM attribute", and TC-297 already removed exactly this
+ * exposure from `copyWithFallback`.
+ */
+describe("share composer clipboard-denied fallback (TC-334)", () => {
+  const SHARE_URL = "https://share.tinycloud.xyz/s/bafyexample#k=SECRET-KEY-MATERIAL";
+
+  /** Every way a string can be read back out of the live tree. */
+  function exposures(root: HTMLElement, value: string): readonly string[] {
+    const found: string[] = [];
+    for (const node of [root, ...root.querySelectorAll<HTMLElement>("*")]) {
+      if ((node.textContent ?? "").includes(value)) found.push(`${node.nodeName}.textContent`);
+      for (const attribute of Array.from(node.attributes ?? [])) {
+        if (attribute.value.includes(value)) found.push(`${node.nodeName}[${attribute.name}]`);
+      }
+      const fieldValue = (node as Partial<HTMLInputElement>).value;
+      if (typeof fieldValue === "string" && fieldValue.includes(value)) found.push(`${node.nodeName}.value`);
+    }
+    return found;
+  }
+
+  async function denyClipboard(): Promise<HTMLElement> {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, {
+      ...baseOptions(),
+      loadCapabilities: async () => [],
+      createShare: async ({ model }) => ({ url: SHARE_URL, cid: "bafyexample", format: model.linkFormat }),
+      copyText: async () => { throw new Error("clipboard unavailable"); },
+    });
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    root.querySelector<HTMLButtonElement>(".result-actions .button-primary")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return root;
+  }
+
+  it("never writes the complete share URL into the DOM when the clipboard is denied", async () => {
+    const root = await denyClipboard();
+    expect(root.querySelector(".manual-copy-field")).not.toBeNull();
+    expect(exposures(root, SHARE_URL)).toEqual([]);
+    expect(exposures(document.body, SHARE_URL)).toEqual([]);
+  });
+
+  it("still lets the sender copy with their own keystroke, substituting the URL in the copy event", async () => {
+    const root = await denyClipboard();
+    const target = root.querySelector<HTMLElement>(".manual-copy-target")!;
+    expect(target.textContent).not.toContain("tinycloud");
+
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+
+    expect(payload).toBe(SHARE_URL);
+    expect(event.defaultPrevented).toBe(true);
+    expect(root.querySelector(".copy-status")?.textContent).toBe("Link copied.");
+  });
+
+  it("does not hijack an unrelated copy elsewhere on the page", async () => {
+    const root = await denyClipboard();
+    const elsewhere = document.createElement("p"); elsewhere.textContent = "unrelated"; document.body.append(elsewhere);
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(elsewhere);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+
+    expect(payload).toBeUndefined();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("disarms the interception once the sender dismisses the affordance", async () => {
+    const root = await denyClipboard();
+    const target = root.querySelector<HTMLElement>(".manual-copy-target")!;
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    root.querySelector<HTMLButtonElement>(".manual-copy-field .button-secondary")!.click();
+    expect(root.querySelector(".manual-copy-field")).toBeNull();
+
+    let payload: string | undefined;
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { setData: (_type: string, data: string) => { payload = data; } } });
+    document.dispatchEvent(event);
+    expect(payload).toBeUndefined();
   });
 });

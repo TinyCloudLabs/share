@@ -10,7 +10,7 @@
 import { Buffer } from "node:buffer";
 import { webcrypto } from "node:crypto";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom 26 ships its own SubtleCrypto, which rejects ArrayBuffers from the
 // module realm — the shipped digest helper cannot run under it. Use node's.
@@ -37,6 +37,28 @@ vi.mock("@tinycloud/share-sdk", () => ({
 }));
 
 const { RECIPIENT_FAILURE, mountPolicyV2Viewer, recipientFailureKind } = await import("../src/viewer/policy-v2.js");
+
+/**
+ * The approved recipient-facing copy, written out as LITERALS (TC-305).
+ *
+ * These strings are deliberately not read from the implementation. Asserting
+ * `status.textContent === EXPECTED_FAILURE_COPY.denied` is a tautology: editing the
+ * shipped string edits the expectation with it, so a copy regression — jargon
+ * creeping back in, the wrong message shown for a state, an unactionable
+ * sentence — can never turn this suite red. Every assertion below compares
+ * against the sentence a recipient is supposed to read. Exactly one test
+ * compares the exported table to these literals; that is the single place a
+ * deliberate copy change has to be re-approved.
+ */
+const EXPECTED_FAILURE_COPY = {
+  denied: "You don't have access to this. Ask the sender to share it again.",
+  conflict: "Someone else saved a change first. Reload to see the latest version.",
+  malformed: "Something went wrong opening this. Ask the sender for a fresh link.",
+  offline: "You appear to be offline. Reconnect and try again.",
+} as const;
+
+const EXPECTED_COPY_SUCCEEDED = "Link copied.";
+const EXPECTED_COPY_FAILED = "Copy failed. Allow clipboard access and try again.";
 
 const RAW_MESSAGES = [
   "native get denied",
@@ -106,7 +128,7 @@ describe("addressed viewer — recipient never sees raw exception text (P0-3)", 
     stub.respond = async () => new Response("{}", { status: 403 });
     const root = mount(["read"]);
     clickOpen(root);
-    await vi.waitFor(() => expect(status(root).textContent).toBe(RECIPIENT_FAILURE.denied));
+    await vi.waitFor(() => expect(status(root).textContent).toBe(EXPECTED_FAILURE_COPY.denied));
     for (const raw of RAW_MESSAGES) expect(root.textContent).not.toContain(raw);
     expect(status(root).getAttribute("role")).toBe("alert");
   });
@@ -115,7 +137,7 @@ describe("addressed viewer — recipient never sees raw exception text (P0-3)", 
     stub.respond = async () => new Response("not json", { status: 200, headers: { "content-type": "text/plain" } });
     const root = mount(["read"]);
     clickOpen(root);
-    await vi.waitFor(() => expect(status(root).textContent).toBe(RECIPIENT_FAILURE.malformed));
+    await vi.waitFor(() => expect(status(root).textContent).toBe(EXPECTED_FAILURE_COPY.malformed));
     expect(root.textContent).not.toContain("media type is invalid");
   });
 
@@ -123,12 +145,12 @@ describe("addressed viewer — recipient never sees raw exception text (P0-3)", 
     stub.respond = async () => new Response("{}", { status: 412 });
     const conflict = mount(["read"]);
     clickOpen(conflict);
-    await vi.waitFor(() => expect(status(conflict).textContent).toBe(RECIPIENT_FAILURE.conflict));
+    await vi.waitFor(() => expect(status(conflict).textContent).toBe(EXPECTED_FAILURE_COPY.conflict));
 
     stub.establish = async () => { throw new TypeError("Failed to fetch"); };
     const offline = mount(["read"]);
     clickOpen(offline);
-    await vi.waitFor(() => expect(status(offline).textContent).toBe(RECIPIENT_FAILURE.offline));
+    await vi.waitFor(() => expect(status(offline).textContent).toBe(EXPECTED_FAILURE_COPY.offline));
   });
 
   it("classifies untagged failures conservatively and keeps the four messages jargon-free", () => {
@@ -138,6 +160,16 @@ describe("addressed viewer — recipient never sees raw exception text (P0-3)", 
     for (const message of Object.values(RECIPIENT_FAILURE)) {
       expect(message).not.toMatch(/native|delegation|capability|policy|envelope|KV|CID|registry/i);
     }
+  });
+
+  /**
+   * The one place the shipped table is compared to the approved copy. Every
+   * other assertion in this file uses the literals, so a copy edit lands here
+   * and has to be made deliberately — instead of silently rewriting every
+   * expectation at once (TC-305).
+   */
+  it("ships exactly the approved four messages and no fifth failure state", () => {
+    expect(RECIPIENT_FAILURE).toEqual(EXPECTED_FAILURE_COPY);
   });
 });
 
@@ -189,21 +221,56 @@ describe("addressed viewer — folder → file is no longer a trap (P0-5)", () =
     expect(document.activeElement).toBe(back);
   });
 
-  it("pushes one history entry per navigation and restores the folder on Back", async () => {
+  /**
+   * TC-305: this used to hand-dispatch `new PopStateEvent("popstate", { state })`
+   * with a state object the test authored itself, which proves only that the
+   * listener reacts to a shape the test invented. It never exercised the
+   * `recordView` -> browser-history-stack -> Back round trip, so a viewer that
+   * pushed no entry, pushed the wrong state key, or pushed two entries per
+   * navigation would still have passed. jsdom implements a real session history,
+   * so drive `window.history.back()` and let the browser deliver the state the
+   * viewer actually recorded.
+   */
+  it("pushes one history entry per navigation and restores the folder on real browser Back", async () => {
+    const before = window.history.length;
     const root = mount(["read", "list"]);
     clickOpen(root);
     await vi.waitFor(() => expect(folderButtons(root)).toHaveLength(2));
+    // The root folder is recorded with replaceState, so it costs no entry.
+    expect(window.history.length).toBe(before);
 
     folderButtons(root).find((button) => button.dataset.path === "notes/plan.md")!.click();
     await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".viewer-file-panel")?.hidden).toBe(false));
     expect((window.history.state as { tinycloudShareView?: { kind?: string } } | null)?.tinycloudShareView?.kind).toBe("file");
+    // Exactly one entry per navigation: Back must not need pressing twice.
+    expect(window.history.length).toBe(before + 1);
     // the recorded position never puts anything about the share in the URL
     expect(window.location.href).not.toContain("plan.md");
     expect(window.location.hash).toBe("");
 
-    window.dispatchEvent(new PopStateEvent("popstate", { state: { tinycloudShareView: { kind: "folder", path: "notes/" } } }));
+    window.history.back();
     await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".viewer-file-panel")?.hidden).toBe(true));
     expect(folderButtons(root)).toHaveLength(2);
+    expect((window.history.state as { tinycloudShareView?: { kind?: string; path?: string } } | null)?.tinycloudShareView).toEqual({ kind: "folder", path: "notes/" });
+  });
+
+  it("restores the folder the recipient came from after browsing two levels deep", async () => {
+    const root = mount(["read", "list"]);
+    clickOpen(root);
+    await vi.waitFor(() => expect(folderButtons(root)).toHaveLength(2));
+
+    folderButtons(root).find((button) => button.dataset.path === "notes/sub/")!.click();
+    await vi.waitFor(() => expect(folderButtons(root).map((button) => button.dataset.path)).toEqual(["notes/sub/deep.md"]));
+    folderButtons(root)[0]!.click();
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".viewer-file-panel")?.hidden).toBe(false));
+
+    window.history.back();
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".viewer-file-panel")?.hidden).toBe(true));
+    await vi.waitFor(() => expect(folderButtons(root).map((button) => button.dataset.path)).toEqual(["notes/sub/deep.md"]));
+
+    window.history.back();
+    await vi.waitFor(() => expect(folderButtons(root)).toHaveLength(2));
+    expect(folderButtons(root).map((button) => button.dataset.path)).toEqual(["notes/plan.md", "notes/sub/"]);
   });
 
   it("opens a subfolder instead of printing a stub", async () => {
@@ -223,23 +290,169 @@ describe("addressed viewer — folder → file is no longer a trap (P0-5)", () =
 
     stub.respond = async () => new Response("{}", { status: 403 });
     folderButtons(root).find((button) => button.dataset.path === "notes/sub/")!.click();
-    await vi.waitFor(() => expect(status(root).textContent).toBe(RECIPIENT_FAILURE.denied));
+    await vi.waitFor(() => expect(status(root).textContent).toBe(EXPECTED_FAILURE_COPY.denied));
     expect(folderButtons(root)).toHaveLength(2);
   });
 });
 
-describe("addressed viewer — Copy link", () => {
+/**
+ * TC-305 / TC-297. The previous version of this section installed a
+ * `navigator.clipboard.writeText` that always RESOLVED, so the assertion only
+ * ever covered the branch that hands the URL straight to the Clipboard API and
+ * touches no DOM at all. The leak TC-297 had to fix lived in the *other*
+ * branch — the `execCommand("copy")` fallback taken when the Clipboard API is
+ * missing or refuses — which attached a `<textarea>` holding the complete share
+ * URL (key fragment included) to `document.body`. Forcing the happy path is why
+ * a security test could sit at this exact spot and miss it.
+ *
+ * These tests take the denied path deliberately, and observe the document
+ * *while* the synchronous copy is in flight, since that is the only window in
+ * which the leaked node was ever attached.
+ */
+describe("addressed viewer — Copy link takes the Clipboard-API-denied path", () => {
   const SECRET = `https://share.tinycloud.xyz/s/bafkreisharecid#k=${"A".repeat(43)}`;
 
-  it("copies the complete in-memory URL and never renders it", async () => {
+  /**
+   * Every way a live document can hold a string: serialized markup (text nodes
+   * and attributes), attribute values, and the `value` PROPERTY of form
+   * controls — which never appears in `outerHTML` and is exactly where the
+   * TC-297 leak lived.
+   */
+  function exposuresOf(secret: string, when: string): string[] {
+    const found: string[] = [];
+    if (document.documentElement.outerHTML.includes(secret)) found.push(`${when}: serialized document`);
+    for (const node of Array.from(document.querySelectorAll("*"))) {
+      for (const attribute of Array.from(node.attributes)) {
+        if (attribute.value.includes(secret)) found.push(`${when}: <${node.localName} ${attribute.name}>`);
+      }
+      const live = (node as unknown as { readonly value?: unknown }).value;
+      if (typeof live === "string" && live.includes(secret)) found.push(`${when}: <${node.localName}>.value`);
+    }
+    if ((document.documentElement.textContent ?? "").includes(secret)) found.push(`${when}: text node`);
+    return found;
+  }
+
+  /**
+   * jsdom implements neither the Clipboard API nor `execCommand`, so the
+   * fallback's engine call has to be supplied. The stand-in does only what a
+   * real engine does: observe the document at the moment of the copy, deliver
+   * whatever a `copy` handler substitutes, and report success.
+   */
+  function installEngineClipboard(succeeds: boolean): { readonly delivered: string[]; readonly exposures: string[]; readonly execCommand: ReturnType<typeof vi.fn> } {
+    const delivered: string[] = [];
+    const exposures: string[] = [];
+    const execCommand = vi.fn((command: string) => {
+      if (command !== "copy") return false;
+      exposures.push(...exposuresOf(SECRET, "during the copy"));
+      if (!succeeds) return false;
+      const event = new Event("copy", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: { setData: (type: string, value: string) => { if (type === "text/plain") delivered.push(value); } },
+      });
+      document.dispatchEvent(event);
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, writable: true, value: execCommand });
+    return { delivered, exposures, execCommand };
+  }
+
+  function denyClipboardApi(): ReturnType<typeof vi.fn> {
+    const writeText = vi.fn(async () => { throw new DOMException("Write permission denied.", "NotAllowedError"); });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    return writeText;
+  }
+
+  function copyButton(root: HTMLElement): HTMLButtonElement {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Copy link")!;
+  }
+
+  function copyStatus(root: HTMLElement): HTMLElement {
+    return root.querySelector<HTMLElement>(".viewer-policy-copy-status")!;
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+    Reflect.deleteProperty(document, "execCommand");
+  });
+
+  it("still delivers the complete URL when the Clipboard API refuses, without ever attaching it to the document", async () => {
+    const writeText = denyClipboardApi();
+    const engine = installEngineClipboard(true);
+
+    const root = mount(["read"], SECRET);
+    expect(copyButton(root).disabled).toBe(false);
+    copyButton(root).click();
+
+    await vi.waitFor(() => expect(copyStatus(root).textContent).toBe(EXPECTED_COPY_SUCCEEDED));
+    // The denied branch is the one under test — prove it was actually taken.
+    expect(writeText).toHaveBeenCalledWith(SECRET);
+    expect(engine.execCommand).toHaveBeenCalledWith("copy");
+    // The recipient's clipboard receives the whole secret, fragment included.
+    expect(engine.delivered).toEqual([SECRET]);
+    // …and the document never held it, at any point.
+    expect(engine.exposures).toEqual([]);
+    expect(exposuresOf(SECRET, "after the copy")).toEqual([]);
+  });
+
+  it("takes the same DOM-free path when the Clipboard API is absent entirely", async () => {
+    const engine = installEngineClipboard(true);
+
+    const root = mount(["read"], SECRET);
+    copyButton(root).click();
+
+    await vi.waitFor(() => expect(engine.delivered).toEqual([SECRET]));
+    expect(engine.exposures).toEqual([]);
+    expect(exposuresOf(SECRET, "after the copy")).toEqual([]);
+    expect(copyStatus(root).textContent).toBe(EXPECTED_COPY_SUCCEEDED);
+  });
+
+  it("leaves no decoy or selection behind after the fallback runs", async () => {
+    const engine = installEngineClipboard(true);
+    const root = mount(["read"], SECRET);
+    // Whatever the recipient had selected before pressing Copy must come back.
+    const marker = document.createElement("p");
+    marker.textContent = "recipient selection";
+    document.body.append(marker);
+    const range = document.createRange();
+    range.selectNodeContents(marker);
+    document.getSelection()?.removeAllRanges();
+    document.getSelection()?.addRange(range);
+    const before = document.body.childElementCount;
+
+    copyButton(root).click();
+    await vi.waitFor(() => expect(engine.delivered).toEqual([SECRET]));
+
+    expect(document.body.childElementCount).toBe(before); // the decoy node is gone
+    expect(document.getSelection()?.rangeCount).toBe(1);
+    expect(document.getSelection()?.getRangeAt(0).startContainer).toBe(marker);
+  });
+
+  it("tells the recipient what to do when both clipboard paths refuse, and still leaks nothing", async () => {
+    denyClipboardApi();
+    const engine = installEngineClipboard(false);
+
+    const root = mount(["read"], SECRET);
+    copyButton(root).click();
+
+    await vi.waitFor(() => expect(copyStatus(root).textContent).toBe(EXPECTED_COPY_FAILED));
+    expect(copyStatus(root).getAttribute("role")).toBe("alert");
+    expect(engine.delivered).toEqual([]);
+    expect(engine.exposures).toEqual([]);
+    expect(exposuresOf(SECRET, "after the failed copy")).toEqual([]);
+  });
+
+  it("copies through the Clipboard API when it is available, and still never renders the URL", async () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const root = mount(["read"], SECRET);
-    const copy = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "Copy link")!;
-    expect(copy.disabled).toBe(false);
-    copy.click();
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(SECRET));
-    expect(root.textContent).not.toContain(SECRET);
-    expect(Array.from(root.querySelectorAll("*")).every((node) => !Array.from(node.attributes).some((attribute) => attribute.value.includes(SECRET)))).toBe(true);
+    copyButton(root).click();
+    await vi.waitFor(() => expect(copyStatus(root).textContent).toBe(EXPECTED_COPY_SUCCEEDED));
+    expect(writeText).toHaveBeenCalledWith(SECRET);
+    expect(exposuresOf(SECRET, "after the copy")).toEqual([]);
+  });
+
+  it("offers no copy control at all when the viewer was never given the launch URL", () => {
+    const root = mount(["read"]);
+    expect(copyButton(root).disabled).toBe(true);
   });
 });
