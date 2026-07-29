@@ -26,7 +26,18 @@ const senderEnabled = process.env.SHARE_SENDER_ENABLED === "true";
 if (senderEnabled && !value.nodeEnabled) throw new Error("SHARE_SENDER_ENABLED=true requires an enabled trusted node");
 if (process.env.SHARE_SENDER_PRIVATE_KEY !== undefined || process.env.SHARE_SENDER_CAPABILITY_JSON !== undefined || process.env.SHARE_SENDER_CAPABILITIES_JSON !== undefined) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
-  try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
+  // Mirrors the host's rule: a principal the deployment will authenticate must
+  // also be able to derive a sender identity (bounded, control-character-free,
+  // and free of unpaired surrogates, which would collide under UTF-8).
+  const derivable = (value) => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 256) return false;
+    for (const character of value) {
+      const code = character.codePointAt(0) ?? 0;
+      if (code < 0x20 || code === 0x7f || (code >= 0xd800 && code <= 0xdfff)) return false;
+    }
+    return true;
+  };
+  try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$") || !derivable(user.userId))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users with derivable principals"); }
 }
 const provenanceRaw = process.env.SHARE_RELEASE_PROVENANCE;
 if (typeof provenanceRaw !== "string" || provenanceRaw.length === 0) throw new Error("SHARE_RELEASE_PROVENANCE is required for deploy configuration");
