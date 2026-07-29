@@ -112,12 +112,33 @@ function writePermissions(capabilities: readonly UploadCapability[]): Permission
  * own space. It delegates nothing to the Share host and adds no server-held
  * material; the Share host never sees this session's capabilities.
  *
- * The path is deliberately "" (whole service on this space) and never "/":
- * the recap encoder joins "/" as `<space>/<service>//`, which the node's
- * byte-prefix resource matching can never extend.
+ * The read half is deliberately "" (whole service on this space) and never
+ * "/": the recap encoder emits no path component at all for "" — `path: ""`
+ * is mapped to `None` in `SessionConfig::into_message`, so the resource is
+ * `<space>/kv`, and `ResourceId::extends` treats a `None` base as covering
+ * every requested path. "/" instead encodes as `<space>/kv//`, a byte prefix
+ * that real paths (which never start with "/") can never extend, so it
+ * silently grants nothing. The read half must stay whole-space: the library
+ * picker lists the space and the sender picks an arbitrary key out of it.
+ *
+ * TC-351. The write half is not whole-space. Every write this app makes on
+ * this grant lands under `shares/` — the composer builds its resource path as
+ * `shares/<shareId>` or `shares/<shareId>/<filename>`, and its only
+ * pass-through branch is gated on `startsWith("shares/")`. `shares/` encodes
+ * as `<space>/kv/shares/`; because that base ends in "/", `extends` reduces to
+ * a plain byte-prefix test, so it covers `shares/<shareId>` and
+ * `shares/<shareId>/<name>` alike. Sender-history writes are not affected:
+ * they go through `tinycloud.vault`, which resolves to its own
+ * `vault/sender-history/v1/entries/` KV grant in `historyPermissions`.
+ *
+ * `del` is absent on purpose. Nothing here deletes, and this grant is the
+ * sender's whole space.
  */
 export function ownerSpacePermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.kv", space: "share", path: "", actions: ["get", "put", "list", "metadata"] }];
+  return [
+    { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "list", "metadata"] },
+    { service: "tinycloud.kv", space: "share", path: "shares/", actions: ["put"] },
+  ];
 }
 
 function historyPermissions(): PermissionEntry[] {

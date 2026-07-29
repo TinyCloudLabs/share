@@ -69,16 +69,84 @@ describe("owner library entries", () => {
   });
 });
 
+/*
+ * The recap encoder and the node's resource matcher, transcribed from the
+ * versions this app signs against.
+ *
+ * `encodeRecapResource` mirrors `SessionConfig::into_message`
+ * (tinycloud-sdk-wasm/src/session.rs) composed with `impl Display for
+ * ResourceId` (tinycloud-auth/src/resource.rs): an empty path becomes `None`
+ * and so emits no path component at all; any other path is appended verbatim
+ * after a "/". `extendsGrant` mirrors `ResourceId::extends` in that same
+ * resource.rs — a granted path of `None` covers everything, a granted path
+ * ending in "/" is a plain byte prefix, and any other granted path matches
+ * only on a segment boundary.
+ */
+function encodeRecapResource(space: string, service: string, path: string): string {
+  return path.length === 0 ? `${space}/${service}` : `${space}/${service}/${path}`;
+}
+
+function extendsGrant(grant: string, requested: string): boolean {
+  const base = grant.split("/").slice(2).join("/");
+  const self = requested.split("/").slice(2).join("/");
+  if (grant.split("/").length === 2) return true;
+  if (!self.startsWith(base)) return false;
+  return base.endsWith("/") || self.length === base.length || self[base.length] === "/";
+}
+
 describe("owner space permissions", () => {
-  it("grants the sender read, list and write authority over the sender's own space", () => {
+  it("reads the whole space but writes only under shares/", () => {
     expect(ownerSpacePermissions()).toEqual([
-      { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "put", "list", "metadata"] },
+      { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "list", "metadata"] },
+      { service: "tinycloud.kv", space: "share", path: "shares/", actions: ["put"] },
     ]);
   });
 
-  it("uses the empty whole-service path, never '/'", () => {
+  it("never grants put outside shares/", () => {
+    // TC-351. Every write this app makes on this grant is under `shares/`:
+    // `shares/<shareId>` for a folder share, `shares/<shareId>/<filename>` for
+    // an object, and a pass-through branch already gated on `shares/`. If
+    // `put` is ever re-widened back to the whole space this fails.
+    for (const entry of ownerSpacePermissions()) {
+      if (entry.actions.includes("put")) expect(entry.path).toBe("shares/");
+    }
+  });
+
+  it("never grants del at all", () => {
+    for (const entry of ownerSpacePermissions()) expect(entry.actions).not.toContain("del");
+  });
+
+  it("uses the empty whole-service path for reads, never '/'", () => {
     // A "/" path is encoded by the recap encoder as `<space>/<service>//`,
     // which the node's byte-prefix resource matching can never extend.
     for (const entry of ownerSpacePermissions()) expect(entry.path).not.toBe("/");
+    const read = ownerSpacePermissions().find((entry) => entry.actions.includes("get"))!;
+    expect(read.path).toBe("");
+    expect(encodeRecapResource("space", "kv", read.path)).toBe("space/kv");
+    expect(encodeRecapResource("space", "kv", "/")).toBe("space/kv//");
+  });
+
+  it("encodes the write grant as a prefix the write targets actually extend", () => {
+    const write = ownerSpacePermissions().find((entry) => entry.actions.includes("put"))!;
+    const grant = encodeRecapResource("space", "kv", write.path);
+    expect(grant).toBe("space/kv/shares/");
+    // The three write targets the owner path produces.
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc"))).toBe(true);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc/report.md"))).toBe(true);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc/nested/report.md"))).toBe(true);
+    // And what it deliberately no longer reaches.
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "report.md"))).toBe(false);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "vault/sender-history/v1/entries/1/2"))).toBe(false);
+    // "/" would have encoded to a prefix nothing can extend.
+    expect(extendsGrant(encodeRecapResource("space", "kv", "/"), encodeRecapResource("space", "kv", "shares/abc"))).toBe(false);
+  });
+
+  it("keeps the read grant covering every key the picker can offer", () => {
+    const read = ownerSpacePermissions().find((entry) => entry.actions.includes("get"))!;
+    const grant = encodeRecapResource("space", "kv", read.path);
+    for (const key of ["report.md", "shares/abc/report.md", "a/b/c"]) {
+      expect(extendsGrant(grant, encodeRecapResource("space", "kv", key))).toBe(true);
+    }
+    expect(read.actions).toEqual(["get", "list", "metadata"]);
   });
 });
