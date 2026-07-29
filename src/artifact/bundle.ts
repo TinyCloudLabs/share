@@ -62,7 +62,7 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const ENCODED_PATH_ALIAS = /%2f|%5c|%2e/i;
 const UNSAFE_CLASSIC_SCRIPT =
-  /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts|sendBeacon|open)\s*\(|\b(?:window|document|globalThis|self|top|parent|opener)\s*(?:\.\s*location|\[\s*["']location["']\s*\])|\blocation\s*(?:=|\.assign\s*\(|\.replace\s*\(|\.reload\s*\()|\bimport\s*\(|\beval\s*\(|\bWebAssembly\b/;
+  /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts|sendBeacon|open)\s*\(|\b(?:window|document|globalThis|self|top|parent|opener)\s*(?:\.\s*location|\[\s*["']location["']\s*\])|\blocation\s*(?:=|(?:\.\s*|\[\s*["'])href(?:["']\s*\])?|\.assign\s*\(|\.replace\s*\(|\.reload\s*\()|\bimport\s*\(|\beval\s*\(|\bWebAssembly\b/;
 
 function fail(kind: ArtifactFailureKind, detail: string): never {
   throw new ArtifactBundleError(kind, detail);
@@ -173,6 +173,12 @@ function decodeText(file: ArtifactFile): string {
 
 function assertClassicScript(source: string): void {
   if (UNSAFE_CLASSIC_SCRIPT.test(source)) fail("unsupported", "artifact script uses a blocked browser capability");
+}
+
+function wrapMediaCss(source: string, media: string | null): string {
+  const value = media?.trim() ?? "";
+  if (value.length === 0 || value.toLowerCase() === "all") return source;
+  return `@media ${value} {\n${source}\n}`;
 }
 
 function rejectEventHandlerAttributes(doc: Document): void {
@@ -301,7 +307,7 @@ async function transformHtml(path: string, file: ArtifactFile, context: Transfor
     if (relation.includes("stylesheet")) {
       const { file: stylesheet, resolved } = requiredFile(context, path, link.getAttribute("href") ?? "");
       const style = doc.createElement("style");
-      style.textContent = await transformCss(decodeText(stylesheet), resolved.path, { ...context, cssStack: [resolved.path] });
+      style.textContent = wrapMediaCss(await transformCss(decodeText(stylesheet), resolved.path, { ...context, cssStack: [resolved.path] }), link.getAttribute("media"));
       link.replaceWith(style);
       continue;
     }
@@ -313,7 +319,7 @@ async function transformHtml(path: string, file: ArtifactFile, context: Transfor
     link.remove();
   }
   for (const style of inlineStyles) {
-    style.textContent = await transformCss(style.textContent ?? "", path, { ...context, cssStack: [] });
+    style.textContent = wrapMediaCss(await transformCss(style.textContent ?? "", path, { ...context, cssStack: [] }), style.getAttribute("media"));
   }
   for (const element of doc.querySelectorAll<HTMLElement>("[style]")) {
     const value = element.getAttribute("style");

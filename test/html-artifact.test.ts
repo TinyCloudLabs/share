@@ -94,11 +94,22 @@ describe("HTML artifact resource preparation", () => {
     expect(artifact.pages["pages/about.html"]).toContain("Team");
   });
 
+  it("preserves stylesheet media guards when inlining linked and embedded CSS", async () => {
+    const artifact = await prepareHtmlArtifact([
+      utf8("index.html", '<link rel="stylesheet" href="css/a.css" media="print"><style media="screen">body{color:teal}</style>'),
+      utf8("css/a.css", "body{background:papayawhip}"),
+    ]);
+    const page = artifact.pages["index.html"]!;
+    expect(page).toContain("@media print");
+    expect(page).toContain("@media screen");
+  });
+
   it.each([
     [fixtureFiles().filter((file) => file.path !== "assets/cloud.svg"), "missing"],
     [[utf8("index.html", '<img src="https://tracker.example/pixel">')], "unsupported"],
     [[utf8("index.html", '<button onclick="alert(1)">Hi</button>')], "unsupported"],
     [[utf8("index.html", '<script>fetch("/private")</script>')], "unsupported"],
+    [[utf8("index.html", '<script>location.href="/private"</script>')], "unsupported"],
     [[utf8("index.html", '<script type="module">export default 1</script>')], "unsupported"],
     [[utf8("index.html", '<form action="/send"></form>')], "unsupported"],
     [[utf8("index.html", '<link rel="stylesheet" href="a.css">'), utf8("a.css", '@import "b.css";'), utf8("b.css", '@import "a.css";')], "unsupported"],
