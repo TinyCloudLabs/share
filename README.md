@@ -8,6 +8,7 @@ The UX blueprint, specs, wireframes, and spec site for **TinyCloud Sharing** (sh
 |---|---|
 | [`specs/sharing-ux-blueprint.md`](specs/sharing-ux-blueprint.md) | UX blueprint — sender flow, human-recipient flow, agent-recipient flow, link anatomy, claim protocol, decision record |
 | [`specs/sharing-viewer-and-registry.md`](specs/sharing-viewer-and-registry.md) | Viewer product (share.tinycloud.xyz) + share registry service spec |
+| [`docs/html-artifact-sharing.md`](docs/html-artifact-sharing.md) | HTML artifact bundle format, isolation model, limits, and chrome recovery |
 | [`wireframes/`](wireframes/) | 14 low-fi SVG wireframes + [`annotations.md`](wireframes/annotations.md) — the canonical, annotated source of truth |
 | `index.html`, `src/`, `public/` | The Vite spec site rendering the blueprint as a single page |
 

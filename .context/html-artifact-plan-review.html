@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TinyCloud HTML Artifact Sharing — Implementation Plan</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f8f9fb;
+      --surface: #ffffff;
+      --ink: #141923;
+      --muted: #536174;
+      --line: #cbd3df;
+      --accent: #2a56f6;
+      --accent-soft: #e9eeff;
+      --danger: #a52828;
+      --danger-soft: #fff0f0;
+      --ok: #17663a;
+      --ok-soft: #e9f7ef;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0e14;
+        --surface: #121722;
+        --ink: #f0f3f8;
+        --muted: #aeb8c8;
+        --line: #354052;
+        --accent: #88a3ff;
+        --accent-soft: #17244c;
+        --danger: #ff9494;
+        --danger-soft: #391b20;
+        --ok: #7ad49d;
+        --ok-soft: #153122;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 1rem/1.58 var(--sans); }
+    main { width: min(100% - 2rem, 72rem); margin: 0 auto; padding: 3rem 0 5rem; }
+    header { max-width: 62rem; padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
+    h1, h2, h3 { line-height: 1.18; text-wrap: balance; }
+    h1 { max-width: 18ch; margin: 0; font-size: 2.5rem; letter-spacing: -0.035em; }
+    h2 { margin: 3rem 0 1rem; font-size: 1.5rem; letter-spacing: -0.02em; }
+    h3 { margin: 1.75rem 0 0.5rem; font-size: 1.08rem; }
+    p, li { max-width: 76ch; }
+    .lede { color: var(--muted); font-size: 1.08rem; }
+    .status { display: inline-block; margin-top: 1rem; padding: 0.35rem 0.7rem; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font: 700 0.78rem/1.2 var(--mono); }
+    .callout { margin: 1.25rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+    .callout strong { color: var(--accent); }
+    .danger { border-color: var(--danger); background: var(--danger-soft); }
+    .danger strong { color: var(--danger); }
+    .ok { border-color: var(--ok); background: var(--ok-soft); }
+    .ok strong { color: var(--ok); }
+    code { font: 0.9em/1.45 var(--mono); overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--surface); }
+    th, td { padding: 0.7rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 0.86rem; }
+    ol, ul { padding-left: 1.35rem; }
+    li + li { margin-top: 0.45rem; }
+    .flow { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: stretch; margin: 1.25rem 0; }
+    .flow span { flex: 1 1 10rem; min-width: 0; padding: 0.8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .flow b { display: block; margin-bottom: 0.25rem; color: var(--accent); font: 700 0.78rem/1.2 var(--mono); }
+    .checklist li::marker { color: var(--ok); }
+    @media (max-width: 40rem) {
+      main { width: min(100% - 1.25rem, 72rem); padding-top: 2rem; }
+      h1 { font-size: 2rem; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>TinyCloud HTML artifact sharing</h1>
+    <p class="lede">Concrete implementation plan for encrypted, prefix-scoped HTML bundles rendered as full-page, opaque-origin artifacts through the existing verified sharing path.</p>
+    <span class="status">SOL REVIEWED · REVISED BEFORE IMPLEMENTATION</span>
+  </header>
+
+  <section>
+    <h2>Outcome and invariants</h2>
+    <p>An addressed sender may select or upload a canonical prefix bundle with exactly one root <code>index.html</code>. The encrypted, signed v2 envelope carries only an optional artifact discriminator. A recipient establishes the existing policy session, lists and reads only the authorized prefix, prepares the bundle locally, and sends one self-contained document to an opaque-origin frame. Existing bearer, exact-file, and ordinary folder behavior remains unchanged.</p>
+    <div class="callout danger">
+      <strong>Isolation is the feature boundary.</strong>
+      Artifact code receives no authority material and runs without <code>allow-same-origin</code>, forms, popups, downloads, top navigation, storage, parent DOM access, or network access. No compatibility requirement may loosen that boundary.
+    </div>
+    <div class="flow" role="img" aria-label="Sender selects a bundle, signed encrypted envelope marks it as HTML, recipient verifies policy authority, reads the prefix, prepares resources locally, and renders through an opaque sandbox.">
+      <span><b>1 · SENDER</b>Canonical bundle paths</span>
+      <span><b>2 · ENVELOPE</b>Optional <code>artifact: "html"</code></span>
+      <span><b>3 · AUTHORITY</b>Existing policy session</span>
+      <span><b>4 · BUNDLE</b>Bounded list/get + rewrite</span>
+      <span><b>5 · FRAME</b>Opaque origin + restrictive CSP</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sol adversarial review and required revisions</h2>
+    <p>This review challenged the initial plan before any production edit. The decisions below are incorporated into the implementation stages and acceptance tests that follow.</p>
+    <table>
+      <thead><tr><th>Challenge</th><th>Finding</th><th>Revision</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Security model</td>
+          <td><code>connect-src 'none'</code> blocks Fetch/XHR/WebSocket but does not reliably cancel a script assigning its own frame’s <code>location</code>; Chromium was tested and still began that request. The sandbox does prevent ancestor/top navigation.</td>
+          <td>Strip every declarative navigation surface; reject direct navigation APIs in classic script sources as unsupported; include <code>navigate-to 'none'</code> as defense-in-depth, and destroy the artifact frame on any unexpected load. State the residual browser limit honestly: arbitrary obfuscated self-navigation cannot be proven absent, so script support is for static classic artifacts, not hostile exfiltration-resistant computation. Top-page isolation remains unconditional.</td>
+        </tr>
+        <tr>
+          <td>Protocol compatibility</td>
+          <td>A new top-level envelope field would break strict schemas and widen every signer/binding implementation.</td>
+          <td>Use only optional encrypted v2 <code>metadata.artifact</code>. Require <code>encrypted === true</code>, prefix resource, and read+list actions when present. Keep bindings and legacy envelopes byte-for-byte unchanged.</td>
+        </tr>
+        <tr>
+          <td>KV path and resource semantics</td>
+          <td>List responses can paginate, repeat, return folder markers, contain out-of-prefix entries, or alias through normalization. Current library copying keeps only direct children.</td>
+          <td>Bound pagination and cursor uniqueness; accept exact file entries only; canonicalize relative to the established prefix; reject duplicates and every out-of-prefix entry; recursively copy all listed descendants while preserving nested names and MIME.</td>
+        </tr>
+        <tr>
+          <td>Browser sandbox</td>
+          <td>One opaque frame is enough for parent isolation, but the bridge must survive artifact document replacement and must never share an origin with artifact code.</td>
+          <td>Keep the served opaque bridge plus a second opaque <code>srcdoc</code> artifact frame. Validate both message hops. Pin HTTP <code>frame-ancestors</code> headers and add a load watchdog; never add <code>allow-same-origin</code>, <code>allow-forms</code>, <code>allow-popups</code>, downloads, or top-navigation tokens.</td>
+        </tr>
+        <tr>
+          <td>Asset resolution</td>
+          <td>Raw-text script serialization can terminate its own <code>&lt;script&gt;</code>; CSS imports can cycle; data URLs increase memory; a partial rewrite could accidentally render with missing dependencies.</td>
+          <td>Escape case-insensitive <code>&lt;/script</code> in embedded classic sources, reject async/defer/module scripts, fail on CSS cycles/depth overflow, cap render aggregate at 10 MB before base64 expansion, and prepare the complete document before creating the visible frame. Revoke/clear generated resources on destroy.</td>
+        </tr>
+        <tr>
+          <td>UX and accessibility</td>
+          <td>“Permanent” hide could trap keyboard users; a tiny visual cloud can still have an undersized hit target; status copy could expose a missing filename.</td>
+          <td>Keep a 44 px semantic button even when the glyph is smaller, add a documented keyboard restore, announce transitions, support forced colors and reduced motion, and use path-free failure copy.</td>
+        </tr>
+        <tr>
+          <td>Failure states</td>
+          <td>Silently dropping unsafe external references would produce misleading partial output.</td>
+          <td>Classify malformed, missing, unsupported, denied/offline, and limit failures before frame creation. Any required unsafe/missing resource fails the whole artifact; exception text and resource paths stay out of recipient copy.</td>
+        </tr>
+        <tr>
+          <td>Testability</td>
+          <td>jsdom does not execute sandbox documents and a mocked e2e can falsely prove only DOM assembly.</td>
+          <td>Execute exported bridge scripts against a mocked window as Mermaid tests do, then use real Chromium for classic JS, relative assets, CSP network attempts, storage/parent/top isolation, frame reload watchdog, and chrome controls.</td>
+        </tr>
+        <tr>
+          <td>Scope</td>
+          <td>Supporting arbitrary runtime-generated fetches or module graphs would require a secure virtual origin/proxy and materially widen risk.</td>
+          <td>Keep modules, dynamic imports, runtime network, workers, WebAssembly, frames, forms, and artifact-triggered downloads unsupported. Controlled in-bundle HTML navigation is the only navigation feature.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="callout ok">
+      <strong>Review verdict:</strong>
+      Proceed only with the revised, bounded static-artifact model. The parent/account boundary is strong and unconditional; the documentation must distinguish that from the narrower guarantee around arbitrary obfuscated self-navigation inside a script-capable child frame.
+    </div>
+  </section>
+
+  <section>
+    <h2>Protocol and data shape</h2>
+    <ul>
+      <li>Add one optional literal field to encrypted v2 content metadata: <code>artifact: "html"</code>. The fixed entry point is implied as <code>index.html</code>; no filename list, manifest, recipient data, URL, fragment, or authority material is added.</li>
+      <li>Keep the field absent for existing shares. Strict schemas remain additive and old signed vectors continue to parse unchanged.</li>
+      <li>For owner-policy shares, include the discriminator in the encrypted signed envelope only. Do not add it to public bindings, logging, analytics, history URLs, or authorization messages.</li>
+      <li>The signed resource remains the prefix root. The viewer derives each exact child resource by joining a canonical relative path beneath that root and invokes the existing <code>tinycloud.kv/list</code> / <code>tinycloud.kv/get</code> path.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Implementation stages</h2>
+    <h3>1. Artifact-bundle core</h3>
+    <p>Create <code>src/artifact/bundle.ts</code> as the deterministic boundary for canonical paths, artifact detection, MIME fallback, query/hash-aware lookup, aggregate limits, DOM transformation, and bounded CSS resource resolution. HTML decisions use <code>DOMParser</code>; CSS <code>url()</code> and <code>@import</code> use bounded transformations with cycle/depth checks.</p>
+    <ul>
+      <li>Canonical relative paths: NFC, forward slashes only, no empty / dot / dot-dot segments, no controls, backslashes, encoded separator/dot aliases, absolute URLs, or duplicate case-folded canonical keys.</li>
+      <li>Limits: 1,000 files listed, 100 MB authorized source ceiling, 10 MB render aggregate including encoded output, 5 MB per rendered text file, 16 CSS import levels, and 10,000 transformed references. Any limit failure aborts the whole render.</li>
+      <li>HTML transforms: stylesheets become inline styles; classic external scripts become inline classic scripts in document order; images, fonts, media, and static assets become data URLs; relative anchors to known HTML documents become controlled in-bundle navigation requests.</li>
+      <li>External URLs, protocol-relative URLs, unsafe schemes, <code>&lt;base&gt;</code>, forms, meta refresh, module/async/defer scripts, direct script navigation APIs, workers, nested frames, and unsupported active embeds fail closed. External classic sources are embedded with case-insensitive closing-script escaping.</li>
+    </ul>
+
+    <h3>2. Sender detection and nested path preservation</h3>
+    <ul>
+      <li>Preserve canonical folder-relative paths from <code>File.webkitRelativePath</code>, stripping exactly one common selected-folder segment. Flat multi-file selection remains compatible.</li>
+      <li>Recursively copy selected library prefixes instead of only direct children; preserve MIME and nested paths under the newly delegated <code>shares/&lt;shareId&gt;</code> prefix.</li>
+      <li>Detect an artifact only when the normalized bundle has exactly one root <code>index.html</code>. A normal multi-file folder without it remains a folder share and gets non-blocking guidance; unsafe/duplicate paths block creation with actionable copy.</li>
+      <li>Add a separate folder picker using the native directory-selection attribute while retaining the existing file picker and framework-free UI.</li>
+    </ul>
+
+    <h3>3. Opaque artifact frame</h3>
+    <ul>
+      <li>Add an app-served <code>/artifact-sandbox.html</code> builder and Vite output analogous to Mermaid’s proven frame.</li>
+      <li>Parent iframe sandbox is exactly <code>allow-scripts</code>. The served bridge self-checks <code>self.origin === "null"</code>, requires a per-frame 128-bit nonce, and accepts messages only from its parent.</li>
+      <li>The bridge creates a second sandboxed <code>srcdoc</code> iframe for artifact code, also with exactly <code>allow-scripts</code>. Its inherited CSP allows inline classic scripts/styles and data/blob static assets but has <code>default-src 'none'</code>, <code>connect-src 'none'</code>, <code>form-action 'none'</code>, <code>object-src 'none'</code>, defense-in-depth <code>navigate-to 'none'</code>, and no top-navigation capability. Any unexpected child load destroys the render.</li>
+      <li>Parent replies are checked by source window, opaque <code>"null"</code> origin, nonce, id, and strict shape. Destroying the controller rejects pending renders and removes the frame.</li>
+    </ul>
+
+    <h3>4. Verified viewer path and full-page presentation</h3>
+    <ul>
+      <li>After <code>ShareRecipientClient.establishPolicySession()</code>, detect the signed artifact marker plus prefix resource. List all entries with bounded pagination and unique cursors, canonicalize every returned file path under the established prefix, reject duplicates/folder markers/out-of-prefix paths, then issue exact <code>get</code> calls only for that closed set.</li>
+      <li>No caller-controlled URL becomes a node request. Unknown paths referenced by HTML/CSS fail as a missing-asset state before the frame receives content.</li>
+      <li>Artifact mode replaces ordinary folder chrome only after authorization succeeds. Loading, access denied/offline, malformed bundle, missing asset, unsupported feature, and limit failure use stable recipient-safe messages without exception text.</li>
+    </ul>
+
+    <h3>5. TinyCloud overlay</h3>
+    <ul>
+      <li>Render the artifact full viewport. A small safe-area-aware overlay outside the frame starts expanded with “Shared with TinyCloud”, collapse, share/copy, and permanently hide controls.</li>
+      <li>Collapsed mode is one 44 × 44 px cloud control. Permanent hide is stored as <code>hidden</code> under a SHA-256-derived per-share key; no URL, fragment, identity, path, or filename enters storage.</li>
+      <li>Restore via <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd>, which works without pointer input and remains available after permanent hide.</li>
+      <li>Reshare calls Web Share first and falls back to the existing closure-held clipboard flow; the complete URL is never put in text, an <code>href</code>, a value, data attribute, or storage.</li>
+      <li>Use existing app tokens, semantic buttons, visible focus, a polite live announcement, reduced motion, forced-colors support, and pointer-independent controls.</li>
+    </ul>
+
+    <h3>6. Fixture, documentation, and release evidence</h3>
+    <ul>
+      <li>Add a small fixture with <code>index.html</code>, separate CSS, separate classic JS, nested SVG/image asset, nested stylesheet import, and an interactive counter plus isolation probes.</li>
+      <li>Add unit/integration tests at module boundaries and a Puppeteer artifact flow using the hermetic viewer path as far as the current harness supports.</li>
+      <li>Document supported classic static behavior, unsupported modules/runtime fetch/workers/forms/frames, restore controls, limits, and security boundary.</li>
+      <li>Capture desktop and mobile screenshots, inspect them, run all gates, review the diff, commit, open a PR, repair only scoped CI failures, and squash-merge only after every non-skipped check is green.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Failure-state vocabulary</h2>
+    <table>
+      <thead><tr><th>State</th><th>Recipient message and recovery</th><th>Internal detail policy</th></tr></thead>
+      <tbody>
+        <tr><td>Loading</td><td>“Opening this shared artifact…”</td><td>No path or filename</td></tr>
+        <tr><td>Denied / offline</td><td>Reuse existing access/offline copy; reconnect or ask sender</td><td>Raw error only to existing scrubbed debug boundary</td></tr>
+        <tr><td>Malformed</td><td>“This artifact can’t be displayed. Ask the sender for a fresh link.”</td><td>No parser or canonical path detail</td></tr>
+        <tr><td>Missing asset</td><td>“A file this artifact needs is missing. Ask the sender to share the complete folder.”</td><td>No missing plaintext path</td></tr>
+        <tr><td>Unsupported</td><td>“This artifact uses a browser feature TinyCloud blocks for safety.”</td><td>Feature kind may be tested, not rendered</td></tr>
+        <tr><td>Limit</td><td>“This artifact is too large or complex to display safely.”</td><td>No numeric exception or stack</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Acceptance tests</h2>
+    <ol class="checklist">
+      <li><strong>Detection:</strong> one root <code>index.html</code> marks an artifact; missing root remains a normal folder with guidance; duplicate canonical roots and unsafe paths are rejected.</li>
+      <li><strong>Canonical resolution:</strong> nested relative references, <code>../</code> within the bundle, query/hash suffixes, CSS <code>url()</code>, CSS imports, <code>src</code>, <code>href</code>, <code>srcset</code>, and classic script sources resolve to authorized files; escapes and unknown paths fail.</li>
+      <li><strong>Limits:</strong> aggregate bytes, per-file text, file count, reference count, import depth, and import cycles terminate deterministically with no partial frame.</li>
+      <li><strong>Protocol:</strong> optional metadata round-trips in v2, remains absent in legacy shares and public bindings, and all envelope vectors plus existing single/folder tests stay green.</li>
+      <li><strong>KV authority:</strong> viewer list/get requests are descendants of the established prefix; malicious list entries and transform references cannot widen it.</li>
+      <li><strong>Sandbox:</strong> both frames omit <code>allow-same-origin</code>; CSP blocks Fetch/XHR/WebSocket/subresources, forms, objects, and external sources; direct self-navigation constructs are rejected and unexpected loads destroy the frame; spoofed source/origin/nonce/id messages are ignored; destroy rejects pending renders.</li>
+      <li><strong>Execution:</strong> fixture CSS, nested image/font/static asset, and classic script load; interaction works; parent DOM, storage, cookie, opener, top navigation, and fetch isolation probes fail.</li>
+      <li><strong>Viewer routing:</strong> marked prefix selects artifact mode; ordinary prefix stays folder mode; exact/bearer results are unchanged.</li>
+      <li><strong>Chrome:</strong> expanded, collapsed, reopen, permanent hide, keyboard restore, Web Share, clipboard fallback, storage denial, and URL-not-in-DOM are tested.</li>
+      <li><strong>Accessibility:</strong> semantic names, focus-visible, keyboard order, live state, 44 px target, reduced motion, forced colors, and mobile safe areas are asserted or visually inspected.</li>
+      <li><strong>Failures:</strong> malformed, missing asset, unsupported feature, offline/denied, and render limit states show approved recovery copy and never exception text.</li>
+      <li><strong>Release:</strong> <code>npm test</code>, <code>npm run typecheck</code>, <code>npm run build</code>, and the narrowest safe sharing e2e pass; desktop/mobile screenshots are inspected; PR CI is all green before squash merge.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Explicit scope limits</h2>
+    <div class="callout">
+      <strong>Supported initially:</strong> static HTML documents, nested CSS with bounded imports, images/fonts/media/data files referenced statically, classic external and inline scripts that do not use navigation/runtime-network primitives, static relative HTML navigation through the controlled bundle router, query/hash lookup suffixes, and normal DOM interaction inside the artifact.
+    </div>
+    <div class="callout">
+      <strong>Unsupported by design:</strong> ES modules and dynamic imports, runtime <code>fetch</code>/XHR/WebSocket/EventSource, direct script navigation APIs, service/shared/workers, WebAssembly, <code>eval</code>, forms, popups, downloads initiated by the artifact, nested frames/embeds/objects, top navigation, cross-origin or protocol-relative resources, credentialed APIs, and server-side routing. These produce an explicit failure or are inert; none causes a sandbox relaxation. Because current Chromium still begins an iframe self-navigation despite <code>navigate-to 'none'</code>, TinyCloud rejects direct navigation constructs and destroys unexpected loads; it does not claim to safely execute deliberately obfuscated exfiltration code.
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -103,6 +103,14 @@ async function getResponse(path: string, text: string): Promise<Response> {
   });
 }
 
+async function artifactGetResponse(path: string, text: string, mediaType: string): Promise<Response> {
+  const bytes = Uint8Array.from(Buffer.from(text, "utf8"));
+  return nativeJson({
+    type: "TinyCloudShareInvokeResponse", version: 2, action: "tinycloud.kv/get", resource: path,
+    mediaType, content: Buffer.from(bytes).toString("base64url"), bodyDigest: await digestBytes(bytes), etag: null,
+  });
+}
+
 function status(root: HTMLElement): HTMLElement {
   return root.querySelector<HTMLElement>(".viewer-policy-status")!;
 }
@@ -117,6 +125,8 @@ function folderButtons(root: HTMLElement): HTMLButtonElement[] {
 
 beforeEach(() => {
   document.body.replaceChildren();
+  document.body.classList.remove("artifact-active");
+  localStorage.clear();
   stub.invokes.length = 0;
   stub.establish = async () => ({ resource: { kind: "exact", path: "notes/plan.md" } });
   stub.respond = async () => new Response(null, { status: 500 });
@@ -292,6 +302,89 @@ describe("addressed viewer — folder → file is no longer a trap (P0-5)", () =
     folderButtons(root).find((button) => button.dataset.path === "notes/sub/")!.click();
     await vi.waitFor(() => expect(status(root).textContent).toBe(EXPECTED_FAILURE_COPY.denied));
     expect(folderButtons(root)).toHaveLength(2);
+  });
+});
+
+describe("addressed viewer — HTML artifact selection", () => {
+  beforeEach(() => {
+    stub.establish = async () => ({ resource: { kind: "prefix", path: "shares/artifact" } });
+  });
+
+  function mountArtifact(): HTMLElement {
+    const root = document.createElement("div");
+    root.tabIndex = -1;
+    document.body.append(root);
+    mountPolicyV2Viewer(root, {
+      envelope: {
+        actions: ["read", "list"],
+        shareId: "artifact-share",
+        resource: { kind: "prefix", path: "shares/artifact" },
+        metadata: { artifact: "html" },
+      } as never,
+      shareCid: "bafkreisharecid",
+      policy: {},
+    }, {
+      nodeOrigin: "https://node.example",
+      trustedNode: {} as never,
+      holderDid: "did:key:z6Mkholder",
+      buildPresentation: async () => ({}) as never,
+      shareUrl: "https://share.tinycloud.xyz/s/example#secret",
+    });
+    return root;
+  }
+
+  it("loads every artifact file through verified native invokes and switches to the sandbox", async () => {
+    stub.respond = async (request) => {
+      const resource = request.resource as { readonly path: string };
+      if (request.action === "list") {
+        return listResponse(resource.path, [
+          "shares/artifact/index.html",
+          "shares/artifact/styles/site.css",
+          "shares/artifact/assets/cloud.svg",
+        ]);
+      }
+      if (resource.path.endsWith("index.html")) {
+        return artifactGetResponse(resource.path, '<link rel="stylesheet" href="styles/site.css"><h1>Artifact</h1><img src="assets/cloud.svg">', "text/html");
+      }
+      if (resource.path.endsWith("site.css")) return artifactGetResponse(resource.path, "h1{color:navy}", "text/css");
+      return artifactGetResponse(resource.path, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>", "image/svg+xml");
+    };
+    const root = mountArtifact();
+    clickOpen(root);
+    await vi.waitFor(() => expect(document.querySelector<HTMLIFrameElement>(".viewer-artifact-frame")).not.toBeNull());
+    const frame = document.querySelector<HTMLIFrameElement>(".viewer-artifact-frame")!;
+    const nonce = new URL(frame.src).hash.slice(1);
+    const post = vi.spyOn(frame.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data: { type: "ready", nonce } }));
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    const request = post.mock.calls[0]![0] as { id: string };
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data: { type: "result", nonce, id: request.id, ok: true } }));
+
+    await vi.waitFor(() => expect(document.body.classList.contains("artifact-active")).toBe(true));
+    expect(frame.hidden).toBe(false);
+    expect(root.querySelector<HTMLElement>(".viewer-policy-v2")?.hidden).toBe(true);
+    expect(document.querySelector(".artifact-chrome")?.textContent).toContain("Shared with TinyCloud");
+    expect(document.body.textContent).not.toContain("#secret");
+    expect(stub.invokes.map((request) => request.action)).toEqual(["list", "get", "get", "get"]);
+
+    window.dispatchEvent(new MessageEvent("message", { source: frame.contentWindow, origin: "null", data: { type: "result", nonce, id: request.id, ok: false } }));
+    await vi.waitFor(() => expect(document.body.classList.contains("artifact-active")).toBe(false));
+    expect(document.querySelector(".viewer-artifact-frame")).toBeNull();
+    expect(root.querySelector<HTMLElement>(".viewer-policy-v2")?.hidden).toBe(false);
+    expect(status(root).textContent).toBe("This HTML artifact uses a browser feature that TinyCloud cannot safely run.");
+  });
+
+  it("shows a deliberate missing-resource state without developer details", async () => {
+    stub.respond = async (request) => {
+      const resource = request.resource as { readonly path: string };
+      if (request.action === "list") return listResponse(resource.path, ["shares/artifact/index.html"]);
+      return artifactGetResponse(resource.path, '<img src="missing.png">', "text/html");
+    };
+    const root = mountArtifact();
+    clickOpen(root);
+    await vi.waitFor(() => expect(status(root).textContent).toBe("This HTML artifact is missing a required file. Ask the sender to share the complete folder."));
+    expect(root.textContent).not.toContain("missing.png");
+    expect(document.querySelector(".viewer-artifact-frame")).toBeNull();
   });
 });
 

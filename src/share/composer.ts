@@ -1,5 +1,6 @@
 import { armManualCopy, createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
 import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-sdk";
+import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import { canonicalDigest } from "../email-share/protocol.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
@@ -66,10 +67,9 @@ function unsafeLibraryKey(value: string): boolean {
  *
  * Every key becomes an exact entry, and every directory that key sits under
  * becomes a folder entry — `shares/<id>/report.md` yields the object plus the
- * folders `shares/` and `shares/<id>/`. Nested folders matter: a folder share
- * copies the *direct children* of the chosen prefix (`copySelectedSource`), so
- * offering only top-level folders would offer folders that contain no files
- * of their own.
+ * folders `shares/` and `shares/<id>/`. Prefix sharing copies the complete
+ * bounded descendant tree, so nested folders remain independently selectable
+ * and an HTML artifact selected from the library retains all nested assets.
  *
  * Keys with empty, `.` or `..` segments, or with control characters or
  * backslashes, are dropped rather than repaired: they cannot be addressed by
@@ -200,38 +200,70 @@ function setStatus(node: HTMLElement, title: string, detail: string, state: stri
 }
 
 /**
- * Flat browser file selections become direct children of one delegated
- * prefix. Canonicalization happens before any policy is signed or key is
- * written, and names that could alias another key are rejected rather than
- * silently overwriting a sibling.
+ * Browser folder selections retain their paths below the selected root.
+ * Canonicalization happens before any policy is signed or key is written, and
+ * names that could alias another key are rejected rather than silently
+ * overwriting a sibling.
  */
+const uploadPathByFile = new WeakMap<File, string>();
+
+export function selectedFilePath(file: File): string {
+  return uploadPathByFile.get(file) ?? canonicalArtifactPath(file.name);
+}
+
 export function canonicalUploadFiles(selected: readonly File[]): readonly File[] {
   if (selected.length === 0) throw fail("content", "upload selection is empty");
+  const browserPaths = selected.map((file) => {
+    const remembered = uploadPathByFile.get(file);
+    if (remembered !== undefined) return remembered;
+    const relative = typeof file.webkitRelativePath === "string" && file.webkitRelativePath.length > 0
+      ? file.webkitRelativePath
+      : file.name;
+    return relative.normalize("NFC");
+  });
+  const roots = browserPaths.map((path) => path.split("/")[0] ?? "");
+  const sharedFolderRoot = selected.every((file) => !uploadPathByFile.has(file))
+    && browserPaths.length > 0
+    && browserPaths.every((path) => path.includes("/"))
+    && roots.every((root) => root === roots[0])
+    ? `${roots[0]}/`
+    : "";
   const files: File[] = [];
   const seen = new Set<string>();
   let total = 0;
-  for (const input of selected) {
+  for (const [index, input] of selected.entries()) {
     const name = input.name.normalize("NFC");
-    const encodedLength = new TextEncoder().encode(name).byteLength;
+    const rawPath = browserPaths[index]!;
+    const path = rawPath.startsWith(sharedFolderRoot) ? rawPath.slice(sharedFolderRoot.length) : rawPath;
+    let canonicalPath: string;
+    try {
+      canonicalPath = canonicalArtifactPath(path);
+    } catch {
+      throw fail("filename", "upload path is unsafe");
+    }
+    const segments = canonicalPath.split("/");
     if (
       name.length === 0
       || name.trim() !== name
       || name === "."
       || name === ".."
-      || encodedLength > 240
       || /[\/\\\u0000-\u001f\u007f]/.test(name)
       || /%2f|%5c|%2e/i.test(name)
+      || segments.at(-1) !== name
+      || segments.some((segment) => segment.trim() !== segment || new TextEncoder().encode(segment).byteLength > 240)
     ) {
       throw fail("filename", "upload filename is unsafe");
     }
-    const collisionKey = name.toLocaleLowerCase("en-US");
-    if (seen.has(collisionKey)) throw fail("filename", "upload filenames would overwrite one another");
+    const collisionKey = canonicalPath.toLowerCase();
+    if (seen.has(collisionKey)) throw fail("filename", "upload paths would overwrite one another");
     seen.add(collisionKey);
     if (input.size === 0) throw fail("emptyFile", "uploaded document is empty");
     if (input.size > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document exceeds 100 MB");
     total += input.size;
     if (!Number.isSafeInteger(total) || total > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "aggregate upload exceeds 100 MB");
-    files.push(name === input.name ? input : new File([input], name, { type: input.type, lastModified: input.lastModified }));
+    const output = name === input.name ? input : new File([input], name, { type: input.type, lastModified: input.lastModified });
+    uploadPathByFile.set(output, canonicalPath);
+    files.push(output);
   }
   return files;
 }
@@ -466,9 +498,14 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
   const sdk = await ownerSdk();
   const shareKey = await sdk.createDelegatedShareKey({ extractable: false });
   try {
+    let copiedPaths: readonly string[] = [];
     if (selectedSource !== undefined && sourcePath !== undefined) {
-      await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
+      copiedPaths = await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
     }
+    const artifactPaths = resourceKind === "prefix"
+      ? (selectedSource === undefined ? files.map(selectedFilePath) : copiedPaths)
+      : [];
+    const artifact = artifactPaths.length > 0 && detectHtmlArtifact(artifactPaths).kind === "html" ? "html" as const : undefined;
     const decryption = {
       networkId: ownerEncryptionNetwork(options.openKeyAddress),
       action: "tinycloud.encryption/decrypt",
@@ -529,7 +566,7 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
     const outerSignature = toBase64Url(await shareKey.sign(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v2\0${canonicalize(outerUnsigned)}`)));
     const ownerAuthority = { registrationCid: registration.registration.registrationCid, shareCid, envelopeCid, enforcementDelegation, outerEnvelope: { ...outerUnsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: outerSignature } } };
     const byteLength = files.reduce((total, selected) => total + selected.size, 0);
-    const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength, filename }, ownerAuthority };
+    const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength, filename, ...(artifact === undefined ? {} : { artifact }) }, ownerAuthority };
     // The signature covers `unsigned`, so `unsigned` must be checked with the
     // unsigned schema; `shareEnvelopeV2Schema` requires `signature` and so
     // always threw "signature Required" here (TC-338). The signed envelope is
@@ -583,7 +620,7 @@ export async function uploadSelectedFiles(
   for (const file of files) {
     const content = new Uint8Array(await file.arrayBuffer());
     if (content.byteLength !== file.size || content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
-    const childPath = resourceKind === "prefix" ? `${resourcePath}/${file.name}` : resourcePath;
+    const childPath = resourceKind === "prefix" ? `${resourcePath}/${selectedFilePath(file)}` : resourcePath;
     const result = await kv.put(childPath, content, { contentType: file.type.trim() || "application/octet-stream" });
     if (!result.ok) throw fail("upload", "owner file upload was rejected");
   }
@@ -595,30 +632,46 @@ export async function copySelectedSource(
   sourcePath: string,
   resourceKind: "exact" | "prefix",
   targetPath: string,
-): Promise<void> {
+): Promise<readonly string[]> {
   const kv = tinycloud.kvForSpace(spaceId);
   if (resourceKind === "exact") {
     const result = await kv.get<Uint8Array>(sourcePath, { binary: true });
     if (!result.ok) throw fail("libraryCopy", "library file read failed during copy");
     const stored = await kv.put(targetPath, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
     if (!stored.ok) throw fail("libraryCopy", "library file write failed during copy");
-    return;
+    return [targetPath.split("/").at(-1) ?? targetPath];
   }
   const listing = await kv.list({ path: sourcePath, limit: 1000 });
   if (!listing.ok) throw fail("libraryOpen", "library folder listing failed");
+  if (listing.data.truncated) throw fail("libraryCopy", "library folder exceeds the safe copy limit");
   const prefix = `${sourcePath}/`;
-  const directChildren = listing.data.keys.filter((candidate) => {
-    if (!candidate.startsWith(prefix)) return false;
-    const remainder = candidate.slice(prefix.length);
-    return remainder.length > 0 && !remainder.includes("/");
-  });
-  for (const childPath of directChildren) {
-    const result = await kv.get<Uint8Array>(childPath, { binary: true });
-    if (!result.ok) throw fail("libraryCopy", "library folder child read failed during copy");
-    const childName = childPath.slice(prefix.length);
-    const stored = await kv.put(`${targetPath}/${childName}`, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
-    if (!stored.ok) throw fail("libraryCopy", "library folder child write failed during copy");
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const children: Array<{ readonly source: string; readonly relative: string }> = [];
+  for (const childPath of listing.data.keys) {
+    if (!childPath.startsWith(prefix)) throw fail("libraryCopy", "library folder listing escaped its prefix");
+    if (childPath.endsWith("/")) continue;
+    const remainder = childPath.slice(prefix.length).replace(/\/+$/, "");
+    if (remainder.length === 0) continue;
+    let childName: string;
+    try {
+      childName = canonicalArtifactPath(remainder);
+    } catch {
+      throw fail("libraryCopy", "library folder contains an unsafe path");
+    }
+    const collisionKey = childName.toLowerCase();
+    if (seen.has(collisionKey)) throw fail("libraryCopy", "library folder paths would overwrite one another");
+    seen.add(collisionKey);
+    children.push({ source: childPath, relative: childName });
   }
+  for (const child of children) {
+    const result = await kv.get<Uint8Array>(child.source, { binary: true });
+    if (!result.ok) throw fail("libraryCopy", "library folder child read failed during copy");
+    const stored = await kv.put(`${targetPath}/${child.relative}`, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
+    if (!stored.ok) throw fail("libraryCopy", "library folder child write failed during copy");
+    paths.push(child.relative);
+  }
+  return paths;
 }
 
 async function authorAddressedDelegation(input: { readonly scope: SenderScope; readonly source: ContentSource; readonly matcher: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string }; readonly shareId: string; readonly resource: ShareComposerModel["resource"]; readonly actions: readonly SharePermission[]; readonly expiresAt: string; readonly fetchFn: typeof fetch }): Promise<{ readonly scope: SenderScope; readonly policy: { readonly policyCid: string; readonly policyBytes: string; readonly policyDigest: string } }> {
@@ -725,17 +778,23 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB total");
   const fileInput = el(doc, "input", "upload-input") as HTMLInputElement;
   fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*"; fileInput.multiple = true;
+  const folderInput = el(doc, "input", "upload-input") as HTMLInputElement;
+  folderInput.type = "file"; folderInput.name = "artifact-folder"; folderInput.multiple = true;
+  folderInput.setAttribute("webkitdirectory", "");
+  folderInput.setAttribute("directory", "");
   const dropActions = el(doc, "div", "dropzone-actions");
   const chooseFileButton = el(doc, "button", "dropzone-action", "Choose files") as HTMLButtonElement;
   chooseFileButton.type = "button";
+  const chooseFolderButton = el(doc, "button", "dropzone-action", "Choose folder") as HTMLButtonElement;
+  chooseFolderButton.type = "button";
   const pasteButton = el(doc, "button", "dropzone-action dropzone-paste", "Paste from clipboard") as HTMLButtonElement;
   pasteButton.type = "button";
   const libraryLink = el(doc, "button", "dropzone-action dropzone-library", "Pick from your library") as HTMLButtonElement;
   libraryLink.type = "button";
-  dropActions.append(chooseFileButton, pasteButton, libraryLink);
+  dropActions.append(chooseFileButton, chooseFolderButton, pasteButton, libraryLink);
   const pasteStatus = el(doc, "span", "dropzone-paste-status");
   pasteStatus.setAttribute("aria-live", "polite");
-  drop.append(dropTitle, dropHint, dropLimit, fileInput, dropActions, pasteStatus);
+  drop.append(dropTitle, dropHint, dropLimit, fileInput, folderInput, dropActions, pasteStatus);
 
   const chosen = el(doc, "div", "content-chosen"); chosen.hidden = true;
   const chosenName = el(doc, "strong", "content-chosen-name");
@@ -905,7 +964,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   refreshRecipient();
 
   const showDropzone = (): void => {
-    contentKind = "empty"; chosenFiles = []; fileInput.value = ""; saveAsLabel.hidden = false;
+    contentKind = "empty"; chosenFiles = []; fileInput.value = ""; folderInput.value = ""; saveAsLabel.hidden = false;
     chosen.hidden = true; textPanel.hidden = true; libraryPanel.hidden = true; drop.hidden = false; drop.dataset.over = "false";
   };
   const chooseFiles = (selected: readonly File[]): void => {
@@ -920,9 +979,15 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     drop.hidden = true; textPanel.hidden = true; libraryPanel.hidden = true;
     chosen.hidden = false;
     chosenName.textContent = files.length === 1 ? files[0]!.name : `${files.length} files`;
+    const detection = files.length > 1 ? detectHtmlArtifact(files.map(selectedFilePath)) : undefined;
+    const artifactNote = detection?.kind === "html"
+      ? " · Opens full-page as an HTML artifact"
+      : files.length > 1
+        ? " · Opens as a folder; add one index.html at the selected root for artifact mode"
+        : "";
     chosenMeta.textContent = files.length === 1
       ? formatBytes(files[0]!.size)
-      : `${files.map((file) => file.name).join(", ")} · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}`;
+      : `${files.map(selectedFilePath).join(", ")} · ${formatBytes(files.reduce((total, file) => total + file.size, 0))}${artifactNote}`;
     saveAsLabel.hidden = files.length > 1;
     refreshRecipient();
   };
@@ -998,10 +1063,11 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   drop.addEventListener("click", (event) => {
     const target = event.target;
-    if (target === fileInput || target === chooseFileButton || target === pasteButton || target === libraryLink) return;
+    if (target === fileInput || target === folderInput || target === chooseFileButton || target === chooseFolderButton || target === pasteButton || target === libraryLink) return;
     fileInput.click();
   });
   chooseFileButton.addEventListener("click", () => fileInput.click());
+  chooseFolderButton.addEventListener("click", () => folderInput.click());
   pasteButton.addEventListener("click", () => { void readClipboard(); });
   drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.dataset.over = "true"; });
   drop.addEventListener("dragleave", () => { drop.dataset.over = "false"; });
@@ -1021,6 +1087,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     handlePaste(event);
   }, { signal: pasteScope.signal });
   fileInput.addEventListener("change", () => { const picked = Array.from(fileInput.files ?? []); if (picked.length > 0) chooseFiles(picked); });
+  folderInput.addEventListener("change", () => { const picked = Array.from(folderInput.files ?? []); if (picked.length > 0) chooseFiles(picked); });
   libraryLink.addEventListener("click", chooseLibrary);
   source.addEventListener("change", refreshRecipient);
   change.addEventListener("click", () => { showDropzone(); drop.focus(); });

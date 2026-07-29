@@ -37,6 +37,19 @@ describe("canonical v2 envelopes", () => {
     expect(() => signEnvelopeV2({ ...baseEnvelope(), metadata: { mediaType: "application/octet-stream", byteLength: 100 * 1024 * 1024 + 1, filename: "too-large.bin" } }, key)).toThrow();
   });
 
+  it("allows the HTML discriminator only on an encrypted readable and listable prefix", () => {
+    const artifact = {
+      ...baseEnvelope(),
+      actions: ["read" as const, "list" as const],
+      resource: { kind: "prefix" as const, path: "shares/artifact" },
+      metadata: { mediaType: "application/x-tinycloud-folder", byteLength: 12, filename: "4 files", artifact: "html" as const },
+    };
+    expect(() => signEnvelopeV2(artifact, key)).not.toThrow();
+    expect(() => signEnvelopeV2({ ...artifact, actions: ["read"] }, key)).toThrow(/artifact/i);
+    expect(() => signEnvelopeV2({ ...artifact, resource: { kind: "exact", path: "shares/artifact/index.html" } }, key)).toThrow(/artifact/i);
+    expect(() => signEnvelopeV2({ ...artifact, encrypted: false }, key)).toThrow();
+  });
+
   it("rejects every content-bearing safe-plaintext envelope", () => {
     const base = {
       version: 2 as const,

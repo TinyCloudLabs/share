@@ -17,6 +17,7 @@
     "link:web-sdk": "node scripts/link-web-sdk.mjs",
     "check:web-sdk-link": "node scripts/link-web-sdk.mjs --check",
     "test:e2e:sharing": "npm run check:web-sdk-link && SHARING_E2E_LOCAL_UNPUSHED=1 node test/e2e-sharing/integration.mjs",
+    "test:e2e:artifact": "node test/e2e-html-artifact.mjs",
     "test:e2e:sharing:release": "npm run check:web-sdk-link && node test/e2e-sharing/integration.mjs",
     "test:e2e:email:fixture": "node test/e2e-email/integration.mjs --fixture-only",
     "test:e2e:share-payload-proof": "tsx test/e2e-email/share-payload-proof.ts",

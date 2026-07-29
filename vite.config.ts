@@ -14,6 +14,11 @@ import {
   MERMAID_SANDBOX_PATH,
   buildMermaidSandboxHtml,
 } from "./src/viewer/mermaid-frame.ts";
+import {
+  ARTIFACT_SANDBOX_HTTP_HEADERS,
+  ARTIFACT_SANDBOX_PATH,
+  buildArtifactSandboxHtml,
+} from "./src/viewer/artifact-frame.ts";
 import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
 import { senderOnlyRoute } from "./src/host/production-server.ts";
 import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
@@ -101,6 +106,30 @@ function mermaidSandboxHtml(): Plugin {
         fileName: MERMAID_SANDBOX_PATH.slice(1),
         source: getHtml(),
       });
+    },
+  };
+}
+
+function artifactSandboxHtml(): Plugin {
+  const html = buildArtifactSandboxHtml();
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    server.middlewares.use((req, res, next) => {
+      const path = (req.url ?? "").split("?")[0] ?? "";
+      if (path !== ARTIFACT_SANDBOX_PATH) {
+        next();
+        return;
+      }
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      for (const [name, value] of ARTIFACT_SANDBOX_HTTP_HEADERS) res.setHeader(name, value);
+      res.end(html);
+    });
+  };
+  return {
+    name: "artifact-sandbox-html",
+    configureServer: serve,
+    configurePreviewServer: serve,
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: ARTIFACT_SANDBOX_PATH.slice(1), source: html });
     },
   };
 }
@@ -196,7 +225,7 @@ const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache
 
 export default defineConfig({
   base: "/",
-  plugins: [shareRouteRewrite(), securityHeaders(), mermaidSandboxHtml(), shareHostAdapter()],
+  plugins: [shareRouteRewrite(), securityHeaders(), mermaidSandboxHtml(), artifactSandboxHtml(), shareHostAdapter()],
   build: {
     rollupOptions: {
       input: {

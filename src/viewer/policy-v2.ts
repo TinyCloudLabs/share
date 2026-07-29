@@ -7,6 +7,15 @@ import { mountTextEditor, canEdit, type EditableDocument } from "./editor.js";
 import { normalizeFolderPage, renderFolder } from "./folder.js";
 import { copyWithFallback } from "../share/link-only.js";
 import { focusViewerRoot } from "./focus.js";
+import {
+  ArtifactBundleError,
+  MAX_ARTIFACT_FILES,
+  canonicalArtifactPath,
+  prepareHtmlArtifact,
+  type ArtifactFile,
+} from "../artifact/bundle.js";
+import { createArtifactSandbox, type ArtifactSandbox } from "./artifact-sandbox.js";
+import { mountArtifactChrome, type ArtifactChrome } from "./artifact-chrome.js";
 
 export interface PolicyV2ViewerOptions {
   readonly nodeOrigin: string;
@@ -36,6 +45,13 @@ export const RECIPIENT_FAILURE: Record<RecipientFailureKind, string> = {
   malformed: "Something went wrong opening this. Ask the sender for a fresh link.",
   offline: "You appear to be offline. Reconnect and try again.",
 };
+
+export const ARTIFACT_FAILURE = {
+  malformed: "This HTML artifact is malformed. Ask the sender to share a corrected bundle.",
+  missing: "This HTML artifact is missing a required file. Ask the sender to share the complete folder.",
+  unsupported: "This HTML artifact uses a browser feature that TinyCloud cannot safely run.",
+  limit: "This HTML artifact is too large or complex to render safely.",
+} as const;
 
 function fail(kind: RecipientFailureKind, detail: string, extra: Record<string, unknown> = {}): Error {
   return Object.assign(new Error(detail), { kind, ...extra });
@@ -166,12 +182,14 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
   });
 
   const showFailure = (error: unknown): void => {
-    // The raw text is a developer detail — `native list denied`,
-    // `KV_PRECONDITION_FAILED`, ten `native response … is invalid` variants.
-    // It never reaches the recipient.
-    console.debug("tinycloud share: recipient request failed", error);
+    // Log only the bounded category. Raw exceptions can contain resource
+    // paths, recipient details, or transport URLs and must not cross this
+    // privacy boundary.
+    console.debug("tinycloud share: recipient request failed", {
+      kind: error instanceof ArtifactBundleError ? `artifact-${error.kind}` : recipientFailureKind(error),
+    });
     status.setAttribute("role", "alert");
-    status.textContent = recipientFailureMessage(error);
+    status.textContent = error instanceof ArtifactBundleError ? ARTIFACT_FAILURE[error.kind] : recipientFailureMessage(error);
   };
   const showProgress = (message: string): void => {
     status.setAttribute("role", "status");
@@ -194,6 +212,75 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
         const bodyDigest = body === undefined ? undefined : await digestBytes(body);
         return { response, payload: await nativePayload(response, action, typeof resource.path === "string" ? resource.path : "", bodyDigest, typeof extra.contentType === "string" ? extra.contentType : undefined) };
       };
+      if (input.envelope.metadata?.artifact === "html") {
+        if (session.resource.kind !== "prefix" || input.envelope.resource.kind !== "prefix" || !actions.includes("read") || !actions.includes("list")) {
+          throw new ArtifactBundleError("malformed", "artifact authority is not a readable prefix");
+        }
+        const rootPrefix = session.resource.path.replace(/\/+$/, "");
+        if (rootPrefix.length === 0 || rootPrefix !== input.envelope.resource.path.replace(/\/+$/, "")) {
+          throw new ArtifactBundleError("malformed", "artifact session resource does not match its envelope");
+        }
+        const prefix = `${rootPrefix}/`;
+        const listedPaths = new Map<string, string>();
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const { payload } = await invoke("list", { kind: "prefix", path: rootPrefix }, { limit: MAX_ARTIFACT_FILES, ...(cursor === undefined ? {} : { cursor }) });
+          const page = normalizeFolderPage(payload.value);
+          for (const entry of page.entries) {
+            if (entry.kind === "folder") continue;
+            if (!entry.path.startsWith(prefix)) throw new ArtifactBundleError("malformed", "artifact listing escaped its prefix");
+            const relative = canonicalArtifactPath(entry.path.slice(prefix.length));
+            const collisionKey = relative.toLowerCase();
+            if (listedPaths.has(collisionKey)) throw new ArtifactBundleError("malformed", "artifact listing contains colliding paths");
+            listedPaths.set(collisionKey, relative);
+            if (listedPaths.size > MAX_ARTIFACT_FILES) throw new ArtifactBundleError("limit", "artifact file count exceeds its limit");
+          }
+          cursor = page.nextCursor;
+          if (cursor !== undefined && (cursor.length === 0 || cursors.has(cursor))) {
+            throw new ArtifactBundleError("malformed", "artifact listing cursor is invalid");
+          }
+          if (cursor !== undefined) cursors.add(cursor);
+        } while (cursor !== undefined);
+        const files: ArtifactFile[] = [];
+        for (const relative of listedPaths.values()) {
+          const path = `${prefix}${relative}`;
+          const { response, payload } = await invoke("get", { kind: "exact", path });
+          files.push({
+            path: relative,
+            bytes: payload.bytes ?? new Uint8Array(),
+            mediaType: payload.mediaType ?? response.headers.get("content-type") ?? "application/octet-stream",
+          });
+        }
+        const artifact = await prepareHtmlArtifact(files);
+        let chrome: ArtifactChrome | undefined;
+        let sandbox: ArtifactSandbox;
+        const runtimeFailure = (): void => {
+          sandbox.destroy();
+          chrome?.destroy();
+          doc.body.classList.remove("artifact-active");
+          shell.hidden = false;
+          status.setAttribute("role", "alert");
+          status.textContent = ARTIFACT_FAILURE.unsupported;
+          open.disabled = false;
+        };
+        sandbox = createArtifactSandbox(doc, { onFailure: runtimeFailure });
+        try {
+          await sandbox.render(artifact);
+          shell.hidden = true;
+          sandbox.iframe.hidden = false;
+          doc.body.classList.add("artifact-active");
+          chrome = await mountArtifactChrome(doc, {
+            shareId: input.envelope.shareId,
+            ...(options.shareUrl === undefined ? {} : { shareUrl: options.shareUrl }),
+          });
+          showProgress("");
+          return;
+        } catch (error) {
+          sandbox.destroy();
+          throw error instanceof ArtifactBundleError ? error : new ArtifactBundleError("malformed", "artifact sandbox failed");
+        }
+      }
       const renderLoadedFile = async (path: string, bytes: Uint8Array, mediaType: string, etag: string): Promise<void> => {
         await renderSafeContent(content, bytes, { mediaType, filename: path.split("/").at(-1) ?? "shared-document", byteLength: bytes.byteLength });
         if (!actions.includes("edit") || etag === "" || !canEdit(mediaType, actions)) return;
