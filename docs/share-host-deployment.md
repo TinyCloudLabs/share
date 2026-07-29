@@ -79,6 +79,17 @@ Required production variables:
   only then issues an opaque sender session bound to that wallet.
   `SHARE_AUTH_USERS_JSON` is an optional legacy fallback containing
   scrypt-password records; the product UI does not request those passwords.
+- `SHARE_SENDER_ROOT_KEY_PATH` (sender-enabled only) is the persistent sender
+  root seed. It defaults to `/var/lib/tinycloud/share/sender-root.key` and must
+  be a normalized strict descendant of the persistent Share volume. The host
+  creates it once at 0600 and reuses it across restarts; each authenticated
+  wallet's sender `did:key` is derived from that seed and its verified
+  `did:pkh` principal, so a session for one wallet can never sign under
+  another wallet's sender identity. There is deliberately no inline variant: a
+  sender secret is never expressible in deployment configuration. `senderReady`
+  means the sender path is configured and can serve an authenticated session,
+  not that any particular capability exists; a session with no admitted
+  capability gets `409 sender_capability_required` per request.
 - `SHARE_BINDING_STORE_ROOT` is the verified persistent mount root and is fixed
   by the production Compose file at `/var/lib/tinycloud/share`. A separately
   mounted durable root may be supplied only when that mount is explicitly
@@ -105,9 +116,14 @@ Atomic enablement sequence:
    but keep `SHARE_EMAIL_CAPABILITY=false` until provider, database, CA, and
    trust-bundle inputs are complete.
 3. `SHARE_SENDER_ENABLED=true` requires the durable binding store mounted and
-   a wallet-rooted capability-issuance path for the sender session; no
-   deployment variable substitutes for that path, so this composition is not
-   yet a supported production shape.
+   the persistent sender root seed path writable. No deployment variable
+   carries sender authority: a wallet's sender identity is derived at request
+   time from an authenticated OpenKey session, and its capability is admitted
+   per session. The composition boots and reports `senderReady: true`. A
+   wallet's sends are only authorized once its derived `senderDid` appears in
+   the node's operator-supplied authority material, so read that DID from
+   `GET /api/share/sender-identity` and provision it on the node before
+   enabling delivery for that wallet.
 4. Enable OpenCredentials through its production renderer, confirm healthy
    storage and capability advertisement, then run the controlled E2E.
 5. If either readiness gate degrades, disable both flags and restore the last

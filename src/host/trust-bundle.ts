@@ -3,7 +3,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
 function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toString("base64url"); }
-function didKeyFromEd25519PublicKey(value: Uint8Array): string {
+export function didKeyFromEd25519PublicKey(value: Uint8Array): string {
   const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const bytes = [0xed, 0x01, ...value]; const digits = [0];
   for (const byte of bytes) { let carry = byte; for (let index = 0; index < digits.length; index++) { const next = digits[index]! * 256 + carry; digits[index] = next % 58; carry = Math.floor(next / 58); } while (carry > 0) { digits.push(carry % 58); carry = Math.floor(carry / 58); } }

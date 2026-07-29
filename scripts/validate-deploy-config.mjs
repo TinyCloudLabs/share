@@ -36,6 +36,16 @@ const provenanceKeys = ["releaseId", "shareCommit", "nodeCommit", "openCredentia
 if (typeof provenance !== "object" || provenance === null || Array.isArray(provenance) || Object.keys(provenance).length !== provenanceKeys.length || provenanceKeys.some((key) => !Object.hasOwn(provenance, key)) || typeof provenance.releaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.releaseId) || !commit.test(provenance.shareCommit) || !commit.test(provenance.nodeCommit) || !commit.test(provenance.openCredentialsCommit) || !commit.test(provenance.sdkCommit) || provenance.shareApiImage !== process.env.SHARE_API_IMAGE || !digest.test(provenance.configurationDigest) || typeof provenance.migrationVersion !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(provenance.migrationVersion) || !immutableImage.test(provenance.rollbackImage) || typeof provenance.rollbackReleaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.rollbackReleaseId)) throw new Error("SHARE_RELEASE_PROVENANCE must bind reviewed commits, image, configuration, migration, and rollback target");
 const bindingStorePath = process.env.SHARE_BINDING_STORE_PATH ?? "/var/lib/tinycloud/share/bindings.ndjson";
 if (process.env.SHARE_BINDING_STORE_ROOT !== undefined && process.env.SHARE_BINDING_STORE_ROOT !== "/var/lib/tinycloud/share") throw new Error("SHARE_BINDING_STORE_ROOT is fixed to the named Share volume");
+const senderRootKeyPath = process.env.SHARE_SENDER_ROOT_KEY_PATH ?? "/var/lib/tinycloud/share/sender-root.key";
+// The sender root seed is host-created key material inside the persistent
+// volume, never a supplied secret; it must not collide with the journal.
+if (senderEnabled) {
+  const seedRemainder = relative(resolve("/var/lib/tinycloud/share"), resolve(senderRootKeyPath));
+  if (!isAbsolute(senderRootKeyPath) || senderRootKeyPath.endsWith("/") || senderRootKeyPath.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..") || seedRemainder === "" || seedRemainder.startsWith("..") || isAbsolute(seedRemainder)) {
+    throw new Error("SHARE_SENDER_ROOT_KEY_PATH must be a normalized descendant of /var/lib/tinycloud/share");
+  }
+  if (resolve(senderRootKeyPath) === resolve(bindingStorePath)) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with the binding journal");
+}
 if (senderEnabled) {
   const root = "/var/lib/tinycloud/share";
   const remainder = relative(resolve(root), resolve(bindingStorePath));
