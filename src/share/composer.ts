@@ -36,6 +36,67 @@ type OwnerSdk = Pick<WebSdkModule, typeof OWNER_SDK_PRIMITIVES[number]>;
  */
 export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerSharePolicy", "createPolicyEnforcementDelegation"] as const;
 
+/** Upper bound on the owner-space listing that backs the library picker. */
+export const OWNER_LIBRARY_LIMIT = 1000;
+
+/**
+ * Prefixes the application owns in the sender's space. `tinycloud.vault`
+ * stores the sender history under `vault/`, and the first run with a real
+ * space listing duly offered `vault/sender-history/v1/entries/...` as things
+ * to share. Those are the app's own encrypted bookkeeping records, not the
+ * sender's library, and sharing one would hand a recipient the sender's own
+ * history. They are excluded here rather than filtered at the picker so the
+ * exclusion is stated once and testable.
+ */
+export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
+
+/** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
+function unsafeLibraryKey(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f || code === 0x5c) return true;
+  }
+  return false;
+}
+
+/**
+ * TC-344. What the sender can share out of "your library" is exactly what is
+ * already in the sender's own space, so the picker is derived from that
+ * space's own key listing rather than from a server-issued capability.
+ *
+ * Every key becomes an exact entry, and every directory that key sits under
+ * becomes a folder entry — `shares/<id>/report.md` yields the object plus the
+ * folders `shares/` and `shares/<id>/`. Nested folders matter: a folder share
+ * copies the *direct children* of the chosen prefix (`copySelectedSource`), so
+ * offering only top-level folders would offer folders that contain no files
+ * of their own.
+ *
+ * Keys with empty, `.` or `..` segments, or with control characters or
+ * backslashes, are dropped rather than repaired: they cannot be addressed by
+ * the signed resource boundary, and a silently rewritten path would be a
+ * different object from the one the sender picked.
+ */
+export function ownerLibraryEntries(keys: readonly string[]): readonly { readonly path: string; readonly kind: "exact" | "prefix" }[] {
+  const entries: { readonly path: string; readonly kind: "exact" | "prefix" }[] = [];
+  const seen = new Set<string>();
+  const add = (path: string, kind: "exact" | "prefix"): void => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    entries.push({ path, kind });
+  };
+  for (const key of keys) {
+    if (typeof key !== "string") continue;
+    const trimmed = key.replace(/\/+$/, "");
+    const segments = trimmed.split("/");
+    if (trimmed.length === 0 || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) continue;
+    if (unsafeLibraryKey(trimmed)) continue;
+    if (OWNER_LIBRARY_RESERVED_PREFIXES.some((prefix) => trimmed === prefix.replace(/\/$/, "") || trimmed.startsWith(prefix))) continue;
+    add(trimmed, "exact");
+    for (let depth = 1; depth < segments.length; depth += 1) add(`${segments.slice(0, depth).join("/")}/`, "prefix");
+  }
+  return entries;
+}
+
 /** The owner-share primitives the loaded Web SDK does not provide, in `OWNER_SDK_PRIMITIVES` order. */
 export function missingOwnerSdkPrimitives(module: Record<string, unknown>): readonly string[] {
   return OWNER_SDK_PRIMITIVES.filter((name) => typeof module[name] !== "function");
@@ -657,6 +718,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
 
   let created: ComposerShareResult | undefined;
   let availableCapabilities: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] = [];
+  // Set once the sender's own space has been listed; the library options that
+  // listing produced carry no capability, so this is what names their space.
+  let ownerLibrarySpaceId: string | undefined;
   // The tag mirrors the ComposerContent union: it records what the sender did,
   // it is never a control the sender has to operate.
   let contentKind: "empty" | "file" | "text" | "library" = "empty";
@@ -795,19 +859,58 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   useFile.addEventListener("click", () => { showDropzone(); drop.focus(); });
   useUpload.addEventListener("click", () => { showDropzone(); drop.focus(); });
 
+  const addLibraryOption = (path: string, kind: "exact" | "prefix", space: string, capabilityId?: string, matcher?: { readonly kind: RecipientKind; readonly value: string }): void => {
+    const canonical = kind === "prefix" ? (path.endsWith("/") ? path : `${path}/`) : path.replace(/\/$/, "");
+    if (canonical.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(canonical) || /[\u0000-\u001f\u007f\\]/.test(canonical)) return;
+    if (Array.from(source.options).some((existing) => existing.value === canonical)) return;
+    const readable = canonical.split("/").filter(Boolean).at(-1) ?? canonical;
+    const option = el(doc, "option", "", kind === "prefix" ? `${readable}/ (folder)` : readable) as HTMLOptionElement;
+    option.value = canonical; option.dataset.space = space; option.dataset.resourceKind = kind;
+    if (capabilityId !== undefined) option.dataset.capabilityId = capabilityId;
+    if (matcher !== undefined) { option.dataset.recipientMatcherKind = matcher.kind; option.dataset.recipientMatcherValue = matcher.value; }
+    source.append(option);
+  };
+
+  /*
+   * TC-344. Two independent sources feed this picker, and only one of them is
+   * reachable in any shape this application can legally launch.
+   *
+   * The owner listing is the real one. Every addressed share the shipped app
+   * creates goes through `createOwnerPolicyShare`, which works entirely inside
+   * `tinycloud.spaceId` — the sender's own space, reached with the sender's
+   * own wallet-rooted session. What a sender can pick from "your library" is
+   * therefore just what is already in that space, so the picker asks the
+   * space. No server-issued capability is involved.
+   *
+   * None is available either. `GET /api/share/capabilities` returns `[]` for
+   * every authenticated session in every deployable shape: static sender
+   * authority is forbidden (src/host/share-adapter.ts, production-server.ts,
+   * scripts/validate-deploy-config.mjs) and the wallet-rooted
+   * capability-issuance path that would replace it does not exist yet
+   * (docs/share-host-deployment.md). Sourcing the picker only from that
+   * endpoint left it permanently empty, which is why every library flow ended
+   * at "Choose what to share".
+   *
+   * The capability listing below is retained for the host-capability composer
+   * branch (`options.tinycloud === undefined`), which still selects a
+   * capability by signed recipient matcher.
+   */
+  void (async (): Promise<void> => {
+    const tinycloud = options.tinycloud;
+    const spaceId = tinycloud?.spaceId;
+    if (tinycloud === undefined || spaceId === undefined || spaceId.length === 0) return;
+    const listing = await tinycloud.kvForSpace(spaceId).list({ limit: OWNER_LIBRARY_LIMIT });
+    if (!listing.ok) return;
+    ownerLibrarySpaceId = spaceId;
+    for (const entry of ownerLibraryEntries(listing.data.keys)) addLibraryOption(entry.path, entry.kind, spaceId);
+  })().catch(() => undefined);
+
   void (options.loadCapabilities === undefined ? fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }).then(async (response) => response.ok ? ((await response.json()) as { readonly capabilities?: readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[] }).capabilities ?? [] : []) : options.loadCapabilities()).then((capabilities) => {
     availableCapabilities = capabilities;
     for (const candidate of capabilities) {
       if (candidate.source.kind !== "kv") continue;
-      const add = (path: string, kind: "exact" | "prefix"): void => {
-        const canonical = kind === "prefix" ? (path.endsWith("/") ? path : `${path}/`) : path.replace(/\/$/, "");
-        if (canonical.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(canonical) || /[\u0000-\u001f\u007f\\]/.test(canonical)) return;
-        const readable = canonical.split("/").filter(Boolean).at(-1) ?? canonical;
-        const option = el(doc, "option", "", kind === "prefix" ? `${readable}/ (folder)` : readable) as HTMLOptionElement;
-        option.value = canonical; option.dataset.space = candidate.source.space; option.dataset.resourceKind = kind; option.dataset.capabilityId = candidate.capabilityId;
-        const matcher = signedMatcher(candidate); if (matcher !== undefined) { option.dataset.recipientMatcherKind = matcher.kind; option.dataset.recipientMatcherValue = matcher.value; }
-        source.append(option);
-      };
+      const matcher = signedMatcher(candidate);
+      const add = (path: string, kind: "exact" | "prefix"): void => addLibraryOption(path, kind, candidate.source.space as string, candidate.capabilityId, matcher);
       add(candidate.source.path, candidate.source.path.endsWith("/") ? "prefix" : "exact");
       const prefixes = candidate.scope.prefixes;
       if (Array.isArray(prefixes)) for (const prefix of prefixes) if (typeof prefix === "string") add(prefix, "prefix");
@@ -839,7 +942,12 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         const override = saveAs.value.trim();
         let content: ComposerContent | undefined;
         if (contentKind === "library") {
-          if (selectedCapability !== undefined && selectedPath !== undefined) content = { kind: "library", source: selectedCapability.source, resource: { kind: selectedResourceKind, path: selectedPath } };
+          // An owner-listed option has no capability behind it — the sender's
+          // own space is the authority — so name that space directly. The
+          // capability branch still applies to the host-capability composer.
+          const librarySource = selectedCapability?.source
+            ?? (ownerLibrarySpaceId === undefined || selectedPath === undefined ? undefined : { kind: "kv" as const, space: ownerLibrarySpaceId, path: selectedPath.replace(/\/+$/, ""), action: "tinycloud.kv/get" as const });
+          if (librarySource !== undefined && selectedPath !== undefined) content = { kind: "library", source: librarySource, resource: { kind: selectedResourceKind, path: selectedPath } };
         } else if (contentKind === "text") {
           const text = author.value;
           if (text.length > 0) content = { kind: "text", text, filename: (override.length > 0 ? override : nameChip.value.trim()) || modelFilename(text) };
