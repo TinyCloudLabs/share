@@ -12,7 +12,7 @@
     "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
     "check:deploy-config": "node scripts/validate-deploy-config.mjs",
     "preview": "vite preview",
-    "test": "vitest run --config vitest.viewer.config.ts && vitest run packages/sdk/test/email.test.ts packages/share-sdk/test/share-sdk.test.ts",
+    "test": "vitest run --config vitest.viewer.config.ts && vitest run packages/sdk/test/email.test.ts packages/share-sdk/test/share-sdk.test.ts packages/email/test/worker.test.ts",
     "test:e2e:email": "node test/e2e-email/integration.mjs",
     "link:web-sdk": "node scripts/link-web-sdk.mjs",
     "check:web-sdk-link": "node scripts/link-web-sdk.mjs --check",
@@ -24,7 +24,7 @@
     "manual:email-preview": "tsx test/e2e-email/manual-email-preview.ts",
     "smoke:manual:share-link": "tsx test/e2e-email/manual-share-link.ts --smoke --test-manual-replace",
     "release:evidence": "node test/e2e-email/release-evidence.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run -w @tinycloud/share-email typecheck",
     "sync:wireframes": "cp wireframes/*.svg public/wireframes/"
   },
   "dependencies": {

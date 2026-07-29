@@ -1,0 +1,18 @@
+// Same account and zone as `packages/registry`. `database_id` is intentionally
+// empty: the D1 database is not created yet, and this file must not claim an
+// id that does not exist. See DEPLOYMENT.md — nothing here deploys on merge.
+{
+  "name": "tinycloud-share-email",
+  "account_id": "9959301f03d2db1a5fcf5e004278d467",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-22",
+  "vars": {
+    "SHARE_ORIGIN": "https://share.tinycloud.xyz",
+    "NODE_ORIGIN": "https://node.tinycloud.xyz",
+    "EMAIL_FROM": "TinyCloud Share <invite@share.tinycloud.xyz>"
+  },
+  "d1_databases": [
+    { "binding": "DELIVERIES", "database_name": "tinycloud-share-email", "database_id": "" }
+  ],
+  "routes": [{ "pattern": "email.tinycloud.xyz/*", "zone_id": "29b3a489c28c19707f8a9dd91da9dc42" }]
+}
