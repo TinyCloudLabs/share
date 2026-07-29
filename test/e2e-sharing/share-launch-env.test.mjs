@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
 
+const canonicalOrigins = {
+  credentials: "https://witness.credentials.org",
+  node: "https://node.tinycloud.xyz",
+  registry: "https://registry.tinycloud.xyz",
+};
+
 function baseArgs() {
   return {
     host: "127.0.0.1",
@@ -13,6 +19,9 @@ function baseArgs() {
     walletOrigin: "http://127.0.0.1:4300",
     shareOrigin: "http://127.0.0.1:4123",
     registryOrigin: "http://127.0.0.1:4400",
+    canonicalOrigins,
+    nodeTransportOrigin: "http://127.0.0.1:4500",
+    credentialsTransportOrigin: "http://127.0.0.1:4600",
   };
 }
 
@@ -30,10 +39,35 @@ test("share host launch env carries the exact host/port/trust/registry/node/herm
     SHARE_HERMETIC_WALLET_ORIGIN: "http://127.0.0.1:4300",
     SHARE_HERMETIC_BROWSER_ORIGIN: "http://127.0.0.1:4123",
     SHARE_HERMETIC_REGISTRY_ORIGIN: "http://127.0.0.1:4400",
+    SHARE_HERMETIC_COMPOSITION: "true",
+    SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({
+      node: { origin: "https://node.tinycloud.xyz", transportOrigin: "http://127.0.0.1:4500" },
+      credentials: { origin: "https://witness.credentials.org", transportOrigin: "http://127.0.0.1:4600" },
+      registry: { origin: "https://registry.tinycloud.xyz", transportOrigin: "http://127.0.0.1:4400" },
+    }),
   });
 });
 
-test("share host launch env never sets static authority, fixture, composition, allow-test, or binding-store variables", () => {
+// TC-306. This is the assertion whose absence let the harness proxy
+// /delegate, /invoke, /share/v1/*, /share/v2/*, /info and /v1/share-email/* to
+// the public production node for thirteen rounds of fixes while the locally
+// built node under test received zero browser requests. Every route
+// src/host/upstream.ts can return is one of these three origins, so requiring
+// all three to be loopback is exhaustive.
+test("share host launch env routes every proxied upstream to loopback, never to a production origin", () => {
+  const env = buildShareHostLaunchEnv(baseArgs());
+
+  assert.equal(env.SHARE_HERMETIC_COMPOSITION, "true", "SHARE_HERMETIC_UPSTREAMS_JSON is ignored without SHARE_HERMETIC_COMPOSITION=true");
+  const routes = JSON.parse(env.SHARE_HERMETIC_UPSTREAMS_JSON);
+  assert.deepEqual(Object.keys(routes).sort(), ["credentials", "node", "registry"], "resolveShareUpstreams requires exactly these three keys");
+  for (const [service, route] of Object.entries(routes)) {
+    assert.deepEqual(Object.keys(route).sort(), ["origin", "transportOrigin"]);
+    assert.equal(route.origin, canonicalOrigins[service], `${service} route must name the exact trust-bundle origin it replaces`);
+    assert.match(route.transportOrigin, /^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/, `${service} must resolve to a loopback origin`);
+  }
+});
+
+test("share host launch env never sets static authority, fixture, allow-test, or binding-store variables", () => {
   const env = buildShareHostLaunchEnv(baseArgs());
 
   const forbiddenKeys = [
@@ -41,7 +75,6 @@ test("share host launch env never sets static authority, fixture, composition, a
     "SHARE_SENDER_CAPABILITY_JSON",
     "SHARE_SENDER_CAPABILITIES_JSON",
     "SHARE_TEST_BINDINGS_JSON",
-    "SHARE_HERMETIC_COMPOSITION",
     "SHARE_TRUST_BUNDLE_ALLOW_TEST",
     "SHARE_BINDING_STORE_ROOT",
     "SHARE_BINDING_STORE_PATH",
@@ -130,4 +163,25 @@ test("share host launch env rejects a registryOrigin carrying a path", () => {
 
 test("share host launch env rejects a non-string registryOrigin", () => {
   assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), registryOrigin: undefined }), /registryOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a production nodeTransportOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), nodeTransportOrigin: "https://node.tinycloud.xyz" }), /nodeTransportOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a missing nodeTransportOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), nodeTransportOrigin: undefined }), /nodeTransportOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects a missing credentialsTransportOrigin", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), credentialsTransportOrigin: undefined }), /credentialsTransportOrigin must be an exact http:\/\/127\.0\.0\.1:<port> origin/);
+});
+
+test("share host launch env rejects canonical origins that do not name exactly the three upstreams", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), canonicalOrigins: { ...canonicalOrigins, share: "https://share.tinycloud.xyz" } }), /canonicalOrigins must be an object naming exactly credentials, node, and registry/);
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), canonicalOrigins: undefined }), /canonicalOrigins must be an object naming exactly credentials, node, and registry/);
+});
+
+test("share host launch env rejects a loopback canonical origin, which would mean the trust bundle itself was rewritten", () => {
+  assert.throws(() => buildShareHostLaunchEnv({ ...baseArgs(), canonicalOrigins: { ...canonicalOrigins, node: "http://127.0.0.1:4500" } }), /canonicalOrigins\.node must be the exact https trust-bundle origin/);
 });

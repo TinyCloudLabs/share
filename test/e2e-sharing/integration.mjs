@@ -76,6 +76,12 @@ const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
 let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
+// TC-306. The browser audit below can only see destinations the *page*
+// requests, and the page only ever talks to the loopback Share host. The
+// Share host's own server-side upstream resolution is a second, invisible
+// destination set; it stays `allLoopback: false` until the routing gate in
+// startShare() proves otherwise against the production resolver.
+let upstreamRoutingAudit = { allLoopback: false, upstreams: null, bundleOrigins: null, routes: [] };
 let lockHeld = false;
 let cleanupStarted = false;
 
@@ -480,6 +486,29 @@ async function startFixtures(tempRoot) {
   return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, mailOrigin: mail, mailMessages, mailReplays };
 }
 
+/*
+ * TC-306 hard guard. Runs test/e2e-sharing/assert-loopback-upstreams.ts, which
+ * calls the *production* resolveShareUpstreams/upstreamForPath against the
+ * exact trust bundle and the exact launch env the Share host is about to
+ * receive, and refuses to continue unless every proxied route lands on
+ * loopback. Fail loudly here, before a single browser request is made: a
+ * harness that silently proxies to production is worse than no harness.
+ */
+function assertLoopbackShareUpstreams(launchEnv) {
+  let stdout;
+  try {
+    stdout = execFileSync(join(shareRoot, "node_modules/.bin/tsx"), [join(shareRoot, "test/e2e-sharing/assert-loopback-upstreams.ts")], {
+      cwd: shareRoot, encoding: "utf8", env: { ...process.env, ...launchEnv }, stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const detail = `${String(error?.stderr ?? "")}${String(error?.stdout ?? "")}`.trim();
+    throw new Error(`Share host upstream routing gate failed: ${detail.length > 0 ? detail.slice(-2000) : error instanceof Error ? error.message : String(error)}`);
+  }
+  const audit = JSON.parse(stdout);
+  checks.push(`Share host upstream routing gate resolved every proxied path to loopback through the production resolver: ${JSON.stringify(audit.upstreams)} from production bundle origins ${JSON.stringify(audit.bundleOrigins)}.`);
+  return { allLoopback: true, upstreams: audit.upstreams, bundleOrigins: audit.bundleOrigins, routes: audit.routes };
+}
+
 async function startShare(tempRoot, fixtures) {
   const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/feat/sharing-production-live");
   const sdkLink = join(shareRoot, "node_modules/@tinycloud/web-sdk");
@@ -502,6 +531,11 @@ async function startShare(tempRoot, fixtures) {
     "Share trust bundle nodeAudience must equal the canonical enrolled Node enforcer audience used for SHARE_NODE_ENFORCER_DID",
   );
   await writeFile(trustPath, shareTrustBundleJson, { flag: "wx" });
+  assert.deepEqual(
+    { node: JSON.parse(shareTrustBundleJson).nodeOrigin, credentials: JSON.parse(shareTrustBundleJson).credentialsOrigin, registry: JSON.parse(shareTrustBundleJson).registryOrigin },
+    { node: canonical.node, credentials: canonical.credentials, registry: canonical.registry },
+    "hermetic upstream routes must name the exact canonical origins the Share trust bundle carries",
+  );
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
@@ -509,10 +543,14 @@ async function startShare(tempRoot, fixtures) {
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
-  const share = run("npm", ["run", "start:deploy"], shareRoot, buildShareHostLaunchEnv({
+  const shareLaunchEnv = buildShareHostLaunchEnv({
     host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.nodeId,
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
-  }));
+    canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
+    nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
+  });
+  upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
+  const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
   await waitFor(`${origin}/health/readiness`);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
@@ -664,115 +702,6 @@ function safeBrowserDiagnostic(value) {
   const object = value;
   const message = typeof object.message === "string" ? object.message : typeof object.error === "string" ? object.error : undefined;
   return { type: Array.isArray(value) ? "array" : "object", message: message === undefined ? undefined : safeBrowserDiagnostic(message) };
-}
-
-async function browserGateArchive(origin, walletOrigin, mailOrigin) {
-  await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
-  const initialMail = await (await fetch(`${mailOrigin}/emails`)).json();
-  assert.deepEqual(initialMail.messages, []);
-  checks.push("Mail capture reset and confirmed zero delivery attempts before browser link creation.");
-  await agent(["network", "requests", "--clear"]);
-  await agent(["eval", `location.href=${JSON.stringify(`${origin}/share.html`)}`]);
-  await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
-  await agent(["eval", walletBootstrapScript(walletOrigin)]);
-  await agent(["eval", `(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:input.url;var p=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))p.then(function(r){r.clone().text().then(function(body){window.__tinycloudAuthDiagnostics.push({url:u,status:r.status,body:body.slice(0,2000)})})});return p;};})()`]);
-  await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
-  await agent(["click", "button.auth-button"]);
-  await agent(["wait", "1000"]);
-  await agent(["find", "text", "TinyCloud E2E Wallet", "click"]);
-  // The mounted fixture already provisions a space. A first-run prompt is
-  // optional, so do not spend a browser timeout probing for it on every flow.
-  await agent(["wait", "text=Shared by me."]);
-  if (openComposer) {
-    await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='New share');if(!button)throw new Error('New share action is not present');button.click();return true;})()"]);
-    await agent(["wait", "text=Share a file"]);
-  }
-  checks.push("agent-browser completed the real OpenKey external-wallet/SIWE authentication path with a deterministic EIP-1193/EIP-6963 provider.");
-
-  await agent(pasteIntoDropzone("# Hermetic sharing\n\nMarkdown created in the browser."));
-  await agent(openAdvancedSettings);
-  await agent(["select", "select[name=format]", "compact"]);
-  await agent(["click", "input[value=bearer]"]);
-  await agent(["click", "button.create-link-button"]);
-  await agent(["wait", "text=Your private link is ready"]);
-  const compact = await agent(["get", "value", "#generated-share-link"]);
-  assert.match(compact, /^https:\/\/share\.tinycloud\.xyz\/s\/[^#]+#k=/);
-  checks.push("Browser-created Markdown produced an encrypted compact link.");
-
-  // The bearer viewer is a separate production entrypoint. Re-open the
-  // authenticated composer before starting the addressed flow instead of
-  // relying on a viewer control that intentionally does not exist on the
-  // read-only surface.
-  await agent(["eval", `location.href=${JSON.stringify(`${origin}/share.html`)}`]);
-  await agent(["wait", "text=Share a file"]);
-  await agent(["upload", "input[name=document]", join(shareRoot, "test/e2e-sharing/fixture.md")]);
-  await agent(openAdvancedSettings);
-  await agent(["select", "select[name=format]", "inline"]);
-  await agent(["click", "button.create-link-button"]);
-  await agent(["wait", "text=Your private link is ready"]);
-  const inline = await agent(["get", "value", "#generated-share-link"]);
-  assert.match(inline, /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/);
-  checks.push("Browser upload produced an encrypted inline link.");
-
-  const localCompact = new URL(compact); localCompact.protocol = "http:"; localCompact.host = new URL(origin).host;
-  await agent(["eval", `location.href=${JSON.stringify(localCompact.href)}`]);
-  await agent(["wait", "1500"]);
-  const viewerSnapshot = await agent(["snapshot"]);
-  if (!viewerSnapshot.includes("shared via link")) throw new Error(`viewer did not render the compact share; local compact=${localCompact.href}; snapshot=${viewerSnapshot.slice(0, 2000)}`);
-  const renderedMarkdown = await agent(["eval", "document.querySelector('iframe')?.srcdoc.includes('Hermetic sharing') === true"]);
-  assert.equal(renderedMarkdown, "true");
-  gateResults.bearer = true;
-  checks.push("Bearer compact link rendered the encrypted Markdown in the isolated viewer.");
-  const bearerMail = await (await fetch(`${mailOrigin}/emails`)).json();
-  assert.deepEqual(bearerMail.messages, []);
-  checks.push("Bearer link creation remained link-only with zero mail delivery attempts.");
-
-  // Addressed flows intentionally continue in the same authenticated browser
-  // session. The composer keeps link creation and delivery separate, so the
-  // mail capture must remain empty until the explicit confirmation button is
-  // pressed.
-  await agent(["open", `${origin}/share.html`]);
-  await agent(["wait", "text=Share a file"]);
-  await agent(["click", "input[value=exactEmail]"]);
-  await agent(["fill", "input[name=recipient-value]", "sam@tinycloud.xyz"]);
-  await agent(pasteIntoDropzone("# Exact email\n\nEncrypted exact-recipient Markdown."));
-  await agent(openAdvancedSettings);
-  await agent(["fill", "input[name=delivery-email]", "sam@tinycloud.xyz"]);
-  await agent(["click", "button.create-link-button"]);
-  await agent(["wait", "text=Your private link is ready"]);
-  const exactUrl = await agent(["get", "value", "#generated-share-link"]);
-  assert.match(exactUrl, /^https:\/\/share\.tinycloud\.xyz\/s\//);
-  const beforeConfirm = await (await fetch(`${mailOrigin}/emails`)).json();
-  assert.deepEqual(beforeConfirm.messages, []);
-  checks.push("Encrypted exact-email link was created without delivery; mail capture remained empty before confirmation.");
-  await agent(["eval", "(function(){var old=window.fetch;window.__tinycloudDomainNotifyResponse=null;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');return old.apply(this,arguments).then(function(response){if(u.includes('/v1/share-email/invitations')){response.clone().text().then(function(body){window.__tinycloudDomainNotifyResponse={status:response.status,body:body.slice(0,2000)};});}return response;});};})()"]);
-  await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "2000"]);
-  const domainNotificationStatus = agentString(await agent(["eval", "JSON.stringify({status:(document.querySelector('.notification-status')?.textContent||''),response:window.__tinycloudDomainNotifyResponse})"]));
-  if (!String(domainNotificationStatus?.status ?? "").startsWith("Email queued")) throw new Error("domain notification did not complete: " + JSON.stringify(domainNotificationStatus));
-  const exactMail = await (await fetch(`${mailOrigin}/emails`)).json();
-  assert.equal(exactMail.messages.length, 1);
-  const exactMailText = JSON.stringify(exactMail.messages[0]);
-  assert.match(exactMailText, /sam@tinycloud\.xyz/);
-  assert.match(exactMailText, /https:\/\/share\.tinycloud\.xyz\/s\//);
-  gateResults.exactEmail = true;
-  gateResults.notification = true;
-  checks.push("Explicit confirmation queued exactly one exact-address notification and the captured message contained the exact Share URL.");
-  const finalRequestsPayload = JSON.parse(await agent(["network", "requests", "--json"]));
-  const finalRequests = Array.isArray(finalRequestsPayload) ? finalRequestsPayload : Array.isArray(finalRequestsPayload.data) ? finalRequestsPayload.data : finalRequestsPayload.data?.requests ?? [];
-  const finalTelemetry = JSON.stringify(finalRequests);
-  assert.equal(finalTelemetry.includes("claimSecret"), false, "same-origin telemetry leaked claim secret");
-  assert.equal(finalTelemetry.includes("amh_sql_001"), false, "same-origin telemetry leaked static SQL authority handle");
-  assert.equal(finalTelemetry.includes("amh_kv_001"), false, "same-origin telemetry leaked static KV authority handle");
-  checks.push("Final agent-browser same-origin telemetry assertion observed no claim secret or static authority handle after explicit notification.");
-  const requestsPayload = JSON.parse(await agent(["network", "requests", "--json"]));
-  const requests = Array.isArray(requestsPayload) ? requestsPayload : Array.isArray(requestsPayload.data) ? requestsPayload.data : requestsPayload.data?.requests ?? [];
-  externalRequests = requests.filter((entry) => { try { const url = new URL(entry.url); return url.protocol !== "http:" || (url.hostname !== "127.0.0.1" && url.hostname !== "localhost"); } catch { return true; } });
-  if (externalRequests.length !== 0) throw new Error(`Browser attempted non-loopback destinations: ${JSON.stringify(externalRequests.map((entry) => entry.url).slice(0, 20))}`);
-  const telemetry = JSON.stringify(requests);
-  for (const secret of ["claimSecret", "amh_sql_001", "amh_kv_001"]) assert.equal(telemetry.includes(secret), false, `browser telemetry leaked production secret or static authority handle: ${secret}`);
-  gateResults.browser = true;
-  checks.push("Final agent-browser network audit observed zero unmocked external destinations and no claim secret or static authority handle.");
 }
 
 async function browserGate(origin, walletOrigin, mailOrigin) {
@@ -1056,7 +985,15 @@ async function writeArtifact(status, summary, extraBlockers = []) {
     const digestInput = Buffer.concat([Buffer.from(commit), Buffer.from("\0"), Buffer.from(diff), Buffer.from("\0"), ...untrackedBytes.map((value) => typeof value === "string" ? Buffer.from(value) : value)]);
     repositoryDigests[name] = { commit, digest: createHash("sha256").update(digestInput).digest("hex"), untracked: files };
   }
-  const result = { status, summary, localUnpushedMode, releaseInputsVerified, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  // TC-306: zeroExternalDestinations used to mean "the browser made no
+  // non-loopback request", which is trivially true even when the Share host
+  // proxies every one of those loopback requests straight out to
+  // https://node.tinycloud.xyz — the hop happens server-side, after the
+  // browser's request has already terminated on loopback. It now also
+  // requires the upstream routing gate to have proven the Share host's own
+  // three destinations are loopback, which is the destination set the browser
+  // audit structurally cannot see.
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
@@ -1183,6 +1120,6 @@ try {
 
 const missingFlows = Object.entries({ exactEmail: gateResults.exactEmail, domain: gateResults.domain, bearer: gateResults.bearer, editConflict: gateResults.editConflict, folder: gateResults.folder, notification: gateResults.notification, denialMatrix: gateResults.denialMatrix }).filter(([, passed]) => !passed).map(([name]) => name);
 if (missingFlows.length > 0) blockers.push(`Browser gate did not pass required flow(s): ${missingFlows.join(", ")}.`);
-const complete = blockers.length === 0 && gateResults.browser && gateResults.senderLibrary && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix && externalRequests.length === 0;
+const complete = blockers.length === 0 && upstreamRoutingAudit.allLoopback && gateResults.browser && gateResults.senderLibrary && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix && externalRequests.length === 0;
 await writeArtifact(complete ? "complete" : "blocked", complete ? "Hermetic production-shaped sharing browser gate passed." : "Hermetic gate executed the real local composition and recorded the release blockers without inferring success.");
 process.exitCode = complete ? 0 : 1;
