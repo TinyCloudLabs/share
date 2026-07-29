@@ -93,6 +93,33 @@ function writePermissions(capabilities: readonly UploadCapability[]): Permission
   return permissions;
 }
 
+/*
+ * TC-344. The owner-policy path (`createOwnerPolicyShare`) is the only path
+ * the shipped app takes for an addressed share, and it works entirely inside
+ * the sender's *own* space: it lists that space to build the library picker,
+ * reads a picked object or folder, and writes the shared copy under
+ * `shares/<shareId>/`.
+ *
+ * Until now the manifest's only KV grants came from `writePermissions`, i.e.
+ * were derived from server-issued sender capabilities. No authenticated path
+ * issues those any more — `docs/share-host-deployment.md` records that the
+ * wallet-rooted capability-issuance path is not yet a supported shape, and
+ * `GET /api/share/capabilities` consequently returns `[]` for every session.
+ * So the session was built with no KV authority at all and every addressed
+ * share failed the instant it touched storage.
+ *
+ * This grant is the sender's own wallet-rooted authority over the sender's
+ * own space. It delegates nothing to the Share host and adds no server-held
+ * material; the Share host never sees this session's capabilities.
+ *
+ * The path is deliberately "" (whole service on this space) and never "/":
+ * the recap encoder joins "/" as `<space>/<service>//`, which the node's
+ * byte-prefix resource matching can never extend.
+ */
+export function ownerSpacePermissions(): PermissionEntry[] {
+  return [{ service: "tinycloud.kv", space: "share", path: "", actions: ["get", "put", "list", "metadata"] }];
+}
+
 function historyPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v1/entries/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
 }
@@ -119,6 +146,7 @@ export async function createTinyCloudClient(
     defaults: false,
     includePublicSpace: false,
     permissions: [
+      ...ownerSpacePermissions(),
       ...writePermissions(capabilities),
       ...historyPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
