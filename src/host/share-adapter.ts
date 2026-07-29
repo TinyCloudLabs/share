@@ -7,6 +7,8 @@ import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
+import { derivablePrincipal, derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
+import { assertSecurePath, secureReadSync, SECURE_APPEND, SECURE_CREATE, SECURE_READ } from "./secure-path.js";
 import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamResponse } from "./upstream.js";
 
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
@@ -43,17 +45,19 @@ const REGISTRY_AUTHORIZATION_DOMAIN =
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
 export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
-const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
-const SECURE_READ = constants.O_RDONLY | NO_FOLLOW;
-const SECURE_CREATE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
-const SECURE_APPEND = constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | NO_FOLLOW;
-
 class PayloadTooLargeError extends Error {}
 
 export interface BindingStore {
   readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
+}
+
+async function secureRead(path: string): Promise<string> {
+  assertSecurePath(path);
+  const handle = await open(path, SECURE_READ);
+  try { return await handle.readFile("utf8"); }
+  finally { await handle.close(); }
 }
 
 /** Production bindings must live inside the persistent Share volume. */
@@ -79,43 +83,6 @@ export function validateProductionBindingStorePath(value: string, root = PRODUCT
     throw new Error("binding store path must be a descendant of the configured persistent Share volume");
   }
   return normalized;
-}
-
-function assertSecurePath(path: string, allowMissingLeaf = true): void {
-  const segments = path.split("/").slice(1);
-  let current = "";
-  for (const [index, segment] of segments.entries()) {
-    current += `/${segment}`;
-    let entry;
-    try { entry = lstatSync(current); }
-    catch (error) {
-      if (allowMissingLeaf && index === segments.length - 1 && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    // macOS exposes /var as a fixed system alias for /private/var; it is not
-    // operator-controlled and is needed for the local temp-root security tests.
-    if (entry.isSymbolicLink()) {
-      if (!(process.platform === "darwin" && current === "/var")) throw new Error("binding store path contains a symlink");
-      continue;
-    }
-    if (index < segments.length - 1 && !entry.isDirectory()) throw new Error("binding store path parent is not a directory");
-  }
-  const parent = path.slice(0, path.lastIndexOf("/"));
-  realpathSync(parent);
-}
-
-function secureReadSync(path: string): string {
-  assertSecurePath(path);
-  const descriptor = openSync(path, SECURE_READ);
-  try { return readFileSync(descriptor, "utf8"); }
-  finally { closeSync(descriptor); }
-}
-
-async function secureRead(path: string): Promise<string> {
-  assertSecurePath(path);
-  const handle = await open(path, SECURE_READ);
-  try { return await handle.readFile("utf8"); }
-  finally { await handle.close(); }
 }
 
 function scryptAsync(password: string, salt: Uint8Array, length: number, options: { readonly N: number; readonly r: number; readonly p: number; readonly maxmem: number }): Promise<Buffer> {
@@ -265,6 +232,8 @@ export interface ShareHostOptions {
   readonly registryTransportOrigin: string;
   readonly authUsers?: readonly AuthUser[];
   readonly registryUploadPrivateKey?: Uint8Array;
+  /** Resolves the per-principal sender signing identity; absent means the sender path cannot serve any session. */
+  readonly senderIdentitySource?: SenderIdentitySource;
   readonly senderEnabled: boolean;
   readonly testMode: boolean;
   /** Explicit local production-shaped composition; never enabled by trust data. */
@@ -360,16 +329,26 @@ function parsePolicy(value: unknown, scope: Record<string, unknown>, source: Con
   return { ...policy, source: policySource, recipientEmail };
 }
 
-function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } {
-  const value = JSON.parse(raw) as Record<string, unknown>;
-  if (typeof value !== "object" || value === null || (Object.keys(value).length !== 3 && Object.keys(value).length !== 4) || !Object.hasOwn(value, "scope") || !Object.hasOwn(value, "source") || !Object.hasOwn(value, "policy") || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null || (value.userId !== undefined && typeof value.userId !== "string")) throw new Error("capability shape");
+/**
+ * Parses one sender capability descriptor and binds it to the identity that is
+ * allowed to sign with it.
+ *
+ * `identity` is the sender key of the *authenticated session* the descriptor is
+ * being admitted for (or, in the explicit test-authority composition, the
+ * trust-bundle sender key). `principal`, when supplied, is the verified session
+ * principal: the descriptor's policy owner must be that exact principal, so a
+ * session can never admit another wallet's authority.
+ */
+function parseCapabilityValue(value: Record<string, unknown>, bundle: ShareTrustBundle, identity: SenderIdentity, principal?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || (Object.keys(value).length !== 3 && Object.keys(value).length !== 4) || !Object.hasOwn(value, "scope") || !Object.hasOwn(value, "source") || !Object.hasOwn(value, "policy") || typeof value.scope !== "object" || value.scope === null || typeof value.source !== "object" || value.source === null || (value.userId !== undefined && typeof value.userId !== "string")) throw new Error("capability shape");
   const scope = { ...(value.scope as Record<string, unknown>) };
   if (typeof value.userId === "string") scope.userId = value.userId;
-  if (scope.senderDid !== bundle.sender.senderDid || scope.targetOrigin !== bundle.public.nodeOrigin || scope.nodeAudience !== bundle.public.nodeAudience) throw new Error("capability trust binding");
+  if (scope.senderDid !== identity.did || identity.publicKey.length === 0 || scope.targetOrigin !== bundle.public.nodeOrigin || scope.nodeAudience !== bundle.public.nodeAudience) throw new Error("capability trust binding");
+  if (principal !== undefined && !capabilityOwnedByPrincipal({ scope }, principal)) throw new Error("capability holder binding");
   delete scope.senderPrivateKey;
   delete scope.privateKey;
   scope.shareOrigin = bundle.public.shareOrigin;
-  scope.signingCapability = { capabilityId: toBase64Url(randomBytes(16)), publicKey: bundle.sender.senderPublicKey };
+  scope.signingCapability = { capabilityId: toBase64Url(randomBytes(16)), publicKey: identity.publicKey };
   const trustedNode = scope.trustedNode as Record<string, unknown>;
   if (trustedNode === undefined || typeof trustedNode !== "object" || trustedNode.invitationPublicKey === undefined) throw new Error("capability enrollment");
   trustedNode.invitationPublicKey = typeof trustedNode.invitationPublicKey === "string" ? trustedNode.invitationPublicKey : toBase64Url(new Uint8Array(trustedNode.invitationPublicKey as number[]));
@@ -379,6 +358,10 @@ function parseCapability(raw: string, bundle: ShareTrustBundle): { scope: Record
   for (const key of ["expiryMin", "expiryMax", "expiresAt", "expiryDefault"]) if (scope[key] !== undefined) exactExpiry(scope[key], key);
   const policy = parsePolicy(value.policy, scope, source);
   return { scope, source, policy };
+}
+
+function parseCapability(raw: string, bundle: ShareTrustBundle, identity: SenderIdentity): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } {
+  return parseCapabilityValue(JSON.parse(raw) as Record<string, unknown>, bundle, identity);
 }
 
 function browserSafeScope(value: Record<string, unknown>): Record<string, unknown> {
@@ -395,18 +378,41 @@ function browserSafeScope(value: Record<string, unknown>): Record<string, unknow
 }
 
 interface AuthUser { readonly userId: string; readonly username: string; readonly passwordHash: string; }
-interface ShareSession { readonly userId: string; readonly expiresAt: number; }
+/** A capability plus the identity authorized to sign with it; never serialized. */
+interface CapabilityRecord { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown>; readonly identity: SenderIdentity }
+interface ShareSession { readonly userId: string; readonly expiresAt: number; readonly capabilities: Map<string, CapabilityRecord> }
+/** Bounds the per-session authority a single wallet may enroll. */
+const SESSION_CAPABILITY_LIMIT = 32;
+/**
+ * The signing idempotency cache is reachable in production now that the sender
+ * path can boot, so it is bounded in both size and time: an entry only has to
+ * outlive one client retry.
+ */
+const SIGNER_CACHE_LIMIT = 4096;
+const SIGNER_CACHE_TTL_MS = 10 * 60 * 1000;
+/**
+ * Bounds concurrent sessions *per principal*, which is the only bound that is
+ * safe here: a global cap would let a stranger's disposable-wallet churn evict
+ * a live user's session, trading a memory bound for a forced logout. Total
+ * session state remains bounded the same way it was before TC-348 — by who can
+ * complete a SIWE ceremony — and expired entries are now actively swept.
+ */
+const SESSIONS_PER_PRINCIPAL = 8;
 
-function openKeyAddressFromOwnerDid(value: unknown): string | undefined {
+/**
+ * Ownership is the *complete* normalized DID, chain id included: a session on
+ * one EIP-155 chain must not select a capability owned on another.
+ */
+function normalizedOwnerDid(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const match = /^did:pkh:eip155:[1-9][0-9]*:(0x[0-9a-fA-F]{40})$/.exec(value);
-  return match?.[1]?.toLowerCase();
+  const match = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/.exec(value);
+  return match === null ? undefined : `did:pkh:eip155:${match[1]}:${match[2]!.toLowerCase()}`;
 }
 
 function capabilityOwnedByPrincipal(candidate: { readonly scope: Record<string, unknown> }, principal: string): boolean {
-  const walletAddress = openKeyAddressFromOwnerDid(principal);
-  if (walletAddress !== undefined) {
-    return openKeyAddressFromOwnerDid(candidate.scope.policyOwnerDid) === walletAddress;
+  const ownerDid = normalizedOwnerDid(principal);
+  if (ownerDid !== undefined) {
+    return normalizedOwnerDid(candidate.scope.policyOwnerDid) === ownerDid;
   }
   return typeof candidate.scope.userId === "string" && candidate.scope.userId === principal;
 }
@@ -479,7 +485,7 @@ function sessionValid(request: Request, options: ShareHostOptions, sessions: Map
   const origin = request.headers.get("origin");
   if (!shareOriginAllowed(origin, options)) return undefined;
   const value = sessionCookie(request);
-  if (value === undefined) return options.testMode ? { userId: "fixture", expiresAt: Date.now() + 300_000 } : undefined;
+  if (value === undefined) return options.testMode ? { userId: "fixture", expiresAt: Date.now() + 300_000, capabilities: new Map() } : undefined;
   const session = sessions.get(value);
   if (session === undefined || session.expiresAt <= Date.now()) { if (session !== undefined) sessions.delete(value); return undefined; }
   return session;
@@ -715,26 +721,79 @@ async function assertPublishedBinding(binding: Record<string, unknown>, cid: str
 }
 
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown>; readiness: Record<string, boolean> } {
-  const signers = new Map<string, string>();
+  const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
   const linkOnlyUploads = new Map<string, { count: number; windowStartedAt: number }>();
   const capability = options.capability;
-  const senderReady = options.senderEnabled && options.bundle.public.nodeEnabled && capability !== undefined && options.bundle.sender.senderPrivateKey.length > 0 && options.bindingStore?.writable === true;
+  /**
+   * Drops state whose lifetime has ended. Called before issuing a session, so
+   * the cost of retaining state is paid by whoever creates it.
+   */
+  const sweep = (): void => {
+    const now = Date.now();
+    for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
+    for (const [key, entry] of signers) if (entry.expiresAt <= now) signers.delete(key);
+    for (const [key, budget] of linkOnlyUploads) if (now - budget.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS) linkOnlyUploads.delete(key);
+    for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+  };
+  const issueSession = (token: string, session: ShareSession): void => {
+    sweep();
+    // Map iteration is insertion order, so these drop the oldest first.
+    const owned = [...sessions].filter(([, candidate]) => candidate.userId === session.userId).map(([value]) => value);
+    while (owned.length >= SESSIONS_PER_PRINCIPAL) sessions.delete(owned.shift()!);
+    sessions.set(token, session);
+  };
+  /**
+   * Readiness is a property of the sender *path*, not of one pre-issued key.
+   * `senderReady` answers "is this host configured to serve a sender operation
+   * for an authenticated session": the flag is on, the trusted node is
+   * enabled, a per-principal signing identity can be resolved, and bindings
+   * are durably writable. Whether a given session has enrolled authority is a
+   * per-request fact and is reported per request, not here — a session-scoped
+   * capability could never flip a construction-time constant.
+   */
+  const senderReady = options.senderEnabled && options.bundle.public.nodeEnabled && options.senderIdentitySource !== undefined && options.bindingStore?.writable === true;
   const authReady = true;
   const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, nodeAudience: options.bundle.public.nodeAudience, enforcerDid: process.env.SHARE_NODE_ENFORCER_DID ?? options.bundle.public.nodeAudience, nodeEnabled: options.bundle.public.nodeEnabled, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, issuerEnabled: options.bundle.public.issuerEnabled, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
-  const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): { scope: Record<string, unknown>; source: ContentSource; policy: Record<string, unknown> } => {
-    if (!senderReady || capability === undefined) throw new Error("sender_not_ready");
+  /**
+   * The signing identity for a session. Derived per verified principal, so a
+   * session for one wallet can never sign under another wallet's identity.
+   */
+  const sessionIdentity = (session: ShareSession): SenderIdentity => {
+    if (options.senderIdentitySource === undefined) throw new Error("sender_not_ready");
+    return options.senderIdentitySource.forPrincipal(session.userId);
+  };
+  /**
+   * Statically configured capabilities exist only in the explicit
+   * test-authority composition. Their signing key is re-resolved and must
+   * still match the public key frozen into the descriptor at parse time.
+   */
+  const staticRecord = (candidate: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }): CapabilityRecord | undefined => {
+    if (options.senderIdentitySource === undefined) return undefined;
+    const principal = typeof candidate.scope.policyOwnerDid === "string" ? candidate.scope.policyOwnerDid : typeof candidate.scope.userId === "string" ? candidate.scope.userId : undefined;
+    if (principal === undefined) return undefined;
+    let identity: SenderIdentity;
+    try { identity = options.senderIdentitySource.forPrincipal(principal); } catch { return undefined; }
+    if (identity.publicKey.length === 0 || identity.publicKey !== (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.publicKey) return undefined;
+    return { ...candidate, identity };
+  };
+  const sessionCandidates = (session: ShareSession): CapabilityRecord[] => [
+    ...session.capabilities.values(),
+    ...[...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].map(staticRecord).filter((record): record is CapabilityRecord => record !== undefined),
+  ].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
+  const selectedCapability = (request: Request, session: ShareSession, requestedCapabilityId?: string): CapabilityRecord => {
+    if (!senderReady) throw new Error("sender_not_ready");
     if (requestedCapabilityId === undefined && new URL(request.url).searchParams.has("capabilityId")) throw new Error("query capability selection is not supported");
     const requested = requestedCapabilityId ?? null;
-    const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
+    const candidates = sessionCandidates(session);
     if (requested !== null) {
       const selected = candidates.find((candidate) => (candidate.scope.signingCapability as Record<string, unknown> | undefined)?.capabilityId === requested);
       if (selected === undefined) throw new Error("capability is not authorized for this session");
       return selected;
     }
     const selected = candidates[0];
-    if (selected === undefined) throw new Error("capability is unavailable");
+    if (selected === undefined) throw new Error("sender_capability_required");
     return selected;
   };
   const authUsers = options.authUsers ?? [];
@@ -759,6 +818,9 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const requestOrigin = request.headers.get("origin");
         if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
         const now = Date.now();
+        // Bounded by TTL only. A hard cap here would be worse than the memory
+        // it saves: evicting the oldest live challenge lets an unauthenticated
+        // burst cancel a victim's pending sign-in before they submit it.
         for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
         const nonce = toBase64Url(randomBytes(24));
         const expiresAt = now + OPENKEY_NONCE_TTL_MS;
@@ -786,7 +848,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // A valid OpenKey proof is an authentication ceremony, not a sender
         // capability lookup. Sender capabilities are checked only when a
         // sender operation selects one below.
-        sessions.set(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000 });
+        issueSession(token, { userId: `did:pkh:eip155:1:${normalizedAddress}`, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
         return response(200, { status: "authenticated", address: normalizedAddress }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/login" && request.method === "POST") {
@@ -795,7 +857,8 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const username = safeString(body.username, "username"); const password = safeString(body.password, "password");
         const user = authUsers.find((candidate) => candidate.username === username);
         if (user === undefined || !(await verifyPassword(password, user.passwordHash))) return generic(401);
-        const token = toBase64Url(randomBytes(32)); sessions.set(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000 });
+        const token = toBase64Url(randomBytes(32));
+        issueSession(token, { userId: user.userId, expiresAt: Date.now() + 1_800_000, capabilities: new Map() });
         return response(200, { status: "authenticated" }, { "set-cookie": sessionCookieHeader(token, 1_800, request) });
       }
       if (url.pathname === "/api/share/auth/logout" && request.method === "POST") {
@@ -810,8 +873,37 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       }
       if (url.pathname === "/api/share/capabilities" && request.method === "GET") {
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const candidates = [...(options.capabilities?.values() ?? (capability === undefined ? [] : [capability]))].filter((candidate) => capabilityOwnedByPrincipal(candidate, session.userId));
+        const candidates = sessionCandidates(session);
         return response(200, { capabilities: candidates.map((candidate) => ({ capabilityId: (candidate.scope.signingCapability as Record<string, unknown>).capabilityId, scope: browserSafeScope(candidate.scope), source: candidate.source, policy: candidate.policy })) });
+      }
+      /**
+       * The wallet-rooted sender identity for this session. The holder mints
+       * node authority material bound to this exact `senderDid`; the private
+       * half never leaves the host.
+       */
+      if (url.pathname === "/api/share/sender-identity" && request.method === "GET") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
+        const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
+        const identity = sessionIdentity(session);
+        return response(200, { alg: "Ed25519", senderDid: identity.did, senderPublicKey: identity.publicKey });
+      }
+      /**
+       * Admits one wallet-rooted sender capability into the authenticated
+       * session. The descriptor must already be bound to this session's sender
+       * identity and to this session's verified principal as its policy owner;
+       * both are re-derived here and never read from the request.
+       */
+      if (url.pathname === "/api/share/capabilities" && request.method === "POST") {
+        if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
+        const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
+        if (session.capabilities.size >= SESSION_CAPABILITY_LIMIT) return response(429, { error: { code: "sender_capability_limit" } });
+        const body = await boundedJson(request);
+        if (Object.keys(body).join(",") !== "capability" || typeof body.capability !== "object" || body.capability === null || Array.isArray(body.capability)) return generic(400);
+        const identity = sessionIdentity(session);
+        const parsed = parseCapabilityValue(body.capability as Record<string, unknown>, options.bundle, identity, session.userId);
+        const capabilityId = (parsed.scope.signingCapability as Record<string, unknown>).capabilityId as string;
+        session.capabilities.set(capabilityId, { ...parsed, identity });
+        return response(201, { capabilityId, senderDid: identity.did, scope: browserSafeScope(parsed.scope), source: parsed.source, policy: parsed.policy });
       }
       if (url.pathname === `${LINK_ONLY_REGISTRY_PREFIX}/public-key` && request.method === "GET") {
         if (options.registryUploadPrivateKey === undefined) return response(503, { error: { code: "registry_upload_not_ready" } });
@@ -839,17 +931,25 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const expected = stable({ purpose: body.purpose, message, binding });
         const idempotency = request.headers.get("idempotency-key");
         if (idempotency === null || !B64_128.test(idempotency)) return generic(400);
-        const key = hash(`${capabilityId}:${idempotency}:${expected}`);
-        let signature = signers.get(key);
+        // Bound to the selected capability's own signing identity, so a cached
+        // signature can never be replayed across sessions or sender keys.
+        const key = hash(`${selected.identity.did}:${capabilityId}:${idempotency}:${expected}`);
+        const cached = signers.get(key);
+        let signature = cached === undefined || cached.expiresAt <= Date.now() ? undefined : cached.signature;
         if (signature === undefined) {
           const parsedMessage = body.purpose === "envelope" ? JSON.parse(message) as Record<string, unknown> : undefined;
           const domain = new TextEncoder().encode(body.purpose === "delegationAuthoring" ? SIGNATURE_DOMAINS.delegationAuthoring : body.purpose === "envelope" && parsedMessage?.version === 2 ? SIGNATURE_DOMAINS.envelopeV2 : SIGNATURE_DOMAINS[body.purpose === "envelope" ? "envelope" : "inviteAuthorization"]);
           const bytes = new TextEncoder().encode(message);
           const preimage = new Uint8Array(domain.length + bytes.length); preimage.set(domain); preimage.set(bytes, domain.length);
-          signature = toBase64Url(ed25519.sign(preimage, fromBase64Url(options.bundle.sender.senderPrivateKey)));
-          signers.set(key, signature);
+          signature = toBase64Url(ed25519.sign(preimage, selected.identity.privateKey));
+          if (signers.size >= SIGNER_CACHE_LIMIT) {
+            const now = Date.now();
+            for (const [candidate, entry] of signers) if (entry.expiresAt <= now) signers.delete(candidate);
+            while (signers.size >= SIGNER_CACHE_LIMIT) signers.delete(signers.keys().next().value as string);
+          }
+          signers.set(key, { signature, expiresAt: Date.now() + SIGNER_CACHE_TTL_MS });
         }
-        return response(200, { signerDid: options.bundle.sender.senderDid, signature });
+        return response(200, { signerDid: selected.identity.did, signature });
       }
       if (url.pathname === "/api/share/bindings" && request.method === "POST") {
         if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
@@ -887,13 +987,17 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           return response(400, { error: { code: "upload_retention_invalid" } });
         }
         const uploadKey = sessionCookie(request) ?? session.userId;
-        const prior = linkOnlyUploads.get(uploadKey);
+        // The registry authorization binds to the session token, but the upload
+        // budget is keyed by the verified principal: signing out and back in
+        // must not reset the allowance or accrue a fresh accounting entry.
+        const budgetKey = session.userId;
+        const prior = linkOnlyUploads.get(budgetKey);
         const budget = prior === undefined || now - prior.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS
           ? { count: 0, windowStartedAt: now }
           : prior;
         if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
         budget.count += 1;
-        linkOnlyUploads.set(uploadKey, budget);
+        linkOnlyUploads.set(budgetKey, budget);
         const registryResponse = await proxyRegistry(
           request,
           options.registryOrigin,
@@ -921,6 +1025,9 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     } catch (error) {
       if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
       if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } });
+      // The sender path is ready but this session has enrolled no wallet-rooted
+      // authority yet: a per-session fact, deliberately distinct from readiness.
+      if (error instanceof Error && error.message === "sender_capability_required") return response(409, { error: { code: "sender_capability_required" } });
       return generic(400);
     }
   }
@@ -1023,14 +1130,18 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
   if (senderEnabled && !bundle.public.nodeEnabled) throw new Error("sender requires an enabled trusted node");
   const testAuthority = env.SHARE_TRUST_BUNDLE_ALLOW_TEST === "true";
-  if (senderEnabled && !testAuthority && env.SHARE_SENDER_CAPABILITY_JSON === undefined && env.SHARE_SENDER_CAPABILITIES_JSON === undefined) throw new Error("authenticated OpenKey sender capability is required");
+  // TC-348: sender authority is issued per authenticated OpenKey session at
+  // runtime, so there is deliberately no boot-time capability requirement. The
+  // previous guard demanded capability material that the guard above forbids,
+  // which made SHARE_SENDER_ENABLED=true unbootable in every production shape.
   const capabilityRaw = testAuthority && senderEnabled ? env.SHARE_SENDER_CAPABILITY_JSON : undefined;
   const capabilityListRaw = testAuthority && senderEnabled ? env.SHARE_SENDER_CAPABILITIES_JSON : undefined;
   if (testAuthority && senderEnabled && capabilityRaw !== undefined && capabilityListRaw !== undefined) throw new Error("configure exactly one sender capability source");
   if (testAuthority && senderEnabled && capabilityRaw === undefined && capabilityListRaw === undefined) throw new Error("sender capability material is required when SHARE_SENDER_ENABLED=true");
   const capabilityValues = capabilityRaw === undefined && capabilityListRaw === undefined ? [] : capabilityListRaw === undefined ? [capabilityRaw] : JSON.parse(capabilityListRaw) as unknown[];
   if (!Array.isArray(capabilityValues) || (testAuthority && senderEnabled && capabilityValues.length === 0) || capabilityValues.some((value) => typeof value !== "string")) throw new Error("sender capability input is invalid");
-  const parsedCapabilities = capabilityValues.map((value) => parseCapability(value as string, bundle));
+  const bootIdentity: SenderIdentity = { did: bundle.sender.senderDid, publicKey: bundle.sender.senderPublicKey, privateKey: bundle.sender.senderPrivateKey.length > 0 ? fromBase64Url(bundle.sender.senderPrivateKey) : new Uint8Array(0) };
+  const parsedCapabilities = capabilityValues.map((value) => parseCapability(value as string, bundle, bootIdentity));
   const capability = parsedCapabilities[0];
   const capabilities = new Map(parsedCapabilities.map((value, index) => [String(index), value]));
   const initialBindings = !senderEnabled || env.SHARE_TEST_BINDINGS_JSON === undefined ? {} : JSON.parse(env.SHARE_TEST_BINDINGS_JSON) as Record<string, Record<string, unknown>>;
@@ -1050,6 +1161,19 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   const bindingStore = !senderEnabled ? undefined : bindingPath === undefined ? new MemoryBindingStore(initialBindings) : new TransactionalBindingStore(bindingPath);
   if (senderEnabled && bindingStore === undefined) throw new Error("durable binding store is required when SHARE_SENDER_ENABLED=true");
   if (senderEnabled && bindingStore?.writable !== true) throw new Error("binding store is not writable");
+  /**
+   * The sender signing identity source, resolved only once the rest of the
+   * composition is valid so a broken deployment never mints key material. In
+   * production the trust bundle carries no sender secret, so identities are
+   * derived per authenticated principal from a seed created once inside the
+   * persistent Share volume; only the explicit test-authority composition can
+   * supply a bundle sender key.
+   */
+  const senderIdentitySource = !senderEnabled
+    ? undefined
+    : bundle.sender.senderPrivateKey.length > 0
+      ? staticSenderIdentitySource(bundle.sender.senderPrivateKey)
+      : derivedSenderIdentitySource(loadSenderRootSeed(env, bundle.environment, { root: bindingRoot, reserved: [bindingPath, env.SHARE_REGISTRY_UPLOAD_KEY_PATH].filter((value): value is string => value !== undefined) }));
   const registryOrigin = bundle.public.registryOrigin;
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;
@@ -1063,10 +1187,13 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
       if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) throw new Error("SHARE_AUTH_USERS_JSON is invalid");
       const user = candidate as Record<string, unknown>;
       if (typeof user.userId !== "string" || typeof user.username !== "string" || typeof user.passwordHash !== "string") throw new Error("SHARE_AUTH_USERS_JSON is invalid");
+      // Anything the host will authenticate must also be able to derive a
+      // sender identity, so this fails at startup rather than at request time.
+      if (!derivablePrincipal(user.userId)) throw new Error("SHARE_AUTH_USERS_JSON userId cannot derive a sender identity");
       parsePasswordHash(user.passwordHash);
       return { userId: user.userId, username: user.username, passwordHash: user.passwordHash };
     });
   }
   const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
 }

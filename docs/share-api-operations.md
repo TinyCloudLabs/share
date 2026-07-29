@@ -30,9 +30,24 @@ storage, and `CLOUDFLARE_TUNNEL_TOKEN` injected through the same storage. The
 pinned Cloudflare Tunnel sidecar exposes only the internal
 Share API service at `api.share.tinycloud.xyz`; the API container publishes no
 host port. `authReady` means nonce, OpenKey proof, replay, origin, and session
-issuance work. `SHARE_SENDER_ENABLED=true` requires complete valid sender key,
-exactly one capability source, and writable durable binding-store material or
-startup fails. Without an enabled sender, email sender actions fail closed with
+issuance work. `SHARE_SENDER_ENABLED=true` requires an enabled trusted node, a
+writable durable binding store, and a resolvable sender signing identity.
+Static sender key and capability variables are forbidden and are not a startup
+input; there is no deployment variable that carries sender authority. The
+sender root seed is created once at `SHARE_SENDER_ROOT_KEY_PATH`
+(`/var/lib/tinycloud/share/sender-root.key`), 0600, inside the same persistent
+volume, and each authenticated wallet gets a distinct sender `did:key` derived
+from it. `senderReady` therefore means "the sender path is configured and can
+serve an authenticated session", not "a specific static key exists". Whether a
+given session holds sender authority is a per-request fact:
+`GET /api/share/sender-identity` returns that session's `senderDid`,
+`POST /api/share/capabilities` admits a capability bound to that identity and
+to the session's own wallet as policy owner, and a session holding none gets
+JSON `409 sender_capability_required`. The capability descriptor itself is
+minted outside the Share host: the node resolves it against operator-supplied
+authority material whose `senderDid` is fixed at node boot, so a wallet's
+`senderDid` must be provisioned into that material before its sends are
+authorized. Without an enabled sender, email sender actions fail closed with
 JSON `503 sender_not_ready`; no authority is invented during CVM creation.
 Enable the OpenCredentials email capability only after its durable migrations,
 provider inputs, and readiness gate are healthy; run the controlled E2E only

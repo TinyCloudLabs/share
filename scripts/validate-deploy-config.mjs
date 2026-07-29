@@ -26,7 +26,18 @@ const senderEnabled = process.env.SHARE_SENDER_ENABLED === "true";
 if (senderEnabled && !value.nodeEnabled) throw new Error("SHARE_SENDER_ENABLED=true requires an enabled trusted node");
 if (process.env.SHARE_SENDER_PRIVATE_KEY !== undefined || process.env.SHARE_SENDER_CAPABILITY_JSON !== undefined || process.env.SHARE_SENDER_CAPABILITIES_JSON !== undefined) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
 if (process.env.SHARE_AUTH_USERS_JSON !== undefined) {
-  try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$"))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users"); }
+  // Mirrors the host's rule: a principal the deployment will authenticate must
+  // also be able to derive a sender identity (bounded, control-character-free,
+  // and free of unpaired surrogates, which would collide under UTF-8).
+  const derivable = (value) => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 256) return false;
+    for (const character of value) {
+      const code = character.codePointAt(0) ?? 0;
+      if (code < 0x20 || code === 0x7f || (code >= 0xd800 && code <= 0xdfff)) return false;
+    }
+    return true;
+  };
+  try { const users = JSON.parse(process.env.SHARE_AUTH_USERS_JSON); if (!Array.isArray(users) || users.some((user) => typeof user?.userId !== "string" || typeof user?.username !== "string" || typeof user?.passwordHash !== "string" || !user.passwordHash.startsWith("scrypt$") || !derivable(user.userId))) throw new Error(); } catch { throw new Error("SHARE_AUTH_USERS_JSON must contain scrypt-authenticated users with derivable principals"); }
 }
 const provenanceRaw = process.env.SHARE_RELEASE_PROVENANCE;
 if (typeof provenanceRaw !== "string" || provenanceRaw.length === 0) throw new Error("SHARE_RELEASE_PROVENANCE is required for deploy configuration");
@@ -36,6 +47,21 @@ const provenanceKeys = ["releaseId", "shareCommit", "nodeCommit", "openCredentia
 if (typeof provenance !== "object" || provenance === null || Array.isArray(provenance) || Object.keys(provenance).length !== provenanceKeys.length || provenanceKeys.some((key) => !Object.hasOwn(provenance, key)) || typeof provenance.releaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.releaseId) || !commit.test(provenance.shareCommit) || !commit.test(provenance.nodeCommit) || !commit.test(provenance.openCredentialsCommit) || !commit.test(provenance.sdkCommit) || provenance.shareApiImage !== process.env.SHARE_API_IMAGE || !digest.test(provenance.configurationDigest) || typeof provenance.migrationVersion !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(provenance.migrationVersion) || !immutableImage.test(provenance.rollbackImage) || typeof provenance.rollbackReleaseId !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(provenance.rollbackReleaseId)) throw new Error("SHARE_RELEASE_PROVENANCE must bind reviewed commits, image, configuration, migration, and rollback target");
 const bindingStorePath = process.env.SHARE_BINDING_STORE_PATH ?? "/var/lib/tinycloud/share/bindings.ndjson";
 if (process.env.SHARE_BINDING_STORE_ROOT !== undefined && process.env.SHARE_BINDING_STORE_ROOT !== "/var/lib/tinycloud/share") throw new Error("SHARE_BINDING_STORE_ROOT is fixed to the named Share volume");
+const senderRootKeyPath = process.env.SHARE_SENDER_ROOT_KEY_PATH ?? "/var/lib/tinycloud/share/sender-root.key";
+// The sender root seed is host-created key material inside the persistent
+// volume, never a supplied secret; it must not collide with the journal.
+if (senderEnabled) {
+  const seedRemainder = relative(resolve("/var/lib/tinycloud/share"), resolve(senderRootKeyPath));
+  if (!isAbsolute(senderRootKeyPath) || senderRootKeyPath.endsWith("/") || senderRootKeyPath.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..") || seedRemainder === "" || seedRemainder.startsWith("..") || isAbsolute(seedRemainder)) {
+    throw new Error("SHARE_SENDER_ROOT_KEY_PATH must be a normalized descendant of /var/lib/tinycloud/share");
+  }
+  // The binding store also owns `<path>.lock`, whose stale-lock reaper would
+  // otherwise remove the seed and silently rotate every wallet identity, and
+  // the registry upload key is a separate secret with its own lifecycle.
+  for (const other of [bindingStorePath, process.env.SHARE_REGISTRY_UPLOAD_KEY_PATH ?? "/var/lib/tinycloud/share/registry-upload.key"]) {
+    if (resolve(senderRootKeyPath) === resolve(other) || resolve(senderRootKeyPath) === `${resolve(other)}.lock`) throw new Error("SHARE_SENDER_ROOT_KEY_PATH must not collide with other Share key or journal material");
+  }
+}
 if (senderEnabled) {
   const root = "/var/lib/tinycloud/share";
   const remainder = relative(resolve(root), resolve(bindingStorePath));

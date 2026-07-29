@@ -694,7 +694,10 @@ describe("production trust and host boundaries", () => {
     const source = { kind: "kv", space: scope.spaceId, path: "documents/doc.md", action: "tinycloud.kv/get" };
     const common = { SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_PRIVATE_KEY: senderPrivateKey, SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) };
     expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "yes" })).toThrow(/exactly true or false/);
-    expect(() => createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_ENABLED: "true" })).toThrow(/private key|capability/);
+    // TC-348: absent static sender material is no longer a startup failure —
+    // sender authority is issued per authenticated session. What still fails
+    // closed is the durable binding store.
+    expect(() => createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_SENDER_ENABLED: "true" })).toThrow(/binding store/i);
     expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "true" })).toThrow(/forbidden|private[_ ]key/i);
     expect(() => createShareHostFromEnv({ ...common, SHARE_SENDER_ENABLED: "true", SHARE_BINDING_STORE_PATH: "/missing/share-parent/bindings.ndjson" })).toThrow(/forbidden/i);
 

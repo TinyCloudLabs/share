@@ -10,6 +10,7 @@ services:
       SHARE_BINDING_STORE_ROOT: /var/lib/tinycloud/share
       SHARE_BINDING_STORE_PATH: ${SHARE_BINDING_STORE_PATH:-/var/lib/tinycloud/share/bindings.ndjson}
       SHARE_REGISTRY_UPLOAD_KEY_PATH: /var/lib/tinycloud/share/registry-upload.key
+      SHARE_SENDER_ROOT_KEY_PATH: /var/lib/tinycloud/share/sender-root.key
       SHARE_TRUST_BUNDLE_BASE64: ${SHARE_TRUST_BUNDLE_BASE64:?set the base64-encoded validated public production trust bundle}
       SHARE_RELEASE_PROVENANCE: ${SHARE_RELEASE_PROVENANCE:?set the immutable reviewed release provenance manifest}
     command:
