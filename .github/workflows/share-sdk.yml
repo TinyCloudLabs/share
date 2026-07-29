@@ -23,6 +23,7 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - run: npm run check:share-sdk-artifact
       # Fails the merge gate on a type error. `test/e2e-prod` is excluded from
       # the root tsconfig because its `playwright` dependency is not installed
       # by this `npm ci`; check it with `npm run typecheck` inside that

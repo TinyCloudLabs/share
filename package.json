@@ -11,6 +11,7 @@
     "build:deploy": "SHARE_DEPLOY_BUILD=true vite build",
     "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
     "check:deploy-config": "node scripts/validate-deploy-config.mjs",
+    "check:share-sdk-artifact": "node scripts/validate-share-sdk-artifact.mjs",
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts && vitest run packages",
     "test:e2e:email": "node test/e2e-email/integration.mjs",
