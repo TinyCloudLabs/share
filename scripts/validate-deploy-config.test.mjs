@@ -43,3 +43,23 @@ test("forbids hermetic loopback/browser-origin CSP and auth variables in product
     assert.throws(() => run({ [name]: "http://127.0.0.1:4200" }), new RegExp(`${name} is forbidden in production deployment configuration`));
   }
 });
+
+// TC-372. The trust bundle holds no secret, so a deployment may take it from
+// the reviewed document in the repository instead of a sealed environment.
+test("accepts the committed trust bundle as a deploy source", () => {
+  assert.match(run({ SHARE_TRUST_BUNDLE: undefined, SHARE_TRUST_BUNDLE_SOURCE: "committed" }), /valid production composition/);
+  assert.match(run({ SHARE_TRUST_BUNDLE_SOURCE: "environment" }), /valid production composition/);
+});
+
+test("refuses an ambiguous or unrecognised trust bundle source", () => {
+  assert.throws(() => run({ SHARE_TRUST_BUNDLE_SOURCE: "committed" }), /exactly one Share trust bundle source/);
+  assert.throws(() => run({ SHARE_TRUST_BUNDLE: undefined, SHARE_TRUST_BUNDLE_SOURCE: "committed", SHARE_TRUST_BUNDLE_FILE: "/dev/null" }), /exactly one Share trust bundle source/);
+  assert.throws(() => run({ SHARE_TRUST_BUNDLE_SOURCE: "url" }), /must be exactly "committed" or "environment"/);
+  assert.throws(() => run({ SHARE_TRUST_BUNDLE: undefined }), /SHARE_TRUST_BUNDLE or SHARE_TRUST_BUNDLE_FILE is required/);
+});
+
+test("still rejects the test escape hatch and legacy sender authority under the committed source", () => {
+  const committed = { SHARE_TRUST_BUNDLE: undefined, SHARE_TRUST_BUNDLE_SOURCE: "committed" };
+  assert.throws(() => run({ ...committed, SHARE_TRUST_BUNDLE_ALLOW_TEST: "true" }), /SHARE_TRUST_BUNDLE_ALLOW_TEST is forbidden/);
+  assert.throws(() => run({ ...committed, SHARE_SENDER_PRIVATE_KEY: "some-value" }), /static sender authority variables are forbidden/);
+});

@@ -30,8 +30,21 @@ jobs:
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITIES_JSON") | not) and
             .services["share-api"].environment.SHARE_AUTH_USERS_JSON == "" and
             (.services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 | test("^[A-Za-z0-9+/=]+$")) and
+            .services["share-api"].environment.SHARE_TRUST_BUNDLE_SOURCE == "environment" and
             .services.cloudflared.depends_on["share-api"].condition == "service_healthy"
           ' "$RUNNER_TEMP/compose.json" >/dev/null
+      # TC-372. The unsealed selector must resolve with SHARE_TRUST_BUNDLE_BASE64
+      # absent entirely — that is the whole point of flipping it, and it must not
+      # reintroduce the `:?` requirement that forces a sealed-environment rewrite.
+      - name: Validate the committed-source compose shape with no sealed bundle
+        run: |
+          sed 's/^      SHARE_TRUST_BUNDLE_SOURCE: environment$/      SHARE_TRUST_BUNDLE_SOURCE: committed/' \
+            compose.share-api.yml > "$RUNNER_TEMP/compose.committed.yml"
+          docker compose -f "$RUNNER_TEMP/compose.committed.yml" config --format json > "$RUNNER_TEMP/compose-committed.json"
+          jq -e '
+            .services["share-api"].environment.SHARE_TRUST_BUNDLE_SOURCE == "committed" and
+            .services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 == ""
+          ' "$RUNNER_TEMP/compose-committed.json" >/dev/null
       - run: docker build -f Dockerfile.share-api -t share-api-smoke .
       - run: |
           mkdir -p "$RUNNER_TEMP/share-state"
@@ -58,5 +71,34 @@ jobs:
           test "$(curl -fsS http://127.0.0.1:8787/health/readiness)" = '{"authReady":true,"senderReady":false}'
           test "$(curl -sS -o /tmp/nonce.json -w '%{http_code}' http://127.0.0.1:8787/api/share/auth/openkey/nonce)" = 400
           test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 400
+      # TC-372. Boot the image with NO trust material in the environment at all
+      # and prove it publishes the committed production trust, unchanged.
+      - name: Boot from the committed trust bundle with an empty environment
+        run: |
+          docker run -d --name share-api-committed -p 8788:8787 --read-only --tmpfs /tmp \
+            -e SHARE_SENDER_ENABLED=false \
+            -e SHARE_TRUST_BUNDLE_SOURCE=committed \
+            share-api-smoke
+          attempt=0
+          until curl -fsS http://127.0.0.1:8788/health/readiness; do
+            attempt=$((attempt + 1))
+            test "$attempt" -lt 30
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8788/.well-known/tinycloud-share/config.json > "$RUNNER_TEMP/committed-config.json"
+          jq -e --slurpfile committed config/trust-bundle.production.json '
+            .shareOrigin == $committed[0].shareOrigin and
+            .nodeOrigin == $committed[0].nodeOrigin and
+            .nodeAudience == $committed[0].nodeAudience and
+            .credentialsOrigin == $committed[0].credentialsOrigin and
+            .registryOrigin == $committed[0].registryOrigin and
+            .nodeInvitationKid == $committed[0].nodeInvitationKid and
+            .nodeInvitationPublicKey == $committed[0].nodeInvitationPublicKey and
+            .issuerDid == $committed[0].issuerDid and
+            .issuerPublicKey == $committed[0].issuerPublicKey and
+            (has("environment") | not)
+          ' "$RUNNER_TEMP/committed-config.json" >/dev/null
       - if: always()
         run: docker logs share-api-smoke || true
+      - if: always()
+        run: docker logs share-api-committed || true

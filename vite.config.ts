@@ -159,7 +159,11 @@ function shareHostAdapter(): Plugin {
     configureServer: serve,
     configurePreviewServer: serve,
     generateBundle() {
-      if (process.env.SHARE_TRUST_BUNDLE === undefined && process.env.SHARE_TRUST_BUNDLE_FILE === undefined) {
+      // `SHARE_TRUST_BUNDLE_SOURCE=committed` is a third source: the reviewed,
+      // non-secret document in the repository. It lets a deploy build emit
+      // `_headers` and the public config with no secret material in the
+      // environment at all.
+      if (process.env.SHARE_TRUST_BUNDLE_SOURCE !== "committed" && process.env.SHARE_TRUST_BUNDLE === undefined && process.env.SHARE_TRUST_BUNDLE_FILE === undefined) {
         if (process.env.SHARE_DEPLOY_BUILD === "true") throw new Error("SHARE_TRUST_BUNDLE is required for deploy builds");
         return;
       }

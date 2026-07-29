@@ -42,7 +42,7 @@ describe("canonical v2 envelopes", () => {
       version: 2 as const,
       shareId: "policy-only",
       recipientMatcher: { kind: "policyDigest" as const, value: "A".repeat(43) },
-      actions: ["list"] as const,
+      actions: ["list" as const],
       resource,
       target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: target.spaceId },
       delegationCid: "delegation-cid",
@@ -65,7 +65,7 @@ describe("canonical v2 envelopes", () => {
       version: 2 as const,
       shareId: "policy-only",
       recipientMatcher: { kind: "emailDomain" as const, value: "example.com" },
-      actions: ["list"] as const,
+      actions: ["list" as const],
       resource,
       target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: target.spaceId },
       delegationCid: "delegation-cid",
@@ -88,7 +88,11 @@ function baseEnvelope() {
     version: 2 as const,
     shareId: "share-boundary",
     recipientMatcher: { kind: "bearer" as const },
-    actions: ["read"] as const,
+    // `["read" as const]`, not `["read"] as const`: the latter is a *readonly*
+    // tuple, which `UnsignedShareEnvelopeV2.actions` (a mutable `ShareAction[]`)
+    // does not accept. This form keeps the literal element type without the
+    // readonly modifier.
+    actions: ["read" as const],
     resource,
     target,
     delegationCid: "delegation-cid",
