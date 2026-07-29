@@ -1,0 +1,246 @@
+/**
+ * STAGE 2 — addressed / exact-email share to a Mailinator inbox, against LIVE
+ * production.
+ *
+ * MAILINATOR ADDRESSES ONLY. This harness picks its own `@mailinator.com`
+ * recipient and refuses to run against anything else, so it cannot mail a real
+ * person.
+ *
+ * The full path, and what each step is the first real-browser exercise of:
+ *
+ *   sign in                       — production OpenKey passkey
+ *   compose an addressed share    — `createDelegatedShareKey`, which now uses
+ *                                   the WebCrypto Ed25519 path that replaced a
+ *                                   @noble implementation
+ *   register the owner policy     — the Node's registration receipt, verified
+ *                                   by the SDK against the trust bundle's
+ *                                   `nodeInvitationKid`
+ *   authorize delivery            — `authorizeShareDelivery`; the SDK verifies
+ *                                   the Node's detached EdDSA proof against
+ *                                   `nodeInvitationKid`, and requires
+ *                                   `openCredentialsAudience === credentialsOrigin`
+ *                                   and that it collide with neither
+ *                                   `nodeAudience` nor `returnOrigin`
+ *   POST {credentialsOrigin}/share/v2 — the actual send
+ *   read the Mailinator inbox     — the invitation must really arrive
+ *   follow the link, confirm      — the recipient claim
+ *   read the exact shared bytes
+ *
+ * The three items above the send do NOT depend on `senderReady`: they run in
+ * the browser and against `tee.node.tinycloud.xyz` before anything is POSTed to
+ * the witness. So this harness is worth running even while
+ * `https://api.share.tinycloud.xyz/health/readiness` reports
+ * `senderReady:false` — it will get as far as the send and then report the
+ * exact rejection, and it captures the Node's authorization body (including
+ * `returnOrigin`, which is not readable from the public config) on the way.
+ *
+ * Usage: node stage2-addressed.mjs
+ */
+import { chromium } from "playwright";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare, startOpenKeyAutopilot } from "./lib/openkey.mjs";
+import { newInbox, waitForMessage, extractUrls } from "./lib/mailinator.mjs";
+import { DEEP_TRACE } from "./lib/deep-trace.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ACCOUNT_PATH = resolve(HERE, ".account.json");
+const RUN_DIR = resolve(HERE, "runs", `stage2-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+const SHARE_ORIGIN = process.env.SHARE_ORIGIN ?? "https://share.tinycloud.xyz";
+const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
+
+mkdirSync(RUN_DIR, { recursive: true });
+const lines = [];
+const log = (line) => {
+  console.log(line);
+  lines.push(`${new Date().toISOString()} ${line}`);
+  writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
+};
+
+const results = [];
+function record(name, ok, detail) {
+  results.push({ name, ok, detail });
+  log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : ` — ${detail}`}`);
+}
+
+const recipient = newInbox("tcshare-rcpt");
+if (!recipient.address.endsWith("@mailinator.com")) throw new Error("refusing to run: recipient is not a mailinator address");
+log(`[stage2] recipient ${recipient.address}`);
+writeFileSync(resolve(RUN_DIR, "recipient.txt"), `${recipient.address}\n`);
+
+const readiness = await fetch("https://api.share.tinycloud.xyz/health/readiness", { cache: "no-store" }).then((response) => response.json());
+log(`[stage2] readiness ${JSON.stringify(readiness)}`);
+if (readiness.senderReady !== true) log("[stage2] senderReady is false — the POST to the witness is expected to be rejected; everything before it still runs");
+
+const browser = await chromium.launch({ headless: process.env.HEADED !== "1" });
+log(`[browser] ${browser.version()}`);
+
+/** Every response body from the Node and the witness, for the proof audit. */
+const captured = [];
+
+try {
+  const context = await browser.newContext();
+  if (process.env.TRACE_DEEP === "1") await context.addInitScript(DEEP_TRACE);
+  const page = await context.newPage();
+  page.on("console", (message) => log(`[console ${message.type()}] ${message.text()}`));
+  page.on("pageerror", (error) => log(`[pageerror] ${error.message}`));
+  page.on("response", async (response) => {
+    const url = response.url();
+    if (!/tee\.node\.tinycloud|witness\.credentials\.org|\/api\/share\/|registry/.test(url)) return;
+    const body = await response.text().catch(() => "<unreadable>");
+    log(`[res ${response.status()}] ${response.request().method()} ${url}`);
+    if (/policy|invoke|share\/v2|delivery|authoriz/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
+    captured.push({ status: response.status(), method: response.request().method(), url, body: body.slice(0, 20_000) });
+  });
+
+  // Owner-share requests carry their authority in the Authorization header, so
+  // a rejection is only diagnosable with the request beside the response.
+  page.on("request", (request) => {
+    if (!/\/share\/v[12]\//.test(request.url())) return;
+    const headers = request.headers();
+    captured.push({
+      direction: "request",
+      method: request.method(),
+      url: request.url(),
+      headers: { ...headers, authorization: headers.authorization === undefined ? undefined : `${headers.authorization.slice(0, 120)}…` },
+      body: (request.postData() ?? "").slice(0, 20_000),
+    });
+    log(`[req] ${request.method()} ${request.url()}`);
+  });
+
+  const { cdp, authenticatorId } = await attachVirtualAuthenticator(context, page);
+  let account = process.env.FRESH_ACCOUNT === "1" ? undefined : loadAccount(ACCOUNT_PATH);
+  if (account === undefined) {
+    account = await registerFreshAccount(page, cdp, authenticatorId, log);
+    saveAccount(ACCOUNT_PATH, account);
+  } else {
+    log(`[openkey] reusing account ${account.address}`);
+    await restoreCredential(cdp, authenticatorId, account.credential);
+  }
+
+  await signInToShare(page, { appUrl: COMPOSER_URL, log });
+  record("production OpenKey sign-in reaches the composer", true, account.address);
+
+  // The owner path signs mid-compose; keep answering OpenKey from here on.
+  const stopAutopilot = startOpenKeyAutopilot(page, log);
+
+  if (await page.locator("form.composer-form").count() === 0) {
+    await page.evaluate(() => { window.location.hash = "#/new"; });
+  }
+  await page.locator("form.composer-form").waitFor({ timeout: 60_000 });
+  await page.locator("div.content-dropzone").waitFor({ state: "visible", timeout: 60_000 });
+
+  const nonce = `tc-addressed-${crypto.randomUUID()}`;
+  const markdown = `# Addressed share proof\n\nnonce: ${nonce}\n\nrecipient: ${"<set below>"}\n`;
+  await page.setInputFiles('input[name="document"]', { name: "stage2-proof.md", mimeType: "text/markdown", buffer: Buffer.from(new TextEncoder().encode(markdown.replace("<set below>", recipient.address))) });
+  await page.locator("div.content-chosen").waitFor({ state: "visible", timeout: 30_000 });
+
+  await page.check('input[name="recipient"][value="exactEmail"]');
+  await page.fill('input[name="recipient-value"]', recipient.address);
+  // The delivery address defaults to the recipient; assert rather than assume.
+  const delivery = await page.inputValue('input[name="delivery-email"]').catch(() => "");
+  record("the delivery address defaults to the exact recipient", delivery === recipient.address, `delivery-email=${JSON.stringify(delivery)}`);
+
+  await page.locator("button.create-link-button").click();
+
+  const status = page.locator("div.composer-status");
+  const settled = await page.waitForFunction(
+    () => {
+      const state = document.querySelector("div.composer-status")?.dataset.state;
+      return state === "created" || state?.startsWith("error") === true;
+    },
+    undefined,
+    { timeout: 600_000 },
+  ).then(() => true).catch(() => false);
+  const state = await status.getAttribute("data-state");
+  const statusText = (await status.innerText().catch(() => "")).replace(/\n+/g, " | ");
+  log(`[composer] settled=${settled} data-state=${state} :: ${statusText}`);
+  record("the addressed share was created", state === "created", `data-state=${state}; ${statusText}`);
+  await page.screenshot({ path: resolve(RUN_DIR, "composer.png"), fullPage: true });
+
+  // Delivery is a second, explicit gesture: the composer creates the link, then
+  // offers "Send by email…". Nothing is mailed until it is clicked.
+  if (state === "created") {
+    const send = page.getByRole("button", { name: "Send by email…" });
+    const sendVisible = await send.isVisible().catch(() => false);
+    record('the result screen offers "Send by email…" for an addressed share', sendVisible);
+    if (sendVisible) {
+      await send.click();
+      await page.waitForFunction(
+        () => (document.querySelector("span.notification-status")?.textContent ?? "").length > 0,
+        undefined,
+        { timeout: 300_000 },
+      ).catch(() => {});
+      const deliveryStatus = (await page.locator("span.notification-status").textContent().catch(() => "")) ?? "";
+      log(`[composer] delivery status: ${JSON.stringify(deliveryStatus)}`);
+      record("the composer reports the email was queued", deliveryStatus.startsWith("Email queued"), deliveryStatus);
+    }
+  }
+
+  // The Node's delivery authorization is the object the SDK's
+  // openCredentialsAudience / nodeInvitationKid predicates run against.
+  const authorization = captured.find((entry) => /openCredentialsAudience/.test(entry.body));
+  if (authorization !== undefined) {
+    log(`[stage2] delivery authorization from ${authorization.url}`);
+    let parsed;
+    try {
+      parsed = JSON.parse(authorization.body);
+    } catch {
+      parsed = undefined;
+    }
+    const value = parsed?.authorization ?? parsed;
+    if (value !== undefined) {
+      writeFileSync(resolve(RUN_DIR, "delivery-authorization.json"), JSON.stringify(parsed, null, 2));
+      record("openCredentialsAudience !== nodeAudience", value.openCredentialsAudience !== value.nodeAudience, `${value.openCredentialsAudience} vs ${value.nodeAudience}`);
+      record("openCredentialsAudience !== returnOrigin", value.openCredentialsAudience !== value.returnOrigin, `${value.openCredentialsAudience} vs ${value.returnOrigin}`);
+      record("openCredentialsAudience === the configured credentialsOrigin", value.openCredentialsAudience === "https://witness.credentials.org", String(value.openCredentialsAudience));
+    }
+  } else {
+    record("the Node returned a delivery authorization", false, "no response body containing openCredentialsAudience was observed");
+  }
+
+  const sendResponse = captured.find((entry) => /witness\.credentials\.org\/share\/v2/.test(entry.url));
+  record("the witness accepted the send", sendResponse?.status === 200, sendResponse === undefined ? "no POST to the witness was made" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+
+  // ---------------------------------------------------------------- mailbox
+  log(`[stage2] polling ${recipient.address}`);
+  const { message, text } = await waitForMessage(recipient.inbox, () => true, { timeoutMs: 300_000, log });
+  record("the invitation email actually arrived in the Mailinator inbox", true, `from=${message.from} subject=${JSON.stringify(message.subject)}`);
+  writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
+
+  const links = extractUrls(text).filter((url) => url.includes("/s/"));
+  record("the invitation carries a share link", links.length > 0, links.map((url) => url.replace(/#.*/, "#<redacted>")).join(" "));
+  if (links.length === 0) throw new Error("no share link in the invitation");
+
+  // -------------------------------------------------------------- recipient
+  const recipientContext = await browser.newContext({ acceptDownloads: true });
+  const recipientPage = await recipientContext.newPage();
+  recipientPage.on("console", (message2) => log(`[recipient console ${message2.type()}] ${message2.text()}`));
+  await recipientPage.goto(links[0], { waitUntil: "domcontentloaded" });
+
+  const verify = recipientPage.getByRole("button", { name: /verify and open|open document/i });
+  await verify.waitFor({ timeout: 60_000 });
+  await verify.click();
+  await recipientPage.locator("section.viewer-content, button.viewer-download").waitFor({ timeout: 180_000 });
+
+  const frames = [];
+  for (const frame of recipientPage.frames()) frames.push(await frame.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
+  const rendered = frames.join("\n");
+  record("the recipient reads the exact shared document", rendered.includes(nonce), `nonce ${nonce}`);
+  writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), rendered);
+  await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient.png"), fullPage: true });
+  stopAutopilot();
+} catch (error) {
+  record("stage 2 completed", false, `${error.name}: ${error.message}`);
+  log(error.stack ?? String(error));
+} finally {
+  writeFileSync(resolve(RUN_DIR, "network.json"), JSON.stringify(captured, null, 2));
+  await browser.close();
+}
+
+writeFileSync(resolve(RUN_DIR, "results.json"), JSON.stringify(results, null, 2));
+const failed = results.filter((entry) => !entry.ok);
+log(`\nrecipient address: ${recipient.address}`);
+log(`${results.length - failed.length}/${results.length} checks passed. Artifacts in ${RUN_DIR}`);
+if (failed.length > 0) process.exit(1);
