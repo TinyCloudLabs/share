@@ -1,10 +1,13 @@
 # Deploying the share email Worker
 
-**Nothing in this package deploys on merge.** There is no workflow that runs
-`wrangler deploy` for it; the repository's only CI is the merge gate
-(`.github/workflows/share-sdk.yml`) plus the share-api image/smoke workflows,
-none of which touch `packages/email`. Deployment is a deliberate manual step,
-exactly as it is for `packages/registry`.
+**Nothing in this package deploys on merge.** No workflow in the repository
+runs `wrangler deploy` at all. The merge gate
+(`.github/workflows/share-sdk.yml`) type-checks and runs this package's tests
+— since TC-371 the root `tsconfig.json` includes `packages` and `npm test`
+runs `vitest run packages` — but it publishes nothing. The other two
+workflows build and smoke the `share-api` container image, which is unrelated
+to this Worker. Deployment is a deliberate manual step, exactly as it is for
+`packages/registry`.
 
 ## 1. Cloudflare resources
 
