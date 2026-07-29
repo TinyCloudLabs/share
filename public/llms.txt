@@ -1,0 +1,13 @@
+# TinyCloud Share agent instructions
+
+TinyCloud Share links are verified, read-only links. Supported link versions are compact-v1 and inline-v2. The URL fragment is authority-bearing and must remain local to the receiving agent.
+
+Inspect a complete link without putting it in shell history:
+
+    printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share inspect - --json
+
+Receive verified Markdown into the current directory without overwriting an existing file:
+
+    printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share receive - --output .
+
+The CLI is Node 20 compatible. `share receive --stdout` is the explicit option for plaintext bytes on stdout. Never log, send, or render the complete link outside the local process; a bearer link grants read access to anyone who holds it.
