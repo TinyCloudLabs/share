@@ -17,6 +17,9 @@ type WebSdkModule = typeof import("@tinycloud/web-sdk");
  * own `OwnerShareAction` union — a mis-shaped policy would have compiled.
  */
 type OwnerSharePolicyV2 = Parameters<WebSdkModule["canonicalOwnerSharePolicy"]>[0];
+type OwnerSharePolicyWithDecryption = OwnerSharePolicyV2 & {
+  readonly decryption: { readonly networkId: string; readonly action: "tinycloud.encryption/decrypt" };
+};
 
 /**
  * The owner-share primitives `createOwnerPolicyShare` calls, typed by picking
@@ -510,7 +513,7 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
       networkId: ownerEncryptionNetwork(options.openKeyAddress),
       action: "tinycloud.encryption/decrypt",
     } as const;
-    const ownerDelegation = await tinycloud.createOwnerDelegation({
+    const ownerDelegationInput = {
       delegateDid: shareKey.did,
       spaceId,
       permissions: [
@@ -518,9 +521,10 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
         { service: "tinycloud.encryption", path: decryption.networkId, actions: [decryption.action] },
       ],
       expiresAt: new Date(expiresAt),
-    });
+    } as unknown as Parameters<ShareTinyCloud["createOwnerDelegation"]>[0];
+    const ownerDelegation = await tinycloud.createOwnerDelegation(ownerDelegationInput);
     const sourceDigest = await digestBytes(new TextEncoder().encode(canonicalize(source)));
-    const policyValue: OwnerSharePolicyV2 = {
+    const policyValue: OwnerSharePolicyWithDecryption = {
       type: "TinyCloudSharePolicy",
       version: 2,
       shareId,
@@ -538,7 +542,8 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
     };
     const canonicalPolicy = await sdk.canonicalOwnerSharePolicy(policyValue);
     const policyProof = toBase64Url(await shareKey.sign(canonicalPolicy.bytes));
-    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation({ ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, decryption, contentSourceDigest: sourceDigest, expiresAt });
+    const enforcementInput = { ownerDelegation, shareKey, enforcerDid: config.enforcerDid, policyCid: canonicalPolicy.cid, shareId, spaceId, nodeAudience: config.nodeAudience, path: resourcePath, actions: actionNames, decryption, contentSourceDigest: sourceDigest, expiresAt };
+    const enforcementDelegation = await sdk.createPolicyEnforcementDelegation(enforcementInput);
     // The registration receipt is signed by the enrolled Node key. The trust
     // bundle pins both its kid and public key before the exact response bytes
     // are accepted by the SDK.
