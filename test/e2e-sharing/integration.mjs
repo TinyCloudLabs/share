@@ -826,7 +826,7 @@ function safeBrowserDiagnostic(value) {
   return { type: Array.isArray(value) ? "array" : "object", message: message === undefined ? undefined : safeBrowserDiagnostic(message) };
 }
 
-async function browserGate(origin, walletOrigin, mailOrigin) {
+async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
   await navigate(`${origin}/share.html`);
@@ -1164,7 +1164,10 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
       // it here; otherwise "went unready mid-run" and "was never there" are
       // the same 503.
       try {
-        const readiness = await (await fetch(`${origin}/share/v2/readiness`, { headers: { accept: "application/json", "x-forwarded-proto": "https" } })).json();
+        // Straight at the Node: the Share host only proxies the five allowed
+        // /share/v2 routes, so asking it for readiness answers 404 not_found
+        // and says nothing about the runtime that returned the 503.
+        const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`, { headers: { accept: "application/json" } })).json();
         checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure ${JSON.stringify(readiness)}.`);
       } catch (readinessError) {
         checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure unavailable: ${readinessError instanceof Error ? readinessError.message : String(readinessError)}.`);
@@ -1258,7 +1261,7 @@ try {
   tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-sharing-e2e-"));
   const fixtures = await startFixtures(tempRoot);
   share = await startShare(tempRoot, fixtures);
-  await browserGate(share.origin, fixtures.walletOrigin, fixtures.mailOrigin);
+  await browserGate(share.origin, fixtures.walletOrigin, fixtures.mailOrigin, fixtures.nodeOrigin);
   await browserSmokeLoop(share.origin, fixtures.walletOrigin);
 } catch (error) {
   blockers.push(error instanceof Error ? error.message : String(error));
