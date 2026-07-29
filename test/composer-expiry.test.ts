@@ -225,6 +225,12 @@ function attachFile(root: HTMLElement, file: File): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function attachFiles(root: HTMLElement, files: readonly File[]): void {
+  const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+  Object.defineProperty(input, "files", { configurable: true, value: files });
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 function submit(root: HTMLElement): void {
   root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 }
@@ -441,5 +447,70 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     // the fixed code performs, checked against the bytes that actually shipped.
     const { signature: _signature, ...withoutSignature } = envelope;
     expect(unsignedShareEnvelopeV2Schema.safeParse(withoutSignature).success).toBe(true);
+  });
+
+  it("uploads every selected file beneath one delegated prefix with inferred read and list access", async () => {
+    const ownerDelegationInputs: Record<string, unknown>[] = [];
+    const writes: Array<{ readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }> = [];
+    const tinycloud = {
+      spaceId: "space-1",
+      did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
+      createOwnerDelegation: async (input: Record<string, unknown>) => {
+        ownerDelegationInputs.push(input);
+        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
+      },
+      registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
+      kvForSpace: () => ({
+        list: async () => ({ ok: true, data: { keys: [], truncated: false } }),
+        put: async (path: string, bytes: Uint8Array, options?: { contentType?: string }) => {
+          writes.push({ path, bytes, ...(options?.contentType === undefined ? {} : { contentType: options.contentType }) });
+          return { ok: true };
+        },
+      }),
+    } as unknown as ShareTinyCloud;
+    const root = document.createElement("div");
+    document.body.append(root);
+    const persisted: { readonly share: ComposerShareResult; readonly model: ShareComposerModel }[] = [];
+
+    mountShareComposer(root, {
+      openKeyAddress: "0x1234567890abcdef",
+      origin: "https://share.tinycloud.xyz",
+      onBack: () => undefined,
+      session: {} as OpenKeyShareSession,
+      tinycloud,
+      loadCapabilities: async () => [],
+      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    chooseRecipient(root, "exactEmail");
+    setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
+    setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
+    attachFiles(root, [
+      new File([new Uint8Array([1, 2, 3])], "one.bin", { type: "application/octet-stream" }),
+      new File(["two"], "two.txt", { type: "text/plain" }),
+    ]);
+    submit(root);
+
+    expect(await settle(root)).toBe("created");
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]!.model.resource.kind).toBe("prefix");
+    expect(persisted[0]!.model.permissions).toEqual(["read", "list"]);
+
+    expect(ownerDelegationInputs).toHaveLength(1);
+    expect(ownerDelegationInputs[0]!.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
+    const delegatedPath = ownerDelegationInputs[0]!.path as string;
+    expect(delegatedPath).toMatch(/^shares\/[^/]+\/$/);
+
+    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
+    const policy = hoisted.owner.canonicalPolicies[0]!;
+    expect(policy.resource).toEqual({ kind: "prefix", path: delegatedPath.slice(0, -1) });
+    expect(policy.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
+    expect(writes.map((write) => write.path).sort()).toEqual([
+      `${delegatedPath}one.bin`,
+      `${delegatedPath}two.txt`,
+    ]);
+    expect(Array.from(writes.find((write) => write.path.endsWith("/one.bin"))?.bytes ?? [])).toEqual([1, 2, 3]);
+    expect(Array.from(writes.find((write) => write.path.endsWith("/two.txt"))?.bytes ?? [])).toEqual(Array.from(new TextEncoder().encode("two")));
   });
 });

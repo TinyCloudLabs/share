@@ -13,7 +13,7 @@ import {
   type ComposerContent,
   type ShareComposerModel,
 } from "../src/share/composer-model.js";
-import { mountShareComposer, type ComposerShareResult } from "../src/share/composer.js";
+import { canonicalUploadFiles, mountShareComposer, type ComposerShareResult } from "../src/share/composer.js";
 import { createDevRegistry } from "@tinycloud/share-registry/dev-server";
 import { LinkOnlyShareError } from "../src/share/link-only.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-failure.js";
@@ -57,6 +57,7 @@ const EXPECTED_SENDER_COPY = {
   plaintext: "Link-only and single-person shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   signIn: "Sign-in could not be completed. Try again.",
   signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 } as const;
@@ -101,6 +102,12 @@ function dropFile(target: Element, file: File): void {
   target.dispatchEvent(event);
 }
 
+function dropFiles(target: Element, files: readonly File[]): void {
+  const event = new Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", { value: { files } });
+  target.dispatchEvent(event);
+}
+
 function chooseExpiry(root: HTMLElement, value: string): void {
   const input = root.querySelector<HTMLInputElement>(`input[name=expiry][value="${value}"]`)!;
   input.checked = true;
@@ -124,6 +131,9 @@ describe("share composer model", () => {
     expect(contentFilename({ kind: "file", file })).toBe("photo.bin");
     expect(contentMediaType({ kind: "file", file })).toBe("image/png");
     expect(contentMode({ kind: "file", file })).toBe("upload");
+    expect(contentFilename({ kind: "files", files: [file, new File(["notes"], "notes.txt")] })).toBe("2 files");
+    expect(contentMediaType({ kind: "files", files: [file, new File(["notes"], "notes.txt")] })).toBe("application/x-tinycloud-folder");
+    expect(contentMode({ kind: "files", files: [file, new File(["notes"], "notes.txt")] })).toBe("upload");
 
     const text = contentFile(textContent)!;
     expect(text.name).toBe("notes.md");
@@ -154,7 +164,8 @@ describe("share composer model", () => {
   it("rejects unsafe plaintext attempts and never permits bearer plaintext", () => {
     expect(() => validateComposerModel(modelWith(textContent, { encryption: false }))).toThrow(/must stay encrypted/i);
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: false }))).toThrow(/confirm you understand/i);
-    expect(validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true, resource: { kind: "prefix", path: "docs" } }))).toMatchObject({ recipient: { value: "mailinator.com" }, resource: { kind: "prefix", path: "docs/" } });
+    const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs", action: "tinycloud.kv/get" }, resource: { kind: "prefix", path: "docs" } };
+    expect(validateComposerModel(modelWith(library, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toMatchObject({ recipient: { value: "mailinator.com" }, resource: { kind: "prefix", path: "docs/" }, permissions: ["read", "list"] });
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
@@ -282,6 +293,78 @@ describe("share composer content picker", () => {
     expect(received.model?.content).toMatchObject({ kind: "file" });
     expect(Array.from(await readFileBytes(received.file!))).toEqual([0, 255, 1, 2]);
     expect(received.model?.permissions).toEqual(["read"]);
+    expect(received.model?.resource.kind).toBe("exact");
+  });
+
+  it.each([
+    ["a multiple file selection", (root: HTMLElement, files: readonly File[]) => {
+      const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+      expect(input.multiple).toBe(true);
+      Object.defineProperty(input, "files", { configurable: true, value: files });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }],
+    ["a multiple file drop", (root: HTMLElement, files: readonly File[]) => dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, files)],
+  ])("turns %s into one inferred folder share", async (_label, act) => {
+    const root = document.createElement("div"); document.body.append(root);
+    let received: { readonly files?: readonly File[]; readonly model?: ShareComposerModel } = {};
+    mountShareComposer(root, {
+      ...baseOptions(),
+      loadCapabilities: async () => [],
+      createShare: async ({ files, model }) => {
+        received = { files, model };
+        return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat };
+      },
+    });
+    const files = [
+      new File(["alpha"], "alpha.txt", { type: "text/plain" }),
+      new File(["beta"], "beta.txt", { type: "text/plain" }),
+    ];
+    act(root, files);
+    expect(root.querySelector(".content-chosen-name")?.textContent).toBe("2 files");
+    expect(root.querySelector<HTMLElement>(".composer-browse-notice")?.hidden).toBe(false);
+    expect(root.querySelector(".composer-browse-notice")?.textContent).toContain("included automatically");
+
+    const person = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
+    person.checked = true; person.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    recipient.value = "reader@example.com"; recipient.dispatchEvent(new Event("input", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(received.model).toBeDefined());
+    expect(received.model!.content).toMatchObject({ kind: "files" });
+    expect(received.model!.resource).toEqual({ kind: "prefix", path: "selected-files/" });
+    expect(received.model!.permissions).toEqual(["read", "list"]);
+    expect(received.files?.map((file) => file.name)).toEqual(["alpha.txt", "beta.txt"]);
+  });
+
+  it("rejects a multi-file possession link with actionable recovery guidance", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const createShare = vi.fn();
+    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: createShare as never });
+    dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, [
+      new File(["a"], "a.txt"),
+      new File(["b"], "b.txt"),
+    ]);
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
+    expect(createShare).not.toHaveBeenCalled();
+    expect(root.querySelector(".composer-status")?.textContent).toContain("choose a specific person or company domain");
+    expect(root.querySelector(".composer-status")?.textContent).toContain("support one file at a time");
+  });
+
+  it("canonicalizes names and rejects unsafe, duplicate, per-file, and aggregate uploads", () => {
+    const composed = "café.txt";
+    const decomposed = "cafe\u0301.txt";
+    const canonical = canonicalUploadFiles([new File(["a"], decomposed), new File(["b"], "other.txt")]);
+    expect(canonical[0]?.name).toBe(composed);
+    expect(() => canonicalUploadFiles([new File(["a"], composed), new File(["b"], decomposed)])).toThrow(/overwrite/i);
+    expect(() => canonicalUploadFiles([new File(["a"], "../unsafe.txt")])).toThrow(/filename|file name/i);
+    expect(() => canonicalUploadFiles([{ name: "huge.bin", size: 100 * 1024 * 1024 + 1, type: "", lastModified: 0 } as File])).toThrow(/100 MB/i);
+    expect(() => canonicalUploadFiles([
+      { name: "a.bin", size: 60 * 1024 * 1024, type: "", lastModified: 0 } as File,
+      { name: "b.bin", size: 60 * 1024 * 1024, type: "", lastModified: 0 } as File,
+    ])).toThrow(/100 MB/i);
   });
 
   it("selects a real library source and preserves the canonical source boundary", async () => {
@@ -305,10 +388,15 @@ describe("share composer content picker", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
     const source = root.querySelector<HTMLSelectElement>("select[name=kv-source]")!; source.value = "docs/";
+    const person = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
+    person.checked = true; person.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    recipient.value = "reader@example.com"; recipient.dispatchEvent(new Event("input", { bubbles: true }));
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(selected?.resource).toEqual({ kind: "prefix", path: "docs/" });
     expect(selected?.content).toMatchObject({ kind: "library", source: capability.source });
+    expect(selected?.permissions).toEqual(["read", "list"]);
   });
 
   it("refuses to submit with nothing chosen, and says what to do", async () => {
@@ -372,20 +460,18 @@ describe("share composer access controls", () => {
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
   });
 
-  it("shows only view access for a link-only share and restores controls for a person", () => {
+  it("removes manual folder browsing and restores edit controls for a person", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const read = root.querySelector<HTMLInputElement>("input[name=permission][value=read]")!;
-    const list = root.querySelector<HTMLInputElement>("input[name=permission][value=list]")!;
     const edit = root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!;
-    const listRow = list.closest<HTMLLabelElement>("label")!;
     const editRow = edit.closest<HTMLLabelElement>("label")!;
     const hint = root.querySelector<HTMLElement>(".composer-access-hint")!;
 
     expect(read).toMatchObject({ checked: true, disabled: true });
-    expect(list).toMatchObject({ checked: false });
+    expect(root.querySelector("input[name=permission][value=list]")).toBeNull();
+    expect(root.textContent).not.toContain("Can browse the folder");
     expect(edit).toMatchObject({ checked: false });
-    expect(listRow.hidden).toBe(true);
     expect(editRow.hidden).toBe(true);
     expect(hint.hidden).toBe(false);
 
@@ -394,7 +480,6 @@ describe("share composer access controls", () => {
     person.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(read.disabled).toBe(false);
-    expect(listRow.hidden).toBe(false);
     expect(editRow.hidden).toBe(false);
     expect(hint.hidden).toBe(true);
   });

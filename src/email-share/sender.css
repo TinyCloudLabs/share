@@ -271,7 +271,7 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
   background: var(--share-faint);
 }
 .content-chosen-name { overflow-wrap: anywhere; }
-.content-chosen-meta { color: var(--share-muted); font: 650 .78rem/1.2 var(--mono); }
+.content-chosen-meta { flex: 1 1 18rem; min-width: 0; color: var(--share-muted); font: 650 .78rem/1.4 var(--mono); overflow-wrap: anywhere; }
 .content-change { margin-left: auto; min-height: 44px; }
 .content-text { display: grid; gap: 10px; }
 .content-text .content-filename { max-width: 32ch; font: 650 .8rem/1.2 var(--mono); }
