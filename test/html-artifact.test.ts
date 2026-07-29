@@ -107,13 +107,16 @@ describe("HTML artifact resource preparation", () => {
   it.each([
     [fixtureFiles().filter((file) => file.path !== "assets/cloud.svg"), "missing"],
     [[utf8("index.html", '<img src="https://tracker.example/pixel">')], "unsupported"],
+    [[utf8("index.html", '<link rel="preload" href="bundle.js">')], "unsupported"],
+    [[utf8("index.html", '<link rel="stylesheet" href="a.css" media="screen}</style><script>bad()</script>">'), utf8("a.css", "body{color:red}")], "unsupported"],
+    [[utf8("index.html", '<style media="print}</style><script>bad()</script>">body{color:red}</style>')], "unsupported"],
     [[utf8("index.html", '<button onclick="alert(1)">Hi</button>')], "unsupported"],
     [[utf8("index.html", '<script>fetch("/private")</script>')], "unsupported"],
     [[utf8("index.html", '<script>location.href="/private"</script>')], "unsupported"],
     [[utf8("index.html", '<script type="module">export default 1</script>')], "unsupported"],
     [[utf8("index.html", '<form action="/send"></form>')], "unsupported"],
     [[utf8("index.html", '<link rel="stylesheet" href="a.css">'), utf8("a.css", '@import "b.css";'), utf8("b.css", '@import "a.css";')], "unsupported"],
-  ] as const)("fails closed for missing, external, dynamic, module, form, or cyclic input", async (files, kind) => {
+  ] as const)("fails closed for missing, external, rel/media, dynamic, module, form, or cyclic input", async (files, kind) => {
     await expect(prepareHtmlArtifact(files)).rejects.toMatchObject({ kind });
   });
 

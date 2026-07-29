@@ -19,6 +19,9 @@ are added to public bindings or analytics.
   are resolved within the one authorized prefix. Query strings are ignored for
   file lookup and fragments are retained where meaningful.
 - Links between HTML files in the same bundle are supported.
+- Stylesheet `media` values are validated against a safe subset before they
+  are wrapped, and unsupported `<link>` relations such as preload,
+  modulepreload, and prefetch fail closed instead of being skipped.
 - Every required resource is read through the verified recipient policy
   session before rendering. Missing files fail the whole render with
   recipient-safe recovery copy.

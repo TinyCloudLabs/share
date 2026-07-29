@@ -61,6 +61,7 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = Object.freeze({
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const ENCODED_PATH_ALIAS = /%2f|%5c|%2e/i;
+const SAFE_MEDIA_QUERY = /^[a-z0-9\s,().:%\-+/]+$/i;
 const UNSAFE_CLASSIC_SCRIPT =
   /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts|sendBeacon|open)\s*\(|\b(?:window|document|globalThis|self|top|parent|opener)\s*(?:\.\s*location|\[\s*["']location["']\s*\])|\blocation\s*(?:=|(?:\.\s*|\[\s*["'])href(?:["']\s*\])?|\.assign\s*\(|\.replace\s*\(|\.reload\s*\()|\bimport\s*\(|\beval\s*\(|\bWebAssembly\b/;
 
@@ -175,10 +176,26 @@ function assertClassicScript(source: string): void {
   if (UNSAFE_CLASSIC_SCRIPT.test(source)) fail("unsupported", "artifact script uses a blocked browser capability");
 }
 
-function wrapMediaCss(source: string, media: string | null): string {
+function normalizeMediaQuery(media: string | null | undefined, detail = "artifact uses an unsupported stylesheet media query"): string | null {
   const value = media?.trim() ?? "";
-  if (value.length === 0 || value.toLowerCase() === "all") return source;
+  if (value.length === 0 || value.toLowerCase() === "all") return null;
+  if (/[\u0000-\u001f\u007f<>{};"'`\\]/.test(value) || !SAFE_MEDIA_QUERY.test(value)) fail("unsupported", detail);
+  return value;
+}
+
+function wrapMediaCss(source: string, media: string | null | undefined, detail?: string): string {
+  const value = normalizeMediaQuery(media, detail);
+  if (value === null) return source;
   return `@media ${value} {\n${source}\n}`;
+}
+
+function classifyLinkRelation(rel: string | null): "stylesheet" | "icon" | null {
+  const tokens = (rel?.trim().toLowerCase().split(/\s+/).filter(Boolean) ?? []);
+  if (tokens.length === 0) return null;
+  const tokenSet = new Set(tokens);
+  if (tokenSet.has("stylesheet") && [...tokenSet].every((token) => token === "stylesheet" || token === "alternate")) return "stylesheet";
+  if ((tokenSet.has("icon") || tokenSet.has("apple-touch-icon")) && [...tokenSet].every((token) => token === "icon" || token === "apple-touch-icon" || token === "shortcut")) return "icon";
+  return null;
 }
 
 function rejectEventHandlerAttributes(doc: Document): void {
@@ -227,11 +244,11 @@ async function transformCss(source: string, basePath: string, context: Transform
     /@import\s+(?:url\(\s*(?:(["'])([^"']+)\1|([^"')\s]+))\s*\)|(["'])([^"']+)\4)\s*([^;]*);/gi,
     async (_whole, _urlQuote, quotedUrl, unquotedUrl, _quote, quotedReference, media) => {
       const reference = quotedUrl || unquotedUrl || quotedReference;
-      if (/^(?:layer|supports)\b/i.test(media.trim())) fail("unsupported", "artifact uses an unsupported stylesheet import condition");
+      if (/^(?:layer|supports)\b/i.test(media.trim()) || /\b(?:layer|supports)\b/i.test(media)) fail("unsupported", "artifact uses an unsupported stylesheet import condition");
       const { file, resolved } = requiredFile(context, basePath, reference);
       if (context.cssStack.includes(resolved.path)) fail("unsupported", "artifact stylesheet import cycle");
       const css = await transformCss(decodeText(file), resolved.path, { ...context, cssStack: [...context.cssStack, resolved.path] });
-      return media.trim().length === 0 ? css : `@media ${media.trim()} {\n${css}\n}`;
+      return wrapMediaCss(css, media, "artifact uses an unsupported stylesheet import condition");
     },
   );
   return replaceAsync(
@@ -303,20 +320,20 @@ async function transformHtml(path: string, file: ArtifactFile, context: Transfor
     if (directive === "refresh" || directive === "content-security-policy") meta.remove();
   }
   for (const link of [...doc.querySelectorAll<HTMLLinkElement>("link[href]")]) {
-    const relation = link.rel.toLowerCase().split(/\s+/);
-    if (relation.includes("stylesheet")) {
+    const relation = classifyLinkRelation(link.getAttribute("rel"));
+    if (relation === "stylesheet") {
       const { file: stylesheet, resolved } = requiredFile(context, path, link.getAttribute("href") ?? "");
       const style = doc.createElement("style");
       style.textContent = wrapMediaCss(await transformCss(decodeText(stylesheet), resolved.path, { ...context, cssStack: [resolved.path] }), link.getAttribute("media"));
       link.replaceWith(style);
       continue;
     }
-    if (relation.some((value) => value === "icon" || value === "apple-touch-icon")) {
+    if (relation === "icon") {
       const { file: icon, resolved } = requiredFile(context, path, link.getAttribute("href") ?? "");
       link.href = `${asDataUrl(icon)}${resolved.fragment}`;
       continue;
     }
-    link.remove();
+    fail("unsupported", "artifact contains an unsupported link relation");
   }
   for (const style of inlineStyles) {
     style.textContent = wrapMediaCss(await transformCss(style.textContent ?? "", path, { ...context, cssStack: [] }), style.getAttribute("media"));
