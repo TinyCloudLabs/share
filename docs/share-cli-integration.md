@@ -48,3 +48,4 @@ gate is:
 
 Production upload authority remains authenticated and session-bound. No
 anonymous or plaintext registry upload is a valid release path.
+
