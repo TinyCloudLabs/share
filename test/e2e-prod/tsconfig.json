@@ -1,0 +1,22 @@
+{
+  // The live-production harness is a nested package with its own dependencies
+  // (`playwright`), so it is excluded from the root tsconfig — the root
+  // `npm ci` does not install them and CI cannot check this directory.
+  //
+  // Run `npm install && npm run typecheck` in THIS directory to check it.
+  // Same strictness as the root config; only the inputs differ.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    // The `.mjs` stage drivers and `lib/` helpers are plain JS. `allowJs` lets
+    // tsc infer their exported signatures for `stage1b-viewer.ts` instead of
+    // requiring a hand-written `.d.ts` that would silently drift from them.
+    // `checkJs` stays off: the `.mjs` files are not themselves type-checked.
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["."],
+  // Overrides the root's `exclude`, which would otherwise resolve to this very
+  // directory. `runs/` holds per-run artifacts, not sources.
+  "exclude": ["node_modules", "runs"]
+}

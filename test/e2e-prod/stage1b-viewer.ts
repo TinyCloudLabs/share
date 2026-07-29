@@ -41,7 +41,7 @@ const log = (line: string): void => {
   writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
 };
 
-const results: { name: string; ok: boolean; detail?: string }[] = [];
+const results: { name: string; ok: boolean; detail?: string | undefined }[] = [];
 function record(name: string, ok: boolean, detail?: string): void {
   results.push({ name, ok, detail });
   log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : ` — ${detail}`}`);

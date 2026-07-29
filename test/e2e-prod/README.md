@@ -8,12 +8,20 @@ OpenKey passkey sign-in, the real registry, the real Node
 It is deliberately **not** wired into `npm test`. It creates real shares and
 sends real mail; run it on purpose.
 
+For the same reason it is **excluded from the root `tsconfig.json`**: the
+`playwright` dependency below is installed by `npm install` *in this
+directory*, never by the repository's `npm ci`, so CI cannot type-check it.
+It carries its own `tsconfig.json` at the root config's strictness — run
+`npm run typecheck` here when you change `stage1b-viewer.ts` or a `lib/`
+signature.
+
 ## Setup
 
 ```bash
 cd test/e2e-prod
 npm install
 npx playwright install chromium   # if you have no Chromium yet
+npm run typecheck                 # not covered by the repo's merge gate
 ```
 
 ## What to run
