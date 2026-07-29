@@ -36,12 +36,19 @@ import { COMMITTED_TRUST_BUNDLE_PATH, loadTrustBundle, validateTrustBundle } fro
  * from tinycloud-node 1.13.0 on 2026-07-29 — the key the CVM derives from the
  * dstack KMS and actually signs invitations with. `share_v2::compose` fails
  * closed if a node is ever configured with anything else.
+ *
+ * `emailOrigin` is the one field below production has never published. It is
+ * introduced by TC-379, which moves the sender's delivery POST off
+ * `credentialsOrigin` — where `/share/v2` answers 404, and always has — and
+ * onto the standalone email Worker. It ships in the same change as the code
+ * that reads it, so the published document and the client never disagree.
  */
 const PUBLISHED_IN_PRODUCTION = {
   shareOrigin: "https://share.tinycloud.xyz",
   registryOrigin: "https://registry.tinycloud.xyz",
   nodeOrigin: "https://tee.node.tinycloud.xyz",
   credentialsOrigin: "https://witness.credentials.org",
+  emailOrigin: "https://email.tinycloud.xyz",
   nodeAudience: "did:web:tee.node.tinycloud.xyz",
   nodeEnabled: true,
   issuerDid: "did:web:issuer.credentials.org",
@@ -82,6 +89,26 @@ describe("the committed production trust bundle", () => {
     const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE_SOURCE: "committed" });
     expect(host.publicConfig).toMatchObject(PUBLISHED_IN_PRODUCTION);
     expect(host.publicConfig.environment).toBeUndefined();
+  });
+
+  /**
+   * The regression this exists to prevent is not hypothetical: the sender
+   * POSTed its delivery authorization to `${credentialsOrigin}/share/v2` for
+   * eleven days, and the OpenCredentials witness has no such route. Every
+   * addressed share failed with a 404 that the composer reported as the same
+   * generic "We couldn't send that email" it reports for a bad signature, so
+   * the failure was repeatedly diagnosed as a trust problem.
+   */
+  it("routes delivery to a dedicated email origin, never to the credentials witness", () => {
+    const bundle = validateTrustBundle(committedDocument());
+    expect(bundle.public.emailOrigin).toBe("https://email.tinycloud.xyz");
+    expect(bundle.public.emailOrigin).not.toBe(bundle.public.credentialsOrigin);
+    expect(new URL(bundle.public.emailOrigin).origin).toBe(bundle.public.emailOrigin);
+  });
+
+  it("refuses a bundle that omits emailOrigin rather than falling back to another origin", () => {
+    const { emailOrigin: _omitted, ...withoutEmailOrigin } = committedDocument();
+    expect(() => validateTrustBundle(withoutEmailOrigin)).toThrow(/invalid shape/);
   });
 
   it("pins returnOrigin to shareOrigin, as tinycloud-node's own validator requires", () => {

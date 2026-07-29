@@ -3,12 +3,23 @@ name: Share API image
 on:
   push:
     branches: [main]
+    # Must list everything `Dockerfile.share-api` COPYs into the image.
+    # `config/**` and `packages/**` were missing, so TC-369 — a correction to
+    # the committed trust bundle, which ships *inside* the image — merged to
+    # main and published no new image at all. The CVM would have kept serving
+    # the old key indefinitely while main looked fixed. Keep this list and the
+    # Dockerfile's COPY lines in step.
     paths:
       - Dockerfile.share-api
       - package.json
       - package-lock.json
       - src/**
       - public/**
+      - packages/**
+      - config/**
+      - vite.config.ts
+      - tsconfig.json
+      - "*.html"
       - .github/workflows/share-api-image.yml
   workflow_dispatch:
 

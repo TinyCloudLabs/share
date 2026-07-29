@@ -19,6 +19,7 @@ function bundle(environment: "production" | "test" = "test"): Record<string, unk
     returnOrigin: "https://share.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
     credentialsOrigin: "https://witness.credentials.org",
+    emailOrigin: "https://email.tinycloud.xyz",
     nodeOrigin: environment === "test" ? "https://node.example" : "https://node.tinycloud.xyz",
     nodeAudience: environment === "test" ? "did:web:node.example" : "did:web:node.tinycloud.xyz",
     nodeInvitationKid: environment === "test" ? "did:web:node.example#invitation-key-1" : "did:web:node.tinycloud.xyz#invitation-key-1",

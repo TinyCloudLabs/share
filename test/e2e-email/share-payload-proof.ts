@@ -352,6 +352,7 @@ async function main(): Promise<Json> {
       registryOrigin: "https://registry.tinycloud.xyz",
       nodeOrigin,
       credentialsOrigin: credentialOrigin,
+      emailOrigin: credentialOrigin,
       nodeAudience,
       enforcerDid: nodeAudience,
       nodeEnabled: true,

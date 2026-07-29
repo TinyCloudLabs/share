@@ -14,6 +14,12 @@ export interface SharePublicConfig {
   readonly registryOrigin: string;
   readonly nodeOrigin: string;
   readonly credentialsOrigin: string;
+  /**
+   * Where an authorized delivery is POSTed to become an email. Distinct from
+   * `credentialsOrigin`, which issues the claim credential and has no
+   * `/share/v2` route at all (TC-379).
+   */
+  readonly emailOrigin: string;
   readonly nodeAudience: string;
   readonly enforcerDid: string;
   readonly nodeEnabled: boolean;
@@ -59,25 +65,27 @@ function publicKey(value: unknown, name: string): string {
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
   const raw = value as Record<string, unknown>;
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "nodeAudience", ...(Object.hasOwn(raw, "enforcerDid") ? ["enforcerDid"] : []), "nodeEnabled", "issuerDid", "issuerVct", "issuerEnabled", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "nodeOrigin", "credentialsOrigin", "emailOrigin", "nodeAudience", ...(Object.hasOwn(raw, "enforcerDid") ? ["enforcerDid"] : []), "nodeEnabled", "issuerDid", "issuerVct", "issuerEnabled", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "issuerKeyVersion", "issuerPublicKey", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
   if (object.version !== CONFIG_VERSION || object.issuerVct !== "opencredentials.email/v1") throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const nodeOrigin = httpsOrigin(object.nodeOrigin, "nodeOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
+  const emailOrigin = httpsOrigin(object.emailOrigin, "emailOrigin");
   const enforcerDid = object.enforcerDid === undefined ? object.nodeAudience : object.enforcerDid;
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.nodeKeyVersion !== "number" || !Number.isSafeInteger(object.nodeKeyVersion) || typeof object.issuerKeyVersion !== "number" || !Number.isSafeInteger(object.issuerKeyVersion)) throw new TypeError("share config key versions are invalid");
   if (typeof object.nodeAudience !== "string" || !DID_WEB.test(object.nodeAudience) || object.nodeAudience !== `did:web:${new URL(nodeOrigin).hostname}` || typeof object.nodeEnabled !== "boolean" || typeof object.issuerDid !== "string" || !/^did:web:[A-Za-z0-9.-]+$/.test(object.issuerDid) || object.issuerEnabled !== true || typeof object.nodeInvitationKid !== "string" || !object.nodeInvitationKid.startsWith(`${object.nodeAudience}#`) || !Number.isSafeInteger(object.nodeKeyVersion) || object.nodeKeyVersion < 1 || !Number.isSafeInteger(object.issuerKeyVersion) || object.issuerKeyVersion < 1) throw new TypeError("share config trust binding is not enrolled");
   if (typeof enforcerDid !== "string" || (!DID_KEY.test(enforcerDid) && enforcerDid !== object.nodeAudience)) throw new TypeError("share config enforcer binding is not enrolled");
-  if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
+  if (environment === "production" && [shareOrigin, registryOrigin, nodeOrigin, credentialsOrigin, emailOrigin, object.nodeAudience, object.issuerDid].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback trust value");
   return Object.freeze({
     version: CONFIG_VERSION,
     shareOrigin,
     registryOrigin,
     nodeOrigin,
     credentialsOrigin,
+    emailOrigin,
     nodeAudience: object.nodeAudience,
     enforcerDid,
     nodeEnabled: object.nodeEnabled,

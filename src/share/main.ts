@@ -97,7 +97,7 @@ function renderComposer(current: SenderApp, token: number): void {
       notify: async ({ share, deliveryAuthorization }) => {
         if (deliveryAuthorization === undefined) throw new Error("We couldn't send that email. The link above still works.");
         const config = await loadSharePublicConfig();
-        const response = await fetch(`${config.credentialsOrigin}/share/v2`, {
+        const response = await fetch(`${config.emailOrigin}/share/v2`, {
           method: "POST",
           credentials: "omit",
           redirect: "error",

@@ -320,7 +320,7 @@ async function main(): Promise<void> {
       const origin = parsed.pathname.startsWith("/share/v1/") ? nodeLocal : credentialsLocal;
       return fetch(origin + parsed.pathname, init);
     };
-    const config: SharePublicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: publicOrigin, registryOrigin: publicOrigin, nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, nodeAudience, enforcerDid: scope.enforcerDid ?? nodeAudience, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerEnabled: true, nodeInvitationKid: invitationKid, nodeInvitationPublicKey: b64(fromBase64Url(scope.trustedNode.invitationPublicKey)), nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: issuerPublic, environment: "test" };
+    const config: SharePublicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: publicOrigin, registryOrigin: publicOrigin, nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, emailOrigin: publicOrigin, nodeAudience, enforcerDid: scope.enforcerDid ?? nodeAudience, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerEnabled: true, nodeInvitationKid: invitationKid, nodeInvitationPublicKey: b64(fromBase64Url(scope.trustedNode.invitationPublicKey)), nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: issuerPublic, environment: "test" };
     const resolved = await resolveShare(apiLink.shareUrl, { registryBaseUrl: registryLocal });
     if (resolved.state !== "policy-email-claim-required") throw new Error("manual share did not resolve as a policy claim");
     const binding = bindings.get(apiLink.shareCid);
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
     const fullUrl = browserLink.shareUrl + "&i=" + browserInvitationId + "&c=" + browserClaimSecret;
     const trustBundle = descriptor.trustBundle as Json;
     const capability = { scope: { ...scope, senderPrivateKey: b64(senderSeed), shareOrigin: publicOrigin, targetOrigin: publicOrigin, nodeAudience, trustedNode: { ...scope.trustedNode, targetOrigin: publicOrigin, nodeAudience, invitationKid } }, source };
-    process.env.SHARE_TRUST_BUNDLE = JSON.stringify({ ...trustBundle, shareOrigin: publicOrigin, returnOrigin: publicOrigin, registryOrigin: publicOrigin, credentialsOrigin: publicOrigin, nodeOrigin: publicOrigin, nodeAudience, nodeInvitationKid: invitationKid });
+    process.env.SHARE_TRUST_BUNDLE = JSON.stringify({ ...trustBundle, shareOrigin: publicOrigin, returnOrigin: publicOrigin, registryOrigin: publicOrigin, credentialsOrigin: publicOrigin, emailOrigin: publicOrigin, nodeOrigin: publicOrigin, nodeAudience, nodeInvitationKid: invitationKid });
     process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST = "true";
     process.env.SHARE_SENDER_ENABLED = "true";
     process.env.SHARE_SENDER_PRIVATE_KEY = b64(senderSeed);
