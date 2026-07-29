@@ -97,6 +97,7 @@ describe("HTML artifact resource preparation", () => {
   it.each([
     [fixtureFiles().filter((file) => file.path !== "assets/cloud.svg"), "missing"],
     [[utf8("index.html", '<img src="https://tracker.example/pixel">')], "unsupported"],
+    [[utf8("index.html", '<button onclick="alert(1)">Hi</button>')], "unsupported"],
     [[utf8("index.html", '<script>fetch("/private")</script>')], "unsupported"],
     [[utf8("index.html", '<script type="module">export default 1</script>')], "unsupported"],
     [[utf8("index.html", '<form action="/send"></form>')], "unsupported"],
@@ -120,6 +121,7 @@ describe("artifact sandbox boundary", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("connect-src 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("form-action 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("navigate-to 'none'");
+    expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");
     expect(buildArtifactSandboxHtml()).toContain(`content="${ARTIFACT_SANDBOX_CSP}"`);
     expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", "frame-ancestors 'self'"]);
     const headers = readFileSync("public/_headers", "utf8");

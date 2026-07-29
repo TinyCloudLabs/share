@@ -8,7 +8,7 @@ export const ARTIFACT_SANDBOX_CSP = [
   "font-src data: blob:",
   "media-src data: blob:",
   "connect-src 'none'",
-  "frame-src 'self'",
+  "frame-src 'none'",
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",

@@ -25,10 +25,10 @@ are added to public bindings or analytics.
 
 The initial format intentionally does not support ES modules, dynamic imports,
 workers, runtime `fetch`/XHR/WebSocket/EventSource, forms, embedded frames,
-plugins, a document `<base>`, external URLs, or runtime-generated relative
-resource requests. Classic scripts and statically discoverable resources are
-the safe compatibility boundary. Authors should not weaken this boundary to
-make a site work; publish a static build instead.
+plugins, a document `<base>`, external URLs, inline HTML event handlers, or
+runtime-generated relative resource requests. Classic scripts and statically
+discoverable resources are the safe compatibility boundary. Authors should not
+weaken this boundary to make a site work; publish a static build instead.
 
 Bundles are limited to 1,000 files, 100 MB of source data, 10 MB of renderable
 text/SVG data, 5 MB per text file, 10,000 static references, and 16 nested
@@ -42,10 +42,10 @@ Artifact code runs in a sandboxed iframe without `allow-same-origin`, nested
 inside a second sandboxed bridge frame. Both documents have opaque origins.
 The inner document receives only locally rewritten data URLs and inlined
 classic scripts/styles. CSP blocks network connections, frames, objects,
-forms, base URLs, and top navigation; referrers are disabled. The bridge
-accepts only nonce-bound messages from its direct parent and navigation
-messages from its direct child. Unexpected iframe navigation destroys the
-artifact document.
+forms, base URLs, and top navigation; referrers are disabled. Inline HTML
+event handlers are rejected before render. The bridge accepts only
+nonce-bound messages from its direct parent and navigation messages from its
+direct child. Unexpected iframe navigation destroys the artifact document.
 
 This boundary prevents access to the TinyCloud parent DOM, cookies,
 local/session storage, wallet state, authenticated APIs, opener, and top-level
