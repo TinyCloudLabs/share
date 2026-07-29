@@ -152,14 +152,16 @@ non-delivery.
 ### Correcting `nodeInvitationPublicKey`, or any other trust value
 
 `config/trust-bundle.production.json` pins
-`nodeInvitationPublicKey: tv7Sn8LztrteJyVgwP9aQL6b1kuiDq9CePhTx19HyrI`. That is
-the known-wrong OpenCredentials development fallback production publishes today
-(TC-359), and it is pinned deliberately: switching a live CVM from `environment`
-to `committed` must change nothing observable. Correcting it is then a separate,
-visible, one-line diff.
+`nodeInvitationPublicKey: 5gcZDCwHRoW6iEzPPGUdtiGMzWBj6aGtTlRBVERr1GI`. That is
+the real key, read on 2026-07-29 from the production CVM's own
+`GET https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys` once
+tinycloud-node `1.13.0` was deployed (TC-369). It replaced the known-wrong
+OpenCredentials development fallback the bundle was first committed with, which
+production had been publishing since TC-359.
 
-Once tinycloud-node at or after `8c9ae2d` is deployed and
-`GET /.well-known/tinycloud/node-keys` answers (TC-369):
+The procedure below is what that correction followed, and is what any future
+key change — a node redeploy that rotates the derived key, a second node —
+should follow too:
 
 1. Read the real key. `curl -fsS
    https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys` and take
