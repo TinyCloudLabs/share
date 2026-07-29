@@ -65,6 +65,28 @@ describe("v2 addressed share creation", () => {
     expect(shareEnvelopeV2Schema.parse(result.envelope).version).toBe(2);
   });
 
+  it("stores only the fixed HTML artifact discriminator in encrypted prefix metadata", async () => {
+    const result = await createAddressedShareLink({
+      matcher: { kind: "emailDomain", value: "example.com" },
+      source,
+      scope,
+      policy: { policyCid: "policy-cid", policyBytes: "cG9saWN5" },
+      actions: ["read", "list"],
+      resource: { kind: "prefix", path: "docs" },
+      shareId: "artifact-share",
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      filename: "4 files",
+      mediaType: "application/x-tinycloud-folder",
+      byteLength: 1024,
+      artifact: "html",
+      encrypted: true,
+      format: "inline",
+      uploadEnvelope: async () => undefined,
+    });
+    expect(result.envelope.metadata).toMatchObject({ artifact: "html" });
+    expect(JSON.stringify(result.envelope.metadata)).not.toContain("index.html");
+  });
+
   it("rejects plaintext metadata that could expose delivery or content details", async () => {
     await expect(createAddressedShareLink({
       matcher: { kind: "emailDomain", value: "example.com" },

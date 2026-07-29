@@ -13,7 +13,7 @@ import {
   type ComposerContent,
   type ShareComposerModel,
 } from "../src/share/composer-model.js";
-import { canonicalUploadFiles, mountShareComposer, type ComposerShareResult } from "../src/share/composer.js";
+import { canonicalUploadFiles, mountShareComposer, selectedFilePath, type ComposerShareResult } from "../src/share/composer.js";
 import { createDevRegistry } from "@tinycloud/share-registry/dev-server";
 import { LinkOnlyShareError } from "../src/share/link-only.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-failure.js";
@@ -365,6 +365,31 @@ describe("share composer content picker", () => {
       { name: "a.bin", size: 60 * 1024 * 1024, type: "", lastModified: 0 } as File,
       { name: "b.bin", size: 60 * 1024 * 1024, type: "", lastModified: 0 } as File,
     ])).toThrow(/100 MB/i);
+  });
+
+  it("recognizes a selected folder artifact while preserving nested canonical paths", () => {
+    const root = document.createElement("div"); document.body.append(root);
+    mountShareComposer(root, baseOptions());
+    const index = new File(["<h1>Artifact</h1>"], "index.html");
+    const script = new File(["document.body.dataset.ready='yes'"], "app.js");
+    Object.defineProperty(index, "webkitRelativePath", { value: "demo/index.html" });
+    Object.defineProperty(script, "webkitRelativePath", { value: "demo/scripts/app.js" });
+
+    dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, [index, script]);
+
+    expect(root.querySelector(".content-chosen-meta")?.textContent).toContain("Opens full-page as an HTML artifact");
+    expect(root.querySelector(".content-chosen-meta")?.textContent).toContain("scripts/app.js");
+    expect(root.querySelector<HTMLButtonElement>(".dropzone-actions button:nth-child(2)")?.textContent).toBe("Choose folder");
+  });
+
+  it("keeps normalized folder paths stable when submit validation runs a second time", () => {
+    const first = new File(["a"], "a.txt");
+    const second = new File(["b"], "b.txt");
+    Object.defineProperty(first, "webkitRelativePath", { value: "demo/assets/a.txt" });
+    Object.defineProperty(second, "webkitRelativePath", { value: "demo/assets/b.txt" });
+    const canonical = canonicalUploadFiles([first, second]);
+    expect(canonical.map(selectedFilePath)).toEqual(["assets/a.txt", "assets/b.txt"]);
+    expect(canonicalUploadFiles(canonical).map(selectedFilePath)).toEqual(["assets/a.txt", "assets/b.txt"]);
   });
 
   it("selects a real library source and preserves the canonical source boundary", async () => {

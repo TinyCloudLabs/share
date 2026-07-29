@@ -34,6 +34,7 @@ export interface CreateAddressedShareLinkInput {
   readonly filename: string;
   readonly mediaType: string;
   readonly byteLength: number;
+  readonly artifact?: "html";
   readonly encrypted: boolean;
   readonly format: "compact" | "inline";
   readonly uploadEnvelope: (cid: string, blob: Uint8Array, deleteAfter: string) => Promise<void>;
@@ -92,11 +93,11 @@ export async function createAddressedShareLink(input: CreateAddressedShareLinkIn
   if (!input.encrypted && (input.format !== "inline" || input.matcher.kind !== "policyDigest")) {
     throw new TypeError("Plaintext policy metadata must use an inline policy-digest link.");
   }
-  if (!input.encrypted && (input.deliveryEmail !== undefined || input.byteLength !== 0 || input.filename.length !== 0)) {
+  if (!input.encrypted && (input.deliveryEmail !== undefined || input.byteLength !== 0 || input.filename.length !== 0 || input.artifact !== undefined)) {
     throw new TypeError("Plaintext policy metadata cannot contain delivery or content details.");
   }
   const metadata = input.encrypted
-    ? { mediaType: input.mediaType, byteLength: input.byteLength, filename: input.filename, encoding: input.mediaType.startsWith("text/") ? "utf-8" as const : undefined }
+    ? { mediaType: input.mediaType, byteLength: input.byteLength, filename: input.filename, encoding: input.mediaType.startsWith("text/") ? "utf-8" as const : undefined, ...(input.artifact === undefined ? {} : { artifact: input.artifact }) }
     : {};
   const unsigned = {
     version: 2 as const,

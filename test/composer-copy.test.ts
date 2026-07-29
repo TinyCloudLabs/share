@@ -44,7 +44,7 @@ describe("copySelectedSource (share byte-for-byte copy)", () => {
     expect(copied?.contentType).toBe("application/pdf");
   });
 
-  it("copies every direct child of a folder with real bytes, excluding nested descendants and siblings", async () => {
+  it("copies the complete nested folder tree with real bytes while excluding siblings", async () => {
     const childA = new Uint8Array([10, 20, 30]);
     const childB = new Uint8Array([40, 50, 60, 70]);
     const nested = new Uint8Array([99]);
@@ -62,13 +62,14 @@ describe("copySelectedSource (share byte-for-byte copy)", () => {
     expect(store.get("shares/xyz/a.md")?.contentType).toBe("text/markdown");
     expect(store.get("shares/xyz/b.txt")?.data).toEqual(childB);
     expect(store.get("shares/xyz/b.txt")?.contentType).toBe("text/plain");
-    // Nested descendants and out-of-prefix siblings are never copied.
-    expect(store.has("shares/xyz/nested/c.md")).toBe(false);
+    expect(store.get("shares/xyz/nested/c.md")?.data).toEqual(nested);
+    expect(store.get("shares/xyz/nested/c.md")?.contentType).toBe("text/markdown");
+    // Out-of-prefix siblings are never copied.
     expect(store.has("shares/xyz/nested")).toBe(false);
     expect(store.has("shares/xyz/sibling.md")).toBe(false);
-    // Only the two direct children were written; no empty placeholder for the folder itself.
+    // Only files were written; no empty placeholder for the folder itself.
     const copiedKeys = [...store.keys()].filter((key) => key.startsWith("shares/xyz"));
-    expect(copiedKeys.sort()).toEqual(["shares/xyz/a.md", "shares/xyz/b.txt"]);
+    expect(copiedKeys.sort()).toEqual(["shares/xyz/a.md", "shares/xyz/b.txt", "shares/xyz/nested/c.md"]);
   });
 
   it("does not substitute an unrelated path when the requested source is missing", async () => {
@@ -89,6 +90,18 @@ describe("uploadSelectedFiles", () => {
     expect(store.get("shares/folder-id/one.bin")?.data).toEqual(new Uint8Array([1, 2, 3]));
     expect(Array.from(store.get("shares/folder-id/two.txt")?.data ?? [])).toEqual(Array.from(new TextEncoder().encode("two")));
     expect(store.get("shares/folder-id/two.txt")?.contentType).toBe("text/plain");
+  });
+
+  it("preserves canonical nested paths selected from a browser folder", async () => {
+    const index = new File(["<h1>Artifact</h1>"], "index.html", { type: "text/html" });
+    const script = new File(["document.body.dataset.ready='yes'"], "app.js", { type: "text/javascript" });
+    Object.defineProperty(index, "webkitRelativePath", { value: "demo/index.html" });
+    Object.defineProperty(script, "webkitRelativePath", { value: "demo/scripts/app.js" });
+    const { tinycloud, store } = fakeTinyCloud({});
+
+    await uploadSelectedFiles(tinycloud, "share", "shares/artifact", "prefix", [index, script]);
+
+    expect([...store.keys()].sort()).toEqual(["shares/artifact/index.html", "shares/artifact/scripts/app.js"]);
   });
 
   it("keeps one-file uploads exact and refuses a multi-file exact overwrite", async () => {

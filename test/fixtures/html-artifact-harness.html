@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>HTML artifact browser harness</title>
+    <link rel="stylesheet" href="/src/viewer/viewer.css">
+  </head>
+  <body>
+    <main id="harness-status" role="status">Loading artifact…</main>
+    <script type="module">
+      import { prepareHtmlArtifact } from "/src/artifact/bundle.ts";
+      import { createArtifactSandbox } from "/src/viewer/artifact-sandbox.ts";
+      import { mountArtifactChrome } from "/src/viewer/artifact-chrome.ts";
+      import indexSource from "/examples/html-artifact/index.html?raw";
+      import styleSource from "/examples/html-artifact/styles/site.css?raw";
+      import scriptSource from "/examples/html-artifact/scripts/app.js?raw";
+      import imageSource from "/examples/html-artifact/assets/cloud.svg?raw";
+
+      const definitions = [
+        ["index.html", indexSource, "text/html"],
+        ["styles/site.css", styleSource, "text/css"],
+        ["scripts/app.js", scriptSource, "text/javascript"],
+        ["assets/cloud.svg", imageSource, "image/svg+xml"],
+      ];
+      try {
+        const files = definitions.map(([path, source, mediaType]) => ({
+          path,
+          bytes: new TextEncoder().encode(source),
+          mediaType,
+        }));
+        const artifact = await prepareHtmlArtifact(files);
+        const sandbox = createArtifactSandbox(document);
+        await sandbox.render(artifact);
+        sandbox.iframe.hidden = false;
+        document.body.classList.add("artifact-active");
+        document.getElementById("harness-status").remove();
+        await mountArtifactChrome(document, {
+          shareId: "browser-artifact-example",
+          shareUrl: `${location.origin}/s/example#browser-secret`,
+        });
+        document.documentElement.dataset.ready = "yes";
+      } catch (error) {
+        console.error("Artifact harness failed", error);
+        document.getElementById("harness-status").textContent = "Artifact failed to load.";
+        document.documentElement.dataset.ready = "error";
+      }
+    </script>
+  </body>
+</html>

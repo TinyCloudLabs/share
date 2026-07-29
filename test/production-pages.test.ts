@@ -5,7 +5,7 @@ import { toBase64Url } from "@tinycloud/share-envelope";
 import { onRequest } from "../functions/[[path]].js";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
 import { createProductionHandler, startProductionServer } from "../src/host/production-server.js";
-import { cloudflareHeaders, validateTrustBundle } from "../src/host/trust-bundle.js";
+import { cloudflareHeaders, securityHeadersForPath, validateTrustBundle } from "../src/host/trust-bundle.js";
 import { REGISTRY_UPLOAD_BODY_LIMIT } from "../src/host/upstream.js";
 
 const API_ORIGIN = "https://api.share.tinycloud.xyz";
@@ -79,6 +79,8 @@ describe("Cloudflare Pages static asset boundaries", () => {
       expect(headers).toMatch(/\/share\.html\n(?:  .+\n)*  Cache-Control: no-store/);
       expect(headers).toMatch(/\/assets\/\*\n  Cache-Control: public, max-age=31536000, immutable/);
       expect(headers).toMatch(/\/404\.html\n  Cache-Control: no-store/);
+      expect(headers).toMatch(/\/artifact-sandbox\.html\n(?:  .+\n)*  Content-Security-Policy: frame-ancestors 'self'/);
+      expect(headers).toMatch(/\/artifact-sandbox\.html\n(?:  .+\n)*  X-Frame-Options: SAMEORIGIN/);
     }
   });
 
@@ -89,6 +91,13 @@ describe("Cloudflare Pages static asset boundaries", () => {
     expect(cloudflareHeaders(validateTrustBundle(trustBundle()))).toMatch(/\/\n(?:  .+\n)*  Content-Security-Policy: default-src 'none';/);
     expect(readFileSync("share.html", "utf8")).toContain("https://tee.node.tinycloud.xyz");
     expect(readFileSync("viewer.html", "utf8")).toContain("https://tee.node.tinycloud.xyz");
+  });
+
+  it("refuses third-party artifact-sandbox embedding in the production server", () => {
+    const headers = securityHeadersForPath(validateTrustBundle(trustBundle()), "/artifact-sandbox.html");
+    expect(headers["Content-Security-Policy"]).toBe("frame-ancestors 'self'");
+    expect(headers["X-Frame-Options"]).toBe("SAMEORIGIN");
+    expect(headers["Cache-Control"]).toBe("no-store");
   });
 
   it("converts the Pages SPA fallback into a real 404 for missing build assets", async () => {
