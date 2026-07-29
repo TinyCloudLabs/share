@@ -35,6 +35,8 @@ import { nodeEnforcerAudienceFromTrustBundle } from "./node-enforcer-audience.mj
 import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
 import { safeFailedTelemetry } from "./failure-diagnostic.mjs";
 import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
+import { assertRoutingShimInstalled, loopbackTransportAbortPatterns } from "./loopback-transport.mjs";
+import { OPENSSL_OVERRIDE_ENV, duplicateCertificateExtensions, resolveOpensslBinary, tlsMaterialDiagnostic } from "./openssl-toolchain.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 
@@ -298,6 +300,40 @@ function walletBootstrapScript(walletOrigin) {
   })()`;
 }
 
+/*
+ * TC-340. Re-read the generated material with the pinned binary before
+ * Postgres ever opens it. A repeated X.509 extension parses fine under the
+ * toolchain that wrote it and is fatal under OpenSSL 3, so the only place this
+ * can be caught cheaply is here, naming the binary and the certificate.
+ */
+function assertPostgresLoadableCertificates(openssl, certificates) {
+  for (const [label, path] of Object.entries(certificates)) {
+    let text;
+    try {
+      text = execFileSync(openssl.path, ["x509", "-in", path, "-noout", "-text"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      throw new Error(tlsMaterialDiagnostic({ label, openssl, detail: `${path} could not be parsed back (${String(error?.stderr ?? (error instanceof Error ? error.message : error)).trim().slice(-400)})` }));
+    }
+    const duplicates = duplicateCertificateExtensions(text);
+    if (duplicates.length > 0) throw new Error(tlsMaterialDiagnostic({ label, openssl, detail: `${path} repeats X.509 extension(s) ${duplicates.join(", ")}` }));
+  }
+  try {
+    execFileSync(openssl.path, ["verify", "-CAfile", certificates["certificate authority"], certificates["server certificate"]], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    throw new Error(tlsMaterialDiagnostic({ label: "certificate chain", openssl, detail: `the server certificate does not verify against the harness CA (${String(error?.stderr ?? (error instanceof Error ? error.message : error)).trim().slice(-400)})` }));
+  }
+}
+
+function assertPostgresAcceptsTls(openssl, postgresUrl, caCertPath) {
+  try {
+    execFileSync("/opt/homebrew/opt/postgresql@16/bin/psql", [postgresUrl, "-v", "ON_ERROR_STOP=1", "-tAc", "select 1"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PGSSLROOTCERT: caCertPath, PGCONNECT_TIMEOUT: "10" },
+    });
+  } catch (error) {
+    throw new Error(tlsMaterialDiagnostic({ label: "Postgres server", openssl, detail: `psql refused the sslmode=verify-full handshake (${String(error?.stderr ?? (error instanceof Error ? error.message : error)).trim().slice(-400)})` }));
+  }
+}
+
 async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
     if (request.url !== "/sign") { response.writeHead(404).end(); return; }
@@ -378,15 +414,26 @@ async function startFixtures(tempRoot) {
   const postgresServerCsrPath = join(postgresTlsDir, "server.csr");
   const postgresServerCertPath = join(postgresTlsDir, "server.crt");
   const postgresServerExtPath = join(postgresTlsDir, "server.ext");
-  await runOnce("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresCaKeyPath, "-out", postgresCaCertPath, "-days", "1", "-subj", "/CN=sharing-e2e-harness-ca", "-addext", "basicConstraints=critical,CA:true"], postgresTlsDir);
-  await runOnce("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresServerKeyPath, "-out", postgresServerCsrPath, "-subj", `/CN=${POSTGRES_TLS_HOSTNAME}`], postgresTlsDir);
+  // TC-340. Pin the toolchain instead of taking whatever `openssl` PATH hands
+  // us: an OpenSSL 1.1.1 build emits basicConstraints twice here and Postgres,
+  // which links OpenSSL 3, then dies with an opaque `SSL error: invalid
+  // certificate` two subprocesses away.
+  const openssl = resolveOpensslBinary({ override: process.env[OPENSSL_OVERRIDE_ENV], probe: (path) => execFileSync(path, ["version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) });
+  checks.push(`Harness TLS toolchain pinned to ${openssl.path} (${openssl.version.banner})${process.env[OPENSSL_OVERRIDE_ENV] === undefined ? "" : ` via ${OPENSSL_OVERRIDE_ENV}`}; ambient PATH openssl is never used.`);
+  await runOnce(openssl.path, ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresCaKeyPath, "-out", postgresCaCertPath, "-days", "1", "-subj", "/CN=sharing-e2e-harness-ca", "-addext", "basicConstraints=critical,CA:true"], postgresTlsDir);
+  await runOnce(openssl.path, ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", postgresServerKeyPath, "-out", postgresServerCsrPath, "-subj", `/CN=${POSTGRES_TLS_HOSTNAME}`], postgresTlsDir);
   await writeFile(postgresServerExtPath, postgresServerCertExtensionFile(), { flag: "wx" });
-  await runOnce("openssl", ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
+  await runOnce(openssl.path, ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
   await chmod(postgresServerKeyPath, 0o600);
+  assertPostgresLoadableCertificates(openssl, { "certificate authority": postgresCaCertPath, "server certificate": postgresServerCertPath });
   run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: "samgbafa" });
   await waitForTcp(postgresPort);
   const postgresUrl = postgresConnectionUrl({ user: "samgbafa", host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
-  checks.push(`hermetic verify-full TLS Postgres persistence started on ${POSTGRES_TLS_HOSTNAME}:${postgresPort}.`);
+  // The certificate is only genuinely good if the *database* accepts it, so
+  // complete one verify-full handshake here rather than discovering the
+  // problem inside migrate.sh with no mention of openssl anywhere.
+  assertPostgresAcceptsTls(openssl, postgresUrl, postgresCaCertPath);
+  checks.push(`hermetic verify-full TLS Postgres persistence started on ${POSTGRES_TLS_HOSTNAME}:${postgresPort} and completed a verify-full handshake against the pinned harness CA.`);
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
@@ -571,6 +618,45 @@ async function installBrowserTelemetry() {
   await agent(["eval", `(function(){if(window.__tinycloudTelemetryInstalled)return;var original=window.fetch;var nodeOrigin=${JSON.stringify(canonical.node)};var credentialsOrigin=${JSON.stringify(canonical.credentials)};var routeTelemetryFetchArgs=${routeTelemetryFetchArgsSource};var normalizeTelemetryFetchArgs=${normalizeTelemetryFetchArgsSource};window.__tinycloudTelemetry=[];window.__tinycloudTelemetryInstalled=true;window.fetch=async function(input,init){var fetchStartTime=performance.now();var isRequestInput=typeof Request!=='undefined'&&input instanceof Request;var method=isRequestInput?(init&&init.method)||input.method:(init&&init.method)||'GET';var browserTraceId=crypto.randomUUID();var requestBodyPromise=method==='POST'&&input&&typeof input.clone==='function'?input.clone().text().catch(function(){return ''; }):Promise.resolve(typeof init?.body==='string'?init.body:'');var routedResult=routeTelemetryFetchArgs(input,init,{nodeOrigin:nodeOrigin,credentialsOrigin:credentialsOrigin,currentOrigin:window.location.origin});var routed=routedResult.url;var normalized=normalizeTelemetryFetchArgs(routedResult.fetchArgs);var delegateByteLength=0;var delegateDigest=null;var delegateDigestAvailable=false;if(method==='POST'&&routed.endsWith('/delegate')){try{var delegateArrayBuf=await normalized.request.clone().arrayBuffer();var delegateBytes=new Uint8Array(delegateArrayBuf);delegateByteLength=delegateBytes.byteLength;if(delegateByteLength>0){var delegateHashBuf=await crypto.subtle.digest('SHA-256',delegateBytes);delegateDigest=Array.from(new Uint8Array(delegateHashBuf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');delegateDigestAvailable=true;}}catch(e){}}var authorizationPresent=false;var authorizationDigest=null;var authorizationDigestAvailable=false;if(routed.endsWith('/delegate')){var authHeader=normalized.request.headers.get('authorization');authorizationPresent=typeof authHeader==='string'&&authHeader.length>0;if(authorizationPresent){try{var authBytes=new TextEncoder().encode(authHeader);var authHashBuf=await crypto.subtle.digest('SHA-256',authBytes);authorizationDigest=Array.from(new Uint8Array(authHashBuf)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');authorizationDigestAvailable=true;}catch(e){}}}try{var response=await original.apply(window,normalized.fetchArgs);var item={url:routed,method:routedResult.method,status:response.status,requestId:browserTraceId,serverTraceId:response.headers.get('x-tinycloud-trace-id')};if(method==='POST'&&routed.endsWith('/invoke')){var bodyText=await requestBodyPromise;item.requestSpaces=[...new Set(bodyText.match(/tinycloud:[^\"' ]+/g)||[])];}if(method==='POST'&&routed.endsWith('/delegate')){item.requestBodyLength=delegateByteLength;item.requestDigestAvailable=delegateDigestAvailable;if(delegateDigestAvailable&&delegateDigest!==null){item.requestBodyDigest=delegateDigest;}item.authorizationPresent=authorizationPresent;item.authorizationDigestAvailable=authorizationDigestAvailable;if(authorizationDigestAvailable&&authorizationDigest!==null){item.authorizationDigest=authorizationDigest;}}if((!response.ok&&method==='POST')||(method==='POST'&&routed.endsWith('/delegate'))||(method==='POST'&&routed.endsWith('/invoke'))||(method==='POST'&&routed.endsWith('/policies'))){try{var clone=response.clone();var text=await clone.text();var parsedBody=null;try{parsedBody=JSON.parse(text);}catch{}if(routed.endsWith('/policies')){item.responseKeys=parsedBody&&typeof parsedBody==='object'?Object.keys(parsedBody).sort():[];item.responseErrorCode=parsedBody&&parsedBody.error&&typeof parsedBody.error==='object'?parsedBody.error.code||null:null;}if(routed.endsWith('/delegate'))item.responseBody=text.slice(0,1200);if(routed.endsWith('/invoke')){item.responseContentType=response.headers.get('content-type');item.responseBodyLength=text.length;item.responseBodyPreview=text.slice(0,240);}try{item.errorCode=parsedBody&&parsedBody.error?.code||null;}catch{item.errorCode=null;if(!response.ok)item.errorBody=text.slice(0,500);}}catch{item.errorCode=null;}}var pushTime=performance.now();item.fetchStartTime=fetchStartTime;item.pushTime=pushTime;window.__tinycloudTelemetry.push(item);return response;}catch(error){var pushTime=performance.now();window.__tinycloudTelemetry.push({url:routed,method:method,status:0,requestId:browserTraceId,fetchStartTime:fetchStartTime,pushTime:pushTime});throw error;}};})()`]);
 }
 
+/*
+ * TC-339, enforcement half. See test/e2e-sharing/loopback-transport.mjs for
+ * why the authority host must stay canonical while the transport must not.
+ *
+ * These routes live on the Playwright page, not in the page's JavaScript
+ * realm, so they survive every navigation, cover subframes and non-fetch
+ * transports, and hold whether or not the application cooperates. Their only
+ * job is to make an escape impossible rather than merely improbable: after
+ * this call, no request naming a canonical production origin can leave the
+ * machine, and one that tries fails at the exact call site instead of quietly
+ * succeeding against production.
+ */
+async function installLoopbackTransportGuard() {
+  for (const pattern of loopbackTransportAbortPatterns(canonical)) await agent(["network", "route", pattern, "--abort"]);
+  checks.push(`Loopback transport guard aborts every browser request to ${loopbackTransportAbortPatterns(canonical).join(", ")} at the browser network layer, so hermeticity no longer depends on a page-realm shim surviving navigation.`);
+}
+
+/*
+ * TC-339, routing half. Navigation discards the page realm and with it the
+ * fetch shim that rewrites the canonical node/credentials origins onto the
+ * loopback Share host. Every navigation in this harness goes through here so
+ * that reinstalling the shim is part of navigating rather than something six
+ * of seven call sites forgot to do.
+ */
+async function navigate(url, settleMs) {
+  await agent(["open", url]);
+  if (settleMs !== undefined) await agent(["wait", String(settleMs)]);
+  await installBrowserTelemetry();
+  assertRoutingShimInstalled(await agent(["eval", "window.__tinycloudTelemetryInstalled === true"]), url);
+}
+
+/** Same contract for the in-page navigations the recipient flow performs. */
+async function navigateInPage(href, settleMs = 1500) {
+  await agent(["eval", `location.href=${JSON.stringify(href)}`]);
+  await agent(["wait", String(settleMs)]);
+  await installBrowserTelemetry();
+  assertRoutingShimInstalled(await agent(["eval", "window.__tinycloudTelemetryInstalled === true"]), href);
+}
+
 async function browserTelemetryEntries() {
   try {
     const entries = networkEntries(await agent(["eval", "JSON.stringify((window.__tinycloudTelemetry&&window.__tinycloudTelemetry.length>0)?window.__tinycloudTelemetry:performance.getEntriesByType('resource').map(function(entry,index){return {url:entry.name,method:'GET',status:200,requestId:'performance-'+index}}))"]));
@@ -707,9 +793,9 @@ function safeBrowserDiagnostic(value) {
 async function browserGate(origin, walletOrigin, mailOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
-  await agent(["open", `${origin}/share.html`]);
+  await navigate(`${origin}/share.html`);
+  await installLoopbackTransportGuard();
   await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
-  await installBrowserTelemetry();
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
   await agent(["eval", "(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))result.then(function(response){window.__tinycloudAuthDiagnostics.push({path:(new URL(u,location.href)).pathname,status:response.status});});return result;};})()"]).catch(() => undefined);
@@ -749,20 +835,18 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   assert.match(compact.url, /^https:\/\/share\.tinycloud\.xyz\/s\/[^#]+#k=/);
   const compactNetwork = await browserTelemetryEntries();
   const localCompact = new URL(compact.url); localCompact.protocol = "http:"; localCompact.host = new URL(origin).host;
-  await agent(["eval", `location.href=${JSON.stringify(localCompact.href)}`]);
-  await agent(["wait", "1500"]);
-  await installBrowserTelemetry();
+  await navigateInPage(localCompact.href);
   assert.match(await agent(["snapshot"]), /shared via link/);
   assert.equal(await agent(["eval", "document.querySelector('iframe')?.srcdoc.includes('Hermetic sharing') === true"]), "true");
   await agent(["eval", `window.__tinycloudSharingFlowTraceId=${JSON.stringify(compact.traceId)}`]);
   await auditFlow("bearer-compact", compact.traceId, { mailOrigin, networkEntries: compactNetwork, skipBrowserTraceCheck: true });
   gateResults.bearer = true;
 
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin); await installBrowserTelemetry();
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
   const inline = await createBearer("inline", "upload", "bearer-inline");
   assert.match(inline.url, /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/);
   await auditFlow("bearer-inline", inline.traceId, { mailOrigin });
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin, false);
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin, false);
   await agent(["wait", "text=2 shares loaded."]);
   assert.equal(await agent(["get", "count", ".sender-history-row"]), "2", "fresh same-sender sign-in did not reload the populated encrypted library");
   const libraryCopy = agentString(await agent(["eval", "(()=>{const buttons=[...document.querySelectorAll('button[aria-label^=\"Copy link for\"]')];if(buttons.length<2)throw new Error('sender library copy actions missing; buttons='+buttons.length+'; rows='+document.querySelectorAll('.sender-history-row').length+'; live='+JSON.stringify(document.querySelector('.sender-live')?.textContent||'')+'; error='+JSON.stringify(document.querySelector('.sender-status')?.textContent||'')+'; loadError='+JSON.stringify(window.__tinycloudSenderHistoryError||''));buttons[1].click();return true;})()"]));
@@ -771,13 +855,13 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   assert.equal(await agent(["eval", `!document.documentElement.textContent.includes(${JSON.stringify(compact.url)}) && !document.documentElement.textContent.includes(${JSON.stringify(inline.url)})`]), "true", "sender library rendered a complete secret URL in page text");
   await agent(["eval", "fetch('/api/share/auth/logout',{method:'POST',credentials:'include'}).then(function(r){return r.status})"]);
   assert.equal(await agent(["eval", "fetch('/api/share/capabilities',{credentials:'include'}).then(function(r){return r.status})"]), "401", "signed-out sender library remained authorized");
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin, false); await agent(["wait", "text=2 shares loaded."]);
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin, false); await agent(["wait", "text=2 shares loaded."]);
   assert.equal(await agent(["get", "count", ".sender-history-row"]), "2", "same sender did not recover its library after session reset");
   gateResults.senderLibrary = true;
   checks.push("Sender library created and persisted shares, reset the session, reloaded the populated same-sender library, copied a byte-exact complete link, rendered no secret URL, and denied signed-out access.");
   checks.push("Encrypted compact and inline bearer links were both observed; bearer creation remained link-only.");
 
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin); await installBrowserTelemetry();
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
   const exactTrace = await beginFlow("exact-email");
   await agent(["click", "input[value=exactEmail]"]); await agent(["fill", "input[name=recipient-value]", "sam@tinycloud.xyz"]);
   await agent(pickFromLibrary); await agent(["eval", "(function(){var s=document.querySelector('select[name=kv-source]');s.selectedIndex=0;s.dispatchEvent(new Event('change',{bubbles:true}));})()"]).catch(() => undefined);
@@ -812,7 +896,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   assert.equal(exactAudit.messages.length, 1); assert.match(JSON.stringify(exactAudit.capturedMail.payload), /https:\/\/share\.tinycloud\.xyz\/s\//);
   const exactInviteUrl = localShareUrl(mailShareUrl(exactAudit.capturedMail.payload), origin);
   const canonicalExactInviteUrl = new URL(exactInviteUrl); canonicalExactInviteUrl.protocol = "https:"; canonicalExactInviteUrl.hostname = "share.tinycloud.xyz"; canonicalExactInviteUrl.port = "";
-  await agent(["open", exactInviteUrl]); await agent(["wait", "2000"]); await installBrowserTelemetry();
+  await navigate(exactInviteUrl, 2000);
   await agent(["eval", "(function(){window.__recipientCopiedLink=null;var clipboard={writeText:function(value){window.__recipientCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__recipientCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]);
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link');if(!button)throw new Error('recipient Copy link button is missing');button.click();return true;})()"]); await agent(["wait", "text=Link copied."]);
   const recipientCopyEvidence = agentString(await agent(["eval", `JSON.stringify({exact:window.__recipientCopiedLink===${JSON.stringify(canonicalExactInviteUrl.href)},scrubbed:location.hash===''&&location.search==='',dom:!document.documentElement.textContent.includes(${JSON.stringify(canonicalExactInviteUrl.href)}),storage:![localStorage,sessionStorage].some(function(store){return Object.values(store).some(function(value){return String(value).includes(${JSON.stringify(canonicalExactInviteUrl.href)});});}),referrer:!document.referrer.includes(${JSON.stringify(canonicalExactInviteUrl.href)})})`]));
@@ -857,7 +941,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   checks.push("Exact-email Markdown link creation, explicit delivery, and byte-identical idempotency replay were observed.");
 
   const runDomainFlow = async () => {
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin); await installBrowserTelemetry();
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   const domainTrace = await beginFlow("domain");
   // The mounted credential fixture proves the full mailbox identity
@@ -891,7 +975,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   checks.push(`Domain provider recipient shape sanitized: ${JSON.stringify({ payloadKeys: domainMailPayload && typeof domainMailPayload === "object" ? Object.keys(domainMailPayload).sort() : [], recipientMatches: domainMailStrings.includes(domainDeliveryEmail), recipientStringLengths: domainMailStrings.filter((value) => value.includes("@mailinator.com")).map((value) => value.length).sort() })}.`);
   assert.equal(domainMailStrings.includes(domainDeliveryEmail), true, "domain provider email did not target the generated full delivery email");
   const domainInviteUrl = localShareUrl(mailShareUrl(domainAudit.capturedMail.payload), origin);
-  await agent(["open", domainInviteUrl]); await installBrowserTelemetry(); await agent(["wait", "2000"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "2000"]);
+  await navigate(domainInviteUrl); await agent(["wait", "2000"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "2000"]);
   const domainOpenState = agentString(await agent(["eval", "JSON.stringify({contentPresent:(document.querySelector('.viewer-preview-frame')?.srcdoc||'').length>0,isolatedPreview:document.querySelector('.viewer-preview-frame')?.getAttribute('sandbox')==='',status:(document.querySelector('.viewer-policy-status')?.textContent||'').slice(0,240),responses:(window.__tinycloudTelemetry||[]).filter(function(entry){return String(entry.url||'').includes('/share/v1/')||String(entry.url||'').includes('/claims/')}).map(function(entry){return {status:entry.status,errorCode:entry.errorCode||null}})})"]));
   assert.equal(domainOpenState?.contentPresent, true, `full-email domain claim/open did not render authorized content: ${JSON.stringify(domainOpenState)}`);
   assert.equal(domainOpenState?.isolatedPreview, true, `full-email domain content did not use the isolated preview boundary: ${JSON.stringify(domainOpenState)}`);
@@ -900,7 +984,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   };
 
   const runFolderFlow = async () => {
-  await agent(["open", `${origin}/share.html`]); await authenticateBrowserPage(walletOrigin); await installBrowserTelemetry();
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin);
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   const folderTrace = await beginFlow("folder");
   const folderDeliveryEmail = "sam@mailinator.com";
@@ -913,7 +997,7 @@ async function browserGate(origin, walletOrigin, mailOrigin) {
   const folderAudit = await auditFlow("folder", folderTrace, { mailOrigin, expectMail: true, expectMailRecipient: folderDeliveryEmail, pii: [folderDeliveryEmail] });
   const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(folderDeliveryShape?.resource, "documents"); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
   const folderInviteUrl = localShareUrl(mailShareUrl(folderAudit.capturedMail.payload), origin);
-  await agent(["open", folderInviteUrl]); await agent(["wait", "2000"]); await installBrowserTelemetry(); await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]); await agent(["eval", "(function(){var previous=window.fetch;window.__folderPutCapture=null;window.__policyTrace=[];window.__claimTrace=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=previous.apply(this,arguments);if(u.includes('/policy/challenges')||u.includes('/policy/session')||u.includes('/v1/share-email/claims/')){result.then(function(response){response.clone().text().then(function(body){var parsed=null;try{parsed=JSON.parse(body);}catch{}var path=(new URL(u,location.href)).pathname;var target=path.includes('/claims/')?window.__claimTrace:window.__policyTrace;target.push({path:path,status:response.status,code:parsed&&parsed.error&&parsed.error.code||null,keys:parsed&&typeof parsed==='object'?Object.keys(parsed).sort():[],body:body.slice(0,400)});});});}if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var request=parsed&&parsed.request||{};var action=request.action||request.invocation&&request.invocation.action;if(action==='tinycloud.kv/put'||action==='put'){window.__folderPutCapture={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};}}catch{}}return result;};})()"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "3000"]);
+  await navigate(folderInviteUrl, 2000); await agent(["set", "headers", JSON.stringify({ Origin: canonical.share })]); await agent(["eval", "(function(){var previous=window.fetch;window.__folderPutCapture=null;window.__policyTrace=[];window.__claimTrace=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=previous.apply(this,arguments);if(u.includes('/policy/challenges')||u.includes('/policy/session')||u.includes('/v1/share-email/claims/')){result.then(function(response){response.clone().text().then(function(body){var parsed=null;try{parsed=JSON.parse(body);}catch{}var path=(new URL(u,location.href)).pathname;var target=path.includes('/claims/')?window.__claimTrace:window.__policyTrace;target.push({path:path,status:response.status,code:parsed&&parsed.error&&parsed.error.code||null,keys:parsed&&typeof parsed==='object'?Object.keys(parsed).sort():[],body:body.slice(0,400)});});});}if(u.includes('/invoke')&&init&&typeof init.body==='string'){try{var parsed=JSON.parse(init.body);var request=parsed&&parsed.request||{};var action=request.action||request.invocation&&request.invocation.action;if(action==='tinycloud.kv/put'||action==='put'){window.__folderPutCapture={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:init.body};}}catch{}}return result;};})()"]); await agent(["click", "button.viewer-primary-action"]); await agent(["wait", "3000"]);
   const folderOpenState = agentString(await agent(["eval", "JSON.stringify({title:document.title,policy:(document.querySelector('.viewer-policy-status')?.textContent||'').slice(0,240),claim:(document.querySelector('.viewer-status')?.textContent||'').slice(0,240),trace:window.__policyTrace||[],claimTrace:window.__claimTrace||[],body:(document.body?.innerText||'').replace(/https?:\\/\\/[^\\s]+/g,'[URL]').slice(0,600)})"]));
   if (!String(folderOpenState?.body ?? "").includes("Shared folder")) throw new Error("folder authorization did not complete: " + JSON.stringify(folderOpenState));
   assert.notEqual(await agent(["get", "count", "button.viewer-folder-entry"]), "0", "folder child listing was not observed");
@@ -1001,7 +1085,7 @@ let tempRoot;
 let share;
 async function browserSmokeLoop(origin, walletOrigin) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    await agent(["open", `${origin}/share.html`]);
+    await navigate(`${origin}/share.html`);
     await authenticateBrowserPage(walletOrigin);
     assert.equal(await agent(["get", "count", "main.composer-shell"]), "1", `sequential browser smoke ${attempt} did not reach the production composer`);
   }
