@@ -461,3 +461,4 @@ function mapReceiveError(error: ShareReceiveError): ResolveResult {
     default: return { state: "fetch-failed", detail: "share unavailable" };
   }
 }
+

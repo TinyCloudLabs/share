@@ -1,4 +1,4 @@
-import { armManualCopy, createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
+import { armManualCopy, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
 import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-app-compat";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import { canonicalDigest } from "../email-share/protocol.js";
@@ -9,6 +9,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, shareEnvelopeV2Schema, unsignedShareEnvelopeV2Schema, toBase64Url } from "@tinycloud/share-envelope";
+import { publishShare, type ShareUploadInput } from "@tinycloud/share-sdk";
 type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 /**
@@ -281,24 +282,38 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   }
   if (files.length !== 1) throw fail("linkOnlyFolder", "link-only sharing supports one exact file");
   if (file === undefined) throw fail("content", "link-only share has no file");
-  const result = await createLinkOnlyShare(file, {
-    origin: options.origin,
-    allowBinary: true,
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const registryBaseUrl = `${options.registryOrigin ?? options.origin}/api/share/link-only/registry`;
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const uploadBlob = async (input: ShareUploadInput): Promise<{ readonly cid: string; readonly deleteAfter: string }> => {
+    const response = await fetchFn(`${registryBaseUrl}/blobs`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+      headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": input.deleteAfter },
+      body: input.blob as BodyInit,
+    });
+    if (response.status === 401 || response.status === 403) throw fail("session", "your Share session is no longer authorized");
+    if (!response.ok) throw fail("save", "the Share registry rejected the encrypted blob");
+    const body = await response.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
+    if (body.cid !== input.cid || typeof body.deleteAfter !== "string") throw fail("save", "the Share registry returned an invalid upload receipt");
+    return { cid: input.cid, deleteAfter: body.deleteAfter };
+  };
+  const result = await publishShare({
+    source: bytes,
+    filename: file.name,
+    mediaType: "text/markdown",
+    target: { kind: "bearer" },
     expiresAt: new Date(model.expiresAt),
+    origin: options.origin,
+    inline: model.linkFormat === "inline",
     ...(options.now === undefined ? {} : { now: options.now }),
-    ...(options.registryOrigin === undefined ? {} : { registryOrigin: options.registryOrigin }),
-    ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+    registryBaseUrl,
+    uploadBlob,
   });
-  if (model.linkFormat === "inline") {
-    if (result.inlineEnvelopeBlob === undefined || result.inlineEnvelopeKey === undefined) throw fail("format", "link-only inline material is missing");
-    try {
-      const url = await encodeInlineShareUrl({ origin: options.origin, ciphertext: result.inlineEnvelopeBlob, key32: result.inlineEnvelopeKey });
-      return { url, cid: result.envelopeCid, format: model.linkFormat, expiresAt: result.expiry };
-    } finally {
-      result.inlineEnvelopeKey.fill(0);
-    }
-  }
-  return { url: result.url, cid: result.envelopeCid, format: model.linkFormat, expiresAt: result.expiry };
+  return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt };
 }
 
 function bytes(value: unknown, label: string): Uint8Array {
