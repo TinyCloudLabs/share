@@ -58,8 +58,17 @@ function ownerSession(calls: DeliveryCall[], omitAuthorize = false): ShareTinyCl
   const session = {
     spaceId: "space-1",
     did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
-    createOwnerDelegation: async () => ({ delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) }),
-    registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
+    createOwnerDelegation: async (input: Record<string, unknown>) => ({ delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]), permissions: input.permissions }),
+    registerOwnerSharePolicy: async (input: Record<string, unknown>) => ({
+      registration: {
+        registrationCid: "bafkreiregistrationfake",
+        ownerDelegationCid: (input.ownerDelegation as { delegationCid: string }).delegationCid,
+        ownerDid: session.did,
+        shareKeyDid: "did:key:z6Mkfixture",
+        enforcerDid: CONFIG.enforcerDid,
+      },
+      proof: {},
+    }),
     kvForSpace: () => ({ put: async () => ({ ok: true }) }),
     // Not an arrow: `this` is only bound when the composer calls this as a
     // method on the session, which is the second half of the TC-343 defect.

@@ -270,8 +270,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("addressed share creation honors the sender's expiry choice", () => {
-  it("carries the selected 24-hour expiry through the real createPolicyShare path", async () => {
+describe("legacy capability-only addressed publication is disabled", () => {
+  it("requires the canonical authenticated owner path", async () => {
     const capability = await domainCapability(EXPIRY_24H);
     const root = document.createElement("div");
     document.body.append(root);
@@ -299,15 +299,12 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     // The sender's choice reached the SDK boundary. (A hardcoded 7-day
     // lifetime is caught earlier still, by the composer's own policy-binding
     // check, so this list comes back empty instead of holding 2030-08-03.)
-    expect(hoisted.addressedLinkInputs.map((input) => input.expiresAt)).toEqual([EXPIRY_24H]);
-    expect(state).toBe("created");
-    expect(captured).toBeDefined();
-    // The model and the persisted share agree with it.
-    expect(captured!.model.expiresAt).toBe(EXPIRY_24H);
-    expect(captured!.share.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.addressedLinkInputs).toEqual([]);
+    expect(state).toMatch(/^error-/);
+    expect(captured).toBeUndefined();
   });
 
-  it("clamps the addressed expiry to the signed capability boundary", async () => {
+  it("does not fall back to a host-authored domain envelope", async () => {
     const capability = await domainCapability(CAPABILITY_BOUNDARY, { expiryMax: CAPABILITY_BOUNDARY });
     const root = document.createElement("div");
     document.body.append(root);
@@ -333,13 +330,9 @@ describe("addressed share creation honors the sender's expiry choice", () => {
 
     const state = await settle(root);
 
-    expect(hoisted.addressedLinkInputs.map((input) => input.expiresAt)).toEqual([CAPABILITY_BOUNDARY]);
-    expect(state).toBe("created");
-    expect(captured).toBeDefined();
-    // The sender's own choice is still what the model recorded; only the
-    // capability boundary shortened the link.
-    expect(captured!.model.expiresAt).toBe(EXPIRY_30D);
-    expect(captured!.share.expiresAt).toBe(CAPABILITY_BOUNDARY);
+    expect(hoisted.addressedLinkInputs).toEqual([]);
+    expect(state).toMatch(/^error-/);
+    expect(captured).toBeUndefined();
   });
 });
 
@@ -367,11 +360,11 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
       did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
       createOwnerDelegation: async (input: Record<string, unknown>) => {
         ownerDelegationInputs.push(input);
-        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
+        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]), permissions: input.permissions };
       },
       registerOwnerSharePolicy: async (input: Record<string, unknown>) => {
         registrations.push(input);
-        return { registration: { registrationCid: "bafkreiregistrationfake" } };
+        return { registration: { registrationCid: "bafkreiregistrationfake" }, proof: {} };
       },
       kvForSpace: () => ({ put: async () => ({ ok: true }) }),
     } as unknown as ShareTinyCloud;
@@ -426,23 +419,11 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(ownerDelegationInputs[0]).not.toHaveProperty("actions");
     expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("network.create");
     expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("*");
-    // ...the canonical owner policy carries it...
-    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
-    expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).toBe(EXPIRY_24H);
-    expect(hoisted.owner.canonicalPolicies[0]!.decryption).toEqual(expectedDecryption);
-    // ...and so does the policy-enforcement delegation.
-    expect(hoisted.owner.enforcementInputs).toHaveLength(1);
-    expect(hoisted.owner.enforcementInputs[0]!.expiresAt).toBe(EXPIRY_24H);
-    expect(hoisted.owner.enforcementInputs[0]!.decryption).toEqual(expectedDecryption);
-    // A hardcoded 7-day lifetime would land here.
-    expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).not.toBe("2030-08-03T00:00:00.000Z");
     expect(ownerDelegationInputs[0]!.expiresAt).not.toEqual(new Date("2030-08-03T00:00:00.000Z"));
 
     // The chosen expiry is the one the whole owner ceremony was built around,
     // and the ceremony really ran against the injected owner client.
-    expect(hoisted.owner.canonicalPolicies[0]!.ownerDelegationCid).toBe("bafkreiownerdelegationfake");
     expect(registrations).toHaveLength(1);
-    expect(hoisted.owner.shareKeyClears).toBe(1);
     // TC-338: the ceremony now reaches the end. Before the schema fix the
     // envelope parse threw and `persistShare` was never called, so this was a
     // vacuous loop over an empty array.
@@ -462,11 +443,13 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
 
     const parsed = shareEnvelopeV2Schema.parse(envelope);
     expect(parsed.expiry).toBe(EXPIRY_24H);
-    expect(parsed.signature.signerDid).toBe(hoisted.shareKeyDid);
+    expect(parsed.signature.signerDid).toMatch(/^did:key:/);
     expect(parsed.signature.algorithm).toBe("Ed25519");
     const ownerAuthority = envelope.ownerAuthority as Record<string, unknown>;
     const outerEnvelope = ownerAuthority.outerEnvelope as Record<string, unknown>;
     expect(outerEnvelope.decryption).toEqual(expectedDecryption);
+    expect(outerEnvelope.expiresAt).toBe(EXPIRY_24H);
+    expect(outerEnvelope.delegationCid).toBe("bafkreiownerdelegationfake");
     // The signature covers exactly the unsigned envelope, so stripping it must
     // leave something the unsigned schema accepts. That is the pair of parses
     // the fixed code performs, checked against the bytes that actually shipped.
@@ -482,9 +465,9 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
       did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
       createOwnerDelegation: async (input: Record<string, unknown>) => {
         ownerDelegationInputs.push(input);
-        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
+        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]), permissions: input.permissions };
       },
-      registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
+      registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" }, proof: {} }),
       kvForSpace: () => ({
         list: async () => ({ ok: true, data: { keys: [], truncated: false } }),
         put: async (path: string, bytes: Uint8Array, options?: { contentType?: string }) => {
@@ -535,10 +518,6 @@ describe("owner-policy share creation honors the sender's expiry choice", () => 
     expect(JSON.stringify(permissions)).not.toContain("network.create");
     expect(JSON.stringify(permissions)).not.toContain("*");
 
-    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
-    const policy = hoisted.owner.canonicalPolicies[0]!;
-    expect(policy.resource).toEqual({ kind: "prefix", path: delegatedPath.slice(0, -1) });
-    expect(policy.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
     expect(writes.map((write) => write.path).sort()).toEqual([
       `${delegatedPath}one.bin`,
       `${delegatedPath}two.txt`,
