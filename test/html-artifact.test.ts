@@ -77,6 +77,15 @@ describe("HTML artifact resource preparation", () => {
     expect(page).toContain("window.parent.postMessage");
   });
 
+  it("allows benign local classic-script helpers named open", async () => {
+    const artifact = await prepareHtmlArtifact([
+      utf8("index.html", "<script>function open(){ return 1; } open();</script>"),
+    ]);
+    const page = artifact.pages["index.html"]!;
+    expect(page).toContain("function open()");
+    expect(page).toContain("open();");
+  });
+
   it("supports bounded CSS imports, URLs, srcset, and internal HTML navigation", async () => {
     const artifact = await prepareHtmlArtifact([
       utf8("index.html", '<link rel="stylesheet" href="css/a.css"><img style="background:url(img/a.png)" srcset="img/a.png 1x, img/b.png?x=1 2x"><a href="pages/about.html#team">About</a>'),
@@ -108,6 +117,7 @@ describe("HTML artifact resource preparation", () => {
     [fixtureFiles().filter((file) => file.path !== "assets/cloud.svg"), "missing"],
     [[utf8("index.html", '<img src="https://tracker.example/pixel">')], "unsupported"],
     [[utf8("index.html", '<link rel="preload" href="bundle.js">')], "unsupported"],
+    [[utf8("index.html", '<script>window.open("https://example.com")</script>')], "unsupported"],
     [[utf8("index.html", '<link rel="stylesheet" href="a.css" media="screen}</style><script>bad()</script>">'), utf8("a.css", "body{color:red}")], "unsupported"],
     [[utf8("index.html", '<style media="print}</style><script>bad()</script>">body{color:red}</style>')], "unsupported"],
     [[utf8("index.html", '<button onclick="alert(1)">Hi</button>')], "unsupported"],
@@ -137,6 +147,7 @@ describe("artifact sandbox boundary", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("navigate-to 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");
     expect(buildArtifactSandboxHtml()).toContain(`content="${ARTIFACT_SANDBOX_CSP}"`);
+    expect(buildArtifactSandboxHtml()).toContain("artifact-restore-controls");
     expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", "frame-ancestors 'self'"]);
     const headers = readFileSync("public/_headers", "utf8");
     expect(headers).toContain(ARTIFACT_SANDBOX_PATH);
@@ -183,6 +194,7 @@ describe("TinyCloud artifact chrome", () => {
 
   it("collapses, reopens, permanently hides, and restores accessibly without rendering the URL", async () => {
     const url = "https://share.tinycloud.xyz/s/example#private-fragment";
+    const sandbox = createArtifactSandbox(document);
     await mountArtifactChrome(document, { shareId: "share-a", shareUrl: url });
     const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
     const panel = root.querySelector<HTMLElement>(".artifact-chrome-panel")!;
@@ -199,10 +211,15 @@ describe("TinyCloud artifact chrome", () => {
 
     root.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
     expect(root.hidden).toBe(true);
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", altKey: true, shiftKey: true }));
+    window.dispatchEvent(new MessageEvent("message", {
+      source: sandbox.iframe.contentWindow,
+      origin: "null",
+      data: { type: "artifact-restore-controls" },
+    }));
     expect(root.hidden).toBe(false);
     expect(panel.hidden).toBe(false);
     expect(document.activeElement).toBe(root.querySelector<HTMLButtonElement>(".artifact-chrome-button"));
+    sandbox.destroy();
   });
 
   it("prefers Web Share and keeps status announcements outside the collapsible panel", async () => {
