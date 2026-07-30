@@ -70,6 +70,7 @@ export type ResolveResult =
   | { state: "expired"; envelope: ShareEnvelope }
   | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
   | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2; shareCid: string; policy: Record<string, unknown> }
+  | { state: "recipient-did-authorization-required"; envelope: ShareEnvelopeV2; shareCid: string }
   /** Signed content pointer present, but the registry couldn't serve the blob. */
   | { state: "content-fetch-failed"; detail: string }
   /**
@@ -218,6 +219,7 @@ async function resolveAddressedShare(
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)) as { readonly version?: unknown };
       if (value.version === 2) {
         const v2 = shareEnvelopeV2Schema.parse(value);
+        if (v2.authorizationTarget.kind === "recipientDid") return { state: "recipient-did-authorization-required", envelope: v2, shareCid: ciphertextCid };
         if (v2.authorizationTarget.kind !== "policy") return { state: "unsupported", reason: "recipient-did-target", envelope: v2 as unknown as ShareEnvelope };
         let policy: Record<string, unknown>;
         try { policy = (await parseAddressedEnvelope(v2)).policy; } catch { return { state: "envelope-invalid" }; }
@@ -398,7 +400,7 @@ export async function resolveShare(
       ...(received.metadata.content === undefined ? {} : { contentBytes: received.bytes }),
     };
   } catch (error) {
-    if (error instanceof ShareReceiveError && error.code !== "unsupported-target") return mapReceiveError(error);
+    if (error instanceof ShareReceiveError && error.code !== "unsupported-target" && error.code !== "envelope-invalid" && error.code !== "signature-invalid" && error.code !== "capability-invalid") return mapReceiveError(error);
   }
   if (addressedEnvelope?.version === 2 && addressedCid !== undefined) return { state: "policy-v2-claim-required", envelope: addressedEnvelope, shareCid: addressedCid, policy: {} };
   return resolveAddressedShare(href, options);
