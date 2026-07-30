@@ -272,6 +272,7 @@ export type ShareEnvelope = z.infer<typeof shareEnvelopeSchema>;
 export const recipientMatcherSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("exactEmail"), value: z.string().min(3).regex(/^[^@\s]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/) }).strict(),
   z.object({ kind: z.literal("emailDomain"), value: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/) }).strict(),
+  z.object({ kind: z.literal("recipientDid"), value: z.string().regex(/^did:[a-z0-9]+:.+$/) }).strict(),
   z.object({ kind: z.literal("policyDigest"), value: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).strict(),
   z.object({ kind: z.literal("bearer") }).strict(),
 ]);
@@ -311,6 +312,10 @@ const ownerAuthoritySchema = z.object({
   envelopeCid: z.string().min(1),
   enforcementDelegation: z.record(z.string(), z.unknown()),
   outerEnvelope: z.record(z.string(), z.unknown()),
+  registrationReceipt: z.object({
+    registration: z.record(z.string(), z.unknown()),
+    proof: z.record(z.string(), z.unknown()),
+  }).strict().optional(),
 }).strict();
 
 export const contentMetadataSchema = z.object({

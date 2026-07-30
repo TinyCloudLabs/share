@@ -6,7 +6,7 @@ import { digestBytes, digestText } from "./email-share/node-verifier.js";
 import type { VerifiedExactEmailShare } from "./email-share/verified-share.js";
 import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
-import { mountPolicyV2Viewer } from "./viewer/policy-v2.js";
+import { createRegisteredPolicyAuthority } from "@tinycloud/share-sdk";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
 // <div id="viewer">. There is no non-viewer branch here on purpose: the
@@ -84,7 +84,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   }
 
   try {
-    const [{ REGISTRY_BASE_URL }, { resolveShare }, { presentShare }, config, runtime] = await Promise.all([
+    const [{ REGISTRY_BASE_URL }, { resolveShare, createBrowserAddressedAuthorization }, { presentShare }, config, runtime] = await Promise.all([
       import("./viewer/config.js"),
       import("./viewer/resolve.js"),
       import("./viewer/present.js"),
@@ -95,27 +95,18 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     launch.shareHref = "";
     const invite = launch.invite;
     delete launch.invite;
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
-    if (resolved.state === "policy-v2-claim-required") {
-      const publicConfig = await config.loadSharePublicConfig();
-      const { createHolder } = await import("./email-share/claim.js");
-      const holder = await createHolder();
-      const completeShareUrl = invite === undefined ? shareHref : `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`;
-      mountPolicyV2Viewer(root, resolved, {
-        nodeOrigin: publicConfig.nodeOrigin,
-        trustedNode: config.trustedNodeFromConfig(publicConfig),
-        holderDid: holder.did,
-        shareUrl: completeShareUrl,
-        buildPresentation: async ({ challenge, envelope, policy }) => {
-          // The v2 recipient adapter owns challenge binding and proof
-          // verification.  A production credential is deliberately required
-          // here; the UI must never turn an unverified email into access.
-          if (invite === undefined) throw new Error("Part of this link is missing. Ask the sender to share it again.");
-          return buildV2Presentation({ challenge, envelope, policy, invite, publicConfig, shareCid: resolved.shareCid, holder });
-        },
-      });
-      return;
-    }
+    const shareConfig = await config.loadSharePublicConfig();
+    const shareTrustedNode = config.trustedNodeFromConfig(shareConfig);
+    const authority = createRegisteredPolicyAuthority({ nodeProof: { kid: shareConfig.nodeInvitationKid, publicKey: fromBase64Url(shareConfig.nodeInvitationPublicKey) }, expectedTarget: { origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, enforcerDid: shareConfig.enforcerDid } });
+    const { createHolder } = await import("./email-share/claim.js");
+    const holder = invite === undefined ? undefined : await createHolder();
+    const authorization = invite === undefined || holder === undefined ? undefined : createBrowserAddressedAuthorization({
+      nodeOrigin: shareConfig.nodeOrigin,
+      trustedNode: shareTrustedNode,
+      holderDid: holder.did,
+      buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
+    });
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
     if (resolved.state !== "policy-email-claim-required") {
       await presentShare(root, resolved, { shareUrl: shareHref });
       return;

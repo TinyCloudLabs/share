@@ -468,7 +468,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows all three recipient choices and the required encryption state before Advanced", () => {
+  it("shows all recipient choices and the required encryption state before Advanced", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -476,10 +476,11 @@ describe("share composer access controls", () => {
     const recipientOptions = Array.from(recipients.querySelectorAll<HTMLInputElement>("input[name=recipient]"));
 
     expect(recipients.querySelector("legend")?.textContent).toBe("Who can open it");
-    expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "bearer"]);
+    expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "recipientDid", "bearer"]);
     expect(recipientOptions.map((input) => input.closest("label")?.textContent)).toEqual([
       "Only this person — they'll confirm their email to open it",
       "Anyone with an email from this domain — they'll confirm their email to open it",
+      "Only this OpenKey device — access is bound to its DID",
       "Anyone with the link — anyone you send it to can open it",
     ]);
     expect(advanced.open).toBe(false);

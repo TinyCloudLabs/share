@@ -149,6 +149,7 @@ import {
   expiryFromChoice,
   normalizeEmail,
   normalizeEmailDomain,
+  normalizeRecipientDid,
   projectCapabilities,
   validateComposerModel,
   EXPIRY_CHOICES,
@@ -421,11 +422,11 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
     const policy = { policyCid: authority.policyCid, policyBytes: authority.policyBytes, policyDigest: authority.policyDigest };
     const matcher = model.encryption ? selectedMatcher : { kind: "policyDigest" as const, value: policy.policyDigest };
     const deliveryEmail = model.deliveryEmail;
-    if (deliveryEmail === undefined) throw fail("delivery", "addressed share has no delivery email");
+    if (deliveryEmail === undefined && model.recipient.kind !== "recipientDid") throw fail("delivery", "addressed share has no delivery email");
     const bytes = file === undefined ? undefined : new Uint8Array(await file.arrayBuffer());
     const artifact = await createAddressedShareLink({
       matcher,
-      deliveryEmail,
+      ...(deliveryEmail === undefined ? {} : { deliveryEmail }),
       source,
       scope: delegatedScope,
       policy,
@@ -443,6 +444,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
     });
     return { url: artifact.shareUrl, cid: artifact.shareCid, format: model.linkFormat, expiresAt: artifact.expiresAt, notify: async () => {
       if (options.notify !== undefined) {
+        if (deliveryEmail === undefined) throw fail("delivery", "addressed share has no delivery email");
         await options.notify({ share: { url: artifact.shareUrl, cid: artifact.shareCid, format: model.linkFormat, expiresAt: artifact.expiresAt }, recipient: deliveryEmail, matcher: model.recipient.kind });
         return;
       }
@@ -494,7 +496,9 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
   const expiresAt = model.expiresAt;
   const matcher = model.recipient.kind === "exactEmail"
     ? { kind: "exactEmail" as const, value: model.recipient.value! }
-    : { kind: "emailDomain" as const, value: model.recipient.value! };
+    : model.recipient.kind === "emailDomain"
+      ? { kind: "emailDomain" as const, value: model.recipient.value! }
+      : { kind: "recipientDid" as const, value: model.recipient.value! };
   const deliveryEmail = model.deliveryEmail;
   const missingMethods = missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_METHODS);
   if (missingMethods.length > 0) throw fail("internal", `the TinyCloud session does not provide the owner-share methods ${missingMethods.join(", ")}`, { missingTinyCloudMethods: missingMethods });
@@ -530,7 +534,7 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
       shareId,
       ownerDid: tinycloud.did,
       shareKeyDid: shareKey.did,
-      recipientMatcher: matcher,
+      recipientMatcher: matcher as unknown as OwnerSharePolicyV2["recipientMatcher"],
       target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId },
       resource: { kind: resourceKind, path: resourcePath },
       actions: actionNames,
@@ -569,7 +573,9 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
       expiresAt,
     };
     const outerSignature = toBase64Url(await shareKey.sign(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v2\0${canonicalize(outerUnsigned)}`)));
-    const ownerAuthority = { registrationCid: registration.registration.registrationCid, shareCid, envelopeCid, enforcementDelegation, outerEnvelope: { ...outerUnsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: outerSignature } } };
+    const registrationRecord = registration as unknown as Record<string, unknown>;
+    const registrationReceipt = typeof registrationRecord.proof === "object" && registrationRecord.proof !== null ? registration : undefined;
+    const ownerAuthority = { registrationCid: registration.registration.registrationCid, shareCid, envelopeCid, enforcementDelegation, ...(registrationReceipt === undefined ? {} : { registrationReceipt }), outerEnvelope: { ...outerUnsigned, signature: { signerDid: shareKey.did, algorithm: "Ed25519", value: outerSignature } } };
     const byteLength = files.reduce((total, selected) => total + selected.size, 0);
     const unsigned = { version: 2 as const, shareId, recipientMatcher: matcher, ...(deliveryEmail === undefined ? {} : { deliveryEmail }), actions: model.permissions, resource: { kind: resourceKind, path: resourcePath }, target: { origin: config.nodeOrigin, nodeAudience: config.nodeAudience, spaceId }, delegationCid: ownerDelegation.delegationCid, authorityMaterialHandle: registration.registration.registrationCid, authorityMaterialDigest, contentSource: source, contentSourceDigest: sourceDigest, authorizationTarget: { kind: "policy" as const, policyCid: canonicalPolicy.cid, policyBytes: toBase64Url(canonicalPolicy.bytes) }, display: model.encryption ? { filename } : {}, expiry: expiresAt, encrypted: true, metadata: { mediaType: contentMediaType(model.content), byteLength, filename, ...(artifact === undefined ? {} : { artifact }) }, ownerAuthority };
     // The signature covers `unsigned`, so `unsigned` must be checked with the
@@ -727,7 +733,7 @@ function strictBase64(value: string, label: string): Uint8Array {
 
 function recipientModel(kind: RecipientKind, value: string): ShareComposerModel["recipient"] {
   if (kind === "bearer") return { kind };
-  return { kind, value: kind === "emailDomain" ? normalizeEmailDomain(value) : normalizeEmail(value) };
+  return { kind, value: kind === "emailDomain" ? normalizeEmailDomain(value) : kind === "recipientDid" ? normalizeRecipientDid(value) : normalizeEmail(value) };
 }
 
 /** Only one mounted composer owns the document-level paste fallback. */
@@ -842,6 +848,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
   addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — they'll confirm their email to open it");
+  addRecipientOption(fieldset, "recipientDid", "Only this OpenKey device — access is bound to its DID");
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
   recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
   fieldset.append(recipientInput);
@@ -908,13 +915,13 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       const matcher = (parsed as Record<string, unknown>).recipientMatcher;
       if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher)) return undefined;
       const value = matcher as Record<string, unknown>;
-      if ((value.kind !== "exactEmail" && value.kind !== "emailDomain") || typeof value.value !== "string") return undefined;
+      if ((value.kind !== "exactEmail" && value.kind !== "emailDomain" && value.kind !== "recipientDid") || typeof value.value !== "string") return undefined;
       return { kind: value.kind, value: value.value };
     } catch { return undefined; }
   };
   const selectRecipientCapability = (): void => {
     const kind = selectedKind();
-    if (kind === "bearer" || availableCapabilities.length === 0 || recipientInput.value.length === 0) return;
+    if (kind === "bearer" || kind === "recipientDid" || availableCapabilities.length === 0 || recipientInput.value.length === 0) return;
     const value = kind === "emailDomain" ? normalizeEmailDomain(recipientInput.value) : normalizeEmail(recipientInput.value);
     const match = availableCapabilities.find((candidate) => {
       if (candidate.source.kind !== "kv") return false;
@@ -937,7 +944,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       ? `Anyone who gets this link can open it. It can't be revoked early — it stops working on ${shortDate(expiryIso())}.`
       : kind === "emailDomain"
         ? `Anyone with an @${typed.length === 0 ? "example.com" : typed} email can open this after confirming their address.`
-        : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
+        : kind === "recipientDid"
+          ? `Only the OpenKey device identified by ${typed.length === 0 ? "that DID" : typed} can open this.`
+          : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
   };
   const refreshRecipient = (): void => {
     const kind = selectedKind(); const addressed = kind !== "bearer";
@@ -959,10 +968,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       : "Link-only shares are view-only. Choose a specific person to allow editing.";
     browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
-    recipientInput.type = kind === "emailDomain" ? "text" : "email";
-    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
-    recipientInput.autocomplete = kind === "emailDomain" ? "off" : "email";
-    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : "Recipient email address");
+    recipientInput.type = "text";
+    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : kind === "recipientDid" ? "did:key:z..." : "name@example.com";
+    recipientInput.autocomplete = kind === "emailDomain" || kind === "recipientDid" ? "off" : "email";
+    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : kind === "recipientDid" ? "Recipient DID" : "Recipient email address");
     // The authorized mailbox is the natural delivery address.
     if (kind === "exactEmail" && !deliveryTouched) delivery.value = recipientInput.value.trim();
     refreshNote();
