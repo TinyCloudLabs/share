@@ -235,6 +235,9 @@ export function renderViewerState(
     case "policy-v2-claim-required":
       renderErrorState(root, "Confirm your email to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
       return null;
+    case "recipient-did-authorization-required":
+      renderErrorState(root, "This device isn't authorized", "This share is bound to a different OpenKey device.");
+      return null;
     case "invalid-link":
       renderErrorState(
         root,
