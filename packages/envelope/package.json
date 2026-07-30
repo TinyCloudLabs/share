@@ -1,5 +1,5 @@
 {
-  "name": "@tinycloud/share-envelope",
+  "name": "@tinycloud/share-envelope-source",
   "version": "0.1.0",
   "private": true,
   "description": "Pure, network-free encrypted-envelope core for TinyCloud sharing links (CID, AEAD, envelope schema, sign/verify, link codec).",

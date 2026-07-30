@@ -49,7 +49,7 @@
  * document keeps only the chrome; the content the user reads lives entirely
  * inside that frame.
  */
-import DOMPurify from "dompurify";
+import DOMPurifyFactory, { type DOMPurify as DOMPurifyInstance } from "dompurify";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import rehypeStringify from "rehype-stringify";
 import remarkGfm from "remark-gfm";
@@ -59,6 +59,16 @@ import { unified } from "unified";
 
 import { createPreviewFrame } from "./preview-frame.js";
 import { setSanitizedInnerHtml, TRUSTED_TYPES_POLICY_NAME } from "./trusted-html.js";
+
+// DOMPurify is a browser factory. Node-only package consumers import viewer
+// helpers through the SDK graph without a DOM; keep that import side-effect
+// free while retaining the real sanitizer for every browser render.
+const DOMPurify: DOMPurifyInstance = typeof window === "undefined"
+  ? {
+      sanitize: ((value: string) => value) as DOMPurifyInstance["sanitize"],
+      addHook: (() => undefined) as DOMPurifyInstance["addHook"],
+    } as DOMPurifyInstance
+  : DOMPurifyFactory(window);
 
 /** Re-exported so existing importers/tests keep one entry point. */
 export { TRUSTED_TYPES_POLICY_NAME };
@@ -239,6 +249,7 @@ export async function markdownToSanitizedHtml(markdown: string): Promise<string>
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["style", "form", "math", "svg"],
     FORBID_ATTR: ["style", "srcset"],
+    TRUSTED_TYPES_POLICY: null,
   });
 }
 
@@ -258,6 +269,7 @@ export function sanitizeSvg(svg: string): string {
   return DOMPurify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
     FORBID_TAGS: ["script", "foreignObject", "iframe", "audio", "video"],
+    TRUSTED_TYPES_POLICY: null,
   });
 }
 

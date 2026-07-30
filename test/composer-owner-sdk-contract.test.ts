@@ -88,12 +88,12 @@ describe("the owner-share SDK contract is checked against the installed Web SDK"
     const { resolve } = await import("node:path");
     const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
 
-    // Every `sdk.<name>(` call inside composer.ts must be covered by the guard.
-    // Adding a fourth primitive without listing it here reintroduces exactly the
-    // TC-338 failure mode: an unchecked call on a possibly-absent export.
+    // The browser owner path is now an adapter over the compiled Share SDK;
+    // module-level policy/delegation primitives must not be reimplemented or
+    // called through the mutable Web SDK surface.
     const called = [...new Set([...source.matchAll(/\bsdk\.([A-Za-z0-9_$]+)\s*\(/g)].map((match) => match[1]!))].sort();
-
-    expect(called).toEqual([...OWNER_SDK_PRIMITIVES].sort());
+    expect(called).toEqual([]);
+    expect(source).toMatch(/\bpublishAddressedShare\s*\(/);
 
     // Same for the session methods (TC-343): every guarded name must still be
     // a real call site, so a list that outlives its call site is caught here

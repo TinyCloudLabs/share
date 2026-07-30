@@ -2,8 +2,8 @@
   "schema": "tinycloud.share-sdk-artifact/v1",
   "package": "@tinycloud/share-sdk",
   "version": "0.1.0",
-  "sdkCommit": "766543de1f6d451f3b6f447c409bbf9e56cb97d9",
-  "artifact": "tinycloud-share-sdk-0.1.0-766543d.tgz",
-  "sha512": "sha512-Ta/1WVFoFrqqBimhfZkGgnlaFnX1RtYwy/GDWvFAKnhPPq+U43hQ8KQmR+Ogk6x/UIr5cAL4zrhko84PObOk+g==",
-  "integrity": "sha512-Ta/1WVFoFrqqBimhfZkGgnlaFnX1RtYwy/GDWvFAKnhPPq+U43hQ8KQmR+Ogk6x/UIr5cAL4zrhko84PObOk+g=="
+  "sdkCommit": "52685ead7798ae7cdf329534dca91b61e06582dd",
+  "artifact": "tinycloud-share-sdk-0.1.0-52685ea.tgz",
+  "sha512": "sha512-aCFWrqiBOvFTZ4rJU78tAz4SckSh2tGovWMhQa9zEEgMfq4QlGaFsEQy3UaVbl7UMR0yshpg8rf81u5ja1/7CA==",
+  "integrity": "sha512-aCFWrqiBOvFTZ4rJU78tAz4SckSh2tGovWMhQa9zEEgMfq4QlGaFsEQy3UaVbl7UMR0yshpg8rf81u5ja1/7CA=="
 }
