@@ -63,7 +63,7 @@ const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const ENCODED_PATH_ALIAS = /%2f|%5c|%2e/i;
 const SAFE_MEDIA_QUERY = /^[a-z0-9\s,().:%\-+/]+$/i;
 const UNSAFE_CLASSIC_SCRIPT =
-  /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts|sendBeacon|open)\s*\(|\b(?:window|document|globalThis|self|top|parent|opener)\s*(?:\.\s*location|\[\s*["']location["']\s*\])|\blocation\s*(?:=|(?:\.\s*|\[\s*["'])href(?:["']\s*\])?|\.assign\s*\(|\.replace\s*\(|\.reload\s*\()|\bimport\s*\(|\beval\s*\(|\bWebAssembly\b/;
+  /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|Worker|SharedWorker|importScripts|sendBeacon)\s*\(|\b(?:window|self|globalThis|top|parent|opener)\s*\.\s*open\s*\(|\b(?:window|document|globalThis|self|top|parent|opener)\s*(?:\.\s*location|\[\s*["']location["']\s*\])|\blocation\s*(?:=|(?:\.\s*|\[\s*["'])href(?:["']\s*\])?|\.assign\s*\(|\.replace\s*\(|\.reload\s*\()|\bimport\s*\(|\beval\s*\(|\bWebAssembly\b/;
 
 function fail(kind: ArtifactFailureKind, detail: string): never {
   throw new ArtifactBundleError(kind, detail);
@@ -280,6 +280,11 @@ const CHILD_BOOTSTRAP = `(function(){
     if(!target)return;
     event.preventDefault();
     window.parent.postMessage({type:"navigate",path:target.getAttribute("data-tc-artifact-path"),fragment:target.getAttribute("data-tc-artifact-fragment")||""},"*");
+  },true);
+  window.addEventListener("keydown",function(event){
+    if(!(event.altKey&&event.shiftKey&&typeof event.key==="string"&&event.key.toLowerCase()==="c"))return;
+    event.preventDefault();
+    window.parent.postMessage({type:"artifact-restore-controls"},"*");
   },true);
   window.addEventListener("message",function(event){
     if(event.source!==window.parent||event.origin!=="null"||!event.data||event.data.type!=="artifact-fragment"||typeof event.data.fragment!=="string")return;

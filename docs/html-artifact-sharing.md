@@ -22,6 +22,8 @@ are added to public bindings or analytics.
 - Stylesheet `media` values are validated against a safe subset before they
   are wrapped, and unsupported `<link>` relations such as preload,
   modulepreload, and prefetch fail closed instead of being skipped.
+- Benign local helper names like `open` remain compatible; the hardening gate
+  blocks explicit browser-navigation primitives, not ordinary identifier names.
 - Every required resource is read through the verified recipient policy
   session before rendering. Missing files fail the whole render with
   recipient-safe recovery copy.
@@ -64,10 +66,10 @@ choose “Hide permanently” to store a per-share preference in local browser
 storage. No URL or recipient data is stored.
 
 To restore hidden controls, press **Alt+Shift+C**. The keyboard shortcut also
-toggles expanded and collapsed states. “Share” uses the operating-system share
-sheet when available and otherwise uses TinyCloud’s clipboard fallback; the
-private URL remains in a JavaScript closure and is never rendered into the
-document.
+toggles expanded and collapsed states, and it still works when focus is inside
+the sandboxed artifact frame. “Share” uses the operating-system share sheet
+when available and otherwise uses TinyCloud’s clipboard fallback; the private
+URL remains in a JavaScript closure and is never rendered into the document.
 
 The example bundle in [`examples/html-artifact/`](../examples/html-artifact/)
 contains separate HTML, CSS, classic JavaScript, and nested SVG files.

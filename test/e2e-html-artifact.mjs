@@ -72,11 +72,17 @@ try {
   await page.click(".artifact-chrome-cloud");
   await page.click(".artifact-chrome-hide");
   assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), true);
-  await page.keyboard.down("Alt");
-  await page.keyboard.down("Shift");
-  await page.keyboard.press("KeyC");
-  await page.keyboard.up("Shift");
-  await page.keyboard.up("Alt");
+  await inner.click("#count");
+  await inner.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "c",
+      altKey: true,
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+  });
+  await page.waitForFunction(() => document.querySelector(".artifact-chrome")?.hidden === false);
   assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), false);
 
   await mkdir(screenshotDir, { recursive: true });

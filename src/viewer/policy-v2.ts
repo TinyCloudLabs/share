@@ -295,10 +295,10 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
           shell.hidden = true;
           sandbox.iframe.hidden = false;
           doc.body.classList.add("artifact-active");
-          chrome = await mountArtifactChrome(doc, {
-            shareId: input.envelope.shareId,
-            ...(options.shareUrl === undefined ? {} : { shareUrl: options.shareUrl }),
-          });
+        chrome = await mountArtifactChrome(doc, {
+          shareId: input.envelope.shareId,
+          ...(options.shareUrl === undefined ? {} : { shareUrl: options.shareUrl }),
+        });
           showProgress("");
           return;
         } catch (error) {
