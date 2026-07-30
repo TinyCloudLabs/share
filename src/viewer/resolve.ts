@@ -400,7 +400,7 @@ export async function resolveShare(
       ...(received.metadata.content === undefined ? {} : { contentBytes: received.bytes }),
     };
   } catch (error) {
-    if (error instanceof ShareReceiveError && error.code !== "unsupported-target" && error.code !== "envelope-invalid" && error.code !== "signature-invalid" && error.code !== "capability-invalid") return mapReceiveError(error);
+    if (error instanceof ShareReceiveError && error.code !== "unsupported-target") return mapReceiveError(error);
   }
   if (addressedEnvelope?.version === 2 && addressedCid !== undefined) return { state: "policy-v2-claim-required", envelope: addressedEnvelope, shareCid: addressedCid, policy: {} };
   return resolveAddressedShare(href, options);
@@ -463,5 +463,4 @@ function mapReceiveError(error: ShareReceiveError): ResolveResult {
     default: return { state: "fetch-failed", detail: "share unavailable" };
   }
 }
-
 
