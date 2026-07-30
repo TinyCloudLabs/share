@@ -160,6 +160,21 @@ describe("production trust and host boundaries", () => {
     expect(() => validateSharePublicConfig({ version: "tinycloud.share-email-claim/config-v1", ...publicValue })).toThrow(/placeholder or loopback/);
   });
 
+  it("publishes the stdin-safe agent card at the canonical host path", async () => {
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(bundle()), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true" });
+    const response = await host.handler(new Request("https://share.tinycloud.xyz/.well-known/tinycloud-share/agent.json"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      version: 1,
+      cli: "npx -y @tinycloud/cli@latest",
+      input: "stdin",
+      inspectArgs: ["share", "inspect", "-", "--json"],
+      receiveArgs: ["share", "receive", "-", "--output", "."],
+      fragmentLocalOnly: true,
+    });
+  });
+
   it("never includes the server-only sender key in the capability response", async () => {
     const value = bundle();
     const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));

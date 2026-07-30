@@ -14,6 +14,7 @@ import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamRespons
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
 function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toString("base64url"); }
 const SIGNATURE_DOMAINS = { envelope: "xyz.tinycloud.share/envelope/v1\0", envelopeV2: "xyz.tinycloud.share/envelope/v2\0", inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0", delegationAuthoring: "xyz.tinycloud.share/delegation-authoring/v2\0" } as const;
+const AGENT_CARD = { version: 1, cli: "npx -y @tinycloud/cli@latest", input: "stdin", inspectArgs: ["share", "inspect", "-", "--json"], receiveArgs: ["share", "receive", "-", "--output", "."], fragmentLocalOnly: true } as const;
 type ContentSource = Record<string, unknown>;
 function validateSource(value: ContentSource): ContentSource {
   if (value.kind === "kv") {
@@ -814,6 +815,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     try {
       if ((url.pathname === "/health/readiness" || url.pathname === "/api/health/readiness") && request.method === "GET") return response(200, { authReady, senderReady });
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
+      if (url.pathname === "/.well-known/tinycloud-share/agent.json" && request.method === "GET") return response(200, AGENT_CARD);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
         if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
