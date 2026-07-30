@@ -249,7 +249,7 @@ export async function markdownToSanitizedHtml(markdown: string): Promise<string>
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["style", "form", "math", "svg"],
     FORBID_ATTR: ["style", "srcset"],
-    TRUSTED_TYPES_POLICY: null,
+    TRUSTED_TYPES_POLICY: null as never,
   });
 }
 
@@ -269,7 +269,7 @@ export function sanitizeSvg(svg: string): string {
   return DOMPurify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
     FORBID_TAGS: ["script", "foreignObject", "iframe", "audio", "video"],
-    TRUSTED_TYPES_POLICY: null,
+    TRUSTED_TYPES_POLICY: null as never,
   });
 }
 

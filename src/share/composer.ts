@@ -1,6 +1,8 @@
 import { armManualCopy, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
+import type { ContentSource } from "../email-share/protocol.js";
+import type { SenderPolicy } from "../email-share/sender.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { fromBase64Url } from "@tinycloud/share-envelope";
@@ -289,27 +291,8 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt };
 }
 
-function bytes(value: unknown, label: string): Uint8Array {
-  if (typeof value === "string") {
-    try { return fromBase64Url(value); } catch { throw fail("internal", `${label} is invalid`); }
-  }
-  if (Array.isArray(value) && value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) return Uint8Array.from(value);
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => Number(left) - Number(right));
-    if (entries.length > 0 && entries.every(([key, item], index) => key === String(index) && typeof item === "number")) return Uint8Array.from(entries.map(([, item]) => item as number));
-  }
-  throw fail("internal", `${label} is invalid`);
-}
-
-async function digestBytes(value: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer);
-  return toBase64Url(new Uint8Array(digest));
-}
-
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
-  const file = files.length === 1 ? files[0] : undefined;
-  if (options.tinycloud !== undefined) return createOwnerPolicyShare(files, model, options);
-  throw fail("session", "addressed shares require an authenticated TinyCloud owner session");
+  return createOwnerPolicyShareCanonical(files, model, options);
   /* Legacy host-capability addressed publication is intentionally unreachable.
   if (files.length > 1) throw fail("linkOnlyFolder", "host-capability sharing supports one exact file");
   const response = options.loadCapabilities === undefined ? await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }) : undefined;
@@ -518,12 +501,13 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     authority: {
       ownerDid: tinycloud.did,
       createOwnerDelegation: (input) => tinycloud.createOwnerDelegation(input),
-      registerOwnerSharePolicy: (input) => tinycloud.registerOwnerSharePolicy({ ...input, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } }),
+      registerOwnerSharePolicy: (input) => tinycloud.registerOwnerSharePolicy({ ...input, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } } as unknown as Parameters<ShareTinyCloud["registerOwnerSharePolicy"]>[0]),
     },
     upload: { uploadBlob, fetchFn: options.fetchFn ?? globalThis.fetch },
   });
   return {
-    url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt, delegationCid: published.metadata.ownerDelegationCid,
+    url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt,
+    ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
     ...(deliveryEmail === undefined ? {} : { notify: async () => {
       const share = { url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt } as ComposerShareResult;
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
@@ -600,46 +584,6 @@ export async function copySelectedSource(
     paths.push(child.relative);
   }
   return paths;
-}
-
-async function authorAddressedDelegation(input: { readonly scope: SenderScope; readonly source: ContentSource; readonly matcher: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string }; readonly shareId: string; readonly resource: ShareComposerModel["resource"]; readonly actions: readonly SharePermission[]; readonly expiresAt: string; readonly fetchFn: typeof fetch }): Promise<{ readonly scope: SenderScope; readonly policy: { readonly policyCid: string; readonly policyBytes: string; readonly policyDigest: string } }> {
-  if (input.scope.delegation.length === 0 || input.scope.delegationCid.length === 0 || input.scope.authorityMaterialHandle.length === 0 || input.scope.authorityMaterialDigest.length === 0) throw fail("internal", "addressed authoring scope is incomplete");
-  const actions = [...new Set(input.actions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort();
-  const resource = { kind: input.resource.kind, value: input.resource.path.replace(/\/$/, "") } as const;
-  const requestBody = { version: 2, nonce: toBase64Url(crypto.getRandomValues(new Uint8Array(32))), jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))), senderDid: input.scope.senderDid, recipientMatcher: input.matcher, targetOrigin: input.scope.targetOrigin, nodeAudience: input.scope.nodeAudience, shareCid: input.scope.delegationCid, shareId: input.shareId, delegationCid: input.scope.delegationCid, authorityMaterialHandle: input.scope.authorityMaterialHandle, authorityMaterialDigest: input.scope.authorityMaterialDigest, contentSource: input.source, contentSourceDigest: await canonicalDigest(input.source), actions, resource, expiresAt: input.expiresAt };
-  const request = { ...requestBody, requestBodyDigest: await canonicalDigest(requestBody) };
-  const signature = await input.scope.signer.sign({ purpose: "delegationAuthoring", message: canonicalize(request), binding: request });
-  const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
-  if (signerDid !== input.scope.senderDid || input.scope.signer.publicKey.length !== 32) throw fail("internal", "addressed authoring signer does not match sender");
-  const proof = { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) };
-  const response = await input.fetchFn(new URL("/delegate", input.scope.targetOrigin), { method: "POST", credentials: "omit", redirect: "error", headers: { accept: "application/json", "content-type": "application/vnd.tinycloud.delegation+json" }, body: JSON.stringify({ request, proof }) });
-  if (!response.ok) {
-    let code: unknown;
-    try {
-      const error = await response.clone().json() as { readonly error?: { readonly code?: unknown } | unknown };
-      const value = error.error;
-      code = typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-    } catch { /* Keep the user-facing error independent of an upstream response body. */ }
-    throw fail("rejected", "delegation authoring request was rejected", { code, status: response.status });
-  }
-  const value = await response.json() as Record<string, unknown>;
-  const required = ["type", "version", "nonce", "jti", "policyCid", "policyBytes", "policyDigest", "delegationCid", "delegationBytes", "delegationDigest", "authorityMaterialHandle", "authorityMaterialDigest", "actions", "resource", "expiresAt", "proof"];
-  if (Object.keys(value).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(value, key)) || value.type !== "TinyCloudShareAddressedDelegation" || value.version !== 2 || value.nonce !== request.nonce || value.jti !== request.jti || typeof value.policyCid !== "string" || typeof value.policyBytes !== "string" || typeof value.policyDigest !== "string" || typeof value.delegationCid !== "string" || typeof value.delegationBytes !== "string" || typeof value.delegationDigest !== "string" || !Array.isArray(value.actions) || typeof value.expiresAt !== "string") throw fail("internal", "delegation authoring response shape is invalid");
-  const responseProof = value.proof as Record<string, unknown>;
-  if (typeof responseProof !== "object" || responseProof === null || Array.isArray(responseProof) || Object.keys(responseProof).sort().join(",") !== "alg,kid,signature" || responseProof.alg !== "EdDSA" || typeof responseProof.kid !== "string" || typeof responseProof.signature !== "string") throw fail("internal", "delegation authoring response proof is invalid");
-  const signedResponse = { ...value }; delete signedResponse.proof;
-  await verifyNodeProof(signedResponse, responseProof as never, input.scope.trustedNode, "xyz.tinycloud.share/delegation-authoring-response/v2\0");
-  const responsePolicyBytes = strictBase64(String(value.policyBytes), "Node policy bytes");
-  const responseDelegationBytes = strictBase64(String(value.delegationBytes), "Node delegation bytes");
-  if (value.authorityMaterialHandle !== input.scope.authorityMaterialHandle || value.authorityMaterialDigest !== input.scope.authorityMaterialDigest || canonicalize(value.actions) !== canonicalize(actions) || canonicalize(value.resource) !== canonicalize(resource) || value.expiresAt !== input.expiresAt || await digestBytes(responsePolicyBytes) !== value.policyDigest || await computeCid(responsePolicyBytes) !== value.policyCid || await digestBytes(responseDelegationBytes) !== value.delegationDigest) throw fail("internal", "delegation authoring response binding does not match");
-  return { scope: { ...input.scope, delegation: String(value.delegationBytes), delegationCid: String(value.delegationCid) }, policy: { policyCid: String(value.policyCid), policyBytes: String(value.policyBytes), policyDigest: String(value.policyDigest) } };
-}
-
-function strictBase64(value: string, label: string): Uint8Array {
-  let decoded: Uint8Array;
-  try { decoded = fromBase64Url(value); } catch { throw fail("internal", `${label} is invalid`); }
-  if (decoded.length === 0 || toBase64Url(decoded) !== value) throw fail("internal", `${label} is invalid`);
-  return decoded;
 }
 
 function recipientModel(kind: RecipientKind, value: string): ShareComposerModel["recipient"] {
