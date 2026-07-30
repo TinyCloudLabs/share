@@ -405,6 +405,7 @@ describe("bearer e2e: fail-closed paths", () => {
       now: () => Date.parse(created.expiry) + 1,
     });
     expect(result.state).toBe("expired");
+    expect("envelope" in result).toBe(false);
     expect(contentFetched).toBe(false); // fail closed BEFORE fetching content
     const root = await expectFailClosed(result);
     expect(root.textContent).toContain("expired");

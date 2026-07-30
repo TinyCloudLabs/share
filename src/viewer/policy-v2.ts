@@ -1,4 +1,4 @@
-import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-app-compat";
+import { ShareRecipientClient, type SharePresentationMaterial as PolicyPresentationMaterial, type SharePolicyChallenge as PolicyChallenge } from "@tinycloud/share-sdk";
 import type { TrustedNode } from "../email-share/protocol.js";
 import { fromBase64Url, toBase64Url, type ShareEnvelopeV2 } from "@tinycloud/share-envelope";
 import { digestBytes } from "../email-share/node-verifier.js";
@@ -203,7 +203,7 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
   open.addEventListener("click", () => {
     open.disabled = true; showProgress("Checking…");
     void (async () => {
-      const client = new ShareRecipientClient({ nodeOrigin: options.nodeOrigin, trustedNode: options.trustedNode, holderDid: options.holderDid, envelope: input.envelope, shareCid: input.shareCid, buildPresentation: options.buildPresentation, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+      const client = new ShareRecipientClient({ nodeOrigin: options.nodeOrigin, trustedNode: options.trustedNode, holderDid: options.holderDid, envelope: input.envelope, buildPresentation: async ({ challenge, envelope, policy }) => options.buildPresentation({ challenge, envelope, policy }) as Promise<PolicyPresentationMaterial>, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
       const session = await client.establishPolicySession();
       showProgress("Opening…");
       // The session response narrows the first operation, while the signed

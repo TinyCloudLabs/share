@@ -291,7 +291,7 @@ export function renderViewerState(
       renderErrorState(
         root,
         "This share has expired",
-        `It expired on ${formatExpiry(result.envelope.expiry)}. Ask the sender for a fresh link.`,
+        `It expired on ${formatExpiry(result.expiresAt)}. Ask the sender for a fresh link.`,
       );
       return null;
     case "content-fetch-failed":

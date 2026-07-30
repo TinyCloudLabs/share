@@ -611,7 +611,7 @@ describe("content access SDK", () => {
           ...expired.dependencies,
           resolve: async () => ({
             state: "expired",
-            envelope: policyContract.envelope,
+            expiresAt: policyContract.envelope.expiry,
           }),
         },
       }),
