@@ -31,6 +31,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 
 import {
   bearerResourceUri,
+  canonicalize,
   checkBearerDelegation,
   didKeyFromEd25519PublicKey,
   encodeShareUrl,
@@ -248,7 +249,7 @@ export async function createBearerShare(
     envelopeKey = generateKey();
     options.onKeyBuffer?.(envelopeKey);
     const sealedEnvelope = await seal(
-      new TextEncoder().encode(JSON.stringify(envelope)),
+      new TextEncoder().encode(canonicalize(envelope)),
       envelopeKey,
     );
     const putOptions = fetchFn !== undefined ? { fetchFn } : {};

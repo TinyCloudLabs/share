@@ -1,0 +1,20 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = dirname(fileURLToPath(import.meta.url));
+const manifestPath = join(root, "..", "vendor", "share-sdk-artifact.json");
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const artifactPath = join(root, "..", "vendor", manifest.artifact);
+const bytes = await readFile(artifactPath);
+const digest = createHash("sha512").update(bytes).digest("base64");
+const integrity = `sha512-${digest}`;
+if (manifest.schema !== "tinycloud.share-sdk-artifact/v1") throw new Error("invalid Share SDK artifact manifest schema");
+if (manifest.package !== "@tinycloud/share-sdk" || manifest.version !== "0.1.0") throw new Error("unexpected Share SDK artifact identity");
+if (manifest.sha512 !== integrity || manifest.integrity !== integrity) throw new Error("Share SDK artifact integrity mismatch");
+const lockText = await readFile(join(root, "..", "package-lock.json"), "utf8");
+const lock = JSON.parse(lockText);
+const entry = lock.packages?.["node_modules/@tinycloud/share-sdk"];
+if (entry?.resolved !== `file:vendor/${manifest.artifact}` || entry.integrity !== integrity) throw new Error("package-lock does not pin the Share SDK artifact");
+console.log(`${manifest.package}@${manifest.version} ${manifest.sdkCommit} ${integrity}`);

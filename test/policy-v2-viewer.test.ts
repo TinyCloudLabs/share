@@ -25,7 +25,7 @@ const stub = vi.hoisted(() => ({
   respond: async (_request: Record<string, unknown>): Promise<Response> => new Response(null, { status: 500 }),
 }));
 
-vi.mock("@tinycloud/share-sdk", () => ({
+vi.mock("@tinycloud/share-app-compat", () => ({
   ShareRecipientClient: class {
     constructor(_options: unknown) {}
     establishPolicySession(): Promise<{ resource: Record<string, unknown> }> { return stub.establish(); }

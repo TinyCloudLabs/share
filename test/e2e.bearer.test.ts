@@ -18,6 +18,7 @@
  *     and expiry each fail CLOSED (no content container at all).
  */
 import {
+  canonicalize,
   seal,
   toBase64Url,
   type ShareEnvelope,
@@ -368,7 +369,7 @@ describe("bearer e2e: fail-closed paths", () => {
     };
     const envelopeKey = new Uint8Array(32).fill(5);
     const sealedTampered = await seal(
-      new TextEncoder().encode(JSON.stringify(tampered)),
+      new TextEncoder().encode(canonicalize(tampered)),
       envelopeKey,
     );
     await putBlob(REGISTRY_BASE, sealedTampered.blob, new Date(Date.now() + 3_600_000), {

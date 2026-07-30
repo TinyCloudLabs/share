@@ -53,8 +53,8 @@ const hoisted = vi.hoisted(() => ({
 
 // External module boundary: the share SDK that mints the addressed link. The
 // input it receives is exactly the contract this test is protecting.
-vi.mock("@tinycloud/share-sdk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tinycloud/share-sdk")>();
+vi.mock("@tinycloud/share-app-compat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tinycloud/share-app-compat")>();
   return {
     ...actual,
     createAddressedShareLink: async (input: Record<string, unknown>) => {

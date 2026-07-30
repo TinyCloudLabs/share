@@ -77,6 +77,8 @@ export type ResolveResult =
 export interface ResolveShareOptions {
   /** Registry base URL (see config.ts for the app default). */
   registryBaseUrl: string;
+  /** Trusted Share host; links from another origin are rejected before fetch. */
+  expectedOrigin?: string;
   /** Fetch override — tests inject the in-process dev-registry handler. */
   fetchFn?: typeof globalThis.fetch;
   /** Clock override for the expiry check; defaults to Date.now(). */
@@ -199,10 +201,12 @@ export async function resolveShare(
   try {
     const received = await receiveShare(href, {
       registryBaseUrl: options.registryBaseUrl,
+      expectedOrigin: options.expectedOrigin ?? "https://share.tinycloud.xyz",
       ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
       ...(options.now === undefined ? {} : { now: options.now }),
       ...(options.onKeyParsed === undefined ? {} : { onKeyParsed: options.onKeyParsed }),
     });
+    if ("state" in received) return resolveAddressedShare(href, options);
     const envelope = presentationEnvelope(received.metadata);
     return {
       state: "ok",
@@ -227,14 +231,36 @@ function presentationEnvelope(metadata: ShareMetadata, expiry = metadata.expires
     delegation: "[redacted]",
     authorizationTarget: {
       kind: "bearerKey",
-      sessionJwk: { kty: "OKP", crv: "Ed25519", x: "", d: "" },
+      sessionJwk: { kty: "OKP", crv: "Ed25519", x: "" },
     },
-    target: metadata.target,
+    target: {
+      origin: metadata.target.origin,
+      nodeAudience: metadata.target.nodeAudience,
+      spaceId: metadata.target.spaceId,
+      resource: metadata.resource,
+    },
     display: metadata.display,
     expiry,
     signature: { signerDid: "did:key:z6Mkrender-only", algorithm: "Ed25519", value: "" },
-  } as ShareEnvelope;
+  } as unknown as ShareEnvelope;
 }
+
+const fallbackMetadata = (expiresAt: string): ShareMetadata => ({
+  protocol: "tinycloud-share",
+  version: 1,
+  shareId: "unknown",
+  origin: "https://share.tinycloud.xyz",
+  target: {
+    kind: "bearer",
+    origin: "https://share.tinycloud.xyz",
+    nodeAudience: "unknown",
+    spaceId: "unknown",
+  },
+  resource: { kind: "exact", path: "unknown" },
+  actions: ["read"],
+  expiresAt,
+  display: {},
+});
 
 function mapReceiveError(error: ShareReceiveError): ResolveResult {
   switch (error.code) {
@@ -247,9 +273,9 @@ function mapReceiveError(error: ShareReceiveError): ResolveResult {
     case "origin-mismatch": return { state: "invalid-link", detail: "share origin does not match its signed target" };
     case "signature-invalid": return { state: "signature-invalid" };
     case "capability-invalid": return { state: "capability-invalid", detail: "signed delegation is not valid for this share" };
-    case "expired": return { state: "expired", envelope: presentationEnvelope({ protocol: "tinycloud-share", version: 1, shareId: "unknown", origin: "https://share.tinycloud.xyz", target: { origin: "https://share.tinycloud.xyz", nodeAudience: "unknown", spaceId: "unknown", resource: { kind: "exact", path: "unknown" } }, resource: { kind: "exact", path: "unknown" }, actions: ["read"], expiresAt: error.details?.expiresAt ?? new Date().toISOString(), display: {} }, error.details?.expiresAt) };
+    case "expired": return { state: "expired", envelope: presentationEnvelope(fallbackMetadata(error.details?.expiresAt ?? new Date().toISOString()), error.details?.expiresAt) };
     case "content-integrity-failed": return { state: "content-integrity-failed" };
-    case "unsupported-target": return { state: "unsupported", reason: "recipient-did-target", envelope: presentationEnvelope({ protocol: "tinycloud-share", version: 1, shareId: "unknown", origin: "https://share.tinycloud.xyz", target: { origin: "https://share.tinycloud.xyz", nodeAudience: "unknown", spaceId: "unknown", resource: { kind: "exact", path: "unknown" } }, resource: { kind: "exact", path: "unknown" }, actions: ["read"], expiresAt: new Date().toISOString(), display: {} }) };
+    case "unsupported-target": return { state: "unsupported", reason: "recipient-did-target", envelope: presentationEnvelope(fallbackMetadata(new Date().toISOString())) };
     default: return { state: "fetch-failed", detail: "share unavailable" };
   }
 }

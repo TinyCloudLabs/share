@@ -1,4 +1,4 @@
-import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-sdk";
+import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-app-compat";
 import type { TrustedNode } from "../email-share/protocol.js";
 import { fromBase64Url, toBase64Url, type ShareEnvelopeV2 } from "@tinycloud/share-envelope";
 import { digestBytes } from "../email-share/node-verifier.js";

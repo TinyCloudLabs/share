@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { didKeyFromEd25519PublicKey, parseInlineShareUrl, shareEnvelopeV2Schema } from "@tinycloud/share-envelope";
-import { createAddressedShareLink, normalizeExactEmail } from "@tinycloud/share-sdk";
+import { createAddressedShareLink, normalizeExactEmail } from "@tinycloud/share-app-compat";
 
 const publicKey = new Uint8Array(32).fill(7);
 const source = { kind: "kv" as const, space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" as const };

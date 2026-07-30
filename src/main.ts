@@ -166,7 +166,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   }
 }
 
-async function buildV2Presentation(input: { readonly challenge: import("@tinycloud/share-sdk").PolicyChallenge; readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2; readonly policy: Record<string, unknown>; readonly invite: { readonly invitationId: string; readonly claimSecret: string }; readonly shareCid: string; readonly publicConfig: Awaited<ReturnType<typeof import("./email-share/config.js").loadSharePublicConfig>>; readonly holder: import("./email-share/claim.js").HolderKey }): Promise<import("@tinycloud/share-sdk").PolicyPresentationMaterial> {
+async function buildV2Presentation(input: { readonly challenge: import("@tinycloud/share-app-compat").PolicyChallenge; readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2; readonly policy: Record<string, unknown>; readonly invite: { readonly invitationId: string; readonly claimSecret: string }; readonly shareCid: string; readonly publicConfig: Awaited<ReturnType<typeof import("./email-share/config.js").loadSharePublicConfig>>; readonly holder: import("./email-share/claim.js").HolderKey }): Promise<import("@tinycloud/share-app-compat").PolicyPresentationMaterial> {
   const ownerOuter = input.envelope.ownerAuthority?.outerEnvelope as Record<string, unknown> | undefined;
   const outerSource = ownerOuter?.contentSource as Record<string, unknown> | undefined;
   const source = (outerSource === undefined ? input.policy.contentSource : { ...outerSource, action: input.challenge.action }) as ContentSource;

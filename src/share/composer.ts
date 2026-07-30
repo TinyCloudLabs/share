@@ -1,5 +1,5 @@
 import { armManualCopy, createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
-import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-sdk";
+import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-app-compat";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import { canonicalDigest } from "../email-share/protocol.js";
 import type { ContentSource, SenderScope } from "../email-share/protocol.js";
