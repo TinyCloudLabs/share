@@ -336,6 +336,8 @@ async function digestBytes(value: Uint8Array): Promise<string> {
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   const file = files.length === 1 ? files[0] : undefined;
   if (options.tinycloud !== undefined) return createOwnerPolicyShare(files, model, options);
+  throw fail("session", "addressed shares require an authenticated TinyCloud owner session");
+  /* Legacy host-capability addressed publication is intentionally unreachable.
   if (files.length > 1) throw fail("linkOnlyFolder", "host-capability sharing supports one exact file");
   const response = options.loadCapabilities === undefined ? await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }) : undefined;
   if (response !== undefined && !response.ok) throw fail("account", "capability list request was rejected");
@@ -347,7 +349,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
       try {
         const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(policy.policyBytes))) as unknown;
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) signedPolicy = parsed as Record<string, unknown>;
-      } catch { /* Legacy capability records use recipientEmail below. */ }
+      } catch { }
     }
     const signedMatcher = signedPolicy?.recipientMatcher;
     if (typeof signedMatcher === "object" && signedMatcher !== null && !Array.isArray(signedMatcher)) {
@@ -483,6 +485,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
       });
     },
   };
+  */
 }
 
 async function createOwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
