@@ -211,8 +211,21 @@ try {
   // look for `witness.credentials.org/share/v2`, so it reported a failure on the
   // 2026-07-31 run that actually delivered mail to a Mailinator inbox — the
   // witness has no part in delivery any more, and a POST to it would be the bug.
-  const sendResponse = captured.find((entry) => entry.direction !== "request" && /email\.tinycloud\.xyz\/share\/v2/.test(entry.url));
-  record("the email Worker accepted the send", sendResponse?.status === 202, sendResponse === undefined ? "no POST to the email Worker was made" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+  //
+  // Polled, not read once: the `response` handler pushes to `captured` only
+  // after `await response.text()` resolves, so reading the array the moment the
+  // composer reports "queued" races the capture and finds nothing. The first
+  // version of this check did exactly that and reported "no POST to the email
+  // Worker was made" on a run whose log ends with `[res 202] POST
+  // https://email.tinycloud.xyz/share/v2`.
+  const sendDeadline = Date.now() + 30_000;
+  let sendResponse;
+  for (;;) {
+    sendResponse = captured.find((entry) => entry.direction !== "request" && /email\.tinycloud\.xyz\/share\/v2/.test(entry.url));
+    if (sendResponse !== undefined || Date.now() >= sendDeadline) break;
+    await page.waitForTimeout(500);
+  }
+  record("the email Worker accepted the send", sendResponse?.status === 202, sendResponse === undefined ? "no POST to the email Worker was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
   log(`[stage2] polling ${recipient.address}`);
