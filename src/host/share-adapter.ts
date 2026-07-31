@@ -6,6 +6,7 @@ import { verifyMessage } from "viem";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
+import { canonicalize } from "@tinycloud/share-envelope";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { derivablePrincipal, derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
 import { assertSecurePath, secureReadSync, SECURE_APPEND, SECURE_CREATE, SECURE_READ } from "./secure-path.js";
@@ -41,6 +42,14 @@ const LINK_ONLY_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
 const LINK_ONLY_UPLOAD_WINDOW_MS = 5 * 60 * 1000;
 const LINK_ONLY_UPLOAD_LIMIT = 20;
 const LINK_ONLY_AUTHORIZATION_TTL_MS = 60 * 1000;
+const UPLOAD_ATTESTATION_HEADER = "x-tinycloud-upload-attestation";
+const UPLOAD_RETENTION_HEADER = "x-tinycloud-retention";
+const UPLOAD_ATTESTATION_DOMAIN = "xyz.tinycloud.share/upload-attestation/v1\0";
+const MAX_UPLOAD_ATTESTATION_BYTES = 64 * 1024;
+const MAX_UPLOAD_ATTESTATION_REPLAY = 8192;
+const UPLOAD_ATTESTATION_CLOCK_SKEW_MS = 30 * 1000;
+const UPLOAD_ATTESTATION_TTL_MS = 120 * 1000;
+const MAX_RETENTION_BYTES = 1024;
 const REGISTRY_AUTHORIZATION_DOMAIN =
   "xyz.tinycloud.share/registry-authorization/v1\0";
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
@@ -52,6 +61,12 @@ export interface BindingStore {
   readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
+  reserveUpload?(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
+}
+
+export interface UploadBudgetStore {
+  readonly writable: boolean;
+  reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
 }
 
 async function secureRead(path: string): Promise<string> {
@@ -90,8 +105,14 @@ function scryptAsync(password: string, salt: Uint8Array, length: number, options
   return new Promise((resolve, reject) => scrypt(password, salt, length, options, (error, derived) => error === null ? resolve(derived as Buffer) : reject(error)));
 }
 
-function parseJournal(text: string): Map<string, Record<string, unknown>> {
-  const records = new Map<string, Record<string, unknown>>();
+interface JournalState {
+  readonly bindings: Map<string, Record<string, unknown>>;
+  readonly budgets: Map<string, { count: number; windowStartedAt: number }>;
+}
+
+function parseJournal(text: string): JournalState {
+  const bindings = new Map<string, Record<string, unknown>>();
+  const budgets = new Map<string, { count: number; windowStartedAt: number }>();
   if (text.length === 0) throw new Error("binding journal is empty");
   const lines = text.split("\n");
   for (const [lineNumber, line] of lines.entries()) {
@@ -100,13 +121,21 @@ function parseJournal(text: string): Map<string, Record<string, unknown>> {
     try { value = JSON.parse(line); } catch { throw new Error("binding journal is corrupt"); }
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("binding journal record is invalid");
     const record = value as Record<string, unknown>;
-    if (record.op !== "put" || typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
-    const binding = record.binding as Record<string, unknown>;
-    const previous = records.get(record.cid);
-    if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
-    records.set(record.cid, binding);
+    if (record.op === "put") {
+      if (typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
+      const binding = record.binding as Record<string, unknown>;
+      const previous = bindings.get(record.cid);
+      if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
+      bindings.set(record.cid, binding);
+      continue;
+    }
+    if (record.op === "upload-budget" && typeof record.principal === "string" && Number.isSafeInteger(record.count) && (record.count as number) >= 0 && Number.isSafeInteger(record.windowStartedAt) && (record.windowStartedAt as number) >= 0) {
+      budgets.set(record.principal, { count: record.count as number, windowStartedAt: record.windowStartedAt as number });
+      continue;
+    }
+    throw new Error("binding journal record is invalid");
   }
-  return records;
+  return { bindings, budgets };
 }
 
 /**
@@ -166,11 +195,11 @@ export class TransactionalBindingStore implements BindingStore {
     }
   }
 
-  private async readJournal(): Promise<Map<string, Record<string, unknown>>> {
+  private async readJournal(): Promise<JournalState> {
     let text: string;
     try { text = await secureRead(this.path); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { bindings: new Map(), budgets: new Map() };
       throw error;
     }
     return parseJournal(text);
@@ -194,13 +223,13 @@ export class TransactionalBindingStore implements BindingStore {
     }
   }
 
-  async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).get(cid); }
+  async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).bindings.get(cid); }
 
   async put(cid: string, binding: Record<string, unknown>): Promise<void> {
     if (!this.writable) throw new Error("binding store is not writable");
     await this.withLock(async () => {
-      const records = await this.readJournal();
-      const previous = records.get(cid);
+      const state = await this.readJournal();
+      const previous = state.bindings.get(cid);
       if (previous !== undefined) {
         if (stable(previous) !== stable(binding)) throw new Error("binding is immutable");
         return;
@@ -213,14 +242,49 @@ export class TransactionalBindingStore implements BindingStore {
       } finally { await handle.close(); }
     });
   }
+
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    if (!this.writable) throw new Error("upload budget store is not writable");
+    return this.withLock(async () => {
+      const state = await this.readJournal();
+      const prior = state.budgets.get(principal);
+      const budget = prior === undefined || now - prior.windowStartedAt >= windowMs
+        ? { count: 0, windowStartedAt: now }
+        : prior;
+      if (budget.count >= limit) return false;
+      const next = { count: budget.count + 1, windowStartedAt: budget.windowStartedAt };
+      assertSecurePath(this.path);
+      const handle = await open(this.path, SECURE_APPEND, 0o600);
+      try {
+        await handle.write(`${JSON.stringify({ op: "upload-budget", principal, ...next })}\n`, undefined, "utf8");
+        await handle.sync();
+      } finally { await handle.close(); }
+      return true;
+    });
+  }
 }
 
 class MemoryBindingStore implements BindingStore {
   readonly writable = true;
   private readonly values = new Map<string, Record<string, unknown>>();
+  private readonly budgets = new MemoryUploadBudgetStore();
   constructor(initial: Record<string, Record<string, unknown>> = {}) { Object.entries(initial).forEach(([key, value]) => this.values.set(key, value)); }
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return this.values.get(cid); }
   async put(cid: string, binding: Record<string, unknown>): Promise<void> { this.values.set(cid, binding); }
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> { return this.budgets.reserveUpload(principal, now, windowMs, limit); }
+}
+
+class MemoryUploadBudgetStore implements UploadBudgetStore {
+  readonly writable = true;
+  private readonly values = new Map<string, { count: number; windowStartedAt: number }>();
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    const prior = this.values.get(principal);
+    const budget = prior === undefined || now - prior.windowStartedAt >= windowMs ? { count: 0, windowStartedAt: now } : prior;
+    if (budget.count >= limit) return false;
+    budget.count += 1;
+    this.values.set(principal, budget);
+    return true;
+  }
 }
 
 export interface ShareHostOptions {
@@ -228,6 +292,7 @@ export interface ShareHostOptions {
   readonly capability?: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
   readonly bindingStore?: BindingStore;
+  readonly uploadBudgetStore?: UploadBudgetStore;
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver or SHARE_HERMETIC_REGISTRY_ORIGIN. */
   readonly registryTransportOrigin: string;
@@ -248,6 +313,82 @@ function generic(status = 400): Response { return response(status, { error: { co
 function safeString(value: unknown, label: string): string { if (typeof value !== "string" || value.length === 0 || value.length > 4096) throw new Error(label); return value; }
 function hash(value: string): string { return createHash("sha256").update(value).digest("base64url"); }
 function hashBytes(value: Uint8Array): string { return createHash("sha256").update(value).digest("base64url"); }
+
+interface UploadAttestation {
+  readonly type: "TinyCloudShareUploadAttestation";
+  readonly version: 1;
+  readonly issuer: string;
+  readonly kid: string;
+  readonly ownerDid: string;
+  readonly sessionDid: string;
+  readonly shareOrigin: string;
+  readonly encryptedBlobCid: string;
+  readonly encryptedBlobSha256: string;
+  readonly byteLength: number;
+  readonly deleteAfter: string;
+  readonly retention: unknown;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly jti: string;
+  readonly signature: string;
+}
+
+const UPLOAD_ATTESTATION_KEYS = ["byteLength", "deleteAfter", "encryptedBlobCid", "encryptedBlobSha256", "expiresAt", "issuedAt", "issuer", "jti", "kid", "ownerDid", "retention", "sessionDid", "shareOrigin", "signature", "type", "version"] as const;
+const PRINCIPAL = /^did:[A-Za-z0-9][A-Za-z0-9.-]*:[^\s\u0000-\u001f\u007f]{1,1023}$/;
+
+function strictBase64Url(value: unknown, bytes: number): value is string {
+  const length = Math.ceil(bytes * 4 / 3);
+  if (typeof value !== "string" || value.length !== length || !new RegExp(`^[A-Za-z0-9_-]{${length}}$`).test(value)) return false;
+  const decoded = fromBase64Url(value);
+  return decoded.byteLength === bytes && toBase64Url(decoded) === value;
+}
+
+function canonicalTimestamp(value: unknown, label: string): number {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) throw new Error(label);
+  const time = Date.parse(value);
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== value) throw new Error(label);
+  return time;
+}
+
+function exactAttestation(value: unknown): UploadAttestation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("attestation shape");
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).sort().join(",") !== [...UPLOAD_ATTESTATION_KEYS].sort().join(",")) throw new Error("attestation shape");
+  return object as unknown as UploadAttestation;
+}
+
+function uploadAttestationBytes(attestation: UploadAttestation): Uint8Array {
+  const unsigned = Object.fromEntries(Object.entries(attestation).filter(([key]) => key !== "signature"));
+  return new TextEncoder().encode(`${UPLOAD_ATTESTATION_DOMAIN}${canonicalize(unsigned)}`);
+}
+
+async function verifyUploadAttestation(
+  request: Request,
+  bytes: Uint8Array,
+  bundle: ShareTrustBundle,
+  now: number,
+): Promise<UploadAttestation> {
+  const encoded = request.headers.get(UPLOAD_ATTESTATION_HEADER);
+  const retentionHeader = request.headers.get(UPLOAD_RETENTION_HEADER);
+  if (encoded === null || Buffer.byteLength(encoded, "utf8") > MAX_UPLOAD_ATTESTATION_BYTES || retentionHeader === null || Buffer.byteLength(retentionHeader, "utf8") > MAX_RETENTION_BYTES) throw new Error("attestation missing");
+  let attestation: UploadAttestation;
+  let retention: unknown;
+  try {
+    attestation = exactAttestation(JSON.parse(encoded));
+    retention = JSON.parse(retentionHeader);
+  } catch { throw new Error("attestation malformed"); }
+  if (retention === null || canonicalize(retention).length > MAX_RETENTION_BYTES || canonicalize(retention) !== retentionHeader) throw new Error("attestation retention");
+  if (attestation.type !== "TinyCloudShareUploadAttestation" || attestation.version !== 1 || attestation.issuer !== bundle.public.nodeAudience || attestation.kid !== bundle.public.nodeInvitationKid || attestation.shareOrigin !== bundle.public.shareOrigin || attestation.retention === null || canonicalize(attestation.retention) !== retentionHeader || !PRINCIPAL.test(attestation.ownerDid) || !PRINCIPAL.test(attestation.sessionDid) || !strictBase64Url(attestation.signature, 64) || !strictBase64Url(attestation.encryptedBlobSha256, 32) || !strictBase64Url(attestation.jti, 16) || typeof attestation.encryptedBlobCid !== "string" || attestation.encryptedBlobCid.length > 200 || typeof attestation.byteLength !== "number" || !Number.isSafeInteger(attestation.byteLength) || attestation.byteLength < 0 || typeof attestation.deleteAfter !== "string" || typeof attestation.issuedAt !== "string" || typeof attestation.expiresAt !== "string") throw new Error("attestation fields");
+  const issuedAt = canonicalTimestamp(attestation.issuedAt, "attestation issuedAt");
+  const expiresAt = canonicalTimestamp(attestation.expiresAt, "attestation expiresAt");
+  const deleteAfter = canonicalTimestamp(attestation.deleteAfter, "attestation deleteAfter");
+  if (issuedAt > now + UPLOAD_ATTESTATION_CLOCK_SKEW_MS || expiresAt <= now || expiresAt > now + UPLOAD_ATTESTATION_TTL_MS || expiresAt <= issuedAt || expiresAt - issuedAt > UPLOAD_ATTESTATION_TTL_MS || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS || attestation.deleteAfter !== request.headers.get("x-delete-after")) throw new Error("attestation time");
+  if (attestation.byteLength !== bytes.byteLength || attestation.byteLength > LINK_ONLY_BLOB_LIMIT) throw new Error("attestation length");
+  const cid = CID.create(1, 0x55, await sha256.digest(bytes)).toString();
+  if (attestation.encryptedBlobCid !== cid || attestation.encryptedBlobSha256 !== hashBytes(bytes)) throw new Error("attestation body binding");
+  if (!ed25519.verify(fromBase64Url(attestation.signature), uploadAttestationBytes(attestation), fromBase64Url(bundle.public.nodeInvitationPublicKey))) throw new Error("attestation signature");
+  return attestation;
+}
 
 function registryUploadAuthorization(
   privateKey: Uint8Array,
@@ -416,6 +557,12 @@ function capabilityOwnedByPrincipal(candidate: { readonly scope: Record<string, 
     return normalizedOwnerDid(candidate.scope.policyOwnerDid) === ownerDid;
   }
   return typeof candidate.scope.userId === "string" && candidate.scope.userId === principal;
+}
+
+function samePrincipal(left: string, right: string): boolean {
+  const normalizedLeft = normalizedOwnerDid(left);
+  const normalizedRight = normalizedOwnerDid(right);
+  return normalizedLeft !== undefined || normalizedRight !== undefined ? normalizedLeft === normalizedRight : left === right;
 }
 
 function openKeyMessage(origin: string, address: string, nonce: string, issuedAt: string): string {
@@ -725,7 +872,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
-  const linkOnlyUploads = new Map<string, { count: number; windowStartedAt: number }>();
+  // Attestation jti replay is intentionally process-local: the current Share
+  // deployment is a single instance. The durable upload-budget journal below
+  // is the authority that must remain correct across restart and concurrent
+  // instances; a multi-instance deployment needs a shared replay store before
+  // adding another Share process.
+  const uploadAttestationReplay = new Map<string, number>();
+  const uploadBudgetStore = options.uploadBudgetStore ?? (options.testMode ? new MemoryUploadBudgetStore() : undefined);
   const capability = options.capability;
   /**
    * Drops state whose lifetime has ended. Called before issuing a session, so
@@ -735,8 +888,19 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     const now = Date.now();
     for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
     for (const [key, entry] of signers) if (entry.expiresAt <= now) signers.delete(key);
-    for (const [key, budget] of linkOnlyUploads) if (now - budget.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS) linkOnlyUploads.delete(key);
+    for (const [jti, expiresAt] of uploadAttestationReplay) if (expiresAt <= now) uploadAttestationReplay.delete(jti);
     for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+  };
+  const consumeUploadAttestationJti = (jti: string, expiresAt: number): boolean => {
+    sweep();
+    if (uploadAttestationReplay.has(jti)) return false;
+    if (uploadAttestationReplay.size >= MAX_UPLOAD_ATTESTATION_REPLAY) return false;
+    uploadAttestationReplay.set(jti, expiresAt);
+    return true;
+  };
+  const reserveUpload = async (principal: string, now: number): Promise<boolean> => {
+    if (uploadBudgetStore?.writable !== true) throw new Error("upload_budget_unavailable");
+    return uploadBudgetStore.reserveUpload(principal, now, LINK_ONLY_UPLOAD_WINDOW_MS, LINK_ONLY_UPLOAD_LIMIT);
   };
   const issueSession = (token: string, session: ShareSession): void => {
     sweep();
@@ -978,41 +1142,53 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const binding = await options.bindingStore?.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
       if (url.pathname.startsWith(`${LINK_ONLY_REGISTRY_PREFIX}/`) || url.pathname === LINK_ONLY_REGISTRY_PREFIX) {
-        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
         if (url.pathname !== `${LINK_ONLY_REGISTRY_PREFIX}/blobs`) return undefinedResponse();
         if (request.method !== "POST") return response(405, { error: { code: "method_not_allowed" } }, { allow: "POST" });
         if (options.registryUploadPrivateKey === undefined) return response(503, { error: { code: "registry_upload_not_ready" } });
+        const attestationHeader = request.headers.get(UPLOAD_ATTESTATION_HEADER);
+        if (attestationHeader !== null && attestationHeader.length > MAX_UPLOAD_ATTESTATION_BYTES) return response(413, { error: { code: "upload_attestation_too_large" } });
         const now = Date.now();
         const deleteAfterHeader = request.headers.get("x-delete-after") ?? "";
         const deleteAfter = Date.parse(deleteAfterHeader);
         if (!Number.isFinite(deleteAfter) || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS) {
           return response(400, { error: { code: "upload_retention_invalid" } });
         }
-        const uploadKey = sessionCookie(request) ?? session.userId;
-        // The registry authorization binds to the session token, but the upload
+        if (attestationHeader !== null) {
+          if (!shareOriginAllowed(request.headers.get("origin"), options)) return response(401, { error: { code: "authentication_required" } });
+          const bytes = await boundedUpload(request, LINK_ONLY_BLOB_LIMIT);
+          const attestation = await verifyUploadAttestation(request, bytes, options.bundle, now);
+          const sessionToken = sessionCookie(request);
+          if (sessionToken !== undefined) {
+            const session = sessionValid(request, options, sessions);
+            if (session === undefined || !samePrincipal(session.userId, attestation.ownerDid)) return response(401, { error: { code: "authentication_required" } });
+          }
+          if (!consumeUploadAttestationJti(attestation.jti, Date.parse(attestation.expiresAt))) return response(401, { error: { code: "upload_attestation_replayed" } });
+          if (!(await reserveUpload(attestation.ownerDid, now))) return response(429, { error: { code: "upload_rate_limited" } });
+          const registryResponse = await proxyRegistry(
+            request,
+            options.registryOrigin,
+            options.registryTransportOrigin,
+            LINK_ONLY_REGISTRY_PREFIX,
+            LINK_ONLY_BLOB_LIMIT,
+            (body) => registryUploadAuthorization(options.registryUploadPrivateKey!, body, deleteAfterHeader, `${attestation.ownerDid}:${attestation.sessionDid}`),
+            bytes,
+          );
+          if (registryResponse.status === 401 || registryResponse.status === 403) return response(502, { error: { code: "registry_upload_rejected" } });
+          return registryResponse;
+        }
+        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
+        // The registry authorization binds to the session token, but the durable
         // budget is keyed by the verified principal: signing out and back in
         // must not reset the allowance or accrue a fresh accounting entry.
-        const budgetKey = session.userId;
-        const prior = linkOnlyUploads.get(budgetKey);
-        const budget = prior === undefined || now - prior.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS
-          ? { count: 0, windowStartedAt: now }
-          : prior;
-        if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
-        budget.count += 1;
-        linkOnlyUploads.set(budgetKey, budget);
+        const uploadKey = sessionCookie(request) ?? session.userId;
+        if (!(await reserveUpload(session.userId, now))) return response(429, { error: { code: "upload_rate_limited" } });
         const registryResponse = await proxyRegistry(
           request,
           options.registryOrigin,
           options.registryTransportOrigin,
           LINK_ONLY_REGISTRY_PREFIX,
           LINK_ONLY_BLOB_LIMIT,
-          (bytes) =>
-            registryUploadAuthorization(
-              options.registryUploadPrivateKey!,
-              bytes,
-              deleteAfterHeader,
-              uploadKey,
-            ),
+          (bytes) => registryUploadAuthorization(options.registryUploadPrivateKey!, bytes, deleteAfterHeader, uploadKey),
         );
         if (registryResponse.status === 401 || registryResponse.status === 403) {
           return response(502, { error: { code: "registry_upload_rejected" } });
@@ -1027,6 +1203,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     } catch (error) {
       if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
       if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } });
+      if (error instanceof Error && error.message === "upload_budget_unavailable") return response(503, { error: { code: "upload_budget_unavailable" } });
       // The sender path is ready but this session has enrolled no wallet-rooted
       // authority yet: a per-session fact, deliberately distinct from readiness.
       if (error instanceof Error && error.message === "sender_capability_required") return response(409, { error: { code: "sender_capability_required" } });
@@ -1049,19 +1226,30 @@ async function proxyRegistry(
   routePrefix = "/registry",
   maxBody = MAX_BODY,
   authorize?: (body: Uint8Array) => string,
+  bodyOverride?: Uint8Array,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
   const suffix = requestUrl.pathname.slice(routePrefix.length) || "/";
   const policyPath = `/registry${suffix}`;
   const base = new URL(transportOrigin); const target = new URL(suffix, base); target.search = requestUrl.search;
-  const bytes = new Uint8Array(await request.arrayBuffer());
+  const bytes = bodyOverride ?? new Uint8Array(await request.arrayBuffer());
   if (bytes.length > maxBody) throw new PayloadTooLargeError("upload too large");
   const headers = sanitizeUpstreamRequest(policyPath, request.method, request.headers, bytes.length, origin);
   if (authorize !== undefined) {
     headers.set("x-tinycloud-authorization", authorize(bytes));
   }
+  headers.delete(UPLOAD_ATTESTATION_HEADER);
+  headers.delete(UPLOAD_RETENTION_HEADER);
   const result = await fetch(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
   return sanitizeUpstreamResponse(policyPath, request.method, result);
+}
+
+async function boundedUpload(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const length = Number(request.headers.get("content-length") ?? "0");
+  if (!Number.isFinite(length) || length < 0 || length > maxBytes) throw new PayloadTooLargeError("upload too large");
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > maxBytes) throw new PayloadTooLargeError("upload too large");
+  return bytes;
 }
 
 function undefinedResponse(): Response { return new Response(null, { status: 404, headers: JSON_HEADERS }); }
@@ -1180,6 +1368,15 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;
   const registryUploadPrivateKey = loadRegistryUploadPrivateKey(env, bundle.environment);
+  const uploadBudgetPath = env.SHARE_UPLOAD_BUDGET_STORE_PATH ?? env.SHARE_BINDING_STORE_PATH ?? (env.SHARE_REGISTRY_UPLOAD_KEY_PATH === undefined ? undefined : `${env.SHARE_REGISTRY_UPLOAD_KEY_PATH}.budget.ndjson`);
+  const uploadBudgetStore = registryUploadPrivateKey === undefined
+    ? undefined
+    : bindingStore?.reserveUpload !== undefined && uploadBudgetPath === bindingPath
+      ? bindingStore
+      : uploadBudgetPath === undefined
+        ? undefined
+        : new TransactionalBindingStore(uploadBudgetPath);
+  if (registryUploadPrivateKey !== undefined && bundle.environment === "production" && uploadBudgetStore?.writable !== true) throw new Error("durable upload budget store is required");
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {
@@ -1197,5 +1394,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     });
   }
   const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
 }

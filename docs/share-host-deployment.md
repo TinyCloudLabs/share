@@ -17,10 +17,19 @@ share. Its only write path is `POST /api/share/link-only/registry/blobs`: raw,
 create-only blobs up to 64 KiB, retention bounded to eight days, with a
 per-session upload budget. The Share host validates the session before
 forwarding only the protocol headers and encrypted body to the registry. A
+non-browser caller may provide the bounded `x-tinycloud-upload-attestation`
+header plus canonical JSON `x-tinycloud-retention`; the Node-signed attestation
+is checked against the body before it is consumed and stripped at the registry
+boundary.
 dedicated upload key is created once in the persistent CVM volume and signs a
 one-minute authorization bound to the session, body digest, body size, and
 retention; this key is not sender/email authority. The registry independently
 checks those bounds with `REGISTRY_LINK_UPLOAD_PUBLIC_KEY`.
+The upload budget is reserved in the existing fsynced binding journal under its
+OS lock, so restart and concurrent hosts sharing the mounted volume cannot reset
+or multiply quota. The current deployment is single-instance for the
+process-local upload-attestation jti replay cache; horizontal scaling requires a
+shared replay store before it is enabled.
 Unauthenticated writes and direct `POST /registry/blobs` requests fail closed;
 public CID reads remain available to recipients.
 
