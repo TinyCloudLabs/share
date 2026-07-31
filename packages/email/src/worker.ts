@@ -240,7 +240,21 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
     providerMessageId: sent.ok ? sent.providerMessageId : null,
     at: new Date().toISOString(),
   });
-  if (!sent.ok) return deny("provider-unavailable");
+  if (!sent.ok) {
+    // The provider's numeric status, and nothing else. `resend.ts` already
+    // draws this line — the response BODY can echo the recipient address, the
+    // status cannot. Without it a provider refusal is indistinguishable from
+    // every other provider refusal: production answered a plain `502
+    // provider-unavailable` for every send, the D1 ledger recorded `failed`
+    // with a null message id, and there was no way to tell an unverified
+    // sending domain (403) from a bad key (401) or a rate limit (429) short of
+    // redeploying the Worker (TC-444).
+    return json(
+      STATUS["provider-unavailable"],
+      { error: "provider-unavailable", providerStatus: sent.status },
+      headers,
+    );
+  }
 
   return json(
     202,

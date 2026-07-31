@@ -218,7 +218,11 @@ describe("authorized delivery", () => {
 
     const failed = await worker.fetch(post(payload), environment);
     expect(failed.status).toBe(502);
-    expect(await failed.json()).toEqual({ error: "provider-unavailable" });
+    // The provider's numeric status is surfaced, and only the status — never
+    // its body, which can echo the recipient address. Without it every provider
+    // refusal is indistinguishable from outside the Worker, which is what made
+    // an unverified Resend sending domain look like an unexplained 502.
+    expect(await failed.json()).toEqual({ error: "provider-unavailable", providerStatus: 429 });
     expect([...environment.DELIVERIES.rows.values()][0]?.status).toBe("failed");
 
     const retried = await worker.fetch(post(payload), environment);
