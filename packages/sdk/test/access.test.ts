@@ -345,6 +345,7 @@ async function makeHarness(options: {
         SIGNATURE_DOMAINS.policyPresentation,
         String(presentation.holderDid),
       );
+      const sessionIssuedAtMs = Date.now();
       const session = {
         type: "TinyCloudSharePolicySession",
         version: 1,
@@ -363,8 +364,15 @@ async function makeHarness(options: {
         action: presentation.action,
         resource: presentation.resource,
         credentialDigest: (activeCredentialDigest = await digestText(String(body.credential))),
-        issuedAt: new Date().toISOString(),
-        expiresAt: options.sessionExpiresAt ?? new Date(Date.now() + 300_000).toISOString(),
+        // One clock reading for both. Two readings made this fixture's TTL
+        // `300_000 + however long the runner took between these lines`, and
+        // `assertNodeTime(..., 300)` rejects anything over 300_000 — a **zero**
+        // millisecond budget between two adjacent property evaluations. It
+        // flaked `main` red at a49fc22 ("fails closed on replay and expiry",
+        // `share-access-error` from `access.ts:64`). Same defect as TC-450,
+        // which fixed only the policy-challenge fixture.
+        issuedAt: new Date(sessionIssuedAtMs).toISOString(),
+        expiresAt: options.sessionExpiresAt ?? new Date(sessionIssuedAtMs + 300_000).toISOString(),
       };
       return {
         session,
@@ -380,6 +388,7 @@ async function makeHarness(options: {
       const invocationJti = String(invocation.jti);
       if (readJtis.has(invocationJti)) throw new ShareTransportError("used");
       readJtis.add(invocationJti);
+      const readIssuedAtMs = Date.now();
       assertHolderProof(
         invocation,
         body.proof,
@@ -396,8 +405,12 @@ async function makeHarness(options: {
         audience: nodeAudience,
         holderDid: String(invocation.holderDid),
         credentialDigest: activeCredentialDigest,
-        issuedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+        // Single reading here too. This one has 30s of slack against the 60s
+        // READ_INVOCATION_TTL_SECONDS bound so it is not flaky today, but the
+        // two-reading shape is what made the other two fixtures flaky and it
+        // should not survive a future tightening of the bound.
+        issuedAt: new Date(readIssuedAtMs).toISOString(),
+        expiresAt: new Date(readIssuedAtMs + 30_000).toISOString(),
         mediaType: "text/markdown; charset=utf-8" as const,
         content,
         contentSource: source,
