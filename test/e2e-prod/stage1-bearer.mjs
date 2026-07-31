@@ -140,7 +140,15 @@ try {
   }
 
   await signInToShare(senderPage, { appUrl: COMPOSER_URL, log });
-  record("production OpenKey sign-in reaches the sender app", true, account.address);
+  // Not a hardcoded `true`. This leaned on `signInToShare` throwing, so the
+  // check could only ever pass and told you nothing about what it names. The
+  // claim is "reaches the sender app", so assert the composer form — a
+  // signed-out page has none.
+  record(
+    "production OpenKey sign-in reaches the sender app",
+    await senderPage.locator("form.composer-form").count() > 0,
+    account.address,
+  );
 
   /** Drive the composer once and return the URL the app handed the clipboard. */
   async function createBearerShare({ filename, bytes, mimeType, denyClipboard = false }) {
@@ -220,6 +228,23 @@ try {
   const manualVisible = (await manualField.count()) > 0;
   record("clipboard denial surfaces the manual-copy affordance", manualVisible, manualVisible ? (await senderPage.locator("p.manual-copy-help").textContent())?.trim() : "div.manual-copy-field never appeared");
 
+  // `deniedParsed` gated three security checks below without ever being
+  // asserted, so a malformed denied-path URL made them VANISH — and because the
+  // summary prints `passed/results.length`, the denominator shrinks with them
+  // and the run still reports "all passed". A skipped check must not be
+  // indistinguishable from a passing one.
+  record(
+    "the clipboard-denied path produced a parseable share link",
+    deniedParsed !== null,
+    deniedParsed === null ? `unparseable: ${String(deniedUrl).replace(/#k=.*/, "#k=<redacted>")}` : "shape ok",
+  );
+  if (!manualVisible || deniedParsed === null) {
+    record(
+      "the clipboard-denied DOM and copy-gesture checks ran",
+      false,
+      `skipped: manualVisible=${manualVisible} parsed=${deniedParsed !== null}`,
+    );
+  }
   if (manualVisible && deniedParsed !== null) {
     const targetText = await senderPage.locator("span.manual-copy-target").textContent();
     record(
