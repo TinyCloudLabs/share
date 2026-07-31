@@ -182,11 +182,17 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
   });
 
   const showFailure = (error: unknown): void => {
-    // Log only the bounded category. Raw exceptions can contain resource
-    // paths, recipient details, or transport URLs and must not cross this
-    // privacy boundary.
+    // Log only bounded categories. Raw exception *messages* can contain
+    // resource paths, recipient details, or transport URLs and must not cross
+    // this privacy boundary — but the error's constructor name is a class
+    // identifier, never a value, and it is the difference between "the node's
+    // proof or clock was rejected" (`NodeVerificationError`) and "something
+    // else threw". Without it every client-side failure in the claim is the
+    // same `{kind: "malformed"}`, which is what `recipientFailureKind` returns
+    // for any untagged error, and the whole claim path is untagged.
     console.debug("tinycloud share: recipient request failed", {
       kind: error instanceof ArtifactBundleError ? `artifact-${error.kind}` : recipientFailureKind(error),
+      name: error instanceof Error ? error.name : typeof error,
     });
     status.setAttribute("role", "alert");
     status.textContent = error instanceof ArtifactBundleError ? ARTIFACT_FAILURE[error.kind] : recipientFailureMessage(error);
