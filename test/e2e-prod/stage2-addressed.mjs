@@ -95,10 +95,21 @@ try {
     // and no recipient data, so capturing it is what makes a delivery failure
     // diagnosable from the artifacts alone.
     if (!/tee\.node\.tinycloud|witness\.credentials\.org|email\.tinycloud\.xyz|\/api\/share\/|registry/.test(url)) return;
-    const body = await response.text().catch(() => "<unreadable>");
+    // Record the exchange BEFORE awaiting the body, and fill the body in later.
+    //
+    // For several of these responses `response.text()` does not settle until the
+    // browser context closes. This handler used to await it first, so those
+    // entries were pushed *after* the `finally` block had already written
+    // `network.json` — the file was missing the email Worker's response
+    // entirely, and every assertion reading `captured` raced the same promise.
+    // The bodies still arrive; they are just no longer a precondition for
+    // knowing the request happened.
+    const entry = { status: response.status(), method: response.request().method(), url, body: "" };
+    captured.push(entry);
     log(`[res ${response.status()}] ${response.request().method()} ${url}`);
+    const body = await response.text().catch(() => "<unreadable>");
+    entry.body = body.slice(0, 20_000);
     if (/policy|invoke|share\/v2|delivery|authoriz|email\.tinycloud/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
-    captured.push({ status: response.status(), method: response.request().method(), url, body: body.slice(0, 20_000) });
   });
 
   // Owner-share requests carry their authority in the Authorization header, so
