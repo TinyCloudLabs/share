@@ -138,7 +138,6 @@ try {
   }
 
   await signInToShare(page, { appUrl: COMPOSER_URL, log });
-  record("production OpenKey sign-in reaches the composer", true, account.address);
 
   // The owner path signs mid-compose; keep answering OpenKey from here on.
   const stopAutopilot = startOpenKeyAutopilot(page, log);
@@ -147,6 +146,11 @@ try {
     await page.evaluate(() => { window.location.hash = "#/new"; });
   }
   await page.locator("form.composer-form").waitFor({ timeout: 60_000 });
+  // Recorded here rather than immediately after `signInToShare`, where it was a
+  // hardcoded `true` that could only ever pass. The claim is "reaches the
+  // composer", so assert the composer — a signed-out page has no composer form,
+  // and an authenticated session is what puts one there.
+  record("production OpenKey sign-in reaches the composer", await page.locator("form.composer-form").count() > 0, account.address);
   await page.locator("div.content-dropzone").waitFor({ state: "visible", timeout: 60_000 });
 
   const nonce = `tc-addressed-${crypto.randomUUID()}`;
@@ -240,8 +244,22 @@ try {
 
   // ---------------------------------------------------------------- mailbox
   log(`[stage2] polling ${recipient.address}`);
-  const { message, text } = await waitForMessage(recipient.inbox, () => true, { timeoutMs: 300_000, log });
-  record("the invitation email actually arrived in the Mailinator inbox", true, `from=${message.from} subject=${JSON.stringify(message.subject)}`);
+  // The predicate used to be `() => true`, which accepts ANY message that lands
+  // in the inbox — so this proved "an email arrived", not "the invitation for
+  // this share arrived", while claiming the latter. Require the document name
+  // and a `/s/` link, both of which are known before polling starts. A stray
+  // message now keeps the poll running instead of being asserted on and then
+  // failing the link check below with a misleading message.
+  const isInvitation = (_message, body) => body.includes("stage2-proof.md") && body.includes("/s/");
+  const { message, text } = await waitForMessage(recipient.inbox, isInvitation, { timeoutMs: 300_000, log });
+  // Not a hardcoded `true`: `waitForMessage` throws on timeout, but that only
+  // proves *something* matched. Re-assert the identity here so the reported
+  // check is the one that was actually made.
+  record(
+    "the invitation email actually arrived in the Mailinator inbox",
+    isInvitation(message, text) && /tinycloud/i.test(String(message.from)),
+    `from=${message.from} subject=${JSON.stringify(message.subject)}`,
+  );
   writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
 
   const links = extractUrls(text).filter((url) => url.includes("/s/"));
