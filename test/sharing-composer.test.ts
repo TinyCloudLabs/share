@@ -617,6 +617,7 @@ describe("share composer access controls", () => {
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
+      now: () => fixed,
       fetchFn: authenticatedRegistryFetch,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },

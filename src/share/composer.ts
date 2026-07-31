@@ -790,7 +790,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
 
   const expiryIso = (): string => {
     const choice = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value ?? DEFAULT_EXPIRY_CHOICE;
-    return expiryFromChoice(choice as ExpiryChoice);
+    return expiryFromChoice(choice as ExpiryChoice, options.now?.() ?? Date.now());
   };
   const refreshNote = (): void => {
     const kind = selectedKind();
