@@ -207,8 +207,12 @@ try {
     record("the Node returned a delivery authorization", false, "no response body containing openCredentialsAudience was observed");
   }
 
-  const sendResponse = captured.find((entry) => /witness\.credentials\.org\/share\/v2/.test(entry.url));
-  record("the witness accepted the send", sendResponse?.status === 200, sendResponse === undefined ? "no POST to the witness was made" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+  // The send goes to the email Worker, not to the witness. This check used to
+  // look for `witness.credentials.org/share/v2`, so it reported a failure on the
+  // 2026-07-31 run that actually delivered mail to a Mailinator inbox — the
+  // witness has no part in delivery any more, and a POST to it would be the bug.
+  const sendResponse = captured.find((entry) => entry.direction !== "request" && /email\.tinycloud\.xyz\/share\/v2/.test(entry.url));
+  record("the email Worker accepted the send", sendResponse?.status === 202, sendResponse === undefined ? "no POST to the email Worker was made" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
   log(`[stage2] polling ${recipient.address}`);
@@ -229,11 +233,30 @@ try {
   const verify = recipientPage.getByRole("button", { name: /verify and open|open document/i });
   await verify.waitFor({ timeout: 60_000 });
   await verify.click();
-  await recipientPage.locator("section.viewer-content, button.viewer-download").waitFor({ timeout: 180_000 });
 
-  const frames = [];
-  for (const frame of recipientPage.frames()) frames.push(await frame.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
-  const rendered = frames.join("\n");
+  // `section.viewer-content` ships with the document, so waiting for it returned
+  // in well under a second while the page still read "Checking…" — the 180s
+  // budget never applied and the nonce assertion below ran against a
+  // still-loading page. Wait for a terminal state instead: the nonce rendered
+  // anywhere (including inside the viewer's frames), or the claim visibly
+  // failing. Whichever arrives first is the answer; the timeout is now real.
+  const readRendered = async () => {
+    const frames = [];
+    for (const frame of recipientPage.frames()) frames.push(await frame.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
+    return frames.join("\n");
+  };
+  const deadline = Date.now() + 180_000;
+  let rendered = "";
+  for (;;) {
+    rendered = await readRendered();
+    if (rendered.includes(nonce)) break;
+    if (/something went wrong|ask the sender for a fresh link|link has expired|no longer available/i.test(rendered)) {
+      log("[recipient] the page reached a failure state; not waiting out the rest of the budget");
+      break;
+    }
+    if (Date.now() >= deadline) break;
+    await recipientPage.waitForTimeout(2_000);
+  }
   record("the recipient reads the exact shared document", rendered.includes(nonce), `nonce ${nonce}`);
   writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), rendered);
   await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient.png"), fullPage: true });
