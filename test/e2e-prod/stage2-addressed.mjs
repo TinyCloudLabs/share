@@ -76,7 +76,7 @@ if (readiness.senderReady !== true) log("[stage2] senderReady is false — the P
 const browser = await chromium.launch({ headless: process.env.HEADED !== "1" });
 log(`[browser] ${browser.version()}`);
 
-/** Every response body from the Node and the witness, for the proof audit. */
+/** Every response body from the Node, the email Worker and the witness, for the proof audit. */
 const captured = [];
 
 try {
@@ -87,10 +87,17 @@ try {
   page.on("pageerror", (error) => log(`[pageerror] ${error.message}`));
   page.on("response", async (response) => {
     const url = response.url();
-    if (!/tee\.node\.tinycloud|witness\.credentials\.org|\/api\/share\/|registry/.test(url)) return;
+    // `email.tinycloud.xyz` is the hop that decides whether the mail is sent,
+    // and it was the one hop this filter omitted: a run could trace the Node
+    // signing the authorization, then report "The email didn't go out" with
+    // nothing but a bare `502` in the console. The Worker's error body carries
+    // its refusal reason and the upstream provider's numeric status (TC-444)
+    // and no recipient data, so capturing it is what makes a delivery failure
+    // diagnosable from the artifacts alone.
+    if (!/tee\.node\.tinycloud|witness\.credentials\.org|email\.tinycloud\.xyz|\/api\/share\/|registry/.test(url)) return;
     const body = await response.text().catch(() => "<unreadable>");
     log(`[res ${response.status()}] ${response.request().method()} ${url}`);
-    if (/policy|invoke|share\/v2|delivery|authoriz/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
+    if (/policy|invoke|share\/v2|delivery|authoriz|email\.tinycloud/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
     captured.push({ status: response.status(), method: response.request().method(), url, body: body.slice(0, 20_000) });
   });
 
