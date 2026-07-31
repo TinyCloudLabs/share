@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare, startOpenKeyAutopilot } from "./lib/openkey.mjs";
 import { newInbox, waitForMessage, extractUrls } from "./lib/mailinator.mjs";
 import { DEEP_TRACE } from "./lib/deep-trace.mjs";
+import { redactHeaders, redactJsonText, redactString } from "./lib/redact.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ACCOUNT_PATH = resolve(HERE, ".account.json");
@@ -53,8 +54,9 @@ const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
 mkdirSync(RUN_DIR, { recursive: true });
 const lines = [];
 const log = (line) => {
-  console.log(line);
-  lines.push(`${new Date().toISOString()} ${line}`);
+  const safe = redactString(line);
+  console.log(safe);
+  lines.push(`${new Date().toISOString()} ${safe}`);
   writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
 };
 
@@ -89,9 +91,10 @@ try {
     const url = response.url();
     if (!/tee\.node\.tinycloud|witness\.credentials\.org|\/api\/share\/|registry/.test(url)) return;
     const body = await response.text().catch(() => "<unreadable>");
-    log(`[res ${response.status()}] ${response.request().method()} ${url}`);
-    if (/policy|invoke|share\/v2|delivery|authoriz/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
-    captured.push({ status: response.status(), method: response.request().method(), url, body: body.slice(0, 20_000) });
+    const safeBody = redactJsonText(body);
+    log(`[res ${response.status()}] ${response.request().method()} ${redactString(url)}`);
+    if (/policy|invoke|share\/v2|delivery|authoriz/i.test(url)) log(`  body: ${safeBody.slice(0, 1200)}`);
+    captured.push({ status: response.status(), method: response.request().method(), url: redactString(url), body: safeBody.slice(0, 20_000) });
   });
 
   // Owner-share requests carry their authority in the Authorization header, so
@@ -102,11 +105,11 @@ try {
     captured.push({
       direction: "request",
       method: request.method(),
-      url: request.url(),
-      headers: { ...headers, authorization: headers.authorization === undefined ? undefined : `${headers.authorization.slice(0, 120)}…` },
-      body: (request.postData() ?? "").slice(0, 20_000),
+      url: redactString(request.url()),
+      headers: redactHeaders(headers),
+      body: redactJsonText((request.postData() ?? "").slice(0, 20_000)),
     });
-    log(`[req] ${request.method()} ${request.url()}`);
+    log(`[req] ${request.method()} ${redactString(request.url())}`);
   });
 
   const { cdp, authenticatorId } = await attachVirtualAuthenticator(context, page);
@@ -207,7 +210,7 @@ try {
   log(`[stage2] polling ${recipient.address}`);
   const { message, text } = await waitForMessage(recipient.inbox, () => true, { timeoutMs: 300_000, log });
   record("the invitation email actually arrived in the Mailinator inbox", true, `from=${message.from} subject=${JSON.stringify(message.subject)}`);
-  writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
+  writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), "[redacted invitation body; link and delivery were verified in memory]\n");
 
   const links = extractUrls(text).filter((url) => url.includes("/s/"));
   record("the invitation carries a share link", links.length > 0, links.map((url) => url.replace(/#.*/, "#<redacted>")).join(" "));

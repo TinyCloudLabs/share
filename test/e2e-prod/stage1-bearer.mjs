@@ -28,6 +28,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare } from "./lib/openkey.mjs";
+import { redactString } from "./lib/redact.mjs";
 import { DEEP_TRACE } from "./lib/deep-trace.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -39,8 +40,9 @@ const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
 mkdirSync(RUN_DIR, { recursive: true });
 const lines = [];
 const log = (line) => {
-  console.log(line);
-  lines.push(`${new Date().toISOString()} ${line}`);
+  const safe = redactString(line);
+  console.log(safe);
+  lines.push(`${new Date().toISOString()} ${safe}`);
   writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
 };
 
@@ -245,7 +247,11 @@ try {
     );
   }
 
-  await senderContext.storageState({ path: resolve(RUN_DIR, "sender-storage.json") });
+  const storage = await senderContext.storageState();
+  writeFileSync(resolve(RUN_DIR, "sender-storage.redacted.json"), JSON.stringify({
+    origins: storage.origins.map((origin) => ({ origin: origin.origin, localStorageKeys: origin.localStorage.map((entry) => entry.name) })),
+    cookies: storage.cookies.map(({ name, domain, path, expires }) => ({ name, domain, path, expires })),
+  }, null, 2));
 
   // ---------------------------------------------------------- recipient
   /**

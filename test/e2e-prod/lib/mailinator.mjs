@@ -9,6 +9,8 @@
  * should be able to send to a real person.
  */
 
+import { redactString } from "./redact.mjs";
+
 // Both hosts serve the same unauthenticated public-inbox API and both return
 // intermittent 500s; try them in turn rather than treating one 500 as failure.
 const API_HOSTS = ["https://api.mailinator.com", "https://www.mailinator.com"];
@@ -65,14 +67,14 @@ export async function waitForMessage(inbox, predicate, { timeoutMs = 180_000, in
     try {
       messages = await listMessages(inbox);
     } catch (error) {
-      log(`[mailinator] list failed: ${error.message}`);
+      log(`[mailinator] list failed: ${redactString(error.message)}`);
     }
     for (const summary of messages) {
       if (seen.has(summary.id)) continue;
       seen.add(summary.id);
-      log(`[mailinator] from=${summary.from} subject=${JSON.stringify(summary.subject)}`);
+      log(`[mailinator] from=${redactString(summary.from)} subject=${JSON.stringify(redactString(summary.subject))}`);
       const message = await fetchMessage(inbox, summary.id).catch((error) => {
-        log(`[mailinator] fetch ${summary.id} failed: ${error.message}`);
+        log(`[mailinator] fetch ${redactString(summary.id)} failed: ${redactString(error.message)}`);
         return undefined;
       });
       if (message === undefined) continue;
