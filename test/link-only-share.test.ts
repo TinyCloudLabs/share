@@ -256,8 +256,16 @@ describe("link-only creation and recipient recovery", () => {
       }),
       {
         origin: SHARE_ORIGIN,
+        // `now` is injected so the envelope's own timestamps stay deterministic.
+        // `expiresAt` deliberately is NOT: it becomes the `x-delete-after` header,
+        // which the registry Worker validates against the REAL clock —
+        // `retentionExpiry` (worker.ts:95) requires
+        // `Date.now() < expiry <= Date.now() + LINK_RETENTION_LIMIT_MS` (8 days).
+        // A hardcoded date is a time bomb in both directions: it goes stale and
+        // 400s once it passes, and a far-future constant exceeds the retention
+        // window and 400s immediately. Keep this relative to real time.
         now: () => Date.parse("2026-07-23T20:00:00.000Z"),
-        expiresAt: new Date(Date.parse("2026-07-23T20:00:00.000Z") + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         fetchFn: authenticatedRegistryFetch,
       },
     );
