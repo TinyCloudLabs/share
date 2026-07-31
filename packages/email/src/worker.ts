@@ -249,6 +249,14 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
     // with a null message id, and there was no way to tell an unverified
     // sending domain (403) from a bad key (401) or a rate limit (429) short of
     // redeploying the Worker (TC-444).
+    //
+    // Also logged, because the response body reaches only the browser that made
+    // the request: a Chromium `fetch` that fails CORS or is read after the page
+    // moves on yields nothing readable, so a live acceptance run saw a bare
+    // `502` with no body in any artifact. `wrangler tail` is the operator's only
+    // other view of this Worker, and it shows logs. The number is the whole
+    // payload — same reasoning as above, nothing recipient-specific.
+    console.warn(`share-email: provider refused, status=${sent.status ?? "transport-failure"}`);
     return json(
       STATUS["provider-unavailable"],
       { error: "provider-unavailable", providerStatus: sent.status },
