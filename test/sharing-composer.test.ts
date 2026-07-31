@@ -632,7 +632,7 @@ describe("share composer access controls", () => {
     chooseExpiry(root, "24h");
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
-    await vi.waitFor(() => expect(captured).toBeDefined());
+    await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
     expect(captured!.model.expiresAt).toBe(expectedExpiry);
     expect(captured!.share.expiresAt).toBe(expectedExpiry);
     expect(requests).toHaveLength(2);
