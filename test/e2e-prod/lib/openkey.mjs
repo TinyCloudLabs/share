@@ -243,7 +243,14 @@ export async function signInToShare(page, { appUrl, log, timeoutMs = 420_000, un
       // Priority order. "Use a passkey instead" is the 2026-07 entry point on
       // the embed's chooser; "Continue with email" must never be picked, which
       // is why the continue matcher is anchored.
-      for (const name of [/use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /sign message/i, /^approve$/i, /^allow$/i, /^connect$/i, /^confirm$/i, /^continue$/i]) {
+      //
+      // As of 2026-07-31 the embed's chooser renders the passkey entry point as
+      // a bare "Passkey" (alongside "Continue with email", "Continue with
+      // Google", "Register", "Recover account"), which matched none of the
+      // older labels and left the harness sitting on the chooser until it timed
+      // out. `/^passkey$/i` is anchored so it can never select
+      // "Continue with email".
+      for (const name of [/use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /^passkey$/i, /sign message/i, /^approve$/i, /^allow$/i, /^connect$/i, /^confirm$/i, /^continue$/i]) {
         const button = frame.getByRole("button", { name }).first();
         if (await button.isVisible().catch(() => false)) {
           log(`[openkey frame] clicking ${name}`);
