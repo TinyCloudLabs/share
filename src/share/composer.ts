@@ -582,7 +582,13 @@ async function createOwnerPolicyShare(files: readonly File[], model: ShareCompos
     if (key === undefined) throw fail("internal", "owner share encryption key is missing");
     const shareUrl = model.linkFormat === "inline"
       ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
-      : (await (async () => { const uploaded = await fetch(`${options.registryOrigin ?? config.registryOrigin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "omit", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit }); if (!uploaded.ok) throw fail("save", "owner envelope upload was rejected"); return encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key }); })());
+      // `/api/share/link-only/registry/blobs` is a SHARE-HOST route that proxies to
+      // the registry. It does not exist on the registry Worker origin, and it needs
+      // the session cookie. Falling back to `config.registryOrigin` with
+      // `credentials: "omit"` produced a 404 against registry.tinycloud.xyz and made
+      // every addressed share fail at envelope upload (TC-438). This now mirrors the
+      // link-only lane above, which has always been correct.
+      : (await (async () => { const uploaded = await fetch(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit }); if (!uploaded.ok) throw fail("save", "owner envelope upload was rejected"); return encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key }); })());
     key.fill(0);
     if (selectedSource === undefined && model.content.kind !== "library") {
       if (files.length === 0) throw fail("content", "owner upload has no file");
