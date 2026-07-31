@@ -299,6 +299,19 @@ describe("bearer single-file share (happy path)", () => {
     expect(body.querySelector("table")).not.toBeNull();
   });
 
+  it("uses addressed copy for policy access instead of bearer semantics", () => {
+    const root = makeRoot();
+    const result = {
+      state: "ok" as const,
+      access: "policy" as const,
+      envelope: { ...makeUnsigned(), authorizationTarget: POLICY_TARGET } as ShareEnvelope,
+      senderVerified: true,
+    };
+    renderViewerState(root, result);
+    expect(root.textContent).toContain("addressed to an approved recipient policy");
+    expect(root.textContent).not.toContain("Anyone with this link can open it");
+  });
+
   it("zeroes the fragment key after decryption", async () => {
     const envelope = signEnvelope(makeUnsigned(), PRIV_KEY);
     const key = generateKey();

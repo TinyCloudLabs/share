@@ -95,6 +95,7 @@ function renderOk(
   root: HTMLElement,
   envelope: ShareEnvelope,
   hasContent: boolean,
+  access: "bearer" | "policy",
   senderVerified = false,
   shareUrl?: string,
 ): HTMLElement {
@@ -124,8 +125,8 @@ function renderOk(
     el(
       doc,
       "p",
-      senderVerified ? "viewer-addressed-note" : "viewer-bearer-note",
-      senderVerified ? "Shared with you specifically. Nothing about this document leaves your browser." : "Anyone with this link can open it. We can't confirm who sent it.",
+      access === "policy" ? "viewer-addressed-note" : "viewer-bearer-note",
+      access === "policy" ? "This share is addressed to an approved recipient policy. Access was checked before opening." : "Anyone with this link can open it. We can't confirm who sent it.",
     ),
   );
 
@@ -228,7 +229,7 @@ export function renderViewerState(
 ): HTMLElement | null {
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope, result.content !== undefined, result.senderVerified, options.shareUrl);
+      return renderOk(root, result.envelope, result.content !== undefined, result.access ?? "bearer", result.senderVerified, options.shareUrl);
     case "policy-email-claim-required":
       renderErrorState(root, "Confirm your email to open this", "Open this document from the link in the invitation email the sender asked us to send.");
       return null;

@@ -108,7 +108,10 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
       state: "ok",
       ...(addressed ? { access: "policy" as const } : { access: "bearer" as const }),
       envelope,
-      senderVerified: false,
+      // A completed addressed authorization is not bearer access. Keep this
+      // distinction in the result so the viewer cannot render bearer copy for
+      // a policy-enforced share.
+      senderVerified: addressed,
       ...(received.text === undefined ? {} : { content: received.text }),
       ...(received.metadata.content === undefined ? {} : { contentBytes: received.bytes }),
     };
