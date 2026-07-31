@@ -307,14 +307,23 @@ async function makeHarness(options: {
     }),
     policyChallenge: vi.fn(async (body) => {
       const request = body as Record<string, unknown>;
+      // One clock reading for both timestamps. Two readings made the fixture's
+      // own TTL `119_000 + however long the runner took between these two
+      // adjacent lines`, and `assertNodeTime` rejects a challenge whose TTL
+      // exceeds 120s — a one-second budget between two property evaluations.
+      // It ran out on CI: `main` went red at 541b3d7 with `share-access-error`
+      // thrown from `access.ts:140`, and went green again on the next two
+      // commits with no related change. Forcing this constant to 121_000
+      // reproduces that exact failure.
+      const issuedAtMs = Date.now();
       const challenge = {
         type: "TinyCloudSharePolicyChallenge",
         version: 1,
         challengeId: "E".repeat(22),
         nonce: "F".repeat(43),
         ...request,
-        issuedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 119_000).toISOString(),
+        issuedAt: new Date(issuedAtMs).toISOString(),
+        expiresAt: new Date(issuedAtMs + 119_000).toISOString(),
       };
       return {
         challenge,
