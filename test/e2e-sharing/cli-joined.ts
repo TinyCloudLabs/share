@@ -6,7 +6,9 @@ import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { ed25519 } from "@noble/curves/ed25519";
+import { canonicalize, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 
 import { startProductionServer } from "../../src/host/production-server.js";
 
@@ -16,39 +18,48 @@ const nodeWorktree = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(workspaceRoo
 const sdkWorktree = process.env.TINYCLOUD_SDK_WORKTREE ?? resolve(workspaceRoot, "worktrees/js-sdk/feat/share-cli-greenfield-20260729-a");
 const canonicalShare = "https://share.tinycloud.xyz";
 const canonicalRegistry = "https://registry.tinycloud.xyz";
+const canonicalNode = "https://node.tinycloud.xyz";
 
 type Child = { process: ChildProcess; output: () => string };
 
 type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string };
 
 async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: string; close: () => Promise<void>; requested: Set<string> }> {
-  const byName = new Map(packages.map((package_) => [package_.manifest.name, package_]));
+  const byName = new Map<string, PackedPackage[]>();
+  for (const package_ of packages) {
+    const versions = byName.get(package_.manifest.name) ?? [];
+    versions.push(package_);
+    byName.set(package_.manifest.name, versions);
+  }
   const requested = new Set<string>();
   const server = createServer((request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
       const separator = pathname.indexOf("/-/");
       const name = separator < 0 ? pathname.slice(1) : pathname.slice(1, separator);
-      const package_ = byName.get(name);
-      if (!package_) { response.writeHead(404).end(); return; }
+      const packageVersions = byName.get(name);
+      if (packageVersions === undefined) { response.writeHead(404).end(); return; }
       requested.add(name);
       if (separator < 0) {
-        const integrity = `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`;
-        const metadata = {
-          name: package_.manifest.name,
-          "dist-tags": { latest: package_.manifest.version },
-          versions: {
-            [package_.manifest.version]: {
-              ...package_.manifest,
-              dist: { tarball: `${origin}/${encodeURIComponent(name)}/-/${package_.filename}`, integrity },
-            },
+        const versions = Object.fromEntries(packageVersions.map((package_) => [package_.manifest.version, {
+          ...package_.manifest,
+          dist: {
+            tarball: `${origin}/${encodeURIComponent(name)}/-/${package_.filename}`,
+            integrity: `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`,
           },
+        }]));
+        const metadata = {
+          name,
+          "dist-tags": { latest: packageVersions.at(-1)!.manifest.version },
+          versions,
         };
         const body = JSON.stringify(metadata);
         response.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }).end(body);
         return;
       }
-      if (pathname !== `/${name}/-/${package_.filename}`) { response.writeHead(404).end(); return; }
+      const filename = pathname.slice(`/${name}/-/`.length);
+      const package_ = packageVersions.find((candidate) => candidate.filename === filename);
+      if (package_ === undefined) { response.writeHead(404).end(); return; }
       response.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(package_.bytes.length) }).end(package_.bytes);
     } catch {
       response.writeHead(400).end();
@@ -118,7 +129,7 @@ async function treeDigest(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-type PackageManifest = PackedPackage["manifest"] & { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; private?: boolean; scripts?: Record<string, string> };
+type PackageManifest = PackedPackage["manifest"] & { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string>; private?: boolean; scripts?: Record<string, string> };
 
 async function readManifest(path: string): Promise<PackageManifest> {
   return JSON.parse(await readFile(join(path, "package.json"), "utf8")) as PackageManifest;
@@ -135,6 +146,75 @@ async function packageDirectoryFromRequire(name: string, from: string): Promise<
     current = parent;
   }
   throw new Error(`dependency ${name} is not installed in the frozen SDK graph`);
+}
+
+async function installedPackageDirectories(nodeModules: string): Promise<string[]> {
+  const result: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const candidate = join(directory, entry.name);
+      const manifestPath = join(candidate, "package.json");
+      try {
+        if ((await lstat(manifestPath)).isFile()) {
+          result.push(candidate);
+          const nested = join(candidate, "node_modules");
+          try { if ((await lstat(nested)).isDirectory()) await visit(nested); } catch { /* no nested dependencies */ }
+          continue;
+        }
+      } catch { /* package scope or non-package directory */ }
+      await visit(candidate);
+    }
+  };
+  await visit(nodeModules);
+  return result;
+}
+
+function writeTarOctal(header: Buffer, offset: number, length: number, value: number): void {
+  const text = value.toString(8).padStart(length - 1, "0").slice(-(length - 1));
+  header.write(text, offset, "ascii");
+  header[offset + length - 1] = 0;
+}
+
+function tarHeader(name: string, mode: number, size: number, type: number, linkName = ""): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(`package/${name}`, 0, 100, "utf8");
+  writeTarOctal(header, 100, 8, mode & 0o7777);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, size);
+  writeTarOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header[156] = type;
+  header.write(linkName, 157, 100, "utf8");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  header.write("root", 265, 32, "ascii");
+  header.write("root", 297, 32, "ascii");
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
+  header[154] = 0;
+  header[155] = 0x20;
+  return header;
+}
+
+async function deterministicPublishedTar(directory: string, files: string[]): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for (const relative of [...files].sort()) {
+    const path = join(directory, relative);
+    const info = await lstat(path);
+    if (info.isSymbolicLink()) {
+      chunks.push(tarHeader(relative, 0o777, 0, 50, await readlink(path)));
+      continue;
+    }
+    if (!info.isFile()) throw new Error(`published package entry is not a file: ${relative}`);
+    const bytes = await readFile(path);
+    chunks.push(tarHeader(relative, info.mode, bytes.length, 48), bytes);
+    const padding = (512 - (bytes.length % 512)) % 512;
+    if (padding > 0) chunks.push(Buffer.alloc(padding));
+  }
+  chunks.push(Buffer.alloc(1024));
+  return Buffer.concat(chunks);
 }
 
 async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promise<PackedPackage[]> {
@@ -158,22 +238,39 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     const directory = queue.shift()!;
     const manifest = await readManifest(directory);
     if (typeof manifest.name !== "string" || typeof manifest.version !== "string") throw new Error(`invalid package manifest at ${directory}`);
-    if (directories.has(manifest.name)) continue;
-    directories.set(manifest.name, directory);
-    for (const dependency of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) {
+    const identity = `${manifest.name}@${manifest.version}`;
+    if (directories.has(identity)) continue;
+    directories.set(identity, directory);
+    for (const dependency of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies })) {
       const workspace = workspaceByName.get(dependency);
       queue.push(workspace ?? await packageDirectoryFromRequire(dependency, directory));
     }
   }
+  for (const directory of await installedPackageDirectories(join(sdkRoot, "node_modules"))) {
+    try {
+      const manifest = await readManifest(directory);
+      if (typeof manifest.name === "string" && typeof manifest.version === "string" && manifest.private !== true) directories.set(`${manifest.name}@${manifest.version}`, directory);
+    } catch { /* broken package entries are not installable artifacts */ }
+  }
+  const npmRoot = await runCommand("npm", ["root", "-g"], sdkRoot);
+  if (npmRoot.status !== 0) throw new Error(`could not locate npm's packlist implementation: ${npmRoot.output}`);
+  const packlistModule = await import(join(npmRoot.output.trim(), "npm/node_modules/npm-packlist/lib/index.js"));
+  const packlist = packlistModule.default as (tree: {
+    path: string;
+    package: PackageManifest;
+    edgesOut: Map<string, never>;
+    isProjectRoot: boolean;
+    workspaces: Map<string, string>;
+  }) => Promise<string[]>;
   const packages: PackedPackage[] = [];
-  for (const [name, directory] of directories) {
+  for (const directory of directories.values()) {
     const manifest = await readManifest(directory);
-    const pack = child("npm", ["pack", "--silent", "--pack-destination", outputRoot], directory, {});
-    const [status] = await once(pack.process, "exit");
-    if (status !== 0) throw new Error(`could not pack frozen dependency ${name}: ${pack.output()}`);
-    const filename = pack.output().trim().split(/\r?\n/).at(-1);
-    if (filename === undefined || filename.length === 0) throw new Error(`npm pack produced no artifact for ${name}`);
-    packages.push({ manifest, bytes: await readFile(join(outputRoot, filename)), filename });
+    const filename = `${manifest.name.replaceAll("/", "-")}-${manifest.version}.tgz`;
+    const files = await packlist({ path: directory, package: manifest, edgesOut: new Map<string, never>(), isProjectRoot: true, workspaces: new Map() });
+    const tarball = deterministicPublishedTar(directory, files);
+    const bytes = gzipSync(await tarball, { level: 9 });
+    await writeFile(join(outputRoot, filename), bytes);
+    packages.push({ manifest, bytes, filename });
   }
   return packages;
 }
@@ -192,6 +289,136 @@ async function runNpx(prefix: string, args: string[], env: NodeJS.ProcessEnv, in
   else result.process.stdin?.end();
   const [status] = await once(result.process, "exit");
   return { status: typeof status === "number" ? status : 1, stdout: result.output() };
+}
+
+async function digestJson(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalize(value));
+  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
+}
+
+async function runRecipientDidRouteMatrix(input: {
+  readonly shareLink: string;
+  readonly nodeOrigin: string;
+  readonly shareOrigin: string;
+  readonly registryOrigin: string;
+  readonly packedSdk: Record<string, any>;
+  readonly packedNode: any;
+  readonly session: Record<string, any>;
+  readonly holderDid: string;
+  readonly nodeInvitationKid: string;
+  readonly nodeInvitationPublicKey: string;
+}): Promise<void> {
+  const routeBodies = new Map<string, Record<string, any>>();
+  const routeObservations: Array<{ path: string; status: number; body: any }> = [];
+  const mappedFetch = async (inputValue: any, init?: RequestInit): Promise<Response> => {
+    const value = typeof inputValue === "string" || inputValue instanceof URL ? new URL(inputValue) : new URL(inputValue.url);
+    const originalOrigin = value.origin;
+    let nextInit = init;
+    if (originalOrigin === canonicalShare) {
+      value.href = `${input.shareOrigin}${value.pathname}${value.search}`;
+      const headers = new Headers(init?.headers);
+      headers.set("x-forwarded-proto", "https");
+      nextInit = { ...init, headers };
+    } else if (originalOrigin === canonicalRegistry) {
+      value.href = `${input.registryOrigin}${value.pathname}${value.search}`;
+    }
+    const rawBody = typeof nextInit?.body === "string" ? nextInit.body : undefined;
+    if (value.origin === input.nodeOrigin && value.pathname.startsWith("/share/v2/")) {
+      if (rawBody !== undefined) routeBodies.set(value.pathname, JSON.parse(rawBody) as Record<string, any>);
+      const response = await fetch(value, nextInit);
+      let body: any = null;
+      try { body = await response.clone().json(); } catch { /* status is the only body for malformed HTTP failures */ }
+      routeObservations.push({ path: value.pathname, status: response.status, body });
+      return response;
+    }
+    return fetch(value, nextInit);
+  };
+
+  const bundle = {
+    invitationKid: input.nodeInvitationKid,
+    invitationPublicKey: fromBase64Url(input.nodeInvitationPublicKey),
+  };
+  const credential = String(input.session.delegationHeader?.Authorization ?? "");
+  const delegationCid = String(input.session.delegationCid ?? "");
+  const buildPresentation = async ({ challenge, envelope }: { challenge: Record<string, any>; envelope: Record<string, any> }): Promise<Record<string, any>> => {
+    const authority = envelope.ownerAuthority as Record<string, any>;
+    const action = envelope.actions.includes("list") ? "tinycloud.kv/list" : envelope.actions.includes("edit") ? "tinycloud.kv/put" : "tinycloud.kv/get";
+    const actions = [...new Set(envelope.actions.map((value: string) => value === "list" ? "tinycloud.kv/list" : value === "edit" ? "tinycloud.kv/put" : "tinycloud.kv/get"))].sort();
+    const policyCid = envelope.authorizationTarget.kind === "policy" ? envelope.authorizationTarget.policyCid : "";
+    const credentialDigest = await digestJson(credential);
+    const jti = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+    const presentation = {
+      type: "TinyCloudSharePolicyPresentation", version: 2, challengeId: challenge.challengeId, nonce: challenge.nonce,
+      shareCid: authority.shareCid, shareId: envelope.shareId, delegationCid: envelope.delegationCid, policyCid,
+      authorityMaterialHandle: envelope.authorityMaterialHandle, authorityMaterialDigest: envelope.authorityMaterialDigest,
+      contentSource: envelope.contentSource, contentSourceDigest: envelope.contentSourceDigest, holderDid: input.holderDid,
+      targetOrigin: envelope.target.origin, nodeAudience: envelope.target.nodeAudience, enforcerDid: challenge.enforcerDid,
+      credentialDigest, action, actions, resource: envelope.resource.path.replace(/\/$/, ""), requestBodyDigest: challenge.requestBodyDigest,
+      issuedAt: new Date().toISOString(), expiresAt: challenge.expiresAt, jti,
+    };
+    const sign = (bytes: Uint8Array): Promise<Uint8Array> => input.packedNode.signSessionBytes(bytes);
+    const signature = toBase64Url(await sign(new TextEncoder().encode(`${input.packedSdk.SHARE_V2_PROTOCOL.sessionDomain}${canonicalize(presentation)}`)));
+    const proof = { alg: "EdDSA", kid: `${input.holderDid}#${input.holderDid.slice("did:key:".length)}`, signature };
+    const holderBinding = await input.packedSdk.createShareV2HolderBindingArtifact({
+      holderDid: input.holderDid,
+      sign,
+      message: {
+        type: input.packedSdk.SHARE_V2_PROTOCOL.holderBindingType,
+        version: input.packedSdk.SHARE_V2_PROTOCOL.holderBindingVersion,
+        holderDid: input.holderDid, challengeId: challenge.challengeId, challengeNonce: challenge.nonce,
+        shareId: envelope.shareId, policyCid, credentialDigest, delegationCid,
+        targetOrigin: envelope.target.origin, nodeAudience: envelope.target.nodeAudience, enforcerDid: challenge.enforcerDid,
+        expiresAt: challenge.expiresAt, jti,
+      },
+    });
+    return { holderDid: input.holderDid, credential, credentialDigest, presentation, presentationProof: proof, proof, holderBinding, sign };
+  };
+  const authorization = input.packedSdk.createAddressedAuthorization({ nodeOrigin: input.nodeOrigin, trustedNode: bundle, holderDid: input.holderDid, fetchFn: mappedFetch, buildPresentation });
+  const received = await input.packedSdk.receiveShare(input.shareLink, {
+    registryBaseUrl: `${canonicalShare}/api/share/link-only/registry`,
+    expectedOrigin: canonicalShare,
+    fetchFn: mappedFetch,
+    authorization,
+  });
+  if (received.state === "authorization-required" || !(received.bytes instanceof Uint8Array)) throw new Error("live recipient-DID Share proof did not receive bytes");
+  if (new TextDecoder().decode(received.bytes) !== "joined production path\n") throw new Error("live recipient-DID Share proof returned different bytes");
+  const successfulRoutes = new Set(routeObservations.filter((observation) => observation.status === 200).map((observation) => observation.path));
+  for (const path of ["/share/v2/policy/challenges", "/share/v2/policy/session", "/share/v2/invoke"]) {
+    if (!successfulRoutes.has(path)) throw new Error(`live recipient-DID route did not return 200: ${path}`);
+  }
+  const challengeBody = routeBodies.get("/share/v2/policy/challenges");
+  const sessionBody = routeBodies.get("/share/v2/policy/session");
+  if (challengeBody === undefined || sessionBody === undefined) throw new Error("live recipient-DID matrix did not capture signed v2 requests");
+  const postJson = async (path: string, body: Record<string, any>): Promise<{ status: number; body: any }> => {
+    const response = await mappedFetch(`${input.nodeOrigin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  const withDigest = async (body: Record<string, any>): Promise<Record<string, any>> => {
+    const { requestBodyDigest: _oldDigest, ...unsigned } = body;
+    return { ...unsigned, requestBodyDigest: await digestJson(unsigned) };
+  };
+  const wrongDid = "did:key:z6MkggtHVWQUGJ3FVjJKXeb5oZThQvLmJVMV8hfNUz4ezcav";
+  const wrongDidResult = await postJson("/share/v2/policy/challenges", await withDigest({ ...challengeBody, holderDid: wrongDid }));
+  if (wrongDidResult.status !== 403 || JSON.stringify(wrongDidResult.body) !== JSON.stringify({ error: { code: "policy_denied" } })) throw new Error("wrong recipient DID was not denied by the live challenge router");
+  const wrongAudienceResult = await postJson("/share/v2/policy/challenges", await withDigest({ ...challengeBody, nodeAudience: "did:web:wrong-audience.example" }));
+  if (wrongAudienceResult.status !== 403 || JSON.stringify(wrongAudienceResult.body) !== JSON.stringify({ error: { code: "policy_denied" } })) throw new Error("wrong audience was not denied by the live challenge router");
+  const replayResult = await postJson("/share/v2/policy/session", sessionBody);
+  if (replayResult.status !== 403 || JSON.stringify(replayResult.body) !== JSON.stringify({ error: { code: "policy_session_replayed" } })) throw new Error("replayed policy session was not denied by the live session router");
+  const expiredChallengeResponse = await postJson("/share/v2/policy/challenges", challengeBody);
+  if (expiredChallengeResponse.status !== 200 || typeof expiredChallengeResponse.body.challenge?.challengeId !== "string") throw new Error("live matrix could not establish a fresh challenge for expiry proof");
+  const expiredChallenge = expiredChallengeResponse.body.challenge as Record<string, any>;
+  const originalPresentation = sessionBody.presentation as Record<string, any>;
+  const expiredPresentation = { ...originalPresentation, challengeId: expiredChallenge.challengeId, nonce: expiredChallenge.nonce, requestBodyDigest: expiredChallenge.requestBodyDigest, issuedAt: new Date(Date.now() - 1_000).toISOString(), expiresAt: new Date(Date.now() - 1).toISOString(), jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
+  const expiredSignature = toBase64Url(await input.packedNode.signSessionBytes(new TextEncoder().encode(`${input.packedSdk.SHARE_V2_PROTOCOL.sessionDomain}${canonicalize(expiredPresentation)}`)));
+  const expiredProof = { alg: "EdDSA", kid: `${input.holderDid}#${input.holderDid.slice("did:key:".length)}`, signature: expiredSignature };
+  const originalBinding = sessionBody.holderBinding as Record<string, any>;
+  const expiredBinding = await input.packedSdk.createShareV2HolderBindingArtifact({
+    holderDid: input.holderDid,
+    sign: (bytes: Uint8Array) => input.packedNode.signSessionBytes(bytes),
+    message: { ...(originalBinding.message as Record<string, any>), challengeId: expiredChallenge.challengeId, challengeNonce: expiredChallenge.nonce, expiresAt: expiredPresentation.expiresAt, jti: expiredPresentation.jti },
+  });
+  const expiredResult = await postJson("/share/v2/policy/session", { ...sessionBody, challengeId: expiredChallenge.challengeId, nonce: expiredChallenge.nonce, presentation: expiredPresentation, proof: expiredProof, holderBinding: expiredBinding });
+  if (expiredResult.status !== 403 || JSON.stringify(expiredResult.body) !== JSON.stringify({ error: { code: "invalid_holder_proof" } })) throw new Error("expired policy presentation was not denied by the live session router");
 }
 
 async function main(): Promise<void> {
@@ -267,7 +494,7 @@ async function main(): Promise<void> {
     const shareMatch = await ready(share, /joined Share host listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const shareOrigin = shareMatch[1]!;
     await cp(join(nodeHome, ".tinycloud"), join(cliHome, ".tinycloud"), { recursive: true });
-    await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
+    await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; else if (originalOrigin === ${JSON.stringify(canonicalNode)}) value.href = ${JSON.stringify(nodeOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } if (value.pathname.startsWith("/share/v2/")) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + (body.error?.code === undefined ? "" : " error=" + body.error.code); } catch {} } if (value.origin === ${JSON.stringify(nodeOrigin)} && ["/delegate", "/invoke", "/info"].includes(value.pathname)) { try { const body = await response.clone().json(); detail = " error=" + String(body.error?.code ?? body.error ?? ""); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
 
     const publishedPackages = await packFrozenSdkCatalog(sdkWorktree, root);
     const npmRegistry = await startNpmRegistry(publishedPackages);
@@ -277,35 +504,40 @@ async function main(): Promise<void> {
     const cli = publishedPackages.find((package_) => package_.manifest.name === "@tinycloud/cli");
     if (cli === undefined) throw new Error("frozen SDK catalog omitted @tinycloud/cli");
     const networkGuard = join(root, "network-guard.mjs");
+    const npmUserConfig = join(root, "npm-user-config");
+    const npmGlobalConfig = join(root, "npm-global-config");
+    await writeFile(npmUserConfig, "");
+    await writeFile(npmGlobalConfig, "");
     await writeFile(networkGuard, [
       "import http from \"node:http\";",
       "import https from \"node:https\";",
       "const allowed = (input) => {",
       "  const raw = typeof input === \"string\" ? input : input instanceof URL ? input.href : input?.href ?? `${input?.protocol ?? \"\"}//${input?.host ?? \"\"}${input?.path ?? \"/\"}`;",
       "  const url = new URL(raw);",
-      "  if (url.hostname !== \"127.0.0.1\" && url.hostname !== \"localhost\") throw new Error(\"hermetic network denied\");",
+      "  if (url.hostname !== \"127.0.0.1\" && url.hostname !== \"localhost\") throw new Error(`hermetic network denied: ${url.origin}${url.pathname}`);",
       "};",
       "for (const module of [http, https]) { const request = module.request; module.request = function(input, ...args) { allowed(input); return request.call(this, input, ...args); }; }",
       "const fetch = globalThis.fetch; globalThis.fetch = async (input, ...args) => { allowed(input); return fetch(input, ...args); };",
       "",
     ].join("\n"));
-    const guardedInstallEnv = { NODE_OPTIONS: `--import ${networkGuard}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" };
+    const guardedInstallEnv = { NODE_OPTIONS: `--import ${networkGuard}`, NPM_CONFIG_CACHE: join(root, "npm-cache"), NPM_CONFIG_USERCONFIG: npmUserConfig, NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" };
     const installResult = child("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", `--registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cli.manifest.version}`], sdkWorktree, guardedInstallEnv);
     children.push(installResult);
     try {
       if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
       const installedLock = JSON.parse(await readFile(join(install, "package-lock.json"), "utf8")) as { packages?: Record<string, { version?: string; resolved?: string; integrity?: string }> };
-      const catalog = new Map(publishedPackages.map((package_) => [package_.manifest.name, package_]));
       for (const [location, entry] of Object.entries(installedLock.packages ?? {})) {
         if (location === "") continue;
         const name = location.slice(location.lastIndexOf("node_modules/") + "node_modules/".length);
-        const package_ = catalog.get(name);
-        if (package_ === undefined || entry.version !== package_.manifest.version || entry.resolved?.startsWith(npmRegistry.origin) !== true || entry.integrity !== `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`) throw new Error(`installed dependency ${name} is not an exact hermetic catalog artifact`);
+        const package_ = publishedPackages.find((candidate) => candidate.manifest.name === name && candidate.manifest.version === entry.version);
+        const expectedIntegrity = package_ === undefined ? "" : `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`;
+        if (package_ === undefined || entry.version !== package_.manifest.version || entry.resolved?.startsWith(npmRegistry.origin) !== true || entry.integrity !== expectedIntegrity) throw new Error(`installed dependency ${name}@${entry.version ?? "missing"} is not an exact hermetic catalog artifact (catalog=${publishedPackages.filter((candidate) => candidate.manifest.name === name).map((candidate) => candidate.manifest.version).join(",")}, resolved=${entry.resolved?.startsWith(npmRegistry.origin) === true}, integrity=${entry.integrity === expectedIntegrity})`);
       }
     } finally {
       await npmRegistry.close();
     }
     const packedSdk = await import(`${install}/node_modules/@tinycloud/node-sdk/dist/index.js`);
+    const packedShareSdk = await import(`${install}/node_modules/@tinycloud/share-sdk/dist/index.js`);
     const packedNode = new packedSdk.TinyCloudNode({ host: nodeOrigin });
     await packedNode.restoreSession({ ...session, verificationMethod: profile.sessionDid });
     const packedHeaders = packedNode.invokeAny([{ spaceId: session.spaceId, service: "capabilities", action: "tinycloud.capabilities/read" }], [{ requestBodyDigest: "probe" }]);
@@ -321,17 +553,23 @@ async function main(): Promise<void> {
     });
     if (link === undefined) throw new Error("publish did not return a valid canonical compact link");
     const recipientPublished = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--to", profile.sessionDid, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
-    if (recipientPublished.status !== 0) throw new Error("installed CLI recipient-DID publish failed");
+    if (recipientPublished.status !== 0) throw new Error(`installed CLI recipient-DID publish failed (${recipientPublished.status}): ${recipientPublished.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-2000)} transport=${(await readFile(nodeStatus, "utf8").catch(() => "unobserved")).slice(-3000)}`);
     const recipientLink = recipientPublished.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
       try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
       catch { return false; }
     });
     if (recipientLink === undefined) throw new Error("recipient-DID publish did not return a valid canonical compact link");
+    await runRecipientDidRouteMatrix({ shareLink: recipientLink, nodeOrigin, shareOrigin, registryOrigin, packedSdk: packedShareSdk, packedNode, session, holderDid: profile.sessionDid, nodeInvitationKid: String(JSON.parse(bundle).nodeInvitationKid), nodeInvitationPublicKey: String(JSON.parse(bundle).nodeInvitationPublicKey) });
     const recipientOutput = join(root, "recipient-received");
     await mkdir(recipientOutput, { recursive: true });
     const recipientReceived = await runCli(bin, ["--profile", "joined", "share", "receive", "-", "--stdin", "--output", recipientOutput], cliEnv, `${recipientLink}\n`);
     if (recipientReceived.status !== 0) throw new Error("installed CLI recipient-DID receive failed");
     const transportEnv = { ...cliEnv, NODE_OPTIONS: `--import ${networkGuard} --import ${preload}` };
+    const noProfile = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", join(root, "no-profile-received")], { ...transportEnv, TC_HOME: join(root, "no-profile-home") }, `${recipientLink}\n`);
+    if (noProfile.status === 0) throw new Error("recipient-DID receive succeeded without an OpenKey profile");
+    const nodeStatuses = await readFile(nodeStatus, "utf8").catch(() => "");
+    if (!nodeStatuses.split(/\r?\n/).some((line) => line.startsWith("/share/v2/policies=200"))) throw new Error("recipient-DID publish did not exercise the live /share/v2/policies route with status 200");
+    if (nodeStatuses.split(/\r?\n/).some((line) => line.startsWith("/share/v2/") && (line.includes("=404") || line.includes("=503")))) throw new Error("live recipient-DID route matrix observed an unavailable or unmounted v2 route");
     const inspected = await runCli(bin, ["share", "inspect", "-", "--stdin", "--json"], { ...transportEnv, TC_HOME: join(root, "public-inspect-home") }, `${link}\n`);
     if (inspected.status !== 0) throw new Error(`profile-free inspect failed status=${inspected.status} outputLength=${inspected.stdout.length} transport=${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
     const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home"), npm_config_offline: "true" }, `${link}\n`);
@@ -345,7 +583,7 @@ async function main(): Promise<void> {
     if (received.status !== 0) throw new Error("profile-free bearer receive failed");
     const names = await readdir(outputDir);
     if (names.length !== 1 || (await digest(join(outputDir, names[0]!))) !== await digest(inputPath)) throw new Error("joined receive digest mismatch");
-    process.stdout.write(JSON.stringify({ status: "passed", profileFixtureSeeded: true, acceptanceEvidence: false, nodeOrigin: true, shareProcess: true, registryProcess: true, packedCli: true, identicalDigest: true, profileFreeInspect: true, profileFreeBearerReceive: true }) + "\n");
+    process.stdout.write(JSON.stringify({ status: "passed", profileFixtureSeeded: true, acceptanceEvidence: false, nodeOrigin: true, shareProcess: true, registryProcess: true, packedCli: true, recipientDidRouteMatrix: true, identicalDigest: true, profileFreeInspect: true, profileFreeBearerReceive: true }) + "\n");
   } finally {
     for (const entry of children.reverse()) await stop(entry);
     if (process.env.KEEP_JOINED_ARTIFACTS !== "1") await rm(root, { recursive: true, force: true });
