@@ -722,6 +722,8 @@ async function main(): Promise<void> {
     if (adapterProbe.status !== 0) throw new Error(`source upload adapter probe failed: ${(await readFile(nodeStatus, "utf8").catch(() => "unobserved")).replace(/[^A-Za-z0-9=:_\\n-]/g, "")}`);
     const bin = join(install, "node_modules/@tinycloud/cli/bin/tc");
     const cliEnv = { HOME: consumerHome, TC_HOME: cliHome, TC_PROFILE: "joined", CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
+    const authStatus = await runCli(bin, ["--profile", "joined", "auth", "status", "--json"], cliEnv, undefined, []);
+    await writeFile(nodeStatus, `${await readFile(nodeStatus, "utf8").catch(() => "")}packed-auth-status=${authStatus.status}:${authStatus.stdout.length}\n`);
     const published = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
     if (published.status !== 0) {
       const stateFiles = ["config.json", "profiles/joined/profile.json", "profiles/joined/session.json", "profiles/joined/key.json"];
