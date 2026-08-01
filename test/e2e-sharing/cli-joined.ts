@@ -717,7 +717,7 @@ async function main(): Promise<void> {
     const packedProbe = await fetch(`${nodeOrigin}/share/upload/attestation`, { method: "POST", headers: { ...packedHeaders, "content-type": "application/json" }, body: "{}" });
     if (packedProbe.status !== 400) throw new Error(`packed Node authorization probe returned ${packedProbe.status}`);
     const bin = join(install, "node_modules/@tinycloud/cli/bin/tc");
-    const cliEnv = { HOME: consumerHome, TC_HOME: cliHome, CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
+    const cliEnv = { HOME: consumerHome, TC_HOME: cliHome, TC_PROFILE: "joined", CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
     const published = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
     if (published.status !== 0) {
       const stateFiles = ["config.json", "profiles/joined/profile.json", "profiles/joined/session.json", "profiles/joined/key.json"];
