@@ -5,7 +5,7 @@
  */
 import { createServer } from "node:http";
 import { Readable } from "node:stream";
-import worker, { type RegistryEnv } from "./worker.js";
+import worker, { UploadAuthorization, type DurableObjectNamespace, type DurableObjectState, type RegistryEnv } from "./worker.js";
 
 class MemoryR2Object {
   constructor(private readonly bytes: Uint8Array, readonly customMetadata: Record<string, string> | undefined) {}
@@ -30,6 +30,37 @@ class MemoryR2 {
   }
 }
 
+class MemoryDurableObjectStorage {
+  private readonly values = new Map<string, unknown>();
+
+  async get<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined; }
+  async put<T>(key: string, value: T): Promise<void> { this.values.set(key, value); }
+}
+
+class MemoryDurableObjectState implements DurableObjectState {
+  readonly storage = new MemoryDurableObjectStorage();
+  private queue = Promise.resolve();
+
+  async blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(callback);
+    this.queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+}
+
+class MemoryDurableObjects implements DurableObjectNamespace {
+  private readonly objects = new Map<string, UploadAuthorization>();
+
+  getByName(name: string) {
+    let object = this.objects.get(name);
+    if (!object) {
+      object = new UploadAuthorization(new MemoryDurableObjectState());
+      this.objects.set(name, object);
+    }
+    return { fetch: (input: string, init?: RequestInit) => object!.fetch(new Request(input, init)) };
+  }
+}
+
 function requestUrl(request: import("node:http").IncomingMessage): string {
   return `http://127.0.0.1${request.url ?? "/"}`;
 }
@@ -37,6 +68,7 @@ function requestUrl(request: import("node:http").IncomingMessage): string {
 const bucket = new MemoryR2();
 const env: RegistryEnv = {
   REGISTRY: bucket as unknown as RegistryEnv["REGISTRY"],
+  UPLOAD_AUTHORIZATION: new MemoryDurableObjects(),
   ...(process.env.REGISTRY_AUTH_PUBLIC_KEY === undefined ? {} : { REGISTRY_AUTH_PUBLIC_KEY: process.env.REGISTRY_AUTH_PUBLIC_KEY }),
   ...(process.env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY === undefined ? {} : { REGISTRY_LINK_UPLOAD_PUBLIC_KEY: process.env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY }),
   ...(process.env.MAX_BLOB_BYTES === undefined ? {} : { MAX_BLOB_BYTES: process.env.MAX_BLOB_BYTES }),

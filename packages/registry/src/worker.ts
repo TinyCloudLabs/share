@@ -8,7 +8,23 @@ interface R2Bucket {
   delete?(keys: string | string[]): Promise<void>;
   list?(options?: { prefix?: string; cursor?: string; include?: string[] }): Promise<{ objects: Array<{ key: string; customMetadata?: Record<string, string> }>; truncated: boolean; cursor?: string }>;
 }
-export interface RegistryEnv { REGISTRY: R2Bucket; REGISTRY_AUTH_PUBLIC_KEY?: string; REGISTRY_LINK_UPLOAD_PUBLIC_KEY?: string; MAX_BLOB_BYTES?: string }
+export interface DurableObjectStorage {
+  get<T>(key: string): Promise<T | undefined>;
+  put<T>(key: string, value: T): Promise<void>;
+}
+export interface DurableObjectState {
+  storage: DurableObjectStorage;
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+}
+export interface DurableObjectStub { fetch(input: string, init?: RequestInit): Promise<Response> }
+export interface DurableObjectNamespace { getByName(name: string): DurableObjectStub }
+export interface RegistryEnv {
+  REGISTRY: R2Bucket;
+  REGISTRY_AUTH_PUBLIC_KEY?: string;
+  REGISTRY_LINK_UPLOAD_PUBLIC_KEY?: string;
+  UPLOAD_AUTHORIZATION?: DurableObjectNamespace;
+  MAX_BLOB_BYTES?: string;
+}
 const CORS = { "access-control-allow-origin": "https://share.tinycloud.xyz", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,if-none-match,x-delete-after,x-tinycloud-authorization", "access-control-max-age": "86400", "strict-transport-security": "max-age=31536000; includeSubDomains", vary: "Origin" };
 const LINK_PROXY_ORIGIN = "https://registry.tinycloud.xyz";
 const LINK_AUTHORIZATION_DOMAIN = "xyz.tinycloud.share/registry-authorization/v1\0";
@@ -25,6 +41,29 @@ function authBytes(value: string): Uint8Array {
   const padding = (4 - (normalized.length % 4)) % 4;
   const decoded = atob(`${normalized}${"=".repeat(padding)}`);
   return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+export class UploadAuthorization {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST" || new URL(request.url).pathname !== "/consume") return new Response(null, { status: 404 });
+    let accepted = false;
+    await this.state.blockConcurrencyWhile(async () => {
+      if (await this.state.storage.get<boolean>("consumed") === true) return;
+      await this.state.storage.put("consumed", true);
+      accepted = true;
+    });
+    return new Response(null, { status: accepted ? 204 : 409 });
+  }
+}
+async function consumeUploadAuthorization(env: RegistryEnv, jti: string): Promise<boolean> {
+  if (!env.UPLOAD_AUTHORIZATION) return false;
+  try {
+    const response = await env.UPLOAD_AUTHORIZATION.getByName(jti).fetch("https://upload-authorization/consume", { method: "POST" });
+    return response.status === 204;
+  } catch {
+    return false;
+  }
 }
 async function authorized(request: Request, env: RegistryEnv, operation: string, resource: string): Promise<boolean> {
   const encoded = request.headers.get("x-tinycloud-authorization");
@@ -94,9 +133,7 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
       authBytes(proof.signature).slice().buffer,
       new TextEncoder().encode(`${LINK_AUTHORIZATION_DOMAIN}${unsigned}`),
     );
-    if (!verified || await env.REGISTRY.get(key("upload-authorization", body.jti)) !== null) return false;
-    await env.REGISTRY.put(key("upload-authorization", body.jti), new Uint8Array());
-    return true;
+    return verified && await consumeUploadAuthorization(env, body.jti);
   } catch { return false; }
 }
 function retentionExpiry(request: Request): number | null {

@@ -20,6 +20,49 @@ const canonicalRegistry = "https://registry.tinycloud.xyz";
 
 type Child = { process: ChildProcess; output: () => string };
 
+type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string };
+
+async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: string; close: () => Promise<void> }> {
+  const byName = new Map(packages.map((package_) => [package_.manifest.name, package_]));
+  const server = createServer((request, response) => {
+    try {
+      const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+      const separator = pathname.indexOf("/-/");
+      const name = separator < 0 ? pathname.slice(1) : pathname.slice(1, separator);
+      const package_ = byName.get(name);
+      if (!package_) { response.writeHead(404).end(); return; }
+      if (separator < 0) {
+        const integrity = `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`;
+        const metadata = {
+          name: package_.manifest.name,
+          "dist-tags": { latest: package_.manifest.version },
+          versions: {
+            [package_.manifest.version]: {
+              ...package_.manifest,
+              dist: { tarball: `${origin}/${encodeURIComponent(name)}/-/${package_.filename}`, integrity },
+            },
+          },
+        };
+        const body = JSON.stringify(metadata);
+        response.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }).end(body);
+        return;
+      }
+      if (pathname !== `/${name}/-/${package_.filename}`) { response.writeHead(404).end(); return; }
+      response.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(package_.bytes.length) }).end(package_.bytes);
+    } catch {
+      response.writeHead(400).end();
+    }
+  });
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("hermetic npm registry did not bind");
+  const origin = `http://127.0.0.1:${address.port}`;
+  return { origin, close: () => new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose())) };
+}
+
 function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Child {
   const process = spawn(command, args, { cwd, env: { ...globalThis.process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
@@ -75,6 +118,10 @@ async function main(): Promise<void> {
     if (address === null || typeof address === "string") throw new Error("joined Share host did not bind an address");
     process.stdout.write(`joined Share host listening on http://127.0.0.1:${address.port}\n`);
     return;
+  }
+
+  if (process.env.TINYCLOUD_ALLOW_SYNTHETIC_PROFILE !== "1") {
+    throw new Error("joined proof requires the orchestrator's explicit OpenKey login; fixture-seeded profiles are opt-in and never acceptance evidence");
   }
 
   const root = await mkdtemp(join(tmpdir(), "tinycloud-cli-joined-"));
@@ -139,15 +186,47 @@ async function main(): Promise<void> {
     const cliTarball = await packPackage(resolve(sdkWorktree, "packages/cli"));
     const envelopeTarball = await packPackage(resolve(sdkWorktree, "packages/share-envelope"));
     const shareSdkTarball = await packPackage(resolve(sdkWorktree, "packages/share-sdk"));
-    const nodeSdkTarball = await packPackage(resolve(sdkWorktree, "packages/node-sdk"));
-    const nodeWasmTarball = await packPackage(resolve(sdkWorktree, "packages/sdk-rs/packages/node"));
-    const sdkCoreTarball = await packPackage(resolve(sdkWorktree, "packages/sdk-core"));
-    const sdkServicesTarball = await packPackage(resolve(sdkWorktree, "packages/sdk-services"));
-    const operationsTarball = await packPackage(resolve(sdkWorktree, "packages/operations"));
+    const nodeSdkDirectory = resolve(sdkWorktree, "packages/node-sdk");
+    const nodeWasmDirectory = resolve(sdkWorktree, "packages/sdk-rs/packages/node");
+    const sdkCoreDirectory = resolve(sdkWorktree, "packages/sdk-core");
+    const sdkServicesDirectory = resolve(sdkWorktree, "packages/sdk-services");
+    const operationsDirectory = resolve(sdkWorktree, "packages/operations");
+    const bootstrapDirectory = resolve(sdkWorktree, "packages/bootstrap");
+    const nodeSdkTarball = await packPackage(nodeSdkDirectory);
+    const nodeWasmTarball = await packPackage(nodeWasmDirectory);
+    const sdkCoreTarball = await packPackage(sdkCoreDirectory);
+    const sdkServicesTarball = await packPackage(sdkServicesDirectory);
+    const operationsTarball = await packPackage(operationsDirectory);
+    const bootstrapTarball = await packPackage(bootstrapDirectory);
+    const packageDirectories = [
+      resolve(sdkWorktree, "packages/cli"),
+      resolve(sdkWorktree, "packages/share-envelope"),
+      resolve(sdkWorktree, "packages/share-sdk"),
+      nodeSdkDirectory,
+      nodeWasmDirectory,
+      sdkCoreDirectory,
+      sdkServicesDirectory,
+      operationsDirectory,
+      bootstrapDirectory,
+    ];
+    const packageTarballs = [cliTarball, envelopeTarball, shareSdkTarball, nodeSdkTarball, nodeWasmTarball, sdkCoreTarball, sdkServicesTarball, operationsTarball, bootstrapTarball];
+    const publishedPackages: PackedPackage[] = await Promise.all(packageDirectories.map(async (directory, index) => ({
+      manifest: JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as PackedPackage["manifest"],
+      bytes: await readFile(packageTarballs[index]!),
+      filename: packageTarballs[index]!.split("/").pop()!,
+    })));
+    const npmRegistry = await startNpmRegistry(publishedPackages);
     const install = join(root, "packed-cli");
-    const installResult = child("npm", ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--prefix", install, cliTarball, envelopeTarball, shareSdkTarball, nodeSdkTarball, nodeWasmTarball, sdkCoreTarball, sdkServicesTarball, operationsTarball, "ethers"], sdkWorktree, {});
+    await mkdir(install, { recursive: true });
+    await writeFile(join(install, "package.json"), JSON.stringify({ name: "tinycloud-cli-consumer", private: true, type: "module" }));
+    const cliVersion = publishedPackages.find((package_) => package_.manifest.name === "@tinycloud/cli")!.manifest.version;
+    const installResult = child("npm", ["install", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org", `--@tinycloud:registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cliVersion}`], sdkWorktree, {});
     children.push(installResult);
-    if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
+    try {
+      if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
+    } finally {
+      await npmRegistry.close();
+    }
     const packedSdk = await import(`${install}/node_modules/@tinycloud/node-sdk/dist/index.js`);
     const packedNode = new packedSdk.TinyCloudNode({ host: nodeOrigin });
     await packedNode.restoreSession({ ...session, verificationMethod: profile.sessionDid });
@@ -166,7 +245,7 @@ async function main(): Promise<void> {
     const transportEnv = { ...cliEnv, NODE_OPTIONS: `--import ${preload}` };
     const inspected = await runCli(bin, ["share", "inspect", "-", "--stdin", "--json"], { ...transportEnv, TC_HOME: join(root, "public-inspect-home") }, `${link}\n`);
     if (inspected.status !== 0) throw new Error(`profile-free inspect failed status=${inspected.status} outputLength=${inspected.stdout.length} transport=${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
-    const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home") }, `${link}\n`);
+    const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home"), npm_config_offline: "true" }, `${link}\n`);
     if (warmed.status !== 0) throw new Error("warm-cache npx inspect failed");
     const warmPublished = await runNpx(install, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
     if (warmPublished.status !== 0) throw new Error("warm-cache npx publish failed");
@@ -175,7 +254,7 @@ async function main(): Promise<void> {
     if (received.status !== 0) throw new Error("profile-free bearer receive failed");
     const names = await readdir(outputDir);
     if (names.length !== 1 || (await digest(join(outputDir, names[0]!))) !== await digest(inputPath)) throw new Error("joined receive digest mismatch");
-    process.stdout.write(JSON.stringify({ status: "passed", nodeOrigin: true, shareProcess: true, registryProcess: true, packedCli: true, identicalDigest: true, profileFreeInspect: true, profileFreeBearerReceive: true }) + "\n");
+    process.stdout.write(JSON.stringify({ status: "passed", profileFixtureSeeded: true, acceptanceEvidence: false, nodeOrigin: true, shareProcess: true, registryProcess: true, packedCli: true, identicalDigest: true, profileFreeInspect: true, profileFreeBearerReceive: true }) + "\n");
   } finally {
     for (const entry of children.reverse()) await stop(entry);
     if (process.env.KEEP_JOINED_ARTIFACTS !== "1") await rm(root, { recursive: true, force: true });

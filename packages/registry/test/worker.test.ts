@@ -103,10 +103,38 @@ function bucket(): RegistryEnv["REGISTRY"] {
   };
 }
 
-function env(): RegistryEnv {
+function uploadAuthorizationNamespace(): NonNullable<RegistryEnv["UPLOAD_AUTHORIZATION"]> {
+  const states = new Map<string, { consumed: boolean; queue: Promise<void> }>();
+  return {
+    getByName(name) {
+      let state = states.get(name);
+      if (!state) {
+        state = { consumed: false, queue: Promise.resolve() };
+        states.set(name, state);
+      }
+      return {
+        fetch: async () => {
+          let accepted = false;
+          const previous = state!.queue;
+          const current = previous.then(() => {
+            if (state!.consumed) return;
+            state!.consumed = true;
+            accepted = true;
+          });
+          state!.queue = current.catch(() => undefined);
+          await current;
+          return new Response(null, { status: accepted ? 204 : 409 });
+        },
+      };
+    },
+  };
+}
+
+function env(uploadAuthorization = uploadAuthorizationNamespace()): RegistryEnv {
   return {
     REGISTRY: bucket(),
     REGISTRY_LINK_UPLOAD_PUBLIC_KEY: b64(publicKey),
+    UPLOAD_AUTHORIZATION: uploadAuthorization,
     MAX_BLOB_BYTES: "65536",
   };
 }
@@ -139,7 +167,7 @@ describe("production link-only registry authorization", () => {
 
     const signed = authorization(bytes, deleteAfter);
     const tampered = JSON.parse(signed) as { proof: { signature: string } };
-    tampered.proof.signature = `${tampered.proof.signature.slice(0, -1)}${tampered.proof.signature.endsWith("A") ? "B" : "A"}`;
+    tampered.proof.signature = `${tampered.proof.signature[0] === "A" ? "B" : "A"}${tampered.proof.signature.slice(1)}`;
     expect((await worker.fetch(request(bytes, deleteAfter, JSON.stringify(tampered)), env())).status).toBe(401);
 
     expect((await worker.fetch(request(bytes, deleteAfter, authorization(bytes, deleteAfter, { audience: "https://wrong.example" })), env())).status).toBe(401);
@@ -148,6 +176,30 @@ describe("production link-only registry authorization", () => {
     const replayEnv = env();
     expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(201);
     expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(401);
+  });
+
+  it("fails closed without the durable single-use primitive", async () => {
+    const bytes = new Uint8Array([2, 4, 6]);
+    const deleteAfter = new Date(Date.now() + 60_000).toISOString();
+    const unavailable = env();
+    delete unavailable.UPLOAD_AUTHORIZATION;
+    expect((await worker.fetch(request(bytes, deleteAfter), unavailable)).status).toBe(401);
+  });
+
+  it("accepts exactly one concurrent request across independent Worker instances for one JTI", async () => {
+    const bytes = new Uint8Array([7, 7, 7]);
+    const deleteAfter = new Date(Date.now() + 60_000).toISOString();
+    const sharedBucket = bucket();
+    const sharedAuthorization = uploadAuthorizationNamespace();
+    const first = env(sharedAuthorization);
+    const second = env(sharedAuthorization);
+    first.REGISTRY = sharedBucket;
+    second.REGISTRY = sharedBucket;
+    const [left, right] = await Promise.all([
+      worker.fetch(request(bytes, deleteAfter), first),
+      worker.fetch(request(bytes, deleteAfter), second),
+    ]);
+    expect([left.status, right.status].sort((a, b) => a - b)).toEqual([201, 401]);
   });
 
   it("accepts a short-lived session-bound authorization for exactly the uploaded ciphertext", async () => {
