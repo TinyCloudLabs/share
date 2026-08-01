@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile, lstat, readlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile, lstat, readlink } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -20,6 +20,7 @@ const canonicalRegistry = "https://registry.tinycloud.xyz";
 const canonicalNode = "https://node.tinycloud.xyz";
 
 type Child = { process: ChildProcess; output: () => string };
+type ChildOptions = { readonly allowLoopbackPorts?: readonly number[] };
 
 type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string; integrity: string };
 
@@ -74,14 +75,42 @@ async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: st
   return { origin, requested, close: () => new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose())) };
 }
 
-const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR"] as const;
+const CHILD_ENV_ALLOWLIST = ["PATH", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR"] as const;
 
-function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Child {
+function loopbackPort(origin: string): number {
+  const parsed = new URL(origin);
+  if (parsed.protocol !== "http:" || (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") || parsed.port === "") throw new Error(`joined child origin is not an allocated loopback service: ${origin}`);
+  const port = Number(parsed.port);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error(`joined child origin has an invalid loopback port: ${origin}`);
+  return port;
+}
+
+async function sandboxExecutable(): Promise<string> {
+  if (process.platform !== "darwin") throw new Error("joined lifecycle proof requires the enforceable macOS sandbox boundary");
+  const executable = "/usr/bin/sandbox-exec";
+  try { await access(executable); } catch { throw new Error("joined lifecycle proof requires /usr/bin/sandbox-exec; refusing proxy-only isolation"); }
+  return executable;
+}
+
+async function sandboxedCommand(command: string, args: readonly string[], allowedPorts: readonly number[]): Promise<{ command: string; args: string[] }> {
+  const executable = await sandboxExecutable();
+  const ports = [...new Set(allowedPorts)].sort((a, b) => a - b);
+  const profile = [
+    "(version 1)",
+    "(allow default)",
+    "(deny network-outbound)",
+    ...ports.map((port) => `(allow network-outbound (remote tcp \"localhost:${port}\"))`),
+  ].join("");
+  return { command: executable, args: ["-p", profile, command, ...args] };
+}
+
+async function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, options: ChildOptions = {}): Promise<Child> {
   const inherited = Object.fromEntries(CHILD_ENV_ALLOWLIST.flatMap((key) => {
     const value = globalThis.process.env[key];
     return value === undefined ? [] : [[key, value]];
   }));
-  const process = spawn(command, args, { cwd, env: { ...inherited, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  const launched = options.allowLoopbackPorts === undefined ? { command, args } : await sandboxedCommand(command, args, options.allowLoopbackPorts);
+  const process = spawn(launched.command, launched.args, { cwd, env: { ...inherited, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   const collect = (chunk: Buffer): void => { output = `${output}${chunk.toString()}`.slice(-32_000); };
   process.stdout?.on("data", collect);
@@ -107,8 +136,8 @@ async function stop(entry: Child): Promise<void> {
   if (entry.process.exitCode === null) entry.process.kill("SIGKILL");
 }
 
-async function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): Promise<{ status: number; output: string }> {
-  const entry = child(command, args, cwd, env);
+async function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}, options: ChildOptions = {}): Promise<{ status: number; output: string }> {
+  const entry = await child(command, args, cwd, env, options);
   const [status] = await once(entry.process, "exit");
   return { status: typeof status === "number" ? status : 1, output: entry.output() };
 }
@@ -153,8 +182,11 @@ async function resolveInstalledDependency(name: string, from: string): Promise<s
   throw new Error(`dependency ${name} is not installed in the frozen SDK graph`);
 }
 
-const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "7632f6b9ff2a3d035ca3f4802bc8f31dfd86b9b6";
+const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "4673542be295edb26ebde545e6120a7057e281da";
 const expectedSdkBranch = process.env.TINYCLOUD_JS_SDK_BRANCH ?? "feat/share-cli-greenfield-20260729-a";
+const expectedNodeHead = process.env.TINYCLOUD_NODE_EXACT_HEAD ?? "5b4883fe19c50582b70b0596badcdbc89a35e9bb";
+const expectedNodeBranch = process.env.TINYCLOUD_NODE_BRANCH ?? "feat/share-upload-attestation-20260731";
+const expectedNodeUpstream = process.env.TINYCLOUD_NODE_UPSTREAM ?? `origin/${expectedNodeBranch}`;
 
 async function assertExactSdkSource(sdkRoot: string): Promise<void> {
   if (!/^[0-9a-f]{40}$/.test(expectedSdkHead)) throw new Error("TINYCLOUD_JS_SDK_EXACT_HEAD must be a full commit");
@@ -170,18 +202,41 @@ async function assertExactSdkSource(sdkRoot: string): Promise<void> {
   if (upstreamHead !== expectedSdkHead || remoteHead !== expectedSdkHead) throw new Error("js-sdk source head does not match both fetched upstream and remote");
 }
 
+async function assertExactNodeSource(nodeRoot: string): Promise<{ readonly head: string; readonly sourceDigest: string }> {
+  if (!/^[0-9a-f]{40}$/.test(expectedNodeHead)) throw new Error("TINYCLOUD_NODE_EXACT_HEAD must be a full commit");
+  const head = (await runCommand("git", ["rev-parse", "HEAD"], nodeRoot)).output.trim();
+  const branch = (await runCommand("git", ["branch", "--show-current"], nodeRoot)).output.trim();
+  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], nodeRoot)).output.trim();
+  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], nodeRoot);
+  const fetchedFeatureHead = (await runCommand("git", ["rev-parse", `origin/${expectedNodeBranch}`], nodeRoot)).output.trim();
+  const remoteFeatureHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedNodeBranch}`], nodeRoot)).output.trim().split(/\s+/)[0];
+  const source = await runCommand("git", ["ls-tree", "-r", "--full-tree", "HEAD"], nodeRoot);
+  const sourceDigest = createHash("sha256").update(source.output).digest("hex");
+  if (head !== expectedNodeHead || fetchedFeatureHead !== expectedNodeHead || remoteFeatureHead !== expectedNodeHead) throw new Error("Node exact head does not match local, fetched feature, and live remote feature heads");
+  if (branch !== expectedNodeBranch || upstream !== expectedNodeUpstream) throw new Error(`Node branch/upstream mismatch: expected ${expectedNodeBranch} tracking ${expectedNodeUpstream}, found ${branch} tracking ${upstream}`);
+  if (status.status !== 0 || status.output.trim() !== "" || source.status !== 0) throw new Error("Node source or generated output is dirty or unreadable");
+  return { head, sourceDigest };
+}
+
 async function packWorkspaceArtifact(directory: string, outputRoot: string): Promise<{ manifest: PackageManifest; bytes: Buffer; filename: string; integrity: string }> {
   // Workspace packages are the exact checked-out source authority.  Their
   // normal pack lifecycle is part of the reproducible artifact, so scripts
   // must run rather than being silently suppressed.
+  const artifactHome = join(outputRoot, "artifact-home");
+  const artifactCache = join(outputRoot, "artifact-npm-cache");
+  const artifactUserConfig = join(outputRoot, "artifact-npm-user-config");
+  const artifactGlobalConfig = join(outputRoot, "artifact-npm-global-config");
+  await mkdir(artifactHome, { recursive: true });
+  await writeFile(artifactUserConfig, "");
+  await writeFile(artifactGlobalConfig, "");
   const result = await runCommand("npm", ["pack", "--silent", "--pack-destination", outputRoot], directory, {
+    HOME: artifactHome,
+    NPM_CONFIG_CACHE: artifactCache,
+    NPM_CONFIG_USERCONFIG: artifactUserConfig,
+    NPM_CONFIG_GLOBALCONFIG: artifactGlobalConfig,
     NPM_CONFIG_OFFLINE: "true",
     CARGO_NET_OFFLINE: "true",
-    HTTP_PROXY: "http://127.0.0.1:9",
-    HTTPS_PROXY: "http://127.0.0.1:9",
-    ALL_PROXY: "http://127.0.0.1:9",
-    NO_PROXY: "127.0.0.1,localhost",
-  });
+  }, { allowLoopbackPorts: [] });
   if (result.status !== 0) throw new Error(`could not pack ${directory}: ${result.output.slice(-4000)}`);
   const filename = result.output.trim().split(/\r?\n/).at(-1);
   if (filename === undefined || !/\.tgz$/.test(filename)) throw new Error(`npm pack produced no artifact for ${directory}`);
@@ -301,16 +356,16 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
   return packages;
 }
 
-async function runCli(bin: string, args: string[], env: NodeJS.ProcessEnv, input?: string): Promise<{ status: number; stdout: string; stderr: string }> {
-  const result = child(process.env.TINYCLOUD_CLI_RUNTIME ?? "node", [bin, ...args], dirname(bin), env);
+async function runCli(bin: string, args: string[], env: NodeJS.ProcessEnv, input?: string, allowLoopbackPorts: readonly number[] = []): Promise<{ status: number; stdout: string; stderr: string }> {
+  const result = await child(process.env.TINYCLOUD_CLI_RUNTIME ?? "node", [bin, ...args], dirname(bin), env, { allowLoopbackPorts });
   if (input !== undefined) result.process.stdin?.end(input);
   else result.process.stdin?.end();
   const [status] = await once(result.process, "exit");
   return { status: typeof status === "number" ? status : 1, stdout: result.output(), stderr: "" };
 }
 
-async function runNpx(prefix: string, args: string[], env: NodeJS.ProcessEnv, input?: string): Promise<{ status: number; stdout: string }> {
-  const result = child("npx", ["--prefix", prefix, "--no-install", "tc", ...args], prefix, env);
+async function runNpx(prefix: string, args: string[], env: NodeJS.ProcessEnv, input?: string, allowLoopbackPorts: readonly number[] = []): Promise<{ status: number; stdout: string }> {
+  const result = await child("npx", ["--prefix", prefix, "--no-install", "tc", ...args], prefix, env, { allowLoopbackPorts });
   if (input !== undefined) result.process.stdin?.end(input);
   else result.process.stdin?.end();
   const [status] = await once(result.process, "exit");
@@ -511,18 +566,21 @@ async function main(): Promise<void> {
     await writeFile(inputPath, "joined production path\n", { mode: 0o600 });
     const nodeTarget = process.env.TINYCLOUD_NODE_TARGET_DIR ?? join(root, "node-target");
     const nodeBinary = join(nodeTarget, "debug/tinycloud-node-production-e2e");
-    const nodeHead = await runCommand("git", ["rev-parse", "HEAD"], nodeWorktree);
-    const nodeDirty = await runCommand("git", ["status", "--porcelain"], nodeWorktree);
-    if (nodeHead.status !== 0 || nodeDirty.status !== 0 || nodeDirty.output.trim() !== "") throw new Error("Node exact-head provenance check failed");
-    const nodeBuild = await runCommand("cargo", ["build", "--manifest-path", join(nodeWorktree, "test/n4-mounted-e2e/Cargo.toml"), "--features", "mounted-fixture", "--bin", "tinycloud-node-production-e2e", "--target-dir", nodeTarget], nodeWorktree);
+    const nodeSourceBefore = await assertExactNodeSource(nodeWorktree);
+    const nodeBuild = await runCommand("cargo", ["build", "--manifest-path", join(nodeWorktree, "test/n4-mounted-e2e/Cargo.toml"), "--features", "mounted-fixture", "--bin", "tinycloud-node-production-e2e", "--target-dir", nodeTarget], nodeWorktree, {
+      HOME: nodeHome,
+      CARGO_HOME: process.env.CARGO_HOME ?? join(homedir(), ".cargo"),
+      RUSTUP_HOME: process.env.RUSTUP_HOME ?? join(homedir(), ".rustup"),
+      CARGO_NET_OFFLINE: "true",
+    }, { allowLoopbackPorts: [] });
     if (nodeBuild.status !== 0) throw new Error(`exact-head Node build failed: ${nodeBuild.output.slice(-8000)}`);
-    const nodeSelfTest = await runCommand(nodeBinary, ["--self-test"], nodeWorktree);
+    const nodeSelfTest = await runCommand(nodeBinary, ["--self-test"], nodeWorktree, { HOME: nodeHome }, { allowLoopbackPorts: [] });
     if (nodeSelfTest.status !== 0 || !nodeSelfTest.output.includes("production HTTP adversarial checks passed")) throw new Error("exact-head mounted Node self-test/provenance check failed");
     const registryPrivateKey = randomBytes(32);
     await writeFile(registryKey, registryPrivateKey.toString("base64url"), { mode: 0o600 });
     const registryPublicKey = Buffer.from(ed25519.getPublicKey(registryPrivateKey)).toString("base64url");
     const nodeSecret = Buffer.alloc(32, 0x09).toString("base64url");
-    const node = child(nodeBinary, ["--target-origin", "https://node.tinycloud.xyz", "--profile-output", nodeHome, "--trust-bundle-output", trustBundle, "--keys-secret", nodeSecret, "--quiet"], nodeWorktree, {});
+    const node = await child(nodeBinary, ["--target-origin", "https://node.tinycloud.xyz", "--profile-output", nodeHome, "--trust-bundle-output", trustBundle, "--keys-secret", nodeSecret, "--quiet"], nodeWorktree, { HOME: nodeHome });
     children.push(node);
     const nodeMatch = await ready(node, /tinycloud-node-production-e2e listening on http:\/\/127\.0\.0\.1:(\d+)/);
     const nodeOrigin = `http://127.0.0.1:${nodeMatch[1]}`;
@@ -534,7 +592,7 @@ async function main(): Promise<void> {
     const probeHeaders = probeNode.invokeAny([{ spaceId: session.spaceId, service: "capabilities", action: "tinycloud.capabilities/read" }], [{ requestBodyDigest: "probe" }]);
     const probe = await fetch(`${nodeOrigin}/share/upload/attestation`, { method: "POST", headers: { ...probeHeaders, "content-type": "application/json" }, body: "{}" });
     if (probe.status !== 400) throw new Error(`mounted Node authorization probe returned ${probe.status}`);
-    const registry = child("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
+    const registry = await child("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
       REGISTRY_AUTH_PUBLIC_KEY: registryPublicKey,
       REGISTRY_LINK_UPLOAD_PUBLIC_KEY: registryPublicKey,
     });
@@ -542,7 +600,7 @@ async function main(): Promise<void> {
     const registryMatch = await ready(registry, /production share registry listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const registryOrigin = registryMatch[1]!;
     const bundle = await readFile(trustBundle, "utf8");
-    const share = child("bun", ["test/e2e-sharing/cli-joined.ts", "--host"], shareRoot, {
+    const share = await child("bun", ["test/e2e-sharing/cli-joined.ts", "--host"], shareRoot, {
       SHARE_TRUST_BUNDLE_SOURCE: "environment",
       SHARE_TRUST_BUNDLE: bundle,
       SHARE_SENDER_ENABLED: "false",
@@ -558,8 +616,12 @@ async function main(): Promise<void> {
     await cp(join(nodeHome, ".tinycloud"), join(cliHome, ".tinycloud"), { recursive: true });
     await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; else if (originalOrigin === ${JSON.stringify(canonicalNode)}) value.href = ${JSON.stringify(nodeOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } if (value.pathname.startsWith("/share/v2/")) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + (body.error?.code === undefined ? "" : " error=" + body.error.code); } catch {} } if (["/delegate", "/invoke", "/info", "/share/v2/policies"].includes(value.pathname)) { try { const body = await response.clone().json(); detail = " error=" + String(body.error?.code ?? body.error ?? ""); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
 
+    const canonicalCache = process.env.TINYCLOUD_CANONICAL_NPM_CACHE;
+    if (canonicalCache === undefined) throw new Error("TINYCLOUD_CANONICAL_NPM_CACHE must point to the independent canonical cache");
+    const canonicalCacheBefore = await treeDigest(resolve(canonicalCache));
     const publishedPackages = await packFrozenSdkCatalog(sdkWorktree, root);
     const npmRegistry = await startNpmRegistry(publishedPackages);
+    const npmRegistryPort = loopbackPort(npmRegistry.origin);
     const install = join(root, "packed-cli");
     await mkdir(install, { recursive: true });
     await writeFile(join(install, "package.json"), JSON.stringify({ name: "tinycloud-cli-consumer", private: true, type: "module" }));
@@ -568,6 +630,11 @@ async function main(): Promise<void> {
     const networkGuard = join(root, "network-guard.mjs");
     const npmUserConfig = join(root, "npm-user-config");
     const npmGlobalConfig = join(root, "npm-global-config");
+    const consumerHome = join(root, "consumer-home");
+    const consumerCache = join(root, "npm-cache");
+    await mkdir(consumerHome, { recursive: true });
+    await mkdir(consumerCache, { recursive: true });
+    if ((await readdir(consumerCache)).length !== 0) throw new Error("consumer npm cache was not independently empty before install");
     await writeFile(npmUserConfig, "");
     await writeFile(npmGlobalConfig, "");
     await writeFile(networkGuard, [
@@ -584,8 +651,30 @@ async function main(): Promise<void> {
       "const fetch = globalThis.fetch; globalThis.fetch = async (input, ...args) => { allowed(input); return fetch(input, ...args); };",
       "",
     ].join("\n"));
-    const guardedInstallEnv = { NODE_OPTIONS: `--import ${networkGuard}`, NPM_CONFIG_CACHE: join(root, "npm-cache"), NPM_CONFIG_USERCONFIG: npmUserConfig, NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" };
-    const installResult = child("npm", ["install", "--no-audit", "--no-fund", `--registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cli.manifest.version}`], sdkWorktree, guardedInstallEnv);
+    const servicePorts = [loopbackPort(nodeOrigin), loopbackPort(shareOrigin), loopbackPort(registryOrigin)];
+    const lifecycleFixture = join(root, "lifecycle-fixture");
+    const lifecycleOutput = join(root, "lifecycle-output");
+    await mkdir(lifecycleFixture, { recursive: true });
+    await mkdir(lifecycleOutput, { recursive: true });
+    const directSocketEscape = await runCommand("node", ["-e", "const net=require('node:net'); const socket=net.createConnection({host:'192.0.2.1',port:9}); socket.once('connect',()=>process.exit(1)); socket.once('error',error=>process.exit(error.code==='EPERM'?0:2)); setTimeout(()=>process.exit(3),1000);"], lifecycleFixture, { HOME: consumerHome }, { allowLoopbackPorts: [] });
+    if (directSocketEscape.status !== 0) throw new Error(`direct Node socket escape was not denied by the OS boundary: ${directSocketEscape.output.slice(-2000)}`);
+    const nonNodeSocketEscape = await runCommand("python3", ["-c", "import socket; socket.create_connection(('192.0.2.1', 9), 1)"], lifecycleFixture, { HOME: consumerHome }, { allowLoopbackPorts: [] });
+    if (nonNodeSocketEscape.status === 0 || !nonNodeSocketEscape.output.includes("Operation not permitted")) throw new Error(`non-Node socket escape was not denied by the OS boundary: ${nonNodeSocketEscape.output.slice(-2000)}`);
+    await writeFile(join(lifecycleFixture, "package.json"), JSON.stringify({
+      name: "tinycloud-hermetic-lifecycle-fixture", version: "1.0.0", private: true,
+      scripts: {
+        prepack: "node -e \"require('node:fs').writeFileSync(process.env.TC_LIFECYCLE_MARKER + '.pre', 'ran')\"",
+        postpack: "node -e \"require('node:fs').writeFileSync(process.env.TC_LIFECYCLE_MARKER + '.post', 'ran')\"",
+      },
+    }));
+    const lifecycleMarker = join(root, "lifecycle-marker");
+    const lifecycleResult = await runCommand("npm", ["pack", "--silent", "--pack-destination", lifecycleOutput], lifecycleFixture, {
+      HOME: consumerHome, NPM_CONFIG_CACHE: join(root, "lifecycle-npm-cache"), NPM_CONFIG_USERCONFIG: npmUserConfig, NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig,
+      TC_LIFECYCLE_MARKER: lifecycleMarker,
+    }, { allowLoopbackPorts: [] });
+    if (lifecycleResult.status !== 0 || (await readFile(`${lifecycleMarker}.pre`, "utf8").catch(() => "")) !== "ran" || (await readFile(`${lifecycleMarker}.post`, "utf8").catch(() => "")) !== "ran") throw new Error(`normal npm lifecycle scripts did not run under the process boundary: ${lifecycleResult.output.slice(-4000)}`);
+    const guardedInstallEnv = { HOME: consumerHome, NODE_OPTIONS: `--import ${networkGuard}`, NPM_CONFIG_CACHE: consumerCache, NPM_CONFIG_USERCONFIG: npmUserConfig, NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" };
+    const installResult = await child("npm", ["install", "--no-audit", "--no-fund", `--registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cli.manifest.version}`], sdkWorktree, guardedInstallEnv, { allowLoopbackPorts: [npmRegistryPort] });
     children.push(installResult);
     try {
       if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
@@ -607,15 +696,15 @@ async function main(): Promise<void> {
     const packedProbe = await fetch(`${nodeOrigin}/share/upload/attestation`, { method: "POST", headers: { ...packedHeaders, "content-type": "application/json" }, body: "{}" });
     if (packedProbe.status !== 400) throw new Error(`packed Node authorization probe returned ${packedProbe.status}`);
     const bin = join(install, "node_modules/@tinycloud/cli/bin/tc");
-    const cliEnv = { TC_HOME: cliHome, CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
-    const published = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
+    const cliEnv = { HOME: consumerHome, TC_HOME: cliHome, CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
+    const published = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
     if (published.status !== 0) throw new Error(`packed CLI publish failed with transport statuses ${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
     const link = published.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
       try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
       catch { return false; }
     });
     if (link === undefined) throw new Error("publish did not return a valid canonical compact link");
-    const recipientPublished = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--to", profile.sessionDid, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
+    const recipientPublished = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--to", profile.sessionDid, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
     if (recipientPublished.status !== 0) throw new Error(`installed CLI recipient-DID publish failed (${recipientPublished.status}): ${recipientPublished.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-2000)} transport=${(await readFile(nodeStatus, "utf8").catch(() => "unobserved")).slice(-3000)}`);
     const recipientLink = recipientPublished.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
       try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
@@ -625,27 +714,30 @@ async function main(): Promise<void> {
     await runRecipientDidRouteMatrix({ shareLink: recipientLink, nodeOrigin, shareOrigin, registryOrigin, packedSdk: packedShareSdk, packedNode, session, holderDid: profile.sessionDid, nodeInvitationKid: String(JSON.parse(bundle).nodeInvitationKid), nodeInvitationPublicKey: String(JSON.parse(bundle).nodeInvitationPublicKey) });
     const recipientOutput = join(root, "recipient-received");
     await mkdir(recipientOutput, { recursive: true });
-    const recipientReceived = await runCli(bin, ["--profile", "joined", "share", "receive", "-", "--stdin", "--output", recipientOutput], cliEnv, `${recipientLink}\n`);
+    const recipientReceived = await runCli(bin, ["--profile", "joined", "share", "receive", "-", "--stdin", "--output", recipientOutput], cliEnv, `${recipientLink}\n`, servicePorts);
     if (recipientReceived.status !== 0) throw new Error("installed CLI recipient-DID receive failed");
     const transportEnv = { ...cliEnv, NODE_OPTIONS: `--import ${networkGuard} --import ${preload}` };
-    const noProfile = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", join(root, "no-profile-received")], { ...transportEnv, TC_HOME: join(root, "no-profile-home") }, `${recipientLink}\n`);
+    const noProfile = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", join(root, "no-profile-received")], { ...transportEnv, TC_HOME: join(root, "no-profile-home") }, `${recipientLink}\n`, servicePorts);
     if (noProfile.status === 0) throw new Error("recipient-DID receive succeeded without an OpenKey profile");
     const nodeStatuses = await readFile(nodeStatus, "utf8").catch(() => "");
     if (!nodeStatuses.split(/\r?\n/).some((line) => line.startsWith("/share/v2/policies=200"))) throw new Error("recipient-DID publish did not exercise the live /share/v2/policies route with status 200");
     if (nodeStatuses.split(/\r?\n/).some((line) => line.startsWith("/share/v2/") && (line.includes("=404") || line.includes("=503")))) throw new Error("live recipient-DID route matrix observed an unavailable or unmounted v2 route");
-    const inspected = await runCli(bin, ["share", "inspect", "-", "--stdin", "--json"], { ...transportEnv, TC_HOME: join(root, "public-inspect-home") }, `${link}\n`);
+    const inspected = await runCli(bin, ["share", "inspect", "-", "--stdin", "--json"], { ...transportEnv, TC_HOME: join(root, "public-inspect-home") }, `${link}\n`, servicePorts);
     if (inspected.status !== 0) throw new Error(`profile-free inspect failed status=${inspected.status} outputLength=${inspected.stdout.length} transport=${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
-    const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home"), npm_config_offline: "true" }, `${link}\n`);
+    const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home"), npm_config_offline: "true" }, `${link}\n`, servicePorts);
     if (warmed.status !== 0) throw new Error("warm-cache npx inspect failed");
     const nodeModulesBeforeWarm = await treeDigest(join(install, "node_modules"));
-    const warmPublished = await runNpx(install, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
+    const warmPublished = await runNpx(install, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
     if (warmPublished.status !== 0) throw new Error("warm-cache npx publish failed");
     if (await treeDigest(join(install, "node_modules")) !== nodeModulesBeforeWarm) throw new Error("warm npx mutated or replaced node_modules");
     await mkdir(outputDir, { recursive: true });
-    const received = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", outputDir], { ...transportEnv, TC_HOME: join(root, "public-receive-home") }, `${link}\n`);
+    const received = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", outputDir], { ...transportEnv, TC_HOME: join(root, "public-receive-home") }, `${link}\n`, servicePorts);
     if (received.status !== 0) throw new Error("profile-free bearer receive failed");
     const names = await readdir(outputDir);
     if (names.length !== 1 || (await digest(join(outputDir, names[0]!))) !== await digest(inputPath)) throw new Error("joined receive digest mismatch");
+    if (await treeDigest(resolve(canonicalCache)) !== canonicalCacheBefore) throw new Error("joined proof mutated the independent canonical npm cache");
+    const nodeSourceAfter = await assertExactNodeSource(nodeWorktree);
+    if (nodeSourceAfter.head !== nodeSourceBefore.head || nodeSourceAfter.sourceDigest !== nodeSourceBefore.sourceDigest) throw new Error("Node source changed between exact build and completed joined proof");
     process.stdout.write(JSON.stringify({ status: "passed", profileFixtureSeeded: true, acceptanceEvidence: false, nodeOrigin: true, shareProcess: true, registryProcess: true, packedCli: true, recipientDidRouteMatrix: true, identicalDigest: true, profileFreeInspect: true, profileFreeBearerReceive: true }) + "\n");
   } finally {
     for (const entry of children.reverse()) await stop(entry);
