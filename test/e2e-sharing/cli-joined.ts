@@ -14,7 +14,6 @@ const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../..");
 const nodeWorktree = process.env.TINYCLOUD_NODE_WORKTREE ?? resolve(workspaceRoot, "worktrees/tinycloud-node/feat/share-upload-attestation-20260731");
 const sdkWorktree = process.env.TINYCLOUD_SDK_WORKTREE ?? resolve(workspaceRoot, "worktrees/js-sdk/feat/share-cli-greenfield-20260729-a");
-const nodeBinary = process.env.TINYCLOUD_NODE_E2E_BIN ?? resolve(nodeWorktree, "target/debug/tinycloud-node-production-e2e");
 const canonicalShare = "https://share.tinycloud.xyz";
 const canonicalRegistry = "https://registry.tinycloud.xyz";
 
@@ -92,6 +91,12 @@ async function stop(entry: Child): Promise<void> {
   if (entry.process.exitCode === null) entry.process.kill("SIGKILL");
 }
 
+async function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}): Promise<{ status: number; output: string }> {
+  const entry = child(command, args, cwd, env);
+  const [status] = await once(entry.process, "exit");
+  return { status: typeof status === "number" ? status : 1, output: entry.output() };
+}
+
 function digest(path: string): Promise<string> {
   return readFile(path).then((bytes) => createHash("sha256").update(bytes).digest("hex"));
 }
@@ -133,7 +138,11 @@ async function packageDirectoryFromRequire(name: string, from: string): Promise<
 }
 
 async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promise<PackedPackage[]> {
-  const lock = JSON.parse(await readFile(join(sdkRoot, "bun.lock"), "utf8")) as { workspaces?: Record<string, { name?: string; version?: string }> };
+  // bun.lock is Bun's JSON5 lock format, not JSON. Keep the committed lock
+  // workspace graph authoritative while using Bun's maintained parser.
+  const bunRuntime = (globalThis as typeof globalThis & { Bun?: { JSON5: { parse(value: string): unknown } } }).Bun;
+  if (bunRuntime === undefined) throw new Error("joined harness must run under Bun");
+  const lock = bunRuntime.JSON5.parse(await readFile(join(sdkRoot, "bun.lock"), "utf8")) as { workspaces?: Record<string, { name?: string; version?: string }> };
   const workspaceByName = new Map<string, string>();
   for (const workspacePath of Object.keys(lock.workspaces ?? {})) {
     if (workspacePath === "") continue;
@@ -211,6 +220,15 @@ async function main(): Promise<void> {
   const children: Child[] = [];
   try {
     await writeFile(inputPath, "joined production path\n", { mode: 0o600 });
+    const nodeTarget = join(root, "node-target");
+    const nodeBinary = join(nodeTarget, "debug/tinycloud-node-production-e2e");
+    const nodeHead = await runCommand("git", ["rev-parse", "HEAD"], nodeWorktree);
+    const nodeDirty = await runCommand("git", ["status", "--porcelain"], nodeWorktree);
+    if (nodeHead.status !== 0 || nodeDirty.status !== 0 || nodeDirty.output.trim() !== "") throw new Error("Node exact-head provenance check failed");
+    const nodeBuild = await runCommand("cargo", ["build", "--manifest-path", join(nodeWorktree, "test/n4-mounted-e2e/Cargo.toml"), "--features", "mounted-fixture", "--bin", "tinycloud-node-production-e2e", "--target-dir", nodeTarget], nodeWorktree);
+    if (nodeBuild.status !== 0) throw new Error(`exact-head Node build failed: ${nodeBuild.output.slice(-8000)}`);
+    const nodeSelfTest = await runCommand(nodeBinary, ["--self-test"], nodeWorktree);
+    if (nodeSelfTest.status !== 0 || !nodeSelfTest.output.includes("production HTTP adversarial checks passed")) throw new Error("exact-head mounted Node self-test/provenance check failed");
     const registryPrivateKey = randomBytes(32);
     await writeFile(registryKey, registryPrivateKey.toString("base64url"), { mode: 0o600 });
     const registryPublicKey = Buffer.from(ed25519.getPublicKey(registryPrivateKey)).toString("base64url");
@@ -302,6 +320,17 @@ async function main(): Promise<void> {
       catch { return false; }
     });
     if (link === undefined) throw new Error("publish did not return a valid canonical compact link");
+    const recipientPublished = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--to", profile.sessionDid, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
+    if (recipientPublished.status !== 0) throw new Error("installed CLI recipient-DID publish failed");
+    const recipientLink = recipientPublished.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
+      try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
+      catch { return false; }
+    });
+    if (recipientLink === undefined) throw new Error("recipient-DID publish did not return a valid canonical compact link");
+    const recipientOutput = join(root, "recipient-received");
+    await mkdir(recipientOutput, { recursive: true });
+    const recipientReceived = await runCli(bin, ["--profile", "joined", "share", "receive", "-", "--stdin", "--output", recipientOutput], cliEnv, `${recipientLink}\n`);
+    if (recipientReceived.status !== 0) throw new Error("installed CLI recipient-DID receive failed");
     const transportEnv = { ...cliEnv, NODE_OPTIONS: `--import ${networkGuard} --import ${preload}` };
     const inspected = await runCli(bin, ["share", "inspect", "-", "--stdin", "--json"], { ...transportEnv, TC_HOME: join(root, "public-inspect-home") }, `${link}\n`);
     if (inspected.status !== 0) throw new Error(`profile-free inspect failed status=${inspected.status} outputLength=${inspected.stdout.length} transport=${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
