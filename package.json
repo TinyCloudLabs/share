@@ -33,7 +33,7 @@
     "@openkey/sdk": "^0.9.0",
     "@tinycloud/share-cli": "*",
     "@tinycloud/share-app-compat": "*",
-    "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.1.0-499a8dc.tgz",
+    "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.1.0-0c6aaa4.tgz",
     "@tinycloud/share-envelope": "file:vendor/tinycloud-share-envelope-0.1.0.tgz",
     "@tinycloud/share-registry": "*",
     "@tinycloud/web-sdk": "2.11.0-beta.1",

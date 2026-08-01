@@ -6,7 +6,7 @@ import type { SenderPolicy } from "../email-share/sender.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, senderFailureMessage } from "./sender-failure.js";
 import { fromBase64Url } from "@tinycloud/share-envelope";
-import { publishAddressedShare, publishShare, type ShareUploadInput } from "@tinycloud/share-sdk";
+import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
 
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
@@ -143,6 +143,8 @@ export interface ComposerShareResult {
   readonly cid: string;
   readonly format: ShareLinkFormat;
   readonly expiresAt?: string;
+  /** Canonical sender history, handed to the encrypted persistence adapter. */
+  readonly record?: SenderShareRecord;
   /** The owner delegation CID backing this share, absent for bearer (possession-only) links. Revoking this CID revokes the share and every delegation derived from it. */
   readonly delegationCid?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
@@ -288,7 +290,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
     registryBaseUrl,
     uploadBlob,
   });
-  return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt };
+  return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt, record: historyRecordForPublishedShare(result) };
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
@@ -505,15 +507,23 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     },
     upload: { uploadBlob, fetchFn: options.fetchFn ?? globalThis.fetch },
   });
+  const record = historyRecordForPublishedShare(published);
   return {
-    url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt,
+    url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt, record,
     ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
     ...(deliveryEmail === undefined ? {} : { notify: async () => {
-      const share = { url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt } as ComposerShareResult;
+      const share = { url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
-      const authorization = await tinycloud.authorizeShareDelivery({ envelopeCid: published.metadata.envelopeCid!, shareCid: published.metadata.shareCid!, shareId, registrationCid: published.metadata.registrationCid!, policyCid: published.metadata.policyCid!, delegationCid: published.metadata.ownerDelegationCid!, enforcementDelegationCid: published.metadata.enforcementDelegationCid!, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString(), nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) }, credentialsAudience: config.credentialsOrigin });
-      if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
-      await options.notify({ share, recipient: deliveryEmail, matcher: model.recipient.kind, deliveryAuthorization: authorization });
+      const adapter: ShareDeliveryAdapter = {
+        deliver: async () => {
+          const authorization = await tinycloud.authorizeShareDelivery({ envelopeCid: published.metadata.envelopeCid!, shareCid: published.metadata.shareCid!, shareId, registrationCid: published.metadata.registrationCid!, policyCid: published.metadata.policyCid!, delegationCid: published.metadata.ownerDelegationCid!, enforcementDelegationCid: published.metadata.enforcementDelegationCid!, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString(), nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) }, credentialsAudience: config.credentialsOrigin });
+          if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
+          await options.notify({ share, recipient: deliveryEmail, matcher: model.recipient.kind, deliveryAuthorization: authorization });
+          return "delivered";
+        },
+      };
+      const notification = await notifyShare({ shareId: record.shareId, recipient: deliveryEmail, record, adapter });
+      if (notification.state === "partial-failure") throw new Error("We couldn't send that email. The link above still works.");
     } }),
   };
 }
@@ -1144,10 +1154,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         // Sending is always offered here for an addressed share; nothing in
         // the form gates it any more (P1-5).
         if (canNotify(model) && notifyAction !== undefined) {
-          const confirm = el(doc, "button", "button button-secondary confirm-notification", "Send by email…") as HTMLButtonElement; confirm.type = "button";
+          const confirm = el(doc, "button", "button button-secondary confirm-notification", "Notify recipient") as HTMLButtonElement; confirm.type = "button";
           const cancel = el(doc, "button", "button button-secondary cancel-notification", "Keep link-only") as HTMLButtonElement; cancel.type = "button";
           const deliveryStatus = el(doc, "span", "copy-status notification-status");
-          confirm.addEventListener("click", () => { confirm.disabled = true; void notifyAction().then(() => { deliveryStatus.textContent = `Email queued for ${model.deliveryEmail as string}.`; confirm.hidden = true; cancel.hidden = true; }).catch(() => { confirm.disabled = false; deliveryStatus.textContent = "The email didn't go out. The link above still works; try again when ready."; }); });
+          confirm.addEventListener("click", () => { confirm.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = "Sending notification…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = "Notification sent."; confirm.hidden = true; cancel.hidden = true; }).catch(() => { confirm.disabled = false; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = "Notification failed. The link above still works; try again when ready."; }); });
           cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; deliveryStatus.textContent = "No email was sent."; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
         }
         copy.focus();

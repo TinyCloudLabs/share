@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createSenderHistoryRecord, redactSenderHistoryRecord, SenderHistoryRepository, validateSenderHistoryRecord, type SenderHistoryRecord } from "../src/share/sender-history.js";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
+import { SenderHistoryRepository, importSenderHistoryRecord } from "../src/share/sender-history.js";
+import type { SenderShareRecord } from "@tinycloud/share-sdk";
 
 function fakeVault(): IDataVaultService {
   const store = new Map<string, unknown>();
@@ -8,86 +9,67 @@ function fakeVault(): IDataVaultService {
     put: async (key: string, value: unknown) => { store.set(key, value); return { ok: true, data: undefined }; },
     get: async (key: string) => store.has(key) ? { ok: true, data: store.get(key) } : { ok: false, error: { code: "NOT_FOUND", message: "missing" } },
     delete: async (key: string) => { store.delete(key); return { ok: true, data: undefined }; },
-    listPage: async ({ prefix, limit }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => {
-      const keys = [...store.keys()].filter((key) => key.startsWith(prefix)).slice(0, limit);
-      return { ok: true, data: { keys, truncated: false } };
-    },
+    listPage: async ({ prefix, limit }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => ({ ok: true, data: { keys: [...store.keys()].filter((key) => key.startsWith(prefix)).slice(0, limit), truncated: false } }),
   } as unknown as IDataVaultService;
 }
 
-const base = {
-  id: "sender-entry-00000001",
-  url: "https://share.tinycloud.xyz/s/bafkreigdyrzt2abcde#k=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  cid: "bafybeigdyrzt5example",
-  format: "compact" as const,
-  createdAt: "2026-07-24T12:00:00.000Z",
-  expiresAt: "2026-07-31T12:00:00.000Z",
-  name: "notes.md",
-  mediaType: "text/markdown",
-  sourceKind: "upload" as const,
-  recipient: { kind: "bearer" as const },
-  actions: ["read"] as const,
-  delegationCid: null,
-  revokedAt: null,
-};
+function record(overrides: Partial<SenderShareRecord> = {}): SenderShareRecord {
+  return {
+    shareId: "share-history-1",
+    target: { origin: "https://share.example.invalid", nodeAudience: "did:web:node.example.invalid", spaceId: "space-1" },
+    resource: { kind: "exact", path: "notes.md" },
+    actions: ["tinycloud.kv/get"],
+    recipientMatcher: { kind: "bearer" },
+    targetKind: "bearer",
+    registeredAt: "2026-07-24T12:00:00.000Z",
+    expiresAt: "2026-07-31T12:00:00.000Z",
+    link: "https://share.example.invalid/s/test",
+    filename: "notes.md",
+    ...overrides,
+  };
+}
 
-describe("sender history records", () => {
-  it("canonicalizes and round-trips an exact link inside the record", async () => {
-    const record = await createSenderHistoryRecord(base);
-    expect(record.url).toBe(base.url);
-    expect(record.urlDigest).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(validateSenderHistoryRecord(record)).toEqual(record);
+describe("canonical sender history adapter", () => {
+  it("persists canonical records through encrypted Vault storage and redacts list/show", async () => {
+    const repository = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+    await repository.save(record());
+    const page = await repository.page();
+    expect(page.items[0]).toMatchObject({ state: "ready", record: { shareId: "share-history-1" }, view: { target: "bearer", revoked: false } });
+    const listed = await repository.records.list();
+    expect(listed[0]).not.toHaveProperty("type");
+    expect(await repository.show("share-history-1")).not.toHaveProperty("link");
+    expect(await repository.show("share-history-1", true)).toHaveProperty("link");
   });
 
-  it("rejects unknown fields, invalid timestamps, and invalid recipient enums", () => {
-    expect(() => validateSenderHistoryRecord({ ...base, type: "future", version: 1, urlDigest: "x" })).toThrow(/invalid/i);
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", createdAt: "not-a-time" })).toThrow(/invalid/i);
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", recipient: { kind: "exactEmail", value: "" } })).toThrow(/invalid/i);
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", url: base.url.replace("https:", "http:") })).toThrow(/invalid/i);
+  it("uses canonical recipient redaction for DID and email targets", async () => {
+    const repository = new SenderHistoryRepository(fakeVault());
+    await repository.save(record({ shareId: "did-share", recipientMatcher: { kind: "recipientDid", value: "did:key:holder" }, targetKind: "recipientDid" }));
+    await repository.save(record({ shareId: "domain-share", recipientMatcher: { kind: "emailDomain", value: "example.invalid" }, targetKind: "emailDomain" }));
+    const page = await repository.page();
+    const views = page.items.filter((item): item is Extract<typeof item, { readonly view: unknown }> => "view" in item).map((item) => item.view);
+    expect(views.map((view) => view.target).sort()).toEqual(["email-domain", "recipient-did"]);
+    expect(views.every((view) => !Object.hasOwn(view, "link"))).toBe(true);
   });
 
-  it("bounds oversized URLs before persistence", () => {
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", url: `https://share.tinycloud.xyz/s/${"a".repeat(70_000)}` })).toThrow(/invalid/i);
-  });
-
-  it("rejects an empty-string delegationCid and a non-canonical revokedAt", () => {
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", delegationCid: "" })).toThrow(/invalid/i);
-    expect(() => validateSenderHistoryRecord({ ...base, type: "TinyCloudShareSenderHistory", version: 1, urlDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", revokedAt: "not-a-time" })).toThrow(/invalid/i);
-  });
-
-  it("accepts a delegation-backed addressed record", async () => {
-    const record = await createSenderHistoryRecord({ ...base, delegationCid: "bafyreidelegationexample" });
-    expect(record.delegationCid).toBe("bafyreidelegationexample");
-    expect(validateSenderHistoryRecord(record)).toEqual(record);
-  });
-
-  it("keeps bearer links out of the default history projection", async () => {
-    const record = await createSenderHistoryRecord(base);
-    const redacted = redactSenderHistoryRecord(record);
-    expect(redacted).not.toHaveProperty("url");
-    expect(redactSenderHistoryRecord(record, true).url).toBe(record.url);
-  });
-});
-
-describe("sender history revocation is reload-safe", () => {
-  it("marks a delegation-backed record revoked and persists it across a fresh repository instance pointed at the same vault", async () => {
+  it("keeps revocation and paging reload-safe", async () => {
     const vault = fakeVault();
-    const repo = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
-    const record = await createSenderHistoryRecord({ ...base, delegationCid: "bafyreidelegationexample" });
-    await repo.save(record);
-
-    let page = await repo.page();
-    expect(page.items).toEqual([{ key: SenderHistoryRepository.keyFor(record), record, state: "ready" }]);
-
-    await repo.markRevoked(record);
-
-    // Simulate a page reload: a brand-new repository instance over the same
-    // durable vault must still observe the revocation.
+    const repository = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
+    await repository.save({ ...record({ shareId: "first" }), registeredAt: "2026-07-26T12:00:00.000Z" });
+    await repository.save({ ...record({ shareId: "second" }), registeredAt: "2026-07-25T12:00:00.000Z" });
+    await repository.markRevoked({ ...record({ shareId: "first" }), registeredAt: "2026-07-26T12:00:00.000Z" });
     const reloaded = new SenderHistoryRepository(vault, () => Date.parse("2026-07-27T00:00:00.000Z"));
-    page = await reloaded.page();
-    expect(page.items).toHaveLength(1);
-    const [item] = page.items;
-    expect(item?.state).toBe("revoked");
-    expect((item as { record: SenderHistoryRecord }).record.revokedAt).not.toBeNull();
+    const firstPage = await reloaded.page(undefined, 1);
+    expect(firstPage.truncated).toBe(true);
+    expect(firstPage.items[0]?.state).toBe("revoked");
+    const second = (await reloaded.page(firstPage.nextCursor, 1)).items[0];
+    const secondId = second !== undefined && "record" in second ? second.record.shareId : undefined;
+    expect(secondId).toBe("second");
+  });
+
+  it("imports a possessed link as a canonical bearer record", () => {
+    const imported = importSenderHistoryRecord("https://share.example.invalid/s/test", new Date("2026-07-27T00:00:00.000Z"));
+    expect(imported.recipientMatcher).toEqual({ kind: "bearer" });
+    expect(imported.targetKind).toBe("bearer");
+    expect(imported.registeredAt).toBe("2026-07-27T00:00:00.000Z");
   });
 });

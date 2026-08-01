@@ -237,7 +237,7 @@ export function renderViewerState(
       renderErrorState(root, "Confirm your email to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
       return null;
     case "recipient-did-authorization-required":
-      renderErrorState(root, "This device isn't authorized", "This share is bound to a different OpenKey device.");
+      renderErrorState(root, "Confirm this OpenKey device", "Continue with OpenKey to confirm the current session before opening this share.");
       return null;
     case "invalid-link":
       renderErrorState(

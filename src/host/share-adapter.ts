@@ -62,11 +62,13 @@ export interface BindingStore {
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
   reserveUpload?(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
+  consumeUploadAttestation?(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean>;
 }
 
 export interface UploadBudgetStore {
   readonly writable: boolean;
   reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
+  consumeUploadAttestation?(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean>;
 }
 
 async function secureRead(path: string): Promise<string> {
@@ -108,11 +110,13 @@ function scryptAsync(password: string, salt: Uint8Array, length: number, options
 interface JournalState {
   readonly bindings: Map<string, Record<string, unknown>>;
   readonly budgets: Map<string, { count: number; windowStartedAt: number }>;
+  readonly uploadAttestations: Map<string, number>;
 }
 
 function parseJournal(text: string): JournalState {
   const bindings = new Map<string, Record<string, unknown>>();
   const budgets = new Map<string, { count: number; windowStartedAt: number }>();
+  const uploadAttestations = new Map<string, number>();
   if (text.length === 0) throw new Error("binding journal is empty");
   const lines = text.split("\n");
   for (const [lineNumber, line] of lines.entries()) {
@@ -133,9 +137,13 @@ function parseJournal(text: string): JournalState {
       budgets.set(record.principal, { count: record.count as number, windowStartedAt: record.windowStartedAt as number });
       continue;
     }
+    if (record.op === "upload-attestation" && typeof record.jti === "string" && Number.isSafeInteger(record.expiresAt) && (record.expiresAt as number) > 0) {
+      uploadAttestations.set(record.jti, record.expiresAt as number);
+      continue;
+    }
     throw new Error("binding journal record is invalid");
   }
-  return { bindings, budgets };
+  return { bindings, budgets, uploadAttestations };
 }
 
 /**
@@ -199,7 +207,7 @@ export class TransactionalBindingStore implements BindingStore {
     let text: string;
     try { text = await secureRead(this.path); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { bindings: new Map(), budgets: new Map() };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { bindings: new Map(), budgets: new Map(), uploadAttestations: new Map() };
       throw error;
     }
     return parseJournal(text);
@@ -262,6 +270,24 @@ export class TransactionalBindingStore implements BindingStore {
       return true;
     });
   }
+
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> {
+    if (!this.writable) throw new Error("upload attestation store is not writable");
+    return this.withLock(async () => {
+      const state = await this.readJournal();
+      for (const [value, expiry] of state.uploadAttestations) {
+        if (expiry <= now) state.uploadAttestations.delete(value);
+      }
+      if (state.uploadAttestations.has(jti) || state.uploadAttestations.size >= limit) return false;
+      assertSecurePath(this.path);
+      const handle = await open(this.path, SECURE_APPEND, 0o600);
+      try {
+        await handle.write(`${JSON.stringify({ op: "upload-attestation", jti, expiresAt })}\n`, undefined, "utf8");
+        await handle.sync();
+      } finally { await handle.close(); }
+      return true;
+    });
+  }
 }
 
 class MemoryBindingStore implements BindingStore {
@@ -272,17 +298,25 @@ class MemoryBindingStore implements BindingStore {
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return this.values.get(cid); }
   async put(cid: string, binding: Record<string, unknown>): Promise<void> { this.values.set(cid, binding); }
   async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> { return this.budgets.reserveUpload(principal, now, windowMs, limit); }
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> { return this.budgets.consumeUploadAttestation(jti, expiresAt, now, limit); }
 }
 
 class MemoryUploadBudgetStore implements UploadBudgetStore {
   readonly writable = true;
   private readonly values = new Map<string, { count: number; windowStartedAt: number }>();
+  private readonly attestations = new Map<string, number>();
   async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
     const prior = this.values.get(principal);
     const budget = prior === undefined || now - prior.windowStartedAt >= windowMs ? { count: 0, windowStartedAt: now } : prior;
     if (budget.count >= limit) return false;
     budget.count += 1;
     this.values.set(principal, budget);
+    return true;
+  }
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> {
+    for (const [value, expiry] of this.attestations) if (expiry <= now) this.attestations.delete(value);
+    if (this.attestations.has(jti) || this.attestations.size >= limit) return false;
+    this.attestations.set(jti, expiresAt);
     return true;
   }
 }
@@ -377,7 +411,7 @@ async function verifyUploadAttestation(
     attestation = exactAttestation(JSON.parse(encoded));
     retention = JSON.parse(retentionHeader);
   } catch { throw new Error("attestation malformed"); }
-  if (retention === null || canonicalize(retention).length > MAX_RETENTION_BYTES || canonicalize(retention) !== retentionHeader) throw new Error("attestation retention");
+  if (retention !== "until-delete" || canonicalize(retention).length > MAX_RETENTION_BYTES || canonicalize(retention) !== retentionHeader) throw new Error("attestation retention");
   if (attestation.type !== "TinyCloudShareUploadAttestation" || attestation.version !== 1 || attestation.issuer !== bundle.public.nodeAudience || attestation.kid !== bundle.public.nodeInvitationKid || attestation.shareOrigin !== bundle.public.shareOrigin || attestation.retention === null || canonicalize(attestation.retention) !== retentionHeader || !PRINCIPAL.test(attestation.ownerDid) || !PRINCIPAL.test(attestation.sessionDid) || !strictBase64Url(attestation.signature, 64) || !strictBase64Url(attestation.encryptedBlobSha256, 32) || !strictBase64Url(attestation.jti, 16) || typeof attestation.encryptedBlobCid !== "string" || attestation.encryptedBlobCid.length > 200 || typeof attestation.byteLength !== "number" || !Number.isSafeInteger(attestation.byteLength) || attestation.byteLength < 0 || typeof attestation.deleteAfter !== "string" || typeof attestation.issuedAt !== "string" || typeof attestation.expiresAt !== "string") throw new Error("attestation fields");
   const issuedAt = canonicalTimestamp(attestation.issuedAt, "attestation issuedAt");
   const expiresAt = canonicalTimestamp(attestation.expiresAt, "attestation expiresAt");
@@ -872,12 +906,6 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
-  // Attestation jti replay is intentionally process-local: the current Share
-  // deployment is a single instance. The durable upload-budget journal below
-  // is the authority that must remain correct across restart and concurrent
-  // instances; a multi-instance deployment needs a shared replay store before
-  // adding another Share process.
-  const uploadAttestationReplay = new Map<string, number>();
   const uploadBudgetStore = options.uploadBudgetStore ?? (options.testMode ? new MemoryUploadBudgetStore() : undefined);
   const capability = options.capability;
   /**
@@ -888,15 +916,12 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     const now = Date.now();
     for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
     for (const [key, entry] of signers) if (entry.expiresAt <= now) signers.delete(key);
-    for (const [jti, expiresAt] of uploadAttestationReplay) if (expiresAt <= now) uploadAttestationReplay.delete(jti);
     for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
   };
-  const consumeUploadAttestationJti = (jti: string, expiresAt: number): boolean => {
-    sweep();
-    if (uploadAttestationReplay.has(jti)) return false;
-    if (uploadAttestationReplay.size >= MAX_UPLOAD_ATTESTATION_REPLAY) return false;
-    uploadAttestationReplay.set(jti, expiresAt);
-    return true;
+  const consumeUploadAttestationJti = async (jti: string, expiresAt: number, now: number): Promise<boolean> => {
+    const store = options.bindingStore?.consumeUploadAttestation === undefined ? uploadBudgetStore : options.bindingStore;
+    if (store?.writable !== true || store.consumeUploadAttestation === undefined) throw new Error("upload_attestation_store_unavailable");
+    return store.consumeUploadAttestation(jti, expiresAt, now, MAX_UPLOAD_ATTESTATION_REPLAY);
   };
   const reserveUpload = async (principal: string, now: number): Promise<boolean> => {
     if (uploadBudgetStore?.writable !== true) throw new Error("upload_budget_unavailable");
@@ -1162,7 +1187,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
             const session = sessionValid(request, options, sessions);
             if (session === undefined || !samePrincipal(session.userId, attestation.ownerDid)) return response(401, { error: { code: "authentication_required" } });
           }
-          if (!consumeUploadAttestationJti(attestation.jti, Date.parse(attestation.expiresAt))) return response(401, { error: { code: "upload_attestation_replayed" } });
+          if (!(await consumeUploadAttestationJti(attestation.jti, Date.parse(attestation.expiresAt), now))) return response(401, { error: { code: "upload_attestation_replayed" } });
           if (!(await reserveUpload(attestation.ownerDid, now))) return response(429, { error: { code: "upload_rate_limited" } });
           const registryResponse = await proxyRegistry(
             request,
@@ -1204,6 +1229,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
       if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } });
       if (error instanceof Error && error.message === "upload_budget_unavailable") return response(503, { error: { code: "upload_budget_unavailable" } });
+      if (error instanceof Error && error.message === "upload_attestation_store_unavailable") return response(503, { error: { code: "upload_attestation_store_unavailable" } });
       // The sender path is ready but this session has enrolled no wallet-rooted
       // authority yet: a per-session fact, deliberately distinct from readiness.
       if (error instanceof Error && error.message === "sender_capability_required") return response(409, { error: { code: "sender_capability_required" } });

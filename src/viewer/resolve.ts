@@ -9,6 +9,7 @@ import {
   receiveShare,
   ShareReceiveError,
   createAddressedAuthorization,
+  ShareRecipientClient,
   type ShareNodeTrust,
   type SharePresentationMaterial,
   type ShareMetadata,
@@ -37,7 +38,7 @@ export type ResolveResult =
   /** Retained for the legacy invitation controller; canonical resolution never creates this state. */
   | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
   | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2; shareCid: string; policy: Record<string, unknown> }
-  | { state: "recipient-did-authorization-required"; envelope: ShareEnvelopeV2; shareCid: string }
+  | { state: "recipient-did-authorization-required"; envelope: ShareEnvelopeV2; shareCid: string; resumeToken?: string }
   | { state: "content-fetch-failed"; detail: string }
   | { state: "content-integrity-failed" }
   | { state: "unsupported"; reason: UnsupportedReason };
@@ -58,7 +59,7 @@ export interface BrowserAddressedAuthorizationOptions {
   readonly nodeOrigin: string;
   readonly trustedNode: TrustedNode;
   readonly holderDid: string;
-  readonly buildPresentation: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
+  readonly buildPresentation?: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
   readonly fetchFn?: typeof fetch;
 }
 
@@ -74,8 +75,30 @@ export function createBrowserAddressedAuthorization(input: BrowserAddressedAutho
     trustedNode: trust,
     holderDid: input.holderDid,
     ...(input.fetchFn === undefined ? {} : { fetchFn: input.fetchFn }),
-    buildPresentation: async ({ challenge, envelope, policy }): Promise<SharePresentationMaterial> => input.buildPresentation({ challenge: challenge as PolicyChallenge, envelope, policy }) as Promise<SharePresentationMaterial>,
+    ...(input.buildPresentation === undefined ? {} : { buildPresentation: async ({ challenge, envelope, policy }): Promise<SharePresentationMaterial> => input.buildPresentation!({ challenge: challenge as PolicyChallenge, envelope, policy }) as Promise<SharePresentationMaterial> }),
   });
+}
+
+/**
+ * Start the SDK's explicit challenge step without creating a session. The
+ * browser keeps the returned challenge in memory until the user completes the
+ * OpenKey ceremony, then supplies the SDK resume proof to resolveShare.
+ */
+export async function beginBrowserAddressedChallenge(input: {
+  readonly envelope: ShareEnvelopeV2;
+  readonly nodeOrigin: string;
+  readonly trustedNode: TrustedNode;
+  readonly holderDid: string;
+  readonly fetchFn?: typeof fetch;
+}): Promise<PolicyChallenge> {
+  const client = new ShareRecipientClient({
+    nodeOrigin: input.nodeOrigin,
+    trustedNode: { invitationKid: input.trustedNode.invitationKid, invitationPublicKey: input.trustedNode.invitationPublicKey },
+    holderDid: input.holderDid,
+    envelope: input.envelope,
+    ...(input.fetchFn === undefined ? {} : { fetchFn: input.fetchFn }),
+  });
+  return client.beginChallenge(input.envelope) as Promise<PolicyChallenge>;
 }
 
 export async function resolveShare(href: string, options: ResolveShareOptions): Promise<ResolveResult> {
@@ -97,7 +120,7 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
     if ("state" in received) {
       if (addressedEnvelope?.version === 2 && addressedCid !== undefined) {
         return addressedEnvelope.recipientMatcher.kind === "recipientDid"
-          ? { state: "recipient-did-authorization-required", envelope: addressedEnvelope, shareCid: addressedCid }
+          ? { state: "recipient-did-authorization-required", envelope: addressedEnvelope, shareCid: addressedCid, ...(received.resumeToken === undefined ? {} : { resumeToken: received.resumeToken }) }
           : { state: "policy-v2-claim-required", envelope: addressedEnvelope, shareCid: addressedCid, policy: {} };
       }
       return { state: "unsupported", reason: "policy-target" };

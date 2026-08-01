@@ -107,6 +107,31 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
     });
     const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
+    if (resolved.state === "recipient-did-authorization-required") {
+      const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
+      const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
+      const { beginBrowserAddressedChallenge } = await import("./viewer/resolve.js");
+      const challenge = await beginBrowserAddressedChallenge({ envelope: resolved.envelope, nodeOrigin: shareConfig.nodeOrigin, trustedNode: shareTrustedNode, holderDid: expectedDid });
+      mountRecipientDidAuthorization(root, {
+        expectedDid,
+        resume: async () => {
+          const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
+          const session = await authenticateWithOpenKey(() => undefined);
+          const tinycloud = await createTinyCloudClient(session, shareConfig, [], () => undefined);
+          if (tinycloud.sessionDid !== expectedDid) throw new Error("recipient-did-mismatch");
+          const proof = await buildOpenKeyAuthorizationProof({ challenge, envelope: resolved.envelope, holderDid: tinycloud.sessionDid, sign: (bytes) => tinycloud.signSessionBytes(bytes) });
+          const didAuthorization = createBrowserAddressedAuthorization({
+            nodeOrigin: shareConfig.nodeOrigin,
+            trustedNode: shareTrustedNode,
+            holderDid: tinycloud.sessionDid,
+          });
+          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
+          await presentShare(root, next, { shareUrl: shareHref });
+          return next;
+        },
+      });
+      return;
+    }
     if (resolved.state !== "policy-email-claim-required") {
       await presentShare(root, resolved, { shareUrl: shareHref });
       return;
@@ -155,6 +180,53 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
+}
+
+async function buildOpenKeyAuthorizationProof(input: {
+  readonly challenge: import("@tinycloud/share-sdk").SharePolicyChallenge;
+  readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2;
+  readonly holderDid: string;
+  readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
+}): Promise<Record<string, unknown>> {
+  const authority = input.envelope.ownerAuthority;
+  if (authority === undefined) throw new Error("addressed-owner-authority-missing");
+  const nativeAction = (action: string): string => action === "list" ? "tinycloud.kv/list" : action === "edit" ? "tinycloud.kv/put" : "tinycloud.kv/get";
+  const actions = [...new Set(input.envelope.actions.map(nativeAction))].sort();
+  const action = input.envelope.actions.includes("list") ? "tinycloud.kv/list" : input.envelope.actions.includes("edit") ? "tinycloud.kv/put" : "tinycloud.kv/get";
+  const policyCid = input.envelope.authorizationTarget.kind === "policy" ? input.envelope.authorizationTarget.policyCid : "";
+  const credential = "openkey-device-session";
+  const credentialDigest = await digestText(credential);
+  const presentation = {
+    type: "TinyCloudSharePolicyPresentation",
+    version: 1,
+    challengeId: input.challenge.challengeId,
+    nonce: input.challenge.nonce,
+    shareCid: authority.shareCid,
+    shareId: input.envelope.shareId,
+    delegationCid: input.envelope.delegationCid,
+    policyCid,
+    authorityMaterialHandle: input.envelope.authorityMaterialHandle,
+    authorityMaterialDigest: input.envelope.authorityMaterialDigest,
+    contentSource: input.envelope.contentSource,
+    contentSourceDigest: input.envelope.contentSourceDigest,
+    holderDid: input.holderDid,
+    targetOrigin: input.envelope.target.origin,
+    nodeAudience: input.envelope.target.nodeAudience,
+    ...(input.challenge.enforcerDid === undefined ? {} : { enforcerDid: input.challenge.enforcerDid }),
+    credentialDigest,
+    action,
+    actions,
+    resource: input.envelope.resource.path.replace(/\/$/, ""),
+    requestBodyDigest: input.challenge.requestBodyDigest,
+    issuedAt: new Date().toISOString(),
+    expiresAt: input.challenge.expiresAt,
+    jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+  };
+  const signedBytes = new TextEncoder().encode(`${SIGNATURE_DOMAINS.policyPresentation}${canonicalize(presentation)}`);
+  const signature = toBase64Url(await input.sign(signedBytes));
+  const presentationProof = { alg: "EdDSA", kid: `${input.holderDid}#${input.holderDid.slice("did:key:".length)}`, signature };
+  const holderBinding = { type: "TinyCloudShareOpenKeyHolderBinding", version: 1, holderDid: input.holderDid, challengeId: input.challenge.challengeId, nonce: input.challenge.nonce, expiresAt: input.challenge.expiresAt };
+  return { presentation, presentationProof, proof: presentationProof, nonce: input.challenge.nonce, credential, holderDid: input.holderDid, holderBinding, sign: input.sign };
 }
 
 async function buildV2Presentation(input: { readonly challenge: import("@tinycloud/share-sdk").SharePolicyChallenge; readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2; readonly policy: Record<string, unknown>; readonly invite: { readonly invitationId: string; readonly claimSecret: string }; readonly shareCid: string; readonly publicConfig: Awaited<ReturnType<typeof import("./email-share/config.js").loadSharePublicConfig>>; readonly holder: import("./email-share/claim.js").HolderKey }): Promise<import("@tinycloud/share-sdk").SharePresentationMaterial> {

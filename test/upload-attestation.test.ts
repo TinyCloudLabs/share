@@ -155,7 +155,7 @@ describe("owner-bound upload attestations", () => {
   it("enforces the durable budget after restart and across concurrent instances", async () => {
     const fixture = await setup();
     try {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ cid: "bafkrei" + "b".repeat(52), deleteAfter: timestamp(7 * 24 * 60 * 60 * 1000) }), { status: 201, headers: { "content-type": "application/json" } }));
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ cid: "bafkrei" + "b".repeat(52), deleteAfter: timestamp(7 * 24 * 60 * 60 * 1000) }), { status: 201, headers: { "content-type": "application/json" } }));
       const first = fixture.host();
       const second = fixture.host();
       const body = new Uint8Array([7, 8, 9]);
@@ -170,6 +170,25 @@ describe("owner-bound upload attestations", () => {
       const responses = await Promise.all(Array.from({ length: 20 }, (_, index) => make(index + 2, index % 2 === 0 ? restarted : second)));
       expect(responses.filter((value) => value.status === 201)).toHaveLength(19);
       expect(responses.filter((value) => value.status === 429)).toHaveLength(1);
+    } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("consumes the same attestation jti durably across restart and horizontal concurrency", async () => {
+    const fixture = await setup();
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ cid: "bafkrei" + "c".repeat(52), deleteAfter: timestamp(7 * 24 * 60 * 60 * 1000) }), { status: 201, headers: { "content-type": "application/json" } }));
+      const body = new Uint8Array([4, 5, 6]);
+      const jti = toBase64Url(new Uint8Array(16).fill(77));
+      const signed = await attestation(body, { jti });
+      signed.deleteAfter = request(body, signed).headers.get("x-delete-after")!;
+      signed.signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`xyz.tinycloud.share/upload-attestation/v1\0${canonicalize(Object.fromEntries(Object.entries(signed).filter(([key]) => key !== "signature")))}`), NODE_SEED));
+      const first = fixture.host();
+      const second = fixture.host();
+      const results = await Promise.all([first.handler(request(body, signed)), second.handler(request(body, signed))]);
+      expect(results.filter((value) => value.status === 201)).toHaveLength(1);
+      expect(results.filter((value) => value.status === 401)).toHaveLength(1);
+      const restarted = fixture.host();
+      expect((await restarted.handler(request(body, signed))).status).toBe(401);
     } finally { await rm(fixture.root, { recursive: true, force: true }); }
   });
 });
