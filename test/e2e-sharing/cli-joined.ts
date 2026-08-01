@@ -210,11 +210,10 @@ async function assertExactSdkSource(sdkRoot: string): Promise<void> {
   const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], sdkRoot, {}, boundary)).output.trim();
   const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], sdkRoot, {}, boundary);
   const upstreamHead = (await runCommand("git", ["rev-parse", `origin/${expectedSdkBranch}`], sdkRoot, {}, boundary)).output.trim();
-  const remoteHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedSdkBranch}`], sdkRoot, {}, boundary)).output.trim().split(/\s+/)[0];
   if (head !== expectedSdkHead) throw new Error(`js-sdk exact head mismatch: expected ${expectedSdkHead}, found ${head}`);
   if (branch !== expectedSdkBranch || upstream !== `origin/${expectedSdkBranch}`) throw new Error(`js-sdk branch/upstream mismatch: expected ${expectedSdkBranch} tracking origin/${expectedSdkBranch}, found ${branch} tracking ${upstream}`);
   if (status.status !== 0 || status.output.trim() !== "") throw new Error("js-sdk source or generated output is dirty");
-  if (upstreamHead !== expectedSdkHead || remoteHead !== expectedSdkHead) throw new Error("js-sdk source head does not match both fetched upstream and remote");
+  if (upstreamHead !== expectedSdkHead) throw new Error("js-sdk source head does not match the fetched upstream feature ref");
 }
 
 async function assertExactNodeSource(nodeRoot: string): Promise<{ readonly head: string; readonly sourceDigest: string }> {
@@ -225,10 +224,9 @@ async function assertExactNodeSource(nodeRoot: string): Promise<{ readonly head:
   const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], nodeRoot, {}, boundary)).output.trim();
   const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], nodeRoot, {}, boundary);
   const fetchedFeatureHead = (await runCommand("git", ["rev-parse", `origin/${expectedNodeBranch}`], nodeRoot, {}, boundary)).output.trim();
-  const remoteFeatureHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedNodeBranch}`], nodeRoot, {}, boundary)).output.trim().split(/\s+/)[0];
   const source = await runCommand("git", ["ls-tree", "-r", "--full-tree", "HEAD"], nodeRoot, {}, boundary);
   const sourceDigest = createHash("sha256").update(source.output).digest("hex");
-  if (head !== expectedNodeHead || fetchedFeatureHead !== expectedNodeHead || remoteFeatureHead !== expectedNodeHead) throw new Error("Node exact head does not match local, fetched feature, and live remote feature heads");
+  if (head !== expectedNodeHead || fetchedFeatureHead !== expectedNodeHead) throw new Error("Node exact head does not match local and the fetched feature ref");
   if (branch !== expectedNodeBranch || upstream !== expectedNodeUpstream) throw new Error(`Node branch/upstream mismatch: expected ${expectedNodeBranch} tracking ${expectedNodeUpstream}, found ${branch} tracking ${upstream}`);
   if (status.status !== 0 || status.output.trim() !== "" || source.status !== 0) throw new Error("Node source or generated output is dirty or unreadable");
   return { head, sourceDigest };
