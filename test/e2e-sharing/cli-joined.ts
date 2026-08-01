@@ -719,7 +719,11 @@ async function main(): Promise<void> {
     const bin = join(install, "node_modules/@tinycloud/cli/bin/tc");
     const cliEnv = { HOME: consumerHome, TC_HOME: cliHome, CI: "1", NODE_OPTIONS: `--import ${networkGuard} --import ${preload}`, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost", TC_JOINED_NODE_STATUS_FILE: nodeStatus };
     const published = await runCli(bin, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv, undefined, servicePorts);
-    if (published.status !== 0) throw new Error(`packed CLI publish failed with transport statuses ${await readFile(nodeStatus, "utf8").catch(() => "unobserved")} output=${published.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-4000)}`);
+    if (published.status !== 0) {
+      const stateFiles = ["config.json", "profiles/joined/profile.json", "profiles/joined/session.json", "profiles/joined/key.json"];
+      const statePresence = await Promise.all(stateFiles.map(async (relativePath) => [relativePath, await access(join(cliHome, ".tinycloud", relativePath)).then(() => true).catch(() => false)] as const));
+      throw new Error(`packed CLI publish failed with transport statuses ${await readFile(nodeStatus, "utf8").catch(() => "unobserved")} state=${JSON.stringify(Object.fromEntries(statePresence))} output=${published.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-4000)}`);
+    }
     const link = published.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
       try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
       catch { return false; }
