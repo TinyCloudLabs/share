@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { randomBytes } from "node:crypto";
+import { ed25519 } from "@noble/curves/ed25519";
 
 import { startProductionServer } from "../../src/host/production-server.js";
 
@@ -87,6 +89,9 @@ async function main(): Promise<void> {
   const children: Child[] = [];
   try {
     await writeFile(inputPath, "joined production path\n", { mode: 0o600 });
+    const registryPrivateKey = randomBytes(32);
+    await writeFile(registryKey, registryPrivateKey.toString("base64url"), { mode: 0o600 });
+    const registryPublicKey = Buffer.from(ed25519.getPublicKey(registryPrivateKey)).toString("base64url");
     const nodeSecret = Buffer.alloc(32, 0x09).toString("base64url");
     const node = child(nodeBinary, ["--target-origin", "https://node.tinycloud.xyz", "--profile-output", nodeHome, "--trust-bundle-output", trustBundle, "--keys-secret", nodeSecret, "--quiet"], nodeWorktree, {});
     children.push(node);
@@ -100,9 +105,12 @@ async function main(): Promise<void> {
     const probeHeaders = probeNode.invokeAny([{ spaceId: session.spaceId, service: "capabilities", action: "tinycloud.capabilities/read" }], [{ requestBodyDigest: "probe" }]);
     const probe = await fetch(`${nodeOrigin}/share/upload/attestation`, { method: "POST", headers: { ...probeHeaders, "content-type": "application/json" }, body: "{}" });
     if (probe.status !== 400) throw new Error(`mounted Node authorization probe returned ${probe.status}`);
-    const registry = child("bun", ["packages/registry/src/dev-server-cli.ts", "--port", "0"], shareRoot, {});
+    const registry = child("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
+      REGISTRY_AUTH_PUBLIC_KEY: registryPublicKey,
+      REGISTRY_LINK_UPLOAD_PUBLIC_KEY: registryPublicKey,
+    });
     children.push(registry);
-    const registryMatch = await ready(registry, /dev share registry listening on (http:\/\/127\.0\.0\.1:\d+)/);
+    const registryMatch = await ready(registry, /production share registry listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const registryOrigin = registryMatch[1]!;
     const bundle = await readFile(trustBundle, "utf8");
     const share = child("bun", ["test/e2e-sharing/cli-joined.ts", "--host"], shareRoot, {
@@ -137,21 +145,9 @@ async function main(): Promise<void> {
     const sdkServicesTarball = await packPackage(resolve(sdkWorktree, "packages/sdk-services"));
     const operationsTarball = await packPackage(resolve(sdkWorktree, "packages/operations"));
     const install = join(root, "packed-cli");
-    const installResult = child("npm", ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--prefix", install, cliTarball, envelopeTarball, shareSdkTarball, nodeSdkTarball, "ethers"], sdkWorktree, {});
+    const installResult = child("npm", ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--prefix", install, cliTarball, envelopeTarball, shareSdkTarball, nodeSdkTarball, nodeWasmTarball, sdkCoreTarball, sdkServicesTarball, operationsTarball, "ethers"], sdkWorktree, {});
     children.push(installResult);
     if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
-    const replacePackedDependency = async (tarball: string, packagePath: string): Promise<void> => {
-      const unpacked = join(root, `unpacked-${packagePath.replaceAll("/", "-")}`);
-      await mkdir(unpacked, { recursive: true });
-      const extracted = child("tar", ["-xzf", tarball, "-C", unpacked], sdkWorktree, {});
-      children.push(extracted);
-      if ((await once(extracted.process, "exit"))[0] !== 0) throw new Error("packed dependency extraction failed");
-      await cp(join(unpacked, "package"), join(install, "node_modules", packagePath), { recursive: true, force: true });
-    };
-    await replacePackedDependency(nodeWasmTarball, "@tinycloud/node-sdk-wasm");
-    await replacePackedDependency(sdkCoreTarball, "@tinycloud/sdk-core");
-    await replacePackedDependency(sdkServicesTarball, "@tinycloud/sdk-services");
-    await replacePackedDependency(operationsTarball, "@tinycloud/operations");
     const packedSdk = await import(`${install}/node_modules/@tinycloud/node-sdk/dist/index.js`);
     const packedNode = new packedSdk.TinyCloudNode({ host: nodeOrigin });
     await packedNode.restoreSession({ ...session, verificationMethod: profile.sessionDid });
@@ -172,6 +168,8 @@ async function main(): Promise<void> {
     if (inspected.status !== 0) throw new Error(`profile-free inspect failed status=${inspected.status} outputLength=${inspected.stdout.length} transport=${await readFile(nodeStatus, "utf8").catch(() => "unobserved")}`);
     const warmed = await runNpx(install, ["share", "inspect", "-", "--stdin"], { ...transportEnv, TC_HOME: join(root, "warm-npx-home") }, `${link}\n`);
     if (warmed.status !== 0) throw new Error("warm-cache npx inspect failed");
+    const warmPublished = await runNpx(install, ["--profile", "joined", "share", "publish", inputPath, "--registry", `${canonicalShare}/api/share/link-only/registry`], cliEnv);
+    if (warmPublished.status !== 0) throw new Error("warm-cache npx publish failed");
     await mkdir(outputDir, { recursive: true });
     const received = await runCli(bin, ["share", "receive", "-", "--stdin", "--output", outputDir], { ...transportEnv, TC_HOME: join(root, "public-receive-home") }, `${link}\n`);
     if (received.status !== 0) throw new Error("profile-free bearer receive failed");

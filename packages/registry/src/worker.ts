@@ -16,6 +16,7 @@ const LINK_AUTHORIZATION_TTL_MS = 2 * 60 * 1000;
 const LINK_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
 const DELETE_AFTER_METADATA = "tinycloud-delete-after";
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
+const B64_JTI = /^[A-Za-z0-9_-]{22}$/;
 const json = (status: number, body: unknown, extra: HeadersInit = {}) => new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json", ...extra } });
 const key = (kind: string, id: string) => `${kind}/${id}`;
 function authBytes(value: string): Uint8Array {
@@ -44,7 +45,7 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
     const outer = JSON.parse(encoded) as { authorization?: Record<string, unknown>; proof?: Record<string, unknown> };
     const body = outer.authorization;
     const proof = outer.proof;
-    const expectedKeys = ["action", "bodyDigest", "contentLength", "deleteAfter", "expiresAt", "mode", "resource", "sessionBinding", "type", "version"];
+    const expectedKeys = ["action", "audience", "bodyDigest", "contentLength", "deleteAfter", "expiresAt", "jti", "mode", "resource", "sessionBinding", "type", "version"];
     if (
       !body ||
       !proof ||
@@ -54,6 +55,7 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
       typeof proof.signature !== "string" ||
       body.type !== "TinyCloudShareRegistryAuthorization" ||
       body.version !== 1 ||
+      body.audience !== LINK_PROXY_ORIGIN ||
       body.mode !== "link-only" ||
       body.action !== "tinycloud.share/upload" ||
       body.resource !== "registry/blobs" ||
@@ -62,6 +64,8 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
       !B64_256.test(body.bodyDigest) ||
       typeof body.sessionBinding !== "string" ||
       !B64_256.test(body.sessionBinding) ||
+      typeof body.jti !== "string" ||
+      !B64_JTI.test(body.jti) ||
       typeof body.deleteAfter !== "string" ||
       body.deleteAfter !== request.headers.get(DELETE_AFTER_HEADER) ||
       typeof body.expiresAt !== "string"
@@ -84,12 +88,15 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
     if (bodyDigest !== body.bodyDigest) return false;
     const publicKey = await crypto.subtle.importKey("raw", authBytes(env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY).slice().buffer, { name: "Ed25519" }, false, ["verify"]);
     const unsigned = JSON.stringify(Object.keys(body).sort().reduce((o, k) => { o[k] = body[k]; return o; }, {} as Record<string, unknown>));
-    return await crypto.subtle.verify(
+    const verified = await crypto.subtle.verify(
       "Ed25519",
       publicKey,
       authBytes(proof.signature).slice().buffer,
       new TextEncoder().encode(`${LINK_AUTHORIZATION_DOMAIN}${unsigned}`),
     );
+    if (!verified || await env.REGISTRY.get(key("upload-authorization", body.jti)) !== null) return false;
+    await env.REGISTRY.put(key("upload-authorization", body.jti), new Uint8Array());
+    return true;
   } catch { return false; }
 }
 function retentionExpiry(request: Request): number | null {
@@ -110,11 +117,12 @@ function linkAuthorizationAdmitsBody(request: Request, env: RegistryEnv, max: nu
     const proof = outer.proof;
     const contentLength = request.headers.get("content-length");
     return !!body && !!proof && body.type === "TinyCloudShareRegistryAuthorization" && body.version === 1 &&
-      body.mode === "link-only" && body.action === "tinycloud.share/upload" && body.resource === "registry/blobs" &&
+      body.mode === "link-only" && body.action === "tinycloud.share/upload" && body.audience === LINK_PROXY_ORIGIN && body.resource === "registry/blobs" &&
       Number.isSafeInteger(body.contentLength) && Number(body.contentLength) >= 0 && Number(body.contentLength) <= max &&
       (!contentLength || Number(contentLength) === Number(body.contentLength)) &&
       typeof body.bodyDigest === "string" && B64_256.test(body.bodyDigest) &&
       typeof body.sessionBinding === "string" && B64_256.test(body.sessionBinding) &&
+      typeof body.jti === "string" && B64_JTI.test(body.jti) &&
       typeof body.deleteAfter === "string" && body.deleteAfter === request.headers.get(DELETE_AFTER_HEADER) &&
       retentionExpiry(request) !== null && typeof body.expiresAt === "string" &&
       Date.parse(body.expiresAt) > Date.now() && Date.parse(body.expiresAt) <= Date.now() + LINK_AUTHORIZATION_TTL_MS &&

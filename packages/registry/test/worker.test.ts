@@ -37,10 +37,12 @@ function authorization(
 ): string {
   const body = {
     action: "tinycloud.share/upload",
+    audience: ORIGIN,
     bodyDigest: createHash("sha256").update(bytes).digest("base64url"),
     contentLength: bytes.byteLength,
     deleteAfter,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    jti: b64(new Uint8Array(16).fill(5)),
     mode: "link-only",
     resource: "registry/blobs",
     sessionBinding: b64(new Uint8Array(32).fill(4)),
@@ -128,6 +130,26 @@ function request(
 }
 
 describe("production link-only registry authorization", () => {
+  it("denies missing, tampered, wrong-audience, expired, and replayed authorizations", async () => {
+    const bytes = new Uint8Array([2, 4, 6]);
+    const deleteAfter = new Date(Date.now() + 60_000).toISOString();
+    const missing = request(bytes, deleteAfter);
+    missing.headers.delete("x-tinycloud-authorization");
+    expect((await worker.fetch(missing, env())).status).toBe(401);
+
+    const signed = authorization(bytes, deleteAfter);
+    const tampered = JSON.parse(signed) as { proof: { signature: string } };
+    tampered.proof.signature = `${tampered.proof.signature.slice(0, -1)}${tampered.proof.signature.endsWith("A") ? "B" : "A"}`;
+    expect((await worker.fetch(request(bytes, deleteAfter, JSON.stringify(tampered)), env())).status).toBe(401);
+
+    expect((await worker.fetch(request(bytes, deleteAfter, authorization(bytes, deleteAfter, { audience: "https://wrong.example" })), env())).status).toBe(401);
+    expect((await worker.fetch(request(bytes, deleteAfter, authorization(bytes, deleteAfter, { expiresAt: new Date(Date.now() - 1_000).toISOString() })), env())).status).toBe(401);
+
+    const replayEnv = env();
+    expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(201);
+    expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(401);
+  });
+
   it("accepts a short-lived session-bound authorization for exactly the uploaded ciphertext", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
     const deleteAfter = new Date(Date.now() + 60_000).toISOString();

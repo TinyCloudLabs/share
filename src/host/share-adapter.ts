@@ -27,6 +27,43 @@ function validateSource(value: ContentSource): ContentSource {
 }
 function stable(value: unknown): string { if (value === null || typeof value !== "object") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`; }
 
+function isCanonicalRecipientDid(value: string): boolean {
+  if (value.length === 0 || value.length > 2048 || /[\u0000-\u0020\u007f]/.test(value)) return false;
+  const parts = value.split(":");
+  if (parts.length < 3 || parts[0] !== "did" || !/^[a-z0-9]+$/.test(parts[1] ?? "")) return false;
+  const identifier = parts.slice(2);
+  if (identifier.some((part) => part.length === 0)) return false;
+  if (parts[1] === "web") {
+    const host = identifier[0] ?? "";
+    if (host.length > 253 || host.split(".").some((label) => !label || label.length > 63 || !/^[A-Za-z0-9-]+$/.test(label) || label.startsWith("-") || label.endsWith("-"))) return false;
+    return identifier.slice(1).every((part) => /^[A-Za-z0-9._%-]+$/.test(part));
+  }
+  if (parts[1] === "pkh") return identifier.length >= 3 && identifier.every((part) => /^[A-Za-z0-9._%-]+$/.test(part));
+  if (parts[1] === "key") {
+    if (!/^z[1-9A-HJ-NP-Za-km-z]+$/.test(identifier.join(":"))) return false;
+    const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const digits = identifier.join(":").slice(1).split("").map((char) => alphabet.indexOf(char));
+    if (digits.some((digit) => digit < 0)) return false;
+    const bytes = [0];
+    for (const digit of digits) {
+      let carry = digit;
+      for (let index = bytes.length - 1; index >= 0; index -= 1) {
+        const value = bytes[index] * 58 + carry;
+        bytes[index] = value & 0xff;
+        carry = value >>> 8;
+      }
+      while (carry > 0) {
+        bytes.unshift(carry & 0xff);
+        carry >>>= 8;
+      }
+    }
+    const leadingZeroes = identifier.join(":").slice(1).match(/^1*/)?.[0].length ?? 0;
+    const decoded = [...new Array(leadingZeroes).fill(0), ...bytes].slice(bytes.length === 1 && bytes[0] === 0 ? leadingZeroes : 0);
+    return decoded.length === 34 && decoded[0] === 0xed && decoded[1] === 0x01;
+  }
+  return false;
+}
+
 const MAX_BODY = 128 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
 const B64_128 = /^[A-Za-z0-9_-]{22}$/;
@@ -432,6 +469,7 @@ function registryUploadAuthorization(
 ): string {
   const authorization = {
     action: "tinycloud.share/upload",
+    audience: "https://registry.tinycloud.xyz",
     bodyDigest: hashBytes(body),
     contentLength: body.byteLength,
     deleteAfter,
@@ -441,6 +479,7 @@ function registryUploadAuthorization(
     sessionBinding: hash(sessionToken),
     type: "TinyCloudShareRegistryAuthorization",
     version: 1,
+    jti: toBase64Url(randomBytes(16)),
   };
   const message = new TextEncoder().encode(
     `${REGISTRY_AUTHORIZATION_DOMAIN}${stable(authorization)}`,
@@ -725,7 +764,8 @@ function assertAddressedDelegationAuthoringSigningBinding(message: Record<string
   if (Object.keys(message).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(message, key)) || !sameJson(binding, message)) throw new Error("delegation authoring signing shape");
   if (message.version !== 2 || typeof message.nonce !== "string" || typeof message.jti !== "string" || !B64_256.test(message.nonce) || !B64_128.test(message.jti) || message.senderDid !== scope.senderDid || message.targetOrigin !== scope.targetOrigin || message.nodeAudience !== scope.nodeAudience || message.delegationCid !== scope.delegationCid || message.authorityMaterialHandle !== scope.authorityMaterialHandle || message.authorityMaterialDigest !== scope.authorityMaterialDigest || !sameJson(message.contentSource, source) || message.contentSourceDigest !== sourceDigest(source)) throw new Error("delegation authoring binding");
   const matcher = message.recipientMatcher;
-  if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher) || !["exactEmail", "emailDomain"].includes((matcher as Record<string, unknown>).kind as string) || typeof (matcher as Record<string, unknown>).value !== "string") throw new Error("delegation authoring matcher");
+  if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher) || !["exactEmail", "emailDomain", "recipientDid"].includes((matcher as Record<string, unknown>).kind as string) || typeof (matcher as Record<string, unknown>).value !== "string") throw new Error("delegation authoring matcher");
+  if ((matcher as Record<string, unknown>).kind === "recipientDid" && !isCanonicalRecipientDid((matcher as Record<string, unknown>).value as string)) throw new Error("delegation authoring matcher");
   const resource = message.resource;
   if (typeof resource !== "object" || resource === null || Array.isArray(resource)) throw new Error("delegation authoring resource");
   const resourceObject = resource as Record<string, unknown>;
@@ -753,7 +793,7 @@ async function parseV2Policy(policyCid: string, policyBytes: string): Promise<Re
   const matcher = parsed.recipientMatcher as Record<string, unknown>;
   const resource = parsed.resource as Record<string, unknown>;
   const source = parsed.contentSource as Record<string, unknown>;
-  if (Object.keys(parsed).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(parsed, key)) || stable(parsed) !== text || parsed.type !== "TinyCloudSharePolicy" || parsed.version !== 2 || typeof parsed.issuerDid !== "string" || typeof parsed.expiresAt !== "string" || typeof parsed.contentSource !== "object" || parsed.contentSource === null || Array.isArray(parsed.contentSource) || typeof parsed.resource !== "object" || parsed.resource === null || Array.isArray(parsed.resource) || !Array.isArray(parsed.actions) || parsed.actions.length === 0 || parsed.actions.length > 4 || parsed.actions.some((action) => action !== "tinycloud.kv/get" && action !== "tinycloud.kv/metadata" && action !== "tinycloud.kv/list" && action !== "tinycloud.kv/put") || typeof parsed.recipientMatcher !== "object" || parsed.recipientMatcher === null || Array.isArray(parsed.recipientMatcher) || typeof parsed.contentSourceDigest !== "string" || Object.keys(matcher).some((key) => key !== "kind" && key !== "value") || (matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain") || typeof matcher.value !== "string" || Object.keys(resource).some((key) => key !== "kind" && key !== "value") || (resource.kind !== "exact" && resource.kind !== "prefix") || typeof resource.value !== "string" || Object.keys(source).some((key) => key !== "kind" && key !== "space" && key !== "path" && key !== "action") || source.kind !== "kv" || typeof source.space !== "string" || typeof source.path !== "string" || (source.action !== "tinycloud.kv/get" && source.action !== "tinycloud.kv/list" && source.action !== "tinycloud.kv/put")) throw new Error("v2 policy shape");
+  if (Object.keys(parsed).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(parsed, key)) || stable(parsed) !== text || parsed.type !== "TinyCloudSharePolicy" || parsed.version !== 2 || typeof parsed.issuerDid !== "string" || typeof parsed.expiresAt !== "string" || typeof parsed.contentSource !== "object" || parsed.contentSource === null || Array.isArray(parsed.contentSource) || typeof parsed.resource !== "object" || parsed.resource === null || Array.isArray(parsed.resource) || !Array.isArray(parsed.actions) || parsed.actions.length === 0 || parsed.actions.length > 4 || parsed.actions.some((action) => action !== "tinycloud.kv/get" && action !== "tinycloud.kv/metadata" && action !== "tinycloud.kv/list" && action !== "tinycloud.kv/put") || typeof parsed.recipientMatcher !== "object" || parsed.recipientMatcher === null || Array.isArray(parsed.recipientMatcher) || typeof parsed.contentSourceDigest !== "string" || Object.keys(matcher).some((key) => key !== "kind" && key !== "value") || (matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "recipientDid") || typeof matcher.value !== "string" || (matcher.kind === "recipientDid" ? !isCanonicalRecipientDid(matcher.value) : false) || Object.keys(resource).some((key) => key !== "kind" && key !== "value") || (resource.kind !== "exact" && resource.kind !== "prefix") || typeof resource.value !== "string" || Object.keys(source).some((key) => key !== "kind" && key !== "space" && key !== "path" && key !== "action") || source.kind !== "kv" || typeof source.space !== "string" || typeof source.path !== "string" || (source.action !== "tinycloud.kv/get" && source.action !== "tinycloud.kv/list" && source.action !== "tinycloud.kv/put")) throw new Error("v2 policy shape");
   return parsed;
 }
 
@@ -765,11 +805,12 @@ async function assertV2SigningBinding(message: Record<string, unknown>, binding:
   const recipient = message.recipientMatcher;
   if (typeof recipient !== "object" || recipient === null || Array.isArray(recipient)) throw new Error("v2 recipient matcher");
   const matcher = recipient as Record<string, unknown>;
-  if ((matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "policyDigest" && matcher.kind !== "bearer") || (matcher.kind !== "bearer" && typeof matcher.value !== "string")) throw new Error("v2 recipient matcher");
+  if ((matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "recipientDid" && matcher.kind !== "policyDigest" && matcher.kind !== "bearer") || (matcher.kind !== "bearer" && typeof matcher.value !== "string")) throw new Error("v2 recipient matcher");
   const matcherValue = matcher.value as string | undefined;
   if (matcher.kind === "exactEmail") canonicalEmail(matcherValue!);
   if (matcher.kind === "emailDomain" && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(matcherValue!)) throw new Error("v2 recipient domain");
   if (matcher.kind === "policyDigest" && !B64_256.test(matcherValue!)) throw new Error("v2 policy matcher");
+  if (matcher.kind === "recipientDid" && !isCanonicalRecipientDid(matcherValue!)) throw new Error("v2 recipient DID");
   if (stable(matcher) !== stable(binding.recipientMatcher)) throw new Error("v2 recipient binding");
   const actions = message.actions;
   if (!Array.isArray(actions) || actions.length === 0 || actions.length > 3 || stable(actions) !== stable(["read", "list", "edit"].filter((action) => actions.includes(action)))) throw new Error("v2 actions");
@@ -804,6 +845,7 @@ async function assertV2SigningBinding(message: Record<string, unknown>, binding:
   if (deliveryEmail !== undefined) {
     const email = canonicalEmail(deliveryEmail);
     if (matcher.kind === "exactEmail" && email !== matcher.value || matcher.kind === "emailDomain" && email.slice(email.lastIndexOf("@") + 1) !== matcher.value) throw new Error("v2 delivery binding");
+    if (matcher.kind === "recipientDid") throw new Error("v2 delivery binding");
   }
 }
 

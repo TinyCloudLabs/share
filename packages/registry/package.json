@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./dev-server": "./src/dev-server.ts"
+    "./dev-server": "./src/dev-server.ts",
+    "./production-server": "./src/production-server-cli.ts"
   },
   "scripts": {
     "test": "vitest run",
