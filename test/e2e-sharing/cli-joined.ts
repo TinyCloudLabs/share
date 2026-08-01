@@ -209,8 +209,12 @@ async function readCanonicalNpmArtifact(
   }
   const actual = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
   if (actual !== integrity) throw new Error(`canonical npm artifact integrity mismatch for ${name}@${version}: expected ${integrity}, found ${actual}`);
-  const manifestText = await runCommand("tar", ["-xOf", contentPath, "package/package.json"], shareRoot);
-  if (manifestText.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
+  const archiveEntries = await runCommand("tar", ["-tzf", contentPath], shareRoot);
+  if (archiveEntries.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} is not a readable gzip tarball`);
+  const manifestEntry = archiveEntries.output.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => /(?:^|\/)package\.json$/.test(entry));
+  if (manifestEntry === undefined) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
+  const manifestText = await runCommand("tar", ["-xOzf", contentPath, manifestEntry], shareRoot);
+  if (manifestText.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} has an unreadable package manifest`);
   const manifest = JSON.parse(manifestText.output) as PackageManifest;
   if (manifest.name !== name || manifest.version !== version) throw new Error(`canonical npm artifact identity mismatch: expected ${name}@${version}, found ${manifest.name}@${manifest.version}`);
   const filename = `${name.replace(/^@/, "").replaceAll("/", "-")}-${version}.tgz`;
