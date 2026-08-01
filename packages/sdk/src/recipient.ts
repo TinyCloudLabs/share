@@ -207,7 +207,24 @@ export class ShareRecipientClient {
       const source = outer.contentSource as Record<string, unknown>;
       const ownerShareCid = ownerAuthority.shareCid;
       const action = envelope.actions.includes("list") ? "tinycloud.kv/list" : envelope.actions.includes("edit") ? "tinycloud.kv/put" : "tinycloud.kv/get";
-      const actions = [...new Set(envelope.actions.map(nativeAction))].sort();
+      // Copy the signed set verbatim — do not re-derive it from
+      // `envelope.actions`.
+      //
+      // The node compares this array against the outer envelope's for exact
+      // equality (`verify_outer_envelope`, `share_v2.rs`), and the outer
+      // envelope is signed with its CID committing to those bytes. This was
+      // `[...new Set(envelope.actions.map(nativeAction))].sort()`, which
+      // re-expands the UI vocabulary — and `nativeAction("read")` yields only
+      // `tinycloud.kv/get`, while the composer expands `read` to
+      // `tinycloud.kv/get` *and* `tinycloud.kv/metadata`
+      // (`src/share/composer.ts`). One permission, two expansions, so every
+      // addressed claim on production was refused `403 policy_denied` (TC-446).
+      // Re-sorting or de-duplicating here would reintroduce the same drift.
+      const signedActions: unknown = (outer as { readonly actions?: unknown }).actions;
+      if (!Array.isArray(signedActions) || signedActions.length === 0 || signedActions.some((value) => typeof value !== "string")) {
+        throw new TypeError("owner authority outer envelope actions");
+      }
+      const actions = [...signedActions] as NativeAction[];
       const challengeBody = {
         envelopeCid: ownerAuthority.envelopeCid,
         shareCid: ownerShareCid,

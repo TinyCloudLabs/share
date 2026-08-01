@@ -40,7 +40,26 @@ export async function sendViaResend(
   try {
     response = await fetchFn(config.endpoint ?? DEFAULT_ENDPOINT, {
       method: "POST",
-      redirect: "error",
+      // `manual`, not `error`. The intent is the same — never follow a redirect,
+      // so a moved endpoint can never re-send the message somewhere else — but
+      // the Workers runtime does not implement `error` and throws on the call:
+      //
+      //   TypeError: Invalid redirect value, must be one of "follow" or
+      //   "manual" ("error" won't be implemented since it does not make sense
+      //   at the edge; use "manual" and check the response status code).
+      //
+      // It throws *before any network I/O*, so this module returned
+      // `{ok: false, status: null}` for every send and the Worker answered a
+      // flat `502 provider-unavailable`. Every row in the D1 ledger was
+      // `failed` with a null message id: this Worker had never delivered a
+      // single message. `redirect: "error"` came over from
+      // `opencredentials::flow::resend_client`, where reqwest's
+      // `Policy::none()` means exactly this and is supported.
+      //
+      // With `manual` a 3xx arrives as an ordinary response and is refused by
+      // the `!response.ok` check below, which is the behaviour `error` was
+      // reached for.
+      redirect: "manual",
       headers: {
         authorization: `Bearer ${config.apiKey}`,
         "content-type": "application/json",

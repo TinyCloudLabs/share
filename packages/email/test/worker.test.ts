@@ -161,8 +161,30 @@ function post(payload: unknown, origin: string | null = SHARE_ORIGIN): Request {
 
 let provider: ReturnType<typeof vi.fn>;
 
+/**
+ * `fetch` as the Workers runtime actually implements it, in the one respect
+ * that mattered: `redirect` accepts only `follow` and `manual`, and *throws* on
+ * anything else before any network I/O.
+ *
+ * Without this the stub accepted every `RequestInit` we handed it, so the suite
+ * was 20/20 green while production shipped `redirect: "error"` and never
+ * delivered a single message — `sendViaResend` caught the TypeError and
+ * reported an indistinguishable `{ok: false, status: null}`. A stub that
+ * accepts what the runtime rejects is not a test of the call.
+ */
+function workerdFetch(handler: (endpoint: string, init: RequestInit) => Promise<Response>) {
+  return vi.fn(async (endpoint: string, init: RequestInit) => {
+    if (init.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
+      throw new TypeError(
+        `Invalid redirect value, must be one of "follow" or "manual" ("${init.redirect}" won't be implemented since it does not make sense at the edge; use "manual" and check the response status code).`,
+      );
+    }
+    return handler(endpoint, init);
+  });
+}
+
 beforeEach(() => {
-  provider = vi.fn(async () => new Response(JSON.stringify({ id: "msg_live_1" }), { status: 200 }));
+  provider = workerdFetch(async () => new Response(JSON.stringify({ id: "msg_live_1" }), { status: 200 }));
   vi.stubGlobal("fetch", provider);
 });
 
@@ -218,7 +240,11 @@ describe("authorized delivery", () => {
 
     const failed = await worker.fetch(post(payload), environment);
     expect(failed.status).toBe(502);
-    expect(await failed.json()).toEqual({ error: "provider-unavailable" });
+    // The provider's numeric status is surfaced, and only the status — never
+    // its body, which can echo the recipient address. Without it every provider
+    // refusal is indistinguishable from outside the Worker, which is what made
+    // an unverified Resend sending domain look like an unexplained 502.
+    expect(await failed.json()).toEqual({ error: "provider-unavailable", providerStatus: 429 });
     expect([...environment.DELIVERIES.rows.values()][0]?.status).toBe("failed");
 
     const retried = await worker.fetch(post(payload), environment);
@@ -446,6 +472,37 @@ describe("secrets and PII", () => {
     await worker.fetch(post(sign(authorizationBody(), otherPrivateKey)), env());
     await worker.fetch(post(sign(authorizationBody())), env({ DELIVERIES: database({ failing: true }) }));
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The one deliberate exception, and the reason the assertion above is not
+   * simply "never log": a provider refusal is invisible to the operator
+   * otherwise. The error body reaches only the caller's browser, and a live
+   * acceptance run recovered nothing from it — so the numeric status is logged
+   * as well. This pins that exception to exactly one line carrying exactly one
+   * number, because the test above never exercises this path and would not have
+   * noticed the line appearing.
+   */
+  it("logs the provider's numeric status on a refusal, and nothing else about it", async () => {
+    const spies = (["log", "info", "error", "debug", "trace"] as const).map((method) =>
+      vi.spyOn(console, method).mockImplementation(() => undefined),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    provider = workerdFetch(async () => new Response("nope", { status: 403 }));
+    vi.stubGlobal("fetch", provider);
+
+    const response = await worker.fetch(post(sign(authorizationBody())), env());
+    expect(response.status).toBe(502);
+
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain("403");
+    // Not the recipient, not the share URL, not the key fragment, not the API
+    // key — and not the provider's response body, which can echo the address.
+    for (const secret of [SHARE_URL, KEY_FRAGMENT, RECIPIENT, "re_test_key", "nope"]) {
+      expect(line).not.toContain(secret);
+    }
   });
 
   it("declares no cache and a no-referrer policy so intermediaries keep nothing", async () => {

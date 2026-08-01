@@ -8,29 +8,8 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { newInbox, waitForMessage, extractOtp } from "./mailinator.mjs";
-import { redactString } from "./redact.mjs";
 
 export const OPENKEY_ORIGIN = process.env.OPENKEY_ORIGIN ?? "https://openkey.so";
-
-const PASSKEY_NAME = /(?:passkey|security key)/i;
-const NON_PASSKEY_NAME = /(?:email|google|apple|github|twitter|facebook|social)/i;
-
-/** Click only a semantic passkey/key choice; email and social choices are never fallbacks. */
-async function clickPasskeyChoice(frame, log) {
-  const buttons = frame.getByRole("button");
-  const count = await buttons.count().catch(() => 0);
-  for (let index = 0; index < count; index += 1) {
-    const button = buttons.nth(index);
-    const name = (await button.getAttribute("aria-label").catch(() => null)) ?? (await button.textContent().catch(() => ""));
-    const normalized = (name ?? "").replace(/\s+/g, " ").trim();
-    if (!PASSKEY_NAME.test(normalized) || NON_PASSKEY_NAME.test(normalized)) continue;
-    if (!(await button.isVisible().catch(() => false))) continue;
-    log(`[openkey frame] clicking semantic passkey choice ${JSON.stringify(normalized)}`);
-    await button.click().catch((error) => log(`[openkey frame] passkey click failed: ${redactString(error.message)}`));
-    return true;
-  }
-  return false;
-}
 
 /** Attach a virtual internal authenticator to `context` and return its CDP handle. */
 export async function attachVirtualAuthenticator(context, page) {
@@ -82,7 +61,7 @@ export async function registerFreshAccount(page, cdp, authenticatorId, log) {
     log,
   });
   const otp = extractOtp(text);
-  log("[openkey] OTP <redacted>");
+  log(`[openkey] OTP ${otp}`);
 
   await page.locator("#otp").fill(otp);
   await page.getByRole("button", { name: /^verify$/i }).click();
@@ -150,8 +129,7 @@ export function startOpenKeyAutopilot(page, log, intervalMs = 1_000) {
       if (stopped || page.isClosed()) return;
       for (const frame of page.frames()) {
         if (!/openkey/.test(frame.url())) continue;
-        if (await clickPasskeyChoice(frame, log)) continue;
-        for (const name of [/^sign(?: this)? message$/i, /sign message/i, /use this key/i, /select (?:a )?key/i, /generate (?:a )?key/i, /^approve$/i, /^allow$/i, /^confirm$/i]) {
+        for (const name of [/^sign message$/i, /use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /^approve$/i, /^allow$/i, /^confirm$/i]) {
           const button = frame.getByRole("button", { name }).first();
           if (!(await button.isVisible().catch(() => false))) continue;
           const key = `${frame.url()}::${name}`;
@@ -265,17 +243,21 @@ export async function signInToShare(page, { appUrl, log, timeoutMs = 420_000, un
       // Priority order. "Use a passkey instead" is the 2026-07 entry point on
       // the embed's chooser; "Continue with email" must never be picked, which
       // is why the continue matcher is anchored.
-      if (await clickPasskeyChoice(frame, log)) {
-        await page.waitForTimeout(1_500);
-        continue;
-      }
-      for (const name of [/^sign(?: this)? message$/i, /sign message/i, /use this key/i, /select (?:a )?key/i, /generate (?:a )?key/i, /^approve$/i, /^allow$/i, /^connect$/i, /^confirm$/i]) {
+      //
+      // As of 2026-07-31 the embed's chooser renders the passkey entry point as
+      // a bare "Passkey" (alongside "Continue with email", "Continue with
+      // Google", "Register", "Recover account"), which matched none of the
+      // older labels and left the harness sitting on the chooser until it timed
+      // out. `/^passkey$/i` is anchored so it can never select
+      // "Continue with email".
+      for (const name of [/use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /^passkey$/i, /sign message/i, /^approve$/i, /^allow$/i, /^connect$/i, /^confirm$/i, /^continue$/i]) {
         const button = frame.getByRole("button", { name }).first();
-        if (!(await button.isVisible().catch(() => false))) continue;
-        log(`[openkey frame] clicking ${name}`);
-        await button.click().catch((error) => log(`[openkey frame] click failed: ${redactString(error.message)}`));
-        await page.waitForTimeout(1_500);
-        break;
+        if (await button.isVisible().catch(() => false)) {
+          log(`[openkey frame] clicking ${name}`);
+          await button.click().catch((error) => log(`[openkey frame] click failed: ${error.message}`));
+          await page.waitForTimeout(1_500);
+          break;
+        }
       }
     }
     await page.waitForTimeout(1_500);
