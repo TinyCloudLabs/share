@@ -37,7 +37,7 @@ try {
   if (source === localSource && (await run("git", ["status", "--porcelain", "--untracked-files=all"], source)).stdout.trim() !== "") throw new Error("named js-sdk source is dirty");
   await run("git", ["checkout", "--detach", manifest.sdkCommit], isolated);
   if ((await run("git", ["status", "--porcelain", "--untracked-files=all"], isolated)).stdout.trim() !== "") throw new Error("isolated js-sdk checkout is dirty");
-  await run("bun", ["install", "--frozen-lockfile", "--ignore-scripts"], isolated);
+  await run("bun", ["install", "--frozen-lockfile"], isolated);
   await run("bun", ["run", "--cwd", "packages/share-envelope", "build"], isolated);
   await run("bun", ["run", "--cwd", "packages/share-sdk", "build"], isolated);
   const packed = await mkdtemp(join(tmpdir(), "tinycloud-share-sdk-pack-"));

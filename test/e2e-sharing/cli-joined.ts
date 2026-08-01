@@ -134,7 +134,7 @@ async function readManifest(path: string): Promise<PackageManifest> {
   return JSON.parse(await readFile(join(path, "package.json"), "utf8")) as PackageManifest;
 }
 
-async function packageDirectoryFromRequire(name: string, from: string): Promise<string> {
+async function resolveInstalledDependency(name: string, from: string): Promise<string> {
   const segments = name.startsWith("@") ? name.split("/").slice(0, 2) : [name];
   let current = from;
   while (true) {
@@ -164,8 +164,11 @@ async function assertExactSdkSource(sdkRoot: string): Promise<void> {
   if (upstreamHead !== expectedSdkHead || remoteHead !== expectedSdkHead) throw new Error("js-sdk source head does not match both fetched upstream and remote");
 }
 
-async function packNpmArtifact(directory: string, outputRoot: string): Promise<{ manifest: PackageManifest; bytes: Buffer; filename: string; integrity: string }> {
-  const result = await runCommand("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", outputRoot], directory);
+async function packWorkspaceArtifact(directory: string, outputRoot: string): Promise<{ manifest: PackageManifest; bytes: Buffer; filename: string; integrity: string }> {
+  // Workspace packages are the exact checked-out source authority.  Their
+  // normal pack lifecycle is part of the reproducible artifact, so scripts
+  // must run rather than being silently suppressed.
+  const result = await runCommand("npm", ["pack", "--silent", "--pack-destination", outputRoot], directory);
   if (result.status !== 0) throw new Error(`could not pack ${directory}: ${result.output.slice(-4000)}`);
   const filename = result.output.trim().split(/\r?\n/).at(-1);
   if (filename === undefined || !/\.tgz$/.test(filename)) throw new Error(`npm pack produced no artifact for ${directory}`);
@@ -173,20 +176,45 @@ async function packNpmArtifact(directory: string, outputRoot: string): Promise<{
   return { manifest: await readManifest(directory), bytes, filename, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` };
 }
 
-async function immutableCacheDirectory(cacheRoot: string, name: string, version: string): Promise<string> {
-  const segments = name.split("/");
-  const parent = join(cacheRoot, ...segments.slice(0, -1));
-  const leaf = segments.at(-1)!;
-  const entries = await readdir(parent, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(`${leaf}@${version}@@@1`)) continue;
-    const directory = join(parent, entry.name);
+function integrityHex(integrity: string): string {
+  if (!integrity.startsWith("sha512-")) throw new Error(`unsupported package integrity ${integrity}`);
+  const hex = Buffer.from(integrity.slice("sha512-".length), "base64").toString("hex");
+  if (!/^[0-9a-f]{128}$/.test(hex)) throw new Error(`invalid package integrity ${integrity}`);
+  return hex;
+}
+
+async function readCanonicalNpmArtifact(
+  cacheRoot: string,
+  name: string,
+  version: string,
+  integrity: string,
+): Promise<{ manifest: PackageManifest; bytes: Buffer; filename: string; integrity: string }> {
+  const hex = integrityHex(integrity);
+  const contentPath = join(cacheRoot, "_cacache", "content-v2", "sha512", hex.slice(0, 2), hex.slice(2, 4), hex.slice(4));
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(contentPath);
+  } catch {
+    const fetched = await runCommand("npm", [
+      "cache", "add", "--cache", cacheRoot, "--registry", "https://registry.npmjs.org", "--prefer-online", `${name}@${version}`,
+    ], shareRoot);
+    if (fetched.status !== 0) {
+      throw new Error(`canonical npm artifact is missing for ${name}@${version}; populate an independent npm cache with the lockfile SRI before running the joined proof (${fetched.output.slice(-2000)})`);
+    }
     try {
-      const manifest = await readManifest(directory);
-      if (manifest.name === name && manifest.version === version) return directory;
-    } catch { /* incomplete cache entries are not artifacts */ }
+      bytes = await readFile(contentPath);
+    } catch {
+      throw new Error(`canonical npm cache did not contain the lockfile-SRI artifact for ${name}@${version}; refusing a local repack or public-network fallback`);
+    }
   }
-  throw new Error(`immutable Bun cache is missing ${name}@${version}`);
+  const actual = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+  if (actual !== integrity) throw new Error(`canonical npm artifact integrity mismatch for ${name}@${version}: expected ${integrity}, found ${actual}`);
+  const manifestText = await runCommand("tar", ["-xOf", contentPath, "package/package.json"], shareRoot);
+  if (manifestText.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
+  const manifest = JSON.parse(manifestText.output) as PackageManifest;
+  if (manifest.name !== name || manifest.version !== version) throw new Error(`canonical npm artifact identity mismatch: expected ${name}@${version}, found ${manifest.name}@${manifest.version}`);
+  const filename = `${name.replace(/^@/, "").replaceAll("/", "-")}-${version}.tgz`;
+  return { manifest, bytes, filename, integrity: actual };
 }
 
 function lockIntegrity(lock: { packages?: Record<string, unknown> }, name: string, version: string): string {
@@ -204,8 +232,8 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
   const bunRuntime = (globalThis as typeof globalThis & { Bun?: { JSON5: { parse(value: string): unknown } } }).Bun;
   if (bunRuntime === undefined) throw new Error("joined harness must run under Bun");
   const lock = bunRuntime.JSON5.parse(await readFile(join(sdkRoot, "bun.lock"), "utf8")) as { workspaces?: Record<string, unknown>; packages?: Record<string, unknown> };
-  const catalog = JSON.parse(await readFile(join(shareRoot, "vendor/sdk-cli-artifact-catalog.json"), "utf8")) as { schema?: string; sdkCommit?: string; packages?: Array<{ name: string; version: string; integrity: string }> };
-  if (catalog.schema !== "tinycloud.sdk-cli-artifact-catalog/v1" || catalog.sdkCommit !== expectedSdkHead) throw new Error("SDK artifact catalog is not pinned to the requested exact head");
+  const catalog = JSON.parse(await readFile(join(shareRoot, "vendor/sdk-cli-artifact-catalog.json"), "utf8")) as { schema?: string; sdkCommit?: string; packages?: Array<{ name: string; version: string }> };
+  if (catalog.schema !== "tinycloud.sdk-cli-workspace-catalog/v2" || catalog.sdkCommit !== expectedSdkHead) throw new Error("SDK workspace catalog is not pinned to the requested exact head");
   const expectedWorkspace = new Map((catalog.packages ?? []).map((entry) => [`${entry.name}@${entry.version}`, entry]));
   const workspaceByName = new Map<string, string>();
   for (const workspacePath of Object.keys(lock.workspaces ?? {})) {
@@ -228,22 +256,23 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     directories.set(identity, { directory, workspace });
     for (const dependency of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies })) {
       const dependencyWorkspace = workspaceByName.get(dependency);
-      queue.push(dependencyWorkspace ?? await packageDirectoryFromRequire(dependency, directory));
+      // node_modules is used only to resolve the lock-selected version for
+      // graph traversal.  External bytes are always read from the
+      // independent SRI-addressed npm cache below, never from this directory.
+      queue.push(dependencyWorkspace ?? await resolveInstalledDependency(dependency, directory));
     }
   }
-  const cacheRootResult = await runCommand("bun", ["pm", "cache"], sdkRoot);
-  if (cacheRootResult.status !== 0) throw new Error(`could not locate Bun's immutable package cache: ${cacheRootResult.output}`);
-  const cacheRoot = cacheRootResult.output.trim();
   const packages: PackedPackage[] = [];
+  const canonicalNpmCache = join(outputRoot, "canonical-npm-cache");
   for (const { directory, workspace } of directories.values()) {
     const manifest = await readManifest(directory);
-    const expected = workspace
-      ? expectedWorkspace.get(`${manifest.name}@${manifest.version}`)?.integrity
-      : lockIntegrity(lock, manifest.name, manifest.version);
-    if (expected === undefined) throw new Error(`SDK artifact catalog has no workspace artifact for ${manifest.name}@${manifest.version}`);
-    const artifactSource = workspace ? directory : await immutableCacheDirectory(cacheRoot, manifest.name, manifest.version);
-    const packed = await packNpmArtifact(artifactSource, outputRoot);
-    if (packed.manifest.name !== manifest.name || packed.manifest.version !== manifest.version || packed.integrity !== expected) throw new Error(`independent SDK artifact mismatch for ${manifest.name}@${manifest.version}`);
+    const catalogEntry = expectedWorkspace.get(`${manifest.name}@${manifest.version}`);
+    if (workspace && catalogEntry === undefined) throw new Error(`SDK artifact catalog has no workspace identity for ${manifest.name}@${manifest.version}`);
+    const expected = workspace ? undefined : lockIntegrity(lock, manifest.name, manifest.version);
+    const packed = workspace
+      ? await packWorkspaceArtifact(directory, outputRoot)
+      : await readCanonicalNpmArtifact(canonicalNpmCache, manifest.name, manifest.version, expected!);
+    if (packed.manifest.name !== manifest.name || packed.manifest.version !== manifest.version || (!workspace && packed.integrity !== expected)) throw new Error(`independent SDK artifact mismatch for ${manifest.name}@${manifest.version}`);
     packages.push(packed);
   }
   return packages;
@@ -397,6 +426,12 @@ async function runRecipientDidRouteMatrix(input: {
     const response = await mappedFetch(`${input.nodeOrigin}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
+  const missingRecipientCredential = { ...sessionBody };
+  delete missingRecipientCredential.credential;
+  const missingRecipientCredentialResult = await postJson("/share/v2/policy/session", missingRecipientCredential);
+  if (missingRecipientCredentialResult.status !== 401 || JSON.stringify(missingRecipientCredentialResult.body) !== JSON.stringify({ error: { code: "recipient_credential_required" } })) {
+    throw new Error(`mounted production v2 router missing-credential denial mismatch: status=${missingRecipientCredentialResult.status} body=${JSON.stringify(missingRecipientCredentialResult.body)}`);
+  }
   const withDigest = async (body: Record<string, any>): Promise<Record<string, any>> => {
     const { requestBodyDigest: _oldDigest, ...unsigned } = body;
     return { ...unsigned, requestBodyDigest: await digestJson(unsigned) };

@@ -1,15 +1,15 @@
 {
-  "schema": "tinycloud.sdk-cli-artifact-catalog/v1",
+  "schema": "tinycloud.sdk-cli-workspace-catalog/v2",
   "sdkCommit": "7632f6b9ff2a3d035ca3f4802bc8f31dfd86b9b6",
   "packages": [
-    { "name": "@tinycloud/cli", "version": "0.8.3-beta.5", "integrity": "sha512-WfQvn3UVO72xapPTJA0uYpEbTFpltufb3BQ0eMKtPM9Jm4DqN03nFa+7L5R7yTT+AyBz/GmQpAvQl30bzPvAcg==" },
-    { "name": "@tinycloud/node-sdk", "version": "2.11.0-beta.6", "integrity": "sha512-FDpegscqbvLRdsZUFZQ097RkUANZSO6OIWHEP3V5G6xqTBx0gYYm3a1RQWEHlA+x7rtqUf5IgXvv4TTtgNt3jA==" },
-    { "name": "@tinycloud/node-sdk-wasm", "version": "1.7.5", "integrity": "sha512-9iJNkLrmjpl/Uu9C8zGYk1+bFxohSLNGR0RxHqey19DCHYtSBCI0XjwarOZt9ElZlaGgR0rYXO1/3uwXPmI5qg==" },
-    { "name": "@tinycloud/operations", "version": "0.3.2-beta.5", "integrity": "sha512-MSwoMNfa+8hwkljBB68zqWYeB38vHMFgxHHB3ye/Sgxkgm7xzmhT6sEz1kkkjmz/TnwBS/koZjot7jKRdvSPWQ==" },
-    { "name": "@tinycloud/share-envelope", "version": "0.1.0", "integrity": "sha512-7dO1vFtn0vrYVeQ9Thuhwe+bO4rE32BfSwuHTkRFyWMTYYqSAZvE7xgdH3CCdzwfB2OA27JBzK6hYOxt43Z5eA==" },
-    { "name": "@tinycloud/share-sdk", "version": "0.1.0", "integrity": "sha512-svF9BY0S/ZQGj4mbQjhnfit8/ilICFcLtBx7jJ/UH5EEms4HD70fSr7zrVV+OGGEG56aPQ5pbcQBEx5io5P6pw==" },
-    { "name": "@tinycloud/sdk-core", "version": "2.11.0-beta.6", "integrity": "sha512-j1swga0iDAdj87j/INyH/g2dot+CAyzEIxxo7iw35rN34d3nDs736PBn9aTYn9GnCOmIikO3KzubT/yvbQOXag==" },
-    { "name": "@tinycloud/sdk-services", "version": "2.11.0-beta.6", "integrity": "sha512-a/xjDWy1+2UeVZNypsBkr4P7pSz+JnuQ2wTK89E7Eni72SiYF6e4u/faDRXnBObXV0SmfjLI3cN1pfEXxERc8A==" },
-    { "name": "@tinycloud/bootstrap", "version": "2.6.0", "integrity": "sha512-AlnCxYJDuJuLVmjLGqdecmlVtYaA8GHOAwJ58LjvC0s7bQXt9H9hrNiCdER1IcswIqX8A9dWEAfkD3dk9642Eg==" }
+    { "name": "@tinycloud/cli", "version": "0.8.3-beta.5" },
+    { "name": "@tinycloud/node-sdk", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/node-sdk-wasm", "version": "1.7.5" },
+    { "name": "@tinycloud/operations", "version": "0.3.2-beta.5" },
+    { "name": "@tinycloud/share-envelope", "version": "0.1.0" },
+    { "name": "@tinycloud/share-sdk", "version": "0.1.0" },
+    { "name": "@tinycloud/sdk-core", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/sdk-services", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/bootstrap", "version": "2.6.0" }
   ]
 }
