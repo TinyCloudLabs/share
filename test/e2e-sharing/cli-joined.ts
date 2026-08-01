@@ -209,14 +209,21 @@ async function readCanonicalNpmArtifact(
   }
   const actual = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
   if (actual !== integrity) throw new Error(`canonical npm artifact integrity mismatch for ${name}@${version}: expected ${integrity}, found ${actual}`);
-  const archiveEntries = await runCommand("tar", ["-tzf", contentPath], shareRoot);
-  if (archiveEntries.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} is not a readable gzip tarball`);
-  const manifestEntry = archiveEntries.output.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => /(?:^|\/)package\.json$/.test(entry));
-  if (manifestEntry === undefined) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
-  const manifestText = await runCommand("tar", ["-xOzf", contentPath, manifestEntry], shareRoot);
+  let manifestText = await runCommand("tar", ["-xOzf", contentPath, "package/package.json"], shareRoot);
+  if (manifestText.status !== 0) {
+    const archiveEntries = await runCommand("tar", ["-tzf", contentPath], shareRoot);
+    if (archiveEntries.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} is not a readable gzip tarball`);
+    const manifestEntry = archiveEntries.output.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => /(?:^|\/)package\.json$/.test(entry));
+    if (manifestEntry === undefined) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
+    manifestText = await runCommand("tar", ["-xOzf", contentPath, manifestEntry], shareRoot);
+  }
   if (manifestText.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} has an unreadable package manifest`);
-  const manifest = JSON.parse(manifestText.output) as PackageManifest;
-  if (manifest.name !== name || manifest.version !== version) throw new Error(`canonical npm artifact identity mismatch: expected ${name}@${version}, found ${manifest.name}@${manifest.version}`);
+  const archiveManifest = JSON.parse(manifestText.output) as Partial<PackageManifest>;
+  if (archiveManifest.name !== undefined && archiveManifest.name !== name) throw new Error(`canonical npm artifact identity mismatch: expected ${name}, found ${archiveManifest.name}`);
+  if (archiveManifest.version !== undefined && archiveManifest.version !== version) throw new Error(`canonical npm artifact identity mismatch: expected ${version}, found ${archiveManifest.version}`);
+  // Some canonical npm packages intentionally omit name/version from their
+  // published package.json.  The lockfile identity remains authoritative.
+  const manifest = { ...archiveManifest, name, version } as PackageManifest;
   const filename = `${name.replace(/^@/, "").replaceAll("/", "-")}-${version}.tgz`;
   return { manifest, bytes, filename, integrity: actual };
 }
@@ -267,7 +274,7 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     }
   }
   const packages: PackedPackage[] = [];
-  const canonicalNpmCache = join(outputRoot, "canonical-npm-cache");
+  const canonicalNpmCache = process.env.TINYCLOUD_CANONICAL_NPM_CACHE ?? join(outputRoot, "canonical-npm-cache");
   for (const { directory, workspace } of directories.values()) {
     const manifest = await readManifest(directory);
     const catalogEntry = expectedWorkspace.get(`${manifest.name}@${manifest.version}`);
@@ -279,6 +286,9 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     if (packed.manifest.name !== manifest.name || packed.manifest.version !== manifest.version || (!workspace && packed.integrity !== expected)) throw new Error(`independent SDK artifact mismatch for ${manifest.name}@${manifest.version}`);
     packages.push(packed);
   }
+  const oraIntegrity = lockIntegrity(lock, "ora", "9.3.0");
+  const ora = packages.find((candidate) => candidate.manifest.name === "ora" && candidate.manifest.version === "9.3.0");
+  if (ora === undefined || ora.integrity !== oraIntegrity) throw new Error("canonical ora@9.3.0 artifact does not match bun.lock SRI");
   return packages;
 }
 
@@ -490,7 +500,7 @@ async function main(): Promise<void> {
   const children: Child[] = [];
   try {
     await writeFile(inputPath, "joined production path\n", { mode: 0o600 });
-    const nodeTarget = join(root, "node-target");
+    const nodeTarget = process.env.TINYCLOUD_NODE_TARGET_DIR ?? join(root, "node-target");
     const nodeBinary = join(nodeTarget, "debug/tinycloud-node-production-e2e");
     const nodeHead = await runCommand("git", ["rev-parse", "HEAD"], nodeWorktree);
     const nodeDirty = await runCommand("git", ["status", "--porcelain"], nodeWorktree);
@@ -537,7 +547,7 @@ async function main(): Promise<void> {
     const shareMatch = await ready(share, /joined Share host listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const shareOrigin = shareMatch[1]!;
     await cp(join(nodeHome, ".tinycloud"), join(cliHome, ".tinycloud"), { recursive: true });
-    await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; else if (originalOrigin === ${JSON.stringify(canonicalNode)}) value.href = ${JSON.stringify(nodeOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } if (value.pathname.startsWith("/share/v2/")) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + (body.error?.code === undefined ? "" : " error=" + body.error.code); } catch {} } if (value.origin === ${JSON.stringify(nodeOrigin)} && ["/delegate", "/invoke", "/info"].includes(value.pathname)) { try { const body = await response.clone().json(); detail = " error=" + String(body.error?.code ?? body.error ?? ""); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
+    await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; else if (originalOrigin === ${JSON.stringify(canonicalNode)}) value.href = ${JSON.stringify(nodeOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } if (value.pathname.startsWith("/share/v2/")) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + (body.error?.code === undefined ? "" : " error=" + body.error.code); } catch {} } if (["/delegate", "/invoke", "/info", "/share/v2/policies"].includes(value.pathname)) { try { const body = await response.clone().json(); detail = " error=" + String(body.error?.code ?? body.error ?? ""); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
 
     const publishedPackages = await packFrozenSdkCatalog(sdkWorktree, root);
     const npmRegistry = await startNpmRegistry(publishedPackages);
