@@ -40,7 +40,7 @@
     "@tinycloud/web-sdk-wasm": "file:vendor/tinycloud-web-sdk-wasm-1.7.5.tgz",
     "@tinycloud/share-cli": "*",
     "@tinycloud/share-app-compat": "*",
-    "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.1.0-5c6b19f.tgz",
+    "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.1.0-ce76223.tgz",
     "@tinycloud/share-envelope": "file:vendor/tinycloud-share-envelope-0.1.0.tgz",
     "@tinycloud/share-registry": "*",
     "@tinycloud/web-sdk": "file:vendor/tinycloud-web-sdk-2.11.0-beta.6-5c6b19f.tgz",

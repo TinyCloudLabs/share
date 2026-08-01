@@ -6,7 +6,7 @@ import { digestBytes, digestText } from "./email-share/node-verifier.js";
 import type { VerifiedExactEmailShare } from "./email-share/verified-share.js";
 import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
-import { createRegisteredPolicyAuthority } from "@tinycloud/share-sdk";
+import { createRegisteredPolicyAuthority, createShareV2HolderBindingArtifact, SHARE_V2_PROTOCOL } from "@tinycloud/share-sdk";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
 // <div id="viewer">. There is no non-viewer branch here on purpose: the
@@ -196,23 +196,23 @@ async function buildOpenKeyAuthorizationProof(input: {
   const policyCid = input.envelope.authorizationTarget.kind === "policy" ? input.envelope.authorizationTarget.policyCid : "";
   const credential = "openkey-device-session";
   const credentialDigest = await digestText(credential);
+  const enforcerDid = input.challenge.enforcerDid;
+  if (enforcerDid === undefined) throw new Error("share-v2-challenge-enforcer-missing");
   const presentation = {
     type: "TinyCloudSharePolicyPresentation",
-    version: 1,
+    version: 2,
     challengeId: input.challenge.challengeId,
     nonce: input.challenge.nonce,
     shareCid: authority.shareCid,
     shareId: input.envelope.shareId,
     delegationCid: input.envelope.delegationCid,
     policyCid,
-    authorityMaterialHandle: input.envelope.authorityMaterialHandle,
-    authorityMaterialDigest: input.envelope.authorityMaterialDigest,
     contentSource: input.envelope.contentSource,
     contentSourceDigest: input.envelope.contentSourceDigest,
     holderDid: input.holderDid,
     targetOrigin: input.envelope.target.origin,
     nodeAudience: input.envelope.target.nodeAudience,
-    ...(input.challenge.enforcerDid === undefined ? {} : { enforcerDid: input.challenge.enforcerDid }),
+    enforcerDid,
     credentialDigest,
     action,
     actions,
@@ -222,10 +222,28 @@ async function buildOpenKeyAuthorizationProof(input: {
     expiresAt: input.challenge.expiresAt,
     jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
   };
-  const signedBytes = new TextEncoder().encode(`${SIGNATURE_DOMAINS.policyPresentation}${canonicalize(presentation)}`);
+  const signedBytes = new TextEncoder().encode(`${SHARE_V2_PROTOCOL.sessionDomain}${canonicalize(presentation)}`);
   const signature = toBase64Url(await input.sign(signedBytes));
   const presentationProof = { alg: "EdDSA", kid: `${input.holderDid}#${input.holderDid.slice("did:key:".length)}`, signature };
-  const holderBinding = { type: "TinyCloudShareOpenKeyHolderBinding", version: 1, holderDid: input.holderDid, challengeId: input.challenge.challengeId, nonce: input.challenge.nonce, expiresAt: input.challenge.expiresAt };
+  const holderBinding = await createShareV2HolderBindingArtifact({
+    holderDid: input.holderDid,
+    sign: input.sign,
+    message: {
+      type: SHARE_V2_PROTOCOL.holderBindingType,
+      version: SHARE_V2_PROTOCOL.holderBindingVersion,
+      holderDid: input.holderDid,
+      challengeId: input.challenge.challengeId,
+      challengeNonce: input.challenge.nonce,
+      shareId: input.envelope.shareId,
+      policyCid,
+      credentialDigest,
+      targetOrigin: input.envelope.target.origin,
+      nodeAudience: input.envelope.target.nodeAudience,
+      enforcerDid,
+      expiresAt: input.challenge.expiresAt,
+      jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
+    },
+  });
   return { presentation, presentationProof, proof: presentationProof, nonce: input.challenge.nonce, credential, holderDid: input.holderDid, holderBinding, sign: input.sign };
 }
 
