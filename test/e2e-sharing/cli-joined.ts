@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { ed25519 } from "@noble/curves/ed25519";
 import { canonicalize, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
@@ -20,7 +21,7 @@ const canonicalRegistry = "https://registry.tinycloud.xyz";
 const canonicalNode = "https://node.tinycloud.xyz";
 
 type Child = { process: ChildProcess; output: () => string };
-type ChildOptions = { readonly allowLoopbackPorts?: readonly number[] };
+type ChildOptions = { readonly allowLoopbackPorts: readonly number[] };
 
 type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string; integrity: string };
 
@@ -85,6 +86,19 @@ function loopbackPort(origin: string): number {
   return port;
 }
 
+async function allocateLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("could not allocate a loopback port");
+  const port = address.port;
+  await new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
+  return port;
+}
+
 async function sandboxExecutable(): Promise<string> {
   if (process.platform !== "darwin") throw new Error("joined lifecycle proof requires the enforceable macOS sandbox boundary");
   const executable = "/usr/bin/sandbox-exec";
@@ -92,7 +106,7 @@ async function sandboxExecutable(): Promise<string> {
   return executable;
 }
 
-async function sandboxedCommand(command: string, args: readonly string[], allowedPorts: readonly number[]): Promise<{ command: string; args: string[] }> {
+export async function sandboxedCommand(command: string, args: readonly string[], allowedPorts: readonly number[]): Promise<{ command: string; args: string[] }> {
   const executable = await sandboxExecutable();
   const ports = [...new Set(allowedPorts)].sort((a, b) => a - b);
   const profile = [
@@ -104,12 +118,12 @@ async function sandboxedCommand(command: string, args: readonly string[], allowe
   return { command: executable, args: ["-p", profile, command, ...args] };
 }
 
-async function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, options: ChildOptions = {}): Promise<Child> {
+async function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, options: ChildOptions): Promise<Child> {
   const inherited = Object.fromEntries(CHILD_ENV_ALLOWLIST.flatMap((key) => {
     const value = globalThis.process.env[key];
     return value === undefined ? [] : [[key, value]];
   }));
-  const launched = options.allowLoopbackPorts === undefined ? { command, args } : await sandboxedCommand(command, args, options.allowLoopbackPorts);
+  const launched = await sandboxedCommand(command, args, options.allowLoopbackPorts);
   const process = spawn(launched.command, launched.args, { cwd, env: { ...inherited, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   const collect = (chunk: Buffer): void => { output = `${output}${chunk.toString()}`.slice(-32_000); };
@@ -136,7 +150,7 @@ async function stop(entry: Child): Promise<void> {
   if (entry.process.exitCode === null) entry.process.kill("SIGKILL");
 }
 
-async function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = {}, options: ChildOptions = {}): Promise<{ status: number; output: string }> {
+async function runCommand(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, options: ChildOptions): Promise<{ status: number; output: string }> {
   const entry = await child(command, args, cwd, env, options);
   const [status] = await once(entry.process, "exit");
   return { status: typeof status === "number" ? status : 1, output: entry.output() };
@@ -182,20 +196,21 @@ async function resolveInstalledDependency(name: string, from: string): Promise<s
   throw new Error(`dependency ${name} is not installed in the frozen SDK graph`);
 }
 
-const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "4673542be295edb26ebde545e6120a7057e281da";
+const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "bff28d892c25ed0ea9f495b442e1abf0816d845e";
 const expectedSdkBranch = process.env.TINYCLOUD_JS_SDK_BRANCH ?? "feat/share-cli-greenfield-20260729-a";
-const expectedNodeHead = process.env.TINYCLOUD_NODE_EXACT_HEAD ?? "5b4883fe19c50582b70b0596badcdbc89a35e9bb";
+const expectedNodeHead = process.env.TINYCLOUD_NODE_EXACT_HEAD ?? "03f1e3324e41b20b5608dc5b1974887fa1edac20";
 const expectedNodeBranch = process.env.TINYCLOUD_NODE_BRANCH ?? "feat/share-upload-attestation-20260731";
 const expectedNodeUpstream = process.env.TINYCLOUD_NODE_UPSTREAM ?? `origin/${expectedNodeBranch}`;
 
 async function assertExactSdkSource(sdkRoot: string): Promise<void> {
   if (!/^[0-9a-f]{40}$/.test(expectedSdkHead)) throw new Error("TINYCLOUD_JS_SDK_EXACT_HEAD must be a full commit");
-  const head = (await runCommand("git", ["rev-parse", "HEAD"], sdkRoot)).output.trim();
-  const branch = (await runCommand("git", ["branch", "--show-current"], sdkRoot)).output.trim();
-  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], sdkRoot)).output.trim();
-  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], sdkRoot);
-  const upstreamHead = (await runCommand("git", ["rev-parse", `origin/${expectedSdkBranch}`], sdkRoot)).output.trim();
-  const remoteHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedSdkBranch}`], sdkRoot)).output.trim().split(/\s+/)[0];
+  const boundary = { allowLoopbackPorts: [] };
+  const head = (await runCommand("git", ["rev-parse", "HEAD"], sdkRoot, {}, boundary)).output.trim();
+  const branch = (await runCommand("git", ["branch", "--show-current"], sdkRoot, {}, boundary)).output.trim();
+  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], sdkRoot, {}, boundary)).output.trim();
+  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], sdkRoot, {}, boundary);
+  const upstreamHead = (await runCommand("git", ["rev-parse", `origin/${expectedSdkBranch}`], sdkRoot, {}, boundary)).output.trim();
+  const remoteHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedSdkBranch}`], sdkRoot, {}, boundary)).output.trim().split(/\s+/)[0];
   if (head !== expectedSdkHead) throw new Error(`js-sdk exact head mismatch: expected ${expectedSdkHead}, found ${head}`);
   if (branch !== expectedSdkBranch || upstream !== `origin/${expectedSdkBranch}`) throw new Error(`js-sdk branch/upstream mismatch: expected ${expectedSdkBranch} tracking origin/${expectedSdkBranch}, found ${branch} tracking ${upstream}`);
   if (status.status !== 0 || status.output.trim() !== "") throw new Error("js-sdk source or generated output is dirty");
@@ -204,13 +219,14 @@ async function assertExactSdkSource(sdkRoot: string): Promise<void> {
 
 async function assertExactNodeSource(nodeRoot: string): Promise<{ readonly head: string; readonly sourceDigest: string }> {
   if (!/^[0-9a-f]{40}$/.test(expectedNodeHead)) throw new Error("TINYCLOUD_NODE_EXACT_HEAD must be a full commit");
-  const head = (await runCommand("git", ["rev-parse", "HEAD"], nodeRoot)).output.trim();
-  const branch = (await runCommand("git", ["branch", "--show-current"], nodeRoot)).output.trim();
-  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], nodeRoot)).output.trim();
-  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], nodeRoot);
-  const fetchedFeatureHead = (await runCommand("git", ["rev-parse", `origin/${expectedNodeBranch}`], nodeRoot)).output.trim();
-  const remoteFeatureHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedNodeBranch}`], nodeRoot)).output.trim().split(/\s+/)[0];
-  const source = await runCommand("git", ["ls-tree", "-r", "--full-tree", "HEAD"], nodeRoot);
+  const boundary = { allowLoopbackPorts: [] };
+  const head = (await runCommand("git", ["rev-parse", "HEAD"], nodeRoot, {}, boundary)).output.trim();
+  const branch = (await runCommand("git", ["branch", "--show-current"], nodeRoot, {}, boundary)).output.trim();
+  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], nodeRoot, {}, boundary)).output.trim();
+  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], nodeRoot, {}, boundary);
+  const fetchedFeatureHead = (await runCommand("git", ["rev-parse", `origin/${expectedNodeBranch}`], nodeRoot, {}, boundary)).output.trim();
+  const remoteFeatureHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedNodeBranch}`], nodeRoot, {}, boundary)).output.trim().split(/\s+/)[0];
+  const source = await runCommand("git", ["ls-tree", "-r", "--full-tree", "HEAD"], nodeRoot, {}, boundary);
   const sourceDigest = createHash("sha256").update(source.output).digest("hex");
   if (head !== expectedNodeHead || fetchedFeatureHead !== expectedNodeHead || remoteFeatureHead !== expectedNodeHead) throw new Error("Node exact head does not match local, fetched feature, and live remote feature heads");
   if (branch !== expectedNodeBranch || upstream !== expectedNodeUpstream) throw new Error(`Node branch/upstream mismatch: expected ${expectedNodeBranch} tracking ${expectedNodeUpstream}, found ${branch} tracking ${upstream}`);
@@ -267,13 +283,14 @@ async function readCanonicalNpmArtifact(
   }
   const actual = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
   if (actual !== integrity) throw new Error(`canonical npm artifact integrity mismatch for ${name}@${version}: expected ${integrity}, found ${actual}`);
-  let manifestText = await runCommand("tar", ["-xOzf", contentPath, "package/package.json"], shareRoot);
+  const boundary = { allowLoopbackPorts: [] };
+  let manifestText = await runCommand("tar", ["-xOzf", contentPath, "package/package.json"], shareRoot, {}, boundary);
   if (manifestText.status !== 0) {
-    const archiveEntries = await runCommand("tar", ["-tzf", contentPath], shareRoot);
+    const archiveEntries = await runCommand("tar", ["-tzf", contentPath], shareRoot, {}, boundary);
     if (archiveEntries.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} is not a readable gzip tarball`);
     const manifestEntry = archiveEntries.output.split(/\r?\n/).map((entry) => entry.trim()).find((entry) => /(?:^|\/)package\.json$/.test(entry));
     if (manifestEntry === undefined) throw new Error(`canonical npm artifact for ${name}@${version} has no package manifest`);
-    manifestText = await runCommand("tar", ["-xOzf", contentPath, manifestEntry], shareRoot);
+    manifestText = await runCommand("tar", ["-xOzf", contentPath, manifestEntry], shareRoot, {}, boundary);
   }
   if (manifestText.status !== 0) throw new Error(`canonical npm artifact for ${name}@${version} has an unreadable package manifest`);
   const archiveManifest = JSON.parse(manifestText.output) as Partial<PackageManifest>;
@@ -566,6 +583,9 @@ async function main(): Promise<void> {
     await writeFile(inputPath, "joined production path\n", { mode: 0o600 });
     const nodeTarget = process.env.TINYCLOUD_NODE_TARGET_DIR ?? join(root, "node-target");
     const nodeBinary = join(nodeTarget, "debug/tinycloud-node-production-e2e");
+    const nodePort = await allocateLoopbackPort();
+    const registryPort = await allocateLoopbackPort();
+    const sharePort = await allocateLoopbackPort();
     const nodeSourceBefore = await assertExactNodeSource(nodeWorktree);
     const nodeBuild = await runCommand("cargo", ["build", "--manifest-path", join(nodeWorktree, "test/n4-mounted-e2e/Cargo.toml"), "--features", "mounted-fixture", "--bin", "tinycloud-node-production-e2e", "--target-dir", nodeTarget], nodeWorktree, {
       HOME: nodeHome,
@@ -580,10 +600,11 @@ async function main(): Promise<void> {
     await writeFile(registryKey, registryPrivateKey.toString("base64url"), { mode: 0o600 });
     const registryPublicKey = Buffer.from(ed25519.getPublicKey(registryPrivateKey)).toString("base64url");
     const nodeSecret = Buffer.alloc(32, 0x09).toString("base64url");
-    const node = await child(nodeBinary, ["--target-origin", "https://node.tinycloud.xyz", "--profile-output", nodeHome, "--trust-bundle-output", trustBundle, "--keys-secret", nodeSecret, "--quiet"], nodeWorktree, { HOME: nodeHome });
+    const node = await child(nodeBinary, ["--target-origin", "https://node.tinycloud.xyz", "--listen-port", String(nodePort), "--profile-output", nodeHome, "--trust-bundle-output", trustBundle, "--keys-secret", nodeSecret, "--quiet"], nodeWorktree, { HOME: nodeHome }, { allowLoopbackPorts: [nodePort] });
     children.push(node);
     const nodeMatch = await ready(node, /tinycloud-node-production-e2e listening on http:\/\/127\.0\.0\.1:(\d+)/);
     const nodeOrigin = `http://127.0.0.1:${nodeMatch[1]}`;
+    if (Number(nodeMatch[1]) !== nodePort) throw new Error("mounted Node did not bind its exact allocated loopback port");
     const profile = JSON.parse(await readFile(join(nodeHome, ".tinycloud/profiles/joined/profile.json"), "utf8")) as { spaceId: string; sessionDid: string };
     const session = JSON.parse(await readFile(join(nodeHome, ".tinycloud/profiles/joined/session.json"), "utf8")) as { delegationHeader: { Authorization: string }; delegationCid: string; spaceId: string; jwk: object; verificationMethod: string };
     const { TinyCloudNode } = await import(`${sdkWorktree}/packages/node-sdk/dist/index.js`);
@@ -592,13 +613,14 @@ async function main(): Promise<void> {
     const probeHeaders = probeNode.invokeAny([{ spaceId: session.spaceId, service: "capabilities", action: "tinycloud.capabilities/read" }], [{ requestBodyDigest: "probe" }]);
     const probe = await fetch(`${nodeOrigin}/share/upload/attestation`, { method: "POST", headers: { ...probeHeaders, "content-type": "application/json" }, body: "{}" });
     if (probe.status !== 400) throw new Error(`mounted Node authorization probe returned ${probe.status}`);
-    const registry = await child("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
+    const registry = await child("bun", ["packages/registry/src/production-server-cli.ts", "--port", String(registryPort)], shareRoot, {
       REGISTRY_AUTH_PUBLIC_KEY: registryPublicKey,
       REGISTRY_LINK_UPLOAD_PUBLIC_KEY: registryPublicKey,
-    });
+    }, { allowLoopbackPorts: [registryPort] });
     children.push(registry);
     const registryMatch = await ready(registry, /production share registry listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const registryOrigin = registryMatch[1]!;
+    if (loopbackPort(registryOrigin) !== registryPort) throw new Error("production registry did not bind its exact allocated loopback port");
     const bundle = await readFile(trustBundle, "utf8");
     const share = await child("bun", ["test/e2e-sharing/cli-joined.ts", "--host"], shareRoot, {
       SHARE_TRUST_BUNDLE_SOURCE: "environment",
@@ -607,12 +629,13 @@ async function main(): Promise<void> {
       SHARE_REGISTRY_UPLOAD_KEY_PATH: registryKey,
       SHARE_HERMETIC_COMPOSITION: "true",
       SHARE_HERMETIC_REGISTRY_ORIGIN: registryOrigin,
-      PORT: "0",
+      PORT: String(sharePort),
       HOST: "127.0.0.1",
-    });
+    }, { allowLoopbackPorts: [sharePort, nodePort, registryPort] });
     children.push(share);
     const shareMatch = await ready(share, /joined Share host listening on (http:\/\/127\.0\.0\.1:\d+)/);
     const shareOrigin = shareMatch[1]!;
+    if (loopbackPort(shareOrigin) !== sharePort) throw new Error("Share host did not bind its exact allocated loopback port");
     await cp(join(nodeHome, ".tinycloud"), join(cliHome, ".tinycloud"), { recursive: true });
     await writeFile(preload, `import { appendFile } from "node:fs/promises";\nconst originalFetch = globalThis.fetch;\nglobalThis.fetch = async (input, init) => { const value = typeof input === "string" || input instanceof URL ? new URL(input) : input.url === undefined ? input : new URL(input.url); const originalOrigin = value.origin; let nextInit = init; if (originalOrigin === ${JSON.stringify(canonicalShare)}) { value.href = ${JSON.stringify(shareOrigin)} + value.pathname + value.search; const headers = new Headers(init?.headers); headers.set("x-forwarded-proto", "https"); nextInit = { ...init, headers }; } else if (originalOrigin === ${JSON.stringify(canonicalRegistry)}) value.href = ${JSON.stringify(registryOrigin)} + value.pathname + value.search; else if (originalOrigin === ${JSON.stringify(canonicalNode)}) value.href = ${JSON.stringify(nodeOrigin)} + value.pathname + value.search; const response = await originalFetch(value, nextInit); if (process.env.TC_JOINED_NODE_STATUS_FILE) { let detail = ""; if (value.pathname === "/share/upload/attestation" && response.ok) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + " session=" + String(body.sessionDid ?? ""); } catch {} } if (value.pathname.endsWith("/registry/blobs") && !response.ok) { try { const body = await response.clone().json(); detail = " error=" + JSON.stringify(body.error ?? body); } catch {} } if (value.pathname.startsWith("/share/v2/")) { try { const body = await response.clone().json(); detail = " keys=" + Object.keys(body).sort().join(",") + (body.error?.code === undefined ? "" : " error=" + body.error.code); } catch {} } if (["/delegate", "/invoke", "/info", "/share/v2/policies"].includes(value.pathname)) { try { const body = await response.clone().json(); detail = " error=" + String(body.error?.code ?? body.error ?? ""); } catch {} } await appendFile(process.env.TC_JOINED_NODE_STATUS_FILE, value.pathname + "=" + response.status + detail + "\\n"); } return response; };\n`);
 
@@ -651,7 +674,7 @@ async function main(): Promise<void> {
       "const fetch = globalThis.fetch; globalThis.fetch = async (input, ...args) => { allowed(input); return fetch(input, ...args); };",
       "",
     ].join("\n"));
-    const servicePorts = [loopbackPort(nodeOrigin), loopbackPort(shareOrigin), loopbackPort(registryOrigin)];
+    const servicePorts = [nodePort, sharePort, registryPort];
     const lifecycleFixture = join(root, "lifecycle-fixture");
     const lifecycleOutput = join(root, "lifecycle-output");
     await mkdir(lifecycleFixture, { recursive: true });
@@ -745,4 +768,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
