@@ -48,7 +48,7 @@ function isCanonicalRecipientDid(value: string): boolean {
     for (const digit of digits) {
       let carry = digit;
       for (let index = bytes.length - 1; index >= 0; index -= 1) {
-        const value = bytes[index] * 58 + carry;
+        const value = (bytes[index] ?? 0) * 58 + carry;
         bytes[index] = value & 0xff;
         carry = value >>> 8;
       }
