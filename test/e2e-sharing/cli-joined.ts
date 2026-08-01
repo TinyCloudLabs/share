@@ -6,7 +6,6 @@ import { dirname, join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { gzipSync } from "node:zlib";
 import { ed25519 } from "@noble/curves/ed25519";
 import { canonicalize, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 
@@ -22,7 +21,7 @@ const canonicalNode = "https://node.tinycloud.xyz";
 
 type Child = { process: ChildProcess; output: () => string };
 
-type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string };
+type PackedPackage = { manifest: { name: string; version: string; [key: string]: unknown }; bytes: Buffer; filename: string; integrity: string };
 
 async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: string; close: () => Promise<void>; requested: Set<string> }> {
   const byName = new Map<string, PackedPackage[]>();
@@ -45,7 +44,7 @@ async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: st
           ...package_.manifest,
           dist: {
             tarball: `${origin}/${encodeURIComponent(name)}/-/${package_.filename}`,
-            integrity: `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`,
+            integrity: package_.integrity,
           },
         }]));
         const metadata = {
@@ -148,81 +147,66 @@ async function packageDirectoryFromRequire(name: string, from: string): Promise<
   throw new Error(`dependency ${name} is not installed in the frozen SDK graph`);
 }
 
-async function installedPackageDirectories(nodeModules: string): Promise<string[]> {
-  const result: string[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
-      const candidate = join(directory, entry.name);
-      const manifestPath = join(candidate, "package.json");
-      try {
-        if ((await lstat(manifestPath)).isFile()) {
-          result.push(candidate);
-          const nested = join(candidate, "node_modules");
-          try { if ((await lstat(nested)).isDirectory()) await visit(nested); } catch { /* no nested dependencies */ }
-          continue;
-        }
-      } catch { /* package scope or non-package directory */ }
-      await visit(candidate);
-    }
-  };
-  await visit(nodeModules);
-  return result;
+const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "278b9ad6ed0f70360db720d36844a96548d5e043";
+const expectedSdkBranch = process.env.TINYCLOUD_JS_SDK_BRANCH ?? "feat/share-cli-greenfield-20260729-a";
+
+async function assertExactSdkSource(sdkRoot: string): Promise<void> {
+  if (!/^[0-9a-f]{40}$/.test(expectedSdkHead)) throw new Error("TINYCLOUD_JS_SDK_EXACT_HEAD must be a full commit");
+  const head = (await runCommand("git", ["rev-parse", "HEAD"], sdkRoot)).output.trim();
+  const branch = (await runCommand("git", ["branch", "--show-current"], sdkRoot)).output.trim();
+  const upstream = (await runCommand("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], sdkRoot)).output.trim();
+  const status = await runCommand("git", ["status", "--porcelain", "--untracked-files=all"], sdkRoot);
+  const upstreamHead = (await runCommand("git", ["rev-parse", `origin/${expectedSdkBranch}`], sdkRoot)).output.trim();
+  const remoteHead = (await runCommand("git", ["ls-remote", "origin", `refs/heads/${expectedSdkBranch}`], sdkRoot)).output.trim().split(/\s+/)[0];
+  if (head !== expectedSdkHead) throw new Error(`js-sdk exact head mismatch: expected ${expectedSdkHead}, found ${head}`);
+  if (branch !== expectedSdkBranch || upstream !== `origin/${expectedSdkBranch}`) throw new Error(`js-sdk branch/upstream mismatch: expected ${expectedSdkBranch} tracking origin/${expectedSdkBranch}, found ${branch} tracking ${upstream}`);
+  if (status.status !== 0 || status.output.trim() !== "") throw new Error("js-sdk source or generated output is dirty");
+  if (upstreamHead !== expectedSdkHead || remoteHead !== expectedSdkHead) throw new Error("js-sdk source head does not match both fetched upstream and remote");
 }
 
-function writeTarOctal(header: Buffer, offset: number, length: number, value: number): void {
-  const text = value.toString(8).padStart(length - 1, "0").slice(-(length - 1));
-  header.write(text, offset, "ascii");
-  header[offset + length - 1] = 0;
+async function packNpmArtifact(directory: string, outputRoot: string): Promise<{ manifest: PackageManifest; bytes: Buffer; filename: string; integrity: string }> {
+  const result = await runCommand("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", outputRoot], directory);
+  if (result.status !== 0) throw new Error(`could not pack ${directory}: ${result.output.slice(-4000)}`);
+  const filename = result.output.trim().split(/\r?\n/).at(-1);
+  if (filename === undefined || !/\.tgz$/.test(filename)) throw new Error(`npm pack produced no artifact for ${directory}`);
+  const bytes = await readFile(join(outputRoot, filename));
+  return { manifest: await readManifest(directory), bytes, filename, integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` };
 }
 
-function tarHeader(name: string, mode: number, size: number, type: number, linkName = ""): Buffer {
-  const header = Buffer.alloc(512);
-  header.write(`package/${name}`, 0, 100, "utf8");
-  writeTarOctal(header, 100, 8, mode & 0o7777);
-  writeTarOctal(header, 108, 8, 0);
-  writeTarOctal(header, 116, 8, 0);
-  writeTarOctal(header, 124, 12, size);
-  writeTarOctal(header, 136, 12, 0);
-  header.fill(0x20, 148, 156);
-  header[156] = type;
-  header.write(linkName, 157, 100, "utf8");
-  header.write("ustar\0", 257, 6, "ascii");
-  header.write("00", 263, 2, "ascii");
-  header.write("root", 265, 32, "ascii");
-  header.write("root", 297, 32, "ascii");
-  const checksum = header.reduce((sum, byte) => sum + byte, 0);
-  header.write(checksum.toString(8).padStart(6, "0"), 148, 6, "ascii");
-  header[154] = 0;
-  header[155] = 0x20;
-  return header;
-}
-
-async function deterministicPublishedTar(directory: string, files: string[]): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for (const relative of [...files].sort()) {
-    const path = join(directory, relative);
-    const info = await lstat(path);
-    if (info.isSymbolicLink()) {
-      chunks.push(tarHeader(relative, 0o777, 0, 50, await readlink(path)));
-      continue;
-    }
-    if (!info.isFile()) throw new Error(`published package entry is not a file: ${relative}`);
-    const bytes = await readFile(path);
-    chunks.push(tarHeader(relative, info.mode, bytes.length, 48), bytes);
-    const padding = (512 - (bytes.length % 512)) % 512;
-    if (padding > 0) chunks.push(Buffer.alloc(padding));
+async function immutableCacheDirectory(cacheRoot: string, name: string, version: string): Promise<string> {
+  const segments = name.split("/");
+  const parent = join(cacheRoot, ...segments.slice(0, -1));
+  const leaf = segments.at(-1)!;
+  const entries = await readdir(parent, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(`${leaf}@${version}@@@1`)) continue;
+    const directory = join(parent, entry.name);
+    try {
+      const manifest = await readManifest(directory);
+      if (manifest.name === name && manifest.version === version) return directory;
+    } catch { /* incomplete cache entries are not artifacts */ }
   }
-  chunks.push(Buffer.alloc(1024));
-  return Buffer.concat(chunks);
+  throw new Error(`immutable Bun cache is missing ${name}@${version}`);
+}
+
+function lockIntegrity(lock: { packages?: Record<string, unknown> }, name: string, version: string): string {
+  const identity = `${name}@${version}`;
+  for (const value of Object.values(lock.packages ?? {})) {
+    if (!Array.isArray(value) || value[0] !== identity) continue;
+    const integrity = value.find((item): item is string => typeof item === "string" && item.startsWith("sha512-"));
+    if (integrity !== undefined) return integrity;
+  }
+  throw new Error(`bun.lock has no integrity for ${identity}`);
 }
 
 async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promise<PackedPackage[]> {
-  // bun.lock is Bun's JSON5 lock format, not JSON. Keep the committed lock
-  // workspace graph authoritative while using Bun's maintained parser.
+  await assertExactSdkSource(sdkRoot);
   const bunRuntime = (globalThis as typeof globalThis & { Bun?: { JSON5: { parse(value: string): unknown } } }).Bun;
   if (bunRuntime === undefined) throw new Error("joined harness must run under Bun");
-  const lock = bunRuntime.JSON5.parse(await readFile(join(sdkRoot, "bun.lock"), "utf8")) as { workspaces?: Record<string, { name?: string; version?: string }> };
+  const lock = bunRuntime.JSON5.parse(await readFile(join(sdkRoot, "bun.lock"), "utf8")) as { workspaces?: Record<string, unknown>; packages?: Record<string, unknown> };
+  const catalog = JSON.parse(await readFile(join(shareRoot, "vendor/sdk-cli-artifact-catalog.json"), "utf8")) as { schema?: string; sdkCommit?: string; packages?: Array<{ name: string; version: string; integrity: string }> };
+  if (catalog.schema !== "tinycloud.sdk-cli-artifact-catalog/v1" || catalog.sdkCommit !== expectedSdkHead) throw new Error("SDK artifact catalog is not pinned to the requested exact head");
+  const expectedWorkspace = new Map((catalog.packages ?? []).map((entry) => [`${entry.name}@${entry.version}`, entry]));
   const workspaceByName = new Map<string, string>();
   for (const workspacePath of Object.keys(lock.workspaces ?? {})) {
     if (workspacePath === "") continue;
@@ -233,44 +217,34 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     } catch { /* lock entries for non-package workspace paths are ignored */ }
   }
   const queue = [workspaceByName.get("@tinycloud/cli") ?? (() => { throw new Error("CLI workspace is missing from bun.lock"); })()];
-  const directories = new Map<string, string>();
+  const directories = new Map<string, { directory: string; workspace: boolean }>();
   while (queue.length > 0) {
     const directory = queue.shift()!;
     const manifest = await readManifest(directory);
     if (typeof manifest.name !== "string" || typeof manifest.version !== "string") throw new Error(`invalid package manifest at ${directory}`);
     const identity = `${manifest.name}@${manifest.version}`;
     if (directories.has(identity)) continue;
-    directories.set(identity, directory);
+    const workspace = workspaceByName.get(manifest.name) === directory;
+    directories.set(identity, { directory, workspace });
     for (const dependency of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies })) {
-      const workspace = workspaceByName.get(dependency);
-      queue.push(workspace ?? await packageDirectoryFromRequire(dependency, directory));
+      const dependencyWorkspace = workspaceByName.get(dependency);
+      queue.push(dependencyWorkspace ?? await packageDirectoryFromRequire(dependency, directory));
     }
   }
-  for (const directory of await installedPackageDirectories(join(sdkRoot, "node_modules"))) {
-    try {
-      const manifest = await readManifest(directory);
-      if (typeof manifest.name === "string" && typeof manifest.version === "string" && manifest.private !== true) directories.set(`${manifest.name}@${manifest.version}`, directory);
-    } catch { /* broken package entries are not installable artifacts */ }
-  }
-  const npmRoot = await runCommand("npm", ["root", "-g"], sdkRoot);
-  if (npmRoot.status !== 0) throw new Error(`could not locate npm's packlist implementation: ${npmRoot.output}`);
-  const packlistModule = await import(join(npmRoot.output.trim(), "npm/node_modules/npm-packlist/lib/index.js"));
-  const packlist = packlistModule.default as (tree: {
-    path: string;
-    package: PackageManifest;
-    edgesOut: Map<string, never>;
-    isProjectRoot: boolean;
-    workspaces: Map<string, string>;
-  }) => Promise<string[]>;
+  const cacheRootResult = await runCommand("bun", ["pm", "cache"], sdkRoot);
+  if (cacheRootResult.status !== 0) throw new Error(`could not locate Bun's immutable package cache: ${cacheRootResult.output}`);
+  const cacheRoot = cacheRootResult.output.trim();
   const packages: PackedPackage[] = [];
-  for (const directory of directories.values()) {
+  for (const { directory, workspace } of directories.values()) {
     const manifest = await readManifest(directory);
-    const filename = `${manifest.name.replaceAll("/", "-")}-${manifest.version}.tgz`;
-    const files = await packlist({ path: directory, package: manifest, edgesOut: new Map<string, never>(), isProjectRoot: true, workspaces: new Map() });
-    const tarball = deterministicPublishedTar(directory, files);
-    const bytes = gzipSync(await tarball, { level: 9 });
-    await writeFile(join(outputRoot, filename), bytes);
-    packages.push({ manifest, bytes, filename });
+    const expected = workspace
+      ? expectedWorkspace.get(`${manifest.name}@${manifest.version}`)?.integrity
+      : lockIntegrity(lock, manifest.name, manifest.version);
+    if (expected === undefined) throw new Error(`SDK artifact catalog has no workspace artifact for ${manifest.name}@${manifest.version}`);
+    const artifactSource = workspace ? directory : await immutableCacheDirectory(cacheRoot, manifest.name, manifest.version);
+    const packed = await packNpmArtifact(artifactSource, outputRoot);
+    if (packed.manifest.name !== manifest.name || packed.manifest.version !== manifest.version || packed.integrity !== expected) throw new Error(`independent SDK artifact mismatch for ${manifest.name}@${manifest.version}`);
+    packages.push(packed);
   }
   return packages;
 }
@@ -296,6 +270,27 @@ async function digestJson(value: unknown): Promise<string> {
   return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
+const missingCredentialRouteBody = [
+  "<!DOCTYPE html>",
+  '<html lang="en">',
+  "<head>",
+  '    <meta charset="utf-8">',
+  '    <meta name="color-scheme" content="light dark">',
+  "    <title>401 Unauthorized</title>",
+  "</head>",
+  '<body align="center">',
+  '    <div role="main" align="center">',
+  "        <h1>401: Unauthorized</h1>",
+  "        <p>The request requires user authentication.</p>",
+  "        <hr />",
+  "    </div>",
+  '    <div role="contentinfo" align="center">',
+  "        <small>Rocket</small>",
+  "    </div>",
+  "</body>",
+  "</html>",
+].join("\n");
+
 async function runRecipientDidRouteMatrix(input: {
   readonly shareLink: string;
   readonly nodeOrigin: string;
@@ -308,6 +303,15 @@ async function runRecipientDidRouteMatrix(input: {
   readonly nodeInvitationKid: string;
   readonly nodeInvitationPublicKey: string;
 }): Promise<void> {
+  const missingCredential = await fetch(`${input.nodeOrigin}/share/upload/attestation`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  const missingCredentialBody = await missingCredential.text();
+  if (missingCredential.status !== 401 || missingCredentialBody !== missingCredentialRouteBody) {
+    throw new Error(`mounted production Node missing-credential denial mismatch: status=${missingCredential.status} bodyLength=${missingCredentialBody.length}`);
+  }
   const routeBodies = new Map<string, Record<string, any>>();
   const routeObservations: Array<{ path: string; status: number; body: any }> = [];
   const mappedFetch = async (inputValue: any, init?: RequestInit): Promise<Response> => {
@@ -521,7 +525,7 @@ async function main(): Promise<void> {
       "",
     ].join("\n"));
     const guardedInstallEnv = { NODE_OPTIONS: `--import ${networkGuard}`, NPM_CONFIG_CACHE: join(root, "npm-cache"), NPM_CONFIG_USERCONFIG: npmUserConfig, NPM_CONFIG_GLOBALCONFIG: npmGlobalConfig, HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9", ALL_PROXY: "http://127.0.0.1:9", NO_PROXY: "127.0.0.1,localhost" };
-    const installResult = child("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", `--registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cli.manifest.version}`], sdkWorktree, guardedInstallEnv);
+    const installResult = child("npm", ["install", "--no-audit", "--no-fund", `--registry=${npmRegistry.origin}`, "--prefix", install, `@tinycloud/cli@${cli.manifest.version}`], sdkWorktree, guardedInstallEnv);
     children.push(installResult);
     try {
       if ((await once(installResult.process, "exit"))[0] !== 0) throw new Error(`packed CLI install failed: ${installResult.output().slice(-8000)}`);
@@ -530,8 +534,7 @@ async function main(): Promise<void> {
         if (location === "") continue;
         const name = location.slice(location.lastIndexOf("node_modules/") + "node_modules/".length);
         const package_ = publishedPackages.find((candidate) => candidate.manifest.name === name && candidate.manifest.version === entry.version);
-        const expectedIntegrity = package_ === undefined ? "" : `sha512-${createHash("sha512").update(package_.bytes).digest("base64")}`;
-        if (package_ === undefined || entry.version !== package_.manifest.version || entry.resolved?.startsWith(npmRegistry.origin) !== true || entry.integrity !== expectedIntegrity) throw new Error(`installed dependency ${name}@${entry.version ?? "missing"} is not an exact hermetic catalog artifact (catalog=${publishedPackages.filter((candidate) => candidate.manifest.name === name).map((candidate) => candidate.manifest.version).join(",")}, resolved=${entry.resolved?.startsWith(npmRegistry.origin) === true}, integrity=${entry.integrity === expectedIntegrity})`);
+        if (package_ === undefined || entry.version !== package_.manifest.version || entry.resolved?.startsWith(npmRegistry.origin) !== true || entry.integrity !== package_.integrity) throw new Error(`installed dependency ${name}@${entry.version ?? "missing"} is not an exact independent catalog artifact (catalog=${publishedPackages.filter((candidate) => candidate.manifest.name === name).map((candidate) => candidate.manifest.version).join(",")}, resolved=${entry.resolved?.startsWith(npmRegistry.origin) === true}, integrity=${entry.integrity === package_?.integrity})`);
       }
     } finally {
       await npmRegistry.close();
