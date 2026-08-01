@@ -445,12 +445,13 @@ interface UploadAttestation {
   readonly deleteAfter: string;
   readonly retention: unknown;
   readonly issuedAt: string;
+  readonly authorityExpiresAt: string;
   readonly expiresAt: string;
   readonly jti: string;
   readonly signature: string;
 }
 
-const UPLOAD_ATTESTATION_KEYS = ["byteLength", "deleteAfter", "encryptedBlobCid", "encryptedBlobSha256", "expiresAt", "issuedAt", "issuer", "jti", "kid", "ownerDid", "retention", "sessionDid", "shareOrigin", "signature", "type", "version"] as const;
+const UPLOAD_ATTESTATION_KEYS = ["authorityExpiresAt", "byteLength", "deleteAfter", "encryptedBlobCid", "encryptedBlobSha256", "expiresAt", "issuedAt", "issuer", "jti", "kid", "ownerDid", "retention", "sessionDid", "shareOrigin", "signature", "type", "version"] as const;
 const PRINCIPAL = /^did:[A-Za-z0-9][A-Za-z0-9.-]*:[^\s\u0000-\u001f\u007f]{1,1023}$/;
 
 function strictBase64Url(value: unknown, bytes: number): value is string {
@@ -497,9 +498,10 @@ async function verifyUploadAttestation(
   if (retention !== "until-delete" || canonicalize(retention).length > MAX_RETENTION_BYTES || canonicalize(retention) !== retentionHeader) throw new Error("attestation retention");
   if (attestation.type !== "TinyCloudShareUploadAttestation" || attestation.version !== 1 || attestation.issuer !== bundle.public.nodeAudience || attestation.kid !== bundle.public.nodeInvitationKid || attestation.shareOrigin !== bundle.public.shareOrigin || attestation.retention === null || canonicalize(attestation.retention) !== retentionHeader || !PRINCIPAL.test(attestation.ownerDid) || !PRINCIPAL.test(attestation.sessionDid) || !strictBase64Url(attestation.signature, 64) || !strictBase64Url(attestation.encryptedBlobSha256, 32) || !strictBase64Url(attestation.jti, 16) || typeof attestation.encryptedBlobCid !== "string" || attestation.encryptedBlobCid.length > 200 || typeof attestation.byteLength !== "number" || !Number.isSafeInteger(attestation.byteLength) || attestation.byteLength < 0 || typeof attestation.deleteAfter !== "string" || typeof attestation.issuedAt !== "string" || typeof attestation.expiresAt !== "string") throw new Error("attestation fields");
   const issuedAt = canonicalTimestamp(attestation.issuedAt, "attestation issuedAt");
+  const authorityExpiresAt = canonicalTimestamp(attestation.authorityExpiresAt, "attestation authorityExpiresAt");
   const expiresAt = canonicalTimestamp(attestation.expiresAt, "attestation expiresAt");
   const deleteAfter = canonicalTimestamp(attestation.deleteAfter, "attestation deleteAfter");
-  if (issuedAt > now + UPLOAD_ATTESTATION_CLOCK_SKEW_MS || expiresAt <= now || expiresAt > now + UPLOAD_ATTESTATION_TTL_MS || expiresAt <= issuedAt || expiresAt - issuedAt > UPLOAD_ATTESTATION_TTL_MS || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS || attestation.deleteAfter !== request.headers.get("x-delete-after")) throw new Error("attestation time");
+  if (issuedAt > now + UPLOAD_ATTESTATION_CLOCK_SKEW_MS || authorityExpiresAt <= now || expiresAt <= now || expiresAt > authorityExpiresAt || expiresAt > now + UPLOAD_ATTESTATION_TTL_MS || expiresAt <= issuedAt || expiresAt - issuedAt > UPLOAD_ATTESTATION_TTL_MS || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS || attestation.deleteAfter !== request.headers.get("x-delete-after")) throw new Error("attestation time");
   if (attestation.byteLength !== bytes.byteLength || attestation.byteLength > LINK_ONLY_BLOB_LIMIT) throw new Error("attestation length");
   const cid = CID.create(1, 0x55, await sha256.digest(bytes)).toString();
   if (attestation.encryptedBlobCid !== cid || attestation.encryptedBlobSha256 !== hashBytes(bytes)) throw new Error("attestation body binding");

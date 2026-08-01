@@ -60,6 +60,7 @@ async function attestation(bytes: Uint8Array, overrides: Record<string, unknown>
     deleteAfter: timestamp(7 * 24 * 60 * 60 * 1000),
     retention: RETENTION,
     issuedAt: timestamp(-1000),
+    authorityExpiresAt: timestamp(120 * 1000),
     expiresAt: timestamp(60 * 1000),
     jti: toBase64Url(new Uint8Array(16).fill(Math.floor(Math.random() * 255))),
     ...overrides,

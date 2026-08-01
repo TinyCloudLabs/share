@@ -173,13 +173,14 @@ describe("the owner-share delivery authorization carries the trust bundle the SD
     // Every field the SDK's `authorizeShareDelivery` declares, none undefined.
     expect(Object.keys(input).sort()).toEqual([
       "credentialsAudience", "delegationCid", "documentName", "enforcementDelegationCid", "envelopeCid",
-      "expiresAt", "nodeProof", "policyCid", "recipientEmail", "registrationCid", "resourcePath",
+      "expiresAt", "idempotencyKey", "nodeProof", "policyCid", "recipientEmail", "registrationCid", "resourcePath",
       "shareCid", "shareId", "shareUrl",
     ]);
     for (const [name, field] of Object.entries(input)) expect(field, name).toBeDefined();
     expect(input.recipientEmail).toBe(RECIPIENT);
     expect(input.registrationCid).toBe("bafkreiregistrationfake");
     expect(input.delegationCid).toBe("bafkreiownerdelegationfake");
+    expect(input.idempotencyKey).toMatch(/^tinycloud-share:[A-Za-z0-9_-]+:[A-Za-z0-9_-]{43}$/);
     // The delivery window is capped well below the share's own expiry.
     expect(Date.parse(input.expiresAt as string)).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
 

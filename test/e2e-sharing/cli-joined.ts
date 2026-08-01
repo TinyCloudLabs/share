@@ -74,8 +74,14 @@ async function startNpmRegistry(packages: PackedPackage[]): Promise<{ origin: st
   return { origin, requested, close: () => new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose())) };
 }
 
+const CHILD_ENV_ALLOWLIST = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR"] as const;
+
 function child(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Child {
-  const process = spawn(command, args, { cwd, env: { ...globalThis.process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  const inherited = Object.fromEntries(CHILD_ENV_ALLOWLIST.flatMap((key) => {
+    const value = globalThis.process.env[key];
+    return value === undefined ? [] : [[key, value]];
+  }));
+  const process = spawn(command, args, { cwd, env: { ...inherited, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   const collect = (chunk: Buffer): void => { output = `${output}${chunk.toString()}`.slice(-32_000); };
   process.stdout?.on("data", collect);
@@ -168,7 +174,14 @@ async function packWorkspaceArtifact(directory: string, outputRoot: string): Pro
   // Workspace packages are the exact checked-out source authority.  Their
   // normal pack lifecycle is part of the reproducible artifact, so scripts
   // must run rather than being silently suppressed.
-  const result = await runCommand("npm", ["pack", "--silent", "--pack-destination", outputRoot], directory);
+  const result = await runCommand("npm", ["pack", "--silent", "--pack-destination", outputRoot], directory, {
+    NPM_CONFIG_OFFLINE: "true",
+    CARGO_NET_OFFLINE: "true",
+    HTTP_PROXY: "http://127.0.0.1:9",
+    HTTPS_PROXY: "http://127.0.0.1:9",
+    ALL_PROXY: "http://127.0.0.1:9",
+    NO_PROXY: "127.0.0.1,localhost",
+  });
   if (result.status !== 0) throw new Error(`could not pack ${directory}: ${result.output.slice(-4000)}`);
   const filename = result.output.trim().split(/\r?\n/).at(-1);
   if (filename === undefined || !/\.tgz$/.test(filename)) throw new Error(`npm pack produced no artifact for ${directory}`);
@@ -195,17 +208,7 @@ async function readCanonicalNpmArtifact(
   try {
     bytes = await readFile(contentPath);
   } catch {
-    const fetched = await runCommand("npm", [
-      "cache", "add", "--cache", cacheRoot, "--registry", "https://registry.npmjs.org", "--prefer-online", `${name}@${version}`,
-    ], shareRoot);
-    if (fetched.status !== 0) {
-      throw new Error(`canonical npm artifact is missing for ${name}@${version}; populate an independent npm cache with the lockfile SRI before running the joined proof (${fetched.output.slice(-2000)})`);
-    }
-    try {
-      bytes = await readFile(contentPath);
-    } catch {
-      throw new Error(`canonical npm cache did not contain the lockfile-SRI artifact for ${name}@${version}; refusing a local repack or public-network fallback`);
-    }
+    throw new Error(`canonical npm artifact is missing at ${contentPath} for ${name}@${version}; populate the independent content-addressed cache with the lockfile SRI before running the joined proof`);
   }
   const actual = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
   if (actual !== integrity) throw new Error(`canonical npm artifact integrity mismatch for ${name}@${version}: expected ${integrity}, found ${actual}`);
@@ -274,7 +277,13 @@ async function packFrozenSdkCatalog(sdkRoot: string, outputRoot: string): Promis
     }
   }
   const packages: PackedPackage[] = [];
-  const canonicalNpmCache = process.env.TINYCLOUD_CANONICAL_NPM_CACHE ?? join(outputRoot, "canonical-npm-cache");
+  const canonicalNpmCache = process.env.TINYCLOUD_CANONICAL_NPM_CACHE;
+  if (canonicalNpmCache === undefined) throw new Error("TINYCLOUD_CANONICAL_NPM_CACHE must point to a separately populated SRI-addressed cache");
+  const canonicalCachePath = resolve(canonicalNpmCache);
+  const consumerCachePath = resolve(outputRoot, "npm-cache");
+  if (canonicalCachePath === consumerCachePath || canonicalCachePath.startsWith(resolve(outputRoot) + "/")) {
+    throw new Error("canonical npm cache must be independent of the consumer output and cache");
+  }
   for (const { directory, workspace } of directories.values()) {
     const manifest = await readManifest(directory);
     const catalogEntry = expectedWorkspace.get(`${manifest.name}@${manifest.version}`);
@@ -564,12 +573,14 @@ async function main(): Promise<void> {
     await writeFile(networkGuard, [
       "import http from \"node:http\";",
       "import https from \"node:https\";",
+      "import net from \"node:net\";",
       "const allowed = (input) => {",
       "  const raw = typeof input === \"string\" ? input : input instanceof URL ? input.href : input?.href ?? `${input?.protocol ?? \"\"}//${input?.host ?? \"\"}${input?.path ?? \"/\"}`;",
       "  const url = new URL(raw);",
       "  if (url.hostname !== \"127.0.0.1\" && url.hostname !== \"localhost\") throw new Error(`hermetic network denied: ${url.origin}${url.pathname}`);",
       "};",
       "for (const module of [http, https]) { const request = module.request; module.request = function(input, ...args) { allowed(input); return request.call(this, input, ...args); }; }",
+      "for (const method of [\"connect\", \"createConnection\"]) { const original = net[method]; net[method] = function(input, ...args) { allowed(typeof input === \"object\" ? input : `http://${input}`); return original.call(this, input, ...args); }; }",
       "const fetch = globalThis.fetch; globalThis.fetch = async (input, ...args) => { allowed(input); return fetch(input, ...args); };",
       "",
     ].join("\n"));

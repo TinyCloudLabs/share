@@ -76,10 +76,10 @@ function authorization(
   });
 }
 
-function legacyAuthorization(): string {
+function legacyAuthorization(expiresAt = new Date(Date.now() + 60_000).toISOString()): string {
   const body = {
     action: "tinycloud.share/upload",
-    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    expiresAt,
     resource: "registry/blobs",
     type: "TinyCloudShareInviteAuthorization",
     version: 1,
@@ -196,6 +196,14 @@ describe("production link-only registry authorization", () => {
     const replayEnv = env();
     expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(201);
     expect((await worker.fetch(request(bytes, deleteAfter, signed), replayEnv)).status).toBe(401);
+  });
+
+  it("rejects malformed legacy registry expiry strings even when signed", async () => {
+    const bytes = new Uint8Array([2, 4, 6]);
+    const deleteAfter = new Date(Date.now() + 60_000).toISOString();
+    for (const expiresAt of ["not-a-date", "January 1, 2099", "2099-02-29T00:00:00.000Z"]) {
+      expect((await worker.fetch(request(bytes, deleteAfter, legacyAuthorization(expiresAt)), env())).status).toBe(401);
+    }
   });
 
   it("fails closed without the durable single-use primitive", async () => {

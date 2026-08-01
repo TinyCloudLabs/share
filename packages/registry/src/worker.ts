@@ -34,8 +34,14 @@ const DELETE_AFTER_METADATA = "tinycloud-delete-after";
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const B64_JTI = /^[A-Za-z0-9_-]{22}$/;
 const REGISTRY_STORE_DOMAIN = "xyz.tinycloud.share/registry-store/v1\0";
+const CANONICAL_EXPIRY = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const json = (status: number, body: unknown, extra: HeadersInit = {}) => new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json", ...extra } });
 const key = (kind: string, id: string) => `${kind}/${id}`;
+function canonicalExpiry(value: unknown): number | null {
+  if (typeof value !== "string" || !CANONICAL_EXPIRY.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : null;
+}
 function authBytes(value: string): Uint8Array {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new TypeError("invalid base64url");
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -131,7 +137,8 @@ async function authorized(request: Request, env: RegistryEnv, operation: string,
   try {
     const outer = JSON.parse(encoded) as { authorization?: Record<string, unknown>; proof?: { alg?: string; signature?: string } };
     const body = outer.authorization; const proof = outer.proof;
-    if (!body || proof?.alg !== "EdDSA" || typeof proof.signature !== "string" || body.type !== "TinyCloudShareInviteAuthorization" || body.version !== 1 || body.action !== operation || body.resource !== resource || typeof body.expiresAt !== "string" || Date.parse(body.expiresAt) <= Date.now()) return false;
+    const expiresAt = canonicalExpiry(body?.expiresAt);
+    if (!body || proof?.alg !== "EdDSA" || typeof proof.signature !== "string" || body.type !== "TinyCloudShareInviteAuthorization" || body.version !== 1 || body.action !== operation || body.resource !== resource || expiresAt === null || expiresAt <= Date.now()) return false;
     const publicKey = await crypto.subtle.importKey("raw", Uint8Array.from(authBytes(env.REGISTRY_AUTH_PUBLIC_KEY)), { name: "Ed25519" }, false, ["verify"]);
     const unsigned = JSON.stringify(Object.keys(body).sort().reduce((o, k) => { o[k] = body[k]; return o; }, {} as Record<string, unknown>));
     return await crypto.subtle.verify("Ed25519", publicKey, Uint8Array.from(authBytes(proof.signature)), new TextEncoder().encode(`xyz.tinycloud.share/registry-authorization/v1\0${unsigned}`));
@@ -170,13 +177,13 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
       typeof body.expiresAt !== "string"
     ) return false;
     const now = Date.now();
-    const expiresAt = Date.parse(body.expiresAt);
-    const deleteAfter = Date.parse(body.deleteAfter);
+    const expiresAt = canonicalExpiry(body.expiresAt);
+    const deleteAfter = canonicalExpiry(body.deleteAfter);
     if (
-      !Number.isFinite(expiresAt) ||
+      expiresAt === null ||
       expiresAt <= now ||
       expiresAt > now + LINK_AUTHORIZATION_TTL_MS ||
-      !Number.isFinite(deleteAfter) ||
+      deleteAfter === null ||
       deleteAfter <= now ||
       deleteAfter > now + LINK_RETENTION_LIMIT_MS
     ) return false;
@@ -222,7 +229,7 @@ function linkAuthorizationAdmitsBody(request: Request, env: RegistryEnv, max: nu
       typeof body.jti === "string" && B64_JTI.test(body.jti) &&
       typeof body.deleteAfter === "string" && body.deleteAfter === request.headers.get(DELETE_AFTER_HEADER) &&
       retentionExpiry(request) !== null && typeof body.expiresAt === "string" &&
-      Date.parse(body.expiresAt) > Date.now() && Date.parse(body.expiresAt) <= Date.now() + LINK_AUTHORIZATION_TTL_MS &&
+      canonicalExpiry(body.expiresAt) !== null && canonicalExpiry(body.expiresAt)! > Date.now() && canonicalExpiry(body.expiresAt)! <= Date.now() + LINK_AUTHORIZATION_TTL_MS &&
       proof.alg === "EdDSA" && typeof proof.signature === "string";
   } catch {
     return false;

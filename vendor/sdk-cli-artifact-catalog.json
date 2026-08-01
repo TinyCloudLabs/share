@@ -1,6 +1,6 @@
 {
   "schema": "tinycloud.sdk-cli-workspace-catalog/v2",
-  "sdkCommit": "7632f6b9ff2a3d035ca3f4802bc8f31dfd86b9b6",
+  "sdkCommit": "4673542be295edb26ebde545e6120a7057e281da",
   "packages": [
     { "name": "@tinycloud/cli", "version": "0.8.3-beta.5" },
     { "name": "@tinycloud/node-sdk", "version": "2.11.0-beta.6" },
