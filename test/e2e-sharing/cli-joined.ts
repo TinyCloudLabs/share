@@ -147,7 +147,7 @@ async function packageDirectoryFromRequire(name: string, from: string): Promise<
   throw new Error(`dependency ${name} is not installed in the frozen SDK graph`);
 }
 
-const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "278b9ad6ed0f70360db720d36844a96548d5e043";
+const expectedSdkHead = process.env.TINYCLOUD_JS_SDK_EXACT_HEAD ?? "7632f6b9ff2a3d035ca3f4802bc8f31dfd86b9b6";
 const expectedSdkBranch = process.env.TINYCLOUD_JS_SDK_BRANCH ?? "feat/share-cli-greenfield-20260729-a";
 
 async function assertExactSdkSource(sdkRoot: string): Promise<void> {

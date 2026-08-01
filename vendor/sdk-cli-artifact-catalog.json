@@ -1,6 +1,6 @@
 {
   "schema": "tinycloud.sdk-cli-artifact-catalog/v1",
-  "sdkCommit": "278b9ad6ed0f70360db720d36844a96548d5e043",
+  "sdkCommit": "7632f6b9ff2a3d035ca3f4802bc8f31dfd86b9b6",
   "packages": [
     { "name": "@tinycloud/cli", "version": "0.8.3-beta.5", "integrity": "sha512-WfQvn3UVO72xapPTJA0uYpEbTFpltufb3BQ0eMKtPM9Jm4DqN03nFa+7L5R7yTT+AyBz/GmQpAvQl30bzPvAcg==" },
     { "name": "@tinycloud/node-sdk", "version": "2.11.0-beta.6", "integrity": "sha512-FDpegscqbvLRdsZUFZQ097RkUANZSO6OIWHEP3V5G6xqTBx0gYYm3a1RQWEHlA+x7rtqUf5IgXvv4TTtgNt3jA==" },
