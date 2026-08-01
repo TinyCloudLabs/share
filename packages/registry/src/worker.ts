@@ -33,6 +33,7 @@ const LINK_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
 const DELETE_AFTER_METADATA = "tinycloud-delete-after";
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
 const B64_JTI = /^[A-Za-z0-9_-]{22}$/;
+const REGISTRY_STORE_DOMAIN = "xyz.tinycloud.share/registry-store/v1\0";
 const json = (status: number, body: unknown, extra: HeadersInit = {}) => new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json", ...extra } });
 const key = (kind: string, id: string) => `${kind}/${id}`;
 function authBytes(value: string): Uint8Array {
@@ -46,14 +47,43 @@ export class UploadAuthorization {
   constructor(private readonly state: DurableObjectState) {}
 
   async fetch(request: Request): Promise<Response> {
-    if (request.method !== "POST" || new URL(request.url).pathname !== "/consume") return new Response(null, { status: 404 });
-    let accepted = false;
-    await this.state.blockConcurrencyWhile(async () => {
-      if (await this.state.storage.get<boolean>("consumed") === true) return;
-      await this.state.storage.put("consumed", true);
-      accepted = true;
-    });
-    return new Response(null, { status: accepted ? 204 : 409 });
+    if (request.method !== "POST") return new Response(null, { status: 404 });
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/consume") {
+      let accepted = false;
+      await this.state.blockConcurrencyWhile(async () => {
+        if (await this.state.storage.get<boolean>("consumed") === true) return;
+        await this.state.storage.put("consumed", true);
+        accepted = true;
+      });
+      return new Response(null, { status: accepted ? 204 : 409 });
+    }
+    if (pathname === "/reserve") {
+      let accepted = false;
+      try {
+        const body = await request.json() as { now?: unknown; windowMs?: unknown; limit?: unknown };
+        const nowValue = body.now;
+        const windowMsValue = body.windowMs;
+        const limitValue = body.limit;
+        if (typeof nowValue !== "number" || !Number.isSafeInteger(nowValue) || typeof windowMsValue !== "number" || !Number.isSafeInteger(windowMsValue) || windowMsValue <= 0 || typeof limitValue !== "number" || !Number.isSafeInteger(limitValue) || limitValue <= 0) return new Response(null, { status: 400 });
+        const now = nowValue;
+        const windowMs = windowMsValue;
+        const limit = limitValue;
+        await this.state.blockConcurrencyWhile(async () => {
+          const prior = await this.state.storage.get<{ count: number; windowStartedAt: number }>("budget");
+          const budget = prior === undefined || now - prior.windowStartedAt >= windowMs
+            ? { count: 0, windowStartedAt: now }
+            : prior;
+          if (budget.count >= limit) return;
+          await this.state.storage.put("budget", { count: budget.count + 1, windowStartedAt: budget.windowStartedAt });
+          accepted = true;
+        });
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      return new Response(null, { status: accepted ? 204 : 409 });
+    }
+    return new Response(null, { status: 404 });
   }
 }
 async function consumeUploadAuthorization(env: RegistryEnv, jti: string): Promise<boolean> {
@@ -65,6 +95,36 @@ async function consumeUploadAuthorization(env: RegistryEnv, jti: string): Promis
     return false;
   }
 }
+
+function stable(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
+async function authorizeStoreRequest(request: Request, env: RegistryEnv): Promise<{ readonly operation: "consume" | "reserve"; readonly key: string; readonly body: Record<string, unknown> } | null> {
+  if (!env.UPLOAD_AUTHORIZATION || !env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY) return null;
+  try {
+    const body = await request.json() as unknown;
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+    const value = body as Record<string, unknown>;
+    const operation = value.operation;
+    const keyValue = value.key;
+    const signature = request.headers.get("x-tinycloud-registry-store-signature");
+    if ((operation !== "consume" && operation !== "reserve") || typeof keyValue !== "string" || keyValue.length === 0 || typeof signature !== "string") return null;
+    const publicKey = await crypto.subtle.importKey("raw", Uint8Array.from(authBytes(env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY)), { name: "Ed25519" }, false, ["verify"]);
+    const verified = await crypto.subtle.verify("Ed25519", publicKey, Uint8Array.from(authBytes(signature)), new TextEncoder().encode(`${REGISTRY_STORE_DOMAIN}${stable(value)}`));
+    if (!verified) return null;
+    if (operation === "consume") {
+      if (Object.keys(value).sort().join(",") !== "expiresAt,key,operation") return null;
+    } else if (Object.keys(value).sort().join(",") !== "key,limit,now,operation,windowMs") return null;
+    const stub = env.UPLOAD_AUTHORIZATION.getByName(`${operation}:${keyValue}`);
+    const response = await stub.fetch(`https://upload-authorization/${operation === "consume" ? "consume" : "reserve"}`, { method: "POST", body: JSON.stringify(value) });
+    return response.status === 204 ? { operation, key: keyValue, body: value } : null;
+  } catch {
+    return null;
+  }
+}
 async function authorized(request: Request, env: RegistryEnv, operation: string, resource: string): Promise<boolean> {
   const encoded = request.headers.get("x-tinycloud-authorization");
   if (!encoded || !env.REGISTRY_AUTH_PUBLIC_KEY) return false;
@@ -72,9 +132,9 @@ async function authorized(request: Request, env: RegistryEnv, operation: string,
     const outer = JSON.parse(encoded) as { authorization?: Record<string, unknown>; proof?: { alg?: string; signature?: string } };
     const body = outer.authorization; const proof = outer.proof;
     if (!body || proof?.alg !== "EdDSA" || typeof proof.signature !== "string" || body.type !== "TinyCloudShareInviteAuthorization" || body.version !== 1 || body.action !== operation || body.resource !== resource || typeof body.expiresAt !== "string" || Date.parse(body.expiresAt) <= Date.now()) return false;
-    const publicKey = await crypto.subtle.importKey("raw", authBytes(env.REGISTRY_AUTH_PUBLIC_KEY).slice().buffer, { name: "Ed25519" }, false, ["verify"]);
+    const publicKey = await crypto.subtle.importKey("raw", Uint8Array.from(authBytes(env.REGISTRY_AUTH_PUBLIC_KEY)), { name: "Ed25519" }, false, ["verify"]);
     const unsigned = JSON.stringify(Object.keys(body).sort().reduce((o, k) => { o[k] = body[k]; return o; }, {} as Record<string, unknown>));
-    return await crypto.subtle.verify("Ed25519", publicKey, authBytes(proof.signature).slice().buffer, new TextEncoder().encode(`xyz.tinycloud.share/registry-authorization/v1\0${unsigned}`));
+    return await crypto.subtle.verify("Ed25519", publicKey, Uint8Array.from(authBytes(proof.signature)), new TextEncoder().encode(`xyz.tinycloud.share/registry-authorization/v1\0${unsigned}`));
   } catch { return false; }
 }
 async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: Uint8Array): Promise<boolean> {
@@ -121,16 +181,16 @@ async function linkUploadAuthorized(request: Request, env: RegistryEnv, bytes: U
       deleteAfter > now + LINK_RETENTION_LIMIT_MS
     ) return false;
     const digest = new Uint8Array(
-      await crypto.subtle.digest("SHA-256", bytes.slice().buffer as ArrayBuffer),
+      await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes)),
     );
     const bodyDigest = btoa(String.fromCharCode(...digest)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     if (bodyDigest !== body.bodyDigest) return false;
-    const publicKey = await crypto.subtle.importKey("raw", authBytes(env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY).slice().buffer, { name: "Ed25519" }, false, ["verify"]);
+    const publicKey = await crypto.subtle.importKey("raw", Uint8Array.from(authBytes(env.REGISTRY_LINK_UPLOAD_PUBLIC_KEY)), { name: "Ed25519" }, false, ["verify"]);
     const unsigned = JSON.stringify(Object.keys(body).sort().reduce((o, k) => { o[k] = body[k]; return o; }, {} as Record<string, unknown>));
     const verified = await crypto.subtle.verify(
       "Ed25519",
       publicKey,
-      authBytes(proof.signature).slice().buffer,
+      Uint8Array.from(authBytes(proof.signature)),
       new TextEncoder().encode(`${LINK_AUTHORIZATION_DOMAIN}${unsigned}`),
     );
     return verified && await consumeUploadAuthorization(env, body.jti);
@@ -195,6 +255,10 @@ const worker = { async fetch(request: Request, env: RegistryEnv): Promise<Respon
   const linkProxyUpload = (request.method === "POST" || request.method === "PUT") && url.pathname === "/blobs" && origin === LINK_PROXY_ORIGIN;
   if (origin && origin !== "https://share.tinycloud.xyz" && !linkProxyUpload) return json(403, { error: "origin-not-allowed" });
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+  if (request.method === "POST" && url.pathname === "/internal/upload-authorizations") {
+    const authorizedStore = await authorizeStoreRequest(request, env);
+    return authorizedStore === null ? json(503, { error: "upload-authorization-unavailable" }) : new Response(null, { status: 204, headers: CORS });
+  }
   const max = Number(env.MAX_BLOB_BYTES ?? DEFAULT_MAX_BLOB_BYTES);
   const bindingMatch = url.pathname.match(/^\/(?:bindings|\.well-known\/tinycloud-share\/bindings)\/([^/]+)(?:\.json)?$/);
   if ((request.method === "GET" || request.method === "HEAD") && bindingMatch) {

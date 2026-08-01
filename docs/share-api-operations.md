@@ -22,7 +22,12 @@ restarts, and signs only short-lived authorizations bound to the authenticated
 session, ciphertext digest, size, and retention. Configure the corresponding
 public key as `REGISTRY_LINK_UPLOAD_PUBLIC_KEY` on the existing registry
 Worker; it is separate from the Node/email authorization key and cannot
-authorize bindings or reads. Deploy `compose.share-api.yml` with
+authorize bindings or reads. Share signs production replay and quota operations
+to the Worker at `POST /internal/upload-authorizations`; the Worker stores them
+in the `UploadAuthorization` Durable Object. The host fails closed if that
+endpoint or its Durable Object binding is unavailable, so independent host
+instances and restarts share one atomic JTI and twenty-upload window. Deploy
+`compose.share-api.yml` with
 `SHARE_API_IMAGE` set to the
 exact merged-main GHCR digest and `CLOUDFLARE_TUNNEL_TOKEN` injected through
 Phala sealed environment storage. The trust bundle comes from

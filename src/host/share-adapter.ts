@@ -89,6 +89,7 @@ const UPLOAD_ATTESTATION_TTL_MS = 120 * 1000;
 const MAX_RETENTION_BYTES = 1024;
 const REGISTRY_AUTHORIZATION_DOMAIN =
   "xyz.tinycloud.share/registry-authorization/v1\0";
+const REGISTRY_STORE_DOMAIN = "xyz.tinycloud.share/registry-store/v1\0";
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
 export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
@@ -358,6 +359,49 @@ class MemoryUploadBudgetStore implements UploadBudgetStore {
   }
 }
 
+/**
+ * Production replay and quota state lives in the registry Worker’s
+ * UploadAuthorization Durable Object.  The Share process only holds the
+ * private half of the dedicated registry-upload key and signs the exact
+ * store operation; it never treats a local file as authorization state.
+ */
+export class RegistryUploadAuthorizationStore implements UploadBudgetStore {
+  readonly writable = true;
+
+  constructor(
+    private readonly origin: string,
+    private readonly privateKey: Uint8Array,
+    private readonly fetchFn?: typeof fetch,
+  ) {
+    if (!/^https:\/\/[^/?#:@]+$/.test(origin) && !LOOPBACK_ORIGIN.test(origin)) throw new Error("registry authorization store origin is invalid");
+    if (privateKey.byteLength !== 32) throw new Error("registry authorization store key is invalid");
+  }
+
+  private async request(body: Record<string, unknown>): Promise<boolean> {
+    const signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`${REGISTRY_STORE_DOMAIN}${stable(body)}`), this.privateKey));
+    try {
+      const response = await (this.fetchFn ?? globalThis.fetch)(`${this.origin}/internal/upload-authorizations`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", "x-tinycloud-registry-store-signature": signature },
+        body: JSON.stringify(body),
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+      });
+      return response.status === 204;
+    } catch {
+      return false;
+    }
+  }
+
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    return this.request({ key: principal, limit, now, operation: "reserve", windowMs });
+  }
+
+  async consumeUploadAttestation(jti: string, expiresAt: number, _now: number, _limit: number): Promise<boolean> {
+    return this.request({ expiresAt, key: jti, operation: "consume" });
+  }
+}
+
 export interface ShareHostOptions {
   readonly bundle: ShareTrustBundle;
   readonly capability?: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
@@ -367,6 +411,8 @@ export interface ShareHostOptions {
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver or SHARE_HERMETIC_REGISTRY_ORIGIN. */
   readonly registryTransportOrigin: string;
+  /** Optional transport injection for hermetic tests; production uses the platform fetch. */
+  readonly fetchFn?: typeof fetch;
   readonly authUsers?: readonly AuthUser[];
   readonly registryUploadPrivateKey?: Uint8Array;
   /** Resolves the per-principal sender signing identity; absent means the sender path cannot serve any session. */
@@ -961,7 +1007,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
   };
   const consumeUploadAttestationJti = async (jti: string, expiresAt: number, now: number): Promise<boolean> => {
-    const store = options.bindingStore?.consumeUploadAttestation === undefined ? uploadBudgetStore : options.bindingStore;
+    const store = uploadBudgetStore ?? (options.testMode ? options.bindingStore : undefined);
     if (store?.writable !== true || store.consumeUploadAttestation === undefined) throw new Error("upload_attestation_store_unavailable");
     return store.consumeUploadAttestation(jti, expiresAt, now, MAX_UPLOAD_ATTESTATION_REPLAY);
   };
@@ -1239,11 +1285,14 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
             LINK_ONLY_BLOB_LIMIT,
             (body) => registryUploadAuthorization(options.registryUploadPrivateKey!, body, deleteAfterHeader, `${attestation.ownerDid}:${attestation.sessionDid}`),
             bytes,
+            options.fetchFn,
           );
           if (registryResponse.status === 401 || registryResponse.status === 403) return response(502, { error: { code: "registry_upload_rejected" } });
           return registryResponse;
         }
         const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
+        if (((request.headers?.get("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "") !== "application/vnd.ipld.raw") return response(400, { error: { code: "upload_content_type_invalid" } });
+        const bytes = await boundedUpload(request, LINK_ONLY_BLOB_LIMIT);
         // The registry authorization binds to the session token, but the durable
         // budget is keyed by the verified principal: signing out and back in
         // must not reset the allowance or accrue a fresh accounting entry.
@@ -1256,6 +1305,8 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           LINK_ONLY_REGISTRY_PREFIX,
           LINK_ONLY_BLOB_LIMIT,
           (bytes) => registryUploadAuthorization(options.registryUploadPrivateKey!, bytes, deleteAfterHeader, uploadKey),
+          bytes,
+          options.fetchFn,
         );
         if (registryResponse.status === 401 || registryResponse.status === 403) {
           return response(502, { error: { code: "registry_upload_rejected" } });
@@ -1265,7 +1316,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if ((url.pathname.startsWith("/registry/") || url.pathname === "/registry") && request.method === "POST") {
         return response(401, { error: { code: "authentication_required" } });
       }
-      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
+      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin, "/registry", MAX_BODY, undefined, undefined, options.fetchFn);
       return undefinedResponse();
     } catch (error) {
       if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
@@ -1295,6 +1346,7 @@ async function proxyRegistry(
   maxBody = MAX_BODY,
   authorize?: (body: Uint8Array) => string,
   bodyOverride?: Uint8Array,
+  fetchFn: typeof fetch = globalThis.fetch,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
   const suffix = requestUrl.pathname.slice(routePrefix.length) || "/";
@@ -1308,7 +1360,7 @@ async function proxyRegistry(
   }
   headers.delete(UPLOAD_ATTESTATION_HEADER);
   headers.delete(UPLOAD_RETENTION_HEADER);
-  const result = await fetch(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
+  const result = await fetchFn(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
   return sanitizeUpstreamResponse(policyPath, request.method, result);
 }
 
@@ -1382,7 +1434,7 @@ function loadRegistryUploadPrivateKey(
   }
 }
 
-export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
+export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Pick<ShareHostOptions, "fetchFn"> = {}): ReturnType<typeof createShareHostAdapter> {
   const senderEnabled = senderEnabledFromEnv(env);
   if (senderEnabled && env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" && (env.SHARE_SENDER_PRIVATE_KEY !== undefined || env.SHARE_SENDER_CAPABILITY_JSON !== undefined || env.SHARE_SENDER_CAPABILITIES_JSON !== undefined)) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
@@ -1436,15 +1488,16 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;
   const registryUploadPrivateKey = loadRegistryUploadPrivateKey(env, bundle.environment);
-  const uploadBudgetPath = env.SHARE_UPLOAD_BUDGET_STORE_PATH ?? env.SHARE_BINDING_STORE_PATH ?? (env.SHARE_REGISTRY_UPLOAD_KEY_PATH === undefined ? undefined : `${env.SHARE_REGISTRY_UPLOAD_KEY_PATH}.budget.ndjson`);
+  const storeOrigin = env.SHARE_UPLOAD_AUTHORIZATION_ORIGIN ?? (hermeticComposition ? registryTransportOrigin : registryOrigin);
+  if (bundle.environment === "production" && !hermeticComposition && storeOrigin !== registryOrigin) throw new Error("production upload authorization store must use the trusted registry origin");
   const uploadBudgetStore = registryUploadPrivateKey === undefined
     ? undefined
-    : bindingStore?.reserveUpload !== undefined && uploadBudgetPath === bindingPath
-      ? bindingStore
-      : uploadBudgetPath === undefined
-        ? undefined
-        : new TransactionalBindingStore(uploadBudgetPath);
-  if (registryUploadPrivateKey !== undefined && bundle.environment === "production" && uploadBudgetStore?.writable !== true) throw new Error("durable upload budget store is required");
+    : bundle.environment === "production"
+      ? new RegistryUploadAuthorizationStore(storeOrigin, registryUploadPrivateKey)
+      : env.SHARE_UPLOAD_BUDGET_STORE_PATH === undefined
+        ? new MemoryUploadBudgetStore()
+        : new TransactionalBindingStore(env.SHARE_UPLOAD_BUDGET_STORE_PATH);
+  if (registryUploadPrivateKey !== undefined && bundle.environment === "production" && uploadBudgetStore?.writable !== true) throw new Error("durable upload authorization store is required");
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {
@@ -1462,5 +1515,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     });
   }
   const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }), ...(overrides.fetchFn === undefined ? {} : { fetchFn: overrides.fetchFn }) });
 }

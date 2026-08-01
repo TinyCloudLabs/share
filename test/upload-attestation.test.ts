@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, request as httpRequest } from "node:http";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { CID } from "multiformats/cid";
@@ -7,6 +8,7 @@ import { sha256 } from "multiformats/hashes/sha2";
 import { canonicalize, toBase64Url } from "@tinycloud/share-envelope";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createShareHostFromEnv } from "../src/host/share-adapter.js";
+import worker, { UploadAuthorization, type DurableObjectState, type DurableObjectStorage, type RegistryEnv } from "../packages/registry/src/worker.js";
 
 const SHARE_ORIGIN = "https://share.tinycloud.xyz";
 const NODE_AUDIENCE = "did:web:node.tinycloud.xyz";
@@ -72,10 +74,102 @@ async function setup() {
   const budgetPath = `${root}/upload-budget.ndjson`;
   const host = () => createShareHostFromEnv({
     SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
+    SHARE_TRUST_BUNDLE_ALLOW_TEST: "true",
     SHARE_REGISTRY_UPLOAD_KEY_PATH: keyPath,
     SHARE_UPLOAD_BUDGET_STORE_PATH: budgetPath,
   });
   return { root, host };
+}
+
+function shippedRegistryNamespace(): NonNullable<RegistryEnv["UPLOAD_AUTHORIZATION"]> {
+  const values = new Map<string, Map<string, unknown>>();
+  const locks = new Map<string, Promise<void>>();
+  return {
+    getByName(name) {
+      const stored = values.get(name) ?? new Map<string, unknown>();
+      values.set(name, stored);
+      const storage: DurableObjectStorage = {
+        get: async <T>(key: string) => stored.get(key) as T | undefined,
+        put: async <T>(key: string, value: T) => { stored.set(key, value); },
+      };
+      const state: DurableObjectState = {
+        storage,
+        blockConcurrencyWhile: async <T>(callback: () => Promise<T>) => {
+          const prior = locks.get(name) ?? Promise.resolve();
+          let release!: () => void;
+          const current = new Promise<void>((resolve) => { release = resolve; });
+          const queued = prior.then(() => current);
+          locks.set(name, queued);
+          await prior;
+          try { return await callback(); } finally { release(); if (locks.get(name) === queued) locks.delete(name); }
+        },
+      };
+      const durableObject = new UploadAuthorization(state);
+      return { fetch: (input, init) => durableObject.fetch(new Request(input, init)) };
+    },
+  };
+}
+
+async function shippedRegistrySetup(root: string): Promise<{ host: ReturnType<typeof createShareHostFromEnv>; origin: string; fetchFn: typeof fetch; dispose: () => Promise<void> }> {
+  const key = new Uint8Array(32).fill(19);
+  const keyPath = `${root}/registry-upload.key`;
+  await writeFile(keyPath, toBase64Url(key), { mode: 0o600 });
+  const namespace = shippedRegistryNamespace();
+  const registry: RegistryEnv = {
+    REGISTRY: (() => {
+      const objects = new Map<string, Uint8Array>();
+      return {
+        get: async (keyName: string) => { const value = objects.get(keyName); return value === undefined ? null : { arrayBuffer: async () => value.slice().buffer }; },
+        put: async (keyName: string, value: ArrayBuffer | Uint8Array) => { objects.set(keyName, value instanceof Uint8Array ? value.slice() : new Uint8Array(value.slice(0))); },
+      };
+    })(),
+    REGISTRY_AUTH_PUBLIC_KEY: toBase64Url(ed25519.getPublicKey(key)),
+    REGISTRY_LINK_UPLOAD_PUBLIC_KEY: toBase64Url(ed25519.getPublicKey(key)),
+    UPLOAD_AUTHORIZATION: namespace,
+  } as RegistryEnv;
+  const server = createServer(async (incoming, outgoing) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      const requestInit: RequestInit = {
+        method: incoming.method ?? "GET",
+        headers: Object.entries(incoming.headers).flatMap(([name, value]) => value === undefined ? [] : [[name, Array.isArray(value) ? value.join(", ") : value]]),
+      };
+      if (incoming.method !== "GET" && incoming.method !== "HEAD") requestInit.body = Buffer.concat(chunks);
+      const request = new Request(`http://127.0.0.1:${(server.address() as { port: number }).port}${incoming.url ?? "/"}`, requestInit);
+      const response = await worker.fetch(request, registry);
+      outgoing.statusCode = response.status;
+      response.headers.forEach((value, name) => outgoing.setHeader(name, value));
+      outgoing.end(Buffer.from(await response.arrayBuffer()));
+    } catch {
+      outgoing.statusCode = 503;
+      outgoing.end();
+    }
+  });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  const port = (server.address() as { port: number }).port;
+  const loopbackFetch: typeof fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const headers = new Headers(init.headers);
+    const body = init.body === undefined ? undefined : Buffer.from(await new Response(init.body as BodyInit).arrayBuffer());
+    return await new Promise<Response>((resolve, reject) => {
+      const outgoing = httpRequest({ hostname: url.hostname, port: Number(url.port), path: `${url.pathname}${url.search}`, method: init.method ?? "GET", headers: Object.fromEntries(headers.entries()) }, (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+        incoming.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: incoming.statusCode ?? 503, headers: incoming.headers as Record<string, string> })));
+      });
+      outgoing.on("error", reject);
+      if (body !== undefined) outgoing.end(body); else outgoing.end();
+    });
+  };
+  const host = createShareHostFromEnv({
+    SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
+    SHARE_HERMETIC_COMPOSITION: "true",
+    SHARE_HERMETIC_REGISTRY_ORIGIN: `http://127.0.0.1:${port}`,
+    SHARE_REGISTRY_UPLOAD_KEY_PATH: keyPath,
+  }, { fetchFn: loopbackFetch });
+  const origin = `http://127.0.0.1:${port}`;
+  return { host, origin, fetchFn: loopbackFetch, dispose: async () => { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); await rm(root, { recursive: true, force: true }); } };
 }
 
 function request(body: Uint8Array, signed: Record<string, unknown> | null, extra: Record<string, string> = {}): Request {
@@ -148,7 +242,9 @@ describe("owner-bound upload attestations", () => {
       expect((await fixture.host().handler(malformed)).status).toBe(400);
       expect((await fixture.host().handler(request(bytes, null, { "x-tinycloud-upload-attestation": "x".repeat(64 * 1024 + 1) }))).status).toBe(413);
       const stripped = request(bytes, null);
-      expect((await fixture.host().handler(stripped)).status).toBe(401);
+      stripped.headers.set("origin", "https://wrong.example");
+      const strippedResponse = await fixture.host().handler(stripped);
+      expect(strippedResponse.status).toBe(401);
     } finally { await rm(fixture.root, { recursive: true, force: true }); }
   });
 
@@ -190,5 +286,43 @@ describe("owner-bound upload attestations", () => {
       const restarted = fixture.host();
       expect((await restarted.handler(request(body, signed))).status).toBe(401);
     } finally { await rm(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it("uses the shipped Worker and UploadAuthorization Durable Object across host restarts", async () => {
+    const root = await mkdtemp(`${tmpdir()}/share-upload-worker-store-`);
+    const fixture = await shippedRegistrySetup(root);
+    try {
+      const body = new Uint8Array([11, 12, 13]);
+      const make = async (host: ReturnType<typeof createShareHostFromEnv>, value: number) => {
+        const signed = await attestation(body, { jti: toBase64Url(new Uint8Array(16).fill(value)) });
+        signed.deleteAfter = request(body, signed).headers.get("x-delete-after")!;
+        signed.signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`xyz.tinycloud.share/upload-attestation/v1\0${canonicalize(Object.fromEntries(Object.entries(signed).filter(([key]) => key !== "signature")))}`), NODE_SEED));
+        return host.handler(request(body, signed));
+      };
+      const first = fixture.host;
+      const second = createShareHostFromEnv({
+        SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
+        SHARE_HERMETIC_COMPOSITION: "true",
+        SHARE_HERMETIC_REGISTRY_ORIGIN: fixture.origin,
+        SHARE_REGISTRY_UPLOAD_KEY_PATH: `${root}/registry-upload.key`,
+      }, { fetchFn: fixture.fetchFn });
+      const responses = await Promise.all(Array.from({ length: 21 }, (_, index) => make(index % 2 === 0 ? first : second, index + 1)));
+      expect(responses.filter((response) => response.status >= 200 && response.status < 300)).toHaveLength(20);
+      expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
+      const jti = toBase64Url(new Uint8Array(16).fill(88));
+      const signed = await attestation(body, { jti, ownerDid: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222" });
+      signed.deleteAfter = request(body, signed).headers.get("x-delete-after")!;
+      signed.signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`xyz.tinycloud.share/upload-attestation/v1\0${canonicalize(Object.fromEntries(Object.entries(signed).filter(([key]) => key !== "signature")))}`), NODE_SEED));
+      const replay = await Promise.all([first.handler(request(body, signed)), second.handler(request(body, signed))]);
+      expect(replay.filter((response) => response.status >= 200 && response.status < 300)).toHaveLength(1);
+      expect(replay.filter((response) => response.status === 401)).toHaveLength(1);
+      const restarted = createShareHostFromEnv({
+        SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
+        SHARE_HERMETIC_COMPOSITION: "true",
+        SHARE_HERMETIC_REGISTRY_ORIGIN: fixture.origin,
+        SHARE_REGISTRY_UPLOAD_KEY_PATH: `${root}/registry-upload.key`,
+      }, { fetchFn: fixture.fetchFn });
+      expect((await restarted.handler(request(body, signed))).status).toBe(401);
+    } finally { await fixture.dispose(); }
   });
 });

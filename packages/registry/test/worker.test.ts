@@ -8,9 +8,10 @@ import {
   IF_NONE_MATCH_HEADER,
   RAW_BLOCK_CONTENT_TYPE,
 } from "../src/client.js";
-import worker, { type RegistryEnv } from "../src/worker.js";
+import worker, { UploadAuthorization, type DurableObjectState, type DurableObjectStorage, type RegistryEnv } from "../src/worker.js";
 
 const DOMAIN = "xyz.tinycloud.share/registry-authorization/v1\0";
+const STORE_DOMAIN = "xyz.tinycloud.share/registry-store/v1\0";
 const ORIGIN = "https://registry.tinycloud.xyz";
 const privateKey = new Uint8Array(32).fill(7);
 const publicKey = ed25519.getPublicKey(privateKey);
@@ -28,6 +29,21 @@ function stableShallow(value: Record<string, unknown>): string {
         return result;
       }, {}),
   );
+}
+
+function stable(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
+}
+
+function storeRequest(body: Record<string, unknown>, key = privateKey): Request {
+  const signature = b64(ed25519.sign(new TextEncoder().encode(`${STORE_DOMAIN}${stable(body)}`), key));
+  return new Request(`${ORIGIN}/internal/upload-authorizations`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-tinycloud-registry-store-signature": signature },
+    body: JSON.stringify(body),
+  });
 }
 
 function authorization(
@@ -104,27 +120,31 @@ function bucket(): RegistryEnv["REGISTRY"] {
 }
 
 function uploadAuthorizationNamespace(): NonNullable<RegistryEnv["UPLOAD_AUTHORIZATION"]> {
-  const states = new Map<string, { consumed: boolean; queue: Promise<void> }>();
+  const values = new Map<string, Map<string, unknown>>();
+  const locks = new Map<string, Promise<void>>();
   return {
     getByName(name) {
-      let state = states.get(name);
-      if (!state) {
-        state = { consumed: false, queue: Promise.resolve() };
-        states.set(name, state);
-      }
-      return {
-        fetch: async () => {
-          let accepted = false;
-          const previous = state!.queue;
-          const current = previous.then(() => {
-            if (state!.consumed) return;
-            state!.consumed = true;
-            accepted = true;
-          });
-          state!.queue = current.catch(() => undefined);
-          await current;
-          return new Response(null, { status: accepted ? 204 : 409 });
+      const value = values.get(name) ?? new Map<string, unknown>();
+      values.set(name, value);
+      const storage: DurableObjectStorage = {
+        get: async <T>(key: string) => value.get(key) as T | undefined,
+        put: async <T>(key: string, next: T) => { value.set(key, next); },
+      };
+      const state: DurableObjectState = {
+        storage,
+        blockConcurrencyWhile: async <T>(callback: () => Promise<T>) => {
+          const prior = locks.get(name) ?? Promise.resolve();
+          let release!: () => void;
+          const current = new Promise<void>((resolve) => { release = resolve; });
+          const queued = prior.then(() => current);
+          locks.set(name, queued);
+          await prior;
+          try { return await callback(); } finally { release(); if (locks.get(name) === queued) locks.delete(name); }
         },
+      };
+      const durableObject = new UploadAuthorization(state);
+      return {
+        fetch: (input, init) => durableObject.fetch(new Request(input, init)),
       };
     },
   };
@@ -184,6 +204,40 @@ describe("production link-only registry authorization", () => {
     const unavailable = env();
     delete unavailable.UPLOAD_AUTHORIZATION;
     expect((await worker.fetch(request(bytes, deleteAfter), unavailable)).status).toBe(401);
+    expect((await worker.fetch(storeRequest({ expiresAt: Date.now() + 60_000, key: "jti", operation: "consume" }), unavailable)).status).toBe(503);
+  });
+
+  it("uses the exported Durable Object for atomic replay state across fresh instances", async () => {
+    const values = new Map<string, unknown>();
+    const storage: DurableObjectStorage = {
+      get: async <T>(key: string) => values.get(key) as T | undefined,
+      put: async <T>(key: string, value: T) => { values.set(key, value); },
+    };
+    let queue = Promise.resolve();
+    const state: DurableObjectState = {
+      storage,
+      blockConcurrencyWhile: async <T>(callback: () => Promise<T>) => {
+        const result = queue.then(callback);
+        queue = result.then(() => undefined, () => undefined);
+        return result;
+      },
+    };
+    const [first, second] = await Promise.all([
+      new UploadAuthorization(state).fetch(new Request("https://upload-authorization/consume", { method: "POST" })),
+      new UploadAuthorization(state).fetch(new Request("https://upload-authorization/consume", { method: "POST" })),
+    ]);
+    expect([first.status, second.status].sort((a, b) => a - b)).toEqual([204, 409]);
+    expect((await new UploadAuthorization(state).fetch(new Request("https://upload-authorization/consume", { method: "POST" }))).status).toBe(409);
+  });
+
+  it("enforces the twenty-reservation boundary through the Worker binding across instances", async () => {
+    const sharedAuthorization = uploadAuthorizationNamespace();
+    const first = env(sharedAuthorization);
+    const second = env(sharedAuthorization);
+    const body = { key: "principal", limit: 20, now: Date.now(), operation: "reserve", windowMs: 86_400_000 };
+    const responses = await Promise.all(Array.from({ length: 21 }, (_, index) => worker.fetch(storeRequest({ ...body, key: body.key }), index % 2 === 0 ? first : second)));
+    expect(responses.filter((response) => response.status === 204)).toHaveLength(20);
+    expect(responses.filter((response) => response.status === 503)).toHaveLength(1);
   });
 
   it("accepts exactly one concurrent request across independent Worker instances for one JTI", async () => {

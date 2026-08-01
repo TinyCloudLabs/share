@@ -25,11 +25,14 @@ dedicated upload key is created once in the persistent CVM volume and signs a
 one-minute authorization bound to the session, body digest, body size, and
 retention; this key is not sender/email authority. The registry independently
 checks those bounds with `REGISTRY_LINK_UPLOAD_PUBLIC_KEY`.
-The upload budget is reserved in the existing fsynced binding journal under its
-OS lock, so restart and concurrent hosts sharing the mounted volume cannot reset
-or multiply quota. The current deployment is single-instance for the
-process-local upload-attestation jti replay cache; horizontal scaling requires a
-shared replay store before it is enabled.
+The upload budget and upload-attestation JTI are reserved through the registry
+Worker's `/internal/upload-authorizations` endpoint, backed by its
+`UploadAuthorization` Durable Object. The Share host signs each exact store
+operation with the dedicated registry-upload key; it never treats the local
+NDJSON binding journal as replay or quota authority. The production host fails
+closed when the Worker, binding, signature configuration, or Durable Object is
+unavailable. The Worker binding and Durable Object provide atomic uniqueness
+across restarts and independent Share replicas.
 Unauthenticated writes and direct `POST /registry/blobs` requests fail closed;
 public CID reads remain available to recipients.
 

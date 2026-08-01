@@ -414,8 +414,9 @@ describe("production trust and host boundaries", () => {
     const account = privateKeyToAccount(`0x${"41".repeat(32)}`);
     const ceremony = await openKeySignIn(host, account);
     const cookie = ceremony.cookie!;
-    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
+    const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/internal/upload-authorizations")) return new Response(null, { status: 204 });
+      return new Response(
         JSON.stringify({
           cid: `bafkrei${"a".repeat(52)}`,
           deleteAfter: "2026-07-30T00:00:00.000Z",
@@ -424,12 +425,12 @@ describe("production trust and host boundaries", () => {
           status: 201,
           headers: { "content-type": "application/json" },
         },
-      ),
-    );
+      );
+    });
     const accepted = await upload(new Uint8Array([1, 2, 3]), cookie);
     expect(accepted.status).toBe(201);
-    expect(upstream).toHaveBeenCalledOnce();
-    const [target, init] = upstream.mock.calls[0]!;
+    expect(upstream).toHaveBeenCalledTimes(2);
+    const [target, init] = upstream.mock.calls[1]!;
     expect(String(target)).toBe("https://registry.tinycloud.xyz/blobs");
     const forwarded = new Headers(init?.headers);
     expect(forwarded.get("cookie")).toBeNull();
@@ -459,12 +460,12 @@ describe("production trust and host boundaries", () => {
     );
 
     upstream.mockClear();
-    upstream.mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "signed-authorization-required" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    upstream.mockImplementation(async (input) => String(input).includes("/internal/upload-authorizations")
+      ? new Response(null, { status: 204 })
+      : new Response(JSON.stringify({ error: "signed-authorization-required" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }));
     expect((await upload(new Uint8Array([4, 5, 6]), cookie)).status).toBe(502);
 
     upstream.mockClear();
