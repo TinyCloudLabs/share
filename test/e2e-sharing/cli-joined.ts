@@ -728,7 +728,7 @@ async function main(): Promise<void> {
     if (published.status !== 0) {
       const stateFiles = ["config.json", "profiles/joined/profile.json", "profiles/joined/session.json", "profiles/joined/key.json"];
       const statePresence = await Promise.all(stateFiles.map(async (relativePath) => [relativePath, await access(join(cliHome, ".tinycloud", relativePath)).then(() => true).catch(() => false)] as const));
-      throw new Error(`packed CLI publish failed with transport statuses ${await readFile(nodeStatus, "utf8").catch(() => "unobserved")} state=${JSON.stringify(Object.fromEntries(statePresence))} output=${published.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-4000)}`);
+      throw new Error(`packed CLI publish failed with transport statuses ${await readFile(nodeStatus, "utf8").catch(() => "unobserved")} nodeExit=${String(node.process.exitCode)} nodeErrors=${/error|panic/i.test(node.output())} state=${JSON.stringify(Object.fromEntries(statePresence))} output=${published.stdout.replace(/https?:\/\/\S+/g, "<url>").slice(-4000)}`);
     }
     const link = published.stdout.split(/\r?\n/).map((line) => line.trim()).find((line) => {
       try { const url = new URL(line); return url.origin === canonicalShare && /^\/s\/[a-z0-9]+$/.test(url.pathname) && url.hash.length > 1; }
