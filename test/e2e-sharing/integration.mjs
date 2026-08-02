@@ -101,8 +101,8 @@ const CHILD_TIMEOUT_MS = 600_000;
 async function waitForExternalProductJourney(fixtures, localShareOrigin) {
   if (externalControlDir === undefined) return false;
   const resolvedControlDir = resolve(externalControlDir);
-  const resolvedTmp = resolve(tmpdir());
-  if (!resolvedControlDir.startsWith(`${resolvedTmp}/`)) throw new Error("external product control directory must be private temporary storage");
+  const temporaryRoots = [resolve(tmpdir()), resolve("/tmp")];
+  if (!temporaryRoots.some((root) => resolvedControlDir.startsWith(`${root}/`))) throw new Error("external product control directory must be private temporary storage");
   const controlStat = await stat(resolvedControlDir);
   if (!controlStat.isDirectory() || (controlStat.mode & 0o077) !== 0) throw new Error("external product control directory must have mode 0700");
   await writeFile(join(resolvedControlDir, "services.json"), JSON.stringify({
