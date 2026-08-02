@@ -82,6 +82,7 @@ const blockedSlices = {};
 const requiredSlices = parseRequiredSlices(process.env.SHARING_E2E_REQUIRED_SLICES);
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
+const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
 let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
@@ -96,6 +97,34 @@ let cleanupStarted = false;
 
 const AGENT_TIMEOUT_MS = 60_000;
 const CHILD_TIMEOUT_MS = 600_000;
+
+async function waitForExternalProductJourney(fixtures, localShareOrigin) {
+  if (externalControlDir === undefined) return false;
+  const resolvedControlDir = resolve(externalControlDir);
+  const resolvedTmp = resolve(tmpdir());
+  if (!resolvedControlDir.startsWith(`${resolvedTmp}/`)) throw new Error("external product control directory must be private temporary storage");
+  const controlStat = await stat(resolvedControlDir);
+  if (!controlStat.isDirectory() || (controlStat.mode & 0o077) !== 0) throw new Error("external product control directory must have mode 0700");
+  await writeFile(join(resolvedControlDir, "services.json"), JSON.stringify({
+    shareOrigin: localShareOrigin,
+    registryOrigin: fixtures.registryOrigin,
+    nodeOrigin: fixtures.nodeOrigin,
+    credentialsOrigin: fixtures.credentialsOrigin,
+    mailOrigin: fixtures.mailOrigin,
+  }), { flag: "wx", mode: 0o600 });
+  const deadline = Date.now() + 15 * 60_000;
+  while (Date.now() < deadline) {
+    try {
+      await stat(join(resolvedControlDir, "release"));
+      checks.push("External packed-CLI and normal-Chrome product journey completed while the production-shaped composition remained live.");
+      return true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+  }
+  throw new Error("external product journey control timed out");
+}
 
 function featureProcess(pid) {
   try {
@@ -1271,8 +1300,11 @@ try {
   tempRoot = await mkdtemp(join(tmpdir(), "tinycloud-sharing-e2e-"));
   const fixtures = await startFixtures(tempRoot);
   share = await startShare(tempRoot, fixtures);
-  await browserGate(share.origin, fixtures.walletOrigin, fixtures.mailOrigin, fixtures.nodeOrigin);
-  await browserSmokeLoop(share.origin, fixtures.walletOrigin);
+  const externallyDriven = await waitForExternalProductJourney(fixtures, share.origin);
+  if (!externallyDriven) {
+    await browserGate(share.origin, fixtures.walletOrigin, fixtures.mailOrigin, fixtures.nodeOrigin);
+    await browserSmokeLoop(share.origin, fixtures.walletOrigin);
+  }
 } catch (error) {
   blockers.push(error instanceof Error ? error.message : String(error));
   try {
