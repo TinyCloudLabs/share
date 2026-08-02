@@ -145,6 +145,11 @@ function canonicalJson(value) {
 function trustBundleFromRuntime(nodePublicKey) {
   return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
 }
+function credentialsTrustBundleFromRuntime(nodePublicKey) {
+  const bundle = JSON.parse(trustBundleFromRuntime(nodePublicKey));
+  delete bundle.emailOrigin;
+  return JSON.stringify(bundle);
+}
 async function freePort() {
   const server = httpServer();
   server.listen(0, "127.0.0.1");
@@ -502,7 +507,7 @@ async function startFixtures(tempRoot) {
   await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
   const credentialsBinaryPath = join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness");
   const credentialsPort = await freePort();
-  const credentialsTrustBundleJson = trustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey);
+  const credentialsTrustBundleJson = credentialsTrustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey);
   assert.equal(
     JSON.parse(credentialsTrustBundleJson).issuerPublicKey,
     JSON.parse(nodeTrustBundleJson).issuerPublicKey,
