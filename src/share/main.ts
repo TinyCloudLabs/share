@@ -2,6 +2,7 @@ import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./op
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import { authFailureMessage } from "./sender-failure.js";
+import { requestAddressedDelivery } from "./delivery.js";
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
@@ -94,17 +95,13 @@ function renderComposer(current: SenderApp, token: number): void {
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       notify: async ({ share, deliveryAuthorization }) => {
-        if (deliveryAuthorization === undefined) throw new Error("We couldn't send that email. The link above still works.");
+        if (deliveryAuthorization === undefined) throw new Error("The invitation request was not accepted. The link above still works.");
         const config = await loadSharePublicConfig();
-        const response = await fetch(`${config.emailOrigin}/share/v2`, {
-          method: "POST",
-          credentials: "omit",
-          redirect: "error",
-          referrerPolicy: "no-referrer",
-          headers: { accept: "application/json", "content-type": "application/json" },
-          body: JSON.stringify({ authorization: deliveryAuthorization.authorization, proof: deliveryAuthorization.proof, shareUrl: share.url }),
+        await requestAddressedDelivery({
+          credentialsOrigin: config.credentialsOrigin,
+          shareUrl: share.url,
+          deliveryAuthorization,
         });
-        if (!response.ok) throw new Error("We couldn't send that email. The link above still works.");
       },
       persistShare: async ({ share }) => {
         if (share.record !== undefined) {

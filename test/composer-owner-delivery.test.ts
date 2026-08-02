@@ -187,6 +187,9 @@ describe("the owner-share delivery authorization carries the trust bundle the SD
     // And the Node-signed receipt reaches the notifier that posts it.
     expect(notified).toHaveLength(1);
     expect((notified[0]!.deliveryAuthorization as Record<string, unknown>).proof).toBeDefined();
+    const deliveryCopy = root.querySelector<HTMLElement>(".notification-status")?.textContent ?? "";
+    expect(deliveryCopy).toBe("Invitation requested.");
+    expect(deliveryCopy).not.toMatch(/sent|delivered/i);
   });
 
   it("still produces a working link when the session cannot authorize delivery", async () => {

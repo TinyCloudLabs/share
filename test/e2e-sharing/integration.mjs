@@ -51,7 +51,7 @@ const workspaceRoot = resolve(shareRoot, "../../../../");
 const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-production-live");
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-production-live");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
-const artifactPath = join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
+const artifactPath = process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
 const lockPath = join(tmpdir(), "tinycloud-sharing-e2e.lock");
 const canonical = Object.freeze({
   share: "https://share.tinycloud.xyz",
@@ -516,7 +516,7 @@ async function startFixtures(tempRoot) {
   const credentialsLaunchEnv = buildCredentialsLaunchEnv({
     tempRoot, credentialsPort, corsOrigin: canonical.share, dstackSocket: dstackSocketPath, didWeb: "did:web:issuer.credentials.org",
     trustBundleJson: credentialsTrustBundleJson, shareUrl: canonical.share, resendApiKey: `re_${"a".repeat(32)}`, resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
-    postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
+    resendEndpoint: `${mail}/emails`, postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
   });
   const credentials = run(credentialsBinaryPath, [], credentialsRoot, credentialsLaunchEnv);
   const credentialsOrigin = `http://127.0.0.1:${credentialsPort}`;
@@ -920,9 +920,9 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link' && !candidate.disabled);if(!button)throw new Error('Copy link action is not present');button.click();return true;})()"]); await agent(["wait", "text=Link copied to clipboard."]);
   const exactUrl = agentString(await agent(["eval", "window.__senderCopiedLink"])); assert.match(exactUrl, /^https:\/\/share\.tinycloud\.xyz\/s\//);
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
-  await agent(["eval", `(function(){var old=window.fetch;window.__tinycloudDeliveryReplay=null;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/v1/share-email/invitations')&&init){window.__tinycloudDeliveryReplay={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:typeof init.body==='string'?init.body:null};}return old.apply(this,arguments);};})()`]);
+  await agent(["eval", `(function(){var old=window.fetch;window.__tinycloudDeliveryReplay=null;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/share/v2')&&init){window.__tinycloudDeliveryReplay={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:typeof init.body==='string'?init.body:null};}return old.apply(this,arguments);};})()`]);
   await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Email queued"]);
+  await agent(["wait", "text=Invitation requested"]);
   const replayRaw = await agent(["eval", "JSON.stringify(window.__tinycloudDeliveryReplay)"]);
   if (replayRaw === "null" || replayRaw === "undefined") throw new Error("exact-email delivery request capture is missing");
   let replay = JSON.parse(replayRaw);
@@ -1003,7 +1003,7 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   await agent(pickFromLibrary); await agent(["fill", "input[name=delivery-email]", domainDeliveryEmail]);
   const domainLibraryPath = await selectLibraryOption("(function(options){return options.filter(function(option){return option.dataset.resourceKind==='exact'})[0]})", "library object");
   checks.push(`Domain slice shared the library object ${domainLibraryPath} out of the sender's own space.`);
-  await agent(["eval", `(function(){window.__tinycloudDomainDeliveryObserved=false;window.__tinycloudDomainDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/v1/share-email/invitations')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudDomainDeliveryShape={topKeys:Object.keys(value).sort(),authKeys:auth&&typeof auth==='object'?Object.keys(auth).sort():[],deliveryType:typeof auth.deliveryEmail,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};window.__tinycloudDomainDeliveryObserved=auth.deliveryEmail===${JSON.stringify(domainDeliveryEmail)}&&auth.recipientMatcher&&auth.recipientMatcher.kind==='emailDomain'&&auth.recipientMatcher.value==='mailinator.com';}catch{}}return old.apply(this,arguments);};})()`]);
+  await agent(["eval", `(function(){window.__tinycloudDomainDeliveryObserved=false;window.__tinycloudDomainDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/share/v2')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudDomainDeliveryShape={topKeys:Object.keys(value).sort(),authKeys:auth&&typeof auth==='object'?Object.keys(auth).sort():[],deliveryType:typeof auth.deliveryEmail,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};window.__tinycloudDomainDeliveryObserved=auth.deliveryEmail===${JSON.stringify(domainDeliveryEmail)}&&auth.recipientMatcher&&auth.recipientMatcher.kind==='emailDomain'&&auth.recipientMatcher.value==='mailinator.com';}catch{}}return old.apply(this,arguments);};})()`]);
   await agent(["wait", "500"]);
   const domainFormState = agentString(await agent(["eval", `JSON.stringify((function(){var option=document.querySelector('select[name=kv-source] option:checked');return {recipient:document.querySelector('input[value=emailDomain]')?.checked===true,domain:document.querySelector('input[name=recipient-value]')?.value==='mailinator.com',delivery:document.querySelector('input[name=delivery-email]')?.value===${JSON.stringify(domainDeliveryEmail)},selected:option?option.value:null,selectedKind:option?(option.dataset.resourceKind||null):null};})())`]));
   // TC-344. The signed recipient matcher used to arrive pre-issued on the
@@ -1021,7 +1021,7 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   await agent(["fill", "input[name=delivery-email]", domainDeliveryEmail]);
   await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]);
   await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Email queued"]);
+  await agent(["wait", "text=Invitation requested"]);
   const domainAudit = await auditFlow("domain", domainTrace, { mailOrigin, expectMail: true, expectMailRecipient: domainDeliveryEmail, pii: [domainDeliveryEmail] });
   const domainDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudDomainDeliveryShape)"]));
   assert.equal(await agent(["eval", "window.__tinycloudDomainDeliveryObserved === true"]), "true", "domain delivery did not carry the generated full email and signed domain matcher at the enforcing delivery boundary");
@@ -1055,9 +1055,9 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   const folderPath = await selectLibraryOption("(function(options){var files=options.filter(function(option){return option.dataset.resourceKind==='exact'}).map(function(option){return option.value});return options.filter(function(option){return option.dataset.resourceKind==='prefix'&&option.value.charAt(option.value.length-1)==='/'}).find(function(option){return files.some(function(file){return file.indexOf(option.value)===0&&file.slice(option.value.length).indexOf('/')===-1})})})", "library folder with direct file children");
   checks.push(`Folder slice shared the library folder ${folderPath} out of the sender own space.`);
   await agent(["check", "input[name=permission][value=list]"]); await agent(["check", "input[name=permission][value=edit]"]);
-  await agent(["eval", "(function(){window.__tinycloudFolderDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/v1/share-email/invitations')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudFolderDeliveryShape={actions:Array.isArray(auth.actions)?auth.actions.slice().sort():[],resource:typeof auth.resource==='string'?auth.resource:null,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};}catch{}}return old.apply(this,arguments);};})()"]);
+  await agent(["eval", "(function(){window.__tinycloudFolderDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/share/v2')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudFolderDeliveryShape={actions:Array.isArray(auth.actions)?auth.actions.slice().sort():[],resource:typeof auth.resource==='string'?auth.resource:null,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};}catch{}}return old.apply(this,arguments);};})()"]);
   await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]); await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Email queued"]);
+  await agent(["wait", "text=Invitation requested"]);
   const folderAudit = await auditFlow("folder", folderTrace, { mailOrigin, expectMail: true, expectMailRecipient: folderDeliveryEmail, pii: [folderDeliveryEmail] });
   const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(typeof folderDeliveryShape?.resource === "string" && folderDeliveryShape.resource.length > 0 && !folderDeliveryShape.resource.endsWith("/"), true, `folder delivery did not carry a folder resource: ${JSON.stringify(folderDeliveryShape)}`); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
   const folderInviteUrl = localShareUrl(mailShareUrl(folderAudit.capturedMail.payload), origin);

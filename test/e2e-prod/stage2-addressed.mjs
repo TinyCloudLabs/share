@@ -182,11 +182,11 @@ try {
   await page.screenshot({ path: resolve(RUN_DIR, "composer.png"), fullPage: true });
 
   // Delivery is a second, explicit gesture: the composer creates the link, then
-  // offers "Send by email…". Nothing is mailed until it is clicked.
+  // offers "Notify recipient". Nothing is requested until it is clicked.
   if (state === "created") {
-    const send = page.getByRole("button", { name: "Send by email…" });
+    const send = page.getByRole("button", { name: "Notify recipient" });
     const sendVisible = await send.isVisible().catch(() => false);
-    record('the result screen offers "Send by email…" for an addressed share', sendVisible);
+    record('the result screen offers "Notify recipient" for an addressed share', sendVisible);
     if (sendVisible) {
       await send.click();
       await page.waitForFunction(
@@ -196,7 +196,7 @@ try {
       ).catch(() => {});
       const deliveryStatus = (await page.locator("span.notification-status").textContent().catch(() => "")) ?? "";
       log(`[composer] delivery status: ${JSON.stringify(deliveryStatus)}`);
-      record("the composer reports the email was queued", deliveryStatus.startsWith("Email queued"), deliveryStatus);
+      record("the composer reports the invitation was requested", deliveryStatus.startsWith("Invitation requested"), deliveryStatus);
     }
   }
 
@@ -222,25 +222,23 @@ try {
     record("the Node returned a delivery authorization", false, "no response body containing openCredentialsAudience was observed");
   }
 
-  // The send goes to the email Worker, not to the witness. This check used to
-  // look for `witness.credentials.org/share/v2`, so it reported a failure on the
-  // 2026-07-31 run that actually delivered mail to a Mailinator inbox — the
-  // witness has no part in delivery any more, and a POST to it would be the bug.
+  // Addressed delivery goes to OpenCredentials, which mints the invitation
+  // claim material before requesting provider delivery. The legacy Worker
+  // cannot own this path because its delivered link contains only `k`.
   //
   // Polled, not read once: the `response` handler pushes to `captured` only
   // after `await response.text()` resolves, so reading the array the moment the
   // composer reports "queued" races the capture and finds nothing. The first
-  // version of this check did exactly that and reported "no POST to the email
-  // Worker was made" on a run whose log ends with `[res 202] POST
-  // https://email.tinycloud.xyz/share/v2`.
+  // version of this check did exactly that and reported no POST even though
+  // the response arrived immediately afterward.
   const sendDeadline = Date.now() + 30_000;
   let sendResponse;
   for (;;) {
-    sendResponse = captured.find((entry) => entry.direction !== "request" && /email\.tinycloud\.xyz\/share\/v2/.test(entry.url));
+    sendResponse = captured.find((entry) => entry.direction !== "request" && /witness\.credentials\.org\/share\/v2/.test(entry.url));
     if (sendResponse !== undefined || Date.now() >= sendDeadline) break;
     await page.waitForTimeout(500);
   }
-  record("the email Worker accepted the send", sendResponse?.status === 202, sendResponse === undefined ? "no POST to the email Worker was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+  record("OpenCredentials accepted the invitation request", sendResponse?.status === 202, sendResponse === undefined ? "no POST to OpenCredentials was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
   log(`[stage2] polling ${recipient.address}`);

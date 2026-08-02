@@ -37,11 +37,9 @@ import { COMMITTED_TRUST_BUNDLE_PATH, loadTrustBundle, validateTrustBundle } fro
  * dstack KMS and actually signs invitations with. `share_v2::compose` fails
  * closed if a node is ever configured with anything else.
  *
- * `emailOrigin` is the one field below production has never published. It is
- * introduced by TC-379, which moves the sender's delivery POST off
- * `credentialsOrigin` — where `/share/v2` answers 404, and always has — and
- * onto the standalone email Worker. It ships in the same change as the code
- * that reads it, so the published document and the client never disagree.
+ * `emailOrigin` remains the legacy link-notification Worker origin. Exact-email
+ * invitation delivery uses the OpenCredentials `/share/v2` route because only
+ * OpenCredentials mints the claim material appended to an addressed link.
  */
 const PUBLISHED_IN_PRODUCTION = {
   shareOrigin: "https://share.tinycloud.xyz",
@@ -91,15 +89,7 @@ describe("the committed production trust bundle", () => {
     expect(host.publicConfig.environment).toBeUndefined();
   });
 
-  /**
-   * The regression this exists to prevent is not hypothetical: the sender
-   * POSTed its delivery authorization to `${credentialsOrigin}/share/v2` for
-   * eleven days, and the OpenCredentials witness has no such route. Every
-   * addressed share failed with a 404 that the composer reported as the same
-   * generic "We couldn't send that email" it reports for a bad signature, so
-   * the failure was repeatedly diagnosed as a trust problem.
-   */
-  it("routes delivery to a dedicated email origin, never to the credentials witness", () => {
+  it("retains a distinct canonical legacy email origin", () => {
     const bundle = validateTrustBundle(committedDocument());
     expect(bundle.public.emailOrigin).toBe("https://email.tinycloud.xyz");
     expect(bundle.public.emailOrigin).not.toBe(bundle.public.credentialsOrigin);
