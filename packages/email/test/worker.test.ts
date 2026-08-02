@@ -216,6 +216,8 @@ describe("authorized delivery", () => {
     expect(sent.subject).toBe("Quarterly report.pdf was shared with you");
     expect(String(sent.html)).toContain(SHARE_URL);
     expect(String(sent.text)).toContain(SHARE_URL);
+    const deliveredUrl = new URL(String(sent.text).match(/Open document: ([^\n]+)/)?.[1] ?? "https://invalid.example/");
+    expect([...deliveredUrl.hash.slice(1).split("&")].map((part) => part.split("=", 1)[0])).toEqual(["k"]);
   });
 
   it("refuses to send the same authorization twice and reports the first result", async () => {

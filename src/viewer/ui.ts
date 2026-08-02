@@ -95,6 +95,7 @@ function renderOk(
   root: HTMLElement,
   envelope: ShareEnvelope,
   hasContent: boolean,
+  access: "bearer" | "policy",
   senderVerified = false,
   shareUrl?: string,
 ): HTMLElement {
@@ -124,8 +125,8 @@ function renderOk(
     el(
       doc,
       "p",
-      senderVerified ? "viewer-addressed-note" : "viewer-bearer-note",
-      senderVerified ? "Shared with you specifically. Nothing about this document leaves your browser." : "Anyone with this link can open it. We can't confirm who sent it.",
+      access === "policy" ? "viewer-addressed-note" : "viewer-bearer-note",
+      access === "policy" ? "This share is addressed to an approved recipient policy. Access was checked before opening." : "Anyone with this link can open it. We can't confirm who sent it.",
     ),
   );
 
@@ -228,12 +229,15 @@ export function renderViewerState(
 ): HTMLElement | null {
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope, result.content !== undefined, result.senderVerified, options.shareUrl);
+      return renderOk(root, result.envelope, result.content !== undefined, result.access ?? "bearer", result.senderVerified, options.shareUrl);
     case "policy-email-claim-required":
       renderErrorState(root, "Confirm your email to open this", "Open this document from the link in the invitation email the sender asked us to send.");
       return null;
     case "policy-v2-claim-required":
       renderErrorState(root, "Confirm your email to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
+      return null;
+    case "recipient-did-authorization-required":
+      renderErrorState(root, "Confirm this OpenKey device", "Continue with OpenKey to confirm the current session before opening this share.");
       return null;
     case "invalid-link":
       renderErrorState(
@@ -288,7 +292,7 @@ export function renderViewerState(
       renderErrorState(
         root,
         "This share has expired",
-        `It expired on ${formatExpiry(result.envelope.expiry)}. Ask the sender for a fresh link.`,
+        `It expired on ${formatExpiry(result.expiresAt)}. Ask the sender for a fresh link.`,
       );
       return null;
     case "content-fetch-failed":

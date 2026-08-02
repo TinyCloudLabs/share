@@ -6,7 +6,7 @@ function validationFailure(kind: SenderFailureKind): TypeError {
   return Object.assign(new TypeError(SENDER_FAILURE[kind]), { kind });
 }
 
-export type RecipientKind = "exactEmail" | "emailDomain" | "bearer";
+export type RecipientKind = "exactEmail" | "emailDomain" | "recipientDid" | "bearer";
 export type SharePermission = "read" | "list" | "edit";
 export type ShareLinkFormat = "compact" | "inline";
 /** Persisted history taxonomy. The composer never asks for it: it is derived from the content the sender supplied. */
@@ -141,6 +141,14 @@ export function normalizeEmail(value: string): string {
   return `${value.slice(0, value.length - match[1].length).slice(0, -1)}@${normalizeEmailDomain(match[1])}`;
 }
 
+export function normalizeRecipientDid(value: string): string {
+  const did = value.trim();
+  if (!/^did:[a-z0-9]+:.+$/.test(did) || did !== value || did.length > 512) {
+    throw validationFailure("recipientEmail");
+  }
+  return did;
+}
+
 export function emailDomainOf(value: string): string {
   const email = normalizeEmail(value);
   const domain = email.slice(email.lastIndexOf("@") + 1);
@@ -184,6 +192,8 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
     ? { kind: "exactEmail" as const, value: normalizeEmail(model.recipient.value ?? "") }
     : model.recipient.kind === "emailDomain"
       ? { kind: "emailDomain" as const, value: normalizeEmailDomain(model.recipient.value ?? "") }
+      : model.recipient.kind === "recipientDid"
+        ? { kind: "recipientDid" as const, value: normalizeRecipientDid(model.recipient.value ?? "") }
       : { kind: "bearer" as const };
   const inferredResourceKind = model.content.kind === "files"
     ? "prefix"
@@ -206,6 +216,7 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
     throw validationFailure("deliveryDomain");
   }
+  if (recipient.kind === "recipientDid" && deliveryEmail !== undefined) throw validationFailure("deliveryRecipient");
   if (!model.encryption) throw validationFailure("plaintext");
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
@@ -216,5 +227,5 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
  * sender no longer pre-commits to being offered it (P1-5).
  */
 export function canNotify(model: ShareComposerModel): boolean {
-  return model.recipient.kind !== "bearer" && model.deliveryEmail !== undefined;
+  return (model.recipient.kind === "exactEmail" || model.recipient.kind === "emailDomain") && model.deliveryEmail !== undefined;
 }

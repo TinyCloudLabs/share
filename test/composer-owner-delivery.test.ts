@@ -58,8 +58,17 @@ function ownerSession(calls: DeliveryCall[], omitAuthorize = false): ShareTinyCl
   const session = {
     spaceId: "space-1",
     did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
-    createOwnerDelegation: async () => ({ delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) }),
-    registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
+    createOwnerDelegation: async (input: Record<string, unknown>) => ({ delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]), permissions: input.permissions }),
+    registerOwnerSharePolicy: async (input: Record<string, unknown>) => ({
+      registration: {
+        registrationCid: "bafkreiregistrationfake",
+        ownerDelegationCid: (input.ownerDelegation as { delegationCid: string }).delegationCid,
+        ownerDid: session.did,
+        shareKeyDid: "did:key:z6Mkfixture",
+        enforcerDid: CONFIG.enforcerDid,
+      },
+      proof: {},
+    }),
     kvForSpace: () => ({ put: async () => ({ ok: true }) }),
     // Not an arrow: `this` is only bound when the composer calls this as a
     // method on the session, which is the second half of the TC-343 defect.
@@ -164,19 +173,23 @@ describe("the owner-share delivery authorization carries the trust bundle the SD
     // Every field the SDK's `authorizeShareDelivery` declares, none undefined.
     expect(Object.keys(input).sort()).toEqual([
       "credentialsAudience", "delegationCid", "documentName", "enforcementDelegationCid", "envelopeCid",
-      "expiresAt", "nodeProof", "policyCid", "recipientEmail", "registrationCid", "resourcePath",
+      "expiresAt", "idempotencyKey", "nodeProof", "policyCid", "recipientEmail", "registrationCid", "resourcePath",
       "shareCid", "shareId", "shareUrl",
     ]);
     for (const [name, field] of Object.entries(input)) expect(field, name).toBeDefined();
     expect(input.recipientEmail).toBe(RECIPIENT);
     expect(input.registrationCid).toBe("bafkreiregistrationfake");
     expect(input.delegationCid).toBe("bafkreiownerdelegationfake");
+    expect(input.idempotencyKey).toMatch(/^tinycloud-share:[A-Za-z0-9_-]+:[A-Za-z0-9_-]{43}$/);
     // The delivery window is capped well below the share's own expiry.
     expect(Date.parse(input.expiresAt as string)).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
 
     // And the Node-signed receipt reaches the notifier that posts it.
     expect(notified).toHaveLength(1);
     expect((notified[0]!.deliveryAuthorization as Record<string, unknown>).proof).toBeDefined();
+    const deliveryCopy = root.querySelector<HTMLElement>(".notification-status")?.textContent ?? "";
+    expect(deliveryCopy).toBe("Invitation requested.");
+    expect(deliveryCopy).not.toMatch(/sent|delivered/i);
   });
 
   it("still produces a working link when the session cannot authorize delivery", async () => {

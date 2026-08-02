@@ -1,0 +1,15 @@
+{
+  "schema": "tinycloud.sdk-cli-workspace-catalog/v2",
+  "sdkCommit": "bff28d892c25ed0ea9f495b442e1abf0816d845e",
+  "packages": [
+    { "name": "@tinycloud/cli", "version": "0.8.3-beta.5" },
+    { "name": "@tinycloud/node-sdk", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/node-sdk-wasm", "version": "1.7.5" },
+    { "name": "@tinycloud/operations", "version": "0.3.2-beta.5" },
+    { "name": "@tinycloud/share-envelope", "version": "0.1.0" },
+    { "name": "@tinycloud/share-sdk", "version": "0.1.0" },
+    { "name": "@tinycloud/sdk-core", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/sdk-services", "version": "2.11.0-beta.6" },
+    { "name": "@tinycloud/bootstrap", "version": "2.6.0" }
+  ]
+}

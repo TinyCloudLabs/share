@@ -15,7 +15,7 @@ const contentTypes: Record<string, string> = { ".html": "text/html; charset=UTF-
 type ShareHost = ReturnType<typeof createShareHostFromEnv>;
 
 function dynamic(path: string): boolean {
-  return path === "/health/readiness" || path === "/api/health/readiness" || path === "/.well-known/tinycloud-share/config.json" ||
+  return path === "/health/readiness" || path === "/api/health/readiness" || path === "/.well-known/tinycloud-share/config.json" || path === "/.well-known/tinycloud-share/agent.json" ||
     path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" ||
     path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" ||
     path === "/api/share/sender-identity" ||

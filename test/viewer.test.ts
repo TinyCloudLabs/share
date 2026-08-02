@@ -8,6 +8,7 @@ import { Buffer } from "node:buffer";
 
 import { ed25519 } from "@noble/curves/ed25519";
 import {
+  canonicalize,
   computeCid,
   didKeyFromEd25519PublicKey,
   fromBase64Url,
@@ -62,7 +63,7 @@ const BEARER_TARGET: AuthorizationTarget = {
   sessionJwk: {
     kty: "OKP",
     crv: "Ed25519",
-    x: "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+    x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
     d: "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A",
   },
 };
@@ -170,7 +171,7 @@ async function publish(
   envelope: ShareEnvelope,
   key: Uint8Array = generateKey(),
 ): Promise<{ url: string; cid: string; key: Uint8Array }> {
-  const plaintext = new TextEncoder().encode(JSON.stringify(envelope));
+  const plaintext = new TextEncoder().encode(canonicalize(envelope));
   const sealed = await seal(plaintext, key);
   await putBlob(REGISTRY_BASE, sealed.blob, new Date(Date.now() + 3_600_000), {
     fetchFn,
@@ -296,6 +297,19 @@ describe("bearer single-file share (happy path)", () => {
     expect(body.querySelector("h1")?.textContent).toBe("Project Phoenix");
     expect(body.querySelector("em")?.textContent).toBe("small");
     expect(body.querySelector("table")).not.toBeNull();
+  });
+
+  it("uses addressed copy for policy access instead of bearer semantics", () => {
+    const root = makeRoot();
+    const result = {
+      state: "ok" as const,
+      access: "policy" as const,
+      envelope: { ...makeUnsigned(), authorizationTarget: POLICY_TARGET } as ShareEnvelope,
+      senderVerified: true,
+    };
+    renderViewerState(root, result);
+    expect(root.textContent).toContain("addressed to an approved recipient policy");
+    expect(root.textContent).not.toContain("Anyone with this link can open it");
   });
 
   it("zeroes the fragment key after decryption", async () => {

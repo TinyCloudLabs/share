@@ -41,8 +41,11 @@ postMessage, WebCrypto call and Worker — for localising hangs),
 
 Each run writes to `runs/<stage>-<timestamp>/`: `run.log`, `results.json`, the
 downloaded bytes, the rendered document text, screenshots, and — for stage 2 —
-`network.json`, `delivery-authorization.json`, `invitation-email.txt` and
-`recipient.txt`.
+redacted `network.json`, `delivery-authorization.json`, `invitation-email.txt`
+and `recipient.txt`. Session cookies are never written; stage 1 records only
+cookie names and local-storage key names in `sender-storage.redacted.json`.
+OTP values, invitation bodies, bearer fragments, authorization headers, JWKs,
+and other credential material are redacted before structured output is saved.
 
 ## Mailbox
 

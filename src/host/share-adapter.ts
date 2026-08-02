@@ -6,6 +6,7 @@ import { verifyMessage } from "viem";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
+import { canonicalize } from "@tinycloud/share-envelope";
 import { loadTrustBundle, type ShareTrustBundle } from "./trust-bundle.js";
 import { derivablePrincipal, derivedSenderIdentitySource, loadSenderRootSeed, staticSenderIdentitySource, type SenderIdentity, type SenderIdentitySource } from "./sender-identity.js";
 import { assertSecurePath, secureReadSync, SECURE_APPEND, SECURE_CREATE, SECURE_READ } from "./secure-path.js";
@@ -14,6 +15,7 @@ import { resolveShareUpstreams, sanitizeUpstreamRequest, sanitizeUpstreamRespons
 function fromBase64Url(value: string): Uint8Array { return new Uint8Array(Buffer.from(value, "base64url")); }
 function toBase64Url(value: Uint8Array): string { return Buffer.from(value).toString("base64url"); }
 const SIGNATURE_DOMAINS = { envelope: "xyz.tinycloud.share/envelope/v1\0", envelopeV2: "xyz.tinycloud.share/envelope/v2\0", inviteAuthorization: "xyz.tinycloud.share/invite-authorization/v1\0", delegationAuthoring: "xyz.tinycloud.share/delegation-authoring/v2\0" } as const;
+const AGENT_CARD = { version: 1, cli: "npx -y @tinycloud/cli@latest", input: "stdin", inspectArgs: ["share", "inspect", "-", "--json"], receiveArgs: ["share", "receive", "-", "--output", "."], fragmentLocalOnly: true } as const;
 type ContentSource = Record<string, unknown>;
 function validateSource(value: ContentSource): ContentSource {
   if (value.kind === "kv") {
@@ -24,6 +26,43 @@ function validateSource(value: ContentSource): ContentSource {
   return value;
 }
 function stable(value: unknown): string { if (value === null || typeof value !== "object") return JSON.stringify(value); if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`; }
+
+function isCanonicalRecipientDid(value: string): boolean {
+  if (value.length === 0 || value.length > 2048 || /[\u0000-\u0020\u007f]/.test(value)) return false;
+  const parts = value.split(":");
+  if (parts.length < 3 || parts[0] !== "did" || !/^[a-z0-9]+$/.test(parts[1] ?? "")) return false;
+  const identifier = parts.slice(2);
+  if (identifier.some((part) => part.length === 0)) return false;
+  if (parts[1] === "web") {
+    const host = identifier[0] ?? "";
+    if (host.length > 253 || host.split(".").some((label) => !label || label.length > 63 || !/^[A-Za-z0-9-]+$/.test(label) || label.startsWith("-") || label.endsWith("-"))) return false;
+    return identifier.slice(1).every((part) => /^[A-Za-z0-9._%-]+$/.test(part));
+  }
+  if (parts[1] === "pkh") return identifier.length >= 3 && identifier.every((part) => /^[A-Za-z0-9._%-]+$/.test(part));
+  if (parts[1] === "key") {
+    if (!/^z[1-9A-HJ-NP-Za-km-z]+$/.test(identifier.join(":"))) return false;
+    const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const digits = identifier.join(":").slice(1).split("").map((char) => alphabet.indexOf(char));
+    if (digits.some((digit) => digit < 0)) return false;
+    const bytes = [0];
+    for (const digit of digits) {
+      let carry = digit;
+      for (let index = bytes.length - 1; index >= 0; index -= 1) {
+        const value = (bytes[index] ?? 0) * 58 + carry;
+        bytes[index] = value & 0xff;
+        carry = value >>> 8;
+      }
+      while (carry > 0) {
+        bytes.unshift(carry & 0xff);
+        carry >>>= 8;
+      }
+    }
+    const leadingZeroes = identifier.join(":").slice(1).match(/^1*/)?.[0].length ?? 0;
+    const decoded = [...new Array(leadingZeroes).fill(0), ...bytes].slice(bytes.length === 1 && bytes[0] === 0 ? leadingZeroes : 0);
+    return decoded.length === 34 && decoded[0] === 0xed && decoded[1] === 0x01;
+  }
+  return false;
+}
 
 const MAX_BODY = 128 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
@@ -40,8 +79,17 @@ const LINK_ONLY_RETENTION_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
 const LINK_ONLY_UPLOAD_WINDOW_MS = 5 * 60 * 1000;
 const LINK_ONLY_UPLOAD_LIMIT = 20;
 const LINK_ONLY_AUTHORIZATION_TTL_MS = 60 * 1000;
+const UPLOAD_ATTESTATION_HEADER = "x-tinycloud-upload-attestation";
+const UPLOAD_RETENTION_HEADER = "x-tinycloud-retention";
+const UPLOAD_ATTESTATION_DOMAIN = "xyz.tinycloud.share/upload-attestation/v1\0";
+const MAX_UPLOAD_ATTESTATION_BYTES = 64 * 1024;
+const MAX_UPLOAD_ATTESTATION_REPLAY = 8192;
+const UPLOAD_ATTESTATION_CLOCK_SKEW_MS = 30 * 1000;
+const UPLOAD_ATTESTATION_TTL_MS = 120 * 1000;
+const MAX_RETENTION_BYTES = 1024;
 const REGISTRY_AUTHORIZATION_DOMAIN =
   "xyz.tinycloud.share/registry-authorization/v1\0";
+const REGISTRY_STORE_DOMAIN = "xyz.tinycloud.share/registry-store/v1\0";
 export const PRODUCTION_BINDING_STORE_ROOT = "/var/lib/tinycloud/share";
 export const DEFAULT_PRODUCTION_BINDING_STORE_PATH = `${PRODUCTION_BINDING_STORE_ROOT}/bindings.ndjson`;
 
@@ -51,6 +99,14 @@ export interface BindingStore {
   readonly writable: boolean;
   get(cid: string): Promise<Record<string, unknown> | undefined>;
   put(cid: string, binding: Record<string, unknown>): Promise<void>;
+  reserveUpload?(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
+  consumeUploadAttestation?(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean>;
+}
+
+export interface UploadBudgetStore {
+  readonly writable: boolean;
+  reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean>;
+  consumeUploadAttestation?(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean>;
 }
 
 async function secureRead(path: string): Promise<string> {
@@ -89,8 +145,16 @@ function scryptAsync(password: string, salt: Uint8Array, length: number, options
   return new Promise((resolve, reject) => scrypt(password, salt, length, options, (error, derived) => error === null ? resolve(derived as Buffer) : reject(error)));
 }
 
-function parseJournal(text: string): Map<string, Record<string, unknown>> {
-  const records = new Map<string, Record<string, unknown>>();
+interface JournalState {
+  readonly bindings: Map<string, Record<string, unknown>>;
+  readonly budgets: Map<string, { count: number; windowStartedAt: number }>;
+  readonly uploadAttestations: Map<string, number>;
+}
+
+function parseJournal(text: string): JournalState {
+  const bindings = new Map<string, Record<string, unknown>>();
+  const budgets = new Map<string, { count: number; windowStartedAt: number }>();
+  const uploadAttestations = new Map<string, number>();
   if (text.length === 0) throw new Error("binding journal is empty");
   const lines = text.split("\n");
   for (const [lineNumber, line] of lines.entries()) {
@@ -99,13 +163,25 @@ function parseJournal(text: string): Map<string, Record<string, unknown>> {
     try { value = JSON.parse(line); } catch { throw new Error("binding journal is corrupt"); }
     if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("binding journal record is invalid");
     const record = value as Record<string, unknown>;
-    if (record.op !== "put" || typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
-    const binding = record.binding as Record<string, unknown>;
-    const previous = records.get(record.cid);
-    if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
-    records.set(record.cid, binding);
+    if (record.op === "put") {
+      if (typeof record.cid !== "string" || typeof record.binding !== "object" || record.binding === null || Array.isArray(record.binding)) throw new Error("binding journal record is invalid");
+      const binding = record.binding as Record<string, unknown>;
+      const previous = bindings.get(record.cid);
+      if (previous !== undefined && stable(previous) !== stable(binding)) throw new Error("binding journal contains conflicting records");
+      bindings.set(record.cid, binding);
+      continue;
+    }
+    if (record.op === "upload-budget" && typeof record.principal === "string" && Number.isSafeInteger(record.count) && (record.count as number) >= 0 && Number.isSafeInteger(record.windowStartedAt) && (record.windowStartedAt as number) >= 0) {
+      budgets.set(record.principal, { count: record.count as number, windowStartedAt: record.windowStartedAt as number });
+      continue;
+    }
+    if (record.op === "upload-attestation" && typeof record.jti === "string" && Number.isSafeInteger(record.expiresAt) && (record.expiresAt as number) > 0) {
+      uploadAttestations.set(record.jti, record.expiresAt as number);
+      continue;
+    }
+    throw new Error("binding journal record is invalid");
   }
-  return records;
+  return { bindings, budgets, uploadAttestations };
 }
 
 /**
@@ -165,11 +241,11 @@ export class TransactionalBindingStore implements BindingStore {
     }
   }
 
-  private async readJournal(): Promise<Map<string, Record<string, unknown>>> {
+  private async readJournal(): Promise<JournalState> {
     let text: string;
     try { text = await secureRead(this.path); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { bindings: new Map(), budgets: new Map(), uploadAttestations: new Map() };
       throw error;
     }
     return parseJournal(text);
@@ -193,13 +269,13 @@ export class TransactionalBindingStore implements BindingStore {
     }
   }
 
-  async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).get(cid); }
+  async get(cid: string): Promise<Record<string, unknown> | undefined> { return (await this.readJournal()).bindings.get(cid); }
 
   async put(cid: string, binding: Record<string, unknown>): Promise<void> {
     if (!this.writable) throw new Error("binding store is not writable");
     await this.withLock(async () => {
-      const records = await this.readJournal();
-      const previous = records.get(cid);
+      const state = await this.readJournal();
+      const previous = state.bindings.get(cid);
       if (previous !== undefined) {
         if (stable(previous) !== stable(binding)) throw new Error("binding is immutable");
         return;
@@ -212,14 +288,118 @@ export class TransactionalBindingStore implements BindingStore {
       } finally { await handle.close(); }
     });
   }
+
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    if (!this.writable) throw new Error("upload budget store is not writable");
+    return this.withLock(async () => {
+      const state = await this.readJournal();
+      const prior = state.budgets.get(principal);
+      const budget = prior === undefined || now - prior.windowStartedAt >= windowMs
+        ? { count: 0, windowStartedAt: now }
+        : prior;
+      if (budget.count >= limit) return false;
+      const next = { count: budget.count + 1, windowStartedAt: budget.windowStartedAt };
+      assertSecurePath(this.path);
+      const handle = await open(this.path, SECURE_APPEND, 0o600);
+      try {
+        await handle.write(`${JSON.stringify({ op: "upload-budget", principal, ...next })}\n`, undefined, "utf8");
+        await handle.sync();
+      } finally { await handle.close(); }
+      return true;
+    });
+  }
+
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> {
+    if (!this.writable) throw new Error("upload attestation store is not writable");
+    return this.withLock(async () => {
+      const state = await this.readJournal();
+      for (const [value, expiry] of state.uploadAttestations) {
+        if (expiry <= now) state.uploadAttestations.delete(value);
+      }
+      if (state.uploadAttestations.has(jti) || state.uploadAttestations.size >= limit) return false;
+      assertSecurePath(this.path);
+      const handle = await open(this.path, SECURE_APPEND, 0o600);
+      try {
+        await handle.write(`${JSON.stringify({ op: "upload-attestation", jti, expiresAt })}\n`, undefined, "utf8");
+        await handle.sync();
+      } finally { await handle.close(); }
+      return true;
+    });
+  }
 }
 
 class MemoryBindingStore implements BindingStore {
   readonly writable = true;
   private readonly values = new Map<string, Record<string, unknown>>();
+  private readonly budgets = new MemoryUploadBudgetStore();
   constructor(initial: Record<string, Record<string, unknown>> = {}) { Object.entries(initial).forEach(([key, value]) => this.values.set(key, value)); }
   async get(cid: string): Promise<Record<string, unknown> | undefined> { return this.values.get(cid); }
   async put(cid: string, binding: Record<string, unknown>): Promise<void> { this.values.set(cid, binding); }
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> { return this.budgets.reserveUpload(principal, now, windowMs, limit); }
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> { return this.budgets.consumeUploadAttestation(jti, expiresAt, now, limit); }
+}
+
+class MemoryUploadBudgetStore implements UploadBudgetStore {
+  readonly writable = true;
+  private readonly values = new Map<string, { count: number; windowStartedAt: number }>();
+  private readonly attestations = new Map<string, number>();
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    const prior = this.values.get(principal);
+    const budget = prior === undefined || now - prior.windowStartedAt >= windowMs ? { count: 0, windowStartedAt: now } : prior;
+    if (budget.count >= limit) return false;
+    budget.count += 1;
+    this.values.set(principal, budget);
+    return true;
+  }
+  async consumeUploadAttestation(jti: string, expiresAt: number, now: number, limit: number): Promise<boolean> {
+    for (const [value, expiry] of this.attestations) if (expiry <= now) this.attestations.delete(value);
+    if (this.attestations.has(jti) || this.attestations.size >= limit) return false;
+    this.attestations.set(jti, expiresAt);
+    return true;
+  }
+}
+
+/**
+ * Production replay and quota state lives in the registry Worker’s
+ * UploadAuthorization Durable Object.  The Share process only holds the
+ * private half of the dedicated registry-upload key and signs the exact
+ * store operation; it never treats a local file as authorization state.
+ */
+export class RegistryUploadAuthorizationStore implements UploadBudgetStore {
+  readonly writable = true;
+
+  constructor(
+    private readonly origin: string,
+    private readonly privateKey: Uint8Array,
+    private readonly fetchFn?: typeof fetch,
+  ) {
+    if (!/^https:\/\/[^/?#:@]+$/.test(origin) && !LOOPBACK_ORIGIN.test(origin)) throw new Error("registry authorization store origin is invalid");
+    if (privateKey.byteLength !== 32) throw new Error("registry authorization store key is invalid");
+  }
+
+  private async request(body: Record<string, unknown>): Promise<boolean> {
+    const signature = toBase64Url(ed25519.sign(new TextEncoder().encode(`${REGISTRY_STORE_DOMAIN}${stable(body)}`), this.privateKey));
+    try {
+      const response = await (this.fetchFn ?? globalThis.fetch)(`${this.origin}/internal/upload-authorizations`, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", "x-tinycloud-registry-store-signature": signature },
+        body: JSON.stringify(body),
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+      });
+      return response.status === 204;
+    } catch {
+      return false;
+    }
+  }
+
+  async reserveUpload(principal: string, now: number, windowMs: number, limit: number): Promise<boolean> {
+    return this.request({ key: principal, limit, now, operation: "reserve", windowMs });
+  }
+
+  async consumeUploadAttestation(jti: string, expiresAt: number, _now: number, _limit: number): Promise<boolean> {
+    return this.request({ expiresAt, key: jti, operation: "consume" });
+  }
 }
 
 export interface ShareHostOptions {
@@ -227,9 +407,12 @@ export interface ShareHostOptions {
   readonly capability?: { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> };
   readonly capabilities?: ReadonlyMap<string, { readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: Record<string, unknown> }>;
   readonly bindingStore?: BindingStore;
+  readonly uploadBudgetStore?: UploadBudgetStore;
   readonly registryOrigin: string;
   /** Registry transport is bundle-derived, except inside the explicit hermetic resolver or SHARE_HERMETIC_REGISTRY_ORIGIN. */
   readonly registryTransportOrigin: string;
+  /** Optional transport injection for hermetic tests; production uses the platform fetch. */
+  readonly fetchFn?: typeof fetch;
   readonly authUsers?: readonly AuthUser[];
   readonly registryUploadPrivateKey?: Uint8Array;
   /** Resolves the per-principal sender signing identity; absent means the sender path cannot serve any session. */
@@ -248,6 +431,84 @@ function safeString(value: unknown, label: string): string { if (typeof value !=
 function hash(value: string): string { return createHash("sha256").update(value).digest("base64url"); }
 function hashBytes(value: Uint8Array): string { return createHash("sha256").update(value).digest("base64url"); }
 
+interface UploadAttestation {
+  readonly type: "TinyCloudShareUploadAttestation";
+  readonly version: 1;
+  readonly issuer: string;
+  readonly kid: string;
+  readonly ownerDid: string;
+  readonly sessionDid: string;
+  readonly shareOrigin: string;
+  readonly encryptedBlobCid: string;
+  readonly encryptedBlobSha256: string;
+  readonly byteLength: number;
+  readonly deleteAfter: string;
+  readonly retention: unknown;
+  readonly issuedAt: string;
+  readonly authorityExpiresAt: string;
+  readonly expiresAt: string;
+  readonly jti: string;
+  readonly signature: string;
+}
+
+const UPLOAD_ATTESTATION_KEYS = ["authorityExpiresAt", "byteLength", "deleteAfter", "encryptedBlobCid", "encryptedBlobSha256", "expiresAt", "issuedAt", "issuer", "jti", "kid", "ownerDid", "retention", "sessionDid", "shareOrigin", "signature", "type", "version"] as const;
+const PRINCIPAL = /^did:[A-Za-z0-9][A-Za-z0-9.-]*:[^\s\u0000-\u001f\u007f]{1,1023}$/;
+
+function strictBase64Url(value: unknown, bytes: number): value is string {
+  const length = Math.ceil(bytes * 4 / 3);
+  if (typeof value !== "string" || value.length !== length || !new RegExp(`^[A-Za-z0-9_-]{${length}}$`).test(value)) return false;
+  const decoded = fromBase64Url(value);
+  return decoded.byteLength === bytes && toBase64Url(decoded) === value;
+}
+
+function canonicalTimestamp(value: unknown, label: string): number {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) throw new Error(label);
+  const time = Date.parse(value);
+  if (!Number.isFinite(time) || new Date(time).toISOString() !== value) throw new Error(label);
+  return time;
+}
+
+function exactAttestation(value: unknown): UploadAttestation {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("attestation shape");
+  const object = value as Record<string, unknown>;
+  if (Object.keys(object).sort().join(",") !== [...UPLOAD_ATTESTATION_KEYS].sort().join(",")) throw new Error("attestation shape");
+  return object as unknown as UploadAttestation;
+}
+
+function uploadAttestationBytes(attestation: UploadAttestation): Uint8Array {
+  const unsigned = Object.fromEntries(Object.entries(attestation).filter(([key]) => key !== "signature"));
+  return new TextEncoder().encode(`${UPLOAD_ATTESTATION_DOMAIN}${canonicalize(unsigned)}`);
+}
+
+async function verifyUploadAttestation(
+  request: Request,
+  bytes: Uint8Array,
+  bundle: ShareTrustBundle,
+  now: number,
+): Promise<UploadAttestation> {
+  const encoded = request.headers.get(UPLOAD_ATTESTATION_HEADER);
+  const retentionHeader = request.headers.get(UPLOAD_RETENTION_HEADER);
+  if (encoded === null || Buffer.byteLength(encoded, "utf8") > MAX_UPLOAD_ATTESTATION_BYTES || retentionHeader === null || Buffer.byteLength(retentionHeader, "utf8") > MAX_RETENTION_BYTES) throw new Error("attestation missing");
+  let attestation: UploadAttestation;
+  let retention: unknown;
+  try {
+    attestation = exactAttestation(JSON.parse(encoded));
+    retention = JSON.parse(retentionHeader);
+  } catch { throw new Error("attestation malformed"); }
+  if (retention !== "until-delete" || canonicalize(retention).length > MAX_RETENTION_BYTES || canonicalize(retention) !== retentionHeader) throw new Error("attestation retention");
+  if (attestation.type !== "TinyCloudShareUploadAttestation" || attestation.version !== 1 || attestation.issuer !== bundle.public.nodeAudience || attestation.kid !== bundle.public.nodeInvitationKid || attestation.shareOrigin !== bundle.public.shareOrigin || attestation.retention === null || canonicalize(attestation.retention) !== retentionHeader || !PRINCIPAL.test(attestation.ownerDid) || !PRINCIPAL.test(attestation.sessionDid) || !strictBase64Url(attestation.signature, 64) || !strictBase64Url(attestation.encryptedBlobSha256, 32) || !strictBase64Url(attestation.jti, 16) || typeof attestation.encryptedBlobCid !== "string" || attestation.encryptedBlobCid.length > 200 || typeof attestation.byteLength !== "number" || !Number.isSafeInteger(attestation.byteLength) || attestation.byteLength < 0 || typeof attestation.deleteAfter !== "string" || typeof attestation.issuedAt !== "string" || typeof attestation.expiresAt !== "string") throw new Error("attestation fields");
+  const issuedAt = canonicalTimestamp(attestation.issuedAt, "attestation issuedAt");
+  const authorityExpiresAt = canonicalTimestamp(attestation.authorityExpiresAt, "attestation authorityExpiresAt");
+  const expiresAt = canonicalTimestamp(attestation.expiresAt, "attestation expiresAt");
+  const deleteAfter = canonicalTimestamp(attestation.deleteAfter, "attestation deleteAfter");
+  if (issuedAt > now + UPLOAD_ATTESTATION_CLOCK_SKEW_MS || authorityExpiresAt <= now || expiresAt <= now || expiresAt > authorityExpiresAt || expiresAt > now + UPLOAD_ATTESTATION_TTL_MS || expiresAt <= issuedAt || expiresAt - issuedAt > UPLOAD_ATTESTATION_TTL_MS || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS || attestation.deleteAfter !== request.headers.get("x-delete-after")) throw new Error("attestation time");
+  if (attestation.byteLength !== bytes.byteLength || attestation.byteLength > LINK_ONLY_BLOB_LIMIT) throw new Error("attestation length");
+  const cid = CID.create(1, 0x55, await sha256.digest(bytes)).toString();
+  if (attestation.encryptedBlobCid !== cid || attestation.encryptedBlobSha256 !== hashBytes(bytes)) throw new Error("attestation body binding");
+  if (!ed25519.verify(fromBase64Url(attestation.signature), uploadAttestationBytes(attestation), fromBase64Url(bundle.public.nodeInvitationPublicKey))) throw new Error("attestation signature");
+  return attestation;
+}
+
 function registryUploadAuthorization(
   privateKey: Uint8Array,
   body: Uint8Array,
@@ -256,6 +517,7 @@ function registryUploadAuthorization(
 ): string {
   const authorization = {
     action: "tinycloud.share/upload",
+    audience: "https://registry.tinycloud.xyz",
     bodyDigest: hashBytes(body),
     contentLength: body.byteLength,
     deleteAfter,
@@ -265,6 +527,7 @@ function registryUploadAuthorization(
     sessionBinding: hash(sessionToken),
     type: "TinyCloudShareRegistryAuthorization",
     version: 1,
+    jti: toBase64Url(randomBytes(16)),
   };
   const message = new TextEncoder().encode(
     `${REGISTRY_AUTHORIZATION_DOMAIN}${stable(authorization)}`,
@@ -417,6 +680,12 @@ function capabilityOwnedByPrincipal(candidate: { readonly scope: Record<string, 
   return typeof candidate.scope.userId === "string" && candidate.scope.userId === principal;
 }
 
+function samePrincipal(left: string, right: string): boolean {
+  const normalizedLeft = normalizedOwnerDid(left);
+  const normalizedRight = normalizedOwnerDid(right);
+  return normalizedLeft !== undefined || normalizedRight !== undefined ? normalizedLeft === normalizedRight : left === right;
+}
+
 function openKeyMessage(origin: string, address: string, nonce: string, issuedAt: string): string {
   return [
     `${new URL(origin).host} wants you to sign in with your Ethereum account:`,
@@ -543,7 +812,8 @@ function assertAddressedDelegationAuthoringSigningBinding(message: Record<string
   if (Object.keys(message).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(message, key)) || !sameJson(binding, message)) throw new Error("delegation authoring signing shape");
   if (message.version !== 2 || typeof message.nonce !== "string" || typeof message.jti !== "string" || !B64_256.test(message.nonce) || !B64_128.test(message.jti) || message.senderDid !== scope.senderDid || message.targetOrigin !== scope.targetOrigin || message.nodeAudience !== scope.nodeAudience || message.delegationCid !== scope.delegationCid || message.authorityMaterialHandle !== scope.authorityMaterialHandle || message.authorityMaterialDigest !== scope.authorityMaterialDigest || !sameJson(message.contentSource, source) || message.contentSourceDigest !== sourceDigest(source)) throw new Error("delegation authoring binding");
   const matcher = message.recipientMatcher;
-  if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher) || !["exactEmail", "emailDomain"].includes((matcher as Record<string, unknown>).kind as string) || typeof (matcher as Record<string, unknown>).value !== "string") throw new Error("delegation authoring matcher");
+  if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher) || !["exactEmail", "emailDomain", "recipientDid"].includes((matcher as Record<string, unknown>).kind as string) || typeof (matcher as Record<string, unknown>).value !== "string") throw new Error("delegation authoring matcher");
+  if ((matcher as Record<string, unknown>).kind === "recipientDid" && !isCanonicalRecipientDid((matcher as Record<string, unknown>).value as string)) throw new Error("delegation authoring matcher");
   const resource = message.resource;
   if (typeof resource !== "object" || resource === null || Array.isArray(resource)) throw new Error("delegation authoring resource");
   const resourceObject = resource as Record<string, unknown>;
@@ -571,7 +841,7 @@ async function parseV2Policy(policyCid: string, policyBytes: string): Promise<Re
   const matcher = parsed.recipientMatcher as Record<string, unknown>;
   const resource = parsed.resource as Record<string, unknown>;
   const source = parsed.contentSource as Record<string, unknown>;
-  if (Object.keys(parsed).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(parsed, key)) || stable(parsed) !== text || parsed.type !== "TinyCloudSharePolicy" || parsed.version !== 2 || typeof parsed.issuerDid !== "string" || typeof parsed.expiresAt !== "string" || typeof parsed.contentSource !== "object" || parsed.contentSource === null || Array.isArray(parsed.contentSource) || typeof parsed.resource !== "object" || parsed.resource === null || Array.isArray(parsed.resource) || !Array.isArray(parsed.actions) || parsed.actions.length === 0 || parsed.actions.length > 4 || parsed.actions.some((action) => action !== "tinycloud.kv/get" && action !== "tinycloud.kv/metadata" && action !== "tinycloud.kv/list" && action !== "tinycloud.kv/put") || typeof parsed.recipientMatcher !== "object" || parsed.recipientMatcher === null || Array.isArray(parsed.recipientMatcher) || typeof parsed.contentSourceDigest !== "string" || Object.keys(matcher).some((key) => key !== "kind" && key !== "value") || (matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain") || typeof matcher.value !== "string" || Object.keys(resource).some((key) => key !== "kind" && key !== "value") || (resource.kind !== "exact" && resource.kind !== "prefix") || typeof resource.value !== "string" || Object.keys(source).some((key) => key !== "kind" && key !== "space" && key !== "path" && key !== "action") || source.kind !== "kv" || typeof source.space !== "string" || typeof source.path !== "string" || (source.action !== "tinycloud.kv/get" && source.action !== "tinycloud.kv/list" && source.action !== "tinycloud.kv/put")) throw new Error("v2 policy shape");
+  if (Object.keys(parsed).some((key) => !keys.includes(key)) || keys.some((key) => !Object.hasOwn(parsed, key)) || stable(parsed) !== text || parsed.type !== "TinyCloudSharePolicy" || parsed.version !== 2 || typeof parsed.issuerDid !== "string" || typeof parsed.expiresAt !== "string" || typeof parsed.contentSource !== "object" || parsed.contentSource === null || Array.isArray(parsed.contentSource) || typeof parsed.resource !== "object" || parsed.resource === null || Array.isArray(parsed.resource) || !Array.isArray(parsed.actions) || parsed.actions.length === 0 || parsed.actions.length > 4 || parsed.actions.some((action) => action !== "tinycloud.kv/get" && action !== "tinycloud.kv/metadata" && action !== "tinycloud.kv/list" && action !== "tinycloud.kv/put") || typeof parsed.recipientMatcher !== "object" || parsed.recipientMatcher === null || Array.isArray(parsed.recipientMatcher) || typeof parsed.contentSourceDigest !== "string" || Object.keys(matcher).some((key) => key !== "kind" && key !== "value") || (matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "recipientDid") || typeof matcher.value !== "string" || (matcher.kind === "recipientDid" ? !isCanonicalRecipientDid(matcher.value) : false) || Object.keys(resource).some((key) => key !== "kind" && key !== "value") || (resource.kind !== "exact" && resource.kind !== "prefix") || typeof resource.value !== "string" || Object.keys(source).some((key) => key !== "kind" && key !== "space" && key !== "path" && key !== "action") || source.kind !== "kv" || typeof source.space !== "string" || typeof source.path !== "string" || (source.action !== "tinycloud.kv/get" && source.action !== "tinycloud.kv/list" && source.action !== "tinycloud.kv/put")) throw new Error("v2 policy shape");
   return parsed;
 }
 
@@ -583,11 +853,12 @@ async function assertV2SigningBinding(message: Record<string, unknown>, binding:
   const recipient = message.recipientMatcher;
   if (typeof recipient !== "object" || recipient === null || Array.isArray(recipient)) throw new Error("v2 recipient matcher");
   const matcher = recipient as Record<string, unknown>;
-  if ((matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "policyDigest" && matcher.kind !== "bearer") || (matcher.kind !== "bearer" && typeof matcher.value !== "string")) throw new Error("v2 recipient matcher");
+  if ((matcher.kind !== "exactEmail" && matcher.kind !== "emailDomain" && matcher.kind !== "recipientDid" && matcher.kind !== "policyDigest" && matcher.kind !== "bearer") || (matcher.kind !== "bearer" && typeof matcher.value !== "string")) throw new Error("v2 recipient matcher");
   const matcherValue = matcher.value as string | undefined;
   if (matcher.kind === "exactEmail") canonicalEmail(matcherValue!);
   if (matcher.kind === "emailDomain" && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(matcherValue!)) throw new Error("v2 recipient domain");
   if (matcher.kind === "policyDigest" && !B64_256.test(matcherValue!)) throw new Error("v2 policy matcher");
+  if (matcher.kind === "recipientDid" && !isCanonicalRecipientDid(matcherValue!)) throw new Error("v2 recipient DID");
   if (stable(matcher) !== stable(binding.recipientMatcher)) throw new Error("v2 recipient binding");
   const actions = message.actions;
   if (!Array.isArray(actions) || actions.length === 0 || actions.length > 3 || stable(actions) !== stable(["read", "list", "edit"].filter((action) => actions.includes(action)))) throw new Error("v2 actions");
@@ -622,6 +893,7 @@ async function assertV2SigningBinding(message: Record<string, unknown>, binding:
   if (deliveryEmail !== undefined) {
     const email = canonicalEmail(deliveryEmail);
     if (matcher.kind === "exactEmail" && email !== matcher.value || matcher.kind === "emailDomain" && email.slice(email.lastIndexOf("@") + 1) !== matcher.value) throw new Error("v2 delivery binding");
+    if (matcher.kind === "recipientDid") throw new Error("v2 delivery binding");
   }
 }
 
@@ -724,7 +996,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
   const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
   const openKeyNonces = new Map<string, number>();
-  const linkOnlyUploads = new Map<string, { count: number; windowStartedAt: number }>();
+  const uploadBudgetStore = options.uploadBudgetStore ?? (options.testMode ? new MemoryUploadBudgetStore() : undefined);
   const capability = options.capability;
   /**
    * Drops state whose lifetime has ended. Called before issuing a session, so
@@ -734,8 +1006,16 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     const now = Date.now();
     for (const [token, session] of sessions) if (session.expiresAt <= now) sessions.delete(token);
     for (const [key, entry] of signers) if (entry.expiresAt <= now) signers.delete(key);
-    for (const [key, budget] of linkOnlyUploads) if (now - budget.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS) linkOnlyUploads.delete(key);
     for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
+  };
+  const consumeUploadAttestationJti = async (jti: string, expiresAt: number, now: number): Promise<boolean> => {
+    const store = uploadBudgetStore ?? (options.testMode ? options.bindingStore : undefined);
+    if (store?.writable !== true || store.consumeUploadAttestation === undefined) throw new Error("upload_attestation_store_unavailable");
+    return store.consumeUploadAttestation(jti, expiresAt, now, MAX_UPLOAD_ATTESTATION_REPLAY);
+  };
+  const reserveUpload = async (principal: string, now: number): Promise<boolean> => {
+    if (uploadBudgetStore?.writable !== true) throw new Error("upload_budget_unavailable");
+    return uploadBudgetStore.reserveUpload(principal, now, LINK_ONLY_UPLOAD_WINDOW_MS, LINK_ONLY_UPLOAD_LIMIT);
   };
   const issueSession = (token: string, session: ShareSession): void => {
     sweep();
@@ -814,6 +1094,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     try {
       if ((url.pathname === "/health/readiness" || url.pathname === "/api/health/readiness") && request.method === "GET") return response(200, { authReady, senderReady });
       if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
+      if (url.pathname === "/.well-known/tinycloud-share/agent.json" && request.method === "GET") return response(200, AGENT_CARD);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
         if (!shareOriginAllowed(requestOrigin, options)) return generic(403);
@@ -976,41 +1257,58 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         const binding = await options.bindingStore?.get(cid); return binding === undefined ? generic(404) : response(200, binding);
       }
       if (url.pathname.startsWith(`${LINK_ONLY_REGISTRY_PREFIX}/`) || url.pathname === LINK_ONLY_REGISTRY_PREFIX) {
-        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
         if (url.pathname !== `${LINK_ONLY_REGISTRY_PREFIX}/blobs`) return undefinedResponse();
         if (request.method !== "POST") return response(405, { error: { code: "method_not_allowed" } }, { allow: "POST" });
         if (options.registryUploadPrivateKey === undefined) return response(503, { error: { code: "registry_upload_not_ready" } });
+        const attestationHeader = request.headers.get(UPLOAD_ATTESTATION_HEADER);
+        if (attestationHeader !== null && attestationHeader.length > MAX_UPLOAD_ATTESTATION_BYTES) return response(413, { error: { code: "upload_attestation_too_large" } });
         const now = Date.now();
         const deleteAfterHeader = request.headers.get("x-delete-after") ?? "";
         const deleteAfter = Date.parse(deleteAfterHeader);
         if (!Number.isFinite(deleteAfter) || deleteAfter <= now || deleteAfter > now + LINK_ONLY_RETENTION_LIMIT_MS) {
           return response(400, { error: { code: "upload_retention_invalid" } });
         }
-        const uploadKey = sessionCookie(request) ?? session.userId;
-        // The registry authorization binds to the session token, but the upload
+        if (attestationHeader !== null) {
+          if (!shareOriginAllowed(request.headers.get("origin"), options)) return response(401, { error: { code: "authentication_required" } });
+          const bytes = await boundedUpload(request, LINK_ONLY_BLOB_LIMIT);
+          const attestation = await verifyUploadAttestation(request, bytes, options.bundle, now);
+          const sessionToken = sessionCookie(request);
+          if (sessionToken !== undefined) {
+            const session = sessionValid(request, options, sessions);
+            if (session === undefined || !samePrincipal(session.userId, attestation.ownerDid)) return response(401, { error: { code: "authentication_required" } });
+          }
+          if (!(await consumeUploadAttestationJti(attestation.jti, Date.parse(attestation.expiresAt), now))) return response(401, { error: { code: "upload_attestation_replayed" } });
+          if (!(await reserveUpload(attestation.ownerDid, now))) return response(429, { error: { code: "upload_rate_limited" } });
+          const registryResponse = await proxyRegistry(
+            request,
+            options.registryOrigin,
+            options.registryTransportOrigin,
+            LINK_ONLY_REGISTRY_PREFIX,
+            LINK_ONLY_BLOB_LIMIT,
+            (body) => registryUploadAuthorization(options.registryUploadPrivateKey!, body, deleteAfterHeader, `${attestation.ownerDid}:${attestation.sessionDid}`),
+            bytes,
+            options.fetchFn,
+          );
+          if (registryResponse.status === 401 || registryResponse.status === 403) return response(502, { error: { code: "registry_upload_rejected" } });
+          return registryResponse;
+        }
+        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
+        if (((request.headers?.get("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "") !== "application/vnd.ipld.raw") return response(400, { error: { code: "upload_content_type_invalid" } });
+        const bytes = await boundedUpload(request, LINK_ONLY_BLOB_LIMIT);
+        // The registry authorization binds to the session token, but the durable
         // budget is keyed by the verified principal: signing out and back in
         // must not reset the allowance or accrue a fresh accounting entry.
-        const budgetKey = session.userId;
-        const prior = linkOnlyUploads.get(budgetKey);
-        const budget = prior === undefined || now - prior.windowStartedAt >= LINK_ONLY_UPLOAD_WINDOW_MS
-          ? { count: 0, windowStartedAt: now }
-          : prior;
-        if (budget.count >= LINK_ONLY_UPLOAD_LIMIT) return response(429, { error: { code: "upload_rate_limited" } });
-        budget.count += 1;
-        linkOnlyUploads.set(budgetKey, budget);
+        const uploadKey = sessionCookie(request) ?? session.userId;
+        if (!(await reserveUpload(session.userId, now))) return response(429, { error: { code: "upload_rate_limited" } });
         const registryResponse = await proxyRegistry(
           request,
           options.registryOrigin,
           options.registryTransportOrigin,
           LINK_ONLY_REGISTRY_PREFIX,
           LINK_ONLY_BLOB_LIMIT,
-          (bytes) =>
-            registryUploadAuthorization(
-              options.registryUploadPrivateKey!,
-              bytes,
-              deleteAfterHeader,
-              uploadKey,
-            ),
+          (bytes) => registryUploadAuthorization(options.registryUploadPrivateKey!, bytes, deleteAfterHeader, uploadKey),
+          bytes,
+          options.fetchFn,
         );
         if (registryResponse.status === 401 || registryResponse.status === 403) {
           return response(502, { error: { code: "registry_upload_rejected" } });
@@ -1020,11 +1318,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if ((url.pathname.startsWith("/registry/") || url.pathname === "/registry") && request.method === "POST") {
         return response(401, { error: { code: "authentication_required" } });
       }
-      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin);
+      if (url.pathname.startsWith("/registry/") || url.pathname === "/registry") return await proxyRegistry(request, options.registryOrigin, options.registryTransportOrigin, "/registry", MAX_BODY, undefined, undefined, options.fetchFn);
       return undefinedResponse();
     } catch (error) {
       if (error instanceof PayloadTooLargeError) return response(413, { error: { code: "upload_too_large" } });
       if (error instanceof Error && error.message === "sender_not_ready") return response(503, { error: { code: "sender_not_ready" } });
+      if (error instanceof Error && error.message === "upload_budget_unavailable") return response(503, { error: { code: "upload_budget_unavailable" } });
+      if (error instanceof Error && error.message === "upload_attestation_store_unavailable") return response(503, { error: { code: "upload_attestation_store_unavailable" } });
       // The sender path is ready but this session has enrolled no wallet-rooted
       // authority yet: a per-session fact, deliberately distinct from readiness.
       if (error instanceof Error && error.message === "sender_capability_required") return response(409, { error: { code: "sender_capability_required" } });
@@ -1047,19 +1347,31 @@ async function proxyRegistry(
   routePrefix = "/registry",
   maxBody = MAX_BODY,
   authorize?: (body: Uint8Array) => string,
+  bodyOverride?: Uint8Array,
+  fetchFn: typeof fetch = globalThis.fetch,
 ): Promise<Response> {
   const requestUrl = new URL(request.url);
   const suffix = requestUrl.pathname.slice(routePrefix.length) || "/";
   const policyPath = `/registry${suffix}`;
   const base = new URL(transportOrigin); const target = new URL(suffix, base); target.search = requestUrl.search;
-  const bytes = new Uint8Array(await request.arrayBuffer());
+  const bytes = bodyOverride ?? new Uint8Array(await request.arrayBuffer());
   if (bytes.length > maxBody) throw new PayloadTooLargeError("upload too large");
   const headers = sanitizeUpstreamRequest(policyPath, request.method, request.headers, bytes.length, origin);
   if (authorize !== undefined) {
     headers.set("x-tinycloud-authorization", authorize(bytes));
   }
-  const result = await fetch(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
+  headers.delete(UPLOAD_ATTESTATION_HEADER);
+  headers.delete(UPLOAD_RETENTION_HEADER);
+  const result = await fetchFn(target, { method: request.method, headers, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }), redirect: "error" });
   return sanitizeUpstreamResponse(policyPath, request.method, result);
+}
+
+async function boundedUpload(request: Request, maxBytes: number): Promise<Uint8Array> {
+  const length = Number(request.headers.get("content-length") ?? "0");
+  if (!Number.isFinite(length) || length < 0 || length > maxBytes) throw new PayloadTooLargeError("upload too large");
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.length > maxBytes) throw new PayloadTooLargeError("upload too large");
+  return bytes;
 }
 
 function undefinedResponse(): Response { return new Response(null, { status: 404, headers: JSON_HEADERS }); }
@@ -1124,7 +1436,7 @@ function loadRegistryUploadPrivateKey(
   }
 }
 
-export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof createShareHostAdapter> {
+export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Pick<ShareHostOptions, "fetchFn"> = {}): ReturnType<typeof createShareHostAdapter> {
   const senderEnabled = senderEnabledFromEnv(env);
   if (senderEnabled && env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" && (env.SHARE_SENDER_PRIVATE_KEY !== undefined || env.SHARE_SENDER_CAPABILITY_JSON !== undefined || env.SHARE_SENDER_CAPABILITIES_JSON !== undefined)) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
@@ -1178,6 +1490,16 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
   if (!/^https:\/\/[^/?#:@]+$/.test(registryOrigin)) throw new Error("trust-bundle registryOrigin must be a canonical HTTPS origin");
   const registryTransportOrigin = parseHermeticRegistryOrigin(env.SHARE_HERMETIC_REGISTRY_ORIGIN) ?? resolveShareUpstreams(bundle, env).registry;
   const registryUploadPrivateKey = loadRegistryUploadPrivateKey(env, bundle.environment);
+  const storeOrigin = env.SHARE_UPLOAD_AUTHORIZATION_ORIGIN ?? (hermeticComposition ? registryTransportOrigin : registryOrigin);
+  if (bundle.environment === "production" && !hermeticComposition && storeOrigin !== registryOrigin) throw new Error("production upload authorization store must use the trusted registry origin");
+  const uploadBudgetStore = registryUploadPrivateKey === undefined
+    ? undefined
+    : bundle.environment === "production"
+      ? new RegistryUploadAuthorizationStore(storeOrigin, registryUploadPrivateKey)
+      : env.SHARE_UPLOAD_BUDGET_STORE_PATH === undefined
+        ? new MemoryUploadBudgetStore()
+        : new TransactionalBindingStore(env.SHARE_UPLOAD_BUDGET_STORE_PATH);
+  if (registryUploadPrivateKey !== undefined && bundle.environment === "production" && uploadBudgetStore?.writable !== true) throw new Error("durable upload authorization store is required");
   const authUsersRaw = env.SHARE_AUTH_USERS_JSON;
   let authUsers: AuthUser[] = [];
   if (authUsersRaw !== undefined) {
@@ -1195,5 +1517,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env): Re
     });
   }
   const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }) });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }), ...(overrides.fetchFn === undefined ? {} : { fetchFn: overrides.fetchFn }) });
 }

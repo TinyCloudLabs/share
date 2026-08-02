@@ -160,6 +160,21 @@ describe("production trust and host boundaries", () => {
     expect(() => validateSharePublicConfig({ version: "tinycloud.share-email-claim/config-v1", ...publicValue })).toThrow(/placeholder or loopback/);
   });
 
+  it("publishes the stdin-safe agent card at the canonical host path", async () => {
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(bundle()), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true" });
+    const response = await host.handler(new Request("https://share.tinycloud.xyz/.well-known/tinycloud-share/agent.json"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      version: 1,
+      cli: "npx -y @tinycloud/cli@latest",
+      input: "stdin",
+      inspectArgs: ["share", "inspect", "-", "--json"],
+      receiveArgs: ["share", "receive", "-", "--output", "."],
+      fragmentLocalOnly: true,
+    });
+  });
+
   it("never includes the server-only sender key in the capability response", async () => {
     const value = bundle();
     const senderDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(9)));
@@ -399,8 +414,9 @@ describe("production trust and host boundaries", () => {
     const account = privateKeyToAccount(`0x${"41".repeat(32)}`);
     const ceremony = await openKeySignIn(host, account);
     const cookie = ceremony.cookie!;
-    const upstream = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(
+    const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("/internal/upload-authorizations")) return new Response(null, { status: 204 });
+      return new Response(
         JSON.stringify({
           cid: `bafkrei${"a".repeat(52)}`,
           deleteAfter: "2026-07-30T00:00:00.000Z",
@@ -409,12 +425,12 @@ describe("production trust and host boundaries", () => {
           status: 201,
           headers: { "content-type": "application/json" },
         },
-      ),
-    );
+      );
+    });
     const accepted = await upload(new Uint8Array([1, 2, 3]), cookie);
     expect(accepted.status).toBe(201);
-    expect(upstream).toHaveBeenCalledOnce();
-    const [target, init] = upstream.mock.calls[0]!;
+    expect(upstream).toHaveBeenCalledTimes(2);
+    const [target, init] = upstream.mock.calls[1]!;
     expect(String(target)).toBe("https://registry.tinycloud.xyz/blobs");
     const forwarded = new Headers(init?.headers);
     expect(forwarded.get("cookie")).toBeNull();
@@ -444,12 +460,12 @@ describe("production trust and host boundaries", () => {
     );
 
     upstream.mockClear();
-    upstream.mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "signed-authorization-required" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    upstream.mockImplementation(async (input) => String(input).includes("/internal/upload-authorizations")
+      ? new Response(null, { status: 204 })
+      : new Response(JSON.stringify({ error: "signed-authorization-required" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }));
     expect((await upload(new Uint8Array([4, 5, 6]), cookie)).status).toBe(502);
 
     upstream.mockClear();

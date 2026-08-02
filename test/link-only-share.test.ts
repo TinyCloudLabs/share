@@ -250,6 +250,7 @@ describe("link-only creation and recipient recovery", () => {
       );
     };
     const marker = "link-only-production-marker";
+    const now = Date.now();
     const created = await createLinkOnlyShare(
       new File([`# Private note\n\n${marker}\n`], "private-note.md", {
         type: "text/markdown",
@@ -257,15 +258,10 @@ describe("link-only creation and recipient recovery", () => {
       {
         origin: SHARE_ORIGIN,
         // `now` is injected so the envelope's own timestamps stay deterministic.
-        // `expiresAt` deliberately is NOT: it becomes the `x-delete-after` header,
-        // which the registry Worker validates against the REAL clock —
-        // `retentionExpiry` (worker.ts:95) requires
-        // `Date.now() < expiry <= Date.now() + LINK_RETENTION_LIMIT_MS` (8 days).
-        // A hardcoded date is a time bomb in both directions: it goes stale and
-        // 400s once it passes, and a far-future constant exceeds the retention
-        // window and 400s immediately. Keep this relative to real time.
-        now: () => Date.parse("2026-07-23T20:00:00.000Z"),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        // `expiresAt` is relative to the same clock so the registry retention
+        // window remains valid without depending on a wall-clock fixture.
+        now: () => now,
+        expiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000),
         fetchFn: authenticatedRegistryFetch,
       },
     );
@@ -291,7 +287,7 @@ describe("link-only creation and recipient recovery", () => {
     const recovered = await resolveShare(created.url, {
       registryBaseUrl: "http://registry.local",
       fetchFn: registryFetch,
-      now: () => Date.parse("2026-07-23T20:01:00.000Z"),
+      now: () => now + 60 * 1000,
     });
     expect(recovered.state).toBe("ok");
     if (recovered.state !== "ok") throw new Error("expected recovered share");

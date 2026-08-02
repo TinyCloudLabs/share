@@ -1,8 +1,8 @@
 import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./openkey-session.js";
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
-import { contentFilename, contentMediaType, contentMode } from "./composer-model.js";
 import { authFailureMessage } from "./sender-failure.js";
+import { requestAddressedDelivery } from "./delivery.js";
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
@@ -84,7 +84,7 @@ function renderLibrary(current: SenderApp, token: number): void {
 }
 
 function renderComposer(current: SenderApp, token: number): void {
-  void Promise.all([import("./composer.js"), import("./sender-history.js"), import("../email-share/config.js")]).then(([{ mountShareComposer }, { createSenderHistoryRecord }, { loadSharePublicConfig }]) => {
+  void Promise.all([import("./composer.js"), import("../email-share/config.js")]).then(([{ mountShareComposer }, { loadSharePublicConfig }]) => {
     if (token !== renderToken) return;
     mountShareComposer(view, {
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
@@ -95,25 +95,20 @@ function renderComposer(current: SenderApp, token: number): void {
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       notify: async ({ share, deliveryAuthorization }) => {
-        if (deliveryAuthorization === undefined) throw new Error("We couldn't send that email. The link above still works.");
+        if (deliveryAuthorization === undefined) throw new Error("The invitation request was not accepted. The link above still works.");
         const config = await loadSharePublicConfig();
-        const response = await fetch(`${config.emailOrigin}/share/v2`, {
-          method: "POST",
-          credentials: "omit",
-          redirect: "error",
-          referrerPolicy: "no-referrer",
-          headers: { accept: "application/json", "content-type": "application/json" },
-          body: JSON.stringify({ authorization: deliveryAuthorization.authorization, proof: deliveryAuthorization.proof, shareUrl: share.url }),
+        await requestAddressedDelivery({
+          credentialsOrigin: config.credentialsOrigin,
+          shareUrl: share.url,
+          deliveryAuthorization,
         });
-        if (!response.ok) throw new Error("We couldn't send that email. The link above still works.");
       },
-      persistShare: async ({ share, model }) => {
-        const expiresAt = share.expiresAt ?? model.expiresAt;
-        const recipient = model.recipient.kind === "bearer" ? { kind: "bearer" as const } : { kind: model.recipient.kind, value: model.recipient.value! };
-        // The stored history taxonomy stays exactly as it was: the content
-        // union is mapped back to it here, at the persistence boundary.
-        const record = await createSenderHistoryRecord({ id: crypto.randomUUID().replace(/-/g, ""), url: share.url, cid: share.cid, format: share.format, createdAt: new Date().toISOString(), expiresAt, name: contentFilename(model.content), mediaType: contentMediaType(model.content), sourceKind: contentMode(model.content), recipient, actions: model.permissions, delegationCid: share.delegationCid ?? null, revokedAt: null });
-        await current.history.save(record);
+      persistShare: async ({ share }) => {
+        if (share.record !== undefined) {
+          await current.history.save(share.record);
+          return;
+        }
+        throw new Error("share publisher returned no canonical history record");
       },
     });
   });

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "cli": "npx -y @tinycloud/cli@latest",
+  "minimumCliVersion": "0.8.3",
+  "supportedLinks": ["compact-v1", "inline-v2"],
+  "input": "stdin",
+  "inspectArgs": ["share", "inspect", "-", "--json"],
+  "receiveArgs": ["share", "receive", "-", "--output", "."],
+  "fragmentLocalOnly": true,
+  "guidance": "Keep the complete URL, including its fragment, local to the agent. Never put it in logs, analytics, referrers, or cross-origin messages."
+}
