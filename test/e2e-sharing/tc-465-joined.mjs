@@ -155,12 +155,7 @@ async function installInterception(page, services, fixtureOrigin) {
       },
       on: () => provider, removeListener: () => provider, isConnected: () => true,
     };
-    let announced = false;
-    const announce = () => {
-      if (announced) return;
-      announced = true;
-      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider } }));
-    };
+    const announce = () => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider } }));
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", announce);
     setTimeout(announce, 10_000);
