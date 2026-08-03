@@ -7,6 +7,7 @@ import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, native
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
 
 /**
@@ -564,7 +565,10 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     ];
     const createdAt = new Date().toISOString();
     const ownerDid = tinycloud.did;
-    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, sign: options.signUnifiedPolicy });
+    const credentialRequirement = model.recipient.kind === "exactEmail"
+      ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
+      : undefined;
+    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), sign: options.signUnifiedPolicy });
     const sourceDigest = contentSourceDigestHex(unifiedSource);
     const projectionHash = nativeProjectionHashHex(capabilities);
     const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: model.expiresAt, fetchFn });

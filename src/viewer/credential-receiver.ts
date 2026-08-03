@@ -1,92 +1,8 @@
-import { canonicalize, toBase64Url, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import type { InlineEncryptedEnvelope, TinyCloudWeb } from "@tinycloud/web-sdk";
+import { canonicalDigest, emailCredentialRequirement, EMAIL_CREDENTIAL_DESCRIPTOR, type EmailCredentialRequirement } from "../credentials/email.js";
 
-export const EMAIL_CREDENTIAL_DESCRIPTOR = Object.freeze({
-  type: "tinycloud.credentials/descriptor/v1",
-  contractVersion: 1,
-  protocol: "tinycloud.credentials/acquisition/v1",
-  profile: "tinycloud.email-proof/v1",
-  profileVersion: 1,
-  display: {
-    title: "Email address",
-    description: "Prove control of your mailbox",
-    consent: "Prove control of your mailbox",
-    securityTextLocked: true,
-  },
-  accessibility: {
-    progressLabel: "Credential acquisition progress",
-    errorLiveRegion: "assertive",
-  },
-  theme: {
-    tokenVersion: "tinycloud.credentials/tokens/v1",
-    allowed: ["accentColor", "fontFamily", "borderRadius"],
-  },
-  issuer: {
-    did: "did:web:issuer.credentials.org",
-    origin: "https://witness.credentials.org",
-    kid: "did:web:issuer.credentials.org#controller",
-  },
-  interaction: {
-    origin: "https://credentials.org",
-    pathTemplate: "/credentials/acquire/{requestId}",
-  },
-  format: {
-    id: "vc+sd-jwt",
-    vct: "opencredentials.email/v1",
-  },
-  claims: [{ name: "email", matching: "normalized_exact", selectiveDisclosure: true }],
-  subjectRelationship: "holder_is_subject",
-  inputs: [{
-    id: "email",
-    label: "Email address",
-    schema: { type: "string", format: "email", minLength: 3, maxLength: 320 },
-    prefill: "privacy_hint_only",
-    autocomplete: "off",
-  }],
-  steps: [
-    { type: "collect_input", version: 1 },
-    { type: "mailbox_otp", version: 1 },
-    { type: "holder_signature", version: 1 },
-  ],
-  holderBinding: {
-    required: true,
-    alg: "EdDSA",
-    domain: "tinycloud.credentials/holder-binding/v1",
-    version: 1,
-  },
-  endpoints: {
-    request: "request",
-    state: "state",
-    challenge: "challenge",
-    proof: "proof",
-    holderBinding: "holder_binding",
-    holderSignature: "holder_signature",
-    issue: "issue",
-    result: "result",
-  },
-  lifecycle: {
-    requestTtlSeconds: 600,
-    challengeTtlSeconds: 300,
-    maxProofAttempts: 5,
-    challengeConsumption: "atomic_once",
-    retry: "bounded",
-  },
-  status: { type: "none", freshnessSeconds: 300 },
-  revocation: { supported: false },
-  presentation: {
-    stateVersion: "tinycloud.credentials/ux-states/v1",
-    states: ["collecting", "challenging", "proving", "signing", "issuing", "verifying", "saving", "success", "recovery"],
-  },
-} as const);
-
-export interface EmailCredentialRequirement {
-  readonly type: "TinyCloudCredentialRequirement";
-  readonly version: 1;
-  readonly profile: { readonly id: "tinycloud.email-proof/v1"; readonly version: 1 };
-  readonly credentialType: { readonly id: "opencredentials.email/v1"; readonly version: 1 };
-  readonly claims: { readonly email: string };
-  readonly maxAgeSeconds: 3600;
-}
+export { EMAIL_CREDENTIAL_DESCRIPTOR, type EmailCredentialRequirement } from "../credentials/email.js";
 
 /**
  * This value may only be constructed from `resolveShare`'s verified result.
@@ -188,13 +104,6 @@ function receiverError(code: CredentialReceiverErrorCode, message: string, cause
   return cause instanceof CredentialReceiverError ? cause : new CredentialReceiverError(code, message, { cause });
 }
 
-function canonicalEmail(value: string): string {
-  if (!/^[\x21-\x3f\x41-\x7e]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i.test(value)) {
-    throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The verified share does not contain a supported exact-email requirement");
-  }
-  return value.toLowerCase();
-}
-
 export function credentialRequirementFromVerifiedShare(share: VerifiedCredentialShare): EmailCredentialRequirement {
   if (share.envelope.version !== 3 || share.envelope.recipientMatcher.kind !== "exactEmail") {
     throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The verified share does not contain a supported credential requirement");
@@ -202,18 +111,11 @@ export function credentialRequirementFromVerifiedShare(share: VerifiedCredential
   if (canonicalize(share.policy) !== canonicalize(share.envelope.policy)) {
     throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The verified policy does not match the signed share envelope");
   }
-  return Object.freeze({
-    type: "TinyCloudCredentialRequirement",
-    version: 1,
-    profile: { id: "tinycloud.email-proof/v1", version: 1 },
-    credentialType: { id: "opencredentials.email/v1", version: 1 },
-    claims: { email: canonicalEmail(share.envelope.recipientMatcher.value) },
-    maxAgeSeconds: 3600,
-  } as const);
-}
-
-async function canonicalDigest(value: unknown): Promise<string> {
-  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalize(value)))));
+  try {
+    return emailCredentialRequirement(share.envelope.recipientMatcher.value);
+  } catch (cause) {
+    throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The verified share does not contain a supported exact-email requirement", { cause });
+  }
 }
 
 interface SignedCredentialRequirementProjection {
@@ -245,8 +147,8 @@ export async function validateCredentialProjectionFromVerifiedShare(
     || value.issuerDid !== EMAIL_CREDENTIAL_DESCRIPTOR.issuer.did || value.issuerKid !== EMAIL_CREDENTIAL_DESCRIPTOR.issuer.kid
     || profile === null || typeof profile !== "object" || Array.isArray(profile) || Object.keys(profile).sort().join("\0") !== "id\0version" || (profile as Record<string, unknown>).id !== requirement.profile.id || (profile as Record<string, unknown>).version !== 1
     || credentialType === null || typeof credentialType !== "object" || Array.isArray(credentialType) || Object.keys(credentialType).sort().join("\0") !== "id\0version" || (credentialType as Record<string, unknown>).id !== requirement.credentialType.id || (credentialType as Record<string, unknown>).version !== 1
-    || value.requirementDigest !== await canonicalDigest(requirement)
-    || value.descriptorDigest !== await canonicalDigest(EMAIL_CREDENTIAL_DESCRIPTOR)) {
+    || value.requirementDigest !== canonicalDigest(requirement)
+    || value.descriptorDigest !== canonicalDigest(EMAIL_CREDENTIAL_DESCRIPTOR)) {
     throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The verified policy credential projection does not match the requested credential");
   }
   return value as unknown as SignedCredentialRequirementProjection;
