@@ -648,6 +648,7 @@ async function startShare(tempRoot, fixtures) {
   const browserBuildEnv = buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin);
   if (tc465Joined) {
     browserBuildEnv.VITE_SHARE_REGISTRY_URL = `${canonical.share}/registry`;
+    browserBuildEnv.VITE_OPENKEY_ORIGIN = "https://openkey.so";
   }
   await runOnce("npm", ["run", "build"], shareRoot, browserBuildEnv);
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
@@ -660,6 +661,11 @@ async function startShare(tempRoot, fixtures) {
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
     ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
+  // The joined browser keeps the production OpenKey URL and transports it to
+  // the loopback widget through interception. Omitting the loopback-only CSP
+  // seam selects securityHeadersForPath's production https://openkey.so
+  // frame-src instead of authorizing a mixed-content HTTP frame.
+  if (tc465Joined) delete shareLaunchEnv.SHARE_HERMETIC_OPENKEY_ORIGIN;
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
   await waitFor(`${origin}/health/readiness`, 60_000, share);
