@@ -612,7 +612,26 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
     const binding = await fetchFn("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
     if (!binding.ok) throw fail("save", "v3 share binding was rejected");
-    return { url, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: registration.enforcementRootCid };
+    const record: SenderShareRecord = {
+      shareId,
+      policyCid: policy.policyCid,
+      ownerDelegationCid: registration.policyRootCid,
+      enforcementDelegationCid: registration.enforcementRootCid,
+      ownerDid,
+      enforcerDid,
+      target: { origin: config.nodeOrigin, nodeAudience: enforcerDid, spaceId },
+      resource: { kind: resourceKind, path: resourcePath },
+      actions,
+      recipientMatcher: model.recipient.kind === "exactEmail" ? { kind: "exactEmail", value: model.recipient.value! } : { kind: "emailDomain", value: model.recipient.value! },
+      targetKind: model.recipient.kind === "exactEmail" ? "email" : "emailDomain",
+      registeredAt: new Date().toISOString(),
+      expiresAt,
+      envelopeCid: stored.cid,
+      shareCid: stored.cid,
+      link: url,
+      filename,
+    };
+    return { url, cid: stored.cid, format: model.linkFormat, expiresAt, record, delegationCid: registration.enforcementRootCid };
   } finally {
     key.fill(0);
   }
