@@ -125,6 +125,8 @@ async function installInterception(page, services, fixtureOrigin) {
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
   await page.evaluateOnNewDocument((address, shareOrigin) => {
+    window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
+    window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
     const originalDecode = TextDecoder.prototype.decode;
     TextDecoder.prototype.decode = function decode(input, options) {
       const value = originalDecode.call(this, input, options);
@@ -155,9 +157,12 @@ async function installInterception(page, services, fixtureOrigin) {
       },
       on: () => provider, removeListener: () => provider, isConnected: () => true,
     };
-    const announce = () => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider } }));
+    const announce = () => {
+      window.__tc465Diagnostics.walletAnnouncements += 1;
+      window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: { info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" }, provider } }));
+    };
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
-    window.addEventListener("eip6963:requestProvider", announce);
+    window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     setTimeout(announce, 10_000);
   }, wallet.address, canonical.share);
 }
@@ -196,8 +201,20 @@ async function clickText(page, value, optional = false) {
   if (!clicked && !optional) {
     const surfaces = await Promise.all(page.frames().map(async (frame) => ({
       origin: (() => { try { return new URL(frame.url()).origin; } catch { return "invalid"; } })(),
-      actions: await frame.evaluate(() => [...document.querySelectorAll("button,[role=button],a")].map((element) => (element.textContent ?? "").trim()).filter(Boolean).slice(0, 20)).catch(() => []),
+      actions: await frame.evaluate(() => {
+        const values = [];
+        const visit = (root) => {
+          for (const element of root.querySelectorAll("button,[role=button],a")) {
+            const value = (element.textContent ?? "").trim();
+            if (value) values.push(value);
+          }
+          for (const element of root.querySelectorAll("*")) if (element.shadowRoot) visit(element.shadowRoot);
+        };
+        visit(document);
+        return values.slice(0, 30);
+      }).catch(() => []),
       status: await frame.evaluate(() => document.querySelector(".auth-status,[role=alert]")?.textContent?.trim() ?? null).catch(() => null),
+      diagnostics: await frame.evaluate(() => window.__tc465Diagnostics ?? null).catch(() => null),
     })));
     throw new Error(`action not found: ${value}; surfaces=${JSON.stringify(surfaces)}; browserErrors=${JSON.stringify(browserErrors.slice(-10))}`);
   }
