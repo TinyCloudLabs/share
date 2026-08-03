@@ -7,7 +7,7 @@ describe("addressed delivery boundary", () => {
     const workerOrigin = "https://worker.example";
     const authorization = Object.freeze({ type: "TinyCloudShareDeliveryAuthorization", version: 2, jti: "test-jti" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "test-signature" });
-    const shareUrl = "share-url-with-private-fragment";
+    const shareUrl = `https://share.example/s/${`bafkrei${"a".repeat(52)}`}#k=${"A".repeat(43)}`;
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
@@ -31,5 +31,6 @@ describe("addressed delivery boundary", () => {
     expect(init).not.toHaveProperty("referrer");
     expect(JSON.parse(String(init?.body))).toEqual({ authorization, proof, shareUrl });
     expect(Object.keys(JSON.parse(String(init?.body))).sort()).toEqual(["authorization", "proof", "shareUrl"]);
+    expect([...new URL(shareUrl).hash.slice(1).split("&")].map((part) => part.split("=", 1)[0])).toEqual(["k"]);
   });
 });

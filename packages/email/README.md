@@ -78,9 +78,10 @@ numeric status escapes.
 ## Out of scope
 
 The **claim ceremony** — proving the recipient controls the mailbox before
-access is granted — is not here, and whether it belongs in a Worker is an open
-product question. `renderInvitationEmail` already takes the `otp` slot and an
-arbitrary `magicUrl`, so a ceremony that appends `&i=…&c=…` to the fragment
-drops in without a rewrite. Nothing in this package assumes either answer.
+access is granted — is not here. Exact-email delivery is owned by
+OpenCredentials, which receives the Node authorization plus the `k`-only base
+URL and mints the one-use invitation material before sending. This legacy
+Worker refuses exact-email authorizations so it cannot deliver an unusable
+`k`-only link.
 
 See `DEPLOYMENT.md` for what provisioning it needs.

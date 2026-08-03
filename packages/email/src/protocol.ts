@@ -400,6 +400,12 @@ export async function verifyDeliveryAuthorization(
   // The signed `shareUrl` and the transport-level one must agree, so a caller
   // cannot sign one link and deliver another.
   if (authorization.shareUrl !== request.shareUrl) return refuse("malformed");
+  // Exact-email links require OpenCredentials to mint the recipient's
+  // one-use invitation locator and claim secret. This legacy Worker has only
+  // the k-only base URL and must never send it as if it were claim-capable.
+  if ((authorization.recipientMatcher as { readonly kind?: unknown }).kind === "exactEmail") {
+    return refuse("share-url-invalid");
+  }
   const parsed = parseShareUrl(request.shareUrl, trust.shareOrigin);
   if (parsed === null) return refuse("share-url-invalid");
 
