@@ -54,7 +54,7 @@ function headersForFetch(request, forwardedHttps = false) {
 
 async function proxy(request, targetOrigin, options = {}) {
   const original = new URL(request.url());
-  const target = new URL(`${original.pathname}${original.search}`, targetOrigin);
+  const target = new URL(`${options.path ?? original.pathname}${original.search}`, targetOrigin);
   const method = request.method();
   const response = await fetch(target, {
     method,
@@ -119,7 +119,7 @@ async function installInterception(page, services, fixtureOrigin) {
       authorization: headers.authorization,
     } : undefined;
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
-    if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry });
+    if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
     if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry });
     if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { entry });
     if (url.origin === canonical.witness) {
