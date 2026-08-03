@@ -1008,15 +1008,23 @@ async function assertPublishedBinding(binding: Record<string, unknown>, cid: str
 
 function v3PublishedBinding(value: Record<string, unknown>): Record<string, unknown> {
   const keys = ["version", "shareCid", "shareId", "policyCid", "policyRootCid", "enforcementRootCid", "contentSourceDigestHex"];
+  const canonicalRawCid = (candidate: unknown, hashCode: number): boolean => {
+    if (typeof candidate !== "string") return false;
+    try {
+      const cid = CID.parse(candidate);
+      return cid.toString() === candidate && cid.version === 1 && cid.code === 0x55 && cid.multihash.code === hashCode && cid.multihash.size === 32;
+    } catch { return false; }
+  };
   if (
     Object.keys(value).length !== keys.length
     || keys.some((key) => !Object.hasOwn(value, key))
     || value.version !== 3
-    || typeof value.shareCid !== "string"
-    || !/^bafkrei[a-z2-7]{52}$/.test(value.shareCid)
+    || !canonicalRawCid(value.shareCid, 0x12)
     || typeof value.shareId !== "string"
     || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.shareId)
-    || ![value.policyCid, value.policyRootCid, value.enforcementRootCid].every((cid) => typeof cid === "string" && /^bafkrei[a-z2-7]{52}$/.test(cid))
+    || !canonicalRawCid(value.policyCid, 0x12)
+    || !canonicalRawCid(value.policyRootCid, 0x1e)
+    || !canonicalRawCid(value.enforcementRootCid, 0x1e)
     || typeof value.contentSourceDigestHex !== "string"
     || !/^[0-9a-f]{64}$/.test(value.contentSourceDigestHex)
   ) throw new Error("published v3 binding shape");

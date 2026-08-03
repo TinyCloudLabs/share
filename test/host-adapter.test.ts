@@ -792,11 +792,11 @@ describe("production trust and host boundaries", () => {
 
       const v3Binding = {
         version: 3,
-        shareCid: `bafkrei${"b".repeat(52)}`,
+        shareCid: "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
         shareId: "018ff6e2-5f31-4d85-87ac-2e9212dc67bf",
-        policyCid: `bafkrei${"c".repeat(52)}`,
-        policyRootCid: `bafkrei${"d".repeat(52)}`,
-        enforcementRootCid: `bafkrei${"e".repeat(52)}`,
+        policyCid: "bafkreifrqa2b7nagndgqowvv6yxv2av6yzfioafkjvlbxlsgxyuf6svy6q",
+        policyRootCid: "bafkr4id52eujtl3rks5mvwsbuf3aarno4mq77curdkuwcgoiwabgnyxx5y",
+        enforcementRootCid: "bafkr4icwygj7grmphijiicd6ukoy3gmkanfrearbte7onkkc4qjxpo5eay",
         contentSourceDigestHex: "f".repeat(64),
       };
       const v3Put = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify(v3Binding) }));
@@ -804,6 +804,8 @@ describe("production trust and host boundaries", () => {
       const v3Stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${v3Binding.shareCid}`, { method: "GET" }));
       expect(v3Stored.status).toBe(200);
       expect(await v3Stored.json()).toEqual(v3Binding);
+      const wrongRootHash = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify({ ...v3Binding, policyRootCid: `bafkrei${"d".repeat(52)}` }) }));
+      expect(wrongRootHash.status).toBe(400);
       const widenedV3 = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify({ ...v3Binding, recipientEmail: "recipient@example.com" }) }));
       expect(widenedV3.status).toBe(400);
     } finally { await rm(root, { recursive: true, force: true }); }
