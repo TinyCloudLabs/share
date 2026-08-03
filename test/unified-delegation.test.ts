@@ -210,8 +210,8 @@ describe("TC-405 unified delegation", () => {
       const wrapped = await aesEncrypt(shared, symmetricKey);
       const invocation = verifyCompactUcanAuthorization(new Headers(init?.headers).get("Authorization")!);
       const bodyHash = canonicalHash(body);
-      const unsigned = { type: "tinycloud.encryption.decrypt-result/v1", targetNode: nodeDid, networkId, invocationCid: invocation.cid, encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, wrappedKey: toBase64Url(Uint8Array.from([...ephemeralPublic, ...wrapped])), alg: "x25519-aes256gcm/v1", keyVersion: 1, requestHash: hex(sha256(new TextEncoder().encode(`${invocation.cid}${bodyHash}`))), nodeId: nodeDid };
-      return Response.json({ ...unsigned, nodeSignature: toBase64Url(ed25519.sign(new TextEncoder().encode(canonicalize(unsigned)), nodeKey)) });
+      const unsigned = { type: "tinycloud.encryption.decrypt-result/v1", targetNode: nodeDid, networkId, invocationCid: invocation.cid, encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, wrappedKey: Buffer.from([...ephemeralPublic, ...wrapped]).toString("base64"), alg: "x25519-aes256gcm/v1", keyVersion: 1, requestHash: hex(sha256(new TextEncoder().encode(`${invocation.cid}${bodyHash}`))), nodeId: nodeDid };
+      return Response.json({ ...unsigned, nodeSignature: Buffer.from(ed25519.sign(new TextEncoder().encode(canonicalize(unsigned)), nodeKey)).toString("base64") });
     };
     const envelope = { version: 3, target: { nodeAudience: nodeDid }, encryptionNetwork: networkId, contentSource: { keyVersion: 1, encryptedSymmetricKeyDigestHex: encryptedSymmetricKeyHash }, metadata: { mediaType: "text/plain" } } as any;
     const client = new ShareRecipientClient({ nodeOrigin: "https://node.example.com", envelope, holderDid: recipientDid, trustedNode: {} as any, fetchFn, buildPresentation: async () => ({ holderDid: recipientDid, credential: "fixture", holderBinding: {}, proof: {} }) });
