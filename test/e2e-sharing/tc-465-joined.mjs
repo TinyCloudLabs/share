@@ -23,7 +23,7 @@ const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.m
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const receiverRequests = [];
 const requestEntries = new WeakMap();
-const installedPages = new WeakSet();
+const installedPages = new WeakMap();
 let receiverJourneyStarted = false;
 let receiverSequence = 0;
 let integration;
@@ -95,9 +95,17 @@ async function serveCredentialsApp(request) {
 }
 
 async function installInterception(page, services, fixtureOrigin) {
-  if (installedPages.has(page)) return;
-  installedPages.add(page);
-  await page.setRequestInterception(true);
+  const existing = installedPages.get(page);
+  if (existing !== undefined) return existing;
+  let resolveInstallation;
+  let rejectInstallation;
+  const installation = new Promise((resolveInstall, rejectInstall) => {
+    resolveInstallation = resolveInstall;
+    rejectInstallation = rejectInstall;
+  });
+  installedPages.set(page, installation);
+  try {
+    await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
     const headers = request.headers();
@@ -124,7 +132,7 @@ async function installInterception(page, services, fixtureOrigin) {
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-  await page.evaluateOnNewDocument((address, shareOrigin) => {
+    await page.evaluateOnNewDocument((address, shareOrigin) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
     window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
     const originalDecode = TextDecoder.prototype.decode;
@@ -164,7 +172,14 @@ async function installInterception(page, services, fixtureOrigin) {
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     setTimeout(announce, 10_000);
-  }, wallet.address, canonical.share);
+    }, wallet.address, canonical.share);
+    resolveInstallation();
+  } catch (error) {
+    installedPages.delete(page);
+    rejectInstallation(error);
+    throw error;
+  }
+  return installation;
 }
 
 async function text(page) { return page.evaluate(() => document.body?.innerText ?? ""); }
