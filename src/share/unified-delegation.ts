@@ -29,6 +29,7 @@ export const POLICY_SESSION_UCAN_V1_PROFILE = "policy-session-ucan/v1";
 export const LAST_V2_CREATE_AT = "2026-09-30T00:00:00Z";
 export const MAX_LEGACY_ENVELOPE_EXPIRES_AT = "2026-12-29T00:00:00Z";
 export const LAST_V2_READ_AT = "2027-01-05T00:00:00Z";
+const textEncoder = new TextEncoder();
 
 export type UnifiedKvCapability = Extract<UnifiedPolicyCapability, { readonly kind: "kv" }>;
 export type UnifiedEncryptionCapability = Extract<UnifiedPolicyCapability, { readonly kind: "encryption" }>;
@@ -102,7 +103,14 @@ function hex(bytes: Uint8Array): string {
 }
 
 function digestHex(value: unknown, domain: string): string {
-  return hex(sha256(new TextEncoder().encode(`${domain}${canonicalize(value)}`)));
+  return hex(sha256(textEncoder.encode(`${domain}${canonicalize(value)}`)));
+}
+
+function sortByCanonicalJson<T>(values: readonly T[]): readonly T[] {
+  return [...values]
+    .map((value) => ({ value, canonical: canonicalize(value) }))
+    .sort((left, right) => left.canonical < right.canonical ? -1 : left.canonical > right.canonical ? 1 : 0)
+    .map(({ value }) => value);
 }
 
 function base32Lower(bytes: Uint8Array): string {
@@ -132,8 +140,13 @@ function assertV3Time(value: string, label: string): void {
 }
 
 function assertCapabilityCeiling(capabilities: readonly UnifiedPolicyCapability[], source: UnifiedContentSource): void {
-  const kv = capabilities.find((capability): capability is UnifiedKvCapability => capability.kind === "kv");
-  const encryption = capabilities.find((capability): capability is UnifiedEncryptionCapability => capability.kind === "encryption");
+  if (capabilities.length !== 2) throw new TypeError("v3 policy must contain exactly one KV and one decrypt ceiling");
+  let kv: UnifiedKvCapability | undefined;
+  let encryption: UnifiedEncryptionCapability | undefined;
+  for (const capability of capabilities) {
+    if (capability.kind === "kv") kv = capability;
+    else if (capability.kind === "encryption") encryption = capability;
+  }
   if (kv === undefined || kv.resource !== source.kvResource || kv.selector !== source.selector || kv.actions.length === 0) throw new TypeError("v3 policy must contain one KV ceiling");
   if (encryption === undefined || encryption.resource !== source.encryptionNetwork || encryption.action !== "tinycloud.encryption/decrypt") throw new TypeError("v3 policy must contain exact decrypt ceiling");
 }
@@ -157,7 +170,7 @@ export function createUnifiedPolicy(input: UnifiedPolicyInput & { readonly sign:
     // The policy-engine contract signs SHA-256(domain || JCS(unsigned)), not
     // the variable-length preimage.  Keeping this byte boundary here makes
     // the browser signer and Rust verifier use the same golden-vector input.
-    const signatureDigest = sha256(new TextEncoder().encode(`${POLICY_V1_DOMAIN}${canonicalize(unsigned)}`));
+    const signatureDigest = sha256(textEncoder.encode(`${POLICY_V1_DOMAIN}${canonicalize(unsigned)}`));
     const signature = await input.sign(signatureDigest);
     if (signature.length !== 64) throw new TypeError("policy signature must be Ed25519");
     const policy: UnifiedPolicy = {
@@ -165,21 +178,16 @@ export function createUnifiedPolicy(input: UnifiedPolicyInput & { readonly sign:
       policyId,
       signature: { suite: "Ed25519", signerDid: input.ownerDid, value: toBase64Url(signature) },
     };
-    const bytes = new TextEncoder().encode(canonicalize(policy));
+    const bytes = textEncoder.encode(canonicalize(policy));
     const policyCid = await computeCid(bytes);
     return { policy, bytes, policyDigestHex, policyCid };
   })();
 }
 
 export function nativeProjectionHashHex(capabilities: readonly UnifiedPolicyCapability[]): string {
-  const projection = capabilities.map((capability) => capability.kind === "encryption"
+  const projection = sortByCanonicalJson(capabilities.map((capability) => capability.kind === "encryption"
     ? { service: "tinycloud.encryption", space: capability.resource, path: capability.resource, actions: [capability.action] }
-    : { service: "tinycloud.kv", space: capability.resource.slice("tinycloud://".length).split("/")[0], path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } })
-    .sort((left, right) => {
-      const a = canonicalize(left);
-      const b = canonicalize(right);
-      return a < b ? -1 : a > b ? 1 : 0;
-    });
+    : { service: "tinycloud.kv", space: capability.resource.slice("tinycloud://".length).split("/")[0], path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } }));
   return digestHex(projection, NATIVE_PROJECTION_V1_DOMAIN);
 }
 
@@ -228,17 +236,18 @@ export async function createSiblingRoots(input: {
   readonly nodeAudience: string;
   readonly expiresAt: Date;
 }): Promise<{ readonly policyRoot: UnifiedRoot; readonly enforcementRoot: UnifiedRoot }> {
+  const capabilityCeiling = sortByCanonicalJson(input.policy.capabilityCeiling);
   const common = {
     ownerDid: input.ownerDid,
     policyId: input.policy.policyId,
     policyDigestHex: input.policyDigestHex,
     policyCid: input.policyCid,
     contentSourceDigestHex: input.contentSourceDigestHex,
-    capabilityCeilingHashHex: digestHex([...input.policy.capabilityCeiling].sort((left, right) => canonicalize(left).localeCompare(canonicalize(right))), POLICY_CAPABILITY_V1_DOMAIN),
+    capabilityCeilingHashHex: digestHex(capabilityCeiling, POLICY_CAPABILITY_V1_DOMAIN),
     nativeProjectionHashHex: input.nativeProjectionHashHex,
     expiresAt: input.expiresAt,
     nodeAudience: input.nodeAudience,
-    capabilities: input.policy.capabilityCeiling,
+    capabilities: capabilityCeiling,
   };
   const policyRoot = await input.factory.createOwnerRoot({ ...common, role: "policy-authority", audienceDid: `did:tinycloud:policy:${input.policyDigestHex}` });
   const enforcementRoot = await input.factory.createOwnerRoot({ ...common, role: "policy-enforcement", audienceDid: input.enforcerDid });
@@ -258,7 +267,7 @@ export async function signV3Envelope(input: {
   readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
 }): Promise<ShareEnvelopeV3> {
   unsignedShareEnvelopeV3Schema.parse(input.unsigned);
-  const signature = await input.sign(sha256(new TextEncoder().encode(`xyz.tinycloud.share/envelope/v3\0${canonicalize(input.unsigned)}`)));
+  const signature = await input.sign(sha256(textEncoder.encode(`xyz.tinycloud.share/envelope/v3\0${canonicalize(input.unsigned)}`)));
   if (signature.length !== 64) throw new TypeError("v3 envelope signature must be Ed25519");
   const envelope = { ...input.unsigned, signature: { signerDid: input.signerDid, algorithm: "Ed25519" as const, value: toBase64Url(signature) } };
   return shareEnvelopeV3Schema.parse(envelope);
@@ -303,10 +312,10 @@ export async function requestAttestedEnforcerBinding(input: {
   if (Object.keys(binding).length !== 7 || binding.schema !== "xyz.tinycloud.policy/attested-enforcer/v2" || typeof binding.enforcerDid !== "string" || binding.nodeAudience !== binding.enforcerDid || typeof signature !== "object" || signature === null || Array.isArray(signature)) throw new Error("v3 enforcer binding is invalid");
   const proof = signature as Record<string, unknown>;
   if (Object.keys(proof).length !== 3 || proof.suite !== "Ed25519" || proof.signerDid !== binding.enforcerDid || typeof proof.value !== "string") throw new Error("v3 enforcer binding signature is invalid");
-  const expectedBindingDigest = hex(sha256(new TextEncoder().encode(canonicalize({ enforcerDid: binding.enforcerDid, nodeAudience: binding.nodeAudience }))));
+  const expectedBindingDigest = hex(sha256(textEncoder.encode(canonicalize({ enforcerDid: binding.enforcerDid, nodeAudience: binding.nodeAudience }))));
   if (binding.attestationBindingDigestHex !== expectedBindingDigest) throw new Error("v3 enforcer binding digest is invalid");
   const { signature: _signature, ...unsigned } = binding;
-  const digest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
+  const digest = sha256(textEncoder.encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
   if (!ed25519.verify(fromBase64Url(proof.value), digest, ed25519PublicKeyFromDidKey(binding.enforcerDid), { zip215: false })) throw new Error("v3 enforcer binding signature is invalid");
   return binding as unknown as AttestedEnforcerBindingV2;
 }
@@ -396,7 +405,7 @@ export async function invokeUnifiedDelegation(input: {
     const body = input.request;
     const required = ["type", "targetNode", "networkId", "alg", "keyVersion", "encryptedSymmetricKey", "encryptedSymmetricKeyHash", "receiverPublicKey", "receiverPublicKeyHash"] as const;
     if (required.some((key) => !(key in body)) || body.type !== "tinycloud.encryption.decrypt/v1" || body.targetNode !== input.nodeAudience || body.networkId !== input.resource) throw new Error("decrypt invocation body binding is invalid");
-    facts = { type: body.type, targetNode: body.targetNode, networkId: body.networkId, bodyHash: hex(sha256(new TextEncoder().encode(canonicalize(body)))), encryptedSymmetricKeyHash: body.encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, alg: body.alg, keyVersion: body.keyVersion };
+    facts = { type: body.type, targetNode: body.targetNode, networkId: body.networkId, bodyHash: hex(sha256(textEncoder.encode(canonicalize(body)))), encryptedSymmetricKeyHash: body.encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, alg: body.alg, keyVersion: body.keyVersion };
   }
   const invocation = await signCompactUcanAuthorization({
     issuerDid: input.recipientDid,

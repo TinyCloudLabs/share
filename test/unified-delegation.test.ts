@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { canonicalize, didKeyFromEd25519PublicKey, shareEnvelopeV3Schema, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { parseCompactUcanAuthorization as verifyCompactUcanAuthorization, signCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 import { ShareRecipientClient } from "@tinycloud/share-sdk";
-import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
+import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, nativeProjectionHashHex, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
 
 const ownerKey = new Uint8Array(32).fill(7);
 const shareKey = new Uint8Array(32).fill(8);
@@ -125,6 +125,23 @@ describe("TC-405 unified delegation", () => {
     expect(() => rejectV3Downgrade({ version: 2 })).toThrow();
   });
 
+  it("keeps the native projection hash stable when capability order changes", () => {
+    const hash = nativeProjectionHashHex(capabilities);
+    const reversed = nativeProjectionHashHex([...capabilities].reverse());
+    expect(reversed).toBe(hash);
+  });
+
+  it("rejects duplicate capabilities in the policy ceiling", () => {
+    expect(() => createUnifiedPolicy({
+      policyId: "",
+      ownerDid,
+      createdAt: "2026-07-31T12:00:00.000Z",
+      contentSource: source,
+      capabilityCeiling: [...capabilities, capabilities[0]!],
+      sign: async (bytes) => ed25519.sign(bytes, ownerKey),
+    })).toThrow("exactly one KV and one decrypt ceiling");
+  });
+
   it("claims through v3 ceremony then imports and invokes through ordinary SDK routes", async () => {
     const vector = JSON.parse(readFileSync(resolve("test/fixtures/tc-405-compact-authorization.json"), "utf8")) as any;
     const calls: Array<{ url: string; authorization?: string }> = [];
@@ -193,8 +210,8 @@ describe("TC-405 unified delegation", () => {
       const wrapped = await aesEncrypt(shared, symmetricKey);
       const invocation = verifyCompactUcanAuthorization(new Headers(init?.headers).get("Authorization")!);
       const bodyHash = canonicalHash(body);
-      const unsigned = { type: "tinycloud.encryption.decrypt-result/v1", targetNode: nodeDid, networkId, invocationCid: invocation.cid, encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, wrappedKey: toBase64Url(Uint8Array.from([...ephemeralPublic, ...wrapped])), alg: "x25519-aes256gcm/v1", keyVersion: 1, requestHash: hex(sha256(new TextEncoder().encode(`${invocation.cid}${bodyHash}`))), nodeId: nodeDid };
-      return Response.json({ ...unsigned, nodeSignature: toBase64Url(ed25519.sign(new TextEncoder().encode(canonicalize(unsigned)), nodeKey)) });
+      const unsigned = { type: "tinycloud.encryption.decrypt-result/v1", targetNode: nodeDid, networkId, invocationCid: invocation.cid, encryptedSymmetricKeyHash, receiverPublicKeyHash: body.receiverPublicKeyHash, wrappedKey: Buffer.from([...ephemeralPublic, ...wrapped]).toString("base64"), alg: "x25519-aes256gcm/v1", keyVersion: 1, requestHash: hex(sha256(new TextEncoder().encode(`${invocation.cid}${bodyHash}`))), nodeId: nodeDid };
+      return Response.json({ ...unsigned, nodeSignature: Buffer.from(ed25519.sign(new TextEncoder().encode(canonicalize(unsigned)), nodeKey)).toString("base64") });
     };
     const envelope = { version: 3, target: { nodeAudience: nodeDid }, encryptionNetwork: networkId, contentSource: { keyVersion: 1, encryptedSymmetricKeyDigestHex: encryptedSymmetricKeyHash }, metadata: { mediaType: "text/plain" } } as any;
     const client = new ShareRecipientClient({ nodeOrigin: "https://node.example.com", envelope, holderDid: recipientDid, trustedNode: {} as any, fetchFn, buildPresentation: async () => ({ holderDid: recipientDid, credential: "fixture", holderBinding: {}, proof: {} }) });

@@ -17,13 +17,15 @@ const digest = createHash("sha512").update(bytes).digest("base64");
 const integrity = `sha512-${digest}`;
 if (!/^[0-9a-f]{40}$/.test(manifest.sdkCommit)) throw new Error("Share SDK artifact manifest must name a full commit");
 if (manifest.schema !== "tinycloud.share-sdk-artifact/v1") throw new Error("invalid Share SDK artifact manifest schema");
-if (manifest.package !== "@tinycloud/share-sdk" || manifest.version !== "0.2.0-beta.1") throw new Error("unexpected Share SDK artifact identity");
+if (manifest.package !== "@tinycloud/share-sdk" || typeof manifest.version !== "string" || manifest.version.length === 0) throw new Error("unexpected Share SDK artifact identity");
 if (!manifest.artifact.endsWith(`-${manifest.sdkCommit.slice(0, 7)}.tgz`)) throw new Error("Share SDK artifact filename is not bound to sdkCommit");
 if (manifest.sha512 !== integrity || manifest.integrity !== integrity) throw new Error("Share SDK artifact integrity mismatch");
+const packageJson = JSON.parse(await readFile(join(shareRoot, "package.json"), "utf8"));
+if (packageJson.dependencies?.[manifest.package] !== `file:vendor/${manifest.artifact}`) throw new Error("package.json does not pin the Share SDK artifact");
 const lockText = await readFile(join(shareRoot, "package-lock.json"), "utf8");
 const lock = JSON.parse(lockText);
 const entry = lock.packages?.["node_modules/@tinycloud/share-sdk"];
-if (entry?.resolved !== `file:vendor/${manifest.artifact}` || entry.integrity !== integrity) throw new Error("package-lock does not pin the Share SDK artifact");
+if (entry?.version !== manifest.version || entry.resolved !== `file:vendor/${manifest.artifact}` || entry.integrity !== integrity) throw new Error("package-lock does not pin the Share SDK artifact");
 
 async function run(command, args, cwd) {
   return execFile(command, args, { cwd, maxBuffer: 16 * 1024 * 1024 });
