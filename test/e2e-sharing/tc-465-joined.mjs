@@ -71,8 +71,12 @@ async function proxy(request, targetOrigin, options = {}) {
     try { options.entry.responseBody = JSON.parse(responseBytes.toString("utf8")); } catch { /* response validation remains with the product client */ }
   }
   if (response.status >= 400) {
-    let code = "non_json";
-    try { code = JSON.parse(responseBytes.toString("utf8"))?.error?.code ?? "json_without_error_code"; } catch { /* raw bodies never enter diagnostics */ }
+    const raw = responseBytes.toString("utf8");
+    let code = raw.slice(0, 300)
+      .replace(/0x[a-fA-F0-9]{40,}/g, "<address>")
+      .replace(/(?:did|tinycloud):[^\s\"']+/g, "<identifier>")
+      .replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>");
+    try { code = JSON.parse(raw)?.error?.code ?? "json_without_error_code"; } catch { /* sanitized text is useful for local product failures */ }
     browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
   }
   const headers = Object.fromEntries(response.headers.entries());
@@ -201,7 +205,7 @@ async function waitForText(page, value, timeout = 180_000) {
       authError: window.__tinycloudAuthError instanceof Error ? window.__tinycloudAuthError.message : String(window.__tinycloudAuthError ?? ""),
       diagnostics: window.__tc465Diagnostics ?? null,
     })).catch(() => null);
-    throw new Error(`timed out waiting for text ${JSON.stringify(value)}; state=${JSON.stringify(state)}; browserErrors=${JSON.stringify(browserErrors.slice(-10))}`, { cause: error });
+    throw new Error(`timed out waiting for text ${JSON.stringify(value)}; state=${JSON.stringify(state)}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
   }
 }
 async function announceWallet(page) {
