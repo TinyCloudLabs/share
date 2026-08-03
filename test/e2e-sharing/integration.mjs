@@ -675,6 +675,9 @@ async function startShare(tempRoot, fixtures) {
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
   await waitFor(`${origin}/health/readiness`, 60_000, share);
+  const registryKeyResponse = await fetch(`${origin}/api/share/link-only/registry/public-key`, { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(registryKeyResponse.status, 200, "Share host did not publish its registry upload public key");
+  assert.equal((await registryKeyResponse.json()).publicKey, registryUploadPublicKey, "Share host and production registry upload keys differ");
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
 }
