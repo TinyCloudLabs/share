@@ -174,6 +174,10 @@ async function clickText(page, value, optional = false) {
             if ((element.textContent ?? "").trim().includes(expected) && !element.disabled) { element.click(); return true; }
             if (element.shadowRoot && visit(element.shadowRoot)) return true;
           }
+          for (const element of root.querySelectorAll("*")) {
+            if (element.shadowRoot && visit(element.shadowRoot)) return true;
+            if ((element.textContent ?? "").trim() === expected && element instanceof HTMLElement) { element.click(); return true; }
+          }
           return false;
         };
         return visit(document);
@@ -182,7 +186,13 @@ async function clickText(page, value, optional = false) {
     }
     if (!clicked) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
-  if (!clicked && !optional) throw new Error(`action not found: ${value}`);
+  if (!clicked && !optional) {
+    const surfaces = await Promise.all(page.frames().map(async (frame) => ({
+      origin: (() => { try { return new URL(frame.url()).origin; } catch { return "invalid"; } })(),
+      actions: await frame.evaluate(() => [...document.querySelectorAll("button,[role=button],a")].map((element) => (element.textContent ?? "").trim()).filter(Boolean).slice(0, 20)).catch(() => []),
+    })));
+    throw new Error(`action not found: ${value}; surfaces=${JSON.stringify(surfaces)}`);
+  }
   return clicked;
 }
 
