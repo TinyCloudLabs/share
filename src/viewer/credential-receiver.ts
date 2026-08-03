@@ -84,6 +84,7 @@ export interface EmailCredentialRequirement {
   readonly profile: { readonly id: "tinycloud.email-proof/v1"; readonly version: 1 };
   readonly credentialType: { readonly id: "opencredentials.email/v1"; readonly version: 1 };
   readonly claims: { readonly email: string };
+  readonly maxAgeSeconds: 3600;
 }
 
 /**
@@ -153,6 +154,8 @@ export interface CredentialEnsureResultLike {
 
 export interface ActiveCredentialClient {
   readonly sessionDid: string;
+  readonly credentialHolderDid: string;
+  readonly credentialHolderKid: string;
   session(): unknown;
   signSessionBytes(bytes: Uint8Array): Promise<Uint8Array>;
   readonly credentials: {
@@ -255,6 +258,7 @@ export function credentialRequirementFromVerifiedShare(share: VerifiedCredential
     profile: { id: "tinycloud.email-proof/v1", version: 1 },
     credentialType: { id: "opencredentials.email/v1", version: 1 },
     claims: { email: canonicalEmail(share.envelope.recipientMatcher.value) },
+    maxAgeSeconds: 3600,
   } as const);
 }
 
@@ -317,6 +321,7 @@ function assertDurableCredential(result: CredentialEnsureResultLike, readback: S
   const credential = result.credential;
   const record = result.record;
   if (credential.holderDid !== holderDid || credential.subjectDid !== holderDid || record.holderDid !== holderDid
+    || !record.ownerDid.startsWith("did:pkh:") || record.ownerDid === holderDid
     || credential.claims.email !== email || record.claims.email !== email
     || credential.descriptorDigest !== projection.descriptorDigest || record.descriptorDigest !== projection.descriptorDigest || record.requirementDigest !== projection.requirementDigest
     || credential.issuerDid !== projection.issuerDid || record.issuerDid !== projection.issuerDid || credential.issuerKid !== projection.issuerKid || record.issuerKid !== projection.issuerKid
@@ -324,7 +329,9 @@ function assertDurableCredential(result: CredentialEnsureResultLike, readback: S
     || credential.credentialType.id !== projection.credentialType.id || record.credentialType.id !== projection.credentialType.id || credential.credentialType.version !== 1 || record.credentialType.version !== 1
     || credential.credentialDigest.length === 0 || record.credentialDigest !== credential.credentialDigest
     || readback === undefined || readback.recordId !== record.recordId || readback.ownerDid !== record.ownerDid
-    || readback.holderDid !== holderDid || readback.credentialDigest !== credential.credentialDigest) {
+    || readback.holderDid !== holderDid || readback.requirementDigest !== projection.requirementDigest || readback.descriptorDigest !== projection.descriptorDigest
+    || readback.issuerDid !== projection.issuerDid || readback.issuerKid !== projection.issuerKid || readback.claims.email !== email
+    || readback.credentialDigest !== credential.credentialDigest) {
     throw new CredentialReceiverError("CREDENTIAL_NOT_DURABLE", "The acquired credential was not verified in the active TinyCloud");
   }
   if (result.status === "acquired" && (result.receipt === undefined || result.receipt.recordId !== record.recordId || result.receipt.ownerDid !== record.ownerDid)) {
@@ -350,7 +357,8 @@ export async function runCredentialReceiver<Operation>(input: {
   const requirement = credentialRequirementFromVerifiedShare(input.share);
   const projection = await validateCredentialProjectionFromVerifiedShare(input.share, requirement);
   const client = await input.connect();
-  if (client.session() === undefined || !/^did:key:z6Mk[^#]+$/.test(client.sessionDid)) {
+  const holderDid = client.credentialHolderDid;
+  if (client.session() === undefined || !/^did:key:z6Mk[^#]+$/.test(holderDid) || client.credentialHolderKid !== `${holderDid}#${holderDid.slice("did:key:".length)}`) {
     throw new CredentialReceiverError("ACTIVE_SESSION_REQUIRED", "Credential acquisition requires the active TinyCloud/OpenKey session");
   }
   const ensured = await client.credentials.ensure(requirement, {
@@ -370,13 +378,13 @@ export async function runCredentialReceiver<Operation>(input: {
     descriptor: EMAIL_CREDENTIAL_DESCRIPTOR,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
-  assertDurableCredential(ensured, readback, client.sessionDid, requirement.claims.email, projection);
+  assertDurableCredential(ensured, readback, holderDid, requirement.claims.email, projection);
 
   input.onState?.("authorizing-access");
   let delegation: OrdinaryPolicyDelegation;
   try {
-    delegation = await input.admission.admit({ share: input.share, requirement, credential: ensured.credential, holderDid: client.sessionDid, sign: (bytes) => client.signSessionBytes(bytes), ...(input.signal === undefined ? {} : { signal: input.signal }) });
-    assertDelegation(delegation, client.sessionDid);
+    delegation = await input.admission.admit({ share: input.share, requirement, credential: ensured.credential, holderDid, sign: (bytes) => client.signSessionBytes(bytes), ...(input.signal === undefined ? {} : { signal: input.signal }) });
+    assertDelegation(delegation, holderDid);
   } catch (cause) {
     throw receiverError("POLICY_ADMISSION_FAILED", "The verified credential did not authorize this share", cause);
   }

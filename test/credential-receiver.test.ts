@@ -25,7 +25,8 @@ async function shareFixture(email = "Reader@Example.COM"): Promise<VerifiedCrede
     version: 1,
     profile: { id: "tinycloud.email-proof/v1", version: 1 },
     credentialType: { id: "opencredentials.email/v1", version: 1 },
-    claims: { email: "reader@example.com" },
+    claims: { email: email.toLowerCase() },
+    maxAgeSeconds: 3600,
   } as const;
   const policy = {
     schema: "xyz.tinycloud.policy/policy/v2",
@@ -89,7 +90,9 @@ async function receiverFixture(status: "reused" | "acquired") {
   const find = vi.fn(async () => record);
   const signSessionBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
   const client = {
-    sessionDid: holderDid,
+    sessionDid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
+    credentialHolderDid: holderDid,
+    credentialHolderKid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
     session: () => ({}),
     signSessionBytes,
     credentials: { ensure, find },
@@ -129,6 +132,7 @@ describe("TC-465 credential-gated receiver", () => {
       profile: { id: "tinycloud.email-proof/v1", version: 1 },
       credentialType: { id: "opencredentials.email/v1", version: 1 },
       claims: { email: "reader@example.com" },
+      maxAgeSeconds: 3600,
     });
     await expect(validateCredentialProjectionFromVerifiedShare(share, requirement)).resolves.toMatchObject({
       requirementDigest: await digest(requirement),
@@ -136,6 +140,9 @@ describe("TC-465 credential-gated receiver", () => {
       issuerDid: EMAIL_CREDENTIAL_DESCRIPTOR.issuer.did,
       issuerKid: EMAIL_CREDENTIAL_DESCRIPTOR.issuer.kid,
     });
+    const frozenRequirement = credentialRequirementFromVerifiedShare(await shareFixture("Alice@Example.TEST"));
+    expect(await digest(frozenRequirement)).toBe("e3awkBcMp_Ff0YBZXI2XUPYyKmkE_HjeAXI7tz6Brgo");
+    expect(await digest(EMAIL_CREDENTIAL_DESCRIPTOR)).toBe("1tg-qphmKBVtNwzVg9xyz-xxqt_xtMXAsQyXw46m8S0");
 
     await expect(validateCredentialProjectionFromVerifiedShare({ ...share, policy: { ...share.policy, credentialRequirement: { ...(share.policy.credentialRequirement as object), issuerKid: "did:web:attacker.example#key" } } }, requirement))
       .rejects.toMatchObject({ code: "UNSUPPORTED_REQUIREMENT" });
