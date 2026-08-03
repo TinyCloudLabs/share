@@ -120,6 +120,7 @@ async function installInterception(page, services, fixtureOrigin) {
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
     if (url.origin === canonical.openKey) return proxy(request, services.openKeyOrigin, { entry });
+    if (url.origin === services.openKeyOrigin) return request.continue();
     if (url.protocol === "data:" || url.protocol === "blob:" || url.origin === "null") return request.continue();
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
@@ -370,7 +371,7 @@ async function main() {
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(resource));
     const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
-    const allowedOrigins = new Set([...Object.values(canonical), "null"]);
+    const allowedOrigins = new Set([...Object.values(canonical), services.openKeyOrigin, "null"]);
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 

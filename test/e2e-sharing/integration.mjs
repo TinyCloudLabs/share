@@ -648,7 +648,6 @@ async function startShare(tempRoot, fixtures) {
   const browserBuildEnv = buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin);
   if (tc465Joined) {
     browserBuildEnv.VITE_SHARE_REGISTRY_URL = `${canonical.share}/registry`;
-    browserBuildEnv.VITE_OPENKEY_ORIGIN = "https://openkey.so";
   }
   await runOnce("npm", ["run", "build"], shareRoot, browserBuildEnv);
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
