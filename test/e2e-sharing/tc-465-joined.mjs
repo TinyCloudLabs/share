@@ -168,6 +168,12 @@ async function installInterception(page, services, fixtureOrigin) {
 
 async function text(page) { return page.evaluate(() => document.body?.innerText ?? ""); }
 async function waitForText(page, value, timeout = 180_000) { await page.waitForFunction((expected) => document.body?.innerText.includes(expected), { timeout }, value); }
+async function announceWallet(page) {
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: {
+    info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" },
+    provider: window.ethereum,
+  } })));
+}
 async function clickText(page, value, optional = false) {
   let clicked = false;
   const deadline = Date.now() + (optional ? 1_000 : 30_000);
@@ -266,6 +272,7 @@ async function main() {
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
     await page.click("button.auth-button");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
+    await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet");
     await waitForText(page, "Shared by me.");
     await clickText(page, "New share");
@@ -293,6 +300,7 @@ async function main() {
     await waitForText(page, "Confirm your email to open this");
     await page.click("button.viewer-primary-action");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
+    await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet", true);
     const target = await popupTarget;
     const popup = await target.page();
