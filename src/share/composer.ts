@@ -563,8 +563,8 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       { kind: "kv", resource: unifiedSource.kvResource, selector: resourceKind, actions },
       { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
     ];
-    const createdAt = new Date().toISOString();
-    const ownerDid = tinycloud.did;
+    const createdAt = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+    const ownerDid = tinycloud.credentialHolderDid;
     const credentialRequirement = model.recipient.kind === "exactEmail"
       ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
       : undefined;

@@ -92,6 +92,8 @@ function renderComposer(current: SenderApp, token: number): void {
       openKeyAddress: current.session.address,
       session: current.session,
       tinycloud: current.tinycloud,
+      createUnifiedOwnerRoot: (input) => current.tinycloud.createUnifiedOwnerRoot(input),
+      signUnifiedPolicy: (bytes) => current.tinycloud.signSessionBytes(bytes),
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       notify: async ({ share, deliveryAuthorization }) => {
