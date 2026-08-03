@@ -165,18 +165,22 @@ async function text(page) { return page.evaluate(() => document.body?.innerText 
 async function waitForText(page, value, timeout = 180_000) { await page.waitForFunction((expected) => document.body?.innerText.includes(expected), { timeout }, value); }
 async function clickText(page, value, optional = false) {
   let clicked = false;
-  for (const frame of page.frames()) {
-    clicked = await frame.evaluate((expected) => {
-      const visit = (root) => {
-        for (const element of root.querySelectorAll("button,[role=button],a")) {
-          if ((element.textContent ?? "").trim().includes(expected) && !element.disabled) { element.click(); return true; }
-          if (element.shadowRoot && visit(element.shadowRoot)) return true;
-        }
-        return false;
-      };
-      return visit(document);
-    }, value).catch(() => false);
-    if (clicked) break;
+  const deadline = Date.now() + (optional ? 1_000 : 30_000);
+  while (!clicked && Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      clicked = await frame.evaluate((expected) => {
+        const visit = (root) => {
+          for (const element of root.querySelectorAll("button,[role=button],a")) {
+            if ((element.textContent ?? "").trim().includes(expected) && !element.disabled) { element.click(); return true; }
+            if (element.shadowRoot && visit(element.shadowRoot)) return true;
+          }
+          return false;
+        };
+        return visit(document);
+      }, value).catch(() => false);
+      if (clicked) break;
+    }
+    if (!clicked) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   if (!clicked && !optional) throw new Error(`action not found: ${value}`);
   return clicked;
