@@ -29,6 +29,7 @@ let receiverSequence = 0;
 let integration;
 let fixture;
 let browser;
+const browserErrors = [];
 
 function run(command, args, cwd, env = {}) {
   execFileSync(command, args, { cwd, env: { ...process.env, ...env }, stdio: "inherit" });
@@ -201,8 +202,9 @@ async function clickText(page, value, optional = false) {
     const surfaces = await Promise.all(page.frames().map(async (frame) => ({
       origin: (() => { try { return new URL(frame.url()).origin; } catch { return "invalid"; } })(),
       actions: await frame.evaluate(() => [...document.querySelectorAll("button,[role=button],a")].map((element) => (element.textContent ?? "").trim()).filter(Boolean).slice(0, 20)).catch(() => []),
+      status: await frame.evaluate(() => document.querySelector(".auth-status,[role=alert]")?.textContent?.trim() ?? null).catch(() => null),
     })));
-    throw new Error(`action not found: ${value}; surfaces=${JSON.stringify(surfaces)}`);
+    throw new Error(`action not found: ${value}; surfaces=${JSON.stringify(surfaces)}; browserErrors=${JSON.stringify(browserErrors.slice(-10))}`);
   }
   return clicked;
 }
@@ -268,6 +270,9 @@ async function main() {
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
     browser.on("targetcreated", (target) => { void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined); });
     const page = await browser.newPage();
+    page.on("console", (message) => { if (["error", "warning"].includes(message.type())) browserErrors.push(`${message.type()}: ${message.text()}`.slice(0, 500)); });
+    page.on("pageerror", (error) => { browserErrors.push(`pageerror: ${error.message}`.slice(0, 500)); });
+    page.on("requestfailed", (request) => { browserErrors.push(`requestfailed: ${new URL(request.url()).origin}${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`.slice(0, 500)); });
     await installInterception(page, services, fixtureOrigin);
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
     await page.waitForFunction(() => { const button = document.querySelector("button.auth-button"); return button !== null && !button.disabled; }, { timeout: 60_000 });
