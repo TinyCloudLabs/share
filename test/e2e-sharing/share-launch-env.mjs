@@ -103,7 +103,14 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     PORT: String(port),
     SHARE_TRUST_BUNDLE_FILE: trustBundlePath,
     SHARE_SENDER_ENABLED: senderBindingStore === undefined ? "false" : "true",
-    ...(senderBindingStore === undefined ? {} : { SHARE_BINDING_STORE_ROOT: senderBindingStore.root, SHARE_BINDING_STORE_PATH: senderBindingStore.path }),
+    ...(senderBindingStore === undefined ? {} : {
+      SHARE_BINDING_STORE_ROOT: senderBindingStore.root,
+      SHARE_BINDING_STORE_PATH: senderBindingStore.path,
+      // Sender identity and the binding journal share one verified persistent
+      // volume. Leaving this unset selects the production /var/lib default,
+      // which correctly fails the descendant guard for a hermetic temp root.
+      SHARE_SENDER_ROOT_KEY_PATH: `${senderBindingStore.root}/sender-root.key`,
+    }),
     SHARE_REGISTRY_UPLOAD_KEY_PATH: registryUploadKeyPath,
     SHARE_NODE_ENFORCER_DID: nodeEnforcerDid,
     SHARE_HERMETIC_OPENKEY_ORIGIN: loopbackOrigin(openKeyOrigin, "openKeyOrigin"),
