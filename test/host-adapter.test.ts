@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
+import fs from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
@@ -699,6 +700,25 @@ describe("production trust and host boundaries", () => {
       expect(await new TransactionalBindingStore(path).get("cid")).toEqual({ value: "persisted" });
     } finally {
       await chmod(`${root}/read-only`, 0o700).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fsyncs the parent directory after the first committed binding write", async () => {
+    const root = await mkdtemp(`${tmpdir()}/share-binding-fsync-`);
+    try {
+      await mkdir(`${root}/usable`);
+      const store = new TransactionalBindingStore(`${root}/usable/bindings.ndjson`);
+      const fsyncKinds: boolean[] = [];
+      const fsync = vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+        fsyncKinds.push(fs.fstatSync(fd).isDirectory());
+      });
+      await store.put("cid", { value: "persisted" });
+      await store.put("cid-2", { value: "also-persisted" });
+      expect(fsyncKinds).toEqual([true]);
+      fsync.mockRestore();
+    } finally {
+      vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
     }
   });

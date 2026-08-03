@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { canonicalize, didKeyFromEd25519PublicKey, shareEnvelopeV3Schema, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { parseCompactUcanAuthorization as verifyCompactUcanAuthorization, signCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 import { ShareRecipientClient } from "@tinycloud/share-sdk";
-import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
+import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, nativeProjectionHashHex, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
 
 const ownerKey = new Uint8Array(32).fill(7);
 const shareKey = new Uint8Array(32).fill(8);
@@ -123,6 +123,23 @@ describe("TC-405 unified delegation", () => {
     expect(roots.enforcementRoot.role).toBe("policy-enforcement");
     expect(() => shareEnvelopeV3Schema.parse({ ...envelope, downgrade: true })).toThrow();
     expect(() => rejectV3Downgrade({ version: 2 })).toThrow();
+  });
+
+  it("keeps the native projection hash stable when capability order changes", () => {
+    const hash = nativeProjectionHashHex(capabilities);
+    const reversed = nativeProjectionHashHex([...capabilities].reverse());
+    expect(reversed).toBe(hash);
+  });
+
+  it("rejects duplicate capabilities in the policy ceiling", () => {
+    expect(() => createUnifiedPolicy({
+      policyId: "",
+      ownerDid,
+      createdAt: "2026-07-31T12:00:00.000Z",
+      contentSource: source,
+      capabilityCeiling: [...capabilities, capabilities[0]!],
+      sign: async (bytes) => ed25519.sign(bytes, ownerKey),
+    })).toThrow("exactly one KV and one decrypt ceiling");
   });
 
   it("claims through v3 ceremony then imports and invokes through ordinary SDK routes", async () => {

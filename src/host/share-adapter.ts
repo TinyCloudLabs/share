@@ -1,4 +1,5 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
 import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { open, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
@@ -114,6 +115,13 @@ async function secureRead(path: string): Promise<string> {
   const handle = await open(path, SECURE_READ);
   try { return await handle.readFile("utf8"); }
   finally { await handle.close(); }
+}
+
+function syncParentDirectory(path: string): void {
+  const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+  const descriptor = fs.openSync(parent, "r");
+  try { fs.fsyncSync(descriptor); }
+  finally { fs.closeSync(descriptor); }
 }
 
 /** Production bindings must live inside the persistent Share volume. */
@@ -280,12 +288,14 @@ export class TransactionalBindingStore implements BindingStore {
         if (stable(previous) !== stable(binding)) throw new Error("binding is immutable");
         return;
       }
+      const createsJournal = !existsSync(this.path);
       assertSecurePath(this.path);
       const handle = await open(this.path, SECURE_APPEND, 0o600);
       try {
         await handle.write(`${JSON.stringify({ op: "put", cid, binding })}\n`, undefined, "utf8");
         await handle.sync();
       } finally { await handle.close(); }
+      if (createsJournal) syncParentDirectory(this.path);
     });
   }
 
@@ -299,12 +309,14 @@ export class TransactionalBindingStore implements BindingStore {
         : prior;
       if (budget.count >= limit) return false;
       const next = { count: budget.count + 1, windowStartedAt: budget.windowStartedAt };
+      const createsJournal = !existsSync(this.path);
       assertSecurePath(this.path);
       const handle = await open(this.path, SECURE_APPEND, 0o600);
       try {
         await handle.write(`${JSON.stringify({ op: "upload-budget", principal, ...next })}\n`, undefined, "utf8");
         await handle.sync();
       } finally { await handle.close(); }
+      if (createsJournal) syncParentDirectory(this.path);
       return true;
     });
   }
@@ -317,12 +329,14 @@ export class TransactionalBindingStore implements BindingStore {
         if (expiry <= now) state.uploadAttestations.delete(value);
       }
       if (state.uploadAttestations.has(jti) || state.uploadAttestations.size >= limit) return false;
+      const createsJournal = !existsSync(this.path);
       assertSecurePath(this.path);
       const handle = await open(this.path, SECURE_APPEND, 0o600);
       try {
         await handle.write(`${JSON.stringify({ op: "upload-attestation", jti, expiresAt })}\n`, undefined, "utf8");
         await handle.sync();
       } finally { await handle.close(); }
+      if (createsJournal) syncParentDirectory(this.path);
       return true;
     });
   }
