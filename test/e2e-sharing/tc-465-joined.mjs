@@ -241,7 +241,7 @@ async function main() {
     const page = await browser.newPage();
     await installInterception(page, services, fixtureOrigin);
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
-    await clickText(page, "Sign in");
+    await page.click("button.auth-button");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await clickText(page, "TinyCloud E2E Wallet");
     await waitForText(page, "Shared by me.");
