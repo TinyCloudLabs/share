@@ -365,7 +365,7 @@ async function main() {
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
-    const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 180_000 });
+    const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 60_000 });
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     await waitForText(page, "Confirm your email to open this");
@@ -373,7 +373,13 @@ async function main() {
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet", true);
-    const target = await popupTarget;
+    let target;
+    try {
+      target = await popupTarget;
+    } catch (error) {
+      const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
+      throw new Error(`credential acquisition popup did not open; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(receiverRequests.slice(-50))}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+    }
     const popup = await target.page();
     assert(popup, "credential popup page is missing");
     await installInterception(popup, services, fixtureOrigin);
