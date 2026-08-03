@@ -129,7 +129,7 @@ function writePermissions(capabilities: readonly UploadCapability[]): Permission
  * a plain byte-prefix test, so it covers `shares/<shareId>` and
  * `shares/<shareId>/<name>` alike. Sender-history writes are not affected:
  * they go through `tinycloud.vault`, which resolves to its own
- * `vault/sender-history/v1/entries/` KV grant in `historyPermissions`.
+ * `vault/sender-history/v2/records/` KV grant in `historyPermissions`.
  *
  * `del` is absent on purpose. Nothing here deletes, and this grant is the
  * sender's whole space.
@@ -141,8 +141,8 @@ export function ownerSpacePermissions(): PermissionEntry[] {
   ];
 }
 
-function historyPermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v1/entries/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
+export function historyPermissions(): PermissionEntry[] {
+  return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v2/records/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
 }
 
 export function credentialSpacePermissions(): PermissionEntry[] {
