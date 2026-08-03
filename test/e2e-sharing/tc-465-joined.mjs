@@ -183,7 +183,18 @@ async function installInterception(page, services, fixtureOrigin) {
 }
 
 async function text(page) { return page.evaluate(() => document.body?.innerText ?? ""); }
-async function waitForText(page, value, timeout = 180_000) { await page.waitForFunction((expected) => document.body?.innerText.includes(expected), { timeout }, value); }
+async function waitForText(page, value, timeout = 180_000) {
+  try {
+    await page.waitForFunction((expected) => document.body?.innerText.includes(expected), { timeout }, value);
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      text: (document.body?.innerText ?? "").slice(-1_500),
+      authError: window.__tinycloudAuthError instanceof Error ? window.__tinycloudAuthError.message : String(window.__tinycloudAuthError ?? ""),
+      diagnostics: window.__tc465Diagnostics ?? null,
+    })).catch(() => null);
+    throw new Error(`timed out waiting for text ${JSON.stringify(value)}; state=${JSON.stringify(state)}; browserErrors=${JSON.stringify(browserErrors.slice(-10))}`, { cause: error });
+  }
+}
 async function announceWallet(page) {
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: {
     info: { uuid: "8fd9b04a-e8a0-4c43-9d87-5af504aa1f0d", name: "TinyCloud E2E Wallet", icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", rdns: "xyz.tinycloud.e2e-wallet" },
@@ -192,7 +203,7 @@ async function announceWallet(page) {
 }
 async function clickText(page, value, optional = false) {
   let clicked = false;
-  const deadline = Date.now() + (optional ? 1_000 : 30_000);
+  const deadline = Date.now() + (optional ? 10_000 : 30_000);
   while (!clicked && Date.now() < deadline) {
     for (const frame of page.frames()) {
       clicked = await frame.evaluate((expected) => {
@@ -307,7 +318,8 @@ async function main() {
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet");
-    await waitForText(page, "Shared by me.");
+    await clickText(page, "Create TinyCloud Space", true);
+    await waitForText(page, "Shared by me.", 60_000);
     await clickText(page, "New share");
     await waitForText(page, "Share a file");
     await page.evaluate(() => { window.__tc465Copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (value) => { window.__tc465Copied = value; return Promise.resolve(); } } }); });
