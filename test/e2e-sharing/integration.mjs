@@ -21,6 +21,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
@@ -63,6 +64,8 @@ const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1";
 const walletPrivateKey = `0x${"55".repeat(32)}`;
 const issuerSeed = Buffer.alloc(32, tc465Joined ? 67 : 0x47);
 const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+const registryUploadSeed = Buffer.alloc(32, 7);
+const registryUploadPublicKey = Buffer.from(ed25519.getPublicKey(registryUploadSeed)).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
@@ -406,7 +409,11 @@ async function startFixtures(tempRoot) {
     if (!request.url?.startsWith("/widget/")) { response.writeHead(404).end(); return; }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(`<!doctype html><meta charset="utf-8"><script>parent.postMessage({type:"openkey:ready"},"*");setTimeout(()=>parent.postMessage({type:"openkey:auth:use-external-wallet"},"*"),0);addEventListener("message",e=>{if(e.data&&e.data.type==="openkey:auth:request")parent.postMessage({type:"openkey:auth:use-external-wallet"},"*")});</script>`);
   });
-  const registry = run("npm", ["run", "-w", "@tinycloud/share-registry", "dev-server", "--", "--port", "0"], shareRoot);
+  await writeFile(join(tempRoot, "registry-upload.key"), registryUploadSeed.toString("base64url"), { flag: "wx", mode: 0o600 });
+  const registry = run("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
+    REGISTRY_AUTH_PUBLIC_KEY: registryUploadPublicKey,
+    REGISTRY_LINK_UPLOAD_PUBLIC_KEY: registryUploadPublicKey,
+  });
   let registryOrigin;
   const registryDeadline = Date.now() + 30_000;
   while (registryOrigin === undefined && Date.now() < registryDeadline) {
@@ -415,7 +422,7 @@ async function startFixtures(tempRoot) {
     if (registryOrigin === undefined) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   if (registryOrigin === undefined) throw new Error("real Share registry did not publish a loopback URL");
-  checks.push(`real Share registry started at ${registryOrigin}.`);
+  checks.push(`production Share registry with durable upload authorization started at ${registryOrigin}.`);
 
   const mailMessages = [];
   const mailReplays = [];
@@ -628,7 +635,6 @@ async function startShare(tempRoot, fixtures) {
   checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
-  const registryKey = Buffer.alloc(32, 7).toString("base64url");
   const origin = `http://127.0.0.1:${port}`;
   const shareTrustBundleJson = trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey);
   assert.equal(
