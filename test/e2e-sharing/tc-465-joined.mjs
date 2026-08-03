@@ -89,7 +89,7 @@ async function proxy(request, targetOrigin, options = {}) {
       headers["access-control-allow-origin"] = origin;
       headers["access-control-allow-credentials"] = "true";
       headers["access-control-allow-methods"] = "GET, POST, OPTIONS";
-      headers["access-control-allow-headers"] = "authorization, content-type";
+      headers["access-control-allow-headers"] = request.headers()["access-control-request-headers"] ?? "authorization, content-type";
       headers.vary = "Origin";
     }
   }
