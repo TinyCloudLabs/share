@@ -1,4 +1,5 @@
 import { canonicalize, toBase64Url, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import type { InlineEncryptedEnvelope, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 export const EMAIL_CREDENTIAL_DESCRIPTOR = Object.freeze({
   type: "tinycloud.credentials/descriptor/v1",
@@ -152,79 +153,28 @@ export interface CredentialEnsureResultLike {
   readonly receipt?: CredentialStorageReceiptLike;
 }
 
-export interface ActiveCredentialClient {
-  readonly sessionDid: string;
-  readonly credentialHolderDid: string;
-  readonly credentialHolderKid: string;
-  session(): unknown;
-  signSessionBytes(bytes: Uint8Array): Promise<Uint8Array>;
-  readonly credentials: {
-    ensure(requirement: EmailCredentialRequirement, options: {
-      readonly descriptor: typeof EMAIL_CREDENTIAL_DESCRIPTOR;
-      readonly interaction: "popup";
-      readonly openerOrigin: string;
-      readonly signal?: AbortSignal;
-      readonly onProgress: (progress: CredentialProgressLike) => void;
-    }): Promise<CredentialEnsureResultLike>;
-    find(requirement: EmailCredentialRequirement, options: {
-      readonly descriptor: typeof EMAIL_CREDENTIAL_DESCRIPTOR;
-      readonly signal?: AbortSignal;
-    }): Promise<StoredCredentialLike | undefined>;
-  };
-}
+export type ActiveCredentialClient = TinyCloudWeb;
 
-export interface OrdinaryPolicyDelegation {
-  readonly type: "TinyCloudOrdinaryPolicyDelegation";
+export interface CredentialShareReadOperation {
+  readonly type: "TinyCloudInterruptedShareRead";
   readonly version: 1;
-  readonly cid: string;
-  readonly authorization: string;
-  readonly audienceDid: string;
-}
-
-export interface OrdinaryDelegationImportReceipt {
-  readonly type: "TinyCloudOrdinaryDelegationImportReceipt";
-  readonly version: 1;
-  readonly cid: string;
-  readonly imported: true;
+  readonly shareCid: string;
+  readonly envelope: ShareEnvelopeV3;
 }
 
 export interface CredentialAuthorizedContent {
   readonly type: "TinyCloudCredentialAuthorizedContent";
   readonly version: 1;
   readonly delegationCid: string;
-  readonly invocationCid: string;
   readonly bytes: Uint8Array;
   readonly mediaType: string;
-}
-
-export interface CredentialPolicyAdmissionAdapter<Operation> {
-  admit(input: {
-    readonly share: VerifiedCredentialShare;
-    readonly requirement: EmailCredentialRequirement;
-    readonly credential: VerifiedCredentialLike;
-    readonly holderDid: string;
-    readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
-    readonly signal?: AbortSignal;
-  }): Promise<OrdinaryPolicyDelegation>;
-  importDelegation(input: {
-    readonly delegation: OrdinaryPolicyDelegation;
-    readonly signal?: AbortSignal;
-  }): Promise<OrdinaryDelegationImportReceipt>;
-  invoke(input: {
-    readonly delegation: OrdinaryPolicyDelegation;
-    readonly operation: Operation;
-    readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
-    readonly signal?: AbortSignal;
-  }): Promise<CredentialAuthorizedContent>;
 }
 
 export type CredentialReceiverErrorCode =
   | "UNSUPPORTED_REQUIREMENT"
   | "ACTIVE_SESSION_REQUIRED"
   | "CREDENTIAL_NOT_DURABLE"
-  | "POLICY_ADMISSION_UNAVAILABLE"
   | "POLICY_ADMISSION_FAILED"
-  | "DELEGATION_IMPORT_FAILED"
   | "INVOCATION_FAILED";
 
 export class CredentialReceiverError extends Error {
@@ -339,23 +289,34 @@ function assertDurableCredential(result: CredentialEnsureResultLike, readback: S
   }
 }
 
-function assertDelegation(value: OrdinaryPolicyDelegation, holderDid: string): void {
-  if (value.type !== "TinyCloudOrdinaryPolicyDelegation" || value.version !== 1 || value.cid.length === 0 || value.authorization.length === 0 || value.audienceDid !== holderDid) {
-    throw new CredentialReceiverError("POLICY_ADMISSION_FAILED", "Policy admission did not return ordinary recipient authority");
+function requestedReadCapabilities(share: VerifiedCredentialShare) {
+  const envelope = share.envelope;
+  if (!envelope.actions.includes("read") || envelope.resource.kind !== "exact"
+    || envelope.policyRoot.role !== "policy-authority" || envelope.enforcementRoot.role !== "policy-enforcement"
+    || envelope.contentSource.kvResource !== `tinycloud://${envelope.target.spaceId}/kv/${envelope.resource.path}`
+    || envelope.contentSource.selector !== "exact" || envelope.contentSource.encryptionNetwork !== envelope.encryptionNetwork) {
+    throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The credential-gated share does not contain one exact read operation");
   }
+  return Object.freeze([
+    { kind: "kv" as const, resource: envelope.contentSource.kvResource, selector: "exact" as const, actions: ["tinycloud.kv/get" as const] },
+    { kind: "encryption" as const, resource: envelope.encryptionNetwork, action: "tinycloud.encryption/decrypt" as const },
+  ]);
 }
 
-export async function runCredentialReceiver<Operation>(input: {
+export async function runCredentialReceiver(input: {
   readonly share: VerifiedCredentialShare;
-  readonly operation: Operation;
+  readonly operation: CredentialShareReadOperation;
   readonly connect: () => Promise<ActiveCredentialClient>;
-  readonly admission: CredentialPolicyAdmissionAdapter<Operation>;
   readonly openerOrigin: string;
   readonly signal?: AbortSignal;
   readonly onState?: (state: CredentialReceiverState) => void;
 }): Promise<CredentialAuthorizedContent> {
   const requirement = credentialRequirementFromVerifiedShare(input.share);
   const projection = await validateCredentialProjectionFromVerifiedShare(input.share, requirement);
+  if (input.operation.shareCid !== input.share.shareCid || input.operation.envelope !== input.share.envelope) {
+    throw new CredentialReceiverError("INVOCATION_FAILED", "The interrupted share operation was substituted");
+  }
+  const requestedCapabilities = requestedReadCapabilities(input.share);
   const client = await input.connect();
   const holderDid = client.credentialHolderDid;
   if (client.session() === undefined || !/^did:key:z6Mk[^#]+$/.test(holderDid) || client.credentialHolderKid !== `${holderDid}#${holderDid.slice("did:key:".length)}`) {
@@ -381,46 +342,48 @@ export async function runCredentialReceiver<Operation>(input: {
   assertDurableCredential(ensured, readback, holderDid, requirement.claims.email, projection);
 
   input.onState?.("authorizing-access");
-  let delegation: OrdinaryPolicyDelegation;
+  let admission: Awaited<ReturnType<ActiveCredentialClient["credentials"]["admitPolicy"]>>;
   try {
-    delegation = await input.admission.admit({ share: input.share, requirement, credential: ensured.credential, holderDid, sign: (bytes) => client.signSessionBytes(bytes), ...(input.signal === undefined ? {} : { signal: input.signal }) });
-    assertDelegation(delegation, holderDid);
+    type Policy = Parameters<ActiveCredentialClient["credentials"]["admitPolicy"]>[0]["policy"];
+    admission = await client.credentials.admitPolicy({
+      ensured,
+      policy: input.share.policy as unknown as Policy,
+      policyCid: input.share.envelope.policyCid,
+      policyRootCid: input.share.envelope.policyRoot.cid,
+      enforcementRootCid: input.share.envelope.enforcementRoot.cid,
+      requirement,
+      requestedCapabilities,
+      nodeOrigin: input.share.envelope.target.origin,
+    });
+    if (admission.installed.cid !== admission.session.cid || admission.installed.audience !== holderDid) {
+      throw new Error("installed ordinary delegation binding mismatch");
+    }
   } catch (cause) {
     throw receiverError("POLICY_ADMISSION_FAILED", "The verified credential did not authorize this share", cause);
   }
-  try {
-    const receipt = await input.admission.importDelegation({ delegation, ...(input.signal === undefined ? {} : { signal: input.signal }) });
-    if (receipt.type !== "TinyCloudOrdinaryDelegationImportReceipt" || receipt.version !== 1 || receipt.imported !== true || receipt.cid !== delegation.cid) {
-      throw new Error("ordinary delegation import receipt mismatch");
-    }
-  } catch (cause) {
-    throw receiverError("DELEGATION_IMPORT_FAILED", "TinyCloud could not import the ordinary share delegation", cause);
-  }
 
   input.onState?.("opening-content");
-  let content: CredentialAuthorizedContent;
   try {
-    // The exact interrupted operation object is passed through unchanged.
-    content = await input.admission.invoke({ delegation, operation: input.operation, sign: (bytes) => client.signSessionBytes(bytes), ...(input.signal === undefined ? {} : { signal: input.signal }) });
-    if (content.type !== "TinyCloudCredentialAuthorizedContent" || content.version !== 1 || content.delegationCid !== delegation.cid || content.invocationCid.length === 0 || !ArrayBuffer.isView(content.bytes) || content.bytes.BYTES_PER_ELEMENT !== 1 || content.mediaType.length === 0) {
-      throw new Error("ordinary invocation response mismatch");
-    }
+    const envelope = input.operation.envelope;
+    const read = await client.kvForSpace(envelope.target.spaceId).get<Uint8Array>(envelope.resource.path, { binary: true, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+    if (!read.ok || !ArrayBuffer.isView(read.data.data) || read.data.data.BYTES_PER_ELEMENT !== 1) throw new Error("ordinary KV read failed");
+    const encoded = new TextDecoder("utf-8", { fatal: true }).decode(read.data.data);
+    const encrypted = JSON.parse(encoded) as unknown;
+    if (canonicalize(encrypted) !== encoded) throw new Error("encrypted content is not canonical JSON");
+    const decrypted = await client.encryption.decryptEnvelope(encrypted as InlineEncryptedEnvelope, { proofs: [admission.installed.cid] }, { targetNode: envelope.attestedEnforcerBinding.nodeAudience });
+    if (!decrypted.ok || !ArrayBuffer.isView(decrypted.data) || decrypted.data.BYTES_PER_ELEMENT !== 1) throw new Error("ordinary delegated decrypt failed");
+    const content = Object.freeze({
+      type: "TinyCloudCredentialAuthorizedContent" as const,
+      version: 1 as const,
+      delegationCid: admission.installed.cid,
+      bytes: decrypted.data,
+      mediaType: envelope.metadata.mediaType ?? "application/octet-stream",
+    });
+    input.onState?.("success");
+    return content;
   } catch (cause) {
     throw receiverError("INVOCATION_FAILED", "TinyCloud could not resume the shared operation", cause);
   }
-  input.onState?.("success");
-  return content;
-}
-
-export function unavailableCredentialPolicyAdmission<Operation>(): CredentialPolicyAdmissionAdapter<Operation> {
-  const unavailable = (): never => {
-    throw new CredentialReceiverError("POLICY_ADMISSION_UNAVAILABLE", "Credential policy admission is not available on this TinyCloud node");
-  };
-  return {
-    admit: async () => unavailable(),
-    importDelegation: async () => unavailable(),
-    invoke: async () => unavailable(),
-  };
 }
 
 const STATE_COPY: Record<CredentialReceiverState, string> = {
@@ -442,11 +405,10 @@ function element<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, c
   return node;
 }
 
-export function mountCredentialReceiver<Operation>(root: HTMLElement, input: {
+export function mountCredentialReceiver(root: HTMLElement, input: {
   readonly share: VerifiedCredentialShare;
-  readonly operation: Operation;
+  readonly operation: CredentialShareReadOperation;
   readonly connect: () => Promise<ActiveCredentialClient>;
-  readonly admission: CredentialPolicyAdmissionAdapter<Operation>;
   readonly openerOrigin: string;
   readonly onComplete: (content: CredentialAuthorizedContent) => Promise<void> | void;
 }): void {
@@ -474,16 +436,17 @@ export function mountCredentialReceiver<Operation>(root: HTMLElement, input: {
       share: input.share,
       operation: input.operation,
       connect: input.connect,
-      admission: input.admission,
       openerOrigin: input.openerOrigin,
       onState: (state) => { status.textContent = STATE_COPY[state]; },
     }).then(input.onComplete).catch((error: unknown) => {
       console.debug("tinycloud share: credential receiver failed", error);
       button.disabled = false;
       status.setAttribute("role", "alert");
-      status.textContent = error instanceof CredentialReceiverError && error.code === "POLICY_ADMISSION_UNAVAILABLE"
-        ? "Email verified and saved. This TinyCloud node is not ready to authorize this share yet."
-        : "We couldn't verify and save this email credential. Try again or ask the sender for a new link.";
+      status.textContent = error instanceof CredentialReceiverError && error.code === "POLICY_ADMISSION_FAILED"
+        ? "Email verified and saved, but it didn't grant access to this share. Ask the sender for a new link."
+        : error instanceof CredentialReceiverError && error.code === "INVOCATION_FAILED"
+          ? "Access was granted, but the share couldn't be opened. Try again."
+          : "We couldn't verify and save this email credential. Try again or ask the sender for a new link.";
     });
   });
 }

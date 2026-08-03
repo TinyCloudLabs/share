@@ -8,7 +8,6 @@ import {
   validateCredentialProjectionFromVerifiedShare,
   type ActiveCredentialClient,
   type CredentialEnsureResultLike,
-  type CredentialPolicyAdmissionAdapter,
   type VerifiedCredentialShare,
 } from "../src/viewer/credential-receiver.js";
 
@@ -42,7 +41,21 @@ async function shareFixture(email = "Reader@Example.COM"): Promise<VerifiedCrede
     },
   };
   return {
-    envelope: { version: 3, recipientMatcher: { kind: "exactEmail", value: email }, policy } as unknown as ShareEnvelopeV3,
+    envelope: {
+      version: 3,
+      recipientMatcher: { kind: "exactEmail", value: email },
+      actions: ["read"],
+      resource: { kind: "exact", path: "docs/report.md" },
+      target: { origin: "https://node.example", nodeAudience: "did:web:enforcer.example", spaceId: "owner-space" },
+      policy,
+      policyCid: "bafkreipolicy",
+      policyRoot: { cid: "policy-root", authorization: "policy-root-authorization", role: "policy-authority" },
+      enforcementRoot: { cid: "enforcement-root", authorization: "enforcement-root-authorization", role: "policy-enforcement" },
+      contentSource: { kvResource: "tinycloud://owner-space/kv/docs/report.md", selector: "exact", encryptionNetwork: "urn:tinycloud:encryption:fixture" },
+      encryptionNetwork: "urn:tinycloud:encryption:fixture",
+      attestedEnforcerBinding: { nodeAudience: "did:web:node.example" },
+      metadata: { mediaType: "text/plain" },
+    } as unknown as ShareEnvelopeV3,
     policy,
     shareCid: "bafkreicredentialshare",
   };
@@ -88,6 +101,23 @@ async function receiverFixture(status: "reused" | "acquired") {
     return ensured;
   });
   const find = vi.fn(async () => record);
+  const order: string[] = [];
+  const admitPolicy = vi.fn(async () => {
+    order.push("admitPolicy");
+    return {
+      session: { cid: "delegation-cid", authorization: "compact-authorization", aud: holderDid },
+      installed: { cid: "delegation-cid", audience: holderDid },
+    };
+  });
+  const encrypted = new TextEncoder().encode(canonicalize({ type: "fixture-encrypted-envelope" }));
+  const get = vi.fn(async () => {
+    order.push("get");
+    return { ok: true as const, data: { data: encrypted, headers: {} } };
+  });
+  const decryptEnvelope = vi.fn(async () => {
+    order.push("decrypt");
+    return { ok: true as const, data: new TextEncoder().encode("opened") };
+  });
   const signSessionBytes = vi.fn(async () => new Uint8Array([1, 2, 3]));
   const client = {
     sessionDid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
@@ -95,31 +125,11 @@ async function receiverFixture(status: "reused" | "acquired") {
     credentialHolderKid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
     session: () => ({}),
     signSessionBytes,
-    credentials: { ensure, find },
+    credentials: { ensure, find, admitPolicy },
+    kvForSpace: vi.fn(() => ({ get })),
+    encryption: { decryptEnvelope },
   } as unknown as ActiveCredentialClient;
-  return { share, client, ensure, find, signSessionBytes, record, ensured };
-}
-
-function admissionFixture<Operation>(operation: Operation) {
-  const order: string[] = [];
-  const admission: CredentialPolicyAdmissionAdapter<Operation> = {
-    admit: vi.fn(async ({ holderDid: audienceDid, sign }) => {
-      order.push("admit");
-      await sign(new Uint8Array([4]));
-      return { type: "TinyCloudOrdinaryPolicyDelegation" as const, version: 1 as const, cid: "delegation-cid", authorization: "compact-authorization", audienceDid };
-    }),
-    importDelegation: vi.fn(async ({ delegation }) => {
-      order.push("import");
-      return { type: "TinyCloudOrdinaryDelegationImportReceipt" as const, version: 1 as const, cid: delegation.cid, imported: true as const };
-    }),
-    invoke: vi.fn(async ({ delegation, operation: resumedOperation, sign }) => {
-      order.push("invoke");
-      expect(resumedOperation).toBe(operation);
-      await sign(new Uint8Array([5]));
-      return { type: "TinyCloudCredentialAuthorizedContent" as const, version: 1 as const, delegationCid: delegation.cid, invocationCid: "invocation-cid", bytes: new TextEncoder().encode("opened"), mediaType: "text/plain" };
-    }),
-  };
-  return { admission, order };
+  return { share, client, ensure, find, admitPolicy, get, decryptEnvelope, signSessionBytes, record, ensured, order };
 }
 
 describe("TC-465 credential-gated receiver", () => {
@@ -150,43 +160,46 @@ describe("TC-465 credential-gated receiver", () => {
 
   it("reuses a durable credential in the active TinyCloud and resumes through ordinary delegation and invocation", async () => {
     const fixture = await receiverFixture("reused");
-    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead", shareCid: fixture.share.shareCid });
-    const { admission, order } = admissionFixture(operation);
+    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead" as const, version: 1 as const, shareCid: fixture.share.shareCid, envelope: fixture.share.envelope });
     const states: string[] = [];
 
-    const content = await runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, admission, openerOrigin: "https://share.tinycloud.xyz", onState: (state) => states.push(state) });
+    const content = await runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, openerOrigin: "https://share.tinycloud.xyz", onState: (state) => states.push(state) });
 
     expect(new TextDecoder().decode(content.bytes)).toBe("opened");
     expect(fixture.ensure).toHaveBeenCalledOnce();
     expect(fixture.ensure.mock.calls[0]![1]).toMatchObject({ descriptor: EMAIL_CREDENTIAL_DESCRIPTOR, interaction: "popup", openerOrigin: "https://share.tinycloud.xyz" });
     expect(fixture.find).toHaveBeenCalledOnce();
-    expect(order).toEqual(["admit", "import", "invoke"]);
+    expect(fixture.admitPolicy).toHaveBeenCalledWith(expect.objectContaining({ ensured: fixture.ensured, requirement: expect.objectContaining({ claims: { email: "reader@example.com" } }), requestedCapabilities: [
+      { kind: "kv", resource: "tinycloud://owner-space/kv/docs/report.md", selector: "exact", actions: ["tinycloud.kv/get"] },
+      { kind: "encryption", resource: "urn:tinycloud:encryption:fixture", action: "tinycloud.encryption/decrypt" },
+    ] }));
+    expect(fixture.order).toEqual(["admitPolicy", "get", "decrypt"]);
     expect(states).toEqual(["checking-existing", "authorizing-access", "opening-content", "success"]);
-    expect(fixture.signSessionBytes).toHaveBeenCalledTimes(2);
+    expect(fixture.client.kvForSpace).toHaveBeenCalledWith("owner-space");
+    expect(fixture.get).toHaveBeenCalledWith("docs/report.md", expect.objectContaining({ binary: true }));
+    expect(fixture.decryptEnvelope).toHaveBeenCalledWith(expect.anything(), { proofs: ["delegation-cid"] }, { targetNode: "did:web:node.example" });
   });
 
   it("acquires and durably reads back a missing credential before resuming the exact interrupted operation", async () => {
     const fixture = await receiverFixture("acquired");
-    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead", nonce: "keep-this-object" });
-    const { admission, order } = admissionFixture(operation);
+    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead" as const, version: 1 as const, shareCid: fixture.share.shareCid, envelope: fixture.share.envelope });
     const states: string[] = [];
 
-    await runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, admission, openerOrigin: "https://share.tinycloud.xyz", onState: (state) => states.push(state) });
+    await runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, openerOrigin: "https://share.tinycloud.xyz", onState: (state) => states.push(state) });
 
-    expect(order).toEqual(["admit", "import", "invoke"]);
+    expect(fixture.order).toEqual(["admitPolicy", "get", "decrypt"]);
     expect(states).toContain("saving");
     expect(fixture.find).toHaveBeenCalledOnce();
   });
 
   it("does not admit an acquired credential without its authenticated storage receipt", async () => {
     const fixture = await receiverFixture("acquired");
-    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead" });
-    const { admission } = admissionFixture(operation);
+    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead" as const, version: 1 as const, shareCid: fixture.share.shareCid, envelope: fixture.share.envelope });
     const { receipt: _receipt, ...withoutReceipt } = fixture.ensured;
     fixture.ensure.mockResolvedValueOnce(withoutReceipt);
 
-    await expect(runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, admission, openerOrigin: "https://share.tinycloud.xyz" }))
+    await expect(runCredentialReceiver({ share: fixture.share, operation, connect: async () => fixture.client, openerOrigin: "https://share.tinycloud.xyz" }))
       .rejects.toEqual(expect.objectContaining<Partial<CredentialReceiverError>>({ code: "CREDENTIAL_NOT_DURABLE" }));
-    expect(admission.admit).not.toHaveBeenCalled();
+    expect(fixture.admitPolicy).not.toHaveBeenCalled();
   });
 });

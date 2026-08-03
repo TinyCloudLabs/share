@@ -142,7 +142,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       return;
     }
     if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
-      const { mountCredentialReceiver, unavailableCredentialPolicyAdmission } = await import("./viewer/credential-receiver.js");
+      const { mountCredentialReceiver } = await import("./viewer/credential-receiver.js");
       const interruptedOperation = Object.freeze({
         type: "TinyCloudInterruptedShareRead" as const,
         version: 1 as const,
@@ -161,10 +161,6 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           });
           return activeClient;
         },
-        // TC-470 supplies the node's credential-policy admission adapter. Do
-        // not manufacture ordinary authority in the browser while that
-        // authenticated /delegate + /invoke boundary is unavailable.
-        admission: unavailableCredentialPolicyAdmission<typeof interruptedOperation>(),
         onComplete: async (content) => {
           await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
         },
