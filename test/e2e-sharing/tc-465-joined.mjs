@@ -365,10 +365,10 @@ async function main() {
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
-    const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 60_000 });
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     await waitForText(page, "Confirm your email to open this");
+    const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 60_000 });
     await page.click("button.viewer-primary-action");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
