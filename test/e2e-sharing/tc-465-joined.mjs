@@ -134,7 +134,7 @@ async function installInterception(page, services, fixtureOrigin) {
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
     if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true });
-    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { entry });
+    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
       return proxy(request, fixtureOrigin, { cors: true, entry });
