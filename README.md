@@ -12,6 +12,9 @@ The UX blueprint, specs, wireframes, and spec site for **TinyCloud Sharing** (sh
 | [`wireframes/`](wireframes/) | 14 low-fi SVG wireframes + [`annotations.md`](wireframes/annotations.md) — the canonical, annotated source of truth |
 | `index.html`, `src/`, `public/` | The Vite spec site rendering the blueprint as a single page |
 
+The agent-facing CLI contract and cross-repository release gate are documented in
+[`docs/share-cli-integration.md`](docs/share-cli-integration.md).
+
 Note: `wireframes/` is canonical; `public/wireframes/` is a build-time copy used as site assets. Re-sync after editing SVGs with `npm run sync:wireframes`.
 
 ## Local dev

@@ -76,7 +76,7 @@ if (readiness.senderReady !== true) log("[stage2] senderReady is false — the P
 const browser = await chromium.launch({ headless: process.env.HEADED !== "1" });
 log(`[browser] ${browser.version()}`);
 
-/** Every response body from the Node and the witness, for the proof audit. */
+/** Every response body from the Node, the email Worker and the witness, for the proof audit. */
 const captured = [];
 
 try {
@@ -87,11 +87,29 @@ try {
   page.on("pageerror", (error) => log(`[pageerror] ${error.message}`));
   page.on("response", async (response) => {
     const url = response.url();
-    if (!/tee\.node\.tinycloud|witness\.credentials\.org|\/api\/share\/|registry/.test(url)) return;
-    const body = await response.text().catch(() => "<unreadable>");
+    // `email.tinycloud.xyz` is the hop that decides whether the mail is sent,
+    // and it was the one hop this filter omitted: a run could trace the Node
+    // signing the authorization, then report "The email didn't go out" with
+    // nothing but a bare `502` in the console. The Worker's error body carries
+    // its refusal reason and the upstream provider's numeric status (TC-444)
+    // and no recipient data, so capturing it is what makes a delivery failure
+    // diagnosable from the artifacts alone.
+    if (!/tee\.node\.tinycloud|witness\.credentials\.org|email\.tinycloud\.xyz|\/api\/share\/|registry/.test(url)) return;
+    // Record the exchange BEFORE awaiting the body, and fill the body in later.
+    //
+    // For several of these responses `response.text()` does not settle until the
+    // browser context closes. This handler used to await it first, so those
+    // entries were pushed *after* the `finally` block had already written
+    // `network.json` — the file was missing the email Worker's response
+    // entirely, and every assertion reading `captured` raced the same promise.
+    // The bodies still arrive; they are just no longer a precondition for
+    // knowing the request happened.
+    const entry = { status: response.status(), method: response.request().method(), url, body: "" };
+    captured.push(entry);
     log(`[res ${response.status()}] ${response.request().method()} ${url}`);
-    if (/policy|invoke|share\/v2|delivery|authoriz/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
-    captured.push({ status: response.status(), method: response.request().method(), url, body: body.slice(0, 20_000) });
+    const body = await response.text().catch(() => "<unreadable>");
+    entry.body = body.slice(0, 20_000);
+    if (/policy|invoke|share\/v2|delivery|authoriz|email\.tinycloud/i.test(url)) log(`  body: ${body.slice(0, 1200)}`);
   });
 
   // Owner-share requests carry their authority in the Authorization header, so
@@ -120,7 +138,6 @@ try {
   }
 
   await signInToShare(page, { appUrl: COMPOSER_URL, log });
-  record("production OpenKey sign-in reaches the composer", true, account.address);
 
   // The owner path signs mid-compose; keep answering OpenKey from here on.
   const stopAutopilot = startOpenKeyAutopilot(page, log);
@@ -129,6 +146,11 @@ try {
     await page.evaluate(() => { window.location.hash = "#/new"; });
   }
   await page.locator("form.composer-form").waitFor({ timeout: 60_000 });
+  // Recorded here rather than immediately after `signInToShare`, where it was a
+  // hardcoded `true` that could only ever pass. The claim is "reaches the
+  // composer", so assert the composer — a signed-out page has no composer form,
+  // and an authenticated session is what puts one there.
+  record("production OpenKey sign-in reaches the composer", await page.locator("form.composer-form").count() > 0, account.address);
   await page.locator("div.content-dropzone").waitFor({ state: "visible", timeout: 60_000 });
 
   const nonce = `tc-addressed-${crypto.randomUUID()}`;
@@ -160,11 +182,11 @@ try {
   await page.screenshot({ path: resolve(RUN_DIR, "composer.png"), fullPage: true });
 
   // Delivery is a second, explicit gesture: the composer creates the link, then
-  // offers "Send by email…". Nothing is mailed until it is clicked.
+  // offers "Notify recipient". Nothing is requested until it is clicked.
   if (state === "created") {
-    const send = page.getByRole("button", { name: "Send by email…" });
+    const send = page.getByRole("button", { name: "Notify recipient" });
     const sendVisible = await send.isVisible().catch(() => false);
-    record('the result screen offers "Send by email…" for an addressed share', sendVisible);
+    record('the result screen offers "Notify recipient" for an addressed share', sendVisible);
     if (sendVisible) {
       await send.click();
       await page.waitForFunction(
@@ -174,7 +196,7 @@ try {
       ).catch(() => {});
       const deliveryStatus = (await page.locator("span.notification-status").textContent().catch(() => "")) ?? "";
       log(`[composer] delivery status: ${JSON.stringify(deliveryStatus)}`);
-      record("the composer reports the email was queued", deliveryStatus.startsWith("Email queued"), deliveryStatus);
+      record("the composer reports the invitation was requested", deliveryStatus.startsWith("Invitation requested"), deliveryStatus);
     }
   }
 
@@ -200,13 +222,42 @@ try {
     record("the Node returned a delivery authorization", false, "no response body containing openCredentialsAudience was observed");
   }
 
-  const sendResponse = captured.find((entry) => /witness\.credentials\.org\/share\/v2/.test(entry.url));
-  record("the witness accepted the send", sendResponse?.status === 200, sendResponse === undefined ? "no POST to the witness was made" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+  // Addressed delivery goes to OpenCredentials, which mints the invitation
+  // claim material before requesting provider delivery. The legacy Worker
+  // cannot own this path because its delivered link contains only `k`.
+  //
+  // Polled, not read once: the `response` handler pushes to `captured` only
+  // after `await response.text()` resolves, so reading the array the moment the
+  // composer reports "queued" races the capture and finds nothing. The first
+  // version of this check did exactly that and reported no POST even though
+  // the response arrived immediately afterward.
+  const sendDeadline = Date.now() + 30_000;
+  let sendResponse;
+  for (;;) {
+    sendResponse = captured.find((entry) => entry.direction !== "request" && /witness\.credentials\.org\/share\/v2/.test(entry.url));
+    if (sendResponse !== undefined || Date.now() >= sendDeadline) break;
+    await page.waitForTimeout(500);
+  }
+  record("OpenCredentials accepted the invitation request", sendResponse?.status === 202, sendResponse === undefined ? "no POST to OpenCredentials was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
   log(`[stage2] polling ${recipient.address}`);
-  const { message, text } = await waitForMessage(recipient.inbox, () => true, { timeoutMs: 300_000, log });
-  record("the invitation email actually arrived in the Mailinator inbox", true, `from=${message.from} subject=${JSON.stringify(message.subject)}`);
+  // The predicate used to be `() => true`, which accepts ANY message that lands
+  // in the inbox — so this proved "an email arrived", not "the invitation for
+  // this share arrived", while claiming the latter. Require the document name
+  // and a `/s/` link, both of which are known before polling starts. A stray
+  // message now keeps the poll running instead of being asserted on and then
+  // failing the link check below with a misleading message.
+  const isInvitation = (_message, body) => body.includes("stage2-proof.md") && body.includes("/s/");
+  const { message, text } = await waitForMessage(recipient.inbox, isInvitation, { timeoutMs: 300_000, log });
+  // Not a hardcoded `true`: `waitForMessage` throws on timeout, but that only
+  // proves *something* matched. Re-assert the identity here so the reported
+  // check is the one that was actually made.
+  record(
+    "the invitation email actually arrived in the Mailinator inbox",
+    isInvitation(message, text) && /tinycloud/i.test(String(message.from)),
+    `from=${message.from} subject=${JSON.stringify(message.subject)}`,
+  );
   writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
 
   const links = extractUrls(text).filter((url) => url.includes("/s/"));
@@ -222,11 +273,30 @@ try {
   const verify = recipientPage.getByRole("button", { name: /verify and open|open document/i });
   await verify.waitFor({ timeout: 60_000 });
   await verify.click();
-  await recipientPage.locator("section.viewer-content, button.viewer-download").waitFor({ timeout: 180_000 });
 
-  const frames = [];
-  for (const frame of recipientPage.frames()) frames.push(await frame.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
-  const rendered = frames.join("\n");
+  // `section.viewer-content` ships with the document, so waiting for it returned
+  // in well under a second while the page still read "Checking…" — the 180s
+  // budget never applied and the nonce assertion below ran against a
+  // still-loading page. Wait for a terminal state instead: the nonce rendered
+  // anywhere (including inside the viewer's frames), or the claim visibly
+  // failing. Whichever arrives first is the answer; the timeout is now real.
+  const readRendered = async () => {
+    const frames = [];
+    for (const frame of recipientPage.frames()) frames.push(await frame.evaluate(() => document.body?.innerText ?? "").catch(() => ""));
+    return frames.join("\n");
+  };
+  const deadline = Date.now() + 180_000;
+  let rendered = "";
+  for (;;) {
+    rendered = await readRendered();
+    if (rendered.includes(nonce)) break;
+    if (/something went wrong|ask the sender for a fresh link|link has expired|no longer available/i.test(rendered)) {
+      log("[recipient] the page reached a failure state; not waiting out the rest of the budget");
+      break;
+    }
+    if (Date.now() >= deadline) break;
+    await recipientPage.waitForTimeout(2_000);
+  }
   record("the recipient reads the exact shared document", rendered.includes(nonce), `nonce ${nonce}`);
   writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), rendered);
   await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient.png"), fullPage: true });

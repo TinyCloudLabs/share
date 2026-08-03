@@ -72,6 +72,7 @@ export const AUTHORIZATION_KEYS = [
 ] as const;
 
 const AUTHORIZATION_KEY_SET = new Set<string>(AUTHORIZATION_KEYS);
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,256}$/;
 
 /**
  * Every reason this service refuses to send. They are distinguishable on
@@ -375,7 +376,8 @@ export async function verifyDeliveryAuthorization(
   if (
     typeof jti !== "string" ||
     !B64URL_16.test(jti) ||
-    idempotencyKey !== jti ||
+    typeof idempotencyKey !== "string" ||
+    !IDEMPOTENCY_KEY.test(idempotencyKey) ||
     reportAbuseToken !== jti ||
     typeof deliveryEmail !== "string" ||
     deliveryEmail.length > 254 ||

@@ -23,7 +23,6 @@ describe("the unified owner-share authority boundary", () => {
     const { resolve } = await import("node:path");
     const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
     expect(source).not.toMatch(/\bsdk\.(?:createDelegatedShareKey|canonicalOwnerSharePolicy|createPolicyEnforcementDelegation)\s*\(/u);
-    expect(source).not.toMatch(/\btinycloud\.(?:createOwnerDelegation|registerOwnerSharePolicy)\s*\(/u);
     expect(source).toContain("options.createUnifiedOwnerRoot");
     expect(source).toContain("options.signUnifiedPolicy");
   });

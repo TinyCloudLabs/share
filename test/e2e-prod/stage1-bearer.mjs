@@ -28,6 +28,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare } from "./lib/openkey.mjs";
+import { redactString } from "./lib/redact.mjs";
 import { DEEP_TRACE } from "./lib/deep-trace.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -39,8 +40,9 @@ const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
 mkdirSync(RUN_DIR, { recursive: true });
 const lines = [];
 const log = (line) => {
-  console.log(line);
-  lines.push(`${new Date().toISOString()} ${line}`);
+  const safe = redactString(line);
+  console.log(safe);
+  lines.push(`${new Date().toISOString()} ${safe}`);
   writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
 };
 
@@ -140,7 +142,15 @@ try {
   }
 
   await signInToShare(senderPage, { appUrl: COMPOSER_URL, log });
-  record("production OpenKey sign-in reaches the sender app", true, account.address);
+  // Not a hardcoded `true`. This leaned on `signInToShare` throwing, so the
+  // check could only ever pass and told you nothing about what it names. The
+  // claim is "reaches the sender app", so assert the composer form — a
+  // signed-out page has none.
+  record(
+    "production OpenKey sign-in reaches the sender app",
+    await senderPage.locator("form.composer-form").count() > 0,
+    account.address,
+  );
 
   /** Drive the composer once and return the URL the app handed the clipboard. */
   async function createBearerShare({ filename, bytes, mimeType, denyClipboard = false }) {
@@ -220,6 +230,23 @@ try {
   const manualVisible = (await manualField.count()) > 0;
   record("clipboard denial surfaces the manual-copy affordance", manualVisible, manualVisible ? (await senderPage.locator("p.manual-copy-help").textContent())?.trim() : "div.manual-copy-field never appeared");
 
+  // `deniedParsed` gated three security checks below without ever being
+  // asserted, so a malformed denied-path URL made them VANISH — and because the
+  // summary prints `passed/results.length`, the denominator shrinks with them
+  // and the run still reports "all passed". A skipped check must not be
+  // indistinguishable from a passing one.
+  record(
+    "the clipboard-denied path produced a parseable share link",
+    deniedParsed !== null,
+    deniedParsed === null ? `unparseable: ${String(deniedUrl).replace(/#k=.*/, "#k=<redacted>")}` : "shape ok",
+  );
+  if (!manualVisible || deniedParsed === null) {
+    record(
+      "the clipboard-denied DOM and copy-gesture checks ran",
+      false,
+      `skipped: manualVisible=${manualVisible} parsed=${deniedParsed !== null}`,
+    );
+  }
   if (manualVisible && deniedParsed !== null) {
     const targetText = await senderPage.locator("span.manual-copy-target").textContent();
     record(
@@ -245,7 +272,11 @@ try {
     );
   }
 
-  await senderContext.storageState({ path: resolve(RUN_DIR, "sender-storage.json") });
+  const storage = await senderContext.storageState();
+  writeFileSync(resolve(RUN_DIR, "sender-storage.redacted.json"), JSON.stringify({
+    origins: storage.origins.map((origin) => ({ origin: origin.origin, localStorageKeys: origin.localStorage.map((entry) => entry.name) })),
+    cookies: storage.cookies.map(({ name, domain, path, expires }) => ({ name, domain, path, expires })),
+  }, null, 2));
 
   // ---------------------------------------------------------- recipient
   /**

@@ -1,4 +1,4 @@
-import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-sdk";
+import { ShareRecipientClient, type SharePresentationMaterial as PolicyPresentationMaterial, type SharePolicyChallenge as PolicyChallenge } from "@tinycloud/share-sdk";
 import type { TrustedNode } from "../email-share/protocol.js";
 import { fromBase64Url, toBase64Url, type ShareEnvelopeV2, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { digestBytes } from "../email-share/node-verifier.js";
@@ -71,21 +71,16 @@ export function recipientFailureMessage(error: unknown): string {
   return RECIPIENT_FAILURE[recipientFailureKind(error)];
 }
 
-async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string, version = 2): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string }> {
+export async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string, version = 2): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string; readonly proof?: Record<string, unknown> }> {
   if (version === 3) {
     const etag = response.headers.get("etag") ?? undefined;
-    if (expectedAction === "get") {
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      return { value: {}, bytes, mediaType: response.headers.get("content-type") ?? "application/octet-stream", ...(etag === undefined ? {} : { etag }) };
-    }
+    if (expectedAction === "get") return { value: {}, bytes: new Uint8Array(await response.arrayBuffer()), mediaType: response.headers.get("content-type") ?? "application/octet-stream", ...(etag === undefined ? {} : { etag }) };
     if (expectedAction === "list") {
       const entries = await response.json() as unknown;
       if (!Array.isArray(entries)) throw fail("malformed", "v3 list response is invalid");
       return { value: { entries, nextCursor: response.headers.get("x-tinycloud-next-cursor") } };
     }
-    if (expectedAction === "metadata") {
-      return { value: {}, metadata: Object.fromEntries(response.headers.entries()), ...(etag === undefined ? {} : { etag }) };
-    }
+    if (expectedAction === "metadata") return { value: {}, metadata: Object.fromEntries(response.headers.entries()), ...(etag === undefined ? {} : { etag }) };
     return { value: {}, ...(etag === undefined ? {} : { etag }) };
   }
   const contentType = response.headers.get("content-type");
@@ -95,12 +90,12 @@ async function nativePayload(response: Response, expectedAction: "get" | "metada
   const object = value as Record<string, unknown>;
   const action = expectedAction === "get" ? "tinycloud.kv/get" : expectedAction === "metadata" ? "tinycloud.kv/metadata" : expectedAction === "list" ? "tinycloud.kv/list" : "tinycloud.kv/put";
   const allowed = expectedAction === "get"
-    ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag"]
+    ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag", "proof"]
     : expectedAction === "metadata"
-      ? ["type", "version", "action", "resource", "metadata", "etag"]
+      ? ["type", "version", "action", "resource", "metadata", "etag", "proof"]
     : expectedAction === "list"
       ? ["type", "version", "action", "resource", "entries", "nextCursor"]
-      : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType"];
+      : ["type", "version", "action", "resource", "etag", "bodyDigest", "contentType", "proof"];
   if (Object.keys(object).some((key) => !allowed.includes(key))) throw fail("malformed", "native response has unknown fields");
   const required = expectedAction === "get"
     ? ["type", "version", "action", "resource", "mediaType", "content", "bodyDigest", "etag"]
@@ -112,11 +107,11 @@ async function nativePayload(response: Response, expectedAction: "get" | "metada
   if (required.some((key) => !Object.hasOwn(object, key)) || object.type !== "TinyCloudShareInvokeResponse" || object.version !== 2 || object.action !== action || object.resource !== expectedResource) throw fail("malformed", "native response binding is invalid");
   if (expectedAction === "list") {
     if (!Array.isArray(object.entries) || (object.nextCursor !== null && typeof object.nextCursor !== "string")) throw fail("malformed", "native response entries are invalid");
-    return { value: { entries: object.entries, nextCursor: object.nextCursor } };
+    return { value: { entries: object.entries, nextCursor: object.nextCursor }, ...(isProof(object.proof) ? { proof: object.proof } : {}) };
   }
   if (expectedAction === "metadata") {
     if (typeof object.metadata !== "object" || object.metadata === null || Array.isArray(object.metadata) || Object.entries(object.metadata).some(([key, value]) => key.length === 0 || key.length > 128 || /[\u0000-\u001f\u007f]/.test(key) || typeof value !== "string" || value.length > 1024 || /[\u0000-\u001f\u007f]/.test(value)) || (object.etag !== null && typeof object.etag !== "string")) throw fail("malformed", "native response metadata is invalid");
-    return { value: object, metadata: object.metadata as Record<string, string>, ...(typeof object.etag === "string" ? { etag: object.etag } : {}) };
+    return { value: object, metadata: object.metadata as Record<string, string>, ...(typeof object.etag === "string" ? { etag: object.etag } : {}), ...(isProof(object.proof) ? { proof: object.proof } : {}) };
   }
   if (typeof object.bodyDigest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(object.bodyDigest)) throw fail("malformed", "native response digest is invalid");
   if (expectedAction === "get") {
@@ -124,10 +119,14 @@ async function nativePayload(response: Response, expectedAction: "get" | "metada
     let bytes: Uint8Array;
     try { bytes = fromBase64Url(object.content); } catch { throw fail("malformed", "native response content is invalid"); }
     if (toBase64Url(bytes) !== object.content || bytes.length > 100 * 1024 * 1024 || object.bodyDigest !== await digestBytes(bytes) || (object.etag !== null && typeof object.etag !== "string")) throw fail("malformed", "native response content binding is invalid");
-    return { value: object, bytes, mediaType: object.mediaType, ...(typeof object.etag === "string" ? { etag: object.etag } : {}) };
+    return { value: object, bytes, mediaType: object.mediaType, ...(typeof object.etag === "string" ? { etag: object.etag } : {}), ...(isProof(object.proof) ? { proof: object.proof } : {}) };
   }
   if (typeof object.etag !== "string" || typeof object.contentType !== "string" || (expectedBodyDigest !== undefined && object.bodyDigest !== expectedBodyDigest) || (expectedContentType !== undefined && object.contentType !== expectedContentType)) throw fail("malformed", "native response put fields are invalid");
-  return { value: object, etag: object.etag };
+  return { value: object, etag: object.etag, ...(isProof(object.proof) ? { proof: object.proof } : {}) };
+}
+
+function isProof(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && typeof (value as Record<string, unknown>).alg === "string" && typeof (value as Record<string, unknown>).kid === "string" && typeof (value as Record<string, unknown>).signature === "string";
 }
 
 /** One recorded viewer position, restored on Back/Forward. */
@@ -198,11 +197,17 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
   });
 
   const showFailure = (error: unknown): void => {
-    // Log only the bounded category. Raw exceptions can contain resource
-    // paths, recipient details, or transport URLs and must not cross this
-    // privacy boundary.
+    // Log only bounded categories. Raw exception *messages* can contain
+    // resource paths, recipient details, or transport URLs and must not cross
+    // this privacy boundary — but the error's constructor name is a class
+    // identifier, never a value, and it is the difference between "the node's
+    // proof or clock was rejected" (`NodeVerificationError`) and "something
+    // else threw". Without it every client-side failure in the claim is the
+    // same `{kind: "malformed"}`, which is what `recipientFailureKind` returns
+    // for any untagged error, and the whole claim path is untagged.
     console.debug("tinycloud share: recipient request failed", {
       kind: error instanceof ArtifactBundleError ? `artifact-${error.kind}` : recipientFailureKind(error),
+      name: error instanceof Error ? error.name : typeof error,
     });
     status.setAttribute("role", "alert");
     status.textContent = error instanceof ArtifactBundleError ? ARTIFACT_FAILURE[error.kind] : recipientFailureMessage(error);
@@ -215,7 +220,7 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
   open.addEventListener("click", () => {
     open.disabled = true; showProgress("Checking…");
     void (async () => {
-      const client = new ShareRecipientClient({ nodeOrigin: options.nodeOrigin, trustedNode: options.trustedNode, holderDid: options.holderDid, envelope: input.envelope, shareCid: input.shareCid, buildPresentation: options.buildPresentation, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+      const client = new ShareRecipientClient({ nodeOrigin: options.nodeOrigin, trustedNode: options.trustedNode, holderDid: options.holderDid, envelope: input.envelope, buildPresentation: async ({ challenge, envelope, policy }) => options.buildPresentation({ challenge, envelope, policy }) as Promise<PolicyPresentationMaterial>, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
       const session = await client.establishPolicySession();
       showProgress("Opening…");
       // The session response narrows the first operation, while the signed

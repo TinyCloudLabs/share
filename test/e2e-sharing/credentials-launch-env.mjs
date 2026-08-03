@@ -19,6 +19,15 @@ function requireString(values, name) {
   return value;
 }
 
+function requireLoopbackDeliveryEndpoint(value) {
+  let endpoint;
+  try { endpoint = new URL(value); } catch { throw new Error("resendEndpoint must be an explicit loopback URL"); }
+  const loopback = endpoint.hostname === "127.0.0.1" || endpoint.hostname === "localhost" || endpoint.hostname === "[::1]";
+  if (endpoint.protocol !== "http:" || !loopback || endpoint.port.length === 0 || endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new Error("resendEndpoint must be an explicit loopback URL");
+  }
+}
+
 // Shared by the migrate.sh and readiness-check.sh invocations, and by the
 // witness process itself: all three must observe the identical durable-
 // postgres pool/timeout/migrations/freshness-file contract.
@@ -37,11 +46,12 @@ export function buildMigrationEnv({ postgresUrl, postgresCaCert, migrationsDir, 
 
 export function buildCredentialsLaunchEnv({
   tempRoot, credentialsPort, corsOrigin, dstackSocket, didWeb, trustBundleJson, shareUrl,
-  resendApiKey, resendWebhookSecret, postgresUrl, postgresCaCert, migrationsDir, readinessFile,
+  resendApiKey, resendWebhookSecret, resendEndpoint, postgresUrl, postgresCaCert, migrationsDir, readinessFile,
   readinessMaxAgeSeconds = 30, keyDerivationVersion = 1,
 }) {
-  const values = { tempRoot, corsOrigin, dstackSocket, didWeb, trustBundleJson, shareUrl, resendApiKey, resendWebhookSecret };
+  const values = { tempRoot, corsOrigin, dstackSocket, didWeb, trustBundleJson, shareUrl, resendApiKey, resendWebhookSecret, resendEndpoint };
   for (const name of Object.keys(values)) requireString(values, name);
+  requireLoopbackDeliveryEndpoint(resendEndpoint);
   if (!Number.isInteger(credentialsPort) || credentialsPort <= 0) throw new Error("credentialsPort must be a positive integer");
   return {
     TMPDIR: tempRoot,
@@ -55,6 +65,7 @@ export function buildCredentialsLaunchEnv({
     SHARE_EMAIL_SHARE_URL: shareUrl,
     RESEND_API_KEY: resendApiKey,
     RESEND_WEBHOOK_SECRET: resendWebhookSecret,
+    SHARE_EMAIL_RESEND_ENDPOINT: resendEndpoint,
     SHARE_EMAIL_KEY_DERIVATION_VERSION: String(keyDerivationVersion),
     ...buildMigrationEnv({ postgresUrl, postgresCaCert, migrationsDir, readinessFile, readinessMaxAgeSeconds }),
   };

@@ -6,8 +6,6 @@ import {
   shareEnvelopeV3Schema,
   unsignedShareEnvelopeV3Schema,
   toBase64Url,
-  verifyCompactUcanAuthorization,
-  signCompactUcanAuthorization,
   type ShareEnvelopeV3,
   type UnifiedContentSource,
   type UnifiedPolicy,
@@ -15,6 +13,10 @@ import {
   type UnifiedRoot,
   type UnsignedShareEnvelopeV3,
 } from "@tinycloud/share-envelope";
+import {
+  parseCompactUcanAuthorization as verifyCompactUcanAuthorization,
+  signCompactUcanAuthorization,
+} from "@tinycloud/sdk-core/policy";
 import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
 import type { ResourceSelector, RecipientMatcher, ShareAction } from "@tinycloud/share-envelope";
@@ -185,6 +187,7 @@ function rootFromDelegation(value: PortableDelegationLike, input: OwnerRootInput
   const authorization = value.delegationHeader.Authorization.replace(/^Bearer\s+/i, "");
   const compact = verifyCompactUcanAuthorization(authorization, value.cid);
   const fact = compact.payload.fct[0];
+  if (fact === undefined) throw new TypeError("owner root signed projection mismatch");
   const expectedAttenuation = attenuationForCapabilities(input.capabilities);
   const principal = compact.payload.iss.split("#", 1)[0];
   const expectedMode = input.role === "policy-authority" ? "policy-source" : "conditional-mint";
@@ -334,6 +337,7 @@ export async function claimUnifiedDelegation(input: UnifiedClaimTransport & { re
   if (typeof value.sessionCid !== "string") throw new Error("v3 policy delegation CID is missing");
   const compact = verifyCompactUcanAuthorization(value.authorization, value.sessionCid);
   const fact = compact.payload.fct[0];
+  if (fact === undefined) throw new Error("v3 policy delegation signed binding mismatch");
   if (compact.payload.aud !== input.recipientDid
     || fact.recipientDid !== input.recipientDid
     || fact.policyCid !== input.policyCid
@@ -383,8 +387,10 @@ export async function invokeUnifiedDelegation(input: {
   const fetchFn = input.fetchFn ?? globalThis.fetch.bind(globalThis);
   const session = verifyCompactUcanAuthorization(input.sessionAuthorization, input.sessionCid);
   if (session.payload.aud !== input.recipientDid) throw new Error("v3 policy session recipient mismatch");
+  const sessionFact = session.payload.fct[0];
+  if (sessionFact === undefined) throw new Error("v3 policy session facts are missing");
   const now = input.now ?? Math.floor(Date.now() / 1000);
-  let facts: Readonly<Record<string, unknown>> = { type: "tinycloud.policy.invocation/v1", policyCid: session.payload.fct[0].policyCid, sessionCid: session.cid };
+  let facts: Readonly<Record<string, unknown>> = { type: "tinycloud.policy.invocation/v1", policyCid: sessionFact.policyCid, sessionCid: session.cid };
   if (input.action === "tinycloud.encryption/decrypt") {
     if (input.request === undefined || input.request instanceof Uint8Array) throw new Error("decrypt invocation requires the canonical request body");
     const body = input.request;

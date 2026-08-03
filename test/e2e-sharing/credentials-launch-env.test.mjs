@@ -12,6 +12,7 @@ const baseArgs = {
   shareUrl: "https://share.tinycloud.xyz",
   resendApiKey: `re_${"a".repeat(32)}`,
   resendWebhookSecret: "whsec_AAAAAAAAAAAAAAAAAAAAAAAA",
+  resendEndpoint: "http://127.0.0.1:4124/emails",
   postgresUrl: "postgres://share_email@db.localhost:55123/postgres?sslmode=verify-full",
   postgresCaCert: "/tmp/example-tempRoot/pg-ca.pem",
   migrationsDir: "/opt/opencredentials/deploy/share-email/migrations",
@@ -39,6 +40,7 @@ test("buildCredentialsLaunchEnv wires KEYS_TYPE=dstack, the simulator socket, an
   assert.equal(env.SHARE_EMAIL_TRUST_BUNDLE_JSON, baseArgs.trustBundleJson);
   assert.equal(env.RESEND_API_KEY, baseArgs.resendApiKey);
   assert.equal(env.RESEND_WEBHOOK_SECRET, baseArgs.resendWebhookSecret);
+  assert.equal(env.SHARE_EMAIL_RESEND_ENDPOINT, baseArgs.resendEndpoint);
   assert.equal(env.DATABASE_URL, baseArgs.postgresUrl);
   assert.equal(env.DATABASE_POOL_MAX, "8");
   assert.equal(env.SHARE_EMAIL_KEY_DERIVATION_VERSION, "1");
@@ -55,4 +57,10 @@ test("buildCredentialsLaunchEnv never selects the fixture/local-key composition"
 test("buildCredentialsLaunchEnv rejects a non-positive-integer port", () => {
   assert.throws(() => buildCredentialsLaunchEnv({ ...baseArgs, credentialsPort: 0 }));
   assert.throws(() => buildCredentialsLaunchEnv({ ...baseArgs, credentialsPort: "4123" }));
+});
+
+test("buildCredentialsLaunchEnv rejects every non-loopback delivery endpoint", () => {
+  assert.throws(() => buildCredentialsLaunchEnv({ ...baseArgs, resendEndpoint: "https://api.resend.com/emails" }));
+  assert.throws(() => buildCredentialsLaunchEnv({ ...baseArgs, resendEndpoint: "http://example.com:4124/emails" }));
+  assert.throws(() => buildCredentialsLaunchEnv({ ...baseArgs, resendEndpoint: "http://127.0.0.1/emails" }));
 });

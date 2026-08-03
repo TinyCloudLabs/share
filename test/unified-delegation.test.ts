@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
-import { canonicalize, didKeyFromEd25519PublicKey, shareEnvelopeV3Schema, signCompactUcanAuthorization, toBase64Url, verifyCompactUcanAuthorization, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { canonicalize, didKeyFromEd25519PublicKey, shareEnvelopeV3Schema, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { parseCompactUcanAuthorization as verifyCompactUcanAuthorization, signCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 import { ShareRecipientClient } from "@tinycloud/share-sdk";
 import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
 
@@ -196,7 +197,7 @@ describe("TC-405 unified delegation", () => {
       return Response.json({ ...unsigned, nodeSignature: toBase64Url(ed25519.sign(new TextEncoder().encode(canonicalize(unsigned)), nodeKey)) });
     };
     const envelope = { version: 3, target: { nodeAudience: nodeDid }, encryptionNetwork: networkId, contentSource: { keyVersion: 1, encryptedSymmetricKeyDigestHex: encryptedSymmetricKeyHash }, metadata: { mediaType: "text/plain" } } as any;
-    const client = new ShareRecipientClient({ nodeOrigin: "https://node.example.com", envelope, shareCid: "share", holderDid: recipientDid, trustedNode: {} as any, fetchFn, buildPresentation: async () => ({}) });
+    const client = new ShareRecipientClient({ nodeOrigin: "https://node.example.com", envelope, holderDid: recipientDid, trustedNode: {} as any, fetchFn, buildPresentation: async () => ({ holderDid: recipientDid, credential: "fixture", holderBinding: {}, proof: {} }) });
     Object.assign(client as any, { session: { sessionId: session.cid }, v3Authorization: session.authorization, nativeSigner: async (bytes: Uint8Array) => ed25519.sign(bytes, recipientKey) });
     const opened = await client.decryptV3Content(stored);
     expect(new TextDecoder().decode(opened.bytes)).toBe("hello");

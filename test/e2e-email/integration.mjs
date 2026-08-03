@@ -566,8 +566,8 @@ async function runBrowserCase(browser, targets, fixture, issuerPublicKey, caseIn
   sender.on("requestfailed", (request) => console.error(`sender request failed: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`));
   sender.on("response", (response) => {
     const responseUrl = new URL(response.url());
-    if (response.request().method() === "POST" && responseUrl.pathname === "/v1/share-email/invitations") invitationStatuses.push(response.status());
-    if (response.request().method() === "OPTIONS" || (response.status() < 400 && !responseUrl.pathname.includes("/v1/share-email/invitations") && !responseUrl.pathname.includes("/share/v1/invitations/authorize"))) return;
+    if (response.request().method() === "POST" && (responseUrl.pathname === "/share/v2" || responseUrl.pathname === "/v1/share-email/invitations")) invitationStatuses.push(response.status());
+    if (response.request().method() === "OPTIONS" || (response.status() < 400 && !responseUrl.pathname.includes("/share/v2") && !responseUrl.pathname.includes("/v1/share-email/invitations") && !responseUrl.pathname.includes("/share/v1/invitations/authorize"))) return;
     console.error(`sender response: ${response.request().method()} ${response.status()} ${responseUrl.pathname}`);
   });
   await installInterception(sender, targets, {});

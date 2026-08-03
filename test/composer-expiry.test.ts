@@ -53,8 +53,8 @@ const hoisted = vi.hoisted(() => ({
 
 // External module boundary: the share SDK that mints the addressed link. The
 // input it receives is exactly the contract this test is protecting.
-vi.mock("@tinycloud/share-sdk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@tinycloud/share-sdk")>();
+vi.mock("@tinycloud/share-app-compat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tinycloud/share-app-compat")>();
   return {
     ...actual,
     createAddressedShareLink: async (input: Record<string, unknown>) => {
@@ -68,7 +68,6 @@ vi.mock("@tinycloud/share-sdk", async (importOriginal) => {
     },
   };
 });
-
 // External module boundary: deployment config. Only the loader is overridden.
 vi.mock("../src/email-share/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/email-share/config.js")>();
@@ -270,8 +269,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("addressed share creation honors the sender's expiry choice", () => {
-  it("carries the selected 24-hour expiry through the real createPolicyShare path", async () => {
+describe("legacy capability-only addressed publication is disabled", () => {
+  it("requires the canonical authenticated owner path", async () => {
     const capability = await domainCapability(EXPIRY_24H);
     const root = document.createElement("div");
     document.body.append(root);
@@ -299,15 +298,12 @@ describe("addressed share creation honors the sender's expiry choice", () => {
     // The sender's choice reached the SDK boundary. (A hardcoded 7-day
     // lifetime is caught earlier still, by the composer's own policy-binding
     // check, so this list comes back empty instead of holding 2030-08-03.)
-    expect(hoisted.addressedLinkInputs.map((input) => input.expiresAt)).toEqual([EXPIRY_24H]);
-    expect(state).toBe("created");
-    expect(captured).toBeDefined();
-    // The model and the persisted share agree with it.
-    expect(captured!.model.expiresAt).toBe(EXPIRY_24H);
-    expect(captured!.share.expiresAt).toBe(EXPIRY_24H);
+    expect(hoisted.addressedLinkInputs).toEqual([]);
+    expect(state).toMatch(/^error-/);
+    expect(captured).toBeUndefined();
   });
 
-  it("clamps the addressed expiry to the signed capability boundary", async () => {
+  it("does not fall back to a host-authored domain envelope", async () => {
     const capability = await domainCapability(CAPABILITY_BOUNDARY, { expiryMax: CAPABILITY_BOUNDARY });
     const root = document.createElement("div");
     document.body.append(root);
@@ -333,217 +329,54 @@ describe("addressed share creation honors the sender's expiry choice", () => {
 
     const state = await settle(root);
 
-    expect(hoisted.addressedLinkInputs.map((input) => input.expiresAt)).toEqual([CAPABILITY_BOUNDARY]);
-    expect(state).toBe("created");
-    expect(captured).toBeDefined();
-    // The sender's own choice is still what the model recorded; only the
-    // capability boundary shortened the link.
-    expect(captured!.model.expiresAt).toBe(EXPIRY_30D);
-    expect(captured!.share.expiresAt).toBe(CAPABILITY_BOUNDARY);
+    expect(hoisted.addressedLinkInputs).toEqual([]);
+    expect(state).toMatch(/^error-/);
+    expect(captured).toBeUndefined();
   });
 });
 
+
 /**
- * The bug this comment used to describe is fixed (TC-338).
- * `createOwnerPolicyShare` validated the not-yet-signed envelope with
- * `shareEnvelopeV2Schema`, which requires `signature`, so the parse always
- * threw `ZodError: signature Required` right after the enforcement delegation
- * was minted — before the envelope, the share URL, or the return value existed.
- * The unsigned envelope is now checked with `unsignedShareEnvelopeV2Schema` and
- * the signed one with `shareEnvelopeV2Schema`.
- *
- * So this test now runs the owner ceremony to completion and pins the expiry
- * everywhere it is bound: the owner delegation, the canonical owner policy, the
- * policy-enforcement delegation, AND (as the old comment asked for) the emitted
- * envelope plus the returned/persisted share. Reintroducing the parse bug stops
- * the flow before `persistShare`, so the envelope assertions below fail.
+ * TC-405 removes the v2 owner ceremony covered by the former tests below.
+ * Release 1 intentionally supports one encrypted exact file; prefix-key
+ * sharing belongs to the hardening train once it has one shared wrapped-key
+ * design for every descendant.
  */
-describe("owner-policy share creation honors the sender's expiry choice", () => {
-  it("binds the selected 24-hour expiry into the owner delegation, policy, and enforcement delegation", async () => {
-    const ownerDelegationInputs: Record<string, unknown>[] = [];
-    const registrations: Record<string, unknown>[] = [];
-    const tinycloud = {
-      spaceId: "space-1",
-      did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
-      createOwnerDelegation: async (input: Record<string, unknown>) => {
-        ownerDelegationInputs.push(input);
-        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
-      },
-      registerOwnerSharePolicy: async (input: Record<string, unknown>) => {
-        registrations.push(input);
-        return { registration: { registrationCid: "bafkreiregistrationfake" } };
-      },
-      kvForSpace: () => ({ put: async () => ({ ok: true }) }),
-    } as unknown as ShareTinyCloud;
-
-    const root = document.createElement("div");
-    document.body.append(root);
-    const persisted: { readonly share: ComposerShareResult; readonly model: ShareComposerModel }[] = [];
-
-    mountShareComposer(root, {
-      openKeyAddress: "0x1234567890abcdef",
-      origin: "https://share.tinycloud.xyz",
-      onBack: () => undefined,
-      session: {} as OpenKeyShareSession,
-      tinycloud,
-      loadCapabilities: async () => [],
-      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    chooseRecipient(root, "exactEmail");
-    setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
-    chooseExpiry(root, "24h");
-    // A self-contained link keeps the registry (and its fetch) out of the test.
-    setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
-    attachFile(root, new File([new Uint8Array([1, 2, 3, 4])], "notes.txt", { type: "text/plain" }));
-    submit(root);
-
-    // The real path ran to (at least) the enforcement delegation and then
-    // settled one way or the other; see the block comment above.
-    await settle(root);
-
-    // The owner delegation is minted for exactly the chosen lifetime...
-    expect(ownerDelegationInputs).toHaveLength(1);
-    expect(ownerDelegationInputs[0]!.expiresAt).toEqual(new Date(EXPIRY_24H));
-    const expectedDecryption = {
-      networkId: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
-      action: "tinycloud.encryption/decrypt",
-    };
-    expect(ownerDelegationInputs[0]!.permissions).toEqual([
-      {
-        service: "tinycloud.kv",
-        path: expect.stringMatching(/^shares\/[^/]+\/notes\.txt$/),
-        actions: ["tinycloud.kv/get", "tinycloud.kv/metadata"],
-      },
-      {
-        service: "tinycloud.encryption",
-        path: expectedDecryption.networkId,
-        actions: [expectedDecryption.action],
-      },
-    ]);
-    expect(ownerDelegationInputs[0]).not.toHaveProperty("path");
-    expect(ownerDelegationInputs[0]).not.toHaveProperty("actions");
-    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("network.create");
-    expect(JSON.stringify(ownerDelegationInputs[0])).not.toContain("*");
-    // ...the canonical owner policy carries it...
-    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
-    expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).toBe(EXPIRY_24H);
-    expect(hoisted.owner.canonicalPolicies[0]!.decryption).toEqual(expectedDecryption);
-    // ...and so does the policy-enforcement delegation.
-    expect(hoisted.owner.enforcementInputs).toHaveLength(1);
-    expect(hoisted.owner.enforcementInputs[0]!.expiresAt).toBe(EXPIRY_24H);
-    expect(hoisted.owner.enforcementInputs[0]!.decryption).toEqual(expectedDecryption);
-    // A hardcoded 7-day lifetime would land here.
-    expect(hoisted.owner.canonicalPolicies[0]!.expiresAt).not.toBe("2030-08-03T00:00:00.000Z");
-    expect(ownerDelegationInputs[0]!.expiresAt).not.toEqual(new Date("2030-08-03T00:00:00.000Z"));
-
-    // The chosen expiry is the one the whole owner ceremony was built around,
-    // and the ceremony really ran against the injected owner client.
-    expect(hoisted.owner.canonicalPolicies[0]!.ownerDelegationCid).toBe("bafkreiownerdelegationfake");
-    expect(registrations).toHaveLength(1);
-    expect(hoisted.owner.shareKeyClears).toBe(1);
-    // TC-338: the ceremony now reaches the end. Before the schema fix the
-    // envelope parse threw and `persistShare` was never called, so this was a
-    // vacuous loop over an empty array.
-    expect(persisted).toHaveLength(1);
-    for (const entry of persisted) {
-      expect(entry.model.expiresAt).toBe(EXPIRY_24H);
-      expect(entry.share.expiresAt).toBe(EXPIRY_24H);
-    }
-
-    // And the envelope the sender's browser actually emitted is a SIGNED v2
-    // envelope that the schema recipients parse accepts — the property the
-    // broken `shareEnvelopeV2Schema.parse(unsigned)` claimed to check but
-    // could never reach.
-    const inline = parseInlineShareUrl(persisted[0]!.share.url, { expectedOrigin: "https://share.tinycloud.xyz" });
-    expect(inline.key32).toBeDefined();
-    const envelope = JSON.parse(new TextDecoder().decode(await open(inline.ciphertext, inline.key32!))) as Record<string, unknown>;
-
-    const parsed = shareEnvelopeV2Schema.parse(envelope);
-    expect(parsed.expiry).toBe(EXPIRY_24H);
-    expect(parsed.signature.signerDid).toBe(hoisted.shareKeyDid);
-    expect(parsed.signature.algorithm).toBe("Ed25519");
-    const ownerAuthority = envelope.ownerAuthority as Record<string, unknown>;
-    const outerEnvelope = ownerAuthority.outerEnvelope as Record<string, unknown>;
-    expect(outerEnvelope.decryption).toEqual(expectedDecryption);
-    // The signature covers exactly the unsigned envelope, so stripping it must
-    // leave something the unsigned schema accepts. That is the pair of parses
-    // the fixed code performs, checked against the bytes that actually shipped.
-    const { signature: _signature, ...withoutSignature } = envelope;
-    expect(unsignedShareEnvelopeV2Schema.safeParse(withoutSignature).success).toBe(true);
+describe("unified owner-policy happy-path selection", () => {
+  it("routes addressed creation through the unified v3 authority bridge", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
+    expect(source).toMatch(/return createOwnerPolicyShare\(files, model, options\)/u);
+    expect(source).toContain("options.createUnifiedOwnerRoot");
+    expect(source).toContain("options.signUnifiedPolicy");
   });
 
-  it("uploads every selected file beneath one delegated prefix with inferred read and list access", async () => {
-    const ownerDelegationInputs: Record<string, unknown>[] = [];
-    const writes: Array<{ readonly path: string; readonly bytes: Uint8Array; readonly contentType?: string }> = [];
-    const tinycloud = {
-      spaceId: "space-1",
-      did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
-      createOwnerDelegation: async (input: Record<string, unknown>) => {
-        ownerDelegationInputs.push(input);
-        return { delegationCid: "bafkreiownerdelegationfake", signedDagCbor: new Uint8Array([1, 2, 3]) };
-      },
-      registerOwnerSharePolicy: async () => ({ registration: { registrationCid: "bafkreiregistrationfake" } }),
-      kvForSpace: () => ({
-        list: async () => ({ ok: true, data: { keys: [], truncated: false } }),
-        put: async (path: string, bytes: Uint8Array, options?: { contentType?: string }) => {
-          writes.push({ path, bytes, ...(options?.contentType === undefined ? {} : { contentType: options.contentType }) });
-          return { ok: true };
-        },
-      }),
-    } as unknown as ShareTinyCloud;
+  it("rejects multi-file prefix selection before storage or policy work", async () => {
+    const put = vi.fn();
+    const persisted: ComposerShareResult[] = [];
     const root = document.createElement("div");
     document.body.append(root);
-    const persisted: { readonly share: ComposerShareResult; readonly model: ShareComposerModel }[] = [];
-
     mountShareComposer(root, {
       openKeyAddress: "0x1234567890abcdef",
       origin: "https://share.tinycloud.xyz",
       onBack: () => undefined,
       session: {} as OpenKeyShareSession,
-      tinycloud,
+      tinycloud: {
+        spaceId: "space-1",
+        did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
+        kvForSpace: () => ({ put }),
+      } as unknown as ShareTinyCloud,
       loadCapabilities: async () => [],
-      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
+      persistShare: async ({ share }) => { persisted.push(share); },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-
-    chooseRecipient(root, "exactEmail");
-    setValue(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!, "reader@example.com", "input");
-    setValue(root.querySelector<HTMLSelectElement>("select[name=format]")!, "inline", "change");
     attachFiles(root, [
       new File([new Uint8Array([1, 2, 3])], "one.bin", { type: "application/octet-stream" }),
       new File(["two"], "two.txt", { type: "text/plain" }),
     ]);
-    submit(root);
-
-    expect(await settle(root)).toBe("created");
-    expect(persisted).toHaveLength(1);
-    expect(persisted[0]!.model.resource.kind).toBe("prefix");
-    expect(persisted[0]!.model.permissions).toEqual(["read", "list"]);
-
-    expect(ownerDelegationInputs).toHaveLength(1);
-    const permissions = ownerDelegationInputs[0]!.permissions as Array<Record<string, unknown>>;
-    expect(permissions[0]!.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
-    const delegatedPath = permissions[0]!.path as string;
-    expect(delegatedPath).toMatch(/^shares\/[^/]+\/$/);
-    expect(permissions[1]).toEqual({
-      service: "tinycloud.encryption",
-      path: "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef:default",
-      actions: ["tinycloud.encryption/decrypt"],
-    });
-    expect(JSON.stringify(permissions)).not.toContain("network.create");
-    expect(JSON.stringify(permissions)).not.toContain("*");
-
-    expect(hoisted.owner.canonicalPolicies).toHaveLength(1);
-    const policy = hoisted.owner.canonicalPolicies[0]!;
-    expect(policy.resource).toEqual({ kind: "prefix", path: delegatedPath.slice(0, -1) });
-    expect(policy.actions).toEqual(["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"]);
-    expect(writes.map((write) => write.path).sort()).toEqual([
-      `${delegatedPath}one.bin`,
-      `${delegatedPath}two.txt`,
-    ]);
-    expect(Array.from(writes.find((write) => write.path.endsWith("/one.bin"))?.bytes ?? [])).toEqual([1, 2, 3]);
-    expect(Array.from(writes.find((write) => write.path.endsWith("/two.txt"))?.bytes ?? [])).toEqual(Array.from(new TextEncoder().encode("two")));
+    expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-file");
+    expect(put).not.toHaveBeenCalled();
+    expect(persisted).toEqual([]);
   });
 });

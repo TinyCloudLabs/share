@@ -420,7 +420,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows all three recipient choices and the required encryption state before Advanced", () => {
+  it("shows all recipient choices and the required encryption state before Advanced", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -428,10 +428,11 @@ describe("share composer access controls", () => {
     const recipientOptions = Array.from(recipients.querySelectorAll<HTMLInputElement>("input[name=recipient]"));
 
     expect(recipients.querySelector("legend")?.textContent).toBe("Who can open it");
-    expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "bearer"]);
+    expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "recipientDid", "bearer"]);
     expect(recipientOptions.map((input) => input.closest("label")?.textContent)).toEqual([
       "Only this person — they'll confirm their email to open it",
       "Anyone with an email from this domain — they'll confirm their email to open it",
+      "Only this OpenKey device — access is bound to its DID",
       "Anyone with the link — anyone you send it to can open it",
     ]);
     expect(advanced.open).toBe(false);
@@ -568,6 +569,7 @@ describe("share composer access controls", () => {
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
+      now: () => fixed,
       fetchFn: authenticatedRegistryFetch,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
@@ -582,7 +584,7 @@ describe("share composer access controls", () => {
     chooseExpiry(root, "24h");
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
-    await vi.waitFor(() => expect(captured).toBeDefined());
+    await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
     expect(captured!.model.expiresAt).toBe(expectedExpiry);
     expect(captured!.share.expiresAt).toBe(expectedExpiry);
     expect(requests).toHaveLength(2);

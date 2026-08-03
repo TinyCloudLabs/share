@@ -1,5 +1,5 @@
 import { canonicalDigest, type AuthoritativePolicyMaterial, type ContentSource, type SenderScope } from "./protocol.js";
-import { createShareLink, sendShareEmail, type ShareArtifact, type ShareLinkPolicy } from "@tinycloud/share-sdk";
+import { createShareLink, sendShareEmail, type ShareArtifact, type ShareLinkPolicy } from "@tinycloud/share-app-compat";
 import { mapTransportFailure, type ShareTransport, type TransportErrorCode } from "./transport.js";
 
 export type SenderPolicy = ShareLinkPolicy & AuthoritativePolicyMaterial;

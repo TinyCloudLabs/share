@@ -11,6 +11,7 @@
     "build:deploy": "SHARE_DEPLOY_BUILD=true vite build",
     "start:deploy": "SHARE_DEPLOY_STARTUP=true tsx src/host/production-server.ts",
     "check:deploy-config": "node scripts/validate-deploy-config.mjs",
+    "check:share-sdk-artifact": "node scripts/validate-share-sdk-artifact.mjs",
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts && vitest run packages",
     "test:e2e:email": "node test/e2e-email/integration.mjs",
@@ -30,10 +31,19 @@
   },
   "dependencies": {
     "@openkey/sdk": "^0.9.0",
+    "@tinycloud/bootstrap": "file:vendor/tinycloud-bootstrap-2.6.0.tgz",
+    "@tinycloud/node-sdk": "file:vendor/tinycloud-node-sdk-2.11.0-beta.6.tgz",
+    "@tinycloud/node-sdk-wasm": "file:vendor/tinycloud-node-sdk-wasm-1.7.5.tgz",
+    "@tinycloud/operations": "file:vendor/tinycloud-operations-0.3.2-beta.5.tgz",
+    "@tinycloud/sdk-core": "file:vendor/tinycloud-sdk-core-2.11.0-beta.7.tgz",
+    "@tinycloud/sdk-services": "file:vendor/tinycloud-sdk-services-2.11.0-beta.6.tgz",
+    "@tinycloud/web-sdk-wasm": "file:vendor/tinycloud-web-sdk-wasm-1.7.5.tgz",
     "@tinycloud/share-cli": "*",
-    "@tinycloud/share-envelope": "*",
+    "@tinycloud/share-app-compat": "*",
+    "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.2.0-beta.1-790e0e9.tgz",
+    "@tinycloud/share-envelope": "file:vendor/tinycloud-share-envelope-0.2.0-beta.0.tgz",
     "@tinycloud/share-registry": "*",
-    "@tinycloud/web-sdk": "2.11.0-beta.1",
+    "@tinycloud/web-sdk": "file:vendor/tinycloud-web-sdk-2.11.0-beta.6-bff28d8.tgz",
     "dompurify": "3.4.12",
     "mermaid": "11.16.0",
     "rehype-sanitize": "6.0.0",
@@ -51,5 +61,10 @@
     "typescript": "^5.8.3",
     "vite": "^6.0.0",
     "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "@tinycloud/sdk-core": "$@tinycloud/sdk-core",
+    "@tinycloud/share-envelope": "$@tinycloud/share-envelope",
+    "@tinycloud/share-sdk": "$@tinycloud/share-sdk"
   }
 }

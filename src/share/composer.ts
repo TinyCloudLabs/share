@@ -1,15 +1,30 @@
-import { armManualCopy, createLinkOnlyShare, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
-import { createAddressedShareLink, createShareLink, sendShareEmail } from "@tinycloud/share-sdk";
+import { armManualCopy, copyWithFallback, type CreateLinkOnlyShareOptions, type ManualCopyHandle } from "./link-only.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
-import { canonicalDigest } from "../email-share/protocol.js";
-import type { ContentSource, SenderScope } from "../email-share/protocol.js";
-import { verifyNodeProof } from "../email-share/node-verifier.js";
+import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
+import type { ContentSource } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, nativeProjectionHashHex, registerUnifiedPolicy, requestAttestedEnforcerBinding, signV3Envelope, type UnifiedOwnerRootFactory } from "./unified-delegation.js";
-import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
-import { canonicalize, computeCid, didKeyFromEd25519PublicKey, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
+
+/**
+ * Taken from the SDK rather than restated here. The hand-written copy of this
+ * shape typed `actions` as `readonly string[]`, which is wider than the SDK's
+ * own `OwnerShareAction` union — a mis-shaped policy would have compiled.
+ */
+/**
+ * The names in `OwnerSdk`, as values, so the runtime can report a skew by name.
+ * Types are erased at build time and the installed version is whatever npm
+ * resolved, so a `^` range that quietly resolves an SDK without these exports
+ * (TC-338/TC-343) still has to fail diagnosably rather than as
+ * `sdk.createDelegatedShareKey is not a function`.
+ */
+export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerSharePolicy", "createPolicyEnforcementDelegation"] as const;
+
+/** Delivery stays post-link: a missing mail bridge must never destroy a valid link. */
+export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
 
 /** Upper bound on the owner-space listing that backs the library picker. */
 export const OWNER_LIBRARY_LIMIT = 1000;
@@ -71,6 +86,12 @@ export function ownerLibraryEntries(keys: readonly string[]): readonly { readonl
 /** The Node-signed delivery receipt, as the SDK returns it. `main.ts` forwards `authorization` and `proof` verbatim. */
 export type ShareDeliveryAuthorizationReceipt = Awaited<ReturnType<ShareTinyCloud["authorizeShareDelivery"]>>;
 
+/** Which of `names` the TinyCloud session does not provide as callable methods, in `names` order. */
+export function missingTinyCloudMethods(tinycloud: unknown, names: readonly string[]): readonly string[] {
+  const record = (tinycloud ?? {}) as Record<string, unknown>;
+  return names.filter((name) => typeof record[name] !== "function");
+}
+
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { createHttpTransport } from "../email-share/transport.js";
 import {
@@ -85,6 +106,7 @@ import {
   expiryFromChoice,
   normalizeEmail,
   normalizeEmailDomain,
+  normalizeRecipientDid,
   projectCapabilities,
   validateComposerModel,
   EXPIRY_CHOICES,
@@ -102,6 +124,8 @@ export interface ComposerShareResult {
   readonly cid: string;
   readonly format: ShareLinkFormat;
   readonly expiresAt?: string;
+  /** Canonical sender history, handed to the encrypted persistence adapter. */
+  readonly record?: SenderShareRecord;
   /** The owner delegation CID backing this share, absent for bearer (possession-only) links. Revoking this CID revokes the share and every delegation derived from it. */
   readonly delegationCid?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
@@ -216,50 +240,47 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   if (model.recipient.kind !== "bearer") {
     if (options.session === undefined) throw fail("session", "addressed share has no session");
     if (model.content.kind !== "library" && files.length === 0) throw fail("content", "addressed share has no file");
-    return createPolicyShare(files, model, options);
+    return createOwnerPolicyShare(files, model, options);
   }
   if (files.length !== 1) throw fail("linkOnlyFolder", "link-only sharing supports one exact file");
   if (file === undefined) throw fail("content", "link-only share has no file");
-  const result = await createLinkOnlyShare(file, {
-    origin: options.origin,
-    allowBinary: true,
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const registryBaseUrl = `${options.registryOrigin ?? options.origin}/api/share/link-only/registry`;
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const uploadBlob = async (input: ShareUploadInput): Promise<{ readonly cid: string; readonly deleteAfter: string }> => {
+    const response = await fetchFn(`${registryBaseUrl}/blobs`, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+      headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": input.deleteAfter },
+      body: input.blob as BodyInit,
+    });
+    if (response.status === 401 || response.status === 403) throw fail("session", "your Share session is no longer authorized");
+    if (!response.ok) throw fail("save", "the Share registry rejected the encrypted blob");
+    const body = await response.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
+    if (body.cid !== input.cid || typeof body.deleteAfter !== "string") throw fail("save", "the Share registry returned an invalid upload receipt");
+    return { cid: input.cid, deleteAfter: body.deleteAfter };
+  };
+  const result = await publishShare({
+    source: bytes,
+    filename: file.name,
+    mediaType: "text/markdown",
+    target: { kind: "bearer" },
     expiresAt: new Date(model.expiresAt),
+    origin: options.origin,
+    inline: model.linkFormat === "inline",
     ...(options.now === undefined ? {} : { now: options.now }),
-    ...(options.registryOrigin === undefined ? {} : { registryOrigin: options.registryOrigin }),
-    ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+    registryBaseUrl,
+    uploadBlob,
   });
-  if (model.linkFormat === "inline") {
-    if (result.inlineEnvelopeBlob === undefined || result.inlineEnvelopeKey === undefined) throw fail("format", "link-only inline material is missing");
-    try {
-      const url = await encodeInlineShareUrl({ origin: options.origin, ciphertext: result.inlineEnvelopeBlob, key32: result.inlineEnvelopeKey });
-      return { url, cid: result.envelopeCid, format: model.linkFormat, expiresAt: result.expiry };
-    } finally {
-      result.inlineEnvelopeKey.fill(0);
-    }
-  }
-  return { url: result.url, cid: result.envelopeCid, format: model.linkFormat, expiresAt: result.expiry };
-}
-
-function bytes(value: unknown, label: string): Uint8Array {
-  if (typeof value === "string") {
-    try { return fromBase64Url(value); } catch { throw fail("internal", `${label} is invalid`); }
-  }
-  if (Array.isArray(value) && value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) return Uint8Array.from(value);
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => Number(left) - Number(right));
-    if (entries.length > 0 && entries.every(([key, item], index) => key === String(index) && typeof item === "number")) return Uint8Array.from(entries.map(([, item]) => item as number));
-  }
-  throw fail("internal", `${label} is invalid`);
-}
-
-async function digestBytes(value: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer);
-  return toBase64Url(new Uint8Array(digest));
+  return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt, record: historyRecordForPublishedShare(result) };
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
-  const file = files.length === 1 ? files[0] : undefined;
-  if (options.tinycloud !== undefined) return createOwnerPolicyShare(files, model, options);
+  return createOwnerPolicyShare(files, model, options);
+  /* Legacy host-capability addressed publication is intentionally unreachable.
   if (files.length > 1) throw fail("linkOnlyFolder", "host-capability sharing supports one exact file");
   const response = options.loadCapabilities === undefined ? await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }) : undefined;
   if (response !== undefined && !response.ok) throw fail("account", "capability list request was rejected");
@@ -271,7 +292,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
       try {
         const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(policy.policyBytes))) as unknown;
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) signedPolicy = parsed as Record<string, unknown>;
-      } catch { /* Legacy capability records use recipientEmail below. */ }
+      } catch { }
     }
     const signedMatcher = signedPolicy?.recipientMatcher;
     if (typeof signedMatcher === "object" && signedMatcher !== null && !Array.isArray(signedMatcher)) {
@@ -361,11 +382,11 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
     const policy = { policyCid: authority.policyCid, policyBytes: authority.policyBytes, policyDigest: authority.policyDigest };
     const matcher = model.encryption ? selectedMatcher : { kind: "policyDigest" as const, value: policy.policyDigest };
     const deliveryEmail = model.deliveryEmail;
-    if (deliveryEmail === undefined) throw fail("delivery", "addressed share has no delivery email");
+    if (deliveryEmail === undefined && model.recipient.kind !== "recipientDid") throw fail("delivery", "addressed share has no delivery email");
     const bytes = file === undefined ? undefined : new Uint8Array(await file.arrayBuffer());
     const artifact = await createAddressedShareLink({
       matcher,
-      deliveryEmail,
+      ...(deliveryEmail === undefined ? {} : { deliveryEmail }),
       source,
       scope: delegatedScope,
       policy,
@@ -383,6 +404,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
     });
     return { url: artifact.shareUrl, cid: artifact.shareCid, format: model.linkFormat, expiresAt: artifact.expiresAt, notify: async () => {
       if (options.notify !== undefined) {
+        if (deliveryEmail === undefined) throw fail("delivery", "addressed share has no delivery email");
         await options.notify({ share: { url: artifact.shareUrl, cid: artifact.shareCid, format: model.linkFormat, expiresAt: artifact.expiresAt }, recipient: deliveryEmail, matcher: model.recipient.kind });
         return;
       }
@@ -406,34 +428,113 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
       });
     },
   };
+  */
+}
+
+/**
+ * The browser sender is an adapter over the compiled SDK. It owns only the
+ * TinyCloud KV writes and the delivery UI; policy, delegation, envelope,
+ * encryption, and link construction remain in publishAddressedShare.
+ */
+async function createOwnerPolicyShareCanonical(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
+  const tinycloud = options.tinycloud;
+  if (tinycloud === undefined) throw fail("session", "v3 owner share has no TinyCloud session");
+  const config = await loadSharePublicConfig();
+  const spaceId = tinycloud.spaceId;
+  if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
+  const shareId = crypto.randomUUID().replaceAll("-", "");
+  const selectedSource = contentSource(model.content)?.kind === "kv" ? contentSource(model.content) as Extract<NonNullable<ReturnType<typeof contentSource>>, { kind: "kv" }> : undefined;
+  const sourcePath = selectedSource?.path.replace(/\/+$/, "");
+  const filename = contentFilename(model.content);
+  if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
+  const resourceKind = model.resource.kind;
+  const resourcePath = resourceKind === "prefix"
+    ? `shares/${shareId}`
+    : (model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
+  if (resourcePath.length === 0 || (resourceKind === "exact" && resourcePath.endsWith("/"))) throw fail("filename", "owner share resource filename is invalid");
+  const source = { kind: "kv" as const, space: spaceId, path: resourcePath, action: "tinycloud.kv/get" as const };
+  const policyActionOrder = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
+  const policyActions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => policyActionOrder.indexOf(left as typeof policyActionOrder[number]) - policyActionOrder.indexOf(right as typeof policyActionOrder[number])) as ("tinycloud.kv/get" | "tinycloud.kv/list" | "tinycloud.kv/metadata" | "tinycloud.kv/put")[];
+  const target = model.recipient.kind === "exactEmail"
+    ? { kind: "email" as const, address: model.recipient.value! }
+    : model.recipient.kind === "emailDomain"
+      ? { kind: "emailDomain" as const, domain: model.recipient.value! }
+      : { kind: "recipientDid" as const, did: model.recipient.value! };
+  const deliveryEmail = model.deliveryEmail;
+  if (selectedSource !== undefined && sourcePath !== undefined) await copySelectedSource(tinycloud, spaceId, sourcePath, resourceKind, resourcePath);
+  if (selectedSource === undefined && model.content.kind !== "library") {
+    if (files.length === 0) throw fail("content", "owner upload has no file");
+    await uploadSelectedFiles(tinycloud, spaceId, resourcePath, resourceKind, files);
+  }
+  const artifactPaths = resourceKind === "prefix" ? (selectedSource === undefined ? files.map(selectedFilePath) : []) : [];
+  const artifact = artifactPaths.length > 0 && detectHtmlArtifact(artifactPaths).kind === "html" ? "html" as const : undefined;
+  const uploadBlob = async (input: ShareUploadInput): Promise<{ readonly cid: string; readonly deleteAfter: string }> => {
+    const response = await (options.fetchFn ?? globalThis.fetch)(`${options.registryOrigin ?? config.registryOrigin}/api/share/link-only/registry/blobs`, {
+      method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer",
+      headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": input.deleteAfter }, body: input.blob as BodyInit,
+    });
+    if (!response.ok) throw fail("save", "addressed envelope upload was rejected");
+    const receipt = await response.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
+    if (receipt.cid !== input.cid || typeof receipt.deleteAfter !== "string") throw fail("save", "addressed envelope upload returned an invalid receipt");
+    return { cid: input.cid, deleteAfter: receipt.deleteAfter };
+  };
+  const published = await publishAddressedShare({
+    shareId, shareOrigin: config.shareOrigin, nodeOrigin: config.nodeOrigin, nodeAudience: config.nodeAudience, enforcerDid: config.enforcerDid, spaceId,
+    target, resource: { kind: resourceKind, path: resourcePath }, actions: model.permissions, policyActions, contentSource: source,
+    filename, mediaType: contentMediaType(model.content), byteLength: files.reduce((total, item) => total + item.size, 0),
+    ...(artifact === undefined ? {} : { artifact }), ...(deliveryEmail === undefined ? {} : { deliveryEmail }), expiresAt: new Date(model.expiresAt),
+    decryption: { networkId: ownerEncryptionNetwork(options.openKeyAddress), action: "tinycloud.encryption/decrypt" }, inline: model.linkFormat === "inline",
+    authority: {
+      ownerDid: tinycloud.did,
+      createOwnerDelegation: (input) => tinycloud.createOwnerDelegation(input),
+      registerOwnerSharePolicy: (input) => tinycloud.registerOwnerSharePolicy({ ...input, nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) } } as unknown as Parameters<ShareTinyCloud["registerOwnerSharePolicy"]>[0]),
+    },
+    upload: { uploadBlob, fetchFn: options.fetchFn ?? globalThis.fetch },
+  });
+  const record = historyRecordForPublishedShare(published);
+  return {
+    url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt, record,
+    ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
+    ...(deliveryEmail === undefined ? {} : { notify: async () => {
+      const share = { url: published.url, cid: published.link.cid, format: model.linkFormat, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
+      if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
+      const adapter: ShareDeliveryAdapter = {
+        deliver: async (request) => {
+          const authorization = await tinycloud.authorizeShareDelivery({ envelopeCid: published.metadata.envelopeCid!, shareCid: published.metadata.shareCid!, shareId, registrationCid: published.metadata.registrationCid!, policyCid: published.metadata.policyCid!, delegationCid: published.metadata.ownerDelegationCid!, enforcementDelegationCid: published.metadata.enforcementDelegationCid!, resourcePath, recipientEmail: deliveryEmail, shareUrl: share.url, documentName: filename, idempotencyKey: request.idempotencyKey ?? `tinycloud-share:${shareId}`, expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString(), nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) }, credentialsAudience: config.credentialsOrigin });
+          if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
+          await options.notify({ share, recipient: deliveryEmail, matcher: model.recipient.kind, deliveryAuthorization: authorization });
+          return "delivered";
+        },
+      };
+      const notification = await notifyShare({ shareId: record.shareId, recipient: deliveryEmail, record, adapter });
+      if (notification.state === "partial-failure") throw new Error("We couldn't send that email. The link above still works.");
+    } }),
+  };
 }
 
 async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions, createOwnerRoot: UnifiedOwnerRootFactory["createOwnerRoot"]): Promise<ComposerShareResult> {
   if (!model.encryption) throw fail("plaintext", "v3 owner-policy shares require encryption");
   const tinycloud = options.tinycloud;
   if (tinycloud === undefined) throw fail("session", "v3 owner share has no TinyCloud session");
+  if (options.signUnifiedPolicy === undefined) throw fail("internal", "v3 owner share has no owner policy signer");
   const config = await loadSharePublicConfig();
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
   const file = files.length === 1 ? files[0] : undefined;
   const shareId = crypto.randomUUID();
   const resourceKind = model.resource.kind;
   const filename = contentFilename(model.content);
   if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
+  if (resourceKind !== "exact") throw fail("rejected", "v3 prefix shares require a shared wrapped content key");
   const libraryContent = contentSource(model.content);
   const selectedSource = libraryContent?.kind === "kv" ? libraryContent : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
-  const resourcePath = resourceKind === "prefix"
-    ? `shares/${shareId}`
-    : (resourceKind === "exact" && model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
+  const resourcePath = model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`;
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "v3 owner share has no storage space");
   const network = ownerEncryptionNetwork(options.openKeyAddress);
   const key = generateKey();
-  const createdAt = new Date().toISOString();
-  const expiresAt = model.expiresAt;
-  const ownerDid = tinycloud.did;
-    try {
-    if (options.signUnifiedPolicy === undefined) throw fail("internal", "v3 owner share has no owner policy signer");
-    if (resourceKind !== "exact") throw fail("rejected", "v3 prefix shares require a shared wrapped content key");
+  try {
     let plaintext: Uint8Array;
     let plaintextType: string;
     if (selectedSource !== undefined && sourcePath !== undefined) {
@@ -442,63 +543,70 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       plaintext = existing.data.data;
       plaintextType = existing.data.headers.contentType ?? "application/octet-stream";
     } else {
-      if (files.length !== 1) throw fail("content", "v3 exact upload requires one file");
-      plaintext = new Uint8Array(await files[0]!.arrayBuffer());
-      if (plaintext.byteLength !== files[0]!.size || plaintext.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
-      plaintextType = files[0]!.type.trim() || "application/octet-stream";
+      if (file === undefined) throw fail("content", "v3 exact upload requires one file");
+      plaintext = new Uint8Array(await file.arrayBuffer());
+      if (plaintext.byteLength !== file.size || plaintext.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
+      plaintextType = file.type.trim() || "application/octet-stream";
     }
+    const byteLength = plaintext.byteLength;
     const encrypted = await tinycloud.encryption.encryptToNetwork(network, plaintext, { metadata: { contentType: plaintextType, filename } });
     plaintext.fill(0);
     if (!encrypted.ok) throw fail("rejected", "network content encryption was rejected");
-    const encryptedBytes = new TextEncoder().encode(canonicalize(encrypted.data));
-    const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, encryptedBytes, { contentType: "application/vnd.tinycloud.encrypted+json" });
+    const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, new TextEncoder().encode(canonicalize(encrypted.data)), { contentType: "application/vnd.tinycloud.encrypted+json" });
     if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
+
     const unifiedSource = { shareId, kvResource: `tinycloud://${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
-    const actionNames = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort() as Array<"tinycloud.kv/get" | "tinycloud.kv/list" | "tinycloud.kv/metadata" | "tinycloud.kv/put">;
+    const order = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
+    const actions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => order.indexOf(left as typeof order[number]) - order.indexOf(right as typeof order[number])) as Array<typeof order[number]>;
     const capabilities: UnifiedPolicyCapability[] = [
-      { kind: "kv" as const, resource: unifiedSource.kvResource, selector: resourceKind, actions: actionNames },
-      { kind: "encryption" as const, resource: network, action: "tinycloud.encryption/decrypt" as const },
+      { kind: "kv", resource: unifiedSource.kvResource, selector: resourceKind, actions },
+      { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
     ];
-    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, sign: options.signUnifiedPolicy });
+    const createdAt = new Date().toISOString();
+    const ownerDid = tinycloud.did;
+    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, sign: options.signUnifiedPolicy });
     const sourceDigest = contentSourceDigestHex(unifiedSource);
     const projectionHash = nativeProjectionHashHex(capabilities);
-    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: expiresAt });
-    const enforcerDid = String(attestedEnforcerBinding.enforcerDid);
-    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(expiresAt) });
-    const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding });
-    const unsigned = {
-      version: 3 as const,
-      shareId,
-      recipientMatcher: model.recipient.kind === "exactEmail" ? { kind: "exactEmail" as const, value: model.recipient.value! } : { kind: "emailDomain" as const, value: model.recipient.value! },
-      ...(model.deliveryEmail === undefined ? {} : { deliveryEmail: model.deliveryEmail }),
-      actions: (["read", "list", "edit"] as const).filter((action) => model.permissions.includes(action)),
-      resource: { kind: resourceKind, path: resourcePath },
-      target: { origin: config.nodeOrigin, nodeAudience: enforcerDid, spaceId },
-      policy: policy.policy,
-      policyCid: policy.policyCid,
-      policyRoot: roots.policyRoot,
-      enforcementRoot: roots.enforcementRoot,
-      attestedEnforcerBinding,
-      contentSource: unifiedSource,
-      contentSourceDigestHex: sourceDigest,
-      encryptionNetwork: network,
-      expiry: expiresAt,
-      display: { filename },
-      encrypted: true as const,
-      metadata: { mediaType: contentMediaType(model.content), byteLength: file?.size ?? plaintext.byteLength, filename },
-    };
-    const envelope = await signV3Envelope({ unsigned, signerDid: ownerDid, sign: options.signUnifiedPolicy });
-    const envelopeBytes = new TextEncoder().encode(canonicalize(envelope));
-    const stored = await seal(envelopeBytes, key);
-    const uploadEnvelope = async (cid: string, blob: Uint8Array, deleteAfter: string): Promise<void> => {
-      const uploaded = await fetch(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: blob as BodyInit });
-      if (!uploaded.ok || cid.length === 0) throw fail("save", "v3 envelope upload was rejected");
-    };
-    if (model.linkFormat === "compact") await uploadEnvelope(stored.cid, stored.blob, expiresAt);
-    const shareUrl = model.linkFormat === "inline" ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key }) : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
-    const binding = await fetch("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
+    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: model.expiresAt, fetchFn });
+    const enforcerDid = attestedEnforcerBinding.enforcerDid;
+    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(model.expiresAt) });
+    const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding, fetchFn });
+    const envelope = await signV3Envelope({
+      unsigned: {
+        version: 3,
+        shareId,
+        recipientMatcher: model.recipient.kind === "exactEmail" ? { kind: "exactEmail", value: model.recipient.value! } : { kind: "emailDomain", value: model.recipient.value! },
+        ...(model.deliveryEmail === undefined ? {} : { deliveryEmail: model.deliveryEmail }),
+        actions: (["read", "list", "edit"] as const).filter((action) => model.permissions.includes(action)),
+        resource: { kind: resourceKind, path: resourcePath },
+        target: { origin: config.nodeOrigin, nodeAudience: enforcerDid, spaceId },
+        policy: policy.policy,
+        policyCid: policy.policyCid,
+        policyRoot: roots.policyRoot,
+        enforcementRoot: roots.enforcementRoot,
+        attestedEnforcerBinding,
+        contentSource: unifiedSource,
+        contentSourceDigestHex: sourceDigest,
+        encryptionNetwork: network,
+        expiry: model.expiresAt,
+        display: { filename },
+        encrypted: true,
+        metadata: { mediaType: contentMediaType(model.content), byteLength, filename },
+      },
+      signerDid: ownerDid,
+      sign: options.signUnifiedPolicy,
+    });
+    const stored = await seal(new TextEncoder().encode(canonicalize(envelope)), key);
+    if (model.linkFormat === "compact") {
+      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": model.expiresAt }, body: stored.blob as BodyInit });
+      if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
+    }
+    const url = model.linkFormat === "inline"
+      ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
+      : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
+    const binding = await fetchFn("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
     if (!binding.ok) throw fail("save", "v3 share binding was rejected");
-    return { url: shareUrl, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: registration.enforcementRootCid };
+    return { url, cid: stored.cid, format: model.linkFormat, expiresAt: model.expiresAt, delegationCid: registration.enforcementRootCid };
   } finally {
     key.fill(0);
   }
@@ -585,49 +693,9 @@ export async function copySelectedSource(
   return paths;
 }
 
-async function authorAddressedDelegation(input: { readonly scope: SenderScope; readonly source: ContentSource; readonly matcher: { readonly kind: "exactEmail" | "emailDomain"; readonly value: string }; readonly shareId: string; readonly resource: ShareComposerModel["resource"]; readonly actions: readonly SharePermission[]; readonly expiresAt: string; readonly fetchFn: typeof fetch }): Promise<{ readonly scope: SenderScope; readonly policy: { readonly policyCid: string; readonly policyBytes: string; readonly policyDigest: string } }> {
-  if (input.scope.delegation.length === 0 || input.scope.delegationCid.length === 0 || input.scope.authorityMaterialHandle.length === 0 || input.scope.authorityMaterialDigest.length === 0) throw fail("internal", "addressed authoring scope is incomplete");
-  const actions = [...new Set(input.actions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort();
-  const resource = { kind: input.resource.kind, value: input.resource.path.replace(/\/$/, "") } as const;
-  const requestBody = { version: 2, nonce: toBase64Url(crypto.getRandomValues(new Uint8Array(32))), jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))), senderDid: input.scope.senderDid, recipientMatcher: input.matcher, targetOrigin: input.scope.targetOrigin, nodeAudience: input.scope.nodeAudience, shareCid: input.scope.delegationCid, shareId: input.shareId, delegationCid: input.scope.delegationCid, authorityMaterialHandle: input.scope.authorityMaterialHandle, authorityMaterialDigest: input.scope.authorityMaterialDigest, contentSource: input.source, contentSourceDigest: await canonicalDigest(input.source), actions, resource, expiresAt: input.expiresAt };
-  const request = { ...requestBody, requestBodyDigest: await canonicalDigest(requestBody) };
-  const signature = await input.scope.signer.sign({ purpose: "delegationAuthoring", message: canonicalize(request), binding: request });
-  const signerDid = didKeyFromEd25519PublicKey(input.scope.signingCapability.publicKey);
-  if (signerDid !== input.scope.senderDid || input.scope.signer.publicKey.length !== 32) throw fail("internal", "addressed authoring signer does not match sender");
-  const proof = { alg: "EdDSA", kid: `${signerDid}#${signerDid.slice("did:key:".length)}`, signature: toBase64Url(signature) };
-  const response = await input.fetchFn(new URL("/delegate", input.scope.targetOrigin), { method: "POST", credentials: "omit", redirect: "error", headers: { accept: "application/json", "content-type": "application/vnd.tinycloud.delegation+json" }, body: JSON.stringify({ request, proof }) });
-  if (!response.ok) {
-    let code: unknown;
-    try {
-      const error = await response.clone().json() as { readonly error?: { readonly code?: unknown } | unknown };
-      const value = error.error;
-      code = typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-    } catch { /* Keep the user-facing error independent of an upstream response body. */ }
-    throw fail("rejected", "delegation authoring request was rejected", { code, status: response.status });
-  }
-  const value = await response.json() as Record<string, unknown>;
-  const required = ["type", "version", "nonce", "jti", "policyCid", "policyBytes", "policyDigest", "delegationCid", "delegationBytes", "delegationDigest", "authorityMaterialHandle", "authorityMaterialDigest", "actions", "resource", "expiresAt", "proof"];
-  if (Object.keys(value).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(value, key)) || value.type !== "TinyCloudShareAddressedDelegation" || value.version !== 2 || value.nonce !== request.nonce || value.jti !== request.jti || typeof value.policyCid !== "string" || typeof value.policyBytes !== "string" || typeof value.policyDigest !== "string" || typeof value.delegationCid !== "string" || typeof value.delegationBytes !== "string" || typeof value.delegationDigest !== "string" || !Array.isArray(value.actions) || typeof value.expiresAt !== "string") throw fail("internal", "delegation authoring response shape is invalid");
-  const responseProof = value.proof as Record<string, unknown>;
-  if (typeof responseProof !== "object" || responseProof === null || Array.isArray(responseProof) || Object.keys(responseProof).sort().join(",") !== "alg,kid,signature" || responseProof.alg !== "EdDSA" || typeof responseProof.kid !== "string" || typeof responseProof.signature !== "string") throw fail("internal", "delegation authoring response proof is invalid");
-  const signedResponse = { ...value }; delete signedResponse.proof;
-  await verifyNodeProof(signedResponse, responseProof as never, input.scope.trustedNode, "xyz.tinycloud.share/delegation-authoring-response/v2\0");
-  const responsePolicyBytes = strictBase64(String(value.policyBytes), "Node policy bytes");
-  const responseDelegationBytes = strictBase64(String(value.delegationBytes), "Node delegation bytes");
-  if (value.authorityMaterialHandle !== input.scope.authorityMaterialHandle || value.authorityMaterialDigest !== input.scope.authorityMaterialDigest || canonicalize(value.actions) !== canonicalize(actions) || canonicalize(value.resource) !== canonicalize(resource) || value.expiresAt !== input.expiresAt || await digestBytes(responsePolicyBytes) !== value.policyDigest || await computeCid(responsePolicyBytes) !== value.policyCid || await digestBytes(responseDelegationBytes) !== value.delegationDigest) throw fail("internal", "delegation authoring response binding does not match");
-  return { scope: { ...input.scope, delegation: String(value.delegationBytes), delegationCid: String(value.delegationCid) }, policy: { policyCid: String(value.policyCid), policyBytes: String(value.policyBytes), policyDigest: String(value.policyDigest) } };
-}
-
-function strictBase64(value: string, label: string): Uint8Array {
-  let decoded: Uint8Array;
-  try { decoded = fromBase64Url(value); } catch { throw fail("internal", `${label} is invalid`); }
-  if (decoded.length === 0 || toBase64Url(decoded) !== value) throw fail("internal", `${label} is invalid`);
-  return decoded;
-}
-
 function recipientModel(kind: RecipientKind, value: string): ShareComposerModel["recipient"] {
   if (kind === "bearer") return { kind };
-  return { kind, value: kind === "emailDomain" ? normalizeEmailDomain(value) : normalizeEmail(value) };
+  return { kind, value: kind === "emailDomain" ? normalizeEmailDomain(value) : kind === "recipientDid" ? normalizeRecipientDid(value) : normalizeEmail(value) };
 }
 
 /** Only one mounted composer owns the document-level paste fallback. */
@@ -737,6 +805,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
   addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — they'll confirm their email to open it");
+  addRecipientOption(fieldset, "recipientDid", "Only this OpenKey device — access is bound to its DID");
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
   recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
   fieldset.append(recipientInput);
@@ -803,13 +872,13 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       const matcher = (parsed as Record<string, unknown>).recipientMatcher;
       if (typeof matcher !== "object" || matcher === null || Array.isArray(matcher)) return undefined;
       const value = matcher as Record<string, unknown>;
-      if ((value.kind !== "exactEmail" && value.kind !== "emailDomain") || typeof value.value !== "string") return undefined;
+      if ((value.kind !== "exactEmail" && value.kind !== "emailDomain" && value.kind !== "recipientDid") || typeof value.value !== "string") return undefined;
       return { kind: value.kind, value: value.value };
     } catch { return undefined; }
   };
   const selectRecipientCapability = (): void => {
     const kind = selectedKind();
-    if (kind === "bearer" || availableCapabilities.length === 0 || recipientInput.value.length === 0) return;
+    if (kind === "bearer" || kind === "recipientDid" || availableCapabilities.length === 0 || recipientInput.value.length === 0) return;
     const value = kind === "emailDomain" ? normalizeEmailDomain(recipientInput.value) : normalizeEmail(recipientInput.value);
     const match = availableCapabilities.find((candidate) => {
       if (candidate.source.kind !== "kv") return false;
@@ -823,7 +892,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
 
   const expiryIso = (): string => {
     const choice = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value ?? DEFAULT_EXPIRY_CHOICE;
-    return expiryFromChoice(choice as ExpiryChoice);
+    return expiryFromChoice(choice as ExpiryChoice, options.now?.() ?? Date.now());
   };
   const refreshNote = (): void => {
     const kind = selectedKind();
@@ -832,7 +901,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       ? `Anyone who gets this link can open it. It can't be revoked early — it stops working on ${shortDate(expiryIso())}.`
       : kind === "emailDomain"
         ? `Anyone with an @${typed.length === 0 ? "example.com" : typed} email can open this after confirming their address.`
-        : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
+        : kind === "recipientDid"
+          ? `Only the OpenKey device identified by ${typed.length === 0 ? "that DID" : typed} can open this.`
+          : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
   };
   const refreshRecipient = (): void => {
     const kind = selectedKind(); const addressed = kind !== "bearer";
@@ -854,10 +925,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       : "Link-only shares are view-only. Choose a specific person to allow editing.";
     browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
-    recipientInput.type = kind === "emailDomain" ? "text" : "email";
-    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : "name@example.com";
-    recipientInput.autocomplete = kind === "emailDomain" ? "off" : "email";
-    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : "Recipient email address");
+    recipientInput.type = "text";
+    recipientInput.placeholder = kind === "emailDomain" ? "example.com" : kind === "recipientDid" ? "did:key:z..." : "name@example.com";
+    recipientInput.autocomplete = kind === "emailDomain" || kind === "recipientDid" ? "off" : "email";
+    recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : kind === "recipientDid" ? "Recipient DID" : "Recipient email address");
     // The authorized mailbox is the natural delivery address.
     if (kind === "exactEmail" && !deliveryTouched) delivery.value = recipientInput.value.trim();
     refreshNote();
@@ -1178,10 +1249,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         // Sending is always offered here for an addressed share; nothing in
         // the form gates it any more (P1-5).
         if (canNotify(model) && notifyAction !== undefined) {
-          const confirm = el(doc, "button", "button button-secondary confirm-notification", "Send by email…") as HTMLButtonElement; confirm.type = "button";
+          const confirm = el(doc, "button", "button button-secondary confirm-notification", "Notify recipient") as HTMLButtonElement; confirm.type = "button";
           const cancel = el(doc, "button", "button button-secondary cancel-notification", "Keep link-only") as HTMLButtonElement; cancel.type = "button";
           const deliveryStatus = el(doc, "span", "copy-status notification-status");
-          confirm.addEventListener("click", () => { confirm.disabled = true; void notifyAction().then(() => { deliveryStatus.textContent = `Email queued for ${model.deliveryEmail as string}.`; confirm.hidden = true; cancel.hidden = true; }).catch(() => { confirm.disabled = false; deliveryStatus.textContent = "The email didn't go out. The link above still works; try again when ready."; }); });
+          confirm.addEventListener("click", () => { confirm.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch(() => { confirm.disabled = false; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = "Invitation request failed. The link above still works; try again when ready."; }); });
           cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; deliveryStatus.textContent = "No email was sent."; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
         }
         copy.focus();

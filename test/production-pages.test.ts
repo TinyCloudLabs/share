@@ -95,6 +95,40 @@ describe("Cloudflare Pages static asset boundaries", () => {
     expect(readFileSync("viewer.html", "utf8")).toContain("https://tee.node.tinycloud.xyz");
   });
 
+  /**
+   * A page carrying both a `<meta http-equiv>` policy and an HTTP
+   * `Content-Security-Policy` header is held to the INTERSECTION of the two, so
+   * the meta in `share.html` silently overrides anything the header adds.
+   *
+   * `https://email.tinycloud.xyz` was added to the header's `connect-src` (it is
+   * where the sender POSTs the invitation) and never to the meta. `curl` showed
+   * a correct header, the deployed composer still could not send, and the only
+   * evidence was a CSP violation in the browser console — the UI reported the
+   * same generic "The email didn't go out" it reports for every failure
+   * (TC-443).
+   *
+   * The assertion this replaced checked that `share.html` contained the single
+   * string `https://tee.node.tinycloud.xyz`, which stayed green throughout.
+   */
+  it("keeps the share page's meta connect-src from narrowing the header's", () => {
+    const connectSources = (policy: string): string[] => {
+      const directive = policy.split(";").map((part) => part.trim()).find((part) => part.startsWith("connect-src "));
+      expect(directive).toBeDefined();
+      return directive!.slice("connect-src ".length).split(/\s+/).filter((source) => source.length > 0);
+    };
+    // The committed production bundle, not the fixture: this asserts the origins
+    // the deployed page is actually served with.
+    const production = validateTrustBundle(JSON.parse(readFileSync("config/trust-bundle.production.json", "utf8")));
+    const headerPolicy = securityHeadersForPath(production, "/share")["Content-Security-Policy"];
+    expect(headerPolicy).toBeDefined();
+    const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(readFileSync("share.html", "utf8"));
+    expect(meta).not.toBeNull();
+    const metaSources = connectSources(meta![1]!);
+    for (const source of connectSources(headerPolicy!)) {
+      expect(metaSources, `share.html's meta connect-src omits ${source}, so the browser blocks it no matter what the header says`).toContain(source);
+    }
+  });
+
   it("refuses third-party artifact-sandbox embedding in the production server", () => {
     for (const pathname of ["/artifact-sandbox", "/artifact-sandbox.html"]) {
       const headers = securityHeadersForPath(validateTrustBundle(trustBundle()), pathname);
