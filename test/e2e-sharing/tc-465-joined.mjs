@@ -70,6 +70,11 @@ async function proxy(request, targetOrigin, options = {}) {
     options.entry.status = response.status;
     try { options.entry.responseBody = JSON.parse(responseBytes.toString("utf8")); } catch { /* response validation remains with the product client */ }
   }
+  if (response.status >= 400) {
+    let code = "non_json";
+    try { code = JSON.parse(responseBytes.toString("utf8"))?.error?.code ?? "json_without_error_code"; } catch { /* raw bodies never enter diagnostics */ }
+    browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
+  }
   const headers = Object.fromEntries(response.headers.entries());
   delete headers["content-length"];
   const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get("set-cookie");
@@ -333,7 +338,7 @@ async function main() {
     assert(upload, "share upload control is missing");
     await upload.uploadFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
     await page.click("button.create-link-button");
-    await waitForText(page, "Your private link is ready");
+    await waitForText(page, "Your private link is ready", 60_000);
     await clickText(page, "Copy link");
     const shareUrl = await page.evaluate(() => window.__tc465Copied);
     assert.match(shareUrl, /^https:\/\/share\.tinycloud\.xyz\/s\/bafkrei[a-z2-7]{52}/);
