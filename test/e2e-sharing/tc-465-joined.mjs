@@ -60,7 +60,7 @@ async function proxy(request, targetOrigin, options = {}) {
     method,
     headers: headersForFetch(request, options.forwardedHttps),
     redirect: "manual",
-    ...(method === "GET" || method === "HEAD" ? {} : { body: request.postDataBuffer() }),
+    ...(method === "GET" || method === "HEAD" ? {} : { body: await request.fetchPostData() }),
   });
   const responseBytes = Buffer.from(await response.arrayBuffer());
   if (options.entry !== undefined) {
