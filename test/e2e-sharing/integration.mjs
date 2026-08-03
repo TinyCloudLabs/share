@@ -59,8 +59,9 @@ const canonical = Object.freeze({
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
+const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1";
 const walletPrivateKey = `0x${"55".repeat(32)}`;
-const issuerSeed = Buffer.alloc(32, 0x47);
+const issuerSeed = Buffer.alloc(32, tc465Joined ? 67 : 0x47);
 const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
@@ -86,6 +87,7 @@ const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
 let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
+let tc465Evidence;
 // TC-306. The browser audit below can only see destinations the *page*
 // requests, and the page only ever talks to the loopback Share host. The
 // Share host's own server-side upstream resolution is a second, invisible
@@ -111,11 +113,19 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
     nodeOrigin: fixtures.nodeOrigin,
     credentialsOrigin: fixtures.credentialsOrigin,
     mailOrigin: fixtures.mailOrigin,
+    openKeyOrigin: fixtures.openKeyOrigin,
+    walletOrigin: fixtures.walletOrigin,
   }), { flag: "wx", mode: 0o600 });
   const deadline = Date.now() + 15 * 60_000;
   while (Date.now() < deadline) {
     try {
       await stat(join(resolvedControlDir, "release"));
+      if (tc465Joined) {
+        const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
+        const stages = ["policyV3Mint", "delegate", "invoke", "decrypt", "rendered"];
+        if (evidence?.type !== "tinycloud.share/tc-465-joined-evidence/v1" || Object.keys(evidence).sort().join(",") !== "renderedSha256,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true)) throw new Error("dedicated TC-465 evidence is incomplete");
+        tc465Evidence = evidence;
+      }
       checks.push("External packed-CLI and normal-Chrome product journey completed while the production-shaped composition remained live.");
       return true;
     } catch (error) {
@@ -172,7 +182,7 @@ function canonicalJson(value) {
 // covering exactly what it covered before TC-379 split the two origins apart.
 // Production keeps them distinct; see `config/trust-bundle.production.json`.
 function trustBundleFromRuntime(nodePublicKey) {
-  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
+  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: tc465Joined ? "did:web:issuer.credentials.org#controller" : "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
 }
 function credentialsTrustBundleFromRuntime(nodePublicKey) {
   const bundle = JSON.parse(trustBundleFromRuntime(nodePublicKey));
@@ -229,10 +239,14 @@ async function assertReleaseInputs() {
     ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
     : `Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
-async function waitFor(url, timeoutMs = 60_000) {
+async function waitFor(url, timeoutMs = 60_000, child) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { const response = await fetch(url, { redirect: "error" }); if (response.status < 500) return response; } catch {}
+    if (child?.exitCode !== null && child?.exitCode !== undefined) {
+      const output = children.find((entry) => entry.child === child)?.output() ?? "";
+      throw new Error(`service exited before ${url} became ready (${child.exitCode}): ${output.slice(-4000)}`);
+    }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
   throw new Error(`timed out waiting for ${url}`);
@@ -382,7 +396,7 @@ async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
     if (request.url !== "/sign") { response.writeHead(404).end(); return; }
     const caller = request.headers.origin;
-    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
+    const cors = caller === canonical.share || /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
     if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
     if (request.method !== "POST") { response.writeHead(405, cors).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => { try { const body = JSON.parse(Buffer.concat(chunks).toString()); const signature = await wallet.signMessage({ message: body.message }); response.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ address: wallet.address, signature })); } catch { response.writeHead(400, cors).end(); } });
@@ -499,7 +513,7 @@ async function startFixtures(tempRoot) {
   await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
   const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
+  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000, node);
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
@@ -626,7 +640,12 @@ async function startShare(tempRoot, fixtures) {
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
-  await runOnce("npm", ["run", "build"], shareRoot, buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin));
+  const browserBuildEnv = buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin);
+  if (tc465Joined) {
+    browserBuildEnv.VITE_SHARE_REGISTRY_URL = `${canonical.share}/registry`;
+    browserBuildEnv.VITE_OPENKEY_ORIGIN = "https://openkey.so";
+  }
+  await runOnce("npm", ["run", "build"], shareRoot, browserBuildEnv);
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
@@ -635,6 +654,7 @@ async function startShare(tempRoot, fixtures) {
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
+    ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
@@ -1384,6 +1404,13 @@ try {
  * still reading, in the artifact and on stdout, as partial.
  */
 const sliceReport = summarizeSlices({ slices: GATE_SLICES, flowResults: gateResults, attempted: [...attemptedSlices], failures: Object.fromEntries(sliceFailures), blockedBy: blockedSlices });
+if (tc465Joined) {
+  if (tc465Evidence === undefined) blockers.push("Dedicated TC-465 joined browser evidence was not received.");
+  const passed = blockers.length === 0 && upstreamRoutingAudit.allLoopback && tc465Evidence !== undefined;
+  await writeArtifact(passed ? "complete" : "blocked", passed ? "TC-465 exact-email credential-gated receiver joined path completed." : "TC-465 exact-email credential-gated receiver joined path is blocked.");
+  process.exitCode = passed ? 0 : 1;
+  process.exit();
+}
 const verdict = gateVerdict(sliceReport, requiredSlices);
 for (const slice of sliceReport) {
   if (slice.status === "passed") continue;

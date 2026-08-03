@@ -16,6 +16,7 @@ export const UPSTREAM_BODY_LIMIT = 128 * 1024;
 export const NATIVE_SHARE_BODY_LIMIT = Math.floor((100 * 1024 * 1024 / 3) * 4) + 2_000_000;
 export const REGISTRY_UPLOAD_BODY_LIMIT = 100 * 1024 * 1024 + (1 + 12 + 16);
 export const SHARE_V2_BODY_LIMIT = 100 * 1024 * 1024;
+const SHARE_V3_POLICY_ROUTES: readonly string[] = ["/share/v3/policy/challenges", "/share/v3/policy/delegations"];
 const REQUEST_HEADERS = new Set([
   "accept",
   "authorization",
@@ -74,10 +75,12 @@ function routePolicy(path: string, method: string): { readonly service: ShareUps
     if (upper !== "GET") throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: [], responseTypes: ["application/json"], maxBody: 0 };
   }
-  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/")) {
-    const allowed = path.startsWith("/share/v2/")
-      ? ["/share/v2/policies", "/share/v2/policy/challenges", "/share/v2/policy/session", "/share/v2/invoke", "/share/v2/deliveries/authorize"]
-      : ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"];
+  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || SHARE_V3_POLICY_ROUTES.includes(path)) {
+    const allowed = path.startsWith("/share/v3/")
+      ? SHARE_V3_POLICY_ROUTES
+      : path.startsWith("/share/v2/")
+        ? ["/share/v2/policies", "/share/v2/policy/challenges", "/share/v2/policy/session", "/share/v2/invoke", "/share/v2/deliveries/authorize"]
+        : ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"];
     if (upper !== "POST" || !allowed.includes(path)) throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: path === "/share/v2/invoke" ? SHARE_V2_BODY_LIMIT : UPSTREAM_BODY_LIMIT };
   }
@@ -217,7 +220,7 @@ export function upstreamForPath(bundle: ShareTrustBundle, path: string, env: Nod
   if (path === "/info") return { service: "node", origin: origins.node };
   if (peerPath(path) !== undefined) return { service: "node", origin: origins.node };
   if (path === "/encryption/networks" || /^\/encryption\/networks\/[^/]+(?:\/decrypt|\/revoke)?$/.test(path) || /^\/.well-known\/encryption\/network\/[^/]+$/.test(path)) return { service: "node", origin: origins.node };
-  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/")) return { service: "node", origin: origins.node };
+  if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || SHARE_V3_POLICY_ROUTES.includes(path)) return { service: "node", origin: origins.node };
   if (path === "/delegate" || path === "/invoke") return { service: "node", origin: origins.node };
   if (/^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path)) return { service: "registry", origin: origins.registry };
   if (path.startsWith("/v1/share-email/")) return { service: "credentials", origin: origins.credentials };

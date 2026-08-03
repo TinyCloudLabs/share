@@ -771,6 +771,23 @@ describe("production trust and host boundaries", () => {
       const stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${cid}`, { method: "GET" }));
       expect(stored.status).toBe(200);
       expect(await stored.json()).not.toHaveProperty("recipientEmail");
+
+      const v3Binding = {
+        version: 3,
+        shareCid: `bafkrei${"b".repeat(52)}`,
+        shareId: "018ff6e2-5f31-4d85-87ac-2e9212dc67bf",
+        policyCid: `bafkrei${"c".repeat(52)}`,
+        policyRootCid: `bafkrei${"d".repeat(52)}`,
+        enforcementRootCid: `bafkrei${"e".repeat(52)}`,
+        contentSourceDigestHex: "f".repeat(64),
+      };
+      const v3Put = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify(v3Binding) }));
+      expect(v3Put.status).toBe(201);
+      const v3Stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${v3Binding.shareCid}`, { method: "GET" }));
+      expect(v3Stored.status).toBe(200);
+      expect(await v3Stored.json()).toEqual(v3Binding);
+      const widenedV3 = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify({ ...v3Binding, recipientEmail: "recipient@example.com" }) }));
+      expect(widenedV3.status).toBe(400);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

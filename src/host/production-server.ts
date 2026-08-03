@@ -21,7 +21,7 @@ function dynamic(path: string): boolean {
     path === "/api/share/sender-identity" ||
     path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path) ||
     path.startsWith("/api/share/link-only/registry/") ||
-    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
+    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || path === "/share/v3/policy/challenges" || path === "/share/v3/policy/delegations" || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
 }
 
 function rewrite(path: string): string {
