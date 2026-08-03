@@ -31,6 +31,7 @@ export type SenderFailureKind =
   | "acknowledgment"
   | "linkOnlyActions"
   | "linkOnlyFolder"
+  | "folderUnsupported"
   | "signIn"
   | "signInService";
 
@@ -64,6 +65,7 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
+  folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
   signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 };

@@ -96,7 +96,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const invite = launch.invite;
     delete launch.invite;
     const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL });
-    if (resolved.state === "policy-v2-claim-required") {
+    if (resolved.state === "policy-v2-claim-required" || resolved.state === "policy-v3-claim-required") {
       const publicConfig = await config.loadSharePublicConfig();
       const { createHolder } = await import("./email-share/claim.js");
       const holder = await createHolder();
@@ -111,6 +111,9 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           // verification.  A production credential is deliberately required
           // here; the UI must never turn an unverified email into access.
           if (invite === undefined) throw new Error("Part of this link is missing. Ask the sender to share it again.");
+          if (envelope.version === 3) {
+            throw new Error("The credential issuer did not return the owner-authorized v3 claim required by this policy.");
+          }
           return buildV2Presentation({ challenge, envelope, policy, invite, publicConfig, shareCid: resolved.shareCid, holder });
         },
       });

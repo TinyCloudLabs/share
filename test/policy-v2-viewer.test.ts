@@ -21,8 +21,12 @@ const { digestBytes } = await import("../src/email-share/node-verifier.js");
 
 const stub = vi.hoisted(() => ({
   invokes: [] as Array<Record<string, unknown>>,
+  decrypts: [] as Uint8Array[],
+  encrypts: [] as Uint8Array[],
   establish: async (): Promise<{ resource: Record<string, unknown> }> => ({ resource: { kind: "exact", path: "notes/plan.md" } }),
   respond: async (_request: Record<string, unknown>): Promise<Response> => new Response(null, { status: 500 }),
+  decrypt: async (bytes: Uint8Array): Promise<{ readonly bytes: Uint8Array; readonly mediaType: string }> => ({ bytes, mediaType: "text/plain" }),
+  encrypt: async (bytes: Uint8Array): Promise<Uint8Array> => bytes,
 }));
 
 vi.mock("@tinycloud/share-sdk", () => ({
@@ -32,6 +36,14 @@ vi.mock("@tinycloud/share-sdk", () => ({
     nativeInvoke(request: Record<string, unknown>): Promise<Response> {
       stub.invokes.push(request);
       return stub.respond(request);
+    }
+    decryptV3Content(bytes: Uint8Array): Promise<{ readonly bytes: Uint8Array; readonly mediaType: string }> {
+      stub.decrypts.push(bytes);
+      return stub.decrypt(bytes);
+    }
+    encryptV3Content(bytes: Uint8Array): Promise<Uint8Array> {
+      stub.encrypts.push(bytes);
+      return stub.encrypt(bytes);
     }
   },
 }));
@@ -128,9 +140,53 @@ beforeEach(() => {
   document.body.classList.remove("artifact-active");
   localStorage.clear();
   stub.invokes.length = 0;
+  stub.decrypts.length = 0;
+  stub.encrypts.length = 0;
   stub.establish = async () => ({ resource: { kind: "exact", path: "notes/plan.md" } });
   stub.respond = async () => new Response(null, { status: 500 });
+  stub.decrypt = async (bytes) => ({ bytes, mediaType: "text/plain" });
+  stub.encrypt = async (bytes) => bytes;
   window.history.replaceState(null, "", "/s/bafkreisharecid");
+});
+
+describe("addressed viewer — v3 encrypted exact-file lifecycle", () => {
+  it("decrypts before rendering and re-encrypts edits before ordinary put", async () => {
+    const ciphertext = new Uint8Array([1, 2, 3, 4]);
+    const opened = new TextEncoder().encode("original");
+    const reencrypted = new Uint8Array([9, 8, 7]);
+    stub.decrypt = async () => ({ bytes: opened, mediaType: "text/plain" });
+    stub.encrypt = async () => reencrypted;
+    stub.respond = async (request) => {
+      if (request.action === "metadata") return new Response(null, { status: 200, headers: { etag: "v1", "content-type": "application/vnd.tinycloud.encrypted+json" } });
+      if (request.action === "get") return new Response(ciphertext, { status: 200, headers: { etag: "v1", "content-type": "application/vnd.tinycloud.encrypted+json" } });
+      return new Response(null, { status: 200, headers: { etag: "v2" } });
+    };
+    const root = document.createElement("div");
+    document.body.append(root);
+    mountPolicyV2Viewer(root, {
+      envelope: { version: 3, shareId: "share-3", actions: ["read", "edit"], resource: { kind: "exact", path: "notes/plan.md" }, metadata: { mediaType: "text/plain" } } as never,
+      shareCid: "bafkreisharecid",
+      policy: {},
+    }, {
+      nodeOrigin: "https://node.example",
+      trustedNode: {} as never,
+      holderDid: "did:key:z6Mkholder",
+      buildPresentation: async () => ({}) as never,
+    });
+    clickOpen(root);
+    await vi.waitFor(() => expect(root.querySelector<HTMLTextAreaElement>(".viewer-editor")?.value).toBe("original"));
+    expect(stub.decrypts).toHaveLength(1);
+    expect(stub.decrypts[0]).toEqual(ciphertext);
+    const area = root.querySelector<HTMLTextAreaElement>(".viewer-editor")!;
+    area.value = "edited";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    root.querySelector<HTMLButtonElement>(".viewer-editor-save")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".viewer-editor-status")?.textContent).toBe("Saved."));
+    expect(new TextDecoder().decode(stub.encrypts[0])).toBe("edited");
+    const put = stub.invokes.find((request) => request.action === "put")!;
+    expect(put.body).toEqual(Array.from(reencrypted));
+    expect(put.contentType).toBe("application/vnd.tinycloud.encrypted+json");
+  });
 });
 
 describe("addressed viewer — recipient never sees raw exception text (P0-3)", () => {

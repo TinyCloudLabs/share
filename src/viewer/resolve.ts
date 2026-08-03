@@ -52,9 +52,12 @@ import {
   parseCompactOrInlineShareUrl,
   shareEnvelopeSchema,
   shareEnvelopeV2Schema,
+  shareEnvelopeV3Schema,
   verifyEnvelope,
+  verifyEnvelopeV3,
   type ShareEnvelope,
   type ShareEnvelopeV2,
+  type ShareEnvelopeV3,
 } from "@tinycloud/share-envelope";
 import {
   CidMismatchError,
@@ -103,6 +106,7 @@ export type ResolveResult =
   | { state: "expired"; envelope: ShareEnvelope }
   | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
   | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2; shareCid: string; policy: Record<string, unknown> }
+  | { state: "policy-v3-claim-required"; envelope: ShareEnvelopeV3; shareCid: string; policy: Record<string, unknown> }
   /** Signed content pointer present, but the registry couldn't serve the blob. */
   | { state: "content-fetch-failed"; detail: string }
   /**
@@ -191,6 +195,14 @@ export async function resolveShare(
         try { policy = (await parseAddressedEnvelope(v2)).policy; } catch { return { state: "envelope-invalid" }; }
         if (Date.parse(v2.expiry) <= (options.now?.() ?? Date.now())) return { state: "expired", envelope: v2 as unknown as ShareEnvelope };
         return { state: "policy-v2-claim-required", envelope: v2, shareCid: ciphertextCid, policy };
+      }
+      if (value.version === 3) {
+        const v3 = shareEnvelopeV3Schema.parse(value);
+        if (!await verifyEnvelopeV3(v3, { expectedSignerDid: v3.policy.ownerDid })) return { state: "signature-invalid" };
+        let policy: Record<string, unknown>;
+        try { policy = (await parseAddressedEnvelope(v3)).policy; } catch { return { state: "envelope-invalid" }; }
+        if (Date.parse(v3.expiry) <= (options.now?.() ?? Date.now())) return { state: "expired", envelope: v3 as unknown as ShareEnvelope };
+        return { state: "policy-v3-claim-required", envelope: v3, shareCid: ciphertextCid, policy };
       }
       envelope = shareEnvelopeSchema.parse(value);
     } catch {

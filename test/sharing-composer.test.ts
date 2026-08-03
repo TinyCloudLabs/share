@@ -58,6 +58,7 @@ const EXPECTED_SENDER_COPY = {
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
+  folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
   signInService: "TinyCloud is temporarily unavailable. Try signing in again shortly.",
 } as const;
@@ -164,8 +165,13 @@ describe("share composer model", () => {
   it("rejects unsafe plaintext attempts and never permits bearer plaintext", () => {
     expect(() => validateComposerModel(modelWith(textContent, { encryption: false }))).toThrow(/must stay encrypted/i);
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
+    const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" }, resource: { kind: "exact", path: "docs/readme.md" } };
+    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
+  });
+
+  it("rejects prefix content until the encrypted shared-key contract exists", () => {
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs", action: "tinycloud.kv/get" }, resource: { kind: "prefix", path: "docs" } };
-    expect(() => validateComposerModel(modelWith(library, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
+    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "emailDomain", value: "MAILINATOR.COM" } }))).toThrow(SENDER_FAILURE.folderUnsupported);
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
@@ -296,61 +302,24 @@ describe("share composer content picker", () => {
     expect(received.model?.resource.kind).toBe("exact");
   });
 
-  it.each([
-    ["a multiple file selection", (root: HTMLElement, files: readonly File[]) => {
-      const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
-      expect(input.multiple).toBe(true);
-      Object.defineProperty(input, "files", { configurable: true, value: files });
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }],
-    ["a multiple file drop", (root: HTMLElement, files: readonly File[]) => dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, files)],
-  ])("turns %s into one inferred folder share", async (_label, act) => {
+  it("removes folder controls and rejects multi-file drops before share creation", async () => {
     const root = document.createElement("div"); document.body.append(root);
-    let received: { readonly files?: readonly File[]; readonly model?: ShareComposerModel } = {};
+    const createShare = vi.fn();
     mountShareComposer(root, {
       ...baseOptions(),
       loadCapabilities: async () => [],
-      createShare: async ({ files, model }) => {
-        received = { files, model };
-        return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat };
-      },
+      createShare: createShare as never,
     });
+    expect(root.querySelector<HTMLInputElement>("input[name=document]")!.multiple).toBe(false);
+    expect(root.textContent).not.toContain("Choose folder");
     const files = [
       new File(["alpha"], "alpha.txt", { type: "text/plain" }),
       new File(["beta"], "beta.txt", { type: "text/plain" }),
     ];
-    act(root, files);
-    expect(root.querySelector(".content-chosen-name")?.textContent).toBe("2 files");
-    expect(root.querySelector<HTMLElement>(".composer-browse-notice")?.hidden).toBe(false);
-    expect(root.querySelector(".composer-browse-notice")?.textContent).toContain("included automatically");
-
-    const person = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
-    person.checked = true; person.dispatchEvent(new Event("change", { bubbles: true }));
-    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
-    recipient.value = "reader@example.com"; recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    await vi.waitFor(() => expect(received.model).toBeDefined());
-    expect(received.model!.content).toMatchObject({ kind: "files" });
-    expect(received.model!.resource).toEqual({ kind: "prefix", path: "selected-files/" });
-    expect(received.model!.permissions).toEqual(["read", "list"]);
-    expect(received.files?.map((file) => file.name)).toEqual(["alpha.txt", "beta.txt"]);
-  });
-
-  it("rejects a multi-file possession link with actionable recovery guidance", async () => {
-    const root = document.createElement("div"); document.body.append(root);
-    const createShare = vi.fn();
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: createShare as never });
-    dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, [
-      new File(["a"], "a.txt"),
-      new File(["b"], "b.txt"),
-    ]);
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
+    dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, files);
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-file"));
     expect(createShare).not.toHaveBeenCalled();
-    expect(root.querySelector(".composer-status")?.textContent).toContain("choose a specific person or company domain");
-    expect(root.querySelector(".composer-status")?.textContent).toContain("support one file at a time");
+    expect(root.querySelector(".composer-status")?.textContent).toContain(SENDER_FAILURE.folderUnsupported);
   });
 
   it("canonicalizes names and rejects unsafe, duplicate, per-file, and aggregate uploads", () => {
@@ -367,19 +336,11 @@ describe("share composer content picker", () => {
     ])).toThrow(/100 MB/i);
   });
 
-  it("recognizes a selected folder artifact while preserving nested canonical paths", () => {
+  it("does not expose folder or multi-file artifact controls", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
-    const index = new File(["<h1>Artifact</h1>"], "index.html");
-    const script = new File(["document.body.dataset.ready='yes'"], "app.js");
-    Object.defineProperty(index, "webkitRelativePath", { value: "demo/index.html" });
-    Object.defineProperty(script, "webkitRelativePath", { value: "demo/scripts/app.js" });
-
-    dropFiles(root.querySelector<HTMLElement>(".content-dropzone")!, [index, script]);
-
-    expect(root.querySelector(".content-chosen-meta")?.textContent).toContain("Opens full-page as an HTML artifact");
-    expect(root.querySelector(".content-chosen-meta")?.textContent).toContain("scripts/app.js");
-    expect(root.querySelector<HTMLButtonElement>(".dropzone-actions button:nth-child(2)")?.textContent).toBe("Choose folder");
+    expect(root.querySelector("input[name=artifact-folder]")).toBeNull();
+    expect(Array.from(root.querySelectorAll<HTMLButtonElement>(".dropzone-actions button")).map((button) => button.textContent)).toEqual(["Choose file", "Paste from clipboard", "Pick from your library"]);
   });
 
   it("keeps normalized folder paths stable when submit validation runs a second time", () => {
@@ -405,23 +366,14 @@ describe("share composer content picker", () => {
     expect(selected?.resource).toEqual({ kind: "exact", path: capability.source.path });
   });
 
-  it("keeps a selected library folder as a segment-boundary prefix", async () => {
+  it("does not offer a library prefix until folder encryption is supported", async () => {
     const root = document.createElement("div"); document.body.append(root);
-    let selected: ShareComposerModel | undefined;
     const capability = { capabilityId: "cap-folder", scope: { prefixes: ["docs"] }, source: { kind: "kv" as const, space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" as const }, policy: {} as never };
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [capability], createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
+    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [capability] });
     await new Promise((resolve) => setTimeout(resolve, 0));
     root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
-    const source = root.querySelector<HTMLSelectElement>("select[name=kv-source]")!; source.value = "docs/";
-    const person = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
-    person.checked = true; person.dispatchEvent(new Event("change", { bubbles: true }));
-    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
-    recipient.value = "reader@example.com"; recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(selected?.resource).toEqual({ kind: "prefix", path: "docs/" });
-    expect(selected?.content).toMatchObject({ kind: "library", source: capability.source });
-    expect(selected?.permissions).toEqual(["read", "list"]);
+    const options = Array.from(root.querySelector<HTMLSelectElement>("select[name=kv-source]")!.options);
+    expect(options.some((option) => option.value === "docs/" || option.dataset.resourceKind === "prefix")).toBe(false);
   });
 
   it("refuses to submit with nothing chosen, and says what to do", async () => {

@@ -1,6 +1,6 @@
 import { ShareRecipientClient, type PolicyChallenge, type PolicyPresentationMaterial } from "@tinycloud/share-sdk";
 import type { TrustedNode } from "../email-share/protocol.js";
-import { fromBase64Url, toBase64Url, type ShareEnvelopeV2 } from "@tinycloud/share-envelope";
+import { fromBase64Url, toBase64Url, type ShareEnvelopeV2, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { digestBytes } from "../email-share/node-verifier.js";
 import { renderSafeContent } from "./content.js";
 import { mountTextEditor, canEdit, type EditableDocument } from "./editor.js";
@@ -21,7 +21,7 @@ export interface PolicyV2ViewerOptions {
   readonly nodeOrigin: string;
   readonly trustedNode: TrustedNode;
   readonly holderDid: string;
-  readonly buildPresentation: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
+  readonly buildPresentation: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2 | ShareEnvelopeV3; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
   readonly fetchFn?: typeof fetch;
   /** Complete launch URL kept in memory for the recipient's explicit copy action. */
   readonly shareUrl?: string;
@@ -71,7 +71,23 @@ export function recipientFailureMessage(error: unknown): string {
   return RECIPIENT_FAILURE[recipientFailureKind(error)];
 }
 
-async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string }> {
+async function nativePayload(response: Response, expectedAction: "get" | "metadata" | "list" | "put", expectedResource: string, expectedBodyDigest?: string, expectedContentType?: string, version = 2): Promise<{ readonly value: Record<string, unknown>; readonly bytes?: Uint8Array; readonly mediaType?: string; readonly metadata?: Record<string, string>; readonly etag?: string }> {
+  if (version === 3) {
+    const etag = response.headers.get("etag") ?? undefined;
+    if (expectedAction === "get") {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return { value: {}, bytes, mediaType: response.headers.get("content-type") ?? "application/octet-stream", ...(etag === undefined ? {} : { etag }) };
+    }
+    if (expectedAction === "list") {
+      const entries = await response.json() as unknown;
+      if (!Array.isArray(entries)) throw fail("malformed", "v3 list response is invalid");
+      return { value: { entries, nextCursor: response.headers.get("x-tinycloud-next-cursor") } };
+    }
+    if (expectedAction === "metadata") {
+      return { value: {}, metadata: Object.fromEntries(response.headers.entries()), ...(etag === undefined ? {} : { etag }) };
+    }
+    return { value: {}, ...(etag === undefined ? {} : { etag }) };
+  }
   const contentType = response.headers.get("content-type");
   if (contentType !== null && !/^application\/json(?:\s*;|$)/i.test(contentType)) throw fail("malformed", "native response media type is invalid");
   const value = await response.json() as unknown;
@@ -150,7 +166,7 @@ function folderName(path: string): string {
   return name === undefined || name === "" ? "the shared folder" : name;
 }
 
-export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelope: ShareEnvelopeV2; readonly shareCid: string; readonly policy: Record<string, unknown> }, options: PolicyV2ViewerOptions): void {
+export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelope: ShareEnvelopeV2 | ShareEnvelopeV3; readonly shareCid: string; readonly policy: Record<string, unknown> }, options: PolicyV2ViewerOptions): void {
   const doc = root.ownerDocument;
   const view = doc.defaultView ?? window;
   root.replaceChildren();
@@ -210,9 +226,13 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
         if (!response.ok) throw fail(response.status === 412 ? "conflict" : "denied", `native ${action} denied`, { status: response.status });
         const body = Array.isArray(extra.body) ? Uint8Array.from(extra.body as number[]) : undefined;
         const bodyDigest = body === undefined ? undefined : await digestBytes(body);
-        return { response, payload: await nativePayload(response, action, typeof resource.path === "string" ? resource.path : "", bodyDigest, typeof extra.contentType === "string" ? extra.contentType : undefined) };
+        return { response, payload: await nativePayload(response, action, typeof resource.path === "string" ? resource.path : "", bodyDigest, typeof extra.contentType === "string" ? extra.contentType : undefined, input.envelope.version) };
       };
+      const decryptLoaded = async (bytes: Uint8Array, mediaType: string): Promise<{ readonly bytes: Uint8Array; readonly mediaType: string }> => input.envelope.version === 3
+        ? client.decryptV3Content(bytes)
+        : { bytes, mediaType };
       if (input.envelope.metadata?.artifact === "html") {
+        if (input.envelope.version === 3) throw new ArtifactBundleError("unsupported", "v3 prefix encryption is not part of the exact-file contract");
         if (session.resource.kind !== "prefix" || input.envelope.resource.kind !== "prefix" || !actions.includes("read") || !actions.includes("list")) {
           throw new ArtifactBundleError("malformed", "artifact authority is not a readable prefix");
         }
@@ -286,7 +306,21 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
         if (!actions.includes("edit") || etag === "" || !canEdit(mediaType, actions)) return;
         const editorRoot = doc.createElement("section"); editorRoot.className = "viewer-editor-panel"; content.append(editorRoot);
         const editable: EditableDocument = { bytes, etag, mediaType };
-        mountTextEditor(editorRoot, editable, { save: async (next, ifMatch) => { const bodyDigest = await digestBytes(next); const saved = await client.nativeInvoke({ action: "put", resource: { kind: "exact", path }, body: Array.from(next), bodyDigest: Array.from(fromBase64Url(bodyDigest)), ifMatch, contentType: mediaType }); if (saved.status === 412) throw fail("conflict", "KV_PRECONDITION_FAILED", { status: 412 }); if (!saved.ok) throw fail("denied", "save denied", { status: saved.status }); const payload = await nativePayload(saved, "put", path, bodyDigest, mediaType); return { etag: payload.etag ?? saved.headers.get("etag") ?? "" }; }, reload: async () => { const fresh = await invoke("get", { kind: "exact", path }); const freshBytes = fresh.payload.bytes ?? new Uint8Array(await fresh.response.arrayBuffer()); return { bytes: freshBytes, etag: fresh.payload.etag ?? fresh.response.headers.get("etag") ?? "", mediaType: fresh.payload.mediaType ?? fresh.response.headers.get("content-type") ?? mediaType }; } });
+        mountTextEditor(editorRoot, editable, { save: async (next, ifMatch) => {
+          const storedBytes = input.envelope.version === 3 ? await client.encryptV3Content(next, mediaType) : next;
+          const storedType = input.envelope.version === 3 ? "application/vnd.tinycloud.encrypted+json" : mediaType;
+          const bodyDigest = await digestBytes(storedBytes);
+          const saved = await client.nativeInvoke({ action: "put", resource: { kind: "exact", path }, body: Array.from(storedBytes), bodyDigest: Array.from(fromBase64Url(bodyDigest)), ifMatch, contentType: storedType });
+          if (saved.status === 412) throw fail("conflict", "KV_PRECONDITION_FAILED", { status: 412 });
+          if (!saved.ok) throw fail("denied", "save denied", { status: saved.status });
+          const payload = await nativePayload(saved, "put", path, bodyDigest, storedType, input.envelope.version);
+          return { etag: payload.etag ?? saved.headers.get("etag") ?? "" };
+        }, reload: async () => {
+          const fresh = await invoke("get", { kind: "exact", path });
+          const storedBytes = fresh.payload.bytes ?? new Uint8Array(await fresh.response.arrayBuffer());
+          const opened = await decryptLoaded(storedBytes, fresh.payload.mediaType ?? fresh.response.headers.get("content-type") ?? mediaType);
+          return { bytes: opened.bytes, etag: fresh.payload.etag ?? fresh.response.headers.get("etag") ?? "", mediaType: opened.mediaType };
+        } });
       };
       if (actions.includes("list")) {
         const rootPrefix = session.resource.kind === "prefix" ? session.resource.path : "";
@@ -332,8 +366,10 @@ export function mountPolicyV2Viewer(root: HTMLElement, input: { readonly envelop
       }
       const metadataResult = await invoke("metadata", session.resource);
       const loaded = await invoke("get", session.resource);
-      const bytes = loaded.payload.bytes ?? new Uint8Array(await loaded.response.arrayBuffer());
-      const mediaType = loaded.payload.mediaType ?? metadataResult.payload.metadata?.["content-type"] ?? loaded.response.headers.get("content-type") ?? "application/octet-stream";
+      const storedBytes = loaded.payload.bytes ?? new Uint8Array(await loaded.response.arrayBuffer());
+      const opened = await decryptLoaded(storedBytes, loaded.payload.mediaType ?? metadataResult.payload.metadata?.["content-type"] ?? loaded.response.headers.get("content-type") ?? "application/octet-stream");
+      const bytes = opened.bytes;
+      const mediaType = opened.mediaType;
       const etag = loaded.payload.etag ?? metadataResult.payload.etag ?? loaded.response.headers.get("etag") ?? "";
       filePanel.hidden = false;
       await renderLoadedFile(session.resource.path, bytes, mediaType, etag);
