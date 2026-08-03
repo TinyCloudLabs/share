@@ -193,7 +193,7 @@ export function createUnifiedPolicy(input: UnifiedPolicyInput & { readonly sign:
 export function nativeProjectionHashHex(capabilities: readonly UnifiedPolicyCapability[]): string {
   const projection = sortByCanonicalJson(capabilities.map((capability) => capability.kind === "encryption"
     ? { service: "tinycloud.encryption", space: capability.resource, path: capability.resource, actions: [capability.action] }
-    : { service: "tinycloud.kv", space: capability.resource.slice("tinycloud://".length).split("/")[0], path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } }));
+    : { service: "tinycloud.kv", space: capability.resource.slice(0, capability.resource.indexOf("/kv/")), path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } }));
   return digestHex(projection, NATIVE_PROJECTION_V1_DOMAIN);
 }
 

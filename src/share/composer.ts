@@ -556,7 +556,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, new TextEncoder().encode(canonicalize(encrypted.data)), { contentType: "application/vnd.tinycloud.encrypted+json" });
     if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
 
-    const unifiedSource = { shareId, kvResource: `tinycloud://${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
+    const unifiedSource = { shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
     const order = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
     const actions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => order.indexOf(left as typeof order[number]) - order.indexOf(right as typeof order[number])) as Array<typeof order[number]>;
     const capabilities: UnifiedPolicyCapability[] = [
