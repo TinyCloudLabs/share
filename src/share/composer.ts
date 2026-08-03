@@ -603,7 +603,8 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     });
     const stored = await seal(new TextEncoder().encode(canonicalize(envelope)), key);
     if (model.linkFormat === "compact") {
-      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit });
+      const deleteAfter = new Date(expiresAt).toISOString();
+      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: stored.blob as BodyInit });
       if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
     }
     const url = model.linkFormat === "inline"
