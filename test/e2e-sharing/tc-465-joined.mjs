@@ -22,6 +22,7 @@ const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.ti
 const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const receiverRequests = [];
+const browserTraffic = [];
 const requestEntries = new WeakMap();
 const installedPages = new WeakMap();
 let receiverJourneyStarted = false;
@@ -79,6 +80,7 @@ async function proxy(request, targetOrigin, options = {}) {
     try { code = JSON.parse(raw)?.error?.code ?? "json_without_error_code"; } catch { /* sanitized text is useful for local product failures */ }
     browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
   }
+  browserTraffic.push(`${request.method()} ${original.origin}${original.pathname} ${response.status}`);
   const headers = Object.fromEntries(response.headers.entries());
   for (const name of ["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding"]) delete headers[name];
   const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get("set-cookie");
@@ -205,7 +207,7 @@ async function waitForText(page, value, timeout = 180_000) {
       authError: window.__tinycloudAuthError instanceof Error ? window.__tinycloudAuthError.message : String(window.__tinycloudAuthError ?? ""),
       diagnostics: window.__tc465Diagnostics ?? null,
     })).catch(() => null);
-    throw new Error(`timed out waiting for text ${JSON.stringify(value)}; state=${JSON.stringify(state)}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+    throw new Error(`timed out waiting for text ${JSON.stringify(value)}; state=${JSON.stringify(state)}; traffic=${JSON.stringify(browserTraffic.slice(-50))}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
   }
 }
 async function announceWallet(page) {
@@ -321,7 +323,11 @@ async function main() {
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
     browser.on("targetcreated", (target) => { void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined); });
     const page = await browser.newPage();
-    page.on("console", (message) => { if (["error", "warning"].includes(message.type())) browserErrors.push(`${message.type()}: ${message.text()}`.slice(0, 500)); });
+    page.on("console", (message) => {
+      if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
+        browserErrors.push(`${message.type()}: ${message.text()}`.replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>").slice(0, 500));
+      }
+    });
     page.on("pageerror", (error) => { browserErrors.push(`pageerror: ${error.message}`.slice(0, 500)); });
     page.on("requestfailed", (request) => { browserErrors.push(`requestfailed: ${new URL(request.url()).origin}${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`.slice(0, 500)); });
     await installInterception(page, services, fixtureOrigin);
@@ -342,7 +348,7 @@ async function main() {
     assert(upload, "share upload control is missing");
     await upload.uploadFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
     await page.click("button.create-link-button");
-    await waitForText(page, "Your private link is ready", 60_000);
+    await waitForText(page, "Your private link is ready", 30_000);
     await clickText(page, "Copy link");
     const shareUrl = await page.evaluate(() => window.__tc465Copied);
     assert.match(shareUrl, /^https:\/\/share\.tinycloud\.xyz\/s\/bafkrei[a-z2-7]{52}/);
