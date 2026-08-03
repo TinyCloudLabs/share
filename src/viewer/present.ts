@@ -19,7 +19,7 @@ function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>):
   if (typeof metadata?.filename === "string" && metadata.filename.length > 0) return safeFilename(metadata.filename);
   const candidate =
     result.envelope.display.filename ??
-    result.envelope.target.resource.path.split("/").at(-1) ??
+    (result.envelope.version === 1 ? result.envelope.target.resource.path : result.envelope.resource.path).split("/").at(-1) ??
     "shared-document.txt";
   return safeFilename(candidate);
 }

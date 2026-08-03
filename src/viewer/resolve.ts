@@ -21,12 +21,12 @@ import type { SharePolicyChallenge as PolicyChallenge, SharePresentationMaterial
 import { nativePayload } from "./policy-v2.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
 import { type TrustedNode } from "../email-share/protocol.js";
-import type { ShareEnvelope, ShareEnvelopeV2 } from "@tinycloud/share-envelope";
+import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 
 export type UnsupportedReason = "policy-target" | "recipient-did-target" | "prefix-resource";
 
 export type ResolveResult =
-  | { state: "ok"; access?: "bearer" | "policy"; envelope: ShareEnvelope; senderVerified: boolean; content?: string; contentBytes?: Uint8Array }
+  | { state: "ok"; access?: "bearer" | "policy"; envelope: ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3; senderVerified: boolean; content?: string; contentBytes?: Uint8Array }
   | { state: "invalid-link"; detail: string }
   | { state: "fetch-failed"; detail: string }
   | { state: "cid-mismatch" }
@@ -37,7 +37,7 @@ export type ResolveResult =
   | { state: "expired"; expiresAt: string }
   /** Retained for the legacy invitation controller; canonical resolution never creates this state. */
   | { state: "policy-email-claim-required"; envelope: ShareEnvelope; shareCid: string; policy: Record<string, unknown> }
-  | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2; shareCid: string; policy: Record<string, unknown> }
+  | { state: "policy-v2-claim-required"; envelope: ShareEnvelopeV2 | ShareEnvelopeV3; shareCid: string; policy: Record<string, unknown> }
   | { state: "recipient-did-authorization-required"; envelope: ShareEnvelopeV2; shareCid: string; resumeToken?: string }
   | { state: "content-fetch-failed"; detail: string }
   | { state: "content-integrity-failed" }
@@ -102,7 +102,7 @@ export async function beginBrowserAddressedChallenge(input: {
 }
 
 export async function resolveShare(href: string, options: ResolveShareOptions): Promise<ResolveResult> {
-  let addressedEnvelope: ShareEnvelope | ShareEnvelopeV2 | undefined;
+  let addressedEnvelope: ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3 | undefined;
   let addressedCid: string | undefined;
   try {
     const received = await receiveShare(href, {
@@ -118,6 +118,9 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
       onResolvedAddressedEnvelope: (envelope, cid) => { addressedEnvelope = envelope; addressedCid = cid; },
     });
     if ("state" in received) {
+      if (addressedEnvelope?.version === 3 && addressedCid !== undefined && addressedEnvelope.recipientMatcher.kind === "exactEmail") {
+        return { state: "policy-v2-claim-required", envelope: addressedEnvelope, shareCid: addressedCid, policy: addressedEnvelope.policy as Record<string, unknown> };
+      }
       if (addressedEnvelope?.version === 2 && addressedCid !== undefined) {
         return addressedEnvelope.recipientMatcher.kind === "recipientDid"
           ? { state: "recipient-did-authorization-required", envelope: addressedEnvelope, shareCid: addressedCid, ...(received.resumeToken === undefined ? {} : { resumeToken: received.resumeToken }) }
@@ -140,6 +143,9 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
     };
   } catch (error) {
     if (error instanceof ShareReceiveError) {
+      if (addressedEnvelope?.version === 3 && addressedCid !== undefined && addressedEnvelope.recipientMatcher.kind === "exactEmail" && error.code === "authorization-denied") {
+        return { state: "policy-v2-claim-required", envelope: addressedEnvelope, shareCid: addressedCid, policy: addressedEnvelope.policy as Record<string, unknown> };
+      }
       if (addressedEnvelope?.version === 2 && addressedCid !== undefined && error.code === "authorization-denied") {
         return addressedEnvelope.recipientMatcher.kind === "recipientDid"
           ? { state: "recipient-did-authorization-required", envelope: addressedEnvelope, shareCid: addressedCid }

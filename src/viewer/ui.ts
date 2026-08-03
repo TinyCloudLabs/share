@@ -14,7 +14,7 @@
  * "ok" state. Every other state renders a message and nothing else, so no
  * verification failure can ever be followed by content.
  */
-import type { ShareEnvelope } from "@tinycloud/share-envelope";
+import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 
 import type { ResolveResult, UnsupportedReason } from "./resolve.js";
 import { focusViewerRoot } from "./focus.js";
@@ -32,10 +32,12 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function filenameOf(envelope: ShareEnvelope): string {
+type PresentableEnvelope = ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3;
+
+function filenameOf(envelope: PresentableEnvelope): string {
   const fromDisplay = envelope.display.filename;
   if (fromDisplay !== undefined && fromDisplay.length > 0) return fromDisplay;
-  const path = envelope.target.resource.path;
+  const path = envelope.version === 1 ? envelope.target.resource.path : envelope.resource.path;
   return path.split("/").pop() ?? path;
 }
 
@@ -93,7 +95,7 @@ const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: strin
  */
 function renderOk(
   root: HTMLElement,
-  envelope: ShareEnvelope,
+  envelope: PresentableEnvelope,
   hasContent: boolean,
   access: "bearer" | "policy",
   senderVerified = false,

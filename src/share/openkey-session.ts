@@ -145,6 +145,10 @@ function historyPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.vault", space: "share", path: "sender-history/v1/entries/", actions: ["put", "get", "list", "del"], skipPrefix: true }];
 }
 
+export function credentialSpacePermissions(): PermissionEntry[] {
+  return [{ service: "tinycloud.kv", space: "credentials", path: "v1/", actions: ["get", "put", "list"] }];
+}
+
 export function ownerEncryptionNetwork(address: string): string {
   // Network IDs use the storage-normalized EIP-155 account spelling at the
   // signed capability boundary; the SDK still canonicalizes the space DID.
@@ -170,6 +174,7 @@ export async function createTinyCloudClient(
       ...ownerSpacePermissions(),
       ...writePermissions(capabilities),
       ...historyPermissions(),
+      ...credentialSpacePermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
     ],
   };
