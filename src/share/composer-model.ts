@@ -202,9 +202,7 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
       : "exact";
   if (model.resource.kind !== inferredResourceKind) throw validationFailure("actions");
   if (model.content.kind === "files" && model.content.files.length < 2) throw validationFailure("content");
-  if (recipient.kind === "bearer" && inferredResourceKind === "prefix") {
-    throw validationFailure("linkOnlyFolder");
-  }
+  if (inferredResourceKind === "prefix") throw validationFailure("folderUnsupported");
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
   }

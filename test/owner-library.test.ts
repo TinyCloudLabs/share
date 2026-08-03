@@ -12,28 +12,28 @@ import { ownerSpacePermissions } from "../src/share/openkey-session.js";
  * owner path to be able to read and write that space at all.
  */
 describe("owner library entries", () => {
-  it("offers each object and every folder it sits under", () => {
+  it("offers each object without inventing a prefix authority", () => {
     expect(ownerLibraryEntries(["shares/abc/report.md"])).toEqual([
       { path: "shares/abc/report.md", kind: "exact" },
-      { path: "shares/", kind: "prefix" },
-      { path: "shares/abc/", kind: "prefix" },
     ]);
   });
 
-  it("offers nested folders, because a folder share copies only direct children", () => {
+  it("offers only exact objects when several keys share directories", () => {
     const entries = ownerLibraryEntries(["shares/abc/report.md", "shares/abc/notes.md", "shares/def/plan.md"]);
-    const prefixes = entries.filter((entry) => entry.kind === "prefix").map((entry) => entry.path);
-    // "shares/" has no direct file children at all; only the nested folders do.
-    expect(prefixes).toEqual(["shares/", "shares/abc/", "shares/def/"]);
+    expect(entries).toEqual([
+      { path: "shares/abc/report.md", kind: "exact" },
+      { path: "shares/abc/notes.md", kind: "exact" },
+      { path: "shares/def/plan.md", kind: "exact" },
+    ]);
   });
 
   it("offers a top-level object without inventing a folder for it", () => {
     expect(ownerLibraryEntries(["report.md"])).toEqual([{ path: "report.md", kind: "exact" }]);
   });
 
-  it("does not repeat a folder shared by several objects", () => {
+  it("does not repeat an exact object", () => {
     const entries = ownerLibraryEntries(["a/one.md", "a/two.md", "a/one.md"]);
-    expect(entries.map((entry) => entry.path)).toEqual(["a/one.md", "a/", "a/two.md"]);
+    expect(entries.map((entry) => entry.path)).toEqual(["a/one.md", "a/two.md"]);
   });
 
   it("drops keys the signed resource boundary cannot address rather than repairing them", () => {
@@ -47,7 +47,6 @@ describe("owner library entries", () => {
   it("normalizes a trailing slash to the object it names", () => {
     expect(ownerLibraryEntries(["a/b/"])).toEqual([
       { path: "a/b", kind: "exact" },
-      { path: "a/", kind: "prefix" },
     ]);
   });
 
@@ -65,7 +64,7 @@ describe("owner library entries", () => {
   });
 
   it("still offers a sender object whose name merely starts with the reserved word", () => {
-    expect(ownerLibraryEntries(["vaults/plan.md"]).map((entry) => entry.path)).toEqual(["vaults/plan.md", "vaults/"]);
+    expect(ownerLibraryEntries(["vaults/plan.md"]).map((entry) => entry.path)).toEqual(["vaults/plan.md"]);
   });
 });
 

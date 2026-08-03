@@ -3,9 +3,10 @@ import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { ContentSource } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
+import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, nativeProjectionHashHex, registerUnifiedPolicy, requestAttestedEnforcerBinding, signV3Envelope, type UnifiedOwnerRootFactory } from "./unified-delegation.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
-import { fail, senderFailureMessage } from "./sender-failure.js";
-import { fromBase64Url } from "@tinycloud/share-envelope";
+import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
+import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
 
 /**
@@ -21,6 +22,9 @@ import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, pub
  * `sdk.createDelegatedShareKey is not a function`.
  */
 export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerSharePolicy", "createPolicyEnforcementDelegation"] as const;
+
+/** Delivery stays post-link: a missing mail bridge must never destroy a valid link. */
+export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
 
 /** Upper bound on the owner-space listing that backs the library picker. */
 export const OWNER_LIBRARY_LIMIT = 1000;
@@ -50,24 +54,22 @@ function unsafeLibraryKey(value: string): boolean {
  * already in the sender's own space, so the picker is derived from that
  * space's own key listing rather than from a server-issued capability.
  *
- * Every key becomes an exact entry, and every directory that key sits under
- * becomes a folder entry — `shares/<id>/report.md` yields the object plus the
- * folders `shares/` and `shares/<id>/`. Prefix sharing copies the complete
- * bounded descendant tree, so nested folders remain independently selectable
- * and an HTML artifact selected from the library retains all nested assets.
+ * Every key becomes one exact entry. Folder/prefix entries are intentionally
+ * absent until v3 has one specified shared wrapped-key design for all
+ * descendants.
  *
  * Keys with empty, `.` or `..` segments, or with control characters or
  * backslashes, are dropped rather than repaired: they cannot be addressed by
  * the signed resource boundary, and a silently rewritten path would be a
  * different object from the one the sender picked.
  */
-export function ownerLibraryEntries(keys: readonly string[]): readonly { readonly path: string; readonly kind: "exact" | "prefix" }[] {
-  const entries: { readonly path: string; readonly kind: "exact" | "prefix" }[] = [];
+export function ownerLibraryEntries(keys: readonly string[]): readonly { readonly path: string; readonly kind: "exact" }[] {
+  const entries: { readonly path: string; readonly kind: "exact" }[] = [];
   const seen = new Set<string>();
-  const add = (path: string, kind: "exact" | "prefix"): void => {
+  const add = (path: string): void => {
     if (seen.has(path)) return;
     seen.add(path);
-    entries.push({ path, kind });
+    entries.push({ path, kind: "exact" });
   };
   for (const key of keys) {
     if (typeof key !== "string") continue;
@@ -76,31 +78,10 @@ export function ownerLibraryEntries(keys: readonly string[]): readonly { readonl
     if (trimmed.length === 0 || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) continue;
     if (unsafeLibraryKey(trimmed)) continue;
     if (OWNER_LIBRARY_RESERVED_PREFIXES.some((prefix) => trimmed === prefix.replace(/\/$/, "") || trimmed.startsWith(prefix))) continue;
-    add(trimmed, "exact");
-    for (let depth = 1; depth < segments.length; depth += 1) add(`${segments.slice(0, depth).join("/")}/`, "prefix");
+    add(trimmed);
   }
   return entries;
 }
-
-/** The owner-share primitives the loaded Web SDK does not provide, in `OWNER_SDK_PRIMITIVES` order. */
-export function missingOwnerSdkPrimitives(module: Record<string, unknown>): readonly string[] {
-  return OWNER_SDK_PRIMITIVES.filter((name) => typeof module[name] !== "function");
-}
-
-/**
- * The owner-share methods the ceremony invokes on the TinyCloud session. Same
- * failure mode as `OWNER_SDK_PRIMITIVES`, one layer over: these are instance
- * methods on `TinyCloudWeb`, so an SDK without them fails inside the ceremony
- * rather than at import.
- */
-export const OWNER_TINYCLOUD_METHODS = ["createOwnerDelegation", "registerOwnerSharePolicy"] as const;
-
-/**
- * Deliberately not in `OWNER_TINYCLOUD_METHODS`: delivery is a post-link
- * action, so its absence must not fail share creation. The link is already
- * stable when this is reached.
- */
-export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
 
 /** The Node-signed delivery receipt, as the SDK returns it. `main.ts` forwards `authorization` and `proof` verbatim. */
 export type ShareDeliveryAuthorizationReceipt = Awaited<ReturnType<ShareTinyCloud["authorizeShareDelivery"]>>;
@@ -162,6 +143,10 @@ export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "
   readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
   readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined; readonly files: readonly File[] }) => Promise<void>;
+  /** TC-405 owner-root signer supplied by the unified delegation SDK. */
+  readonly createUnifiedOwnerRoot?: UnifiedOwnerRootFactory["createOwnerRoot"];
+  /** TC-405 policy/envelope signer; kept separate from Node/session transport. */
+  readonly signUnifiedPolicy?: (bytes: Uint8Array) => Promise<Uint8Array>;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
@@ -218,7 +203,7 @@ export function canonicalUploadFiles(selected: readonly File[]): readonly File[]
     const rawPath = browserPaths[index]!;
     const path = rawPath.startsWith(sharedFolderRoot) ? rawPath.slice(sharedFolderRoot.length) : rawPath;
     let canonicalPath: string;
-    try {
+  try {
       canonicalPath = canonicalArtifactPath(path);
     } catch {
       throw fail("filename", "upload path is unsafe");
@@ -255,7 +240,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   if (model.recipient.kind !== "bearer") {
     if (options.session === undefined) throw fail("session", "addressed share has no session");
     if (model.content.kind !== "library" && files.length === 0) throw fail("content", "addressed share has no file");
-    return createOwnerPolicyShareCanonical(files, model, options);
+    return createOwnerPolicyShare(files, model, options);
   }
   if (files.length !== 1) throw fail("linkOnlyFolder", "link-only sharing supports one exact file");
   if (file === undefined) throw fail("content", "link-only share has no file");
@@ -294,7 +279,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
-  return createOwnerPolicyShareCanonical(files, model, options);
+  return createOwnerPolicyShare(files, model, options);
   /* Legacy host-capability addressed publication is intentionally unreachable.
   if (files.length > 1) throw fail("linkOnlyFolder", "host-capability sharing supports one exact file");
   const response = options.loadCapabilities === undefined ? await fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error" }) : undefined;
@@ -454,7 +439,7 @@ async function createPolicyShare(files: readonly File[], model: ShareComposerMod
 async function createOwnerPolicyShareCanonical(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
   const tinycloud = options.tinycloud;
-  if (tinycloud === undefined) throw fail("session", "owner share has no TinyCloud session");
+  if (tinycloud === undefined) throw fail("session", "v3 owner share has no TinyCloud session");
   const config = await loadSharePublicConfig();
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
@@ -526,6 +511,118 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       if (notification.state === "partial-failure") throw new Error("We couldn't send that email. The link above still works.");
     } }),
   };
+}
+
+async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions, createOwnerRoot: UnifiedOwnerRootFactory["createOwnerRoot"]): Promise<ComposerShareResult> {
+  if (!model.encryption) throw fail("plaintext", "v3 owner-policy shares require encryption");
+  const tinycloud = options.tinycloud;
+  if (tinycloud === undefined) throw fail("session", "v3 owner share has no TinyCloud session");
+  if (options.signUnifiedPolicy === undefined) throw fail("internal", "v3 owner share has no owner policy signer");
+  const config = await loadSharePublicConfig();
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const file = files.length === 1 ? files[0] : undefined;
+  const shareId = crypto.randomUUID();
+  const resourceKind = model.resource.kind;
+  const filename = contentFilename(model.content);
+  if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
+  if (resourceKind !== "exact") throw fail("rejected", "v3 prefix shares require a shared wrapped content key");
+  const libraryContent = contentSource(model.content);
+  const selectedSource = libraryContent?.kind === "kv" ? libraryContent : undefined;
+  const sourcePath = selectedSource?.path.replace(/\/+$/, "");
+  const resourcePath = model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`;
+  const spaceId = tinycloud.spaceId;
+  if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "v3 owner share has no storage space");
+  const network = ownerEncryptionNetwork(options.openKeyAddress);
+  const key = generateKey();
+  try {
+    let plaintext: Uint8Array;
+    let plaintextType: string;
+    if (selectedSource !== undefined && sourcePath !== undefined) {
+      const existing = await tinycloud.kvForSpace(spaceId).get<Uint8Array>(sourcePath, { binary: true });
+      if (!existing.ok) throw fail("libraryCopy", "library file read failed during encryption");
+      plaintext = existing.data.data;
+      plaintextType = existing.data.headers.contentType ?? "application/octet-stream";
+    } else {
+      if (file === undefined) throw fail("content", "v3 exact upload requires one file");
+      plaintext = new Uint8Array(await file.arrayBuffer());
+      if (plaintext.byteLength !== file.size || plaintext.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
+      plaintextType = file.type.trim() || "application/octet-stream";
+    }
+    const byteLength = plaintext.byteLength;
+    const encrypted = await tinycloud.encryption.encryptToNetwork(network, plaintext, { metadata: { contentType: plaintextType, filename } });
+    plaintext.fill(0);
+    if (!encrypted.ok) throw fail("rejected", "network content encryption was rejected");
+    const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, new TextEncoder().encode(canonicalize(encrypted.data)), { contentType: "application/vnd.tinycloud.encrypted+json" });
+    if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
+
+    const unifiedSource = { shareId, kvResource: `tinycloud://${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
+    const order = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
+    const actions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => order.indexOf(left as typeof order[number]) - order.indexOf(right as typeof order[number])) as Array<typeof order[number]>;
+    const capabilities: UnifiedPolicyCapability[] = [
+      { kind: "kv", resource: unifiedSource.kvResource, selector: resourceKind, actions },
+      { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
+    ];
+    const createdAt = new Date().toISOString();
+    const ownerDid = tinycloud.did;
+    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, sign: options.signUnifiedPolicy });
+    const sourceDigest = contentSourceDigestHex(unifiedSource);
+    const projectionHash = nativeProjectionHashHex(capabilities);
+    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: model.expiresAt, fetchFn });
+    const enforcerDid = attestedEnforcerBinding.enforcerDid;
+    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(model.expiresAt) });
+    const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding, fetchFn });
+    const envelope = await signV3Envelope({
+      unsigned: {
+        version: 3,
+        shareId,
+        recipientMatcher: model.recipient.kind === "exactEmail" ? { kind: "exactEmail", value: model.recipient.value! } : { kind: "emailDomain", value: model.recipient.value! },
+        ...(model.deliveryEmail === undefined ? {} : { deliveryEmail: model.deliveryEmail }),
+        actions: (["read", "list", "edit"] as const).filter((action) => model.permissions.includes(action)),
+        resource: { kind: resourceKind, path: resourcePath },
+        target: { origin: config.nodeOrigin, nodeAudience: enforcerDid, spaceId },
+        policy: policy.policy,
+        policyCid: policy.policyCid,
+        policyRoot: roots.policyRoot,
+        enforcementRoot: roots.enforcementRoot,
+        attestedEnforcerBinding,
+        contentSource: unifiedSource,
+        contentSourceDigestHex: sourceDigest,
+        encryptionNetwork: network,
+        expiry: model.expiresAt,
+        display: { filename },
+        encrypted: true,
+        metadata: { mediaType: contentMediaType(model.content), byteLength, filename },
+      },
+      signerDid: ownerDid,
+      sign: options.signUnifiedPolicy,
+    });
+    const stored = await seal(new TextEncoder().encode(canonicalize(envelope)), key);
+    if (model.linkFormat === "compact") {
+      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": model.expiresAt }, body: stored.blob as BodyInit });
+      if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
+    }
+    const url = model.linkFormat === "inline"
+      ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
+      : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
+    const binding = await fetchFn("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
+    if (!binding.ok) throw fail("save", "v3 share binding was rejected");
+    return { url, cid: stored.cid, format: model.linkFormat, expiresAt: model.expiresAt, delegationCid: registration.enforcementRootCid };
+  } finally {
+    key.fill(0);
+  }
+}
+
+async function createOwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
+  if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
+  const tinycloud = options.tinycloud;
+  if (tinycloud === undefined) throw fail("session", "owner share has no TinyCloud session");
+  // An addressed owner share must never silently downgrade to the legacy
+  // custom resolver.  The v3 owner-root factory and policy signer are a
+  // single capability boundary; until both are supplied, fail closed.
+  if (options.createUnifiedOwnerRoot === undefined || options.signUnifiedPolicy === undefined) {
+    throw fail("internal", "unified v3 owner-share primitives are unavailable");
+  }
+  return createV3OwnerPolicyShare(files, model, options, options.createUnifiedOwnerRoot);
 }
 
 export async function uploadSelectedFiles(
@@ -649,34 +746,29 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     const item = el(doc, "li", ""); item.dataset.state = state; item.append(el(doc, "span", "", number), doc.createTextNode(label)); progress.append(item);
   }
 
-  // What to share. One target, four ways in: click, drag, paste, library.
+  // What to share. Prefix content is deliberately absent until one shared
+  // wrapped-key design can encrypt every descendant without widening access.
   // The kind of content is inferred from what the sender did (P1-1).
   const contentSection = el(doc, "section", "composer-section content-section");
   const drop = el(doc, "div", "content-dropzone");
   drop.setAttribute("role", "group");
   drop.setAttribute("aria-label", "Choose content to share");
-  const dropTitle = el(doc, "strong", "dropzone-title", "Drop files here");
+  const dropTitle = el(doc, "strong", "dropzone-title", "Drop a file here");
   const dropHint = el(doc, "span", "dropzone-hint", "Or choose another way");
   const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB total");
   const fileInput = el(doc, "input", "upload-input") as HTMLInputElement;
-  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*"; fileInput.multiple = true;
-  const folderInput = el(doc, "input", "upload-input") as HTMLInputElement;
-  folderInput.type = "file"; folderInput.name = "artifact-folder"; folderInput.multiple = true;
-  folderInput.setAttribute("webkitdirectory", "");
-  folderInput.setAttribute("directory", "");
+  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*";
   const dropActions = el(doc, "div", "dropzone-actions");
-  const chooseFileButton = el(doc, "button", "dropzone-action", "Choose files") as HTMLButtonElement;
+  const chooseFileButton = el(doc, "button", "dropzone-action", "Choose file") as HTMLButtonElement;
   chooseFileButton.type = "button";
-  const chooseFolderButton = el(doc, "button", "dropzone-action", "Choose folder") as HTMLButtonElement;
-  chooseFolderButton.type = "button";
   const pasteButton = el(doc, "button", "dropzone-action dropzone-paste", "Paste from clipboard") as HTMLButtonElement;
   pasteButton.type = "button";
   const libraryLink = el(doc, "button", "dropzone-action dropzone-library", "Pick from your library") as HTMLButtonElement;
   libraryLink.type = "button";
-  dropActions.append(chooseFileButton, chooseFolderButton, pasteButton, libraryLink);
+  dropActions.append(chooseFileButton, pasteButton, libraryLink);
   const pasteStatus = el(doc, "span", "dropzone-paste-status");
   pasteStatus.setAttribute("aria-live", "polite");
-  drop.append(dropTitle, dropHint, dropLimit, fileInput, folderInput, dropActions, pasteStatus);
+  drop.append(dropTitle, dropHint, dropLimit, fileInput, dropActions, pasteStatus);
 
   const chosen = el(doc, "div", "content-chosen"); chosen.hidden = true;
   const chosenName = el(doc, "strong", "content-chosen-name");
@@ -849,10 +941,14 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   refreshRecipient();
 
   const showDropzone = (): void => {
-    contentKind = "empty"; chosenFiles = []; fileInput.value = ""; folderInput.value = ""; saveAsLabel.hidden = false;
+    contentKind = "empty"; chosenFiles = []; fileInput.value = ""; saveAsLabel.hidden = false;
     chosen.hidden = true; textPanel.hidden = true; libraryPanel.hidden = true; drop.hidden = false; drop.dataset.over = "false";
   };
   const chooseFiles = (selected: readonly File[]): void => {
+    if (selected.length !== 1) {
+      setStatus(status, "Choose one file", SENDER_FAILURE.folderUnsupported, "error-file", true);
+      return;
+    }
     let files: readonly File[];
     try {
       files = canonicalUploadFiles(selected);
@@ -948,11 +1044,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   };
   drop.addEventListener("click", (event) => {
     const target = event.target;
-    if (target === fileInput || target === folderInput || target === chooseFileButton || target === chooseFolderButton || target === pasteButton || target === libraryLink) return;
+    if (target === fileInput || target === chooseFileButton || target === pasteButton || target === libraryLink) return;
     fileInput.click();
   });
   chooseFileButton.addEventListener("click", () => fileInput.click());
-  chooseFolderButton.addEventListener("click", () => folderInput.click());
   pasteButton.addEventListener("click", () => { void readClipboard(); });
   drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.dataset.over = "true"; });
   drop.addEventListener("dragleave", () => { drop.dataset.over = "false"; });
@@ -972,7 +1067,6 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     handlePaste(event);
   }, { signal: pasteScope.signal });
   fileInput.addEventListener("change", () => { const picked = Array.from(fileInput.files ?? []); if (picked.length > 0) chooseFiles(picked); });
-  folderInput.addEventListener("change", () => { const picked = Array.from(folderInput.files ?? []); if (picked.length > 0) chooseFiles(picked); });
   libraryLink.addEventListener("click", chooseLibrary);
   source.addEventListener("change", refreshRecipient);
   change.addEventListener("click", () => { showDropzone(); drop.focus(); });
@@ -980,11 +1074,12 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   useUpload.addEventListener("click", () => { showDropzone(); drop.focus(); });
 
   const addLibraryOption = (path: string, kind: "exact" | "prefix", space: string, capabilityId?: string, matcher?: { readonly kind: RecipientKind; readonly value: string }): void => {
-    const canonical = kind === "prefix" ? (path.endsWith("/") ? path : `${path}/`) : path.replace(/\/$/, "");
+    if (kind === "prefix") return;
+    const canonical = path.replace(/\/$/, "");
     if (canonical.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(canonical) || /[\u0000-\u001f\u007f\\]/.test(canonical)) return;
     if (Array.from(source.options).some((existing) => existing.value === canonical)) return;
     const readable = canonical.split("/").filter(Boolean).at(-1) ?? canonical;
-    const option = el(doc, "option", "", kind === "prefix" ? `${readable}/ (folder)` : readable) as HTMLOptionElement;
+    const option = el(doc, "option", "", readable) as HTMLOptionElement;
     option.value = canonical; option.dataset.space = space; option.dataset.resourceKind = kind;
     if (capabilityId !== undefined) option.dataset.capabilityId = capabilityId;
     if (matcher !== undefined) { option.dataset.recipientMatcherKind = matcher.kind; option.dataset.recipientMatcherValue = matcher.value; }
