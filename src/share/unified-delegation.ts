@@ -67,6 +67,7 @@ export interface OwnerRootInput {
   readonly contentSourceDigestHex: string;
   readonly capabilityCeilingHashHex: string;
   readonly nativeProjectionHashHex: string;
+  readonly notBefore: Date;
   readonly expiresAt: Date;
   readonly nodeAudience: string;
   readonly capabilities: readonly UnifiedPolicyCapability[];
@@ -217,7 +218,7 @@ function rootFromDelegation(value: PortableDelegationLike, input: OwnerRootInput
     nativeProjectionHashHex: input.nativeProjectionHashHex,
     nodeAudience: input.nodeAudience,
   };
-  if (principal !== input.ownerDid || compact.payload.aud !== input.audienceDid || compact.payload.prf.length !== 0 || compact.payload.exp !== Math.floor(input.expiresAt.getTime() / 1000) || canonicalize(compact.payload.att) !== canonicalize(expectedAttenuation) || Object.entries(required).some(([key, expected]) => fact[key] !== expected) || (input.role === "policy-enforcement" ? fact.enforcerDid !== input.audienceDid : "enforcerDid" in fact)) throw new TypeError("owner root signed projection mismatch");
+  if (principal !== input.ownerDid || compact.payload.aud !== input.audienceDid || compact.payload.prf.length !== 0 || compact.payload.nbf !== Math.floor(input.notBefore.getTime() / 1000) || compact.payload.exp !== Math.floor(input.expiresAt.getTime() / 1000) || canonicalize(compact.payload.att) !== canonicalize(expectedAttenuation) || Object.entries(required).some(([key, expected]) => fact[key] !== expected) || (input.role === "policy-enforcement" ? fact.enforcerDid !== input.audienceDid : "enforcerDid" in fact)) throw new TypeError("owner root signed projection mismatch");
   return { cid: value.cid, authorization, role: input.role };
 }
 
@@ -251,6 +252,7 @@ export async function createSiblingRoots(input: {
     contentSourceDigestHex: input.contentSourceDigestHex,
     capabilityCeilingHashHex: digestHex(capabilityCeiling, POLICY_CAPABILITY_V1_DOMAIN),
     nativeProjectionHashHex: input.nativeProjectionHashHex,
+    notBefore: new Date(input.policy.createdAt),
     expiresAt: input.expiresAt,
     nodeAudience: input.nodeAudience,
     capabilities: capabilityCeiling,

@@ -98,17 +98,21 @@ describe("TC-405 unified delegation", () => {
     };
     const vectorSource = vector.policy.value.contentSource;
     const vectorExpiry = new Date(vector.policy.value.expiresAt);
+    const rootNotBefore: number[] = [];
     const roots = await createSiblingRoots({
       factory: {
-        createOwnerRoot: async (input) => ({
-          cid: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].cid,
-          delegationHeader: { Authorization: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].authorization },
-          delegateDID: input.audienceDid,
-          spaceId: "applications",
-          path: "shares/share-405/document.txt",
-          actions: ["tinycloud.kv/get"],
-          expiry: input.expiresAt,
-        }),
+        createOwnerRoot: async (input) => {
+          rootNotBefore.push(input.notBefore.getTime());
+          return {
+            cid: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].cid,
+            delegationHeader: { Authorization: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].authorization },
+            delegateDID: input.audienceDid,
+            spaceId: "applications",
+            path: "shares/share-405/document.txt",
+            actions: ["tinycloud.kv/get"],
+            expiry: input.expiresAt,
+          };
+        },
       },
       ownerDid: vector.principals.ownerDid,
       policy: policy.policy,
@@ -120,6 +124,7 @@ describe("TC-405 unified delegation", () => {
       nodeAudience: vector.principals.nodeDid,
       expiresAt: vectorExpiry,
     });
+    expect(rootNotBefore).toEqual([Date.parse(vector.policy.value.createdAt), Date.parse(vector.policy.value.createdAt)]);
     const envelope = await signV3Envelope({
       unsigned: {
         version: 3,
