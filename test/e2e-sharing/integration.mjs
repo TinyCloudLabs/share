@@ -663,7 +663,7 @@ async function startShare(tempRoot, fixtures) {
   });
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
-  await waitFor(`${origin}/health/readiness`);
+  await waitFor(`${origin}/health/readiness`, 60_000, share);
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
 }
