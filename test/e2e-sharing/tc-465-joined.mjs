@@ -270,6 +270,7 @@ async function main() {
     const page = await browser.newPage();
     await installInterception(page, services, fixtureOrigin);
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
+    await page.waitForFunction(() => { const button = document.querySelector("button.auth-button"); return button !== null && !button.disabled; }, { timeout: 60_000 });
     await page.click("button.auth-button");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
