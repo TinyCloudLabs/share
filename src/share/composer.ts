@@ -564,16 +564,17 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
     ];
     const createdAt = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z");
+    const expiresAt = new Date(Math.floor(Date.parse(model.expiresAt) / 1000) * 1000).toISOString().replace(".000Z", "Z");
     const ownerDid = tinycloud.credentialHolderDid;
     const credentialRequirement = model.recipient.kind === "exactEmail"
       ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
       : undefined;
-    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), sign: options.signUnifiedPolicy });
+    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), sign: options.signUnifiedPolicy });
     const sourceDigest = contentSourceDigestHex(unifiedSource);
     const projectionHash = nativeProjectionHashHex(capabilities);
-    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: model.expiresAt, fetchFn });
+    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: expiresAt, fetchFn });
     const enforcerDid = attestedEnforcerBinding.enforcerDid;
-    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(model.expiresAt) });
+    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(expiresAt) });
     const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding, fetchFn });
     const envelope = await signV3Envelope({
       unsigned: {
@@ -592,7 +593,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         contentSource: unifiedSource,
         contentSourceDigestHex: sourceDigest,
         encryptionNetwork: network,
-        expiry: model.expiresAt,
+        expiry: expiresAt,
         display: { filename },
         encrypted: true,
         metadata: { mediaType: contentMediaType(model.content), byteLength, filename },
@@ -602,7 +603,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     });
     const stored = await seal(new TextEncoder().encode(canonicalize(envelope)), key);
     if (model.linkFormat === "compact") {
-      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": model.expiresAt }, body: stored.blob as BodyInit });
+      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": expiresAt }, body: stored.blob as BodyInit });
       if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
     }
     const url = model.linkFormat === "inline"
@@ -610,7 +611,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
     const binding = await fetchFn("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
     if (!binding.ok) throw fail("save", "v3 share binding was rejected");
-    return { url, cid: stored.cid, format: model.linkFormat, expiresAt: model.expiresAt, delegationCid: registration.enforcementRootCid };
+    return { url, cid: stored.cid, format: model.linkFormat, expiresAt, delegationCid: registration.enforcementRootCid };
   } finally {
     key.fill(0);
   }
