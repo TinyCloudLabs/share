@@ -325,9 +325,9 @@ async function main() {
     await clickText(page, "Create TinyCloud Space", true);
     await waitForText(page, "Shared by me.", 60_000);
     await clickText(page, "New share");
-    await waitForText(page, "Share a file");
+    await page.waitForSelector('input[name="recipient"][value="exactEmail"]', { timeout: 60_000 });
     await page.evaluate(() => { window.__tc465Copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (value) => { window.__tc465Copied = value; return Promise.resolve(); } } }); });
-    await page.click("input[value=exactEmail]");
+    await page.click('input[name="recipient"][value="exactEmail"]');
     await page.type("input[name=recipient-value]", "sam@tinycloud.xyz");
     const upload = await page.$("input[name=document]");
     assert(upload, "share upload control is missing");
