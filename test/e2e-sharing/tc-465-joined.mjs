@@ -62,12 +62,16 @@ async function proxy(request, targetOrigin, options = {}) {
     redirect: "manual",
     ...(method === "GET" || method === "HEAD" ? {} : { body: await request.fetchPostData() }),
   });
-  const responseBytes = Buffer.from(await response.arrayBuffer());
+  let responseBytes = Buffer.from(await response.arrayBuffer());
+  if (options.rewriteNodeCsp === true && response.headers.get("content-type")?.includes("text/html")) {
+    responseBytes = Buffer.from(responseBytes.toString("utf8").replaceAll("https://tee.node.tinycloud.xyz", canonical.node));
+  }
   if (options.entry !== undefined) {
     options.entry.status = response.status;
     try { options.entry.responseBody = JSON.parse(responseBytes.toString("utf8")); } catch { /* response validation remains with the product client */ }
   }
   const headers = Object.fromEntries(response.headers.entries());
+  delete headers["content-length"];
   const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get("set-cookie");
   if (setCookie !== null && setCookie !== undefined) headers["set-cookie"] = setCookie;
   if (options.cors) {
@@ -120,7 +124,7 @@ async function installInterception(page, services, fixtureOrigin) {
     } : undefined;
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
-    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry });
+    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true });
     if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
