@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { Cbor } from "ox";
 import { privateKeyToAccount } from "viem/accounts";
 
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -18,10 +19,13 @@ const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRo
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
 const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so" };
-const expectedContent = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"), "utf8");
+const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
-const requests = [];
+const receiverRequests = [];
+const requestEntries = new WeakMap();
 const installedPages = new WeakSet();
+let receiverJourneyStarted = false;
+let receiverSequence = 0;
 let integration;
 let fixture;
 let browser;
@@ -57,6 +61,11 @@ async function proxy(request, targetOrigin, options = {}) {
     redirect: "manual",
     ...(method === "GET" || method === "HEAD" ? {} : { body: request.postDataBuffer() }),
   });
+  const responseBytes = Buffer.from(await response.arrayBuffer());
+  if (options.entry !== undefined) {
+    options.entry.status = response.status;
+    try { options.entry.responseBody = JSON.parse(responseBytes.toString("utf8")); } catch { /* response validation remains with the product client */ }
+  }
   const headers = Object.fromEntries(response.headers.entries());
   const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get("set-cookie");
   if (setCookie !== null && setCookie !== undefined) headers["set-cookie"] = setCookie;
@@ -70,7 +79,7 @@ async function proxy(request, targetOrigin, options = {}) {
       headers.vary = "Origin";
     }
   }
-  await request.respond({ status: response.status, headers, body: Buffer.from(await response.arrayBuffer()) });
+  await request.respond({ status: response.status, headers, body: responseBytes });
 }
 
 const contentTypes = { ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".wasm": "application/wasm", ".png": "image/png", ".ico": "image/x-icon" };
@@ -90,23 +99,42 @@ async function installInterception(page, services, fixtureOrigin) {
   await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
-    if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin);
-    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true });
-    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin);
+    const headers = request.headers();
+    const entry = receiverJourneyStarted ? {
+      sequence: ++receiverSequence,
+      method: request.method(),
+      origin: url.origin,
+      path: url.pathname,
+      status: undefined,
+      body: (() => { const body = request.postData(); if (body === undefined) return undefined; try { return JSON.parse(body); } catch { return body; } })(),
+      authorization: headers.authorization,
+    } : undefined;
+    if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
+    if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry });
+    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry });
+    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
-      return proxy(request, fixtureOrigin, { cors: true });
+      return proxy(request, fixtureOrigin, { cors: true, entry });
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
-    if (url.origin === canonical.openKey) return proxy(request, services.openKeyOrigin);
+    if (url.origin === canonical.openKey) return proxy(request, services.openKeyOrigin, { entry });
     if (url.protocol === "data:" || url.protocol === "blob:" || url.origin === "null") return request.continue();
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
-  page.on("response", (response) => {
-    const url = new URL(response.url());
-    requests.push({ method: response.request().method(), origin: url.origin, path: url.pathname, status: response.status() });
-  });
+  page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
   await page.evaluateOnNewDocument((address, shareOrigin) => {
+    const originalDecode = TextDecoder.prototype.decode;
+    TextDecoder.prototype.decode = function decode(input, options) {
+      const value = originalDecode.call(this, input, options);
+      if (value.includes("This file is a deterministic hermetic upload fixture.") && input !== undefined) {
+        const bytes = ArrayBuffer.isView(input)
+          ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+          : new Uint8Array(input);
+        window.__tc465RenderedBytes = Array.from(bytes);
+      }
+      return value;
+    };
     const originalAttachShadow = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function attachShadow(init) { return originalAttachShadow.call(this, { ...init, mode: "open" }); };
     const provider = {
@@ -149,6 +177,36 @@ async function clickText(page, value, optional = false) {
   if (!clicked && !optional) throw new Error(`action not found: ${value}`);
   return clicked;
 }
+
+function successful(entry) { return entry.status >= 200 && entry.status < 300; }
+
+function authorizationValue(authorization) {
+  const encoded = authorization?.replace(/^Bearer\s+/i, "");
+  if (encoded === undefined || encoded.length === 0) return undefined;
+  try {
+    const parts = encoded.split(".");
+    if (parts.length === 3) return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return Cbor.decode(Buffer.from(encoded, "base64url"));
+  } catch { return undefined; }
+}
+
+function stringsIn(value, found = []) {
+  if (typeof value === "string") found.push(value);
+  else if (Array.isArray(value)) for (const item of value) stringsIn(item, found);
+  else if (value instanceof Map) for (const [key, item] of value) { stringsIn(key, found); stringsIn(item, found); }
+  else if (value !== null && typeof value === "object") for (const [key, item] of Object.entries(value)) { found.push(key); stringsIn(item, found); }
+  return found;
+}
+
+function authorizationNames(entry) { return stringsIn(authorizationValue(entry.authorization)); }
+
+function routeAfter(label, after, predicate) {
+  const entry = receiverRequests.find((candidate) => candidate.sequence > after && successful(candidate) && predicate(candidate));
+  assert(entry, `${label} was not observed after receiver sequence ${after}`);
+  return entry;
+}
+
+function escaped(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 async function main() {
   const control = await mkdtemp(join(tmpdir(), "tinycloud-tc465-"));
@@ -207,6 +265,7 @@ async function main() {
     assert.equal(binding.body.shareCid, shareCid);
 
     const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 180_000 });
+    receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     await waitForText(page, "Confirm your email to open this");
     await page.click("button.viewer-primary-action");
@@ -229,17 +288,87 @@ async function main() {
     await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), { timeout: 180_000 }, renderedNeedle);
     const rendered = await page.evaluate((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), renderedNeedle);
     assert.equal(rendered, true, `final rendered content was missing: ${(await text(page)).slice(-1000)}`);
+    const renderedBytes = Buffer.from(await page.evaluate(() => window.__tc465RenderedBytes ?? []));
+    assert(renderedBytes.length > 0, "the renderer did not expose the decrypted byte slice it decoded");
+    assert.deepEqual(renderedBytes, expectedBytes, "the decrypted bytes passed to the renderer differ from the fixture");
 
-    const successful = (path) => requests.some((entry) => (typeof path === "string" ? entry.path === path : path.test(entry.path)) && entry.status >= 200 && entry.status < 300);
+    const create = routeAfter("credential acquisition create", 0, (entry) => entry.method === "POST" && entry.origin === canonical.witness && entry.path === "/v1/acquisitions");
+    const acquisitionId = create.responseBody?.requestId;
+    assert.match(acquisitionId, /^[A-Za-z0-9_-]{16,128}$/, "credential acquisition create did not return a canonical request id");
+    const acquisitionPath = new RegExp(`^/v1/acquisitions/${escaped(acquisitionId)}/`);
+    const state = routeAfter("credential acquisition state", create.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/state"));
+    const challenge = routeAfter("credential acquisition OTP challenge", state.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/challenge") && entry.body?.step === "mailbox_otp");
+    const proof = routeAfter("credential acquisition OTP proof", challenge.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/proof") && entry.body?.step === "mailbox_otp");
+    const holderBinding = routeAfter("credential acquisition holder binding", proof.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/holder-binding"));
+    const holderSignature = routeAfter("credential acquisition holder signature", holderBinding.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/holder-signature"));
+    const issue = routeAfter("credential acquisition issue", holderSignature.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/issue"));
+    const result = routeAfter("credential acquisition result", issue.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/result"));
+
+    const credentialWrite = routeAfter("durable credential-space write", result.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/records/")));
+    const credentialRecord = credentialWrite.responseBody.written.find((key) => key.startsWith("v1/records/"));
+    const credentialWriteAuth = authorizationNames(credentialWrite);
+    assert(credentialWrite.authorization && credentialWriteAuth.includes(credentialRecord), "credential-space write was not authenticated for the exact record");
+    const credentialRead = routeAfter("authenticated credential-space readback", credentialWrite.sequence, (entry) => entry.path === "/invoke" && entry.responseBody?.type === "TinyCloudStoredCredential" && `v1/records/${entry.responseBody.recordId}` === credentialRecord);
+    assert(credentialRead.authorization && authorizationNames(credentialRead).includes(credentialRecord), "credential-space readback was not authenticated for the exact record");
+
+    const policyChallenge = routeAfter("Policy/v3 challenge", credentialRead.sequence, (entry) => entry.path === "/share/v3/policy/challenges" && entry.method === "POST");
+    const policyCid = policyChallenge.body?.policyCid;
+    assert.equal(policyCid, binding.body.policyCid, "Policy/v3 challenge did not bind the published policy CID");
+    const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
+    assert(requestedKv?.resource?.startsWith("tinycloud://"), "Policy/v3 challenge did not request one exact TinyCloud KV resource");
+    assert.equal(requestedKv.selector, "exact");
+    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get"]);
+    const kvResource = requestedKv.resource;
+    const resource = kvResource.split("/kv/")[1];
+    assert(resource, "Policy/v3 challenge KV resource path is missing");
+
+    const policyMint = routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
+    const credentialSpaceId = policyMint.body?.credentialSpaceId;
+    assert.equal(typeof credentialSpaceId, "string", "Policy/v3 mint omitted the recipient credentials space");
+    assert.equal(policyMint.body?.presentation?.credentialSpaceOwnerDid, credentialRead.responseBody.ownerDid, "Policy/v3 presentation did not bind the durable credential owner");
+    assert.deepEqual(policyMint.body?.presentation?.requestedCapabilities, policyChallenge.body.requestedCapabilities, "Policy/v3 mint substituted the challenged capability slice");
+
+    const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
+    assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
+    const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(resource));
+    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
+    assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
+    const allowedOrigins = new Set([...Object.values(canonical), "null"]);
+    const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
+    assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
+
+    const chain = [
+      "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
+      "credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint", "delegate", `invoke:${kvResource}`, "decrypt", "render",
+    ];
     const statuses = {
-      policyV3Mint: successful("/share/v3/policy/delegations"),
-      delegate: successful("/delegate"),
-      invoke: successful("/invoke"),
-      decrypt: successful(/^\/encryption\/networks\/[^/]+\/decrypt$/),
+      acquisition: result.sequence > create.sequence,
+      durableCredential: credentialRead.sequence > credentialWrite.sequence,
+      policyV3Challenge: policyChallenge.sequence > credentialRead.sequence,
+      policyV3Mint: policyMint.sequence > policyChallenge.sequence,
+      delegate: delegate.sequence > policyMint.sequence,
+      invoke: invoke.sequence > delegate.sequence,
+      decrypt: decrypt.sequence > invoke.sequence,
       rendered,
+      legacyPolicySessionAbsent: true,
+      zeroExternalDestinations: true,
     };
-    assert.deepEqual(statuses, { policyV3Mint: true, delegate: true, invoke: true, decrypt: true, rendered: true });
-    const evidence = { type: "tinycloud.share/tc-465-joined-evidence/v1", renderedSha256: createHash("sha256").update(expectedContent).digest("hex"), statuses };
+    assert(Object.values(statuses).every((value) => value === true), "receiver chain status is incomplete");
+    const evidence = {
+      type: "tinycloud.share/tc-465-joined-evidence/v2",
+      renderedSha256: createHash("sha256").update(renderedBytes).digest("hex"),
+      statuses,
+      chain,
+      slice: {
+        shareCid,
+        policyCid,
+        resource,
+        credentialSpaceId,
+        credentialRecord,
+        acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
+      },
+    };
+    assert.equal(evidence.renderedSha256, createHash("sha256").update(expectedBytes).digest("hex"), "rendered bytes digest does not match the fixture digest");
     await writeFile(join(control, "tc465-result.json"), JSON.stringify(evidence), { flag: "wx", mode: 0o600 });
     await writeFile(join(control, "release"), "ok\n", { flag: "wx", mode: 0o600 });
     const exitCode = await new Promise((resolveExit) => integration.once("exit", resolveExit));

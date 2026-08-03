@@ -122,8 +122,9 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
       await stat(join(resolvedControlDir, "release"));
       if (tc465Joined) {
         const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
-        const stages = ["policyV3Mint", "delegate", "invoke", "decrypt", "rendered"];
-        if (evidence?.type !== "tinycloud.share/tc-465-joined-evidence/v1" || Object.keys(evidence).sort().join(",") !== "renderedSha256,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true)) throw new Error("dedicated TC-465 evidence is incomplete");
+        const stages = ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
+        const sliceKeys = ["acquisitionIdSha256", "credentialRecord", "credentialSpaceId", "policyCid", "resource", "shareCid"];
+        if (evidence?.type !== "tinycloud.share/tc-465-joined-evidence/v2" || Object.keys(evidence).sort().join(",") !== "chain,renderedSha256,slice,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true) || !Array.isArray(evidence.chain) || evidence.chain.length < 12 || typeof evidence.slice !== "object" || evidence.slice === null || Object.keys(evidence.slice).sort().join(",") !== sliceKeys.join(",") || Object.values(evidence.slice).some((value) => typeof value !== "string" || value.length === 0)) throw new Error("dedicated TC-465 evidence is incomplete");
         tc465Evidence = evidence;
       }
       checks.push("External packed-CLI and normal-Chrome product journey completed while the production-shaped composition remained live.");
@@ -495,7 +496,11 @@ async function startFixtures(tempRoot) {
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
-  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
+  // This composition deliberately injects deterministic issuer and node keys.
+  // `mounted-fixture` is Node's explicit guard for accepting that material;
+  // `local-tee` only supplies the local key-derived TeeContext and correctly
+  // leaves the production trust-bundle placeholder rejection enabled.
+  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
   // Export the public invitation descriptor before launch (it only needs the
   // key material, not a running server) so the canonical trust bundle can be
@@ -1266,7 +1271,7 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   // requires the upstream routing gate to have proven the Share host's own
   // three destinations are loopback, which is the destination set the browser
   // audit structurally cannot see.
-  const result = { status, summary, localUnpushedMode, releaseInputsVerified, requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, ...(tc465Evidence === undefined ? {} : { tc465Evidence }), launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
