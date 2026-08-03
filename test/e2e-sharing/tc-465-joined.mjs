@@ -80,7 +80,7 @@ async function proxy(request, targetOrigin, options = {}) {
     browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
   }
   const headers = Object.fromEntries(response.headers.entries());
-  delete headers["content-length"];
+  for (const name of ["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding"]) delete headers[name];
   const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get("set-cookie");
   if (setCookie !== null && setCookie !== undefined) headers["set-cookie"] = setCookie;
   if (options.cors) {
