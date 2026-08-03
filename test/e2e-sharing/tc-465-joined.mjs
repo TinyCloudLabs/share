@@ -150,6 +150,13 @@ async function installInterception(page, services, fixtureOrigin) {
     await page.evaluateOnNewDocument((address, shareOrigin) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
     window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
+    const originalDebug = console.debug;
+    console.debug = (...args) => {
+      if (String(args[0] ?? "").startsWith("tinycloud share:")) {
+        window.__tc465Diagnostics.productError = String(args[1]?.message ?? args[1] ?? "unknown");
+      }
+      originalDebug(...args);
+    };
     const originalDecode = TextDecoder.prototype.decode;
     TextDecoder.prototype.decode = function decode(input, options) {
       const value = originalDecode.call(this, input, options);
