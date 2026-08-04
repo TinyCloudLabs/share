@@ -32,13 +32,13 @@
   },
   "dependencies": {
     "@openkey/sdk": "^0.9.0",
-    "@tinycloud/bootstrap": "file:vendor/tinycloud-bootstrap-2.6.0.tgz",
+    "@tinycloud/bootstrap": "file:vendor/tinycloud-bootstrap-2.7.0-beta.1-f9f8f1c.tgz",
     "@tinycloud/node-sdk": "file:vendor/tinycloud-node-sdk-2.11.0-beta.12-f9f8f1c.tgz",
-    "@tinycloud/node-sdk-wasm": "file:vendor/tinycloud-node-sdk-wasm-1.7.5.tgz",
-    "@tinycloud/operations": "file:vendor/tinycloud-operations-0.3.2-beta.5.tgz",
+    "@tinycloud/node-sdk-wasm": "file:vendor/tinycloud-node-sdk-wasm-1.7.6-beta.0-f9f8f1c.tgz",
+    "@tinycloud/operations": "file:vendor/tinycloud-operations-0.3.2-beta.11-f9f8f1c.tgz",
     "@tinycloud/sdk-core": "file:vendor/tinycloud-sdk-core-2.11.0-beta.12-f9f8f1c.tgz",
     "@tinycloud/sdk-services": "file:vendor/tinycloud-sdk-services-2.11.0-beta.11-f9f8f1c.tgz",
-    "@tinycloud/web-sdk-wasm": "file:vendor/tinycloud-web-sdk-wasm-1.7.5.tgz",
+    "@tinycloud/web-sdk-wasm": "file:vendor/tinycloud-web-sdk-wasm-1.7.6-beta.0-f9f8f1c.tgz",
     "@tinycloud/share-cli": "*",
     "@tinycloud/share-app-compat": "*",
     "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.2.0-beta.2-f9f8f1c.tgz",
@@ -64,10 +64,13 @@
     "vitest": "^3.2.4"
   },
   "overrides": {
+    "@tinycloud/bootstrap": "$@tinycloud/bootstrap",
     "@tinycloud/node-sdk": "$@tinycloud/node-sdk",
+    "@tinycloud/node-sdk-wasm": "$@tinycloud/node-sdk-wasm",
     "@tinycloud/sdk-core": "$@tinycloud/sdk-core",
     "@tinycloud/sdk-services": "$@tinycloud/sdk-services",
     "@tinycloud/share-envelope": "$@tinycloud/share-envelope",
-    "@tinycloud/share-sdk": "$@tinycloud/share-sdk"
+    "@tinycloud/share-sdk": "$@tinycloud/share-sdk",
+    "@tinycloud/web-sdk-wasm": "$@tinycloud/web-sdk-wasm"
   }
 }

@@ -1,4 +1,5 @@
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import type { CredentialProgressEvent } from "@tinycloud/sdk-core";
 import type { InlineEncryptedEnvelope, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { canonicalDigest, emailCredentialRequirement, EMAIL_CREDENTIAL_DESCRIPTOR, type EmailCredentialRequirement } from "../credentials/email.js";
 
@@ -229,7 +230,7 @@ export async function runCredentialReceiver(input: {
     interaction: "popup",
     openerOrigin: input.openerOrigin,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
-    onProgress: (progress) => {
+    onProgress: (progress: CredentialProgressEvent) => {
       const state = mapCredentialProgress(progress);
       if (state !== undefined) input.onState?.(state);
     },
