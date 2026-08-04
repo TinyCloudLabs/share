@@ -191,6 +191,7 @@ export async function createTinyCloudClient(
     spacePrefix: "share",
     sessionStorageKeyPrefix: "tinycloud-share",
     manifest,
+    notifications: { popups: false },
   });
   onStatus("Connecting to your encrypted TinyCloud…");
   await tinycloud.signIn();
