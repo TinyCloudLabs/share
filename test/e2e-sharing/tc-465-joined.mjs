@@ -519,8 +519,6 @@ async function main() {
     assert.equal(requestedKv.selector, "exact");
     assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get"]);
     const kvResource = requestedKv.resource;
-    const resource = kvResource.split("/kv/")[1];
-    assert(resource, "Policy/v3 challenge KV resource path is missing");
 
     const policyMint = routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
     const credentialSpaceId = policyMint.body?.credentialSpaceId;
@@ -530,7 +528,7 @@ async function main() {
 
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
     assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
-    const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(resource));
+    const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
     const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
     const allowedOrigins = new Set([...Object.values(canonical), "null"]);
@@ -562,7 +560,7 @@ async function main() {
       slice: {
         shareCid,
         policyCid,
-        resource,
+        resource: kvResource,
         credentialSpaceId,
         credentialRecord,
         acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
