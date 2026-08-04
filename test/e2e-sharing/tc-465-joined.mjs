@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { Cbor } from "ox";
 import { privateKeyToAccount } from "viem/accounts";
+import { open, parseShareUrl, shareEnvelopeV3Schema } from "@tinycloud/share-envelope";
 
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -378,6 +379,17 @@ async function main() {
     const shareUrl = await page.evaluate(() => window.__tc465Copied);
     assert.match(shareUrl, /^https:\/\/share\.tinycloud\.xyz\/s\/bafkrei[a-z2-7]{52}/);
     const shareCid = new URL(shareUrl).pathname.split("/").at(-1);
+    const sealedEnvelopeBytes = Uint8Array.from(await page.evaluate(async (cid) => {
+      const response = await fetch(`/registry/ipfs/${cid}?format=raw`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`registry envelope read failed (${response.status})`);
+      return Array.from(new Uint8Array(await response.arrayBuffer()));
+    }, shareCid));
+    const parsedLink = parseShareUrl(shareUrl, { expectedOrigin: canonical.share });
+    const envelopeBytes = await open(sealedEnvelopeBytes, parsedLink.key32);
+    parsedLink.key32.fill(0);
+    const envelopeValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(envelopeBytes));
+    const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
+    assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
     const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
