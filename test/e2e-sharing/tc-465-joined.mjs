@@ -57,11 +57,16 @@ async function proxy(request, targetOrigin, options = {}) {
   const original = new URL(request.url());
   const target = new URL(`${options.path ?? original.pathname}${original.search}`, targetOrigin);
   const method = request.method();
+  const body = method === "GET" || method === "HEAD"
+    ? undefined
+    : original.pathname === "/api/share/link-only/registry/blobs"
+      ? Buffer.from(await options.page.evaluate(() => window.__tc465BinaryBodies.shift() ?? []))
+      : await request.fetchPostData();
   const response = await fetch(target, {
     method,
     headers: headersForFetch(request, options.forwardedHttps),
     redirect: "manual",
-    ...(method === "GET" || method === "HEAD" ? {} : { body: await request.fetchPostData() }),
+    ...(body === undefined ? {} : { body }),
   });
   let responseBytes = Buffer.from(await response.arrayBuffer());
   if (options.rewriteNodeCsp === true && response.headers.get("content-type")?.includes("text/html")) {
@@ -135,7 +140,7 @@ async function installInterception(page, services, fixtureOrigin) {
     } : undefined;
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
-    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true });
+    if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true, page });
     if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
@@ -149,6 +154,19 @@ async function installInterception(page, services, fixtureOrigin) {
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
     await page.evaluateOnNewDocument((address, shareOrigin) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
+    window.__tc465BinaryBodies = [];
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
+      const body = init?.body;
+      if (url.pathname === "/api/share/link-only/registry/blobs" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
+        const bytes = body instanceof ArrayBuffer
+          ? new Uint8Array(body)
+          : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+        window.__tc465BinaryBodies.push(Array.from(bytes));
+      }
+      return originalFetch(input, init);
+    };
     window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
     const originalDebug = console.debug;
     console.debug = (...args) => {
