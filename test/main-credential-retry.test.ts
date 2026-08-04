@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   authenticate: vi.fn(),
   createClient: vi.fn(),
   presented: [] as unknown[],
+  resolved: undefined as unknown,
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
