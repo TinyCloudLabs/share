@@ -51,7 +51,7 @@ async function shareFixture(email = "Reader@Example.COM"): Promise<VerifiedCrede
       policyCid: "bafkreipolicy",
       policyRoot: { cid: "policy-root", authorization: "policy-root-authorization", role: "policy-authority" },
       enforcementRoot: { cid: "enforcement-root", authorization: "enforcement-root-authorization", role: "policy-enforcement" },
-      contentSource: { kvResource: "tinycloud://owner-space/kv/docs/report.md", selector: "exact", encryptionNetwork: "urn:tinycloud:encryption:fixture" },
+      contentSource: { kvResource: "owner-space/kv/docs/report.md", selector: "exact", encryptionNetwork: "urn:tinycloud:encryption:fixture" },
       encryptionNetwork: "urn:tinycloud:encryption:fixture",
       attestedEnforcerBinding: { nodeAudience: "did:web:node.example" },
       metadata: { mediaType: "text/plain" },
@@ -170,7 +170,7 @@ describe("TC-465 credential-gated receiver", () => {
     expect(fixture.ensure.mock.calls[0]![1]).toMatchObject({ descriptor: EMAIL_CREDENTIAL_DESCRIPTOR, interaction: "popup", openerOrigin: "https://share.tinycloud.xyz" });
     expect(fixture.find).toHaveBeenCalledOnce();
     expect(fixture.admitPolicy).toHaveBeenCalledWith(expect.objectContaining({ ensured: fixture.ensured, requirement: expect.objectContaining({ claims: { email: "reader@example.com" } }), requestedCapabilities: [
-      { kind: "kv", resource: "tinycloud://owner-space/kv/docs/report.md", selector: "exact", actions: ["tinycloud.kv/get"] },
+      { kind: "kv", resource: "owner-space/kv/docs/report.md", selector: "exact", actions: ["tinycloud.kv/get"] },
       { kind: "encryption", resource: "urn:tinycloud:encryption:fixture", action: "tinycloud.encryption/decrypt" },
     ] }));
     expect(fixture.order).toEqual(["admitPolicy", "get", "decrypt"]);

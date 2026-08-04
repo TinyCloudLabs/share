@@ -195,7 +195,7 @@ function requestedReadCapabilities(share: VerifiedCredentialShare) {
   const envelope = share.envelope;
   if (!envelope.actions.includes("read") || envelope.resource.kind !== "exact"
     || envelope.policyRoot.role !== "policy-authority" || envelope.enforcementRoot.role !== "policy-enforcement"
-    || envelope.contentSource.kvResource !== `tinycloud://${envelope.target.spaceId}/kv/${envelope.resource.path}`
+    || envelope.contentSource.kvResource !== `${envelope.target.spaceId}/kv/${envelope.resource.path}`
     || envelope.contentSource.selector !== "exact" || envelope.contentSource.encryptionNetwork !== envelope.encryptionNetwork) {
     throw new CredentialReceiverError("UNSUPPORTED_REQUIREMENT", "The credential-gated share does not contain one exact read operation");
   }
