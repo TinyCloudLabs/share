@@ -126,6 +126,12 @@ async function installInterception(page, services, fixtureOrigin) {
   });
   installedPages.set(page, installation);
   try {
+    page.on("console", (message) => {
+      if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
+        browserErrors.push(`${message.type()}: ${message.text()}`.replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>").slice(0, 500));
+      }
+    });
+    page.on("pageerror", (error) => { browserErrors.push(`pageerror: ${error.message}`.replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>").slice(0, 500)); });
     await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
@@ -418,7 +424,12 @@ async function main() {
     const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
     assert(requestCookie?.httpOnly && requestCookie.secure && requestCookie.sameSite === "None" && requestCookie.domain === "witness.credentials.org", "acquisition cookie did not retain canonical HttpOnly/Secure/SameSite=None semantics");
-    await popup.waitForSelector("input[name=otp]", { timeout: 60_000 });
+    try {
+      await popup.waitForSelector("input[name=otp]", { timeout: 60_000 });
+    } catch (error) {
+      const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
+      throw new Error(`credential acquisition OTP input did not render; state=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(receiverRequests.slice(-50))}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+    }
     await popup.type("input[name=otp]", "246810");
     await popup.click("button[type=submit]");
 
