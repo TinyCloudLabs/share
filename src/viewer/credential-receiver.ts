@@ -273,7 +273,10 @@ export async function runCredentialReceiver(input: {
     const encrypted = JSON.parse(encoded) as unknown;
     if (canonicalize(encrypted) !== encoded) throw new Error("encrypted content is not canonical JSON");
     const decrypted = await client.encryption.decryptEnvelope(encrypted as InlineEncryptedEnvelope, { proofs: [admission.installed.cid] }, { targetNode: envelope.attestedEnforcerBinding.nodeAudience });
-    if (!decrypted.ok) throw new Error(`ordinary delegated decrypt failed (${decrypted.error.code})`);
+    if (!decrypted.ok) {
+      const field = decrypted.error.code === "RESPONSE_BINDING_MISMATCH" ? `:${decrypted.error.field}` : "";
+      throw new Error(`ordinary delegated decrypt failed (${decrypted.error.code}${field})`);
+    }
     if (!ArrayBuffer.isView(decrypted.data) || decrypted.data.BYTES_PER_ELEMENT !== 1) throw new Error("ordinary delegated decrypt returned invalid bytes");
     const content = Object.freeze({
       type: "TinyCloudCredentialAuthorizedContent" as const,
