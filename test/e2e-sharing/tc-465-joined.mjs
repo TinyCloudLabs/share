@@ -100,7 +100,10 @@ async function proxy(request, targetOrigin, options = {}) {
       const parsed = JSON.parse(raw);
       const candidate = typeof parsed === "string" ? parsed : parsed?.error?.code ?? parsed?.code ?? (typeof parsed?.error === "string" ? parsed.error : undefined);
       code = typeof candidate === "string" && /^[A-Za-z][A-Za-z0-9 _:.\/-]{0,160}$/.test(candidate) ? candidate : `json_keys:${Object.keys(parsed ?? {}).sort().join(",")}`;
-    } catch { /* sanitized text is useful for local product failures */ }
+    } catch {
+      const candidate = raw.trim();
+      if (/^[a-z][a-z0-9-]{0,160}$/.test(candidate)) code = candidate;
+    }
     browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
   }
   browserTraffic.push(`${request.method()} ${original.origin}${original.pathname} ${response.status}`);
