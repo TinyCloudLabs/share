@@ -64,13 +64,10 @@
     "vitest": "^3.2.4"
   },
   "overrides": {
-    "@tinycloud/bootstrap": "$@tinycloud/bootstrap",
     "@tinycloud/node-sdk": "$@tinycloud/node-sdk",
-    "@tinycloud/node-sdk-wasm": "$@tinycloud/node-sdk-wasm",
     "@tinycloud/sdk-core": "$@tinycloud/sdk-core",
     "@tinycloud/sdk-services": "$@tinycloud/sdk-services",
     "@tinycloud/share-envelope": "$@tinycloud/share-envelope",
-    "@tinycloud/share-sdk": "$@tinycloud/share-sdk",
-    "@tinycloud/web-sdk-wasm": "$@tinycloud/web-sdk-wasm"
+    "@tinycloud/share-sdk": "$@tinycloud/share-sdk"
   }
 }
