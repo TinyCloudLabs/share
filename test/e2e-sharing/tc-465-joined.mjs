@@ -54,6 +54,19 @@ function headersForFetch(request, forwardedHttps = false) {
   return headers;
 }
 
+function diagnosticReceiverTraffic() {
+  return receiverRequests.slice(-50).map((entry) => ({
+    sequence: entry.sequence,
+    method: entry.method,
+    origin: entry.origin,
+    path: entry.path,
+    status: entry.status,
+    authenticated: typeof entry.authorization === "string",
+    ...(entry.body !== undefined && typeof entry.body === "object" && entry.body !== null ? { bodyKeys: Object.keys(entry.body).sort() } : {}),
+    ...(entry.responseBody !== undefined && typeof entry.responseBody === "object" && entry.responseBody !== null ? { responseKeys: Object.keys(entry.responseBody).sort() } : {}),
+  }));
+}
+
 async function proxy(request, targetOrigin, options = {}) {
   const original = new URL(request.url());
   const target = new URL(`${options.path ?? original.pathname}${original.search}`, targetOrigin);
@@ -421,7 +434,7 @@ async function main() {
       target = await popupTarget;
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
-      throw new Error(`credential acquisition popup did not open; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(receiverRequests.slice(-50))}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+      throw new Error(`credential acquisition popup did not open; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
     const popup = await target.page();
     assert(popup, "credential popup page is missing");
@@ -435,13 +448,19 @@ async function main() {
       await popup.waitForSelector("input[name=otp]", { timeout: 60_000 });
     } catch (error) {
       const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
-      throw new Error(`credential acquisition OTP input did not render; state=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(receiverRequests.slice(-50))}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+      throw new Error(`credential acquisition OTP input did not render; state=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
     await popup.type("input[name=otp]", "246810");
     await popup.click("button[type=submit]");
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
-    await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), { timeout: 180_000 }, renderedNeedle);
+    try {
+      await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), { timeout: 180_000 }, renderedNeedle);
+    } catch (error) {
+      const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
+      const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
+      throw new Error(`credential receiver did not render the decrypted document; receiverState=${JSON.stringify(receiverState)}; popupState=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+    }
     const rendered = await page.evaluate((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), renderedNeedle);
     assert.equal(rendered, true, `final rendered content was missing: ${(await text(page)).slice(-1000)}`);
     const renderedBytes = Buffer.from(await page.evaluate(() => window.__tc465RenderedBytes ?? []));
