@@ -339,6 +339,7 @@ export function mountCredentialReceiver(root: HTMLElement, input: {
   button.addEventListener("click", () => {
     button.disabled = true;
     status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
     status.textContent = STATE_COPY["checking-existing"];
     void runCredentialReceiver({
       share: input.share,
@@ -350,6 +351,7 @@ export function mountCredentialReceiver(root: HTMLElement, input: {
       console.debug("tinycloud share: credential receiver failed", error);
       button.disabled = false;
       status.setAttribute("role", "alert");
+      status.setAttribute("aria-live", "assertive");
       status.textContent = error instanceof CredentialReceiverError && error.code === "POLICY_ADMISSION_FAILED"
         ? "Email verified and saved, but it didn't grant access to this share. Ask the sender for a new link."
         : error instanceof CredentialReceiverError && error.code === "INVOCATION_FAILED"

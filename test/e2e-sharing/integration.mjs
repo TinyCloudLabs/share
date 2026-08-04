@@ -221,7 +221,12 @@ function run(command, args, cwd, env = {}) {
 }
 
 async function assertReleaseInputs() {
-  const repositories = [
+  const repositories = tc465Joined ? [
+    { name: "share", path: shareRoot, branch: "skgbafa/tc-465-share-receiver-credentials", pr: "78" },
+    { name: "node", path: nodeRoot, branch: "skgbafa/tc-470-holder-credential-admission", pr: "210" },
+    { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-462-credential-flow-opencredentials-785732297208", pr: "117" },
+    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-470-policy-credential-presentation", pr: "386" },
+  ] : [
     { name: "share", path: shareRoot, branch: "feat/sharing-production-live", pr: "27" },
     { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
     { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
@@ -1285,7 +1290,18 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   // requires the upstream routing gate to have proven the Share host's own
   // three destinations are loopback, which is the destination set the browser
   // audit structurally cannot see.
-  const result = { status, summary, localUnpushedMode, releaseInputsVerified, requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, ...(tc465Evidence === undefined ? {} : { tc465Evidence }), launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const joinedPassed = tc465Evidence !== undefined && Object.values(tc465Evidence.statuses).every((value) => value === true);
+  const joinedSlice = {
+    name: "tc-465-exact-email",
+    status: joinedPassed ? "passed" : "failed",
+    summary: "credential acquisition through exact browser render",
+    flows: tc465Evidence?.statuses ?? {},
+    unprovenFlows: joinedPassed ? [] : Object.entries(tc465Evidence?.statuses ?? {}).filter(([, value]) => value !== true).map(([name]) => name),
+    detail: joinedPassed ? "every required TC-465 browser journey stage was proven" : "the joined TC-465 browser journey did not prove every required stage",
+  };
+  const genericResult = { requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback };
+  const joinedResult = { requiredSlices: [joinedSlice.name], slices: [joinedSlice], provenSlices: joinedPassed ? [joinedSlice.name] : [], unprovenSlices: joinedPassed ? [] : [joinedSlice.name], requiredSlicesPassed: joinedPassed, allSlicesPassed: joinedPassed, browserE2ePassed: joinedPassed, exactEmailPassed: joinedPassed, zeroExternalDestinations: tc465Evidence?.statuses.zeroExternalDestinations === true, senderLibraryPassed: false, domainPassed: false, bearerPassed: false, editConflictPassed: false, folderPassed: false, notificationPassed: false, denialMatrixPassed: false };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, ...(tc465Joined ? joinedResult : genericResult), upstreamRoutingAudit, ...(tc465Evidence === undefined ? {} : { tc465Evidence }), launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 

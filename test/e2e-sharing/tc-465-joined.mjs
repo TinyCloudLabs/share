@@ -374,7 +374,6 @@ async function main() {
     const compositionEnv = {
       ...process.env,
       SHARING_E2E_TC465_JOINED: "1",
-      SHARING_E2E_LOCAL_UNPUSHED: "1",
       SHARING_E2E_EXTERNAL_CONTROL_DIR: control,
       SHARING_E2E_ARTIFACT_PATH: process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, ".context/tc-465-joined.json"),
       TINYCLOUD_NODE_WORKTREE: nodeRoot,

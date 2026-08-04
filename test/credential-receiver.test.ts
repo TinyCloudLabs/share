@@ -149,12 +149,15 @@ describe("TC-465 credential-gated receiver", () => {
     const status = root.querySelector("[role]");
     expect(button).toBeInstanceOf(HTMLButtonElement);
     expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.getAttribute("aria-live")).toBe("polite");
 
     button!.click();
     await vi.waitFor(() => expect(status?.getAttribute("role")).toBe("alert"));
+    expect(status?.getAttribute("aria-live")).toBe("assertive");
     button!.click();
 
     expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.getAttribute("aria-live")).toBe("polite");
     expect(status?.textContent).toBe("Checking your TinyCloud for this credential…");
   });
 
