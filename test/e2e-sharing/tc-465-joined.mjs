@@ -422,6 +422,7 @@ async function main() {
     const envelopeValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(envelopeBytes));
     const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
     assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
+    const exactKvResource = envelopeValidation.data.contentSource.kvResource;
     const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
@@ -496,7 +497,7 @@ async function main() {
     const policyCid = policyChallenge.body?.policyCid;
     assert.equal(policyCid, binding.body.policyCid, "Policy/v3 challenge did not bind the published policy CID");
     const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
-    assert(requestedKv?.resource?.startsWith("tinycloud://"), "Policy/v3 challenge did not request one exact TinyCloud KV resource");
+    assert.equal(requestedKv?.resource, exactKvResource, "Policy/v3 challenge did not request the envelope's exact TinyCloud KV resource");
     assert.equal(requestedKv.selector, "exact");
     assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get"]);
     const kvResource = requestedKv.resource;
