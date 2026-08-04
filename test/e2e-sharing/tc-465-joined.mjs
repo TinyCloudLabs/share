@@ -198,7 +198,13 @@ async function installInterception(page, services, fixtureOrigin) {
     const originalDebug = console.debug;
     console.debug = (...args) => {
       if (String(args[0] ?? "").startsWith("tinycloud share:")) {
-        window.__tc465Diagnostics.productError = String(args[1]?.message ?? args[1] ?? "unknown");
+        const messages = [];
+        let current = args[1];
+        for (let depth = 0; depth < 4 && current !== undefined && current !== null; depth += 1) {
+          messages.push(String(current?.message ?? current));
+          current = current?.cause;
+        }
+        window.__tc465Diagnostics.productError = messages.join(" <- ");
       }
       originalDebug(...args);
     };
