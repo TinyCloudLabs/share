@@ -96,7 +96,11 @@ async function proxy(request, targetOrigin, options = {}) {
       .replace(/0x[a-fA-F0-9]{40,}/g, "<address>")
       .replace(/(?:did|tinycloud):[^\s\"']+/g, "<identifier>")
       .replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>");
-    try { code = JSON.parse(raw)?.error?.code ?? "json_without_error_code"; } catch { /* sanitized text is useful for local product failures */ }
+    try {
+      const parsed = JSON.parse(raw);
+      const candidate = typeof parsed === "string" ? parsed : parsed?.error?.code ?? parsed?.code ?? (typeof parsed?.error === "string" ? parsed.error : undefined);
+      code = typeof candidate === "string" && /^[A-Za-z][A-Za-z0-9 _:.\/-]{0,160}$/.test(candidate) ? candidate : `json_keys:${Object.keys(parsed ?? {}).sort().join(",")}`;
+    } catch { /* sanitized text is useful for local product failures */ }
     browserErrors.push(`response: ${request.method()} ${original.origin}${original.pathname} ${response.status} ${code}`);
   }
   browserTraffic.push(`${request.method()} ${original.origin}${original.pathname} ${response.status}`);
@@ -462,7 +466,8 @@ async function main() {
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
     try {
-      await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), { timeout: 180_000 }, renderedNeedle);
+      await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)) || typeof window.__tc465Diagnostics?.productError === "string", { timeout: 180_000 }, renderedNeedle);
+      assert.equal(typeof await page.evaluate(() => window.__tc465Diagnostics?.productError), "undefined", "receiver reported a terminal product error before rendering");
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
       const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
