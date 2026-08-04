@@ -469,14 +469,25 @@ async function main() {
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
     try {
-      await page.waitForFunction((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)) || typeof window.__tc465Diagnostics?.productError === "string", { timeout: 180_000 }, renderedNeedle);
-      assert.equal(typeof await page.evaluate(() => window.__tc465Diagnostics?.productError), "undefined", "receiver reported a terminal product error before rendering");
+      const deadline = Date.now() + 180_000;
+      let renderedInIsolatedFrame = false;
+      while (!renderedInIsolatedFrame && Date.now() < deadline) {
+        assert.equal(typeof await page.evaluate(() => window.__tc465Diagnostics?.productError), "undefined", "receiver reported a terminal product error before rendering");
+        for (const frame of page.frames()) {
+          if (await frame.evaluate((needle) => document.body?.innerText.includes(needle) ?? false, renderedNeedle).catch(() => false)) {
+            renderedInIsolatedFrame = true;
+            break;
+          }
+        }
+        if (!renderedInIsolatedFrame) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      assert.equal(renderedInIsolatedFrame, true, "decrypted document did not render in the isolated preview frame");
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
       const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
       throw new Error(`credential receiver did not render the decrypted document; receiverState=${JSON.stringify(receiverState)}; popupState=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
-    const rendered = await page.evaluate((needle) => document.body?.innerText.includes(needle) || [...document.querySelectorAll("iframe")].some((frame) => frame.contentDocument?.body?.innerText.includes(needle)), renderedNeedle);
+    const rendered = (await Promise.all(page.frames().map((frame) => frame.evaluate((needle) => document.body?.innerText.includes(needle) ?? false, renderedNeedle).catch(() => false)))).some(Boolean);
     assert.equal(rendered, true, `final rendered content was missing: ${(await text(page)).slice(-1000)}`);
     const renderedBytes = Buffer.from(await page.evaluate(() => window.__tc465RenderedBytes ?? []));
     assert(renderedBytes.length > 0, "the renderer did not expose the decrypted byte slice it decoded");
