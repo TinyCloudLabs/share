@@ -607,7 +607,9 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: stored.blob as BodyInit });
       if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
       const receipt = await uploaded.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
-      if (receipt.cid !== stored.cid || receipt.deleteAfter !== deleteAfter) throw fail("save", "v3 envelope upload returned an invalid receipt");
+      if (receipt.cid !== stored.cid || receipt.deleteAfter !== deleteAfter) {
+        throw fail("save", `v3 envelope upload returned an invalid receipt (cid=${receipt.cid === stored.cid ? "match" : "mismatch"}, retention=${receipt.deleteAfter === deleteAfter ? "match" : "mismatch"})`);
+      }
     }
     const url = model.linkFormat === "inline"
       ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
