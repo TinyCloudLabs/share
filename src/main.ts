@@ -155,11 +155,16 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
         operation: interruptedOperation,
         openerOrigin: window.location.origin,
         connect: () => {
-          activeClient ??= import("./share/openkey-session.js").then(async ({ authenticateWithOpenKey, createTinyCloudClient }) => {
+          if (activeClient !== undefined) return activeClient;
+          const attempt = import("./share/openkey-session.js").then(async ({ authenticateWithOpenKey, createTinyCloudClient }) => {
             const session = await authenticateWithOpenKey(() => undefined);
             return createTinyCloudClient(session, shareConfig, [], () => undefined);
           });
-          return activeClient;
+          activeClient = attempt;
+          void attempt.catch(() => {
+            if (activeClient === attempt) activeClient = undefined;
+          });
+          return attempt;
         },
         onComplete: async (content) => {
           await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
