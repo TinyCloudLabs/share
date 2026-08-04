@@ -159,7 +159,7 @@ async function installInterception(page, services, fixtureOrigin) {
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-    await page.evaluateOnNewDocument((address, shareOrigin) => {
+    await page.evaluateOnNewDocument((address, shareOrigin, interactionOrigin) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
     window.__tc465BinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
@@ -173,6 +173,13 @@ async function installInterception(page, services, fixtureOrigin) {
         window.__tc465BinaryBodies.push(Array.from(bytes));
       }
       return originalFetch(input, init);
+    };
+    const originalOpen = window.open.bind(window);
+    window.open = (url, target, features) => {
+      if (typeof url !== "string" || !url.startsWith(`${interactionOrigin}/credentials/acquire/`)) return originalOpen(url, target, features);
+      const popup = originalOpen("about:blank", target, features);
+      if (popup !== null) setTimeout(() => { popup.location.href = url; }, 1_000);
+      return popup;
     };
     window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
     const originalDebug = console.debug;
@@ -219,7 +226,7 @@ async function installInterception(page, services, fixtureOrigin) {
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     setTimeout(announce, 10_000);
-    }, wallet.address, canonical.share);
+    }, wallet.address, canonical.share, canonical.interaction);
     resolveInstallation();
   } catch (error) {
     installedPages.delete(page);
