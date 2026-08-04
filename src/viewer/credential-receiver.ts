@@ -338,6 +338,7 @@ export function mountCredentialReceiver(root: HTMLElement, input: {
 
   button.addEventListener("click", () => {
     button.disabled = true;
+    status.setAttribute("role", "status");
     status.textContent = STATE_COPY["checking-existing"];
     void runCredentialReceiver({
       share: input.share,

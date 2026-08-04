@@ -4,6 +4,7 @@ import {
   EMAIL_CREDENTIAL_DESCRIPTOR,
   CredentialReceiverError,
   credentialRequirementFromVerifiedShare,
+  mountCredentialReceiver,
   runCredentialReceiver,
   validateCredentialProjectionFromVerifiedShare,
   type ActiveCredentialClient,
@@ -133,6 +134,30 @@ async function receiverFixture(status: "reused" | "acquired") {
 }
 
 describe("TC-465 credential-gated receiver", () => {
+  it("returns error announcements to polite progress on retry", async () => {
+    const share = await shareFixture();
+    const operation = Object.freeze({ type: "TinyCloudInterruptedShareRead" as const, version: 1 as const, shareCid: share.shareCid, envelope: share.envelope });
+    const root = document.createElement("div");
+    mountCredentialReceiver(root, {
+      share,
+      operation,
+      connect: async () => { throw new Error("offline"); },
+      openerOrigin: "https://share.tinycloud.xyz",
+      onComplete: () => undefined,
+    });
+    const button = root.querySelector("button");
+    const status = root.querySelector("[role]");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    expect(status?.getAttribute("role")).toBe("status");
+
+    button!.click();
+    await vi.waitFor(() => expect(status?.getAttribute("role")).toBe("alert"));
+    button!.click();
+
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.textContent).toBe("Checking your TinyCloud for this credential…");
+  });
+
   it("derives the request-local exact-email requirement only from the verified envelope and checks its signed projection", async () => {
     const share = await shareFixture();
     const requirement = credentialRequirementFromVerifiedShare(share);
