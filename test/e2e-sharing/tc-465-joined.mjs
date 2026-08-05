@@ -460,7 +460,7 @@ async function main() {
       const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
       const input = root?.querySelector("input[name=otp]");
       const submit = root?.querySelector("button[type=submit]");
-      if (input === null || submit === null) return false;
+      if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) return false;
       input.value = "246810";
       submit.click();
       return true;
