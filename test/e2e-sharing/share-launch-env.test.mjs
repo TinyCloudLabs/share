@@ -78,11 +78,21 @@ test("share host launch env never sets static authority, fixture, allow-test, or
     "SHARE_TRUST_BUNDLE_ALLOW_TEST",
     "SHARE_BINDING_STORE_ROOT",
     "SHARE_BINDING_STORE_PATH",
+    "SHARE_SENDER_ROOT_KEY_PATH",
   ];
 
   for (const key of forbiddenKeys) {
     assert.equal(Object.prototype.hasOwnProperty.call(env, key), false, `launch env must not set ${key}`);
   }
+});
+
+test("the dedicated TC-465 composition alone enables the sender with a durable binding store", () => {
+  const env = buildShareHostLaunchEnv({ ...baseArgs(), senderBindingStore: { root: "/tmp/harness-root", path: "/tmp/harness-root/bindings.ndjson" } });
+  assert.equal(env.SHARE_SENDER_ENABLED, "true");
+  assert.equal(env.SHARE_BINDING_STORE_ROOT, "/tmp/harness-root");
+  assert.equal(env.SHARE_BINDING_STORE_PATH, "/tmp/harness-root/bindings.ndjson");
+  assert.equal(env.SHARE_SENDER_ROOT_KEY_PATH, "/tmp/harness-root/sender-root.key");
+  for (const key of ["SHARE_SENDER_PRIVATE_KEY", "SHARE_SENDER_CAPABILITY_JSON", "SHARE_SENDER_CAPABILITIES_JSON", "SHARE_TRUST_BUNDLE_ALLOW_TEST"]) assert.equal(Object.prototype.hasOwnProperty.call(env, key), false);
 });
 
 test("share host launch env rejects a non-loopback openKeyOrigin", () => {

@@ -21,6 +21,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
@@ -59,9 +60,12 @@ const canonical = Object.freeze({
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
+const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1";
 const walletPrivateKey = `0x${"55".repeat(32)}`;
-const issuerSeed = Buffer.alloc(32, 0x47);
+const issuerSeed = Buffer.alloc(32, tc465Joined ? 67 : 0x47);
 const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
+const registryUploadSeed = Buffer.alloc(32, 7);
+const registryUploadPublicKey = Buffer.from(ed25519.getPublicKey(registryUploadSeed)).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
 const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
@@ -86,6 +90,7 @@ const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
 let releaseInputsVerified = false;
 let sessionName = runId;
 let externalRequests = [];
+let tc465Evidence;
 // TC-306. The browser audit below can only see destinations the *page*
 // requests, and the page only ever talks to the loopback Share host. The
 // Share host's own server-side upstream resolution is a second, invisible
@@ -111,11 +116,20 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
     nodeOrigin: fixtures.nodeOrigin,
     credentialsOrigin: fixtures.credentialsOrigin,
     mailOrigin: fixtures.mailOrigin,
+    openKeyOrigin: fixtures.openKeyOrigin,
+    walletOrigin: fixtures.walletOrigin,
   }), { flag: "wx", mode: 0o600 });
   const deadline = Date.now() + 15 * 60_000;
   while (Date.now() < deadline) {
     try {
       await stat(join(resolvedControlDir, "release"));
+      if (tc465Joined) {
+        const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
+        const stages = ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
+        const sliceKeys = ["acquisitionIdSha256", "credentialRecord", "credentialSpaceId", "policyCid", "resource", "shareCid"];
+        if (evidence?.type !== "tinycloud.share/tc-465-joined-evidence/v2" || Object.keys(evidence).sort().join(",") !== "chain,renderedSha256,slice,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true) || !Array.isArray(evidence.chain) || evidence.chain.length < 12 || typeof evidence.slice !== "object" || evidence.slice === null || Object.keys(evidence.slice).sort().join(",") !== sliceKeys.join(",") || Object.values(evidence.slice).some((value) => typeof value !== "string" || value.length === 0)) throw new Error("dedicated TC-465 evidence is incomplete");
+        tc465Evidence = evidence;
+      }
       checks.push("External packed-CLI and normal-Chrome product journey completed while the production-shaped composition remained live.");
       return true;
     } catch (error) {
@@ -172,7 +186,7 @@ function canonicalJson(value) {
 // covering exactly what it covered before TC-379 split the two origins apart.
 // Production keeps them distinct; see `config/trust-bundle.production.json`.
 function trustBundleFromRuntime(nodePublicKey) {
-  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
+  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: tc465Joined ? "did:web:issuer.credentials.org#controller" : "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
 }
 function credentialsTrustBundleFromRuntime(nodePublicKey) {
   const bundle = JSON.parse(trustBundleFromRuntime(nodePublicKey));
@@ -207,7 +221,12 @@ function run(command, args, cwd, env = {}) {
 }
 
 async function assertReleaseInputs() {
-  const repositories = [
+  const repositories = tc465Joined ? [
+    { name: "share", path: shareRoot, branch: "skgbafa/tc-465-share-receiver-credentials", pr: "78" },
+    { name: "node", path: nodeRoot, branch: "skgbafa/tc-470-holder-credential-admission", pr: "210" },
+    { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-462-credential-flow-opencredentials-785732297208", pr: "117" },
+    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-470-policy-credential-presentation", pr: "386" },
+  ] : [
     { name: "share", path: shareRoot, branch: "feat/sharing-production-live", pr: "27" },
     { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
     { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
@@ -229,10 +248,14 @@ async function assertReleaseInputs() {
     ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
     : `Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
 }
-async function waitFor(url, timeoutMs = 60_000) {
+async function waitFor(url, timeoutMs = 60_000, child) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { const response = await fetch(url, { redirect: "error" }); if (response.status < 500) return response; } catch {}
+    if (child?.exitCode !== null && child?.exitCode !== undefined) {
+      const output = children.find((entry) => entry.child === child)?.output() ?? "";
+      throw new Error(`service exited before ${url} became ready (${child.exitCode}): ${output.slice(-4000)}`);
+    }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
   throw new Error(`timed out waiting for ${url}`);
@@ -382,7 +405,7 @@ async function startFixtures(tempRoot) {
   const walletOrigin = await loopback("deterministic EIP-1193/EIP-6963 wallet", async (request, response) => {
     if (request.url !== "/sign") { response.writeHead(404).end(); return; }
     const caller = request.headers.origin;
-    const cors = /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
+    const cors = caller === canonical.share || /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(caller ?? "") ? { "access-control-allow-origin": caller, "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type, x-forwarded-proto", vary: "Origin" } : {};
     if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
     if (request.method !== "POST") { response.writeHead(405, cors).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => { try { const body = JSON.parse(Buffer.concat(chunks).toString()); const signature = await wallet.signMessage({ message: body.message }); response.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ address: wallet.address, signature })); } catch { response.writeHead(400, cors).end(); } });
@@ -391,7 +414,11 @@ async function startFixtures(tempRoot) {
     if (!request.url?.startsWith("/widget/")) { response.writeHead(404).end(); return; }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(`<!doctype html><meta charset="utf-8"><script>parent.postMessage({type:"openkey:ready"},"*");setTimeout(()=>parent.postMessage({type:"openkey:auth:use-external-wallet"},"*"),0);addEventListener("message",e=>{if(e.data&&e.data.type==="openkey:auth:request")parent.postMessage({type:"openkey:auth:use-external-wallet"},"*")});</script>`);
   });
-  const registry = run("npm", ["run", "-w", "@tinycloud/share-registry", "dev-server", "--", "--port", "0"], shareRoot);
+  await writeFile(join(tempRoot, "registry-upload.key"), registryUploadSeed.toString("base64url"), { flag: "wx", mode: 0o600 });
+  const registry = run("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
+    REGISTRY_AUTH_PUBLIC_KEY: registryUploadPublicKey,
+    REGISTRY_LINK_UPLOAD_PUBLIC_KEY: registryUploadPublicKey,
+  });
   let registryOrigin;
   const registryDeadline = Date.now() + 30_000;
   while (registryOrigin === undefined && Date.now() < registryDeadline) {
@@ -400,7 +427,7 @@ async function startFixtures(tempRoot) {
     if (registryOrigin === undefined) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   if (registryOrigin === undefined) throw new Error("real Share registry did not publish a loopback URL");
-  checks.push(`real Share registry started at ${registryOrigin}.`);
+  checks.push(`production Share registry with durable upload authorization started at ${registryOrigin}.`);
 
   const mailMessages = [];
   const mailReplays = [];
@@ -481,7 +508,11 @@ async function startFixtures(tempRoot) {
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
-  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
+  // This composition deliberately injects deterministic issuer and node keys.
+  // `mounted-fixture` is Node's explicit guard for accepting that material;
+  // `local-tee` only supplies the local key-derived TeeContext and correctly
+  // leaves the production trust-bundle placeholder rejection enabled.
+  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
   // Export the public invitation descriptor before launch (it only needs the
   // key material, not a running server) so the canonical trust bundle can be
@@ -499,7 +530,7 @@ async function startFixtures(tempRoot) {
   await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
   const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000);
+  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000, node);
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
@@ -609,7 +640,6 @@ async function startShare(tempRoot, fixtures) {
   checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
-  const registryKey = Buffer.alloc(32, 7).toString("base64url");
   const origin = `http://127.0.0.1:${port}`;
   const shareTrustBundleJson = trustBundleFromRuntime(fixtures.nodeDescriptor.trustedNode?.invitationPublicKey);
   assert.equal(
@@ -626,7 +656,12 @@ async function startShare(tempRoot, fixtures) {
   // The shipped viewer consumes the registry client through a same-origin
   // proxy in production; point the production-shaped build at that proxy so
   // browser CSP and the zero-external-destination audit observe the same path.
-  await runOnce("npm", ["run", "build"], shareRoot, buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin));
+  const browserBuildEnv = buildShareBrowserBuildEnv(origin, fixtures.openKeyOrigin);
+  if (tc465Joined) {
+    browserBuildEnv.VITE_SHARE_REGISTRY_URL = `${canonical.share}/registry`;
+    browserBuildEnv.VITE_OPENKEY_ORIGIN = "https://openkey.so";
+  }
+  await runOnce("npm", ["run", "build"], shareRoot, browserBuildEnv);
   const shareAsset = execFileSync("find", [join(shareRoot, "dist/assets"), "-maxdepth", "1", "-name", "main-*.js", "-print"], { encoding: "utf8" }).trim().split("\n")[0];
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
@@ -635,10 +670,19 @@ async function startShare(tempRoot, fixtures) {
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
+    ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
+  // The joined browser keeps the production OpenKey URL and transports it to
+  // the loopback widget through interception. Omitting the loopback-only CSP
+  // seam selects securityHeadersForPath's production https://openkey.so
+  // frame-src instead of authorizing a mixed-content HTTP frame.
+  if (tc465Joined) delete shareLaunchEnv.SHARE_HERMETIC_OPENKEY_ORIGIN;
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
-  await waitFor(`${origin}/health/readiness`);
+  await waitFor(`${origin}/health/readiness`, 60_000, share);
+  const registryKeyResponse = await fetch(`${origin}/api/share/link-only/registry/public-key`, { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(registryKeyResponse.status, 200, "Share host did not publish its registry upload public key");
+  assert.equal((await registryKeyResponse.json()).publicKey, registryUploadPublicKey, "Share host and production registry upload keys differ");
   checks.push(`committed production Share host started on loopback at ${origin} with a production trust bundle.`);
   return { origin, share };
 }
@@ -1246,7 +1290,18 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   // requires the upstream routing gate to have proven the Share host's own
   // three destinations are loopback, which is the destination set the browser
   // audit structurally cannot see.
-  const result = { status, summary, localUnpushedMode, releaseInputsVerified, requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, upstreamRoutingAudit, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback, launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
+  const joinedPassed = tc465Evidence !== undefined && Object.values(tc465Evidence.statuses).every((value) => value === true);
+  const joinedSlice = {
+    name: "tc-465-exact-email",
+    status: joinedPassed ? "passed" : "failed",
+    summary: "credential acquisition through exact browser render",
+    flows: tc465Evidence?.statuses ?? {},
+    unprovenFlows: joinedPassed ? [] : Object.entries(tc465Evidence?.statuses ?? {}).filter(([, value]) => value !== true).map(([name]) => name),
+    detail: joinedPassed ? "every required TC-465 browser journey stage was proven" : "the joined TC-465 browser journey did not prove every required stage",
+  };
+  const genericResult = { requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback };
+  const joinedResult = { requiredSlices: [joinedSlice.name], slices: [joinedSlice], provenSlices: joinedPassed ? [joinedSlice.name] : [], unprovenSlices: joinedPassed ? [] : [joinedSlice.name], requiredSlicesPassed: joinedPassed, allSlicesPassed: joinedPassed, browserE2ePassed: joinedPassed, exactEmailPassed: joinedPassed, zeroExternalDestinations: tc465Evidence?.statuses.zeroExternalDestinations === true, senderLibraryPassed: false, domainPassed: false, bearerPassed: false, editConflictPassed: false, folderPassed: false, notificationPassed: false, denialMatrixPassed: false };
+  const result = { status, summary, localUnpushedMode, releaseInputsVerified, ...(tc465Joined ? joinedResult : genericResult), upstreamRoutingAudit, ...(tc465Evidence === undefined ? {} : { tc465Evidence }), launchInputDigests, repositoryDigests, flowAudits, checks: [...new Set(checks)], blockers: [...new Set([...blockers, ...extraBlockers])] };
   await writeFile(artifactPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
 }
 
@@ -1384,6 +1439,13 @@ try {
  * still reading, in the artifact and on stdout, as partial.
  */
 const sliceReport = summarizeSlices({ slices: GATE_SLICES, flowResults: gateResults, attempted: [...attemptedSlices], failures: Object.fromEntries(sliceFailures), blockedBy: blockedSlices });
+if (tc465Joined) {
+  if (tc465Evidence === undefined) blockers.push("Dedicated TC-465 joined browser evidence was not received.");
+  const passed = blockers.length === 0 && upstreamRoutingAudit.allLoopback && tc465Evidence !== undefined;
+  await writeArtifact(passed ? "complete" : "blocked", passed ? "TC-465 exact-email credential-gated receiver joined path completed." : "TC-465 exact-email credential-gated receiver joined path is blocked.");
+  process.exitCode = passed ? 0 : 1;
+  process.exit();
+}
 const verdict = gateVerdict(sliceReport, requiredSlices);
 for (const slice of sliceReport) {
   if (slice.status === "passed") continue;

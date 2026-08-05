@@ -41,6 +41,8 @@ const PROXIED_PATHS = [
   "/share/v1/policy/session",
   "/share/v2/policies",
   "/share/v2/invoke",
+  "/share/v3/policy/challenges",
+  "/share/v3/policy/delegations",
   "/delegate",
   "/invoke",
   "/v1/share-email/invitations",

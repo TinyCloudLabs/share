@@ -1006,6 +1006,31 @@ async function assertPublishedBinding(binding: Record<string, unknown>, cid: str
   if (binding.shareCid !== cid || Object.entries(expected).some(([key, value]) => !sameJson(binding[key], value))) throw new Error("published binding is outside the selected exact policy");
 }
 
+function v3PublishedBinding(value: Record<string, unknown>): Record<string, unknown> {
+  const keys = ["version", "shareCid", "shareId", "policyCid", "policyRootCid", "enforcementRootCid", "contentSourceDigestHex"];
+  const canonicalRawCid = (candidate: unknown, hashCode: number): boolean => {
+    if (typeof candidate !== "string") return false;
+    try {
+      const cid = CID.parse(candidate);
+      return cid.toString() === candidate && cid.version === 1 && cid.code === 0x55 && cid.multihash.code === hashCode && cid.multihash.size === 32;
+    } catch { return false; }
+  };
+  if (
+    Object.keys(value).length !== keys.length
+    || keys.some((key) => !Object.hasOwn(value, key))
+    || value.version !== 3
+    || !canonicalRawCid(value.shareCid, 0x12)
+    || typeof value.shareId !== "string"
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.shareId)
+    || !canonicalRawCid(value.policyCid, 0x12)
+    || !canonicalRawCid(value.policyRootCid, 0x1e)
+    || !canonicalRawCid(value.enforcementRootCid, 0x1e)
+    || typeof value.contentSourceDigestHex !== "string"
+    || !/^[0-9a-f]{64}$/.test(value.contentSourceDigestHex)
+  ) throw new Error("published v3 binding shape");
+  return value;
+}
+
 export function createShareHostAdapter(options: ShareHostOptions): { handler(request: Request): Promise<Response>; publicConfig: Record<string, unknown>; readiness: Record<string, boolean> } {
   const signers = new Map<string, { signature: string; expiresAt: number }>();
   const sessions = new Map<string, ShareSession>();
@@ -1249,7 +1274,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if (url.pathname === "/api/share/bindings" && request.method === "POST") {
         if (!senderReady) return response(503, { error: { code: "sender_not_ready" } });
         const session = sessionValid(request, options, sessions); if (session === undefined) return generic(401);
-        const body = await boundedJson(request); const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
+        const body = await boundedJson(request);
+        if (body.version === 3) {
+          const binding = v3PublishedBinding(body);
+          await options.bindingStore!.put(binding.shareCid as string, binding);
+          return response(201, { status: "stored" });
+        }
+        const cid = safeString(body.shareCid, "shareCid"); const capabilityId = safeString(body.capabilityId, "capabilityId");
         if (!/^bafkrei[a-z2-7]{52}$/.test(cid) || typeof body.binding !== "object" || body.binding === null) return generic(400);
         const { shareCid: bindingShareCid, capabilityId: _capabilityId, ...binding } = body.binding as Record<string, unknown>;
         const selected = selectedCapability(request, session, capabilityId);

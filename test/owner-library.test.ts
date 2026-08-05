@@ -1,6 +1,7 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { OWNER_LIBRARY_LIMIT, OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
-import { ownerSpacePermissions } from "../src/share/openkey-session.js";
+import { historyPermissions, ownerSpacePermissions } from "../src/share/openkey-session.js";
 
 /**
  * TC-344. The library picker used to be fed only by `GET
@@ -94,6 +95,12 @@ function extendsGrant(grant: string, requested: string): boolean {
 }
 
 describe("owner space permissions", () => {
+  it("grants the exact current sender-history Vault prefix", () => {
+    expect(historyPermissions()).toEqual([
+      { service: "tinycloud.vault", space: "share", path: "sender-history/v2/records/", actions: ["put", "get", "list", "del"], skipPrefix: true },
+    ]);
+  });
+
   it("reads the whole space but writes only under shares/", () => {
     expect(ownerSpacePermissions()).toEqual([
       { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "list", "metadata"] },

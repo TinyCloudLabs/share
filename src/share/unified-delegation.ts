@@ -7,6 +7,7 @@ import {
   unsignedShareEnvelopeV3Schema,
   toBase64Url,
   type ShareEnvelopeV3,
+  type PolicyCredentialRequirementV1,
   type UnifiedContentSource,
   type UnifiedPolicy,
   type UnifiedPolicyCapability,
@@ -22,6 +23,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import type { ResourceSelector, RecipientMatcher, ShareAction } from "@tinycloud/share-envelope";
 
 export const POLICY_V1_DOMAIN = "xyz.tinycloud.policy/policy/v1\0";
+export const POLICY_V2_DOMAIN = "xyz.tinycloud.policy/policy/v2\0";
 export const CONTENT_SOURCE_V1_DOMAIN = "xyz.tinycloud.policy/ContentSource/v1\0";
 export const NATIVE_PROJECTION_V1_DOMAIN = "xyz.tinycloud.policy/NativeProjection/v1\0";
 export const POLICY_CAPABILITY_V1_DOMAIN = "xyz.tinycloud.policy/PolicyCapability/v1\0";
@@ -52,6 +54,7 @@ export interface UnifiedPolicyInput {
   readonly expiresAt?: string;
   readonly contentSource: UnifiedContentSource;
   readonly capabilityCeiling: readonly UnifiedPolicyCapability[];
+  readonly credentialRequirement?: PolicyCredentialRequirementV1;
 }
 
 export interface OwnerRootInput {
@@ -64,6 +67,7 @@ export interface OwnerRootInput {
   readonly contentSourceDigestHex: string;
   readonly capabilityCeilingHashHex: string;
   readonly nativeProjectionHashHex: string;
+  readonly notBefore: Date;
   readonly expiresAt: Date;
   readonly nodeAudience: string;
   readonly capabilities: readonly UnifiedPolicyCapability[];
@@ -155,22 +159,25 @@ export function createUnifiedPolicy(input: UnifiedPolicyInput & { readonly sign:
   assertV3Time(input.createdAt, "policy.createdAt");
   if (input.expiresAt !== undefined) assertV3Time(input.expiresAt, "policy.expiresAt");
   assertCapabilityCeiling(input.capabilityCeiling, input.contentSource);
-  const unsigned = {
-    schema: "xyz.tinycloud.policy/policy/v1" as const,
+  const policyFields = {
     ownerDid: input.ownerDid,
     createdAt: input.createdAt,
     ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
     contentSource: input.contentSource,
     capabilityCeiling: [...input.capabilityCeiling],
   };
-  const policyDigestHex = digestHex(unsigned, POLICY_V1_DOMAIN);
+  const unsigned = input.credentialRequirement === undefined
+    ? { schema: "xyz.tinycloud.policy/policy/v1" as const, ...policyFields }
+    : { schema: "xyz.tinycloud.policy/policy/v2" as const, ...policyFields, credentialRequirement: input.credentialRequirement };
+  const signatureDomain = input.credentialRequirement === undefined ? POLICY_V1_DOMAIN : POLICY_V2_DOMAIN;
+  const policyDigestHex = digestHex(unsigned, signatureDomain);
   const policyId = input.policyId || policyIdForDigest(policyDigestHex);
   if (policyId !== policyIdForDigest(policyDigestHex)) throw new TypeError("policyId does not match policy digest");
   return (async () => {
     // The policy-engine contract signs SHA-256(domain || JCS(unsigned)), not
     // the variable-length preimage.  Keeping this byte boundary here makes
     // the browser signer and Rust verifier use the same golden-vector input.
-    const signatureDigest = sha256(textEncoder.encode(`${POLICY_V1_DOMAIN}${canonicalize(unsigned)}`));
+    const signatureDigest = sha256(textEncoder.encode(`${signatureDomain}${canonicalize(unsigned)}`));
     const signature = await input.sign(signatureDigest);
     if (signature.length !== 64) throw new TypeError("policy signature must be Ed25519");
     const policy: UnifiedPolicy = {
@@ -187,7 +194,7 @@ export function createUnifiedPolicy(input: UnifiedPolicyInput & { readonly sign:
 export function nativeProjectionHashHex(capabilities: readonly UnifiedPolicyCapability[]): string {
   const projection = sortByCanonicalJson(capabilities.map((capability) => capability.kind === "encryption"
     ? { service: "tinycloud.encryption", space: capability.resource, path: capability.resource, actions: [capability.action] }
-    : { service: "tinycloud.kv", space: capability.resource.slice("tinycloud://".length).split("/")[0], path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } }));
+    : { service: "tinycloud.kv", space: capability.resource.slice(0, capability.resource.indexOf("/kv/")), path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } }));
   return digestHex(projection, NATIVE_PROJECTION_V1_DOMAIN);
 }
 
@@ -211,7 +218,7 @@ function rootFromDelegation(value: PortableDelegationLike, input: OwnerRootInput
     nativeProjectionHashHex: input.nativeProjectionHashHex,
     nodeAudience: input.nodeAudience,
   };
-  if (principal !== input.ownerDid || compact.payload.aud !== input.audienceDid || compact.payload.prf.length !== 0 || compact.payload.exp !== Math.floor(input.expiresAt.getTime() / 1000) || canonicalize(compact.payload.att) !== canonicalize(expectedAttenuation) || Object.entries(required).some(([key, expected]) => fact[key] !== expected) || (input.role === "policy-enforcement" ? fact.enforcerDid !== input.audienceDid : "enforcerDid" in fact)) throw new TypeError("owner root signed projection mismatch");
+  if (principal !== input.ownerDid || compact.payload.aud !== input.audienceDid || compact.payload.prf.length !== 0 || compact.payload.nbf !== Math.floor(input.notBefore.getTime() / 1000) || compact.payload.exp !== Math.floor(input.expiresAt.getTime() / 1000) || canonicalize(compact.payload.att) !== canonicalize(expectedAttenuation) || Object.entries(required).some(([key, expected]) => fact[key] !== expected) || (input.role === "policy-enforcement" ? fact.enforcerDid !== input.audienceDid : "enforcerDid" in fact)) throw new TypeError("owner root signed projection mismatch");
   return { cid: value.cid, authorization, role: input.role };
 }
 
@@ -245,6 +252,7 @@ export async function createSiblingRoots(input: {
     contentSourceDigestHex: input.contentSourceDigestHex,
     capabilityCeilingHashHex: digestHex(capabilityCeiling, POLICY_CAPABILITY_V1_DOMAIN),
     nativeProjectionHashHex: input.nativeProjectionHashHex,
+    notBefore: new Date(input.policy.createdAt),
     expiresAt: input.expiresAt,
     nodeAudience: input.nodeAudience,
     capabilities: capabilityCeiling,

@@ -27,6 +27,14 @@ describe("the unified owner-share authority boundary", () => {
     expect(source).toContain("options.signUnifiedPolicy");
   });
 
+  it("wires the authenticated holder's root factory and signer into the shipped composer", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const source = await readFile(resolve(process.cwd(), "src/share/main.ts"), "utf8");
+    expect(source).toContain("current.tinycloud.createUnifiedOwnerRoot(input)");
+    expect(source).toContain("current.tinycloud.signSessionBytes(bytes)");
+  });
+
   it("fails closed before storage or network use when the owner authority bridge is absent", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const put = vi.fn();

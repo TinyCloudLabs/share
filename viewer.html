@@ -7,7 +7,9 @@
   in-document baseline; production must additionally serve these as HTTP
   headers (meta CSP cannot express frame-ancestors) with connect-src set to
   the deployment's registry/node allowlist. Notes:
-  - script-src 'self': every executable is bundled by Vite — no CDN scripts.
+  - script-src 'self' 'wasm-unsafe-eval': every JavaScript executable is
+    bundled by Vite; the receiver's TinyCloud client instantiates its bundled
+    WASM module while credential admission is active.
   - connect-src: 'self' + the default dev registry (src/viewer/config.ts);
     keep in sync with VITE_SHARE_REGISTRY_URL.
   - style-src allows 'unsafe-inline' because mermaid's strict mode injects
@@ -15,8 +17,9 @@
   - In `vite dev`, HMR websockets are not in connect-src — the viewer page
     needs a manual reload during development. Deliberate: dev convenience
     never loosens the shipped policy.
-  - frame-src 'self': the only FETCHED frame the viewer embeds is the
-    mermaid sandbox document (/mermaid-sandbox.html, served from this origin
+  - frame-src also admits the pinned OpenKey origin while the credential
+    receiver establishes its active holder session. The other fetched frame is
+    the mermaid sandbox document (/mermaid-sandbox.html, served from this origin
     and embedded with sandbox="allow-scripts" — opaque origin, own strict
     CSP; see src/viewer/mermaid-frame.ts). The scriptless preview frame
     (src/viewer/preview-frame.ts) is srcdoc-delivered — no fetch, so
@@ -37,7 +40,7 @@
     its render throws and the diagram falls back to sanitized source text —
     fail closed, never fail open.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://tee.node.tinycloud.xyz https://witness.credentials.org https://registry.tinycloud.xyz; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://tee.node.tinycloud.xyz https://witness.credentials.org https://registry.tinycloud.xyz; font-src 'self'; frame-src 'self' https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types share-viewer-html dompurify 'allow-duplicates'">
 <!-- The URL fragment is the decryption key: never leak the URL anywhere. -->
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">

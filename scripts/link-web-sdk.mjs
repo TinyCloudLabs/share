@@ -16,7 +16,7 @@
  * succeeds or silently skips is the failure mode this issue exists to remove.
  */
 
-import { lstatSync, rmSync, symlinkSync } from "node:fs";
+import { lstatSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
 import { assertWebSdkLink, resolveJsSdkWorktree, webSdkLinkPath, webSdkTargetPath } from "../test/e2e-sharing/web-sdk-link.mjs";
@@ -27,9 +27,15 @@ const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
 const linkPath = webSdkLinkPath(shareRoot);
 const targetPath = webSdkTargetPath(sdkRoot);
 const checkOnly = process.argv.includes("--check");
+const companionPackages = ["sdk-core", "share-envelope", "share-sdk"];
 
 if (checkOnly) {
   const resolved = assertWebSdkLink(shareRoot, sdkRoot);
+  for (const packageName of companionPackages) {
+    const actual = realpathSync(resolve(shareRoot, "node_modules", "@tinycloud", packageName));
+    const expected = realpathSync(resolve(sdkRoot, "packages", packageName));
+    if (actual !== expected) throw new Error(`node_modules/@tinycloud/${packageName} resolves to ${actual}, expected ${expected}; run \`npm run link:web-sdk\``);
+  }
   console.log(`@tinycloud/web-sdk resolves to the js-sdk worktree under test: ${resolved}`);
   process.exit(0);
 }
@@ -39,5 +45,12 @@ if (checkOnly) {
 lstatSync(targetPath);
 rmSync(linkPath, { recursive: true, force: true });
 symlinkSync(targetPath, linkPath);
+for (const packageName of companionPackages) {
+  const companionLink = resolve(shareRoot, "node_modules", "@tinycloud", packageName);
+  const companionTarget = resolve(sdkRoot, "packages", packageName);
+  lstatSync(companionTarget);
+  rmSync(companionLink, { recursive: true, force: true });
+  symlinkSync(companionTarget, companionLink);
+}
 const resolved = assertWebSdkLink(shareRoot, sdkRoot);
-console.log(`linked ${linkPath} -> ${resolved}`);
+console.log(`linked ${linkPath} -> ${resolved} with ${companionPackages.join(", ")}`);

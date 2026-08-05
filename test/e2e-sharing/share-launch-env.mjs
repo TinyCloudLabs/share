@@ -20,7 +20,8 @@
 // @tinycloud/share-registry process instead of the canonical public
 // registry. All four must be exact loopback origins with no credentials,
 // path, query, or fragment, or the launch is rejected before the Share host
-// can start.
+// can start. The dedicated TC-465 joined runner is the sole exception: it
+// passes senderBindingStore and proves the Policy/v3 binding journal.
 const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/127\.0\.0\.1:([0-9]+)$/;
 
 // Port digits must match src/host/share-adapter.ts's parseHermeticBrowserOrigin
@@ -84,7 +85,7 @@ export function hermeticUpstreamRoutes({ canonicalOrigins, nodeTransportOrigin, 
   return routes;
 }
 
-export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin, canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin }) {
+export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin, canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, senderBindingStore }) {
   // Validated under its own label first so the SHARE_HERMETIC_REGISTRY_ORIGIN
   // contract keeps reporting `registryOrigin` rather than the transport alias.
   const registry = loopbackOrigin(registryOrigin, "registryOrigin");
@@ -96,11 +97,20 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     // Share host's own registry client already points at.
     registryTransportOrigin: registry,
   });
+  if (senderBindingStore !== undefined && (typeof senderBindingStore !== "object" || senderBindingStore === null || Array.isArray(senderBindingStore) || Object.keys(senderBindingStore).sort().join(",") !== "path,root" || typeof senderBindingStore.root !== "string" || typeof senderBindingStore.path !== "string" || !senderBindingStore.path.startsWith(`${senderBindingStore.root}/`))) throw new Error("senderBindingStore must name an exact root and descendant path");
   return {
     HOST: host,
     PORT: String(port),
     SHARE_TRUST_BUNDLE_FILE: trustBundlePath,
-    SHARE_SENDER_ENABLED: "false",
+    SHARE_SENDER_ENABLED: senderBindingStore === undefined ? "false" : "true",
+    ...(senderBindingStore === undefined ? {} : {
+      SHARE_BINDING_STORE_ROOT: senderBindingStore.root,
+      SHARE_BINDING_STORE_PATH: senderBindingStore.path,
+      // Sender identity and the binding journal share one verified persistent
+      // volume. Leaving this unset selects the production /var/lib default,
+      // which correctly fails the descendant guard for a hermetic temp root.
+      SHARE_SENDER_ROOT_KEY_PATH: `${senderBindingStore.root}/sender-root.key`,
+    }),
     SHARE_REGISTRY_UPLOAD_KEY_PATH: registryUploadKeyPath,
     SHARE_NODE_ENFORCER_DID: nodeEnforcerDid,
     SHARE_HERMETIC_OPENKEY_ORIGIN: loopbackOrigin(openKeyOrigin, "openKeyOrigin"),

@@ -141,6 +141,37 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       });
       return;
     }
+    if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
+      const { mountCredentialReceiver } = await import("./viewer/credential-receiver.js");
+      const interruptedOperation = Object.freeze({
+        type: "TinyCloudInterruptedShareRead" as const,
+        version: 1 as const,
+        shareCid: resolved.shareCid,
+        envelope: resolved.envelope,
+      });
+      let activeClient: Promise<import("./share/openkey-session.js").ShareTinyCloud> | undefined;
+      mountCredentialReceiver(root, {
+        share: { envelope: resolved.envelope, policy: resolved.policy, shareCid: resolved.shareCid },
+        operation: interruptedOperation,
+        openerOrigin: window.location.origin,
+        connect: () => {
+          if (activeClient !== undefined) return activeClient;
+          const attempt = import("./share/openkey-session.js").then(async ({ authenticateWithOpenKey, createTinyCloudClient }) => {
+            const session = await authenticateWithOpenKey(() => undefined);
+            return createTinyCloudClient(session, shareConfig, [], () => undefined);
+          });
+          activeClient = attempt;
+          void attempt.catch(() => {
+            if (activeClient === attempt) activeClient = undefined;
+          });
+          return attempt;
+        },
+        onComplete: async (content) => {
+          await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
+        },
+      });
+      return;
+    }
     if (resolved.state !== "policy-email-claim-required") {
       await presentShare(root, resolved, { shareUrl: shareHref });
       return;

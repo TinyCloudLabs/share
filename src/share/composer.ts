@@ -7,6 +7,7 @@ import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, native
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
 
 /**
@@ -555,21 +556,25 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, new TextEncoder().encode(canonicalize(encrypted.data)), { contentType: "application/vnd.tinycloud.encrypted+json" });
     if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
 
-    const unifiedSource = { shareId, kvResource: `tinycloud://${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
+    const unifiedSource = { shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
     const order = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
     const actions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => order.indexOf(left as typeof order[number]) - order.indexOf(right as typeof order[number])) as Array<typeof order[number]>;
     const capabilities: UnifiedPolicyCapability[] = [
       { kind: "kv", resource: unifiedSource.kvResource, selector: resourceKind, actions },
       { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
     ];
-    const createdAt = new Date().toISOString();
-    const ownerDid = tinycloud.did;
-    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt: model.expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, sign: options.signUnifiedPolicy });
+    const createdAt = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z");
+    const expiresAt = new Date(Math.floor(Date.parse(model.expiresAt) / 1000) * 1000).toISOString().replace(".000Z", "Z");
+    const ownerDid = tinycloud.credentialHolderDid;
+    const credentialRequirement = model.recipient.kind === "exactEmail"
+      ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
+      : undefined;
+    const policy = await createUnifiedPolicy({ policyId: "", ownerDid, createdAt, expiresAt, contentSource: unifiedSource, capabilityCeiling: capabilities, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), sign: options.signUnifiedPolicy });
     const sourceDigest = contentSourceDigestHex(unifiedSource);
     const projectionHash = nativeProjectionHashHex(capabilities);
-    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: model.expiresAt, fetchFn });
+    const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: expiresAt, fetchFn });
     const enforcerDid = attestedEnforcerBinding.enforcerDid;
-    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(model.expiresAt) });
+    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(expiresAt) });
     const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding, fetchFn });
     const envelope = await signV3Envelope({
       unsigned: {
@@ -588,7 +593,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         contentSource: unifiedSource,
         contentSourceDigestHex: sourceDigest,
         encryptionNetwork: network,
-        expiry: model.expiresAt,
+        expiry: expiresAt,
         display: { filename },
         encrypted: true,
         metadata: { mediaType: contentMediaType(model.content), byteLength, filename },
@@ -598,15 +603,39 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     });
     const stored = await seal(new TextEncoder().encode(canonicalize(envelope)), key);
     if (model.linkFormat === "compact") {
-      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": model.expiresAt }, body: stored.blob as BodyInit });
+      const deleteAfter = new Date(expiresAt).toISOString();
+      const uploaded = await fetchFn(`${options.registryOrigin ?? options.origin}/api/share/link-only/registry/blobs`, { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": deleteAfter }, body: stored.blob as BodyInit });
       if (!uploaded.ok) throw fail("save", "v3 envelope upload was rejected");
+      const receipt = await uploaded.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
+      if (receipt.cid !== stored.cid || receipt.deleteAfter !== deleteAfter) {
+        throw fail("save", `v3 envelope upload returned an invalid receipt (cid=${receipt.cid === stored.cid ? "match" : "mismatch"}, retention=${receipt.deleteAfter === deleteAfter ? "match" : "mismatch"})`);
+      }
     }
     const url = model.linkFormat === "inline"
       ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
       : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
     const binding = await fetchFn("/api/share/bindings", { method: "POST", credentials: "include", cache: "no-store", redirect: "error", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 3, shareCid: stored.cid, shareId, policyCid: policy.policyCid, policyRootCid: registration.policyRootCid, enforcementRootCid: registration.enforcementRootCid, contentSourceDigestHex: sourceDigest }) });
     if (!binding.ok) throw fail("save", "v3 share binding was rejected");
-    return { url, cid: stored.cid, format: model.linkFormat, expiresAt: model.expiresAt, delegationCid: registration.enforcementRootCid };
+    const record: SenderShareRecord = {
+      shareId,
+      policyCid: policy.policyCid,
+      ownerDelegationCid: registration.policyRootCid,
+      enforcementDelegationCid: registration.enforcementRootCid,
+      ownerDid,
+      enforcerDid,
+      target: { origin: config.nodeOrigin, nodeAudience: enforcerDid, spaceId },
+      resource: { kind: resourceKind, path: resourcePath },
+      actions,
+      recipientMatcher: model.recipient.kind === "exactEmail" ? { kind: "exactEmail", value: model.recipient.value! } : { kind: "emailDomain", value: model.recipient.value! },
+      targetKind: model.recipient.kind === "exactEmail" ? "email" : "emailDomain",
+      registeredAt: new Date().toISOString(),
+      expiresAt,
+      envelopeCid: stored.cid,
+      shareCid: stored.cid,
+      link: url,
+      filename,
+    };
+    return { url, cid: stored.cid, format: model.linkFormat, expiresAt, record, delegationCid: registration.enforcementRootCid };
   } finally {
     key.fill(0);
   }

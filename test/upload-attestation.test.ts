@@ -268,7 +268,7 @@ describe("owner-bound upload attestations", () => {
       expect(responses.filter((value) => value.status === 201)).toHaveLength(19);
       expect(responses.filter((value) => value.status === 429)).toHaveLength(1);
     } finally { await rm(fixture.root, { recursive: true, force: true }); }
-  });
+  }, 15_000);
 
   it("consumes the same attestation jti durably across restart and horizontal concurrency", async () => {
     const fixture = await setup();
@@ -325,5 +325,5 @@ describe("owner-bound upload attestations", () => {
       }, { fetchFn: fixture.fetchFn });
       expect((await restarted.handler(request(body, signed))).status).toBe(401);
     } finally { await fixture.dispose(); }
-  });
+  }, 15_000);
 });

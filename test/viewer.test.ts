@@ -1153,7 +1153,7 @@ describe("scriptless preview frame (spec §3.3) — the last boundary", () => {
 describe("Trusted Types policy (viewer spec §2)", () => {
   it("routes innerHTML through the named policy when Trusted Types exist", async () => {
     const policyNames: string[] = [];
-    const createHtmlInputs: string[] = [];
+    const createHtmlInputs = new Map<string, string[]>();
     vi.stubGlobal("trustedTypes", {
       createPolicy(
         name: string,
@@ -1162,7 +1162,9 @@ describe("Trusted Types policy (viewer spec §2)", () => {
         policyNames.push(name);
         return {
           createHTML(input: string): string {
-            createHtmlInputs.push(input);
+            const inputs = createHtmlInputs.get(name) ?? [];
+            inputs.push(input);
+            createHtmlInputs.set(name, inputs);
             return rules.createHTML(input);
           },
         };
@@ -1177,16 +1179,17 @@ describe("Trusted Types policy (viewer spec §2)", () => {
         container,
         "# TT heading\n\n<script>window.__pwned=true</script>",
       );
-      expect(policyNames).toEqual([freshRender.TRUSTED_TYPES_POLICY_NAME]);
+      expect(policyNames).toEqual(["dompurify", freshRender.TRUSTED_TYPES_POLICY_NAME]);
       expect(freshRender.TRUSTED_TYPES_POLICY_NAME).toBe("share-viewer-html");
       // the policy received ALREADY-sanitized strings (sanitize → wrap),
       // once per TrustedHTML sink: the detached staging element's innerHTML,
       // then the preview frame's srcdoc document wrapping the same content.
-      expect(createHtmlInputs).toHaveLength(2);
-      expect(createHtmlInputs[0]).toContain("<h1>TT heading</h1>");
-      expect(createHtmlInputs[0]).not.toContain("<script");
-      expect(createHtmlInputs[1]).toContain(createHtmlInputs[0] ?? "@@none@@");
-      expect(createHtmlInputs[1]).toContain("Content-Security-Policy");
+      const viewerInputs = createHtmlInputs.get(freshRender.TRUSTED_TYPES_POLICY_NAME) ?? [];
+      expect(viewerInputs).toHaveLength(2);
+      expect(viewerInputs[0]).toContain("<h1>TT heading</h1>");
+      expect(viewerInputs[0]).not.toContain("<script");
+      expect(viewerInputs[1]).toContain(viewerInputs[0] ?? "@@none@@");
+      expect(viewerInputs[1]).toContain("Content-Security-Policy");
       // and the document was actually rendered through it, into the frame
       const body = assertContentIsolated(container);
       expect(body.querySelector("h1")?.textContent).toBe("TT heading");

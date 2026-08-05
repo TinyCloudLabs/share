@@ -25,6 +25,17 @@ const bundle = validateTrustBundle({
 });
 
 describe("native Node Share forwarding", () => {
+  it.each(["/share/v3/policy/challenges", "/share/v3/policy/delegations"])("forwards the exact Policy/v3 admission route %s", (path) => {
+    expect(upstreamForPath(bundle, path, {})).toEqual({ service: "node", origin: bundle.public.nodeOrigin });
+    const headers = sanitizeUpstreamRequest(path, "POST", new Headers({ "content-type": "application/json" }), 2, bundle.public.shareOrigin);
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
+  it.each(["/share/v3/policies", "/share/v3/enforcer-bindings", "/share/v3/policy/challenges/extra"])("does not expose Policy/v3 route %s", (path) => {
+    expect(upstreamForPath(bundle, path, {})).toBeUndefined();
+    expect(() => sanitizeUpstreamRequest(path, "POST", new Headers({ "content-type": "application/json" }), 2, bundle.public.shareOrigin)).toThrow("upstream route is not allowed");
+  });
+
   it.each(["/delegate", "/invoke"])("forwards %s with the native authorization and CAS headers", (path) => {
     expect(upstreamForPath(bundle, path, {})).toEqual({ service: "node", origin: bundle.public.nodeOrigin });
     const headers = sanitizeUpstreamRequest(path, "POST", new Headers({ authorization: "Bearer opaque", "content-type": "application/json", etag: '"old"', "if-match": '"old"', "x-tinycloud-cursor": "cursor" }), 2, bundle.public.shareOrigin);

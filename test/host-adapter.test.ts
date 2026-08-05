@@ -10,6 +10,7 @@ import { trustedNodeFromConfig, validateSharePublicConfig } from "../src/email-s
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
 import { createShareHostFromEnv, TransactionalBindingStore, validateProductionBindingStorePath } from "../src/host/share-adapter.js";
 import { resolveShareUpstreams, upstreamForPath } from "../src/host/upstream.js";
+import registryWorker, { UploadAuthorization, type DurableObjectState, type RegistryEnv } from "../packages/registry/src/worker.js";
 
 function bundle(environment: "production" | "test" = "test"): Record<string, unknown> {
   const privateKey = new Uint8Array(32).fill(9);
@@ -371,6 +372,8 @@ describe("production trust and host boundaries", () => {
 
   it("authorizes bounded encrypted registry writes with the OpenKey session while sender routes stay disabled", async () => {
     const directory = await mkdtemp(`${tmpdir()}/share-registry-upload-`);
+    const registryPrivateKey = new Uint8Array(32).fill(7);
+    await writeFile(`${directory}/registry-upload.key`, toBase64Url(registryPrivateKey), { mode: 0o600 });
     const value = bundle("production");
     value.nodeEnabled = false;
     const host = createShareHostFromEnv({
@@ -415,19 +418,34 @@ describe("production trust and host boundaries", () => {
     const account = privateKeyToAccount(`0x${"41".repeat(32)}`);
     const ceremony = await openKeySignIn(host, account);
     const cookie = ceremony.cookie!;
-    const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (String(input).includes("/internal/upload-authorizations")) return new Response(null, { status: 204 });
-      return new Response(
-        JSON.stringify({
-          cid: `bafkrei${"a".repeat(52)}`,
-          deleteAfter: "2026-07-30T00:00:00.000Z",
-        }),
-        {
-          status: 201,
-          headers: { "content-type": "application/json" },
+    const objects = new Map<string, { bytes: Uint8Array; customMetadata?: Record<string, string> }>();
+    const durableObjects = new Map<string, UploadAuthorization>();
+    const registryEnv: RegistryEnv = {
+      REGISTRY_LINK_UPLOAD_PUBLIC_KEY: toBase64Url(ed25519.getPublicKey(registryPrivateKey)),
+      REGISTRY: {
+        get: async (key) => {
+          const object = objects.get(key);
+          return object === undefined ? null : { arrayBuffer: async () => object.bytes.slice().buffer, ...(object.customMetadata === undefined ? {} : { customMetadata: object.customMetadata }) };
         },
-      );
-    });
+        put: async (key, bytes, options) => {
+          const customMetadata = (options as { customMetadata?: Record<string, string> } | undefined)?.customMetadata;
+          objects.set(key, { bytes: bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes.slice(0)), ...(customMetadata === undefined ? {} : { customMetadata }) });
+        },
+      },
+      UPLOAD_AUTHORIZATION: {
+        getByName: (name) => {
+          let object = durableObjects.get(name);
+          if (object === undefined) {
+            const values = new Map<string, unknown>();
+            const state: DurableObjectState = { storage: { get: async <T>(key: string) => values.get(key) as T | undefined, put: async <T>(key: string, next: T) => { values.set(key, next); } }, blockConcurrencyWhile: async (callback) => callback() };
+            object = new UploadAuthorization(state);
+            durableObjects.set(name, object);
+          }
+          return { fetch: (input, init) => object!.fetch(new Request(input, init)) };
+        },
+      },
+    };
+    const upstream = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => registryWorker.fetch(new Request(input, init), registryEnv));
     const accepted = await upload(new Uint8Array([1, 2, 3]), cookie);
     expect(accepted.status).toBe(201);
     expect(upstream).toHaveBeenCalledTimes(2);
@@ -771,6 +789,25 @@ describe("production trust and host boundaries", () => {
       const stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${cid}`, { method: "GET" }));
       expect(stored.status).toBe(200);
       expect(await stored.json()).not.toHaveProperty("recipientEmail");
+
+      const v3Binding = {
+        version: 3,
+        shareCid: "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
+        shareId: "018ff6e2-5f31-4d85-87ac-2e9212dc67bf",
+        policyCid: "bafkreifrqa2b7nagndgqowvv6yxv2av6yzfioafkjvlbxlsgxyuf6svy6q",
+        policyRootCid: "bafkr4id52eujtl3rks5mvwsbuf3aarno4mq77curdkuwcgoiwabgnyxx5y",
+        enforcementRootCid: "bafkr4icwygj7grmphijiicd6ukoy3gmkanfrearbte7onkkc4qjxpo5eay",
+        contentSourceDigestHex: "f".repeat(64),
+      };
+      const v3Put = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify(v3Binding) }));
+      expect(v3Put.status).toBe(201);
+      const v3Stored = await host.handler(new Request(`https://share.tinycloud.xyz/.well-known/tinycloud-share/bindings/${v3Binding.shareCid}`, { method: "GET" }));
+      expect(v3Stored.status).toBe(200);
+      expect(await v3Stored.json()).toEqual(v3Binding);
+      const wrongRootHash = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify({ ...v3Binding, policyRootCid: `bafkrei${"d".repeat(52)}` }) }));
+      expect(wrongRootHash.status).toBe(400);
+      const widenedV3 = await host.handler(new Request("https://share.tinycloud.xyz/api/share/bindings", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", cookie, "content-type": "application/json" }, body: JSON.stringify({ ...v3Binding, recipientEmail: "recipient@example.com" }) }));
+      expect(widenedV3.status).toBe(400);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

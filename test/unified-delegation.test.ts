@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
-import { canonicalize, didKeyFromEd25519PublicKey, shareEnvelopeV3Schema, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
+import { canonicalize, didKeyFromEd25519PublicKey, fromBase64Url, shareEnvelopeV3Schema, toBase64Url, unifiedPolicySchema, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { parseCompactUcanAuthorization as verifyCompactUcanAuthorization, signCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 import { ShareRecipientClient } from "@tinycloud/share-sdk";
 import { claimUnifiedDelegation, createSiblingRoots, createUnifiedPolicy, invokeUnifiedDelegation, nativeProjectionHashHex, rejectV3Downgrade, requestAttestedEnforcerBinding, signV3Envelope } from "../src/share/unified-delegation.js";
+import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../src/credentials/email.js";
 
 const ownerKey = new Uint8Array(32).fill(7);
 const shareKey = new Uint8Array(32).fill(8);
@@ -47,6 +48,35 @@ async function aesEncrypt(key: Uint8Array, plaintext: Uint8Array): Promise<Uint8
 }
 
 describe("TC-405 unified delegation", () => {
+  it("authors exact-email requirements as a signed Policy/v2 projection", async () => {
+    const requirement = emailCredentialRequirement("Reader@Example.COM");
+    const credentialRequirement = emailCredentialPolicyProjection(requirement);
+    const credentialSource = { ...source, encryptionNetwork: `urn:tinycloud:encryption:${ownerDid}:default` };
+    const credentialCapabilities: UnifiedPolicyCapability[] = [
+      { kind: "kv", resource: credentialSource.kvResource, selector: credentialSource.selector, actions: ["tinycloud.kv/get", "tinycloud.kv/metadata"] },
+      { kind: "encryption", resource: credentialSource.encryptionNetwork, action: "tinycloud.encryption/decrypt" },
+    ];
+    const result = await createUnifiedPolicy({
+      policyId: "",
+      ownerDid,
+      createdAt: "2026-07-31T12:00:00.000Z",
+      expiresAt: "2026-08-01T12:00:00.000Z",
+      contentSource: credentialSource,
+      capabilityCeiling: credentialCapabilities,
+      credentialRequirement,
+      sign: async (bytes) => ed25519.sign(bytes, ownerKey),
+    });
+
+    expect(result.policy.schema).toBe("xyz.tinycloud.policy/policy/v2");
+    if (result.policy.schema !== "xyz.tinycloud.policy/policy/v2") throw new Error("expected Policy/v2");
+    expect(result.policy.credentialRequirement).toEqual(credentialRequirement);
+    expect(result.policy.credentialRequirement.requirementDigest).toBe("83cNf6RSN1dUs5isEZZcC_M9Pw5Vd8n5YYPKC8M1k_E");
+    expect(unifiedPolicySchema.parse(result.policy)).toEqual(result.policy);
+    const { policyId: _policyId, signature, ...unsigned } = result.policy;
+    const signedDigest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/policy/v2\0${canonicalize(unsigned)}`));
+    expect(ed25519.verify(fromBase64Url(signature.value), signedDigest, ed25519.getPublicKey(ownerKey))).toBe(true);
+  });
+
   it("verifies the node-signed enforcer binding before owner roots are created", async () => {
     const nodeKey = new Uint8Array(32).fill(10);
     const nodeDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(nodeKey));
@@ -68,17 +98,21 @@ describe("TC-405 unified delegation", () => {
     };
     const vectorSource = vector.policy.value.contentSource;
     const vectorExpiry = new Date(vector.policy.value.expiresAt);
+    const rootNotBefore: number[] = [];
     const roots = await createSiblingRoots({
       factory: {
-        createOwnerRoot: async (input) => ({
-          cid: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].cid,
-          delegationHeader: { Authorization: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].authorization },
-          delegateDID: input.audienceDid,
-          spaceId: "applications",
-          path: "shares/share-405/document.txt",
-          actions: ["tinycloud.kv/get"],
-          expiry: input.expiresAt,
-        }),
+        createOwnerRoot: async (input) => {
+          rootNotBefore.push(input.notBefore.getTime());
+          return {
+            cid: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].cid,
+            delegationHeader: { Authorization: vector[input.role === "policy-authority" ? "policyRoot" : "enforcementRoot"].authorization },
+            delegateDID: input.audienceDid,
+            spaceId: "applications",
+            path: "shares/share-405/document.txt",
+            actions: ["tinycloud.kv/get"],
+            expiry: input.expiresAt,
+          };
+        },
       },
       ownerDid: vector.principals.ownerDid,
       policy: policy.policy,
@@ -90,6 +124,7 @@ describe("TC-405 unified delegation", () => {
       nodeAudience: vector.principals.nodeDid,
       expiresAt: vectorExpiry,
     });
+    expect(rootNotBefore).toEqual([Date.parse(vector.policy.value.createdAt), Date.parse(vector.policy.value.createdAt)]);
     const envelope = await signV3Envelope({
       unsigned: {
         version: 3,
