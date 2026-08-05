@@ -195,7 +195,7 @@ describe("TC-465 credential-gated receiver", () => {
 
     expect(new TextDecoder().decode(content.bytes)).toBe("opened");
     expect(fixture.ensure).toHaveBeenCalledOnce();
-    expect(fixture.ensure.mock.calls[0]![1]).toMatchObject({ descriptor: EMAIL_CREDENTIAL_DESCRIPTOR, interaction: "popup", openerOrigin: "https://share.tinycloud.xyz" });
+    expect(fixture.ensure.mock.calls[0]![1]).toMatchObject({ descriptor: EMAIL_CREDENTIAL_DESCRIPTOR, interaction: "inline", openerOrigin: "https://share.tinycloud.xyz" });
     expect(fixture.find).toHaveBeenCalledOnce();
     expect(fixture.admitPolicy).toHaveBeenCalledWith(expect.objectContaining({ ensured: fixture.ensured, requirement: expect.objectContaining({ claims: { email: "reader@example.com" } }), requestedCapabilities: [
       { kind: "kv", resource: "owner-space/kv/docs/report.md", selector: "exact", actions: ["tinycloud.kv/get"] },

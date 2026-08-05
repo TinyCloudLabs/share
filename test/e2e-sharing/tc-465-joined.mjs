@@ -28,6 +28,7 @@ const requestEntries = new WeakMap();
 const installedPages = new WeakMap();
 let receiverJourneyStarted = false;
 let receiverSequence = 0;
+const receiverTargets = [];
 let integration;
 let fixture;
 let browser;
@@ -179,8 +180,8 @@ async function installInterception(page, services, fixtureOrigin) {
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-    await page.evaluateOnNewDocument((address, shareOrigin, interactionOrigin) => {
-    window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0 };
+    await page.evaluateOnNewDocument((address, shareOrigin) => {
+    window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0 };
     window.__tc465BinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
@@ -196,10 +197,8 @@ async function installInterception(page, services, fixtureOrigin) {
     };
     const originalOpen = window.open.bind(window);
     window.open = (url, target, features) => {
-      if (typeof url !== "string" || !url.startsWith(`${interactionOrigin}/credentials/acquire/`)) return originalOpen(url, target, features);
-      const popup = originalOpen("about:blank", target, features);
-      if (popup !== null) setTimeout(() => { popup.location.href = url; }, 1_000);
-      return popup;
+      window.__tc465Diagnostics.windowOpenCalls += 1;
+      return originalOpen(url, target, features);
     };
     window.addEventListener("message", (event) => window.__tc465Diagnostics.messages.push({ origin: event.origin, type: event.data?.type ?? null }));
     const originalDebug = console.debug;
@@ -252,7 +251,7 @@ async function installInterception(page, services, fixtureOrigin) {
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     setTimeout(announce, 10_000);
-    }, wallet.address, canonical.share, canonical.interaction);
+    }, wallet.address, canonical.share);
     resolveInstallation();
   } catch (error) {
     installedPages.delete(page);
@@ -385,7 +384,7 @@ async function main() {
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
-    browser.on("targetcreated", (target) => { void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined); });
+    browser.on("targetcreated", (target) => { if (receiverJourneyStarted) receiverTargets.push(target.url()); void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined); });
     const page = await browser.newPage();
     page.on("console", (message) => {
       if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
@@ -437,34 +436,27 @@ async function main() {
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     await waitForText(page, "Confirm your email to open this");
-    const popupTarget = browser.waitForTarget((target) => target.url().startsWith(`${canonical.interaction}/credentials/acquire/`), { timeout: 60_000 });
     await page.click("button.viewer-primary-action");
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet", true);
-    let target;
     try {
-      target = await popupTarget;
+      await page.waitForFunction(() => document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input[name=otp]") !== null, { timeout: 60_000 });
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
-      throw new Error(`credential acquisition popup did not open; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+      throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
-    const popup = await target.page();
-    assert(popup, "credential popup page is missing");
-    await installInterception(popup, services, fixtureOrigin);
-    const popupUrl = target.url();
-    if (!popupUrl.startsWith(`${canonical.interaction}/credentials/acquire/`) || (await text(popup)).length === 0) await popup.goto(popupUrl, { waitUntil: "networkidle2" });
     const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
-    assert(requestCookie?.httpOnly && requestCookie.secure && requestCookie.sameSite === "None" && requestCookie.domain === "witness.credentials.org", "acquisition cookie did not retain canonical HttpOnly/Secure/SameSite=None semantics");
-    try {
-      await popup.waitForSelector("input[name=otp]", { timeout: 60_000 });
-    } catch (error) {
-      const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
-      throw new Error(`credential acquisition OTP input did not render; state=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
-    }
-    await popup.type("input[name=otp]", "246810");
-    await popup.click("button[type=submit]");
+    assert.equal(requestCookie, undefined, "embedded SDK acquisition must not depend on a browser cookie");
+    await page.evaluate(() => {
+      const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+      const input = root?.querySelector("input[name=otp]");
+      const submit = root?.querySelector("button[type=submit]");
+      if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) throw new Error("embedded OTP controls are missing");
+      input.value = "246810";
+      submit.click();
+    });
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
     try {
@@ -483,8 +475,7 @@ async function main() {
       assert.equal(renderedInIsolatedFrame, true, "decrypted document did not render in the isolated preview frame");
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
-      const popupState = await popup.evaluate(() => ({ url: location.origin + location.pathname, text: (document.body?.innerText ?? "").slice(-1_500) })).catch(() => null);
-      throw new Error(`credential receiver did not render the decrypted document; receiverState=${JSON.stringify(receiverState)}; popupState=${JSON.stringify(popupState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
+      throw new Error(`credential receiver did not render the decrypted document; receiverState=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
     const rendered = (await Promise.all(page.frames().map((frame) => frame.evaluate((needle) => document.body?.innerText.includes(needle) ?? false, renderedNeedle).catch(() => false)))).some(Boolean);
     assert.equal(rendered, true, `final rendered content was missing: ${(await text(page)).slice(-1000)}`);
@@ -530,7 +521,11 @@ async function main() {
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
     const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
-    const allowedOrigins = new Set([...Object.values(canonical), "null"]);
+    assert.equal(receiverTargets.length, 0, `embedded credential acquisition created browser targets: ${JSON.stringify(receiverTargets)}`);
+    const diagnostics = await page.evaluate(() => window.__tc465Diagnostics);
+    assert.equal(diagnostics.windowOpenCalls, 0, "embedded credential acquisition called window.open");
+    assert.equal(receiverRequests.some((entry) => entry.origin === canonical.interaction), false, "embedded credential acquisition navigated to credentials.org");
+    const allowedOrigins = new Set([canonical.share, canonical.node, canonical.witness, canonical.openKey, "null"]);
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 
@@ -549,6 +544,7 @@ async function main() {
       rendered,
       legacyPolicySessionAbsent: true,
       zeroExternalDestinations: true,
+      noPopupOrNavigation: true,
     };
     assert(Object.values(statuses).every((value) => value === true), "receiver chain status is incomplete");
     const evidence = {

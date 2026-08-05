@@ -227,7 +227,7 @@ export async function runCredentialReceiver(input: {
   }
   const ensured = await client.credentials.ensure(requirement, {
     descriptor: EMAIL_CREDENTIAL_DESCRIPTOR,
-    interaction: "popup",
+    interaction: "inline",
     openerOrigin: input.openerOrigin,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     onProgress: (progress: CredentialProgressEvent) => {
@@ -235,7 +235,7 @@ export async function runCredentialReceiver(input: {
       if (state !== undefined) input.onState?.(state);
     },
   });
-  // Popup completion is deliberately not consumed here. `ensure` retrieves
+  // Embedded completion is deliberately not consumed here. `ensure` retrieves
   // and verifies the result through its authenticated channel; Share then
   // proves durable storage by reading the active credentials space again.
   const readback = await client.credentials.find(requirement, {
