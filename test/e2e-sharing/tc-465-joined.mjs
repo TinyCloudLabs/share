@@ -456,15 +456,16 @@ async function main() {
     const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
     assert.equal(requestCookie, undefined, "embedded SDK acquisition must not depend on a browser cookie");
-    await page.waitForFunction(() => {
+    const otpSubmitted = await page.evaluate(() => {
       const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
       const input = root?.querySelector("input[name=otp]");
       const submit = root?.querySelector("button[type=submit]");
-      if (input?.tagName !== "INPUT" || submit?.tagName !== "BUTTON") return false;
+      if (input === null || submit === null) return false;
       input.value = "246810";
       submit.click();
       return true;
-    }, { timeout: 60_000 });
+    });
+    assert.equal(otpSubmitted, true, "embedded OTP controls are missing");
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
     try {
