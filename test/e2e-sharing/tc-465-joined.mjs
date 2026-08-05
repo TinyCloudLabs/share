@@ -181,7 +181,7 @@ async function installInterception(page, services, fixtureOrigin) {
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
     await page.evaluateOnNewDocument((address, shareOrigin) => {
-    window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0 };
+    window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0, shadowModes: [] };
     window.__tc465BinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
     window.fetch = (input, init) => {
@@ -228,9 +228,7 @@ async function installInterception(page, services, fixtureOrigin) {
     const originalAttachShadow = Element.prototype.attachShadow;
     Element.prototype.attachShadow = function attachShadow(init) {
       const options = init || {};
-      if (this.localName === "tinycloud-credential-acquisition") {
-        window.__tc465Diagnostics.credentialShadowOpen = options.mode === "open";
-      }
+      window.__tc465Diagnostics.shadowModes.push({ name: this.localName, mode: options.mode });
       // OpenKey's fixture-only wallet selector uses a closed root, while this
       // browser test drives the deterministic wallet through its public UI.
       // The acquisition element must independently request an open root.
@@ -451,7 +449,7 @@ async function main() {
     await clickText(page, "TinyCloud E2E Wallet", true);
     try {
       await page.waitForFunction(() => document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input[name=otp]") !== null, { timeout: 60_000 });
-      assert.equal(await page.evaluate(() => window.__tc465Diagnostics.credentialShadowOpen), true, "credential acquisition did not request its supported open Shadow DOM root");
+      assert.equal(await page.evaluate(() => window.__tc465Diagnostics.shadowModes.some((entry) => entry.name === "tinycloud-credential-acquisition" && entry.mode === "open")), true, "credential acquisition did not request its supported open Shadow DOM root");
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
       throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
