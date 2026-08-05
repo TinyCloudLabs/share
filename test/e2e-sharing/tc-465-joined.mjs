@@ -447,25 +447,25 @@ async function main() {
     await new Promise((resolveWait) => setTimeout(resolveWait, 800));
     await announceWallet(page);
     await clickText(page, "TinyCloud E2E Wallet", true);
+    let otpSubmitted;
     try {
-      await page.waitForFunction(() => document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input[name=otp]") !== null, { timeout: 60_000 });
+      otpSubmitted = await page.waitForFunction(() => {
+        const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+        const input = root?.querySelector("input[name=otp]");
+        const submit = root?.querySelector("button[type=submit]");
+        if (input?.tagName !== "INPUT" || submit?.tagName !== "BUTTON") return false;
+        input.value = "246810";
+        submit.click();
+        return true;
+      }, { timeout: 60_000 });
     } catch (error) {
-      const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
+      const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), credentialElement: document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.innerHTML ?? null, diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
       throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
+    assert.equal(await otpSubmitted.jsonValue(), true, "embedded OTP controls are missing");
     const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
     assert.equal(requestCookie, undefined, "embedded SDK acquisition must not depend on a browser cookie");
-    const otpSubmitted = await page.waitForFunction(() => {
-      const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
-      const input = root?.querySelector("input[name=otp]");
-      const submit = root?.querySelector("button[type=submit]");
-      if (input?.tagName !== "INPUT" || submit?.tagName !== "BUTTON") return false;
-      input.value = "246810";
-      submit.click();
-      return true;
-    }, { timeout: 60_000 });
-    assert.equal(await otpSubmitted.jsonValue(), true, "embedded OTP controls are missing");
 
     const renderedNeedle = "This file is a deterministic hermetic upload fixture.";
     try {
