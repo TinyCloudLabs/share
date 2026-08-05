@@ -44,7 +44,7 @@
     "@tinycloud/share-sdk": "file:vendor/tinycloud-share-sdk-0.2.0-beta.2-f9f8f1c.tgz",
     "@tinycloud/share-envelope": "file:vendor/tinycloud-share-envelope-0.2.0-beta.1-f9f8f1c.tgz",
     "@tinycloud/share-registry": "*",
-    "@tinycloud/web-sdk": "file:vendor/tinycloud-web-sdk-2.11.0-beta.12-f9f8f1c.tgz",
+    "@tinycloud/web-sdk": "file:vendor/tinycloud-web-sdk-2.11.0-beta.12.tgz",
     "dompurify": "3.4.12",
     "mermaid": "11.16.0",
     "rehype-sanitize": "6.0.0",

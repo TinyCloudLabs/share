@@ -225,8 +225,6 @@ async function installInterception(page, services, fixtureOrigin) {
       }
       return value;
     };
-    const originalAttachShadow = Element.prototype.attachShadow;
-    Element.prototype.attachShadow = function attachShadow(init) { return originalAttachShadow.call(this, { ...init, mode: "open" }); };
     const provider = {
       selectedAddress: address, chainId: "0x1",
       request: async ({ method, params }) => {
