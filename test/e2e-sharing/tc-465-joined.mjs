@@ -29,6 +29,7 @@ const installedPages = new WeakMap();
 let receiverJourneyStarted = false;
 let receiverSequence = 0;
 const receiverTargets = [];
+let receiverTargetBaseline = new Set();
 let integration;
 let fixture;
 let browser;
@@ -391,7 +392,10 @@ async function main() {
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
-    browser.on("targetcreated", (target) => { if (receiverJourneyStarted) receiverTargets.push(target.url()); void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined); });
+    browser.on("targetcreated", (target) => {
+      if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
+      void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
+    });
     const page = await browser.newPage();
     page.on("console", (message) => {
       if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
@@ -440,6 +444,7 @@ async function main() {
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
+    receiverTargetBaseline = new Set(browser.targets());
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     await waitForText(page, "Confirm your email to open this");
