@@ -4,7 +4,7 @@ export interface SignedDeliveryAuthorization {
 }
 
 export interface AddressedDeliveryInput {
-  readonly credentialsOrigin: string;
+  readonly emailOrigin: string;
   readonly shareUrl: string;
   readonly deliveryAuthorization: SignedDeliveryAuthorization;
   readonly fetchFn?: typeof fetch;
@@ -16,7 +16,7 @@ export async function requestAddressedDelivery(input: AddressedDeliveryInput): P
     && (input.deliveryAuthorization.authorization as { readonly version?: unknown }).version === 3
     ? 3
     : 2;
-  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.credentialsOrigin}/share/v${version}`, {
+  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/share/v${version}`, {
     method: "POST",
     credentials: "omit",
     redirect: "error",

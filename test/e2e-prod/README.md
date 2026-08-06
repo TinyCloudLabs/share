@@ -88,9 +88,10 @@ the sign-in appears to hang forever at "Connecting to your encrypted
 TinyCloud…". `signInToShare` finds it and clicks
 `shadowRoot [data-action="create"]`, which is what a user would do.
 
-**"Send by email…".** An addressed share does not mail anything when it is
-created. The result screen offers `Send by email…`; only that click runs
-`authorizeShareDelivery` and `POST {credentialsOrigin}/share/v2`.
+**"Notify recipient".** An addressed share does not mail anything when it is
+created. The result screen offers `Notify recipient`; only that click runs the
+versioned delivery authorization and `POST {emailOrigin}/share/v2` or
+`POST {emailOrigin}/share/v3`.
 
 **The share URL is never in the DOM.** By design (§6.3, TC-297/TC-334): the
 composer hands it to `navigator.clipboard.writeText` and nothing else. The

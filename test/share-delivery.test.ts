@@ -2,16 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { requestAddressedDelivery } from "../src/share/delivery.js";
 
 describe("addressed delivery boundary", () => {
-  it("posts the unchanged Node receipt only to OpenCredentials", async () => {
+  it("posts the unchanged v2 Node receipt only to the email Worker", async () => {
     const credentialsOrigin = "https://credentials.example";
-    const workerOrigin = "https://worker.example";
+    const emailOrigin = "https://worker.example";
     const authorization = Object.freeze({ type: "TinyCloudShareDeliveryAuthorization", version: 2, jti: "test-jti" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "test-signature" });
     const shareUrl = "share-url-with-private-fragment";
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
-      credentialsOrigin,
+      emailOrigin,
       shareUrl,
       deliveryAuthorization: { authorization, proof },
       fetchFn,
@@ -19,8 +19,8 @@ describe("addressed delivery boundary", () => {
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe(`${credentialsOrigin}/share/v2`);
-    expect(String(url)).not.toContain(workerOrigin);
+    expect(url).toBe(`${emailOrigin}/share/v2`);
+    expect(String(url)).not.toContain(credentialsOrigin);
     expect(init).toMatchObject({
       method: "POST",
       credentials: "omit",
@@ -44,14 +44,14 @@ describe("addressed delivery boundary", () => {
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
-      credentialsOrigin: "https://credentials.example",
+      emailOrigin: "https://worker.example",
       shareUrl: "share-url-with-private-fragment",
       deliveryAuthorization: { authorization, proof },
       fetchFn,
     });
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe("https://credentials.example/share/v3");
+    expect(url).toBe("https://worker.example/share/v3");
     expect(JSON.parse(String(init?.body))).toEqual({
       authorization,
       proof,
