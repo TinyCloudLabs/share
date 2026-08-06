@@ -41,11 +41,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare, startOpenKeyAutopilot } from "./lib/openkey.mjs";
-import { newInbox, waitForMessage, extractUrls } from "./lib/mailinator.mjs";
+import { newInbox, waitForMessage, extractOtp, extractUrls } from "./lib/mailinator.mjs";
 import { DEEP_TRACE } from "./lib/deep-trace.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ACCOUNT_PATH = resolve(HERE, ".account.json");
+const RECIPIENT_ACCOUNT_PATH = resolve(HERE, ".account-recipient.json");
 const RUN_DIR = resolve(HERE, "runs", `stage2-${new Date().toISOString().replace(/[:.]/g, "-")}`);
 const SHARE_ORIGIN = process.env.SHARE_ORIGIN ?? "https://share.tinycloud.xyz";
 const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
@@ -180,6 +181,7 @@ try {
   log(`[composer] settled=${settled} data-state=${state} :: ${statusText}`);
   record("the addressed share was created", state === "created", `data-state=${state}; ${statusText}`);
   await page.screenshot({ path: resolve(RUN_DIR, "composer.png"), fullPage: true });
+  if (state !== "created") throw new Error(`addressed share creation failed (${state})`);
 
   // Delivery is a second, explicit gesture: the composer creates the link, then
   // offers "Notify recipient". Nothing is requested until it is clicked.
@@ -268,11 +270,56 @@ try {
   const recipientContext = await browser.newContext({ acceptDownloads: true });
   const recipientPage = await recipientContext.newPage();
   recipientPage.on("console", (message2) => log(`[recipient console ${message2.type()}] ${message2.text()}`));
+  const { cdp: recipientCdp, authenticatorId: recipientAuthenticatorId } = await attachVirtualAuthenticator(recipientContext, recipientPage);
+  let recipientAccount = process.env.FRESH_ACCOUNT === "1" ? undefined : loadAccount(RECIPIENT_ACCOUNT_PATH);
+  if (recipientAccount === undefined) {
+    recipientAccount = await registerFreshAccount(recipientPage, recipientCdp, recipientAuthenticatorId, log);
+    saveAccount(RECIPIENT_ACCOUNT_PATH, recipientAccount);
+  } else {
+    log(`[openkey recipient] reusing account ${recipientAccount.address}`);
+    await restoreCredential(recipientCdp, recipientAuthenticatorId, recipientAccount.credential);
+  }
   await recipientPage.goto(links[0], { waitUntil: "domcontentloaded" });
 
-  const verify = recipientPage.getByRole("button", { name: /verify and open|open document/i });
+  const verify = recipientPage.getByRole("button", { name: /^confirm email$/i });
   await verify.waitFor({ timeout: 60_000 });
+  const stopRecipientAutopilot = startOpenKeyAutopilot(recipientPage, log);
   await verify.click();
+
+  const acquisitionDeadline = Date.now() + 180_000;
+  let acquisitionReady = false;
+  while (!acquisitionReady && Date.now() < acquisitionDeadline) {
+    acquisitionReady = await recipientPage.evaluate(() => {
+      const space = document.querySelector("tinycloud-space-modal")?.shadowRoot;
+      const create = space?.querySelector('button[data-action="create"]');
+      if (create instanceof HTMLButtonElement) create.click();
+      const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+      return root?.querySelector('input[name="otp"]') instanceof HTMLInputElement
+        && root.querySelector('button[type="submit"]') instanceof HTMLButtonElement;
+    }).catch(() => false);
+    if (!acquisitionReady) await recipientPage.waitForTimeout(1_000);
+  }
+  record("the SDK embedded credential element rendered in the Share page", acquisitionReady);
+  if (!acquisitionReady) throw new Error("embedded credential acquisition controls did not render");
+
+  const otpMail = await waitForMessage(
+    recipient.inbox,
+    (_message, body) => !body.includes("stage2-proof.md") && extractOtp(body) !== undefined,
+    { timeoutMs: 300_000, log },
+  );
+  const otp = extractOtp(otpMail.text);
+  if (otp === undefined) throw new Error("credential verification email did not contain a six-digit OTP");
+  const otpSubmitted = await recipientPage.evaluate((value) => {
+    const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+    const input = root?.querySelector('input[name="otp"]');
+    const submit = root?.querySelector('button[type="submit"]');
+    if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) return false;
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    submit.click();
+    return true;
+  }, otp);
+  record("the recipient submitted the Mailinator OTP inside the SDK element", otpSubmitted);
 
   // `section.viewer-content` ships with the document, so waiting for it returned
   // in well under a second while the page still read "Checking…" — the 180s
@@ -300,6 +347,7 @@ try {
   record("the recipient reads the exact shared document", rendered.includes(nonce), `nonce ${nonce}`);
   writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), rendered);
   await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient.png"), fullPage: true });
+  stopRecipientAutopilot();
   stopAutopilot();
 } catch (error) {
   record("stage 2 completed", false, `${error.name}: ${error.message}`);
