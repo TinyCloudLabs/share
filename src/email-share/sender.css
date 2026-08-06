@@ -176,6 +176,7 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .recipient-option input, .permission-option input, .toggle-option input { width: 19px; min-width: 19px; height: 19px; margin: 2px 0 0; accent-color: var(--accent); }
 .recipient-option-copy, .permission-copy { color: var(--share-muted); font-size: .88rem; }
 .recipient-option:has(input:checked), .permission-option:has(input:checked) { color: var(--accent); }
+.recipient-option-unavailable { cursor: not-allowed; opacity: .62; }
 .recipient-value { margin-top: 10px; }
 .composer-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 22px; margin: 0 0 22px; }
 .composer-controls .field-label { margin: 0; }

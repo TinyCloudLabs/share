@@ -59,4 +59,51 @@ describe("the unified owner-share authority boundary", () => {
     expect(failures.join(" | ")).toContain("unified v3 owner-share primitives are unavailable");
     expect(put).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["emailDomain", "example.com"],
+    ["recipientDid", "did:key:z6MkwVDfCg9LbbY6xjH3EZk8YSFQZujV5Y4y1ZWeER9tDiN3"],
+  ] as const)("rejects forced %s submission before storage, policy, or network side effects", async (kind, value) => {
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const put = vi.fn();
+    const createUnifiedOwnerRoot = vi.fn();
+    const signUnifiedPolicy = vi.fn();
+    const fetchFn = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    mountShareComposer(root, {
+      openKeyAddress: "0x1234567890abcdef",
+      origin: "https://share.tinycloud.xyz",
+      onBack: () => undefined,
+      session: {} as OpenKeyShareSession,
+      tinycloud: {
+        spaceId: "space-1",
+        did: "did:pkh:eip155:1:0x2222222222222222222222222222222222222222",
+        kvForSpace: () => ({ put }),
+      } as unknown as ShareTinyCloud,
+      loadCapabilities: async () => [],
+      createUnifiedOwnerRoot,
+      signUnifiedPolicy,
+      fetchFn: fetchFn as unknown as typeof fetch,
+    });
+    const recipient = root.querySelector<HTMLInputElement>(`input[name="recipient"][value="${kind}"]`)!;
+    recipient.disabled = false;
+    recipient.checked = true;
+    recipient.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipientValue = root.querySelector<HTMLInputElement>('input[name="recipient-value"]')!;
+    recipientValue.value = value;
+    recipientValue.dispatchEvent(new Event("input", { bubbles: true }));
+    const file = root.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
+    file.dispatchEvent(new Event("change", { bubbles: true }));
+
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
+    expect(root.querySelector(".sender-status-detail")?.textContent).toBe("That recipient option isn't available yet. Choose one person or anyone with the link.");
+    expect(put).not.toHaveBeenCalled();
+    expect(createUnifiedOwnerRoot).not.toHaveBeenCalled();
+    expect(signUnifiedPolicy).not.toHaveBeenCalled();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
 });
