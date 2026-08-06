@@ -21,7 +21,7 @@
  *                                   `openCredentialsAudience === credentialsOrigin`
  *                                   and that it collide with neither
  *                                   `nodeAudience` nor `returnOrigin`
- *   POST {credentialsOrigin}/share/v2 — the actual send
+ *   POST {emailOrigin}/share/v3     — the actual send
  *   read the Mailinator inbox     — the invitation must really arrive
  *   follow the link, confirm      — the recipient claim
  *   read the exact shared bytes
@@ -223,7 +223,9 @@ try {
   }
 
   // The Node's delivery authorization is the object the SDK's
-  // openCredentialsAudience / nodeInvitationKid predicates run against.
+  // openCredentialsAudience / nodeInvitationKid predicates run against. The
+  // audience remains the credential issuer even though the verified receipt
+  // is delivered to the separate email Worker origin.
   const authorization = captured.find((entry) => /openCredentialsAudience/.test(entry.body));
   if (authorization !== undefined) {
     log(`[stage2] delivery authorization from ${authorization.url}`);
@@ -244,9 +246,9 @@ try {
     record("the Node returned a delivery authorization", false, "no response body containing openCredentialsAudience was observed");
   }
 
-  // Addressed delivery goes to OpenCredentials, which mints the invitation
-  // claim material before requesting provider delivery. The legacy Worker
-  // cannot own this path because its delivered link contains only `k`.
+  // Addressed delivery goes to the email Worker. The credential issuer remains
+  // the signed audience because the recipient later acquires the credential
+  // there; it is not the network destination for the notification request.
   //
   // Polled, not read once: the `response` handler pushes to `captured` only
   // after `await response.text()` resolves, so reading the array the moment the
@@ -256,11 +258,11 @@ try {
   const sendDeadline = invitationRequested ? Date.now() + 30_000 : Date.now();
   let sendResponse;
   for (;;) {
-    sendResponse = captured.find((entry) => entry.direction !== "request" && /witness\.credentials\.org\/share\/v2/.test(entry.url));
+    sendResponse = captured.find((entry) => entry.direction !== "request" && /email\.tinycloud\.xyz\/share\/v3/.test(entry.url));
     if (sendResponse !== undefined || Date.now() >= sendDeadline) break;
     await page.waitForTimeout(500);
   }
-  record("OpenCredentials accepted the invitation request", sendResponse?.status === 202, sendResponse === undefined ? "no POST to OpenCredentials was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
+  record("the email Worker accepted the invitation request", sendResponse?.status === 202, sendResponse === undefined ? "no POST to the email Worker was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
   let recipientLink = copiedShareUrl;

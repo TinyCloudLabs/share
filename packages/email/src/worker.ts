@@ -1,5 +1,5 @@
 /**
- * `POST /share/v2` — send one authorized share invitation.
+ * `POST /share/v2` or `/share/v3` — send one authorized share invitation.
  *
  * Sibling of `@tinycloud/share-registry`: same account, same deploy path,
  * same "a signed contract, not a session, is the authority" model.
@@ -286,7 +286,7 @@ const worker = {
       // Presence only — never the values.
       return json(200, { ready: !("ok" in configured) }, headers);
     }
-    if (request.method === "POST" && url.pathname === "/share/v2") return deliver(request, env);
+    if (request.method === "POST" && (url.pathname === "/share/v2" || url.pathname === "/share/v3")) return deliver(request, env);
     return json(404, { error: "not-found" }, headers);
   },
 };

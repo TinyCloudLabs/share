@@ -2,7 +2,7 @@ import { ed25519 } from "@noble/curves/ed25519";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "@tinycloud/share-envelope";
-import { DELIVERY_AUTHORIZATION_DOMAIN } from "../src/protocol.js";
+import { DELIVERY_AUTHORIZATION_DOMAIN, DELIVERY_AUTHORIZATION_V3_DOMAIN } from "../src/protocol.js";
 import { renderInvitationEmail } from "../src/email.js";
 import type { D1DatabaseLike, D1PreparedStatementLike } from "../src/store.js";
 import worker, { type EmailEnv } from "../src/worker.js";
@@ -65,6 +65,20 @@ function authorizationBody(overrides: Record<string, unknown> = {}): Record<stri
   };
 }
 
+function authorizationV3Body(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const v2 = authorizationBody();
+  for (const key of ["registrationCid", "delegationCid", "enforcementDelegationCid", "envelopeCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSourceDigest"]) delete v2[key];
+  return {
+    ...v2,
+    version: 3,
+    policyRootCid: CID.replace(/.$/, "a"),
+    enforcementRootCid: CID.replace(/.$/, "b"),
+    enforcerDid: "did:key:z6MkEnforcer",
+    contentSourceDigestHex: "a".repeat(64),
+    ...overrides,
+  };
+}
+
 function sign(
   body: Record<string, unknown>,
   privateKey: Uint8Array = nodePrivateKey,
@@ -74,6 +88,15 @@ function sign(
   return {
     authorization: body,
     proof: { alg: "EdDSA", kid, signature: b64(ed25519.sign(message, privateKey)) },
+    shareUrl: String(body.shareUrl),
+  };
+}
+
+function signV3(body: Record<string, unknown>): ReturnType<typeof sign> {
+  const message = new TextEncoder().encode(`${DELIVERY_AUTHORIZATION_V3_DOMAIN}${canonicalize(body)}`);
+  return {
+    authorization: body,
+    proof: { alg: "EdDSA", kid: KID, signature: b64(ed25519.sign(message, nodePrivateKey)) },
     shareUrl: String(body.shareUrl),
   };
 }
@@ -159,6 +182,14 @@ function post(payload: unknown, origin: string | null = SHARE_ORIGIN): Request {
   });
 }
 
+function postV3(payload: unknown): Request {
+  return new Request(`${SHARE_ORIGIN.replace("share", "email")}/share/v3`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: SHARE_ORIGIN },
+    body: JSON.stringify(payload),
+  });
+}
+
 let provider: ReturnType<typeof vi.fn>;
 
 /**
@@ -218,6 +249,18 @@ describe("authorized delivery", () => {
     expect(String(sent.text)).toContain(SHARE_URL);
     const deliveredUrl = new URL(String(sent.text).match(/Open document: ([^\n]+)/)?.[1] ?? "https://invalid.example/");
     expect([...deliveredUrl.hash.slice(1).split("&")].map((part) => part.split("=", 1)[0])).toEqual(["k"]);
+  });
+
+  it("sends a v3 invitation only from the v3 Node-signed root projection", async () => {
+    const response = await worker.fetch(postV3(signV3(authorizationV3Body())), env());
+    expect(response.status).toBe(202);
+    expect(provider).toHaveBeenCalledTimes(1);
+
+    const substituted = authorizationV3Body({ policyRootCid: CID.replace(/.$/, "c") });
+    const signed = signV3(substituted);
+    signed.authorization.policyRootCid = CID.replace(/.$/, "d");
+    expect((await worker.fetch(postV3(signed), env())).status).toBe(401);
+    expect(provider).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to send the same authorization twice and reports the first result", async () => {
@@ -369,6 +412,13 @@ describe("fail closed", () => {
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "malformed" });
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("refuses a signed share CID that differs from the signed URL for both versions", async () => {
+    const otherCid = CID.replace(/.$/, "a");
+    expect((await worker.fetch(post(sign(authorizationBody({ shareCid: otherCid }))), env())).status).toBe(400);
+    expect((await worker.fetch(postV3(signV3(authorizationV3Body({ shareCid: otherCid }))), env())).status).toBe(400);
     expect(provider).not.toHaveBeenCalled();
   });
 

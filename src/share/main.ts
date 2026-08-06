@@ -100,7 +100,7 @@ function renderComposer(current: SenderApp, token: number): void {
         if (deliveryAuthorization === undefined) throw new Error("The invitation request was not accepted. The link above still works.");
         const config = await loadSharePublicConfig();
         await requestAddressedDelivery({
-          credentialsOrigin: config.credentialsOrigin,
+          emailOrigin: config.emailOrigin,
           shareUrl: share.url,
           deliveryAuthorization,
         });

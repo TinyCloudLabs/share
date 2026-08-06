@@ -22,6 +22,8 @@ import { canonicalize } from "@tinycloud/share-envelope";
 /** Matches `V2_DELIVERY_DOMAIN` in `tinycloud-node-server/src/share_v2.rs`. */
 export const DELIVERY_AUTHORIZATION_DOMAIN =
   "xyz.tinycloud.share/delivery-authorization/v2\0";
+export const DELIVERY_AUTHORIZATION_V3_DOMAIN =
+  "xyz.tinycloud.share/delivery-authorization/v3\0";
 
 /**
  * The Node caps `expiresAt` at five minutes from issuance; we re-impose the
@@ -71,7 +73,43 @@ export const AUTHORIZATION_KEYS = [
   "version",
 ] as const;
 
+/** Exact key set emitted by `/share/v3/deliveries/authorize`. */
+export const AUTHORIZATION_V3_KEYS = [
+  "actions",
+  "contentSource",
+  "contentSourceDigestHex",
+  "dataAuthority",
+  "deliveryEmail",
+  "documentName",
+  "enforcementRootCid",
+  "enforcerDid",
+  "expiresAt",
+  "holder",
+  "idempotencyKey",
+  "issuedAt",
+  "jti",
+  "nodeAudience",
+  "openCredentialsAudience",
+  "policyCid",
+  "policyRootCid",
+  "recipientMatcher",
+  "reportAbuseToken",
+  "requestBodyDigest",
+  "resource",
+  "returnOrigin",
+  "senderDid",
+  "senderTrust",
+  "shareCid",
+  "shareExpiresAt",
+  "shareId",
+  "shareUrl",
+  "targetOrigin",
+  "type",
+  "version",
+] as const;
+
 const AUTHORIZATION_KEY_SET = new Set<string>(AUTHORIZATION_KEYS);
+const AUTHORIZATION_V3_KEY_SET = new Set<string>(AUTHORIZATION_V3_KEYS);
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{1,256}$/;
 
 /**
@@ -138,6 +176,42 @@ export interface DeliveryAuthorization {
   readonly dataAuthority: false;
 }
 
+export interface DeliveryAuthorizationV3 {
+  readonly type: "TinyCloudShareDeliveryAuthorization";
+  readonly version: 3;
+  readonly jti: string;
+  readonly shareCid: string;
+  readonly shareId: string;
+  readonly policyCid: string;
+  readonly policyRootCid: string;
+  readonly enforcementRootCid: string;
+  readonly nodeAudience: string;
+  readonly enforcerDid: string;
+  readonly targetOrigin: string;
+  readonly openCredentialsAudience: string;
+  readonly holder: string;
+  readonly recipientMatcher: unknown;
+  readonly deliveryEmail: string;
+  readonly shareUrl: string;
+  readonly returnOrigin: string;
+  readonly documentName: string;
+  readonly senderDid: string;
+  readonly senderTrust: string;
+  readonly contentSource: unknown;
+  readonly contentSourceDigestHex: string;
+  readonly shareExpiresAt: string;
+  readonly issuedAt: string;
+  readonly reportAbuseToken: string;
+  readonly actions: readonly string[];
+  readonly resource: string;
+  readonly requestBodyDigest: string;
+  readonly idempotencyKey: string;
+  readonly expiresAt: string;
+  readonly dataAuthority: false;
+}
+
+export type AnyDeliveryAuthorization = DeliveryAuthorization | DeliveryAuthorizationV3;
+
 export interface DeliveryProof {
   readonly alg: "EdDSA";
   readonly kid: string;
@@ -150,7 +224,7 @@ export interface DeliveryProof {
  * nothing else.
  */
 export interface DeliveryRequest {
-  readonly authorization: DeliveryAuthorization;
+  readonly authorization: AnyDeliveryAuthorization;
   readonly proof: DeliveryProof;
   readonly shareUrl: string;
 }
@@ -178,7 +252,7 @@ export interface DeliveryTrust {
 
 export interface VerifiedDelivery {
   readonly ok: true;
-  readonly authorization: DeliveryAuthorization;
+  readonly authorization: AnyDeliveryAuthorization;
   /** `${shareOrigin}/s/<cid>` — the URL with its secret fragment removed. */
   readonly shareUrlWithoutFragment: string;
 }
@@ -285,12 +359,14 @@ export function parseDeliveryRequest(body: unknown): DeliveryRequest | null {
   const { authorization, proof, shareUrl } = body;
   if (!isPlainObject(authorization) || !isPlainObject(proof) || typeof shareUrl !== "string") return null;
   const keys = Object.keys(authorization);
-  if (keys.length !== AUTHORIZATION_KEYS.length || keys.some((key) => !AUTHORIZATION_KEY_SET.has(key))) return null;
+  const expectedKeys = authorization.version === 3 ? AUTHORIZATION_V3_KEYS : AUTHORIZATION_KEYS;
+  const expectedKeySet = authorization.version === 3 ? AUTHORIZATION_V3_KEY_SET : AUTHORIZATION_KEY_SET;
+  if (keys.length !== expectedKeys.length || keys.some((key) => !expectedKeySet.has(key))) return null;
   if (Object.keys(proof).sort().join(",") !== "alg,kid,signature") return null;
   if (proof.alg !== "EdDSA" || typeof proof.kid !== "string" || typeof proof.signature !== "string") return null;
   if (!B64URL_64.test(proof.signature)) return null;
   return {
-    authorization: authorization as unknown as DeliveryAuthorization,
+    authorization: authorization as unknown as AnyDeliveryAuthorization,
     proof: proof as unknown as DeliveryProof,
     shareUrl,
   };
@@ -324,8 +400,11 @@ export async function verifyDeliveryAuthorization(
   const authorization = request.authorization as unknown as Record<string, unknown>;
   let preimage: ArrayBuffer;
   try {
+    const domain = request.authorization.version === 3
+      ? DELIVERY_AUTHORIZATION_V3_DOMAIN
+      : DELIVERY_AUTHORIZATION_DOMAIN;
     preimage = new TextEncoder()
-      .encode(`${DELIVERY_AUTHORIZATION_DOMAIN}${canonicalize(authorization)}`)
+      .encode(`${domain}${canonicalize(authorization)}`)
       .slice().buffer as ArrayBuffer;
   } catch {
     // `canonicalize` throws on anything JSON/JCS cannot represent.
@@ -359,7 +438,7 @@ export async function verifyDeliveryAuthorization(
   const nodeHost = new URL(trust.nodeOrigin).hostname;
   if (
     authorization.type !== "TinyCloudShareDeliveryAuthorization" ||
-    authorization.version !== 2 ||
+    (authorization.version !== 2 && authorization.version !== 3) ||
     authorization.dataAuthority !== false ||
     // Three audiences that must never be conflated, each pinned independently.
     authorization.openCredentialsAudience !== trust.deliveryAudience ||
@@ -388,8 +467,14 @@ export async function verifyDeliveryAuthorization(
     authorization.senderDid.length === 0 ||
     (authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") ||
     !CID.test(String(authorization.shareCid)) ||
-    !B64URL_32.test(String(authorization.contentSourceDigest)) ||
-    !B64URL_32.test(String(authorization.authorityMaterialDigest)) ||
+    (authorization.version === 2
+      ? !B64URL_32.test(String(authorization.contentSourceDigest))
+        || !B64URL_32.test(String(authorization.authorityMaterialDigest))
+      : !/^[0-9a-f]{64}$/.test(String(authorization.contentSourceDigestHex))
+        || !CID.test(String(authorization.policyRootCid))
+        || !CID.test(String(authorization.enforcementRootCid))
+        || typeof authorization.enforcerDid !== "string"
+        || !authorization.enforcerDid.startsWith("did:")) ||
     !B64URL_32.test(String(authorization.requestBodyDigest)) ||
     !Array.isArray(authorization.actions) ||
     authorization.actions.length === 0
@@ -402,6 +487,7 @@ export async function verifyDeliveryAuthorization(
   if (authorization.shareUrl !== request.shareUrl) return refuse("malformed");
   const parsed = parseShareUrl(request.shareUrl, trust.shareOrigin);
   if (parsed === null) return refuse("share-url-invalid");
+  if (parsed.cid !== authorization.shareCid) return refuse("share-url-invalid");
 
   const expiresAt = timestamp(authorization.expiresAt);
   const issuedAt = timestamp(authorization.issuedAt);
