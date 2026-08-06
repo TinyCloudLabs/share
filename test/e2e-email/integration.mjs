@@ -1019,7 +1019,7 @@ async function fixtureGate() {
     for (const path of ["/share", "/share.html", "/viewer", "/viewer.html", `/s/${validShareCid}`]) {
       const response = await fetch(`${shareUrl}${path}`); if (response.status !== 200) throw new Error(`production Share rewrite failed for ${path}: ${response.status}`);
       const headers = Object.fromEntries(response.headers);
-      if (headers["cache-control"] !== "no-store" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
+      if (headers["cache-control"] !== "no-store, no-transform" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
       if ((path === "/share" || path === "/share.html" || path === "/viewer" || path === "/viewer.html" || path.startsWith("/s/")) && !headers["content-security-policy"]?.includes("connect-src")) throw new Error(`production Share trust-derived CSP missing for ${path}`);
     }
     const descriptorResponse = await fetch(`${shareUrl}/api/share/capabilities`); if (descriptorResponse.status !== 401) throw new Error("production Share host exposed capabilities before authentication");
@@ -1098,7 +1098,7 @@ async function mountedGate() {
     const response = await fetch(`${shareUrl}${path}`);
     if (response.status !== 200) throw new Error(`production Share rewrite failed for ${path}: ${response.status}`);
     const headers = Object.fromEntries(response.headers);
-    if (headers["cache-control"] !== "no-store" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
+    if (headers["cache-control"] !== "no-store, no-transform" || headers["referrer-policy"] !== "no-referrer" || headers["x-content-type-options"] !== "nosniff") throw new Error(`production Share security headers missing for ${path}`);
     if ((path === "/share" || path === "/share.html" || path === "/viewer" || path === "/viewer.html" || path.startsWith("/s/")) && !headers["content-security-policy"]?.includes("connect-src")) throw new Error(`production Share trust-derived CSP missing for ${path}`);
   }
   const fixtureValue = JSON.parse(await readFile(scopePath, "utf8"));

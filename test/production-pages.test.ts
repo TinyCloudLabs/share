@@ -75,10 +75,11 @@ describe("Cloudflare Pages static asset boundaries", () => {
       readFileSync("public/_headers", "utf8"),
       cloudflareHeaders(validateTrustBundle(trustBundle())),
     ]) {
-      expect(headers).toMatch(/\/share\n(?:  .+\n)*  Cache-Control: no-store/);
-      expect(headers).toMatch(/\/share\.html\n(?:  .+\n)*  Cache-Control: no-store/);
+      expect(headers).toMatch(/\/share\n(?:  .+\n)*  Cache-Control: no-store, no-transform/);
+      expect(headers).toMatch(/\/share\.html\n(?:  .+\n)*  Cache-Control: no-store, no-transform/);
+      expect(headers).toMatch(/\/viewer\n(?:  .+\n)*  Cache-Control: no-store, no-transform/);
       expect(headers).toMatch(/\/assets\/\*\n  Cache-Control: public, max-age=31536000, immutable/);
-      expect(headers).toMatch(/\/404\.html\n  Cache-Control: no-store/);
+      expect(headers).toMatch(/\/404\.html\n  Cache-Control: no-store, no-transform/);
       expect(headers).toMatch(/\/artifact-sandbox\n(?:  .+\n)*  Content-Security-Policy: frame-ancestors 'self'/);
       expect(headers).toMatch(/\/artifact-sandbox\n(?:  .+\n)*  X-Frame-Options: SAMEORIGIN/);
       expect(headers).toMatch(/\/artifact-sandbox\.html\n(?:  .+\n)*  Content-Security-Policy: frame-ancestors 'self'/);
@@ -134,7 +135,7 @@ describe("Cloudflare Pages static asset boundaries", () => {
       const headers = securityHeadersForPath(validateTrustBundle(trustBundle()), pathname);
       expect(headers["Content-Security-Policy"]).toBe("frame-ancestors 'self'");
       expect(headers["X-Frame-Options"]).toBe("SAMEORIGIN");
-      expect(headers["Cache-Control"]).toBe("no-store");
+      expect(headers["Cache-Control"]).toBe("no-store, no-transform");
     }
   });
 
