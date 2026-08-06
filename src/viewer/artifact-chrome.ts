@@ -28,6 +28,10 @@ function button(doc: Document, className: string, text: string, label?: string):
   return node;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export async function mountArtifactChrome(doc: Document, options: ArtifactChromeOptions): Promise<ArtifactChrome> {
   const view = doc.defaultView;
   if (view === null) throw new Error("artifact chrome requires a window");
@@ -68,6 +72,23 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   const announce = (value: string, alert = false): void => {
     status.setAttribute("role", alert ? "alert" : "status");
     status.textContent = value;
+  };
+  const handleChord = (): void => {
+    if (permanentlyHidden) {
+      permanentlyHidden = false;
+      try { storage?.removeItem(key); } catch { storage = undefined; }
+      root.hidden = false;
+      panel.hidden = false;
+      collapsed.hidden = true;
+      root.dataset.state = "expanded";
+      collapse.setAttribute("aria-expanded", "true");
+      collapsed.setAttribute("aria-expanded", "false");
+      announce("TinyCloud controls restored.");
+      collapse.focus();
+      return;
+    }
+    if (root.hidden) return;
+    if (panel.hidden) expand(); else collapsePanel();
   };
   const expand = (): void => {
     panel.hidden = false;
@@ -123,27 +144,19 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   const onKeyDown = (event: KeyboardEvent): void => {
     if (!(event.altKey && event.shiftKey && event.key.toLowerCase() === "c")) return;
     event.preventDefault();
-    if (permanentlyHidden) {
-      permanentlyHidden = false;
-      try { storage?.removeItem(key); } catch { storage = undefined; }
-      root.hidden = false;
-      panel.hidden = false;
-      collapsed.hidden = true;
-      root.dataset.state = "expanded";
-      collapse.setAttribute("aria-expanded", "true");
-      collapsed.setAttribute("aria-expanded", "false");
-      announce("TinyCloud controls restored.");
-      collapse.focus();
-      return;
-    }
-    if (root.hidden) return;
-    if (panel.hidden) expand(); else collapsePanel();
+    handleChord();
+  };
+  const onMessage = (event: MessageEvent): void => {
+    if (event.origin !== "null" || !isRecord(event.data) || event.data["type"] !== "artifact-restore-controls") return;
+    handleChord();
   };
   view.addEventListener("keydown", onKeyDown);
+  view.addEventListener("message", onMessage);
 
   return {
     destroy(): void {
       view.removeEventListener("keydown", onKeyDown);
+      view.removeEventListener("message", onMessage);
       root.remove();
     },
   };
