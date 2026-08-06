@@ -594,6 +594,45 @@ describe("share composer access controls", () => {
     }
   });
 
+  it("publishes a non-UTF-8 file through the real link-only creation path", async () => {
+    const registry = createDevRegistry();
+    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
+      const target = new URL(
+        url.pathname.replace("/api/share/link-only/registry", ""),
+        "http://registry.local",
+      );
+      return registry.handler(new Request(target, {
+        ...init,
+        body,
+        duplex: "half",
+      } as RequestInit));
+    };
+
+    const root = document.createElement("div");
+    document.body.append(root);
+    let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
+    mountShareComposer(root, {
+      ...baseOptions(),
+      fetchFn: authenticatedRegistryFetch,
+      loadCapabilities: async () => [],
+      persistShare: async ({ share, model }) => { captured = { share, model }; },
+    });
+
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File([new Uint8Array([0, 255, 1])], "proof.bin", { type: "application/octet-stream" })],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
+    expect(captured!.model.content).toMatchObject({ kind: "file" });
+    expect(captured!.share.url).toMatch(/^https:\/\/share\.tinycloud\.xyz\/s\/[^#]+#k=/u);
+  });
+
   it("a link-only share never persists an ungranted action", async () => {
     const registry = createDevRegistry();
     const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
