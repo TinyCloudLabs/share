@@ -24,6 +24,7 @@ export type SenderFailureKind =
   | "fileTooLarge"
   | "recipientDomain"
   | "recipientEmail"
+  | "recipientUnavailable"
   | "expiry"
   | "deliveryRecipient"
   | "deliveryDomain"
@@ -58,6 +59,7 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   fileTooLarge: "Choose a document no larger than 100 MB.",
   recipientDomain: "Enter a valid ASCII email domain.",
   recipientEmail: "Enter one exact email address.",
+  recipientUnavailable: "That recipient option isn't available yet. Choose one person or anyone with the link.",
   expiry: "Choose when the link should expire.",
   deliveryRecipient: "The delivery address must match the person you're sharing with.",
   deliveryDomain: "The delivery address must belong to the shared domain.",

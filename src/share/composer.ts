@@ -259,6 +259,13 @@ export function canonicalUploadFiles(selected: readonly File[]): readonly File[]
 
 async function defaultCreate(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   const file = files.length === 1 ? files[0] : undefined;
+  // Domain credentials and recipient-DID admission do not yet have complete
+  // production receiver paths. Keep this guard before session, storage, and
+  // network work so a forced/programmatic submit cannot create partial
+  // authority or orphan encrypted content.
+  if (model.recipient.kind === "emailDomain" || model.recipient.kind === "recipientDid") {
+    throw fail("recipientUnavailable", "recipient mode has no complete production receiver path");
+  }
   if (model.recipient.kind !== "bearer") {
     if (options.session === undefined) throw fail("session", "addressed share has no session");
     if (model.content.kind !== "library" && files.length === 0) throw fail("content", "addressed share has no file");
@@ -879,20 +886,23 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   libraryPanel.append(sourceLabel, useUpload);
   contentSection.append(drop, chosen, textPanel, libraryPanel);
 
-  // Who can open it. All recipient kinds are first-class choices.
+  // Who can open it. Unsupported recipient modes remain visible so the
+  // product direction is clear, but cannot be selected before their complete
+  // production authority and receiver paths exist.
   const fieldset = el(doc, "fieldset", "composer-section recipient-section");
   fieldset.append(el(doc, "legend", "field-legend", "Who can open it"));
   const recipientInput = el(doc, "input", "field-input recipient-value") as HTMLInputElement;
-  const addRecipientOption = (parent: HTMLElement, kind: RecipientKind, copy: string): void => {
-    const labelNode = el(doc, "label", "recipient-option");
+  const addRecipientOption = (parent: HTMLElement, kind: RecipientKind, copy: string, available = true): void => {
+    const labelNode = el(doc, "label", available ? "recipient-option" : "recipient-option recipient-option-unavailable");
     const radio = el(doc, "input", "") as HTMLInputElement;
-    radio.type = "radio"; radio.name = "recipient"; radio.value = kind; radio.checked = kind === defaults.recipient.kind;
+    radio.type = "radio"; radio.name = "recipient"; radio.value = kind; radio.checked = kind === defaults.recipient.kind; radio.disabled = !available;
+    if (!available) labelNode.setAttribute("aria-disabled", "true");
     labelNode.append(radio, el(doc, "span", "recipient-option-copy", copy));
     parent.append(labelNode);
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
-  addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — they'll confirm their email to open it");
-  addRecipientOption(fieldset, "recipientDid", "Only this OpenKey device — access is bound to its DID");
+  addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — not available yet", false);
+  addRecipientOption(fieldset, "recipientDid", "Only this OpenKey device — not available yet", false);
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
   recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
   fieldset.append(recipientInput);

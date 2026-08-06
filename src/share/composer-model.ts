@@ -188,13 +188,12 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
 }
 
 export function validateComposerModel(model: ShareComposerModel): ShareComposerModel {
+  if (model.recipient.kind === "emailDomain" || model.recipient.kind === "recipientDid") {
+    throw validationFailure("recipientUnavailable");
+  }
   const recipient = model.recipient.kind === "exactEmail"
     ? { kind: "exactEmail" as const, value: normalizeEmail(model.recipient.value ?? "") }
-    : model.recipient.kind === "emailDomain"
-      ? { kind: "emailDomain" as const, value: normalizeEmailDomain(model.recipient.value ?? "") }
-      : model.recipient.kind === "recipientDid"
-        ? { kind: "recipientDid" as const, value: normalizeRecipientDid(model.recipient.value ?? "") }
-      : { kind: "bearer" as const };
+    : { kind: "bearer" as const };
   const inferredResourceKind = model.content.kind === "files"
     ? "prefix"
     : model.content.kind === "library"
@@ -211,10 +210,6 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
     throw validationFailure("deliveryRecipient");
   }
-  if (recipient.kind === "emailDomain" && deliveryEmail !== undefined && emailDomainOf(deliveryEmail) !== recipient.value) {
-    throw validationFailure("deliveryDomain");
-  }
-  if (recipient.kind === "recipientDid" && deliveryEmail !== undefined) throw validationFailure("deliveryRecipient");
   if (!model.encryption) throw validationFailure("plaintext");
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
