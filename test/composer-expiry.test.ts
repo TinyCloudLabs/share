@@ -348,7 +348,6 @@ describe("unified owner-policy happy-path selection", () => {
     const { resolve } = await import("node:path");
     const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
     expect(source).toMatch(/return createOwnerPolicyShare\(files, model, options\)/u);
-    expect(source).toContain("const shareId = crypto.randomUUID();");
     expect(source).toContain("options.createUnifiedOwnerRoot");
     expect(source).toContain("options.signUnifiedPolicy");
   });

@@ -65,6 +65,18 @@ function record(name, ok, detail) {
   log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : ` — ${detail}`}`);
 }
 
+const CLIPBOARD_TAP = () => {
+  window.__clipboardWrites = [];
+  const clipboard = navigator.clipboard ?? {};
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      ...clipboard,
+      writeText: async (value) => { window.__clipboardWrites.push(value); },
+    },
+  });
+};
+
 const recipient = newInbox("tcshare-rcpt");
 if (!recipient.address.endsWith("@mailinator.com")) throw new Error("refusing to run: recipient is not a mailinator address");
 log(`[stage2] recipient ${recipient.address}`);
@@ -82,6 +94,7 @@ const captured = [];
 
 try {
   const context = await browser.newContext();
+  await context.addInitScript(CLIPBOARD_TAP);
   if (process.env.TRACE_DEEP === "1") await context.addInitScript(DEEP_TRACE);
   const page = await context.newPage();
   page.on("console", (message) => log(`[console ${message.type()}] ${message.text()}`));
@@ -116,7 +129,7 @@ try {
   // Owner-share requests carry their authority in the Authorization header, so
   // a rejection is only diagnosable with the request beside the response.
   page.on("request", (request) => {
-    if (!/\/share\/v[12]\//.test(request.url())) return;
+    if (!/\/share\/v[123]\/|\/api\/share\/bindings/.test(request.url())) return;
     const headers = request.headers();
     captured.push({
       direction: "request",
@@ -183,8 +196,14 @@ try {
   await page.screenshot({ path: resolve(RUN_DIR, "composer.png"), fullPage: true });
   if (state !== "created") throw new Error(`addressed share creation failed (${state})`);
 
+  await page.getByRole("button", { name: /^copy link$/i }).click();
+  const copiedShareUrl = await page.evaluate(() => window.__clipboardWrites?.at(-1));
+  record("the exact-email private link was captured", typeof copiedShareUrl === "string" && copiedShareUrl.includes("/s/") && copiedShareUrl.includes("#k="));
+  if (typeof copiedShareUrl !== "string") throw new Error("exact-email private link was not captured");
+
   // Delivery is a second, explicit gesture: the composer creates the link, then
   // offers "Notify recipient". Nothing is requested until it is clicked.
+  let invitationRequested = false;
   if (state === "created") {
     const send = page.getByRole("button", { name: "Notify recipient" });
     const sendVisible = await send.isVisible().catch(() => false);
@@ -198,7 +217,8 @@ try {
       ).catch(() => {});
       const deliveryStatus = (await page.locator("span.notification-status").textContent().catch(() => "")) ?? "";
       log(`[composer] delivery status: ${JSON.stringify(deliveryStatus)}`);
-      record("the composer reports the invitation was requested", deliveryStatus.startsWith("Invitation requested"), deliveryStatus);
+      invitationRequested = deliveryStatus.startsWith("Invitation requested");
+      record("the composer reports the invitation was requested", invitationRequested, deliveryStatus);
     }
   }
 
@@ -233,7 +253,7 @@ try {
   // composer reports "queued" races the capture and finds nothing. The first
   // version of this check did exactly that and reported no POST even though
   // the response arrived immediately afterward.
-  const sendDeadline = Date.now() + 30_000;
+  const sendDeadline = invitationRequested ? Date.now() + 30_000 : Date.now();
   let sendResponse;
   for (;;) {
     sendResponse = captured.find((entry) => entry.direction !== "request" && /witness\.credentials\.org\/share\/v2/.test(entry.url));
@@ -243,33 +263,41 @@ try {
   record("OpenCredentials accepted the invitation request", sendResponse?.status === 202, sendResponse === undefined ? "no POST to OpenCredentials was observed within 30s" : `${sendResponse.status} ${sendResponse.body.slice(0, 300)}`);
 
   // ---------------------------------------------------------------- mailbox
-  log(`[stage2] polling ${recipient.address}`);
+  let recipientLink = copiedShareUrl;
   // The predicate used to be `() => true`, which accepts ANY message that lands
   // in the inbox — so this proved "an email arrived", not "the invitation for
   // this share arrived", while claiming the latter. Require the document name
   // and a `/s/` link, both of which are known before polling starts. A stray
   // message now keeps the poll running instead of being asserted on and then
   // failing the link check below with a misleading message.
-  const isInvitation = (_message, body) => body.includes("stage2-proof.md") && body.includes("/s/");
-  const { message, text } = await waitForMessage(recipient.inbox, isInvitation, { timeoutMs: 300_000, log });
-  // Not a hardcoded `true`: `waitForMessage` throws on timeout, but that only
-  // proves *something* matched. Re-assert the identity here so the reported
-  // check is the one that was actually made.
-  record(
-    "the invitation email actually arrived in the Mailinator inbox",
-    isInvitation(message, text) && /tinycloud/i.test(String(message.from)),
-    `from=${message.from} subject=${JSON.stringify(message.subject)}`,
-  );
-  writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
+  if (sendResponse?.status === 202) {
+    log(`[stage2] polling ${recipient.address}`);
+    const isInvitation = (_message, body) => body.includes("stage2-proof.md") && body.includes("/s/");
+    const { message, text } = await waitForMessage(recipient.inbox, isInvitation, { timeoutMs: 300_000, log });
+    record(
+      "the invitation email actually arrived in the Mailinator inbox",
+      isInvitation(message, text) && /tinycloud/i.test(String(message.from)),
+      `from=${message.from} subject=${JSON.stringify(message.subject)}`,
+    );
+    writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
 
-  const links = extractUrls(text).filter((url) => url.includes("/s/"));
-  record("the invitation carries a share link", links.length > 0, links.map((url) => url.replace(/#.*/, "#<redacted>")).join(" "));
-  if (links.length === 0) throw new Error("no share link in the invitation");
+    const links = extractUrls(text).filter((url) => url.includes("/s/"));
+    record("the invitation carries a share link", links.length > 0, links.map((url) => url.replace(/#.*/, "#<redacted>")).join(" "));
+    if (links.length === 0) throw new Error("no share link in the invitation");
+    recipientLink = links[0];
+  } else {
+    log("[stage2] invitation delivery is unavailable; continuing the recipient proof with the captured private link");
+  }
 
   // -------------------------------------------------------------- recipient
   const recipientContext = await browser.newContext({ acceptDownloads: true });
   const recipientPage = await recipientContext.newPage();
   recipientPage.on("console", (message2) => log(`[recipient console ${message2.type()}] ${message2.text()}`));
+  recipientPage.on("pageerror", (error) => log(`[recipient pageerror] ${error.message}`));
+  recipientPage.on("response", (response) => {
+    if (/registry|\/api\/share\/|node\.tinycloud|credentials\.org|openkey/.test(response.url())) log(`[recipient res ${response.status()}] ${response.request().method()} ${response.url()}`);
+  });
+  recipientPage.on("requestfailed", (request) => log(`[recipient reqfailed] ${request.method()} ${request.url()} — ${request.failure()?.errorText}`));
   const { cdp: recipientCdp, authenticatorId: recipientAuthenticatorId } = await attachVirtualAuthenticator(recipientContext, recipientPage);
   let recipientAccount = process.env.FRESH_ACCOUNT === "1" ? undefined : loadAccount(RECIPIENT_ACCOUNT_PATH);
   if (recipientAccount === undefined) {
@@ -279,7 +307,7 @@ try {
     log(`[openkey recipient] reusing account ${recipientAccount.address}`);
     await restoreCredential(recipientCdp, recipientAuthenticatorId, recipientAccount.credential);
   }
-  await recipientPage.goto(links[0], { waitUntil: "domcontentloaded" });
+  await recipientPage.goto(recipientLink, { waitUntil: "domcontentloaded" });
 
   const verify = recipientPage.getByRole("button", { name: /^confirm email$/i });
   await verify.waitFor({ timeout: 60_000 });
@@ -288,19 +316,29 @@ try {
 
   const acquisitionDeadline = Date.now() + 180_000;
   let acquisitionReady = false;
-  while (!acquisitionReady && Date.now() < acquisitionDeadline) {
-    acquisitionReady = await recipientPage.evaluate(() => {
+  let acquisitionFailure = "";
+  while (!acquisitionReady && acquisitionFailure.length === 0 && Date.now() < acquisitionDeadline) {
+    const state = await recipientPage.evaluate(() => {
       const space = document.querySelector("tinycloud-space-modal")?.shadowRoot;
       const create = space?.querySelector('button[data-action="create"]');
       if (create instanceof HTMLButtonElement) create.click();
       const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
-      return root?.querySelector('input[name="otp"]') instanceof HTMLInputElement
+      const ready = root?.querySelector('input[name="otp"]') instanceof HTMLInputElement
         && root.querySelector('button[type="submit"]') instanceof HTMLButtonElement;
-    }).catch(() => false);
-    if (!acquisitionReady) await recipientPage.waitForTimeout(1_000);
+      const button = document.querySelector("button.viewer-primary-action");
+      const alert = document.querySelector('[role="alert"]');
+      return { ready, failed: button instanceof HTMLButtonElement && !button.disabled ? alert?.textContent ?? "credential flow returned to retry" : "" };
+    }).catch(() => ({ ready: false, failed: "" }));
+    acquisitionReady = state.ready;
+    acquisitionFailure = state.failed;
+    if (!acquisitionReady && acquisitionFailure.length === 0) await recipientPage.waitForTimeout(1_000);
   }
-  record("the SDK embedded credential element rendered in the Share page", acquisitionReady);
-  if (!acquisitionReady) throw new Error("embedded credential acquisition controls did not render");
+  record("the SDK embedded credential element rendered in the Share page", acquisitionReady, acquisitionFailure || undefined);
+  if (!acquisitionReady) {
+    writeFileSync(resolve(RUN_DIR, "recipient-pre-acquisition.txt"), await recipientPage.evaluate(() => document.body?.innerText ?? ""));
+    await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient-pre-acquisition.png"), fullPage: true });
+    throw new Error("embedded credential acquisition controls did not render");
+  }
 
   const otpMail = await waitForMessage(
     recipient.inbox,

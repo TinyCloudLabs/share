@@ -32,6 +32,7 @@ npm run typecheck                 # not covered by the repo's merge gate
 | `npm run stage1` | **Bearer / link-only, end to end through the composer UI.** Sign in, create a share, read the exact bytes back in a clean context. |
 | `../../node_modules/.bin/tsx stage1b-viewer.ts` | The **viewer half only**, with the share minted by `createBearerShare` directly. Use when the composer is unreachable — it isolates the registry + viewer from the sender. |
 | `npm run stage2` | **Addressed / exact-email to a Mailinator inbox.** Compose, send, read the inbox, follow the link, confirm, read the bytes. |
+| `npm run stage2:domain-did` | **Email-domain and recipient-DID matrix.** Create each production recipient mode and exercise the domain receiver when a link is produced. Expected product gaps remain explicit failed assertions. |
 
 Useful env vars: `HEADED=1` (watch it), `BROWSER_CHANNEL=chrome` (real Chrome
 instead of bundled Chromium), `FRESH_ACCOUNT=1` (register a new OpenKey account

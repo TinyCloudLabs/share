@@ -6,6 +6,7 @@
   "scripts": {
     "stage1": "node stage1-bearer.mjs",
     "stage2": "node stage2-addressed.mjs",
+    "stage2:domain-did": "node stage2b-domain-did.mjs",
     "trust-bundle": "node check-trust-bundle.mjs",
     "typecheck": "../../node_modules/.bin/tsc --noEmit -p tsconfig.json"
   },
