@@ -51,6 +51,7 @@ const EXPECTED_SENDER_COPY = {
   fileTooLarge: "Choose a document no larger than 100 MB.",
   recipientDomain: "Enter a valid ASCII email domain.",
   recipientEmail: "Enter one exact email address.",
+  recipientUnavailable: "That recipient option isn't available yet. Choose one person or anyone with the link.",
   expiry: "Choose when the link should expire.",
   deliveryRecipient: "The delivery address must match the person you're sharing with.",
   deliveryDomain: "The delivery address must belong to the shared domain.",
@@ -155,23 +156,22 @@ describe("share composer model", () => {
     expect(clampExpiry("2026-08-01T00:00:00.000Z")).toBe("2026-08-01T00:00:00.000Z");
   });
 
-  it("normalizes domain authorization from the input, never from asserted metadata", () => {
+  it("normalizes domain input independently while refusing unsupported recipient modes", () => {
     expect(normalizeEmailDomain("MAILINATOR.COM")).toBe("mailinator.com");
     expect(emailDomainOf("Alice@mailinator.com")).toBe("mailinator.com");
-    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "mailinator.com" }, encryption: false, encryptionAcknowledged: false }))).toThrow();
-    expect(validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" } }))).toMatchObject({ recipient: { value: "mailinator.com" } });
+    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" } }))).toThrow("That recipient option isn't available yet");
+    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "recipientDid", value: "did:key:z6Mkexample" } }))).toThrow("That recipient option isn't available yet");
   });
 
   it("rejects unsafe plaintext attempts and never permits bearer plaintext", () => {
     expect(() => validateComposerModel(modelWith(textContent, { encryption: false }))).toThrow(/must stay encrypted/i);
-    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" }, resource: { kind: "exact", path: "docs/readme.md" } };
-    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "emailDomain", value: "MAILINATOR.COM" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
+    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
   });
 
   it("rejects prefix content until the encrypted shared-key contract exists", () => {
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs", action: "tinycloud.kv/get" }, resource: { kind: "prefix", path: "docs" } };
-    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "emailDomain", value: "MAILINATOR.COM" } }))).toThrow(SENDER_FAILURE.folderUnsupported);
+    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" } }))).toThrow(SENDER_FAILURE.folderUnsupported);
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
@@ -420,7 +420,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows all recipient choices and the required encryption state before Advanced", () => {
+  it("shows unsupported recipient choices as intentionally unavailable and keeps encryption required", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -431,10 +431,12 @@ describe("share composer access controls", () => {
     expect(recipientOptions.map((input) => input.value)).toEqual(["exactEmail", "emailDomain", "recipientDid", "bearer"]);
     expect(recipientOptions.map((input) => input.closest("label")?.textContent)).toEqual([
       "Only this person — they'll confirm their email to open it",
-      "Anyone with an email from this domain — they'll confirm their email to open it",
-      "Only this OpenKey device — access is bound to its DID",
+      "Anyone with an email from this domain — not available yet",
+      "Only this OpenKey device — not available yet",
       "Anyone with the link — anyone you send it to can open it",
     ]);
+    expect(recipientOptions.map((input) => input.disabled)).toEqual([false, true, true, false]);
+    expect(recipientOptions.slice(1, 3).map((input) => input.closest("label")?.getAttribute("aria-disabled"))).toEqual(["true", "true"]);
     expect(advanced.open).toBe(false);
     expect(advanced.contains(root.querySelector("select[name=format]"))).toBe(true);
     const encryption = root.querySelector<HTMLInputElement>("input[name=encryption]")!;
@@ -448,53 +450,24 @@ describe("share composer access controls", () => {
     expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
     expect(root.querySelector<HTMLSelectElement>("select[name=format]")!.options[0]!.textContent).toBe("Short link (recommended)");
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
-    root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.checked = true;
-    root.querySelector<HTMLInputElement>("input[value=emailDomain]")!.dispatchEvent(new Event("change", { bubbles: true }));
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
     expect(encryption.checked).toBe(true);
     expect(encryption.disabled).toBe(true);
   });
 
-  it("labels and submits the first-class domain flow with normalized authorization and delivery", async () => {
+  it("does not select or submit unavailable domain and device recipients", () => {
     const root = document.createElement("div"); document.body.append(root);
-    let selected: ShareComposerModel | undefined;
-    mountShareComposer(root, {
-      ...baseOptions(),
-      loadCapabilities: async () => [],
-      createShare: async ({ model }) => {
-        selected = model;
-        return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat };
-      },
-    });
+    mountShareComposer(root, baseOptions());
 
     const domain = root.querySelector<HTMLInputElement>("fieldset.recipient-section input[name=recipient][value=emailDomain]")!;
-    domain.checked = true;
-    domain.dispatchEvent(new Event("change", { bubbles: true }));
-    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
-    expect(recipient).toMatchObject({
-      hidden: false,
-      type: "text",
-      placeholder: "example.com",
-      autocomplete: "off",
-    });
-    expect(recipient.getAttribute("aria-label")).toBe("Email domain");
-    expect(root.querySelector(".composer-note")?.textContent).toContain("confirming their address");
+    const did = root.querySelector<HTMLInputElement>("fieldset.recipient-section input[name=recipient][value=recipientDid]")!;
+    domain.closest<HTMLLabelElement>("label")!.click();
+    did.closest<HTMLLabelElement>("label")!.click();
 
-    recipient.value = "EXAMPLE.COM";
-    recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
-    delivery.value = "reader@example.com";
-    delivery.dispatchEvent(new Event("input", { bubbles: true }));
-    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "domain share" });
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    await vi.waitFor(() => expect(selected).toBeDefined());
-    expect(selected).toMatchObject({
-      recipient: { kind: "emailDomain", value: "example.com" },
-      deliveryEmail: "reader@example.com",
-      encryption: true,
-      permissions: ["read"],
-    });
+    expect(domain.checked).toBe(false);
+    expect(did.checked).toBe(false);
+    expect(root.querySelector<HTMLInputElement>('input[name="recipient"]:checked')?.value).toBe("bearer");
+    expect(root.querySelector<HTMLInputElement>("input[name=recipient-value]")!.hidden).toBe(true);
   });
 
   it("removes manual folder browsing and restores edit controls for a person", () => {
@@ -741,7 +714,7 @@ describe("share composer sender failures", () => {
     } catch (error) {
       validationError = error;
     }
-    expect(senderFailureMessage(validationError)).toBe("The delivery address must belong to the shared domain.");
+    expect(senderFailureMessage(validationError)).toBe("That recipient option isn't available yet. Choose one person or anyone with the link.");
   });
 
   /**
@@ -757,7 +730,7 @@ describe("share composer sender failures", () => {
     }
   });
 
-  it("keeps tagged form validation copy in the composer status", async () => {
+  it("keeps unavailable-recipient validation copy in the composer status", async () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const domain = root.querySelector<HTMLInputElement>("input[name=recipient][value=emailDomain]")!;
@@ -773,7 +746,7 @@ describe("share composer sender failures", () => {
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toContain("must belong to the shared domain");
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("That recipient option isn't available yet. Choose one person or anyone with the link.");
   });
 });
 
