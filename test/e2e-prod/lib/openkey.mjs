@@ -129,7 +129,7 @@ export function startOpenKeyAutopilot(page, log, intervalMs = 1_000) {
       if (stopped || page.isClosed()) return;
       for (const frame of page.frames()) {
         if (!/openkey/.test(frame.url())) continue;
-        for (const name of [/^sign message$/i, /use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /^approve$/i, /^allow$/i, /^confirm$/i]) {
+        for (const name of [/^sign message$/i, /^passkey$/i, /use a passkey instead/i, /sign in with passkey/i, /use this passkey/i, /^approve$/i, /^allow$/i, /^confirm$/i]) {
           const button = frame.getByRole("button", { name }).first();
           if (!(await button.isVisible().catch(() => false))) continue;
           const key = `${frame.url()}::${name}`;
