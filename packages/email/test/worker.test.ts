@@ -17,6 +17,7 @@ const CID = "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4";
 const KEY_FRAGMENT = `${"A".repeat(42)}E`;
 const SHARE_URL = `${SHARE_ORIGIN}/s/${CID}#k=${KEY_FRAGMENT}`;
 const RECIPIENT = "recipient@example.com";
+const DOMAIN_MATCHER = { kind: "emailDomain", value: "example.com" } as const;
 
 const nodePrivateKey = new Uint8Array(32).fill(11);
 const nodePublicKey = ed25519.getPublicKey(nodePrivateKey);
@@ -41,7 +42,7 @@ function authorizationBody(overrides: Record<string, unknown> = {}): Record<stri
     targetOrigin: NODE_ORIGIN,
     openCredentialsAudience: AUDIENCE,
     holder: "did:key:z6MkHolder",
-    recipientMatcher: { kind: "exactEmail", value: RECIPIENT },
+    recipientMatcher: DOMAIN_MATCHER,
     deliveryEmail: RECIPIENT,
     shareUrl: SHARE_URL,
     returnOrigin: SHARE_ORIGIN,
@@ -194,7 +195,7 @@ afterEach(() => {
 });
 
 describe("authorized delivery", () => {
-  it("sends exactly one invitation for a Node-signed authorization", async () => {
+  it("sends exactly one notification for a Node-signed domain authorization", async () => {
     const environment = env();
     const response = await worker.fetch(post(sign(authorizationBody())), environment);
     expect(response.status).toBe(202);
@@ -257,6 +258,18 @@ describe("authorized delivery", () => {
 });
 
 describe("fail closed", () => {
+  it("never sends a k-only exact-email link", async () => {
+    const exactEmail = authorizationBody({
+      recipientMatcher: { kind: "exactEmail", value: RECIPIENT },
+    });
+
+    const response = await worker.fetch(post(sign(exactEmail)), env());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "share-url-invalid" });
+    expect(provider).not.toHaveBeenCalled();
+  });
+
   it("refuses when the trusted node key, audience, sender, or provider key is unset", async () => {
     for (const key of [
       "NODE_INVITATION_KID",
