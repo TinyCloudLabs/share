@@ -32,6 +32,7 @@ vi.mock("../src/email-share/config.js", () => ({
     registryOrigin: "https://registry.tinycloud.xyz",
     nodeOrigin: "https://node.example",
     credentialsOrigin: "https://credentials.example",
+    accountlessReceiverEnabled: true,
     nodeAudience: "did:web:node.example",
     enforcerDid: "did:web:node.example",
     nodeInvitationKid: "did:web:node.example#key-1",

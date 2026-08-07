@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
 import { didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelope";
-import { trustedNodeFromConfig, validateSharePublicConfig } from "../src/email-share/config.js";
+import { loadSharePublicConfig, trustedNodeFromConfig, validateSharePublicConfig } from "../src/email-share/config.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
-import { createShareHostFromEnv, TransactionalBindingStore, validateProductionBindingStorePath } from "../src/host/share-adapter.js";
+import { accountlessReceiverEnabledFromEnv, createShareHostFromEnv, TransactionalBindingStore, validateProductionBindingStorePath } from "../src/host/share-adapter.js";
 import { resolveShareUpstreams, upstreamForPath } from "../src/host/upstream.js";
 import registryWorker, { UploadAuthorization, type DurableObjectState, type RegistryEnv } from "../packages/registry/src/worker.js";
 
@@ -87,6 +87,24 @@ async function openKeySignIn(host: ReturnType<typeof createShareHostFromEnv>, ac
 }
 
 describe("production trust and host boundaries", () => {
+  it("keeps accountless receiving off by default and publishes an exact runtime rollout header", async () => {
+    expect(accountlessReceiverEnabledFromEnv({})).toBe(false);
+    expect(accountlessReceiverEnabledFromEnv({ SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "false" })).toBe(false);
+    expect(accountlessReceiverEnabledFromEnv({ SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "true" })).toBe(true);
+    expect(() => accountlessReceiverEnabledFromEnv({ SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "yes" })).toThrow(/exactly true or false/);
+
+    const host = createShareHostFromEnv({
+      SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
+      SHARE_TRUST_BUNDLE_ALLOW_TEST: "true",
+      SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "true",
+    });
+    const fetchConfig = (request: RequestInfo | URL): Promise<Response> => host.handler(new Request(request));
+    const config = await loadSharePublicConfig(fetchConfig as typeof fetch);
+    expect(config.accountlessReceiverEnabled).toBe(true);
+    const response = await host.handler(new Request("https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json"));
+    expect(response.headers.get("x-tinycloud-share-accountless-receiver")).toBe("enabled");
+  });
+
   it("accepts only normalized descendants of the mounted binding volume", () => {
     expect(validateProductionBindingStorePath("/var/lib/tinycloud/share/bindings.ndjson")).toBe("/var/lib/tinycloud/share/bindings.ndjson");
     for (const value of ["/tmp/bindings.ndjson", "/var/lib/tinycloud/share-sibling/bindings.ndjson", "/var/lib/tinycloud/share/../outside.ndjson", "/var/lib/tinycloud/share/bindings/", "/var/lib/tinycloud/share/\0bindings.ndjson"]) {

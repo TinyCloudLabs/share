@@ -24,6 +24,7 @@ jobs:
             .services["share-api"].build == null and
             .services["share-api"].ports == null and
             .services["share-api"].environment.SHARE_SENDER_ENABLED == "false" and
+            .services["share-api"].environment.SHARE_ACCOUNTLESS_RECEIVER_ENABLED == "false" and
             .services["share-api"].environment.SHARE_BINDING_STORE_PATH == "/var/lib/tinycloud/share/bindings.ndjson" and
             (.services["share-api"].environment | has("SHARE_SENDER_PRIVATE_KEY") | not) and
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITY_JSON") | not) and

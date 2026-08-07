@@ -142,29 +142,60 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       return;
     }
     if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
-      const { createShareReceiverClient } = await import("./share/receiver.js");
-      const receiverClient = createShareReceiverClient(shareConfig, REGISTRY_BASE_URL);
-      const received = await receiverClient.share.receive(shareHref, {
-        identity: "auto",
-        interaction: { kind: "inline", mountTarget: root },
-      });
-      const content = await received.get();
-      await presentShare(
-        root,
-        { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes },
-        {
-          shareUrl: shareHref,
-          saveToTinyCloud: async () => {
-            const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
-            const session = await authenticateWithOpenKey(() => undefined);
-            const accountClient = await createTinyCloudClient(session, shareConfig, [], () => undefined);
-            await received.importInto(accountClient, {
-              namespace: "files-for-you",
-              filename: content.filename,
-            });
+      if (shareConfig.accountlessReceiverEnabled === true) {
+        const { createShareReceiverClient } = await import("./share/receiver.js");
+        const receiverClient = createShareReceiverClient(shareConfig, REGISTRY_BASE_URL);
+        const received = await receiverClient.share.receive(shareHref, {
+          identity: "auto",
+          interaction: { kind: "inline", mountTarget: root },
+        });
+        const content = await received.get();
+        await presentShare(
+          root,
+          { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes },
+          {
+            shareUrl: shareHref,
+            saveToTinyCloud: async () => {
+              const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
+              const session = await authenticateWithOpenKey(() => undefined);
+              const accountClient = await createTinyCloudClient(session, shareConfig, [], () => undefined);
+              await received.importInto(accountClient, {
+                namespace: "files-for-you",
+                filename: content.filename,
+              });
+            },
           },
+        );
+        return;
+      }
+      const { mountCredentialReceiver } = await import("./viewer/credential-receiver.js");
+      const interruptedOperation = Object.freeze({
+        type: "TinyCloudInterruptedShareRead" as const,
+        version: 1 as const,
+        shareCid: resolved.shareCid,
+        envelope: resolved.envelope,
+      });
+      let activeClient: Promise<import("./share/openkey-session.js").ShareTinyCloud> | undefined;
+      mountCredentialReceiver(root, {
+        share: { envelope: resolved.envelope, policy: resolved.policy, shareCid: resolved.shareCid },
+        operation: interruptedOperation,
+        openerOrigin: window.location.origin,
+        connect: () => {
+          if (activeClient !== undefined) return activeClient;
+          const attempt = import("./share/openkey-session.js").then(async ({ authenticateWithOpenKey, createTinyCloudClient }) => {
+            const session = await authenticateWithOpenKey(() => undefined);
+            return createTinyCloudClient(session, shareConfig, [], () => undefined);
+          });
+          activeClient = attempt;
+          void attempt.catch(() => {
+            if (activeClient === attempt) activeClient = undefined;
+          });
+          return attempt;
         },
-      );
+        onComplete: async (content) => {
+          await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
+        },
+      });
       return;
     }
     if (resolved.state !== "policy-email-claim-required") {

@@ -683,6 +683,7 @@ async function startShare(tempRoot, fixtures) {
   // seam selects securityHeadersForPath's production https://openkey.so
   // frame-src instead of authorizing a mixed-content HTTP frame.
   if (tc465Joined) delete shareLaunchEnv.SHARE_HERMETIC_OPENKEY_ORIGIN;
+  if (tc500Joined) shareLaunchEnv.SHARE_ACCOUNTLESS_RECEIVER_ENABLED = "true";
   upstreamRoutingAudit = assertLoopbackShareUpstreams(shareLaunchEnv);
   const share = run("npm", ["run", "start:deploy"], shareRoot, shareLaunchEnv);
   await waitFor(`${origin}/health/readiness`, 60_000, share);
