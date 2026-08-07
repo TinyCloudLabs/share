@@ -210,6 +210,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     controller.subscribe(render);
     render({ state: "ready", emailHint: share.recipientHint });
   } catch (error) {
+    console.debug("tinycloud share: recipient request failed", error);
     const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
       ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";

@@ -397,7 +397,7 @@ async function main() {
       if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
       void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
     });
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     page.on("console", (message) => {
       if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
         browserErrors.push(`${message.type()}: ${message.text()}`.replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>").slice(0, 500));
@@ -445,6 +445,13 @@ async function main() {
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
+    if (tc500) {
+      const receiverContext = await browser.createBrowserContext();
+      const receiverPage = await receiverContext.newPage();
+      await installInterception(receiverPage, services, fixtureOrigin);
+      await page.close();
+      page = receiverPage;
+    }
     receiverTargetBaseline = new Set(browser.targets());
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
@@ -471,7 +478,7 @@ async function main() {
       throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
     assert.equal(await otpSubmitted.jsonValue(), true, "embedded OTP controls are missing");
-    const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
+    const acquisitionCookies = await page.browserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
     assert.equal(requestCookie, undefined, "embedded SDK acquisition must not depend on a browser cookie");
 
