@@ -60,7 +60,8 @@ const canonical = Object.freeze({
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
 });
-const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1";
+const tc500Joined = process.env.SHARING_E2E_TC500_JOINED === "1";
+const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1" || tc500Joined;
 const walletPrivateKey = `0x${"55".repeat(32)}`;
 const issuerSeed = Buffer.alloc(32, tc465Joined ? 67 : 0x47);
 const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
@@ -125,9 +126,14 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
       await stat(join(resolvedControlDir, "release"));
       if (tc465Joined) {
         const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
-        const stages = ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
-        const sliceKeys = ["acquisitionIdSha256", "credentialRecord", "credentialSpaceId", "policyCid", "resource", "shareCid"];
-        if (evidence?.type !== "tinycloud.share/tc-465-joined-evidence/v2" || Object.keys(evidence).sort().join(",") !== "chain,renderedSha256,slice,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true) || !Array.isArray(evidence.chain) || evidence.chain.length < 12 || typeof evidence.slice !== "object" || evidence.slice === null || Object.keys(evidence.slice).sort().join(",") !== sliceKeys.join(",") || Object.values(evidence.slice).some((value) => typeof value !== "string" || value.length === 0)) throw new Error("dedicated TC-465 evidence is incomplete");
+        const stages = tc500Joined
+          ? ["acquisition", "sessionCredential", "policyV4", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroOpenKeyBeforeRender", "zeroExternalDestinations", "saveOpenKeyAfterRender", "saveWrite", "saveReadback"]
+          : ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
+        const sliceKeys = tc500Joined
+          ? ["acquisitionIdSha256", "policyCid", "presentationJti", "receiverDid", "resource", "shareCid"]
+          : ["acquisitionIdSha256", "credentialRecord", "credentialSpaceId", "policyCid", "resource", "shareCid"];
+        const evidenceType = tc500Joined ? "tinycloud.share/tc-500-joined-evidence/v1" : "tinycloud.share/tc-465-joined-evidence/v2";
+        if (evidence?.type !== evidenceType || Object.keys(evidence).sort().join(",") !== "chain,renderedSha256,slice,statuses,type" || typeof evidence.renderedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(evidence.renderedSha256) || typeof evidence.statuses !== "object" || evidence.statuses === null || stages.some((stage) => evidence.statuses[stage] !== true) || !Array.isArray(evidence.chain) || evidence.chain.length < 12 || typeof evidence.slice !== "object" || evidence.slice === null || Object.keys(evidence.slice).sort().join(",") !== sliceKeys.join(",") || Object.values(evidence.slice).some((value) => typeof value !== "string" || value.length === 0)) throw new Error(`dedicated ${tc500Joined ? "TC-500" : "TC-465"} evidence is incomplete`);
         tc465Evidence = evidence;
       }
       checks.push("External packed-CLI and normal-Chrome product journey completed while the production-shaped composition remained live.");
@@ -1292,12 +1298,12 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   // audit structurally cannot see.
   const joinedPassed = tc465Evidence !== undefined && Object.values(tc465Evidence.statuses).every((value) => value === true);
   const joinedSlice = {
-    name: "tc-465-exact-email",
+    name: tc500Joined ? "tc-500-accountless-exact-email" : "tc-465-exact-email",
     status: joinedPassed ? "passed" : "failed",
     summary: "credential acquisition through exact browser render",
     flows: tc465Evidence?.statuses ?? {},
     unprovenFlows: joinedPassed ? [] : Object.entries(tc465Evidence?.statuses ?? {}).filter(([, value]) => value !== true).map(([name]) => name),
-    detail: joinedPassed ? "every required TC-465 browser journey stage was proven" : "the joined TC-465 browser journey did not prove every required stage",
+    detail: joinedPassed ? `every required ${tc500Joined ? "TC-500" : "TC-465"} browser journey stage was proven` : `the joined ${tc500Joined ? "TC-500" : "TC-465"} browser journey did not prove every required stage`,
   };
   const genericResult = { requiredSlices, slices: sliceEvidence.sliceReport ?? [], provenSlices: sliceEvidence.verdict?.provenSlices ?? [], unprovenSlices: sliceEvidence.verdict?.unprovenSlices ?? GATE_SLICES.map((slice) => slice.name), requiredSlicesPassed: sliceEvidence.verdict?.requiredSlicesPassed ?? false, allSlicesPassed: sliceEvidence.verdict?.allSlicesPassed ?? false, browserE2ePassed: gateResults.browser && gateResults.bearer && gateResults.exactEmail && gateResults.domain && gateResults.editConflict && gateResults.folder && gateResults.notification && gateResults.denialMatrix, senderLibraryPassed: gateResults.senderLibrary, exactEmailPassed: gateResults.exactEmail, domainPassed: gateResults.domain, bearerPassed: gateResults.bearer, editConflictPassed: gateResults.editConflict, folderPassed: gateResults.folder, notificationPassed: gateResults.notification, denialMatrixPassed: gateResults.denialMatrix, zeroExternalDestinations: gateResults.browser && externalRequests.length === 0 && upstreamRoutingAudit.allLoopback };
   const joinedResult = { requiredSlices: [joinedSlice.name], slices: [joinedSlice], provenSlices: joinedPassed ? [joinedSlice.name] : [], unprovenSlices: joinedPassed ? [] : [joinedSlice.name], requiredSlicesPassed: joinedPassed, allSlicesPassed: joinedPassed, browserE2ePassed: joinedPassed, exactEmailPassed: joinedPassed, zeroExternalDestinations: tc465Evidence?.statuses.zeroExternalDestinations === true, senderLibraryPassed: false, domainPassed: false, bearerPassed: false, editConflictPassed: false, folderPassed: false, notificationPassed: false, denialMatrixPassed: false };
@@ -1440,9 +1446,9 @@ try {
  */
 const sliceReport = summarizeSlices({ slices: GATE_SLICES, flowResults: gateResults, attempted: [...attemptedSlices], failures: Object.fromEntries(sliceFailures), blockedBy: blockedSlices });
 if (tc465Joined) {
-  if (tc465Evidence === undefined) blockers.push("Dedicated TC-465 joined browser evidence was not received.");
+  if (tc465Evidence === undefined) blockers.push(`Dedicated ${tc500Joined ? "TC-500" : "TC-465"} joined browser evidence was not received.`);
   const passed = blockers.length === 0 && upstreamRoutingAudit.allLoopback && tc465Evidence !== undefined;
-  await writeArtifact(passed ? "complete" : "blocked", passed ? "TC-465 exact-email credential-gated receiver joined path completed." : "TC-465 exact-email credential-gated receiver joined path is blocked.");
+  await writeArtifact(passed ? "complete" : "blocked", passed ? `${tc500Joined ? "TC-500 accountless" : "TC-465"} exact-email receiver joined path completed.` : `${tc500Joined ? "TC-500 accountless" : "TC-465"} exact-email receiver joined path is blocked.`);
   process.exitCode = passed ? 0 : 1;
   process.exit();
 }

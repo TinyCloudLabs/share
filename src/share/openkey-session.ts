@@ -149,6 +149,11 @@ export function credentialSpacePermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.kv", space: "credentials", path: "v1/", actions: ["get", "put", "list"] }];
 }
 
+/** Private, recipient-owned copies created only by the post-render save action. */
+export function filesForYouPermissions(): PermissionEntry[] {
+  return [{ service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"] }];
+}
+
 export function ownerEncryptionNetwork(address: string): string {
   // Network IDs use the storage-normalized EIP-155 account spelling at the
   // signed capability boundary; the SDK still canonicalizes the space DID.
@@ -175,6 +180,7 @@ export async function createTinyCloudClient(
       ...writePermissions(capabilities),
       ...historyPermissions(),
       ...credentialSpacePermissions(),
+      ...filesForYouPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
     ],
   };
