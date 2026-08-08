@@ -217,14 +217,19 @@ try {
     if (sendVisible) {
       await send.click();
       await page.waitForFunction(
-        () => (document.querySelector("span.notification-status")?.textContent ?? "").length > 0,
+        () => {
+          const state = document.querySelector("span.notification-status")?.dataset.state;
+          return state === "success" || state === "error";
+        },
         undefined,
         { timeout: 300_000 },
       ).catch(() => {});
-      const deliveryStatus = (await page.locator("span.notification-status").textContent().catch(() => "")) ?? "";
-      log(`[composer] delivery status: ${JSON.stringify(deliveryStatus)}`);
-      invitationRequested = deliveryStatus.startsWith("Invitation requested");
-      record("the composer reports the invitation was requested", invitationRequested, deliveryStatus);
+      const deliveryStatusElement = page.locator("span.notification-status");
+      const deliveryState = await deliveryStatusElement.getAttribute("data-state").catch(() => null);
+      const deliveryStatus = (await deliveryStatusElement.textContent().catch(() => "")) ?? "";
+      log(`[composer] delivery status: data-state=${deliveryState} ${JSON.stringify(deliveryStatus)}`);
+      invitationRequested = deliveryState === "success" && deliveryStatus.startsWith("Invitation requested");
+      record("the composer reports the invitation was requested", invitationRequested, `data-state=${deliveryState}; ${deliveryStatus}`);
     }
   }
 
