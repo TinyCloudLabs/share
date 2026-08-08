@@ -93,14 +93,17 @@ describe("production trust and host boundaries", () => {
     expect(accountlessReceiverEnabledFromEnv({ SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "true" })).toBe(true);
     expect(() => accountlessReceiverEnabledFromEnv({ SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "yes" })).toThrow(/exactly true or false/);
 
+    const enforcerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(5)));
     const host = createShareHostFromEnv({
       SHARE_TRUST_BUNDLE: JSON.stringify(bundle()),
       SHARE_TRUST_BUNDLE_ALLOW_TEST: "true",
       SHARE_ACCOUNTLESS_RECEIVER_ENABLED: "true",
+      SHARE_NODE_ENFORCER_DID: enforcerDid,
     });
     const fetchConfig = (request: RequestInfo | URL): Promise<Response> => host.handler(new Request(request));
     const config = await loadSharePublicConfig(fetchConfig as typeof fetch);
     expect(config.accountlessReceiverEnabled).toBe(true);
+    expect(config.enforcerDid).toBe(enforcerDid);
     const response = await host.handler(new Request("https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json"));
     expect(response.headers.get("x-tinycloud-share-accountless-receiver")).toBe("enabled");
   });
