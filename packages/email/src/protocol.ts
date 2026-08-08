@@ -260,7 +260,8 @@ export interface VerifiedDelivery {
 const B64URL_16 = /^[A-Za-z0-9_-]{22}$/;
 const B64URL_32 = /^[A-Za-z0-9_-]{43}$/;
 const B64URL_64 = /^[A-Za-z0-9_-]{86}$/;
-const CID = /^bafkrei[a-z2-7]{52}$/;
+const SHA256_RAW_CID = /^bafkrei[a-z2-7]{52}$/;
+const BLAKE3_RAW_CID = /^bafkr4i[a-z2-7]{52}$/;
 const DID_WEB_HOST = /^[A-Za-z0-9.-]+$/;
 const EMAIL = /^[^@\s]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const DOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
@@ -325,7 +326,7 @@ export function parseShareUrl(raw: unknown, shareOrigin: string): { readonly cid
   if (hash < 0) return null;
   const path = rest.slice(0, hash);
   const fragment = rest.slice(hash + 1);
-  if (path.includes("/") || path.includes("?") || !CID.test(path)) return null;
+  if (path.includes("/") || path.includes("?") || !SHA256_RAW_CID.test(path)) return null;
   if (!fragment.startsWith("k=")) return null;
   const key = fragment.slice("k=".length);
   if (key.includes("&") || key.includes("=") || !B64URL_32.test(key)) return null;
@@ -466,13 +467,13 @@ export async function verifyDeliveryAuthorization(
     typeof authorization.senderDid !== "string" ||
     authorization.senderDid.length === 0 ||
     (authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") ||
-    !CID.test(String(authorization.shareCid)) ||
+    !SHA256_RAW_CID.test(String(authorization.shareCid)) ||
     (authorization.version === 2
       ? !B64URL_32.test(String(authorization.contentSourceDigest))
         || !B64URL_32.test(String(authorization.authorityMaterialDigest))
       : !/^[0-9a-f]{64}$/.test(String(authorization.contentSourceDigestHex))
-        || !CID.test(String(authorization.policyRootCid))
-        || !CID.test(String(authorization.enforcementRootCid))
+        || !BLAKE3_RAW_CID.test(String(authorization.policyRootCid))
+        || !BLAKE3_RAW_CID.test(String(authorization.enforcementRootCid))
         || typeof authorization.enforcerDid !== "string"
         || !authorization.enforcerDid.startsWith("did:")) ||
     !B64URL_32.test(String(authorization.requestBodyDigest)) ||

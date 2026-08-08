@@ -14,6 +14,7 @@ const KID = `${NODE_AUDIENCE}#invitation-key-1`;
 const AUDIENCE = "https://witness.credentials.org";
 const RESEND_ENDPOINT = "https://resend.test/emails";
 const CID = "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4";
+const ROOT_CID = `bafkr4i${"a".repeat(52)}`;
 const KEY_FRAGMENT = `${"A".repeat(42)}E`;
 const SHARE_URL = `${SHARE_ORIGIN}/s/${CID}#k=${KEY_FRAGMENT}`;
 const RECIPIENT = "recipient@example.com";
@@ -71,8 +72,8 @@ function authorizationV3Body(overrides: Record<string, unknown> = {}): Record<st
   return {
     ...v2,
     version: 3,
-    policyRootCid: CID.replace(/.$/, "a"),
-    enforcementRootCid: CID.replace(/.$/, "b"),
+    policyRootCid: ROOT_CID,
+    enforcementRootCid: ROOT_CID.replace(/.$/, "b"),
     enforcerDid: "did:key:z6MkEnforcer",
     contentSourceDigestHex: "a".repeat(64),
     ...overrides,
@@ -256,11 +257,18 @@ describe("authorized delivery", () => {
     expect(response.status).toBe(202);
     expect(provider).toHaveBeenCalledTimes(1);
 
-    const substituted = authorizationV3Body({ policyRootCid: CID.replace(/.$/, "c") });
+    const substituted = authorizationV3Body({ policyRootCid: ROOT_CID.replace(/.$/, "c") });
     const signed = signV3(substituted);
-    signed.authorization.policyRootCid = CID.replace(/.$/, "d");
+    signed.authorization.policyRootCid = ROOT_CID.replace(/.$/, "d");
     expect((await worker.fetch(postV3(signed), env())).status).toBe(401);
     expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses v3 roots that do not use the Node's raw Blake3-256 CID grammar", async () => {
+    const response = await worker.fetch(postV3(signV3(authorizationV3Body({ policyRootCid: CID }))), env());
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "malformed" });
+    expect(provider).not.toHaveBeenCalled();
   });
 
   it("refuses to send the same authorization twice and reports the first result", async () => {
