@@ -29,6 +29,17 @@ describe("the unified owner-share authority boundary", () => {
     expect(source).not.toContain("enforcerDid, nodeAudience: enforcerDid");
   });
 
+  it("commits the encryption SDK's canonical network ID across the v3 policy and envelope", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
+    expect(source).toContain("const encryptionNetwork = encrypted.data.networkId;");
+    expect(source).toContain("encryptionNetwork, encryptedSymmetricKeyDigestHex:");
+    expect(source).toContain('{ kind: "encryption", resource: encryptionNetwork, action: "tinycloud.encryption/decrypt" }');
+    expect(source).toContain("        encryptionNetwork,\n");
+    expect(source).not.toContain("encryptionNetwork: network");
+  });
+
   it("wires the authenticated holder's root factory and signer into the shipped composer", async () => {
     const { readFile } = await import("node:fs/promises");
     const { resolve } = await import("node:path");

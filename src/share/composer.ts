@@ -583,15 +583,18 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const encrypted = await tinycloud.encryption.encryptToNetwork(network, plaintext, { metadata: { contentType: plaintextType, filename } });
     plaintext.fill(0);
     if (!encrypted.ok) throw fail("rejected", "network content encryption was rejected");
+    // Encryption resolves the canonical network descriptor (including the
+    // checksummed did:pkh account); every signed binding must use that value.
+    const encryptionNetwork = encrypted.data.networkId;
     const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, new TextEncoder().encode(canonicalize(encrypted.data)), { contentType: "application/vnd.tinycloud.encrypted+json" });
     if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
 
-    const unifiedSource = { shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork: network, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
+    const unifiedSource = { shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork, encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash, keyVersion: encrypted.data.keyVersion, mode: "mutable" as const };
     const order = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
     const actions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => order.indexOf(left as typeof order[number]) - order.indexOf(right as typeof order[number])) as Array<typeof order[number]>;
     const capabilities: UnifiedPolicyCapability[] = [
       { kind: "kv", resource: unifiedSource.kvResource, selector: resourceKind, actions },
-      { kind: "encryption", resource: network, action: "tinycloud.encryption/decrypt" },
+      { kind: "encryption", resource: encryptionNetwork, action: "tinycloud.encryption/decrypt" },
     ];
     const createdAt = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString().replace(".000Z", "Z");
     const expiresAt = new Date(Math.floor(Date.parse(model.expiresAt) / 1000) * 1000).toISOString().replace(".000Z", "Z");
@@ -622,7 +625,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         attestedEnforcerBinding,
         contentSource: unifiedSource,
         contentSourceDigestHex: sourceDigest,
-        encryptionNetwork: network,
+        encryptionNetwork,
         expiry: expiresAt,
         display: { filename },
         encrypted: true,
