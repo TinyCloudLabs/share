@@ -11,6 +11,7 @@ import puppeteer from "puppeteer";
 import { Cbor } from "ox";
 import { privateKeyToAccount } from "viem/accounts";
 import { open, parseShareUrl, shareEnvelopeV3Schema } from "@tinycloud/share-envelope";
+import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -439,7 +440,14 @@ async function main() {
     const envelopeValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(envelopeBytes));
     const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
     assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
-    const exactKvResource = envelopeValidation.data.contentSource.kvResource;
+    const publishedEnvelope = envelopeValidation.data;
+    const policyRoot = parseCompactUcanAuthorization(publishedEnvelope.policyRoot.authorization, publishedEnvelope.policyRoot.cid);
+    const enforcementRoot = parseCompactUcanAuthorization(publishedEnvelope.enforcementRoot.authorization, publishedEnvelope.enforcementRoot.cid);
+    assert.equal(policyRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "policy root collapsed the Node audience into the enforcement DID");
+    assert.equal(enforcementRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "enforcement root collapsed the Node audience into the enforcement DID");
+    assert.equal(enforcementRoot.payload.aud, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root audience does not match the attested enforcement DID");
+    assert.equal(enforcementRoot.payload.fct[0]?.enforcerDid, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root fact does not match the attested enforcement DID");
+    const exactKvResource = publishedEnvelope.contentSource.kvResource;
     const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
