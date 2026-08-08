@@ -22,6 +22,7 @@ cd test/e2e-prod
 npm install
 npx playwright install chromium   # if you have no Chromium yet
 npm run typecheck                 # not covered by the repo's merge gate
+npm run test:redaction
 ```
 
 ## What to run
@@ -29,9 +30,10 @@ npm run typecheck                 # not covered by the repo's merge gate
 | Command | What it proves |
 |---|---|
 | `npm run trust-bundle` | Static checks on the deployed `config.json`: the SDK's `openCredentialsAudience` predicates, `nodeInvitationKid` scoping, key shapes. No browser. |
+| `npm run test:redaction` | Local safety checks that acceptance artifacts scrub receiver emails, Mailinator inbox IDs, private share links, OTPs, and credential material. |
 | `npm run stage1` | **Bearer / link-only, end to end through the composer UI.** Sign in, create a share, read the exact bytes back in a clean context. |
 | `../../node_modules/.bin/tsx stage1b-viewer.ts` | The **viewer half only**, with the share minted by `createBearerShare` directly. Use when the composer is unreachable — it isolates the registry + viewer from the sender. |
-| `npm run stage2` | **Addressed / exact-email to a Mailinator inbox.** Compose, send, read the inbox, follow the link, confirm, read the bytes. |
+| `npm run stage2` | **Addressed / exact-email to a Mailinator inbox.** Compose, send, read the inbox, claim with a session key and zero pre-render OpenKey requests, read the bytes, then explicitly save and verify the authenticated Files for you copy. |
 | `npm run stage2:domain-did` | **Email-domain and recipient-DID availability contract.** Prove both incomplete modes are visibly disabled and that inspecting them causes no share-authority or registry requests. |
 
 Useful env vars: `HEADED=1` (watch it), `BROWSER_CHANNEL=chrome` (real Chrome
@@ -42,8 +44,9 @@ postMessage, WebCrypto call and Worker — for localising hangs),
 
 Each run writes to `runs/<stage>-<timestamp>/`: `run.log`, `results.json`, the
 downloaded bytes, the rendered document text, screenshots, and — for stage 2 —
-redacted `network.json`, `delivery-authorization.json`, `invitation-email.txt`
-and `recipient.txt`. Session cookies are never written; stage 1 records only
+redacted `network.json`, `delivery-authorization.json`, and
+`invitation-email.txt`. Session cookies and mailbox identifiers are never
+written; stage 1 records only
 cookie names and local-storage key names in `sender-storage.redacted.json`.
 OTP values, invitation bodies, bearer fragments, authorization headers, JWKs,
 and other credential material are redacted before structured output is saved.

@@ -8,6 +8,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { newInbox, waitForMessage, extractOtp } from "./mailinator.mjs";
+import { redactString } from "./redact.mjs";
 
 export const OPENKEY_ORIGIN = process.env.OPENKEY_ORIGIN ?? "https://openkey.so";
 
@@ -61,7 +62,7 @@ export async function registerFreshAccount(page, cdp, authenticatorId, log) {
     log,
   });
   const otp = extractOtp(text);
-  log(`[openkey] OTP ${otp}`);
+  log(`[openkey] OTP ${redactString(otp)}`);
 
   await page.locator("#otp").fill(otp);
   await page.getByRole("button", { name: /^verify$/i }).click();

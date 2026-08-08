@@ -8,6 +8,7 @@
     "stage2": "node stage2-addressed.mjs",
     "stage2:domain-did": "node stage2b-domain-did.mjs",
     "trust-bundle": "node check-trust-bundle.mjs",
+    "test:redaction": "node --test redact.test.mjs",
     "typecheck": "../../node_modules/.bin/tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
