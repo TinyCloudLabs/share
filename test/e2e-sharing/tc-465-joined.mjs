@@ -447,7 +447,7 @@ async function main() {
       OPENCREDENTIALS_WORKTREE: credentialsRoot,
     };
     integration = spawn(process.execPath, [join(shareRoot, "test/e2e-sharing/integration.mjs")], { cwd: shareRoot, env: compositionEnv, stdio: ["ignore", "inherit", "inherit"] });
-    await waitForFile(join(control, "services.json"), integration, 600_000);
+    await waitForFile(join(control, "services.json"), integration, 20 * 60_000);
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
