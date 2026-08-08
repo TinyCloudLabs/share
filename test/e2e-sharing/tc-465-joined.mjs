@@ -608,7 +608,7 @@ async function main() {
     const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
     assert.equal(requestedKv?.resource, exactKvResource, "Policy/v3 challenge did not request the envelope's exact TinyCloud KV resource");
     assert.equal(requestedKv.selector, "exact");
-    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get"]);
+    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get", "tinycloud.kv/metadata"]);
     const kvResource = requestedKv.resource;
 
     const policyMint = routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
@@ -632,7 +632,9 @@ async function main() {
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
     assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
-    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
+    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && (tc500
+      ? entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1"
+      : /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path)));
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
     assert.equal(receiverTargets.length, 0, `embedded credential acquisition created browser targets: ${JSON.stringify(receiverTargets)}`);
     const diagnostics = await page.evaluate(() => window.__tc465Diagnostics);
