@@ -25,6 +25,8 @@ describe("the unified owner-share authority boundary", () => {
     expect(source).not.toMatch(/\bsdk\.(?:createDelegatedShareKey|canonicalOwnerSharePolicy|createPolicyEnforcementDelegation)\s*\(/u);
     expect(source).toContain("options.createUnifiedOwnerRoot");
     expect(source).toContain("options.signUnifiedPolicy");
+    expect(source).toContain("nodeAudience: attestedEnforcerBinding.nodeAudience");
+    expect(source).not.toContain("enforcerDid, nodeAudience: enforcerDid");
   });
 
   it("wires the authenticated holder's root factory and signer into the shipped composer", async () => {

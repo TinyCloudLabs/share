@@ -160,6 +160,35 @@ describe("TC-405 unified delegation", () => {
     expect(() => rejectV3Downgrade({ version: 2 })).toThrow();
   });
 
+  it("keeps the enforcement DID distinct from the Node audience in both owner roots", async () => {
+    const policy = await policyFixture();
+    const enforcerDid = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(11)));
+    const nodeAudience = didKeyFromEd25519PublicKey(ed25519.getPublicKey(new Uint8Array(32).fill(12)));
+    const rootBindings: Array<{ readonly role: string; readonly audienceDid: string; readonly nodeAudience: string }> = [];
+    await expect(createSiblingRoots({
+      factory: {
+        createOwnerRoot: async (input) => {
+          rootBindings.push({ role: input.role, audienceDid: input.audienceDid, nodeAudience: input.nodeAudience });
+          return { cid: "invalid", delegationHeader: { Authorization: "invalid.invalid.invalid" }, delegateDID: input.audienceDid, spaceId: "space-405", path: "shares/share-405/document.txt", actions: ["tinycloud.kv/get"], expiry: input.expiresAt };
+        },
+      },
+      ownerDid,
+      policy: policy.policy,
+      policyCid: policy.policyCid,
+      policyDigestHex: policy.policyDigestHex,
+      contentSourceDigestHex: canonicalHash(source),
+      nativeProjectionHashHex: nativeProjectionHashHex(capabilities),
+      enforcerDid,
+      nodeAudience,
+      expiresAt: new Date(policy.policy.expiresAt!),
+    })).rejects.toThrow();
+
+    expect(rootBindings).toEqual([
+      { role: "policy-authority", audienceDid: `did:tinycloud:policy:${policy.policyDigestHex}`, nodeAudience },
+      { role: "policy-enforcement", audienceDid: enforcerDid, nodeAudience },
+    ]);
+  });
+
   it("keeps the native projection hash stable when capability order changes", () => {
     const hash = nativeProjectionHashHex(capabilities);
     const reversed = nativeProjectionHashHex([...capabilities].reverse());

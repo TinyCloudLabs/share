@@ -604,7 +604,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const projectionHash = nativeProjectionHashHex(capabilities);
     const attestedEnforcerBinding = await requestAttestedEnforcerBinding({ nodeOrigin: config.nodeOrigin, rootExpiresAt: expiresAt, fetchFn });
     const enforcerDid = attestedEnforcerBinding.enforcerDid;
-    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: enforcerDid, expiresAt: new Date(expiresAt) });
+    const roots = await createSiblingRoots({ factory: { createOwnerRoot }, ownerDid, policy: policy.policy, policyCid: policy.policyCid, policyDigestHex: policy.policyDigestHex, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, enforcerDid, nodeAudience: attestedEnforcerBinding.nodeAudience, expiresAt: new Date(expiresAt) });
     const registration = await registerUnifiedPolicy({ nodeOrigin: config.nodeOrigin, policy: policy.policy, policyCid: policy.policyCid, policyRoot: roots.policyRoot, enforcementRoot: roots.enforcementRoot, contentSourceDigestHex: sourceDigest, nativeProjectionHashHex: projectionHash, attestedEnforcerBinding, fetchFn });
     const envelope = await signV3Envelope({
       unsigned: {
