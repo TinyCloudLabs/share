@@ -9,8 +9,9 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { Cbor } from "ox";
+import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
-import { open, parseShareUrl, shareEnvelopeV3Schema } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, ed25519PublicKeyFromDidKey, fromBase64Url, open, parseShareUrl, shareEnvelopeV3Schema, verifyEnvelopeV3, verifyEnvelopeV3SignatureOnly } from "@tinycloud/share-envelope";
 import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -358,6 +359,62 @@ function stringsIn(value, found = []) {
 
 function authorizationNames(entry) { return stringsIn(authorizationValue(entry.authorization)); }
 
+function hexDigest(domain, value) {
+  return createHash("sha256").update(domain).update(canonicalize(value)).digest("hex");
+}
+
+function base32Lower(bytes) {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) { output += alphabet[(buffer >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) output += alphabet[(buffer << (5 - bits)) & 31];
+  return output;
+}
+
+async function auditV3Envelope(envelope) {
+  const policy = envelope.policy;
+  const unsignedPolicy = { ...policy };
+  delete unsignedPolicy.policyId;
+  delete unsignedPolicy.signature;
+  const policyDomain = policy.schema === "xyz.tinycloud.policy/policy/v2" ? "xyz.tinycloud.policy/policy/v2\0" : "xyz.tinycloud.policy/policy/v1\0";
+  const policyDigest = createHash("sha256").update(policyDomain).update(canonicalize(unsignedPolicy)).digest();
+  const policyRoot = parseCompactUcanAuthorization(envelope.policyRoot.authorization, envelope.policyRoot.cid);
+  const enforcementRoot = parseCompactUcanAuthorization(envelope.enforcementRoot.authorization, envelope.enforcementRoot.cid);
+  const policyFact = policyRoot.payload.fct[0];
+  const enforcementFact = enforcementRoot.payload.fct[0];
+  const capabilities = [...policy.capabilityCeiling].sort((left, right) => canonicalize(left).localeCompare(canonicalize(right)));
+  const projection = capabilities.map((capability) => capability.kind === "encryption"
+    ? { service: "tinycloud.encryption", space: capability.resource, path: capability.resource, actions: [capability.action] }
+    : { service: "tinycloud.kv", space: capability.resource.slice(0, capability.resource.indexOf("/kv/")), path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } })
+    .sort((left, right) => canonicalize(left).localeCompare(canonicalize(right)));
+  const attenuation = Object.fromEntries(capabilities.map((capability) => capability.kind === "encryption"
+    ? [capability.resource, { [capability.action]: [{}] }]
+    : [capability.resource, Object.fromEntries(capability.actions.map((action) => [action, [{ kind: capability.selector, type: "xyz.tinycloud.resource/selector", value: capability.resource }]]))]));
+  const binding = envelope.attestedEnforcerBinding;
+  const { signature: bindingSignature, ...unsignedBinding } = binding;
+  const bindingDigest = createHash("sha256").update("xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0").update(canonicalize(unsignedBinding)).digest();
+  return {
+    envelopeSignature: verifyEnvelopeV3SignatureOnly(envelope),
+    policySignature: ed25519.verify(fromBase64Url(policy.signature.value), policyDigest, ed25519PublicKeyFromDidKey(policy.ownerDid), { zip215: false }),
+    policyId: policy.policyId === `pol_${base32Lower(policyDigest)}`,
+    policyCid: await computeCid(new TextEncoder().encode(canonicalize(policy))) === envelope.policyCid,
+    contentSourceDigest: hexDigest("xyz.tinycloud.policy/ContentSource/v1\0", policy.contentSource) === envelope.contentSourceDigestHex,
+    capabilityHash: policyFact.capabilityCeilingHashHex === hexDigest("xyz.tinycloud.policy/PolicyCapability/v1\0", capabilities),
+    nativeProjectionHash: policyFact.nativeProjectionHashHex === hexDigest("xyz.tinycloud.policy/NativeProjection/v1\0", projection),
+    bindingDigest: binding.attestationBindingDigestHex === hexDigest("", { enforcerDid: binding.enforcerDid, nodeAudience: binding.nodeAudience }),
+    bindingSignature: ed25519.verify(fromBase64Url(bindingSignature.value), bindingDigest, ed25519PublicKeyFromDidKey(binding.nodeAudience), { zip215: false }),
+    rootAttenuation: canonicalize(policyRoot.payload.att) === canonicalize(attenuation) && canonicalize(enforcementRoot.payload.att) === canonicalize(attenuation),
+    rootFacts: policyFact.policyDigestHex === policyDigest.toString("hex") && enforcementFact.policyDigestHex === policyDigest.toString("hex") && policyFact.nodeAudience === binding.nodeAudience && enforcementFact.nodeAudience === binding.nodeAudience,
+    fullVerification: await verifyEnvelopeV3(envelope, { expectedSignerDid: policy.ownerDid }),
+  };
+}
+
 function routeAfter(label, after, predicate) {
   const entry = receiverRequests.find((candidate) => candidate.sequence > after && successful(candidate) && predicate(candidate));
   assert(entry, `${label} was not observed after receiver sequence ${after}`);
@@ -441,6 +498,8 @@ async function main() {
     const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
     assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
     const publishedEnvelope = envelopeValidation.data;
+    const envelopeAudit = await auditV3Envelope(publishedEnvelope);
+    assert.deepEqual(envelopeAudit, Object.fromEntries(Object.keys(envelopeAudit).map((key) => [key, true])), `published v3 envelope verification audit failed: ${JSON.stringify(envelopeAudit)}`);
     const policyRoot = parseCompactUcanAuthorization(publishedEnvelope.policyRoot.authorization, publishedEnvelope.policyRoot.cid);
     const enforcementRoot = parseCompactUcanAuthorization(publishedEnvelope.enforcementRoot.authorization, publishedEnvelope.enforcementRoot.cid);
     assert.equal(policyRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "policy root collapsed the Node audience into the enforcement DID");
