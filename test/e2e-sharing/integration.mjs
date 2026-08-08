@@ -551,6 +551,7 @@ async function startFixtures(tempRoot) {
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: readiness.enforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
+  await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
   const readinessFile = join(tempRoot, "share-email-readiness.json");
   const migrationsDir = join(credentialsRoot, "deploy/share-email/migrations");
   const migrationEnv = buildMigrationEnv({ postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile });
@@ -573,7 +574,6 @@ async function startFixtures(tempRoot) {
   servers.push(dstackServer);
   checks.push(`harness-owned dstack Unix-socket simulator listening at ${dstackSocketPath}.`);
 
-  await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
   const credentialsBinaryPath = join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness");
   const credentialsPort = await freePort();
   const credentialsTrustBundleJson = credentialsTrustBundleFromRuntime(nodeDescriptor.trustedNode?.invitationPublicKey);
