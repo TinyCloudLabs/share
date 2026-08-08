@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   receive: vi.fn(),
   get: vi.fn(),
   importInto: vi.fn(),
+  resolve: vi.fn(),
   presented: [] as { result: unknown; options: Record<string, unknown> }[],
   resolved: undefined as unknown,
 }));
@@ -43,7 +44,8 @@ vi.mock("../src/email-share/config.js", () => ({
 
 vi.mock("../src/viewer/resolve.js", () => ({
   createBrowserAddressedAuthorization: () => undefined,
-  resolveShare: async () => state.resolved,
+  presentationEnvelope: (metadata: unknown, content: { readonly filename: string; readonly mediaType: string }) => ({ version: 1, display: { filename: content.filename }, metadata: { filename: content.filename, mediaType: content.mediaType }, target: { resource: { path: content.filename } }, expiry: (metadata as { expiresAt: string }).expiresAt }),
+  resolveShare: (...args: unknown[]) => state.resolve(...args),
 }));
 
 vi.mock("../src/viewer/present.js", () => ({
@@ -72,6 +74,7 @@ beforeEach(() => {
   state.receive.mockReset();
   state.get.mockReset();
   state.importInto.mockReset();
+  state.resolve.mockReset();
   state.presented.length = 0;
   const envelope = {
     version: 3,
@@ -85,9 +88,21 @@ beforeEach(() => {
     policy: { schema: "xyz.tinycloud.policy/policy/v2" },
     shareCid: "bafkreicredentialshare",
   };
+  state.resolve.mockResolvedValue(state.resolved);
   state.receive.mockResolvedValue({
     identity: { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: "session", origin: "https://share.tinycloud.xyz" },
     shareId: "share-500",
+    metadata: {
+      protocol: "tinycloud-share",
+      version: 1,
+      shareId: "share-500",
+      origin: "https://share.tinycloud.xyz",
+      target: { kind: "email", origin: "https://node.example", nodeAudience: "did:key:z6MkEnforcer", spaceId: "space-1" },
+      resource: { kind: "exact", path: "shares/share-500/report.md" },
+      actions: ["read"],
+      expiresAt: "2026-08-08T20:00:00Z",
+      display: { filename: "report.md" },
+    },
     get: (...args: unknown[]) => state.get(...args),
     importInto: (...args: unknown[]) => state.importInto(...args),
   });
@@ -113,6 +128,7 @@ describe("TC-500 first-class accountless receiver", () => {
       expect.objectContaining({ identity: "auto", interaction: { kind: "inline", mountTarget: document.getElementById("viewer") } }),
     );
     expect(state.authenticate).not.toHaveBeenCalled();
+    expect(state.resolve).not.toHaveBeenCalled();
     expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
 
     const accountClient = { session: () => ({}) };
