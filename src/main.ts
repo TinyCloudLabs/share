@@ -84,7 +84,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   }
 
   try {
-    const [{ REGISTRY_BASE_URL }, { resolveShare, createBrowserAddressedAuthorization }, { presentShare }, config, runtime] = await Promise.all([
+    const [{ REGISTRY_BASE_URL }, { resolveShare, createBrowserAddressedAuthorization, presentationEnvelope }, { presentShare }, config, runtime] = await Promise.all([
       import("./viewer/config.js"),
       import("./viewer/resolve.js"),
       import("./viewer/present.js"),
@@ -96,6 +96,32 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const invite = launch.invite;
     delete launch.invite;
     const shareConfig = await config.loadSharePublicConfig();
+    if (shareConfig.accountlessReceiverEnabled === true) {
+      const { createShareReceiverClient } = await import("./share/receiver.js");
+      const receiverClient = createShareReceiverClient(shareConfig, REGISTRY_BASE_URL);
+      const received = await receiverClient.share.receive(shareHref, {
+        identity: "auto",
+        interaction: { kind: "inline", mountTarget: root },
+      });
+      const content = await received.get();
+      await presentShare(
+        root,
+        { state: "ok", access: "policy", envelope: presentationEnvelope(received.metadata, content), senderVerified: true, contentBytes: content.bytes },
+        {
+          shareUrl: shareHref,
+          saveToTinyCloud: async () => {
+            const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
+            const session = await authenticateWithOpenKey(() => undefined);
+            const accountClient = await createTinyCloudClient(session, shareConfig, [], () => undefined);
+            await received.importInto(accountClient, {
+              namespace: "files-for-you",
+              filename: content.filename,
+            });
+          },
+        },
+      );
+      return;
+    }
     const shareTrustedNode = config.trustedNodeFromConfig(shareConfig);
     const authority = createRegisteredPolicyAuthority({ nodeProof: { kid: shareConfig.nodeInvitationKid, publicKey: fromBase64Url(shareConfig.nodeInvitationPublicKey) }, expectedTarget: { origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, enforcerDid: shareConfig.enforcerDid } });
     const { createHolder } = await import("./email-share/claim.js");
@@ -215,6 +241,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     controller.subscribe(render);
     render({ state: "ready", emailHint: share.recipientHint });
   } catch (error) {
+    console.debug("tinycloud share: recipient request failed", error);
     const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
       ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";

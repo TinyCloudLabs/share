@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { canonicalize, toBase64Url, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
-import { EMAIL_CREDENTIAL_DESCRIPTOR } from "../src/credentials/email.js";
 
 const state = vi.hoisted(() => ({
   authenticate: vi.fn(),
-  createClient: vi.fn(),
-  presented: [] as unknown[],
+  createAccountClient: vi.fn(),
+  receive: vi.fn(),
+  get: vi.fn(),
+  importInto: vi.fn(),
+  resolve: vi.fn(),
+  presented: [] as { result: unknown; options: Record<string, unknown> }[],
   resolved: undefined as unknown,
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
-  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/s/test" }),
+  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/s/test#k=secret" }),
 }));
 
 vi.mock("../src/email-share/view.js", () => ({
@@ -21,13 +23,17 @@ vi.mock("../src/email-share/view.js", () => ({
 }));
 
 vi.mock("../src/email-share/claim.js", () => ({
-  createHolder: async () => ({}),
+  createHolder: async () => undefined,
   createClaimController: () => ({ state: { state: "idle" }, subscribe: () => undefined }),
 }));
 
 vi.mock("../src/email-share/config.js", () => ({
   loadSharePublicConfig: async () => ({
+    shareOrigin: "https://share.tinycloud.xyz",
+    registryOrigin: "https://registry.tinycloud.xyz",
     nodeOrigin: "https://node.example",
+    credentialsOrigin: "https://credentials.example",
+    accountlessReceiverEnabled: true,
     nodeAudience: "did:web:node.example",
     enforcerDid: "did:web:node.example",
     nodeInvitationKid: "did:web:node.example#key-1",
@@ -38,129 +44,103 @@ vi.mock("../src/email-share/config.js", () => ({
 
 vi.mock("../src/viewer/resolve.js", () => ({
   createBrowserAddressedAuthorization: () => undefined,
-  resolveShare: async () => state.resolved,
+  presentationEnvelope: (metadata: unknown, content: { readonly filename: string; readonly mediaType: string }) => ({ version: 1, display: { filename: content.filename }, metadata: { filename: content.filename, mediaType: content.mediaType }, target: { resource: { path: content.filename } }, expiry: (metadata as { expiresAt: string }).expiresAt }),
+  resolveShare: (...args: unknown[]) => state.resolve(...args),
 }));
 
 vi.mock("../src/viewer/present.js", () => ({
-  presentShare: async (_root: HTMLElement, result: unknown) => { state.presented.push(result); },
+  presentShare: async (_root: HTMLElement, result: unknown, options: Record<string, unknown>) => {
+    state.presented.push({ result, options });
+  },
+}));
+
+vi.mock("../src/share/receiver.js", () => ({
+  createShareReceiverClient: () => ({ share: { receive: (...args: unknown[]) => state.receive(...args) } }),
 }));
 
 vi.mock("@tinycloud/share-sdk", () => ({ createRegisteredPolicyAuthority: () => ({}) }));
 
 vi.mock("../src/share/openkey-session.js", () => ({
   authenticateWithOpenKey: (...args: unknown[]) => state.authenticate(...args),
-  createTinyCloudClient: (...args: unknown[]) => state.createClient(...args),
+  createTinyCloudClient: (...args: unknown[]) => state.createAccountClient(...args),
 }));
 
-async function digest(value: unknown): Promise<string> {
-  return toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalize(value)))));
-}
-
-async function resolvedShare() {
-  const requirement = {
-    type: "TinyCloudCredentialRequirement",
-    version: 1,
-    profile: { id: "tinycloud.email-proof/v1", version: 1 },
-    credentialType: { id: "opencredentials.email/v1", version: 1 },
-    claims: { email: "reader@example.com" },
-    maxAgeSeconds: 3600,
-  } as const;
-  const policy = {
-    schema: "xyz.tinycloud.policy/policy/v2",
-    credentialRequirement: {
-      type: "TinyCloudPolicyCredentialRequirement",
-      version: 1,
-      requirementDigest: await digest(requirement),
-      descriptorDigest: await digest(EMAIL_CREDENTIAL_DESCRIPTOR),
-      issuerDid: EMAIL_CREDENTIAL_DESCRIPTOR.issuer.did,
-      issuerKid: EMAIL_CREDENTIAL_DESCRIPTOR.issuer.kid,
-      profile: requirement.profile,
-      credentialType: requirement.credentialType,
-    },
-  };
-  const envelope = {
-    version: 3,
-    recipientMatcher: { kind: "exactEmail", value: "reader@example.com" },
-    actions: ["read"],
-    resource: { kind: "exact", path: "docs/report.md" },
-    target: { origin: "https://node.example", nodeAudience: "did:web:node.example", spaceId: "owner-space" },
-    policy,
-    policyCid: "bafkreipolicy",
-    policyRoot: { cid: "policy-root", authorization: "policy-root-authorization", role: "policy-authority" },
-    enforcementRoot: { cid: "enforcement-root", authorization: "enforcement-root-authorization", role: "policy-enforcement" },
-    contentSource: { kvResource: "owner-space/kv/docs/report.md", selector: "exact", encryptionNetwork: "urn:tinycloud:encryption:fixture" },
-    encryptionNetwork: "urn:tinycloud:encryption:fixture",
-    attestedEnforcerBinding: { nodeAudience: "did:web:node.example" },
-    metadata: { mediaType: "text/plain" },
-  } as unknown as ShareEnvelopeV3;
-  return { state: "policy-v2-claim-required" as const, envelope, policy, shareCid: "bafkreicredentialshare" };
-}
-
-async function client() {
-  const holderDid = "did:key:z6MkholderSession";
-  const resolved = await resolvedShare();
-  const projection = resolved.policy.credentialRequirement;
-  const record = {
-    ownerDid: "did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678",
-    recordId: "record-1",
-    holderDid,
-    requirementDigest: projection.requirementDigest,
-    descriptorDigest: projection.descriptorDigest,
-    issuerDid: projection.issuerDid,
-    issuerKid: projection.issuerKid,
-    profile: projection.profile,
-    credentialType: projection.credentialType,
-    credentialDigest: "credential-digest",
-    claims: { email: "reader@example.com" },
-  };
-  const encrypted = new TextEncoder().encode(canonicalize({ type: "fixture-encrypted-envelope" }));
-  return {
-    sessionDid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
-    credentialHolderDid: holderDid,
-    credentialHolderKid: `${holderDid}#${holderDid.slice("did:key:".length)}`,
-    session: () => ({}),
-    signSessionBytes: async () => new Uint8Array([1, 2, 3]),
-    credentials: {
-      ensure: async () => ({ status: "acquired" as const, credential: { ...record, subjectDid: holderDid, credential: "verified-sd-jwt" }, record, receipt: { ownerDid: record.ownerDid, recordId: record.recordId } }),
-      find: async () => record,
-      admitPolicy: async () => ({ session: { cid: "delegation-cid", authorization: "compact-authorization", aud: holderDid }, installed: { cid: "delegation-cid", audience: holderDid } }),
-    },
-    kvForSpace: () => ({ get: async () => ({ ok: true as const, data: { data: encrypted, headers: {} } }) }),
-    encryption: { decryptEnvelope: async () => ({ ok: true as const, data: new TextEncoder().encode("opened") }) },
-  };
-}
-
-beforeEach(async () => {
+beforeEach(() => {
   vi.resetModules();
   document.body.innerHTML = '<div id="viewer"></div>';
   window.history.replaceState(null, "", "/viewer.html#secret");
   state.authenticate.mockReset();
-  state.createClient.mockReset();
+  state.createAccountClient.mockReset();
+  state.receive.mockReset();
+  state.get.mockReset();
+  state.importInto.mockReset();
+  state.resolve.mockReset();
   state.presented.length = 0;
-  state.resolved = await resolvedShare();
+  const envelope = {
+    version: 3,
+    recipientMatcher: { kind: "exactEmail", value: "reader@example.com" },
+    display: { filename: "report.md" },
+    metadata: { filename: "report.md", mediaType: "text/plain" },
+  };
+  state.resolved = {
+    state: "policy-v2-claim-required",
+    envelope,
+    policy: { schema: "xyz.tinycloud.policy/policy/v2" },
+    shareCid: "bafkreicredentialshare",
+  };
+  state.resolve.mockResolvedValue(state.resolved);
+  state.receive.mockResolvedValue({
+    identity: { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: "session", origin: "https://share.tinycloud.xyz" },
+    shareId: "share-500",
+    metadata: {
+      protocol: "tinycloud-share",
+      version: 1,
+      shareId: "share-500",
+      origin: "https://share.tinycloud.xyz",
+      target: { kind: "email", origin: "https://node.example", nodeAudience: "did:key:z6MkEnforcer", spaceId: "space-1" },
+      resource: { kind: "exact", path: "shares/share-500/report.md" },
+      actions: ["read"],
+      expiresAt: "2026-08-08T20:00:00Z",
+      display: { filename: "report.md" },
+    },
+    get: (...args: unknown[]) => state.get(...args),
+    importInto: (...args: unknown[]) => state.importInto(...args),
+  });
+  state.get.mockResolvedValue({
+    bytes: new TextEncoder().encode("opened"),
+    filename: "report.md",
+    mediaType: "text/plain",
+    senderDid: "did:key:z6MkSender",
+    shareId: "share-500",
+    byteDigest: "digest",
+    receivedAt: "2026-08-07T20:00:00Z",
+  });
+  state.importInto.mockResolvedValue({ status: "imported", path: "files-for-you/v1/content/share-500/report.md", byteDigest: "digest" });
 });
 
-describe("TC-465 recipient connection recovery", () => {
-  it("retries OpenKey through the real main.ts receiver after a failed connection", async () => {
-    const successfulClient = await client();
-    state.authenticate.mockRejectedValueOnce(new Error("popup closed")).mockResolvedValueOnce({});
-    state.createClient.mockResolvedValue(successfulClient);
-
+describe("TC-500 first-class accountless receiver", () => {
+  it("renders through share.receive with zero OpenKey calls, then signs in only for explicit save", async () => {
     await import("../src/main.js");
-    const root = document.getElementById("viewer")!;
-    await vi.waitFor(() => expect(root.querySelector("button")?.textContent).toBe("Confirm email"));
-
-    root.querySelector<HTMLButtonElement>("button")!.click();
-    await vi.waitFor(() => expect(root.querySelector("[role=alert]")?.textContent).toContain("couldn't verify"));
-    expect(state.authenticate).toHaveBeenCalledTimes(1);
-
-    const retry = root.querySelector<HTMLButtonElement>("button")!;
-    expect(retry.disabled).toBe(false);
-    retry.click();
     await vi.waitFor(() => expect(state.presented).toHaveLength(1));
-    expect(state.authenticate).toHaveBeenCalledTimes(2);
-    expect(state.createClient).toHaveBeenCalledTimes(1);
-    expect(state.presented[0]).toMatchObject({ state: "ok", access: "policy" });
-    expect(new TextDecoder().decode((state.presented[0] as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
+
+    expect(state.receive).toHaveBeenCalledWith(
+      "https://share.tinycloud.xyz/s/test#k=secret",
+      expect.objectContaining({ identity: "auto", interaction: { kind: "inline", mountTarget: document.getElementById("viewer") } }),
+    );
+    expect(state.authenticate).not.toHaveBeenCalled();
+    expect(state.resolve).not.toHaveBeenCalled();
+    expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
+
+    const accountClient = { session: () => ({}) };
+    state.authenticate.mockResolvedValue({});
+    state.createAccountClient.mockResolvedValue(accountClient);
+    const save = state.presented[0]!.options.saveToTinyCloud as () => Promise<void>;
+    await save();
+
+    expect(state.authenticate).toHaveBeenCalledTimes(1);
+    expect(state.importInto).toHaveBeenCalledWith(accountClient, {
+      namespace: "files-for-you",
+      filename: "report.md",
+    });
   });
 });

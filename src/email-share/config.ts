@@ -31,6 +31,8 @@ export interface SharePublicConfig {
   readonly nodeKeyVersion: number;
   readonly issuerKeyVersion: number;
   readonly issuerPublicKey: string;
+  /** Runtime rollout gate; transported as a response header for v1 JSON compatibility. */
+  readonly accountlessReceiverEnabled?: boolean;
   readonly environment?: "production" | "test";
 }
 
@@ -97,6 +99,7 @@ export function validateSharePublicConfig(value: unknown): SharePublicConfig {
     nodeKeyVersion: object.nodeKeyVersion,
     issuerKeyVersion: object.issuerKeyVersion,
     issuerPublicKey: publicKey(object.issuerPublicKey, "issuerPublicKey"),
+    accountlessReceiverEnabled: false,
     ...(environment === "test" ? { environment: "test" as const } : {}),
   });
 }
@@ -114,7 +117,12 @@ export async function loadSharePublicConfig(fetchFn: typeof fetch = globalThis.f
   if (parsed.origin !== (globalThis.location?.origin ?? parsed.origin)) throw new TypeError("share config must be same-origin");
   const response = await fetchFn(parsed, { credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
   if (!response.ok) throw new Error(`share config unavailable (${response.status})`);
-  return validateSharePublicConfig(await response.json());
+  const rollout = response.headers.get("x-tinycloud-share-accountless-receiver");
+  if (rollout !== null && rollout !== "enabled" && rollout !== "disabled") throw new TypeError("share receiver rollout is invalid");
+  return Object.freeze({
+    ...validateSharePublicConfig(await response.json()),
+    accountlessReceiverEnabled: rollout === "enabled",
+  });
 }
 
 export function validateSharePublicBinding(value: unknown): SharePublicBinding {

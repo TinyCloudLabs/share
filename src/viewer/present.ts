@@ -69,6 +69,50 @@ function appendDownloadAction(
 }
 
 /**
+ * Add the explicit post-render account import action. The callback is the only
+ * place allowed to start OpenKey; callers therefore cannot accidentally put
+ * account sign-in in front of the receiver ceremony.
+ */
+export function appendSaveToTinyCloudAction(
+  root: HTMLElement,
+  save: () => Promise<void>,
+): void {
+  const footer = root.querySelector<HTMLElement>(".viewer-footer");
+  const hint = footer?.querySelector<HTMLElement>(".viewer-agent-hint");
+  if (footer === null || footer === undefined || hint === null || hint === undefined
+    || footer.querySelector(".viewer-save-to-tinycloud") !== null) return;
+  const doc = root.ownerDocument;
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.className = "viewer-save-to-tinycloud";
+  button.textContent = "Save a private copy";
+  const status = doc.createElement("span");
+  status.className = "viewer-save-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    status.setAttribute("role", "status");
+    status.textContent = "Opening OpenKey…";
+    void save().then(() => {
+      button.textContent = "Saved to Files for you";
+      status.textContent = "A private copy is now in your TinyCloud.";
+    }).catch(() => {
+      button.disabled = false;
+      status.setAttribute("role", "alert");
+      status.textContent = "We couldn't save a copy. Try again.";
+    });
+  });
+  footer.insertBefore(button, hint);
+  footer.insertBefore(status, hint);
+}
+
+export interface PresentShareOptions extends RenderMarkdownOptions, ViewerStateOptions {
+  /** Offered only after verified bytes have rendered successfully. */
+  readonly saveToTinyCloud?: () => Promise<void>;
+}
+
+/**
  * Returns the content container when the share verified ("ok"), null for
  * every other state (fail closed: no content sink exists unless every
  * verification step passed — ui.ts invariant).
@@ -76,7 +120,7 @@ function appendDownloadAction(
 export async function presentShare(
   root: HTMLElement,
   result: ResolveResult,
-  options: RenderMarkdownOptions & ViewerStateOptions = {},
+  options: PresentShareOptions = {},
 ): Promise<HTMLElement | null> {
   const container = renderViewerState(root, result, options);
   if (container === null || result.state !== "ok" || (result.content === undefined && result.contentBytes === undefined)) {
@@ -96,6 +140,9 @@ export async function presentShare(
       await renderMarkdownInto(container, result.content as string, mode, options);
     }
     appendDownloadAction(root, result);
+    if (options.saveToTinyCloud !== undefined) {
+      appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
+    }
   } catch (error) {
     // renderMarkdownInto throws before touching the DOM (oversize source,
     // node-count breach); leave a message, never partial content. Fail closed.

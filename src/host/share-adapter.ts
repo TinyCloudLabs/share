@@ -432,6 +432,10 @@ export interface ShareHostOptions {
   /** Resolves the per-principal sender signing identity; absent means the sender path cannot serve any session. */
   readonly senderIdentitySource?: SenderIdentitySource;
   readonly senderEnabled: boolean;
+  /** Runtime rollout gate for accountless Policy/v4 receiving. */
+  readonly accountlessReceiverEnabled?: boolean;
+  /** Exact Ed25519 enforcement audience attested in unified share envelopes. */
+  readonly enforcerDid?: string;
   readonly testMode: boolean;
   /** Explicit local production-shaped composition; never enabled by trust data. */
   readonly hermeticComposition?: boolean;
@@ -1074,7 +1078,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
    */
   const senderReady = options.senderEnabled && options.bundle.public.nodeEnabled && options.senderIdentitySource !== undefined && options.bindingStore?.writable === true;
   const authReady = true;
-  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, emailOrigin: options.bundle.public.emailOrigin, nodeAudience: options.bundle.public.nodeAudience, enforcerDid: process.env.SHARE_NODE_ENFORCER_DID ?? options.bundle.public.nodeAudience, nodeEnabled: options.bundle.public.nodeEnabled, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, issuerEnabled: options.bundle.public.issuerEnabled, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
+  const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: options.bundle.public.shareOrigin, registryOrigin: options.bundle.public.registryOrigin, nodeOrigin: options.bundle.public.nodeOrigin, credentialsOrigin: options.bundle.public.credentialsOrigin, emailOrigin: options.bundle.public.emailOrigin, nodeAudience: options.bundle.public.nodeAudience, enforcerDid: options.enforcerDid ?? options.bundle.public.nodeAudience, nodeEnabled: options.bundle.public.nodeEnabled, issuerDid: options.bundle.public.issuerDid, issuerVct: options.bundle.public.issuerVct, issuerEnabled: options.bundle.public.issuerEnabled, nodeInvitationKid: options.bundle.public.nodeInvitationKid, nodeInvitationPublicKey: options.bundle.public.nodeInvitationPublicKey, nodeKeyVersion: options.bundle.public.nodeKeyVersion, issuerKeyVersion: options.bundle.public.issuerKeyVersion, issuerPublicKey: options.bundle.public.issuerPublicKey, ...(options.testMode ? { environment: "test" } : {}) };
   /**
    * The signing identity for a session. Derived per verified principal, so a
    * session for one wallet can never sign under another wallet's identity.
@@ -1132,7 +1136,9 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
     const url = new URL(request.url);
     try {
       if ((url.pathname === "/health/readiness" || url.pathname === "/api/health/readiness") && request.method === "GET") return response(200, { authReady, senderReady });
-      if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig);
+      if (url.pathname === "/.well-known/tinycloud-share/config.json" && request.method === "GET") return response(200, publicConfig, {
+        "x-tinycloud-share-accountless-receiver": options.accountlessReceiverEnabled === true ? "enabled" : "disabled",
+      });
       if (url.pathname === "/.well-known/tinycloud-share/agent.json" && request.method === "GET") return response(200, AGENT_CARD);
       if (url.pathname === "/api/share/auth/openkey/nonce" && request.method === "GET") {
         const requestOrigin = request.headers.get("origin");
@@ -1428,6 +1434,13 @@ export function senderEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
   throw new Error("SHARE_SENDER_ENABLED must be exactly true or false");
 }
 
+export function accountlessReceiverEnabledFromEnv(env: NodeJS.ProcessEnv): boolean {
+  const value = env.SHARE_ACCOUNTLESS_RECEIVER_ENABLED;
+  if (value === undefined || value === "false") return false;
+  if (value === "true") return true;
+  throw new Error("SHARE_ACCOUNTLESS_RECEIVER_ENABLED must be exactly true or false");
+}
+
 function parseRegistryUploadPrivateKey(value: string): Uint8Array {
   if (!B64_256.test(value)) throw new Error("registry upload private key is invalid");
   const key = fromBase64Url(value);
@@ -1483,6 +1496,7 @@ function loadRegistryUploadPrivateKey(
 
 export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env, overrides: Pick<ShareHostOptions, "fetchFn"> = {}): ReturnType<typeof createShareHostAdapter> {
   const senderEnabled = senderEnabledFromEnv(env);
+  const accountlessReceiverEnabled = accountlessReceiverEnabledFromEnv(env);
   if (senderEnabled && env.SHARE_TRUST_BUNDLE_ALLOW_TEST !== "true" && (env.SHARE_SENDER_PRIVATE_KEY !== undefined || env.SHARE_SENDER_CAPABILITY_JSON !== undefined || env.SHARE_SENDER_CAPABILITIES_JSON !== undefined)) throw new Error("static sender authority variables are forbidden; authenticate through OpenKey");
   const bundle = loadTrustBundle(senderEnabled ? env : { ...env, SHARE_SENDER_PRIVATE_KEY: undefined });
   if (senderEnabled && !bundle.public.nodeEnabled) throw new Error("sender requires an enabled trusted node");
@@ -1562,5 +1576,5 @@ export function createShareHostFromEnv(env: NodeJS.ProcessEnv = process.env, ove
     });
   }
   const hermeticBrowserOrigin = parseHermeticBrowserOrigin(env.SHARE_HERMETIC_BROWSER_ORIGIN);
-  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }), ...(overrides.fetchFn === undefined ? {} : { fetchFn: overrides.fetchFn }) });
+  return createShareHostAdapter({ bundle, ...(capability === undefined ? {} : { capability }), ...(parsedCapabilities.length > 1 ? { capabilities } : {}), ...(bindingStore === undefined ? {} : { bindingStore }), ...(uploadBudgetStore === undefined ? {} : { uploadBudgetStore }), ...(registryUploadPrivateKey === undefined ? {} : { registryUploadPrivateKey }), ...(senderIdentitySource === undefined ? {} : { senderIdentitySource }), registryOrigin, registryTransportOrigin, authUsers, senderEnabled, accountlessReceiverEnabled, ...(env.SHARE_NODE_ENFORCER_DID === undefined ? {} : { enforcerDid: env.SHARE_NODE_ENFORCER_DID }), testMode: bundle.environment === "test", hermeticComposition, ...(hermeticBrowserOrigin === undefined ? {} : { hermeticBrowserOrigin }), ...(overrides.fetchFn === undefined ? {} : { fetchFn: overrides.fetchFn }) });
 }

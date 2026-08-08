@@ -157,16 +157,20 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
   }
 }
 
-function presentationEnvelope(metadata: ShareMetadata): ShareEnvelope {
+export function presentationEnvelope(
+  metadata: ShareMetadata,
+  content?: { readonly filename: string; readonly mediaType: string },
+): ShareEnvelope {
   return {
     version: 1,
     shareId: metadata.shareId,
     delegation: "[redacted]",
     authorizationTarget: { kind: "bearerKey", sessionJwk: { kty: "OKP", crv: "Ed25519", x: "" } },
     target: { origin: metadata.target.origin, nodeAudience: metadata.target.nodeAudience, spaceId: metadata.target.spaceId, resource: metadata.resource },
-    display: metadata.display,
+    display: { ...metadata.display, ...(content === undefined ? {} : { filename: content.filename }) },
     expiry: metadata.expiresAt,
     signature: { signerDid: "did:key:z6Mkrender-only", algorithm: "Ed25519", value: "" },
+    ...(content === undefined ? {} : { metadata: { filename: content.filename, mediaType: content.mediaType } }),
   } as unknown as ShareEnvelope;
 }
 

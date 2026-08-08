@@ -9,14 +9,17 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
 import { Cbor } from "ox";
+import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
-import { open, parseShareUrl, shareEnvelopeV3Schema } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, ed25519PublicKeyFromDidKey, fromBase64Url, open, parseShareUrl, shareEnvelopeV3Schema, verifyEnvelopeV3, verifyEnvelopeV3SignatureOnly } from "@tinycloud/share-envelope";
+import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
-const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
+const tc500 = process.argv.includes("--tc-500");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-node-1.15.0-release" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
+const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-accountless-share-receive" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/OpenCredentials" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
 const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so" };
@@ -181,7 +184,7 @@ async function installInterception(page, services, fixtureOrigin) {
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-    await page.evaluateOnNewDocument((address, shareOrigin) => {
+    await page.evaluateOnNewDocument((address, shareOrigin, accountlessReceiver) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0 };
     window.__tc465BinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
@@ -258,8 +261,8 @@ async function installInterception(page, services, fixtureOrigin) {
     };
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
-    setTimeout(announce, 10_000);
-    }, wallet.address, canonical.share);
+    if (!accountlessReceiver) setTimeout(announce, 10_000);
+    }, wallet.address, canonical.share, tc500);
     resolveInstallation();
   } catch (error) {
     installedPages.delete(page);
@@ -356,6 +359,62 @@ function stringsIn(value, found = []) {
 
 function authorizationNames(entry) { return stringsIn(authorizationValue(entry.authorization)); }
 
+function hexDigest(domain, value) {
+  return createHash("sha256").update(domain).update(canonicalize(value)).digest("hex");
+}
+
+function base32Lower(bytes) {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  let output = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) { output += alphabet[(buffer >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) output += alphabet[(buffer << (5 - bits)) & 31];
+  return output;
+}
+
+async function auditV3Envelope(envelope) {
+  const policy = envelope.policy;
+  const unsignedPolicy = { ...policy };
+  delete unsignedPolicy.policyId;
+  delete unsignedPolicy.signature;
+  const policyDomain = policy.schema === "xyz.tinycloud.policy/policy/v2" ? "xyz.tinycloud.policy/policy/v2\0" : "xyz.tinycloud.policy/policy/v1\0";
+  const policyDigest = createHash("sha256").update(policyDomain).update(canonicalize(unsignedPolicy)).digest();
+  const policyRoot = parseCompactUcanAuthorization(envelope.policyRoot.authorization, envelope.policyRoot.cid);
+  const enforcementRoot = parseCompactUcanAuthorization(envelope.enforcementRoot.authorization, envelope.enforcementRoot.cid);
+  const policyFact = policyRoot.payload.fct[0];
+  const enforcementFact = enforcementRoot.payload.fct[0];
+  const capabilities = [...policy.capabilityCeiling].sort((left, right) => canonicalize(left).localeCompare(canonicalize(right)));
+  const projection = capabilities.map((capability) => capability.kind === "encryption"
+    ? { service: "tinycloud.encryption", space: capability.resource, path: capability.resource, actions: [capability.action] }
+    : { service: "tinycloud.kv", space: capability.resource.slice(0, capability.resource.indexOf("/kv/")), path: capability.resource.split("/kv/")[1], actions: [...capability.actions], caveat: { type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource } })
+    .sort((left, right) => canonicalize(left).localeCompare(canonicalize(right)));
+  const attenuation = Object.fromEntries(capabilities.map((capability) => capability.kind === "encryption"
+    ? [capability.resource, { [capability.action]: [{}] }]
+    : [capability.resource, Object.fromEntries(capability.actions.map((action) => [action, [{ kind: capability.selector, type: "xyz.tinycloud.resource/selector", value: capability.resource }]]))]));
+  const binding = envelope.attestedEnforcerBinding;
+  const { signature: bindingSignature, ...unsignedBinding } = binding;
+  const bindingDigest = createHash("sha256").update("xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0").update(canonicalize(unsignedBinding)).digest();
+  return {
+    envelopeSignature: verifyEnvelopeV3SignatureOnly(envelope),
+    policySignature: ed25519.verify(fromBase64Url(policy.signature.value), policyDigest, ed25519PublicKeyFromDidKey(policy.ownerDid), { zip215: false }),
+    policyId: policy.policyId === `pol_${base32Lower(policyDigest)}`,
+    policyCid: await computeCid(new TextEncoder().encode(canonicalize(policy))) === envelope.policyCid,
+    contentSourceDigest: hexDigest("xyz.tinycloud.policy/ContentSource/v1\0", policy.contentSource) === envelope.contentSourceDigestHex,
+    capabilityHash: policyFact.capabilityCeilingHashHex === hexDigest("xyz.tinycloud.policy/PolicyCapability/v1\0", capabilities),
+    nativeProjectionHash: policyFact.nativeProjectionHashHex === hexDigest("xyz.tinycloud.policy/NativeProjection/v1\0", projection),
+    bindingDigest: binding.attestationBindingDigestHex === hexDigest("", { enforcerDid: binding.enforcerDid, nodeAudience: binding.nodeAudience }),
+    bindingSignature: ed25519.verify(fromBase64Url(bindingSignature.value), bindingDigest, ed25519PublicKeyFromDidKey(binding.nodeAudience), { zip215: false }),
+    rootAttenuation: canonicalize(policyRoot.payload.att) === canonicalize(attenuation) && canonicalize(enforcementRoot.payload.att) === canonicalize(attenuation),
+    rootFacts: policyFact.policyDigestHex === policyDigest.toString("hex") && enforcementFact.policyDigestHex === policyDigest.toString("hex") && policyFact.nodeAudience === binding.nodeAudience && enforcementFact.nodeAudience === binding.nodeAudience,
+    fullVerification: await verifyEnvelopeV3(envelope, { expectedSignerDid: policy.ownerDid }),
+  };
+}
+
 function routeAfter(label, after, predicate) {
   const entry = receiverRequests.find((candidate) => candidate.sequence > after && successful(candidate) && predicate(candidate));
   assert(entry, `${label} was not observed after receiver sequence ${after}`);
@@ -365,7 +424,7 @@ function routeAfter(label, after, predicate) {
 function escaped(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
 async function main() {
-  const control = await mkdtemp(join(tmpdir(), "tinycloud-tc465-"));
+  const control = await mkdtemp(join(tmpdir(), tc500 ? "tinycloud-tc500-" : "tinycloud-tc465-"));
   await chmod(control, 0o700);
   try {
     run("npm", ["run", "link:web-sdk"], shareRoot, { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot });
@@ -380,15 +439,15 @@ async function main() {
     });
     const compositionEnv = {
       ...process.env,
-      SHARING_E2E_TC465_JOINED: "1",
+      [tc500 ? "SHARING_E2E_TC500_JOINED" : "SHARING_E2E_TC465_JOINED"]: "1",
       SHARING_E2E_EXTERNAL_CONTROL_DIR: control,
-      SHARING_E2E_ARTIFACT_PATH: process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, ".context/tc-465-joined.json"),
+      SHARING_E2E_ARTIFACT_PATH: process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, tc500 ? ".context/tc-500-joined.json" : ".context/tc-465-joined.json"),
       TINYCLOUD_NODE_WORKTREE: nodeRoot,
       TINYCLOUD_JS_SDK_WORKTREE: sdkRoot,
       OPENCREDENTIALS_WORKTREE: credentialsRoot,
     };
     integration = spawn(process.execPath, [join(shareRoot, "test/e2e-sharing/integration.mjs")], { cwd: shareRoot, env: compositionEnv, stdio: ["ignore", "inherit", "inherit"] });
-    await waitForFile(join(control, "services.json"), integration, 600_000);
+    await waitForFile(join(control, "services.json"), integration, 20 * 60_000);
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
     browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
@@ -396,7 +455,7 @@ async function main() {
       if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
       void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
     });
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     page.on("console", (message) => {
       if (["error", "warning"].includes(message.type()) || message.text().startsWith("tinycloud share:")) {
         browserErrors.push(`${message.type()}: ${message.text()}`.replace(/[A-Za-z0-9_-]{32,}/g, "<opaque>").slice(0, 500));
@@ -438,20 +497,38 @@ async function main() {
     const envelopeValue = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(envelopeBytes));
     const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
     assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
-    const exactKvResource = envelopeValidation.data.contentSource.kvResource;
+    const publishedEnvelope = envelopeValidation.data;
+    const envelopeAudit = await auditV3Envelope(publishedEnvelope);
+    assert.deepEqual(envelopeAudit, Object.fromEntries(Object.keys(envelopeAudit).map((key) => [key, true])), `published v3 envelope verification audit failed: ${JSON.stringify(envelopeAudit)}`);
+    const policyRoot = parseCompactUcanAuthorization(publishedEnvelope.policyRoot.authorization, publishedEnvelope.policyRoot.cid);
+    const enforcementRoot = parseCompactUcanAuthorization(publishedEnvelope.enforcementRoot.authorization, publishedEnvelope.enforcementRoot.cid);
+    assert.equal(policyRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "policy root collapsed the Node audience into the enforcement DID");
+    assert.equal(enforcementRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "enforcement root collapsed the Node audience into the enforcement DID");
+    assert.equal(enforcementRoot.payload.aud, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root audience does not match the attested enforcement DID");
+    assert.equal(enforcementRoot.payload.fct[0]?.enforcerDid, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root fact does not match the attested enforcement DID");
+    const exactKvResource = publishedEnvelope.contentSource.kvResource;
     const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
+    if (tc500) {
+      const receiverContext = await browser.createBrowserContext();
+      const receiverPage = await receiverContext.newPage();
+      await installInterception(receiverPage, services, fixtureOrigin);
+      await page.close();
+      page = receiverPage;
+    }
     receiverTargetBaseline = new Set(browser.targets());
     receiverJourneyStarted = true;
     await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
-    await waitForText(page, "Confirm your email to open this");
-    await page.click("button.viewer-primary-action");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 800));
-    await announceWallet(page);
-    await clickText(page, "TinyCloud E2E Wallet", true);
+    if (!tc500) {
+      await waitForText(page, "Confirm your email to open this");
+      await page.click("button.viewer-primary-action");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 800));
+      await announceWallet(page);
+      await clickText(page, "TinyCloud E2E Wallet", true);
+    }
     let otpSubmitted;
     try {
       otpSubmitted = await page.waitForFunction(() => {
@@ -468,7 +545,7 @@ async function main() {
       throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
     }
     assert.equal(await otpSubmitted.jsonValue(), true, "embedded OTP controls are missing");
-    const acquisitionCookies = await browser.defaultBrowserContext().cookies(canonical.witness);
+    const acquisitionCookies = await page.browserContext().cookies(canonical.witness);
     const requestCookie = acquisitionCookies.find((cookie) => cookie.name === "oc_acquisition");
     assert.equal(requestCookie, undefined, "embedded SDK acquisition must not depend on a browser cookie");
 
@@ -509,48 +586,111 @@ async function main() {
     const issue = routeAfter("credential acquisition issue", holderSignature.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/issue"));
     const result = routeAfter("credential acquisition result", issue.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/result"));
 
-    const credentialWrite = routeAfter("durable credential-space write", result.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/records/")));
-    const credentialRecord = credentialWrite.responseBody.written.find((key) => key.startsWith("v1/records/"));
-    assert(credentialWrite.authorization?.length > 0, "credential-space write was not authenticated");
-    const credentialRead = routeAfter("authenticated credential-space readback", credentialWrite.sequence, (entry) => entry.path === "/invoke" && entry.responseBody?.type === "TinyCloudStoredCredential" && `v1/records/${entry.responseBody.recordId}` === credentialRecord);
-    assert(credentialRead.authorization?.length > 0, "credential-space readback was not authenticated");
+    let credentialRecord;
+    let credentialSpaceId;
+    let policyStartSequence = result.sequence;
+    if (!tc500) {
+      const credentialWrite = routeAfter("durable credential-space write", result.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/records/")));
+      credentialRecord = credentialWrite.responseBody.written.find((key) => key.startsWith("v1/records/"));
+      assert(credentialWrite.authorization?.length > 0, "credential-space write was not authenticated");
+      const credentialRead = routeAfter("authenticated credential-space readback", credentialWrite.sequence, (entry) => entry.path === "/invoke" && entry.responseBody?.type === "TinyCloudStoredCredential" && `v1/records/${entry.responseBody.recordId}` === credentialRecord);
+      assert(credentialRead.authorization?.length > 0, "credential-space readback was not authenticated");
+      policyStartSequence = credentialRead.sequence;
+      credentialSpaceId = credentialRead.responseBody.ownerDid;
+    }
 
-    const policyChallenge = routeAfter("Policy/v3 challenge", credentialRead.sequence, (entry) => entry.path === "/share/v3/policy/challenges" && entry.method === "POST");
+    const policyChallenge = routeAfter("Policy/v3 challenge", policyStartSequence, (entry) => entry.path === "/share/v3/policy/challenges" && entry.method === "POST");
+    if (tc500) {
+      assert.equal(receiverRequests.some((entry) => entry.sequence > result.sequence && entry.sequence < policyChallenge.sequence && entry.path === "/invoke"), false, "accountless credential custody touched TinyCloud account storage");
+    }
     const policyCid = policyChallenge.body?.policyCid;
     assert.equal(policyCid, binding.body.policyCid, "Policy/v3 challenge did not bind the published policy CID");
     const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
     assert.equal(requestedKv?.resource, exactKvResource, "Policy/v3 challenge did not request the envelope's exact TinyCloud KV resource");
     assert.equal(requestedKv.selector, "exact");
-    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get"]);
+    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get", "tinycloud.kv/metadata"]);
     const kvResource = requestedKv.resource;
 
     const policyMint = routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
-    const credentialSpaceId = policyMint.body?.credentialSpaceId;
-    assert.equal(typeof credentialSpaceId, "string", "Policy/v3 mint omitted the recipient credentials space");
-    assert.equal(policyMint.body?.presentation?.credentialSpaceOwnerDid, credentialRead.responseBody.ownerDid, "Policy/v3 presentation did not bind the durable credential owner");
+    const receiverDid = policyChallenge.body?.recipientDid;
+    if (tc500) {
+      assert.match(receiverDid, /^did:key:z/, "accountless challenge recipient is not the receiver session key");
+      assert.equal(policyMint.body?.credentialSpaceId, undefined, "accountless admission carried account credential custody");
+      assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/presentation/v4");
+      assert.equal(policyMint.body?.presentation?.holderDid, receiverDid);
+      assert.equal(policyMint.body?.presentation?.subjectDid, receiverDid);
+      assert.equal(policyMint.body?.presentation?.signature?.signerDid, receiverDid);
+      assert.equal(policyMint.body?.credential?.holderDid, receiverDid);
+      assert.equal(policyMint.body?.credential?.subjectDid, receiverDid);
+    } else {
+      credentialSpaceId = policyMint.body?.credentialSpaceId;
+      assert.equal(typeof credentialSpaceId, "string", "Policy/v3 mint omitted the recipient credentials space");
+      assert.equal(policyMint.body?.presentation?.credentialSpaceOwnerDid, credentialSpaceId, "Policy/v3 presentation did not bind the durable credential owner");
+    }
     assert.deepEqual(policyMint.body?.presentation?.requestedCapabilities, policyChallenge.body.requestedCapabilities, "Policy/v3 mint substituted the challenged capability slice");
 
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
     assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
-    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path) && entry.method === "POST");
+    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && (tc500
+      ? entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1"
+      : /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path)));
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
     assert.equal(receiverTargets.length, 0, `embedded credential acquisition created browser targets: ${JSON.stringify(receiverTargets)}`);
     const diagnostics = await page.evaluate(() => window.__tc465Diagnostics);
     assert.equal(diagnostics.windowOpenCalls, 0, "embedded credential acquisition called window.open");
+    if (tc500) {
+      assert.equal(receiverRequests.some((entry) => entry.origin === canonical.openKey), false, "accountless receive contacted OpenKey before render");
+      assert.equal(diagnostics.walletRequests, 0, "accountless receive requested a wallet provider before render");
+    }
     assert.equal(receiverRequests.some((entry) => entry.origin === canonical.interaction), false, "embedded credential acquisition navigated to credentials.org");
     const allowedOrigins = new Set([canonical.share, canonical.node, canonical.witness, canonical.openKey, "null"]);
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 
+    let saveOpenKey;
+    let saveWrite;
+    let saveReadback;
+    if (tc500) {
+      const renderedSequence = receiverSequence;
+      await page.waitForSelector("button.viewer-save-to-tinycloud", { timeout: 30_000 });
+      await page.click("button.viewer-save-to-tinycloud");
+      await new Promise((resolveWait) => setTimeout(resolveWait, 800));
+      await announceWallet(page);
+      await clickText(page, "TinyCloud E2E Wallet", true);
+      await clickText(page, "Create TinyCloud Space", true);
+      await waitForText(page, "Saved to Files for you", 180_000);
+      saveOpenKey = routeAfter("post-render OpenKey start", renderedSequence, (entry) => entry.origin === canonical.openKey);
+      saveWrite = routeAfter("Files for you import", saveOpenKey.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/content/")) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/metadata/")));
+      saveReadback = routeAfter("Files for you authenticated readback", saveWrite.sequence, (entry) => entry.path === "/invoke" && typeof entry.responseBody?.byteDigest === "string" && entry.responseBody.byteDigest.length > 0);
+      assert(saveWrite.authorization?.length > 0, "Files for you write was not authenticated");
+      assert(saveReadback.authorization?.length > 0, "Files for you readback was not authenticated");
+    }
+
     const chain = [
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
-      "credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint", "delegate", `invoke:${kvResource}`, "decrypt", "render",
+      ...(tc500 ? ["credential:session-custody", "policy-v4:challenge", "policy-v4:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
+      "delegate", `invoke:${kvResource}`, "decrypt", "render",
+      ...(tc500 ? ["save:openkey", "save:write", "save:readback"] : []),
     ];
-    const statuses = {
+    const statuses = tc500 ? {
       acquisition: result.sequence > create.sequence,
-      durableCredential: credentialRead.sequence > credentialWrite.sequence,
-      policyV3Challenge: policyChallenge.sequence > credentialRead.sequence,
+      sessionCredential: policyChallenge.sequence > result.sequence,
+      policyV4: policyMint.sequence > policyChallenge.sequence,
+      delegate: delegate.sequence > policyMint.sequence,
+      invoke: invoke.sequence > delegate.sequence,
+      decrypt: decrypt.sequence > invoke.sequence,
+      rendered,
+      legacyPolicySessionAbsent: true,
+      zeroOpenKeyBeforeRender: true,
+      zeroExternalDestinations: true,
+      saveOpenKeyAfterRender: saveOpenKey.sequence > decrypt.sequence,
+      saveWrite: saveWrite.sequence > saveOpenKey.sequence,
+      saveReadback: saveReadback.sequence > saveWrite.sequence,
+    } : {
+      acquisition: result.sequence > create.sequence,
+      durableCredential: policyChallenge.sequence > result.sequence,
+      policyV3Challenge: policyChallenge.sequence > result.sequence,
       policyV3Mint: policyMint.sequence > policyChallenge.sequence,
       delegate: delegate.sequence > policyMint.sequence,
       invoke: invoke.sequence > delegate.sequence,
@@ -562,11 +702,18 @@ async function main() {
     };
     assert(Object.values(statuses).every((value) => value === true), "receiver chain status is incomplete");
     const evidence = {
-      type: "tinycloud.share/tc-465-joined-evidence/v2",
+      type: tc500 ? "tinycloud.share/tc-500-joined-evidence/v1" : "tinycloud.share/tc-465-joined-evidence/v2",
       renderedSha256: createHash("sha256").update(renderedBytes).digest("hex"),
       statuses,
       chain,
-      slice: {
+      slice: tc500 ? {
+        shareCid,
+        policyCid,
+        resource: kvResource,
+        receiverDid,
+        presentationJti: policyMint.body.presentation.jti,
+        acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
+      } : {
         shareCid,
         policyCid,
         resource: kvResource,
@@ -579,8 +726,8 @@ async function main() {
     await writeFile(join(control, "tc465-result.json"), JSON.stringify(evidence), { flag: "wx", mode: 0o600 });
     await writeFile(join(control, "release"), "ok\n", { flag: "wx", mode: 0o600 });
     const exitCode = await new Promise((resolveExit) => integration.once("exit", resolveExit));
-    assert.equal(exitCode, 0, "production-shaped TC-465 composition failed after browser completion");
-    console.error(`TC-465 joined exact-email receiver: PASS ${JSON.stringify(evidence)}`);
+    assert.equal(exitCode, 0, `production-shaped ${tc500 ? "TC-500" : "TC-465"} composition failed after browser completion`);
+    console.error(`${tc500 ? "TC-500 accountless" : "TC-465"} joined exact-email receiver: PASS ${JSON.stringify(evidence)}`);
   } finally {
     await browser?.close().catch(() => undefined);
     if (fixture?.exitCode === null) fixture.kill("SIGTERM");
