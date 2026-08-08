@@ -83,7 +83,7 @@ export async function waitForMessage(inbox, predicate, { timeoutMs = 180_000, in
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
-  throw new Error(`no matching mail arrived in ${inbox} within ${timeoutMs}ms`);
+  throw new Error(`no matching mail arrived within ${timeoutMs}ms`);
 }
 
 /** The first standalone six-digit group in a message — OpenKey's sign-in OTP. */

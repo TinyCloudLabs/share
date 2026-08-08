@@ -23,8 +23,11 @@
  *                                   `nodeAudience` nor `returnOrigin`
  *   POST {emailOrigin}/share/v3     — the actual send
  *   read the Mailinator inbox     — the invitation must really arrive
- *   follow the link, confirm      — the recipient claim
+ *   follow the link signed out    — accountless session-key recipient claim
+ *   verify mailbox inline         — no OpenKey request or extra page before render
  *   read the exact shared bytes
+ *   explicitly save               — OpenKey starts only after render, then the
+ *                                   Files for you write and readback complete
  *
  * The three items above the send do NOT depend on `senderReady`: they run in
  * the browser and against `tee.node.tinycloud.xyz` before anything is POSTed to
@@ -40,9 +43,10 @@ import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare, startOpenKeyAutopilot } from "./lib/openkey.mjs";
+import { OPENKEY_ORIGIN, attachVirtualAuthenticator, restoreCredential, registerFreshAccount, loadAccount, saveAccount, signInToShare, startOpenKeyAutopilot } from "./lib/openkey.mjs";
 import { newInbox, waitForMessage, extractOtp, extractUrls } from "./lib/mailinator.mjs";
 import { DEEP_TRACE } from "./lib/deep-trace.mjs";
+import { redactString, redactValue } from "./lib/redact.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ACCOUNT_PATH = resolve(HERE, ".account.json");
@@ -50,19 +54,22 @@ const RECIPIENT_ACCOUNT_PATH = resolve(HERE, ".account-recipient.json");
 const RUN_DIR = resolve(HERE, "runs", `stage2-${new Date().toISOString().replace(/[:.]/g, "-")}`);
 const SHARE_ORIGIN = process.env.SHARE_ORIGIN ?? "https://share.tinycloud.xyz";
 const COMPOSER_URL = `${SHARE_ORIGIN}/share#/new`;
+const OPENKEY_REQUEST_ORIGIN = new URL(OPENKEY_ORIGIN).origin;
 
 mkdirSync(RUN_DIR, { recursive: true });
 const lines = [];
 const log = (line) => {
-  console.log(line);
-  lines.push(`${new Date().toISOString()} ${line}`);
+  const safe = redactString(line);
+  console.log(safe);
+  lines.push(`${new Date().toISOString()} ${safe}`);
   writeFileSync(resolve(RUN_DIR, "run.log"), lines.join("\n"));
 };
 
 const results = [];
 function record(name, ok, detail) {
-  results.push({ name, ok, detail });
-  log(`${ok ? "PASS" : "FAIL"}  ${name}${detail === undefined ? "" : ` — ${detail}`}`);
+  const safeDetail = detail === undefined ? undefined : redactString(detail);
+  results.push({ name, ok, ...(safeDetail === undefined ? {} : { detail: safeDetail }) });
+  log(`${ok ? "PASS" : "FAIL"}  ${name}${safeDetail === undefined ? "" : ` — ${safeDetail}`}`);
 }
 
 const CLIPBOARD_TAP = () => {
@@ -80,7 +87,6 @@ const CLIPBOARD_TAP = () => {
 const recipient = newInbox("tcshare-rcpt");
 if (!recipient.address.endsWith("@mailinator.com")) throw new Error("refusing to run: recipient is not a mailinator address");
 log(`[stage2] recipient ${recipient.address}`);
-writeFileSync(resolve(RUN_DIR, "recipient.txt"), `${recipient.address}\n`);
 
 const readiness = await fetch("https://api.share.tinycloud.xyz/health/readiness", { cache: "no-store" }).then((response) => response.json());
 log(`[stage2] readiness ${JSON.stringify(readiness)}`);
@@ -168,8 +174,8 @@ try {
   await page.locator("div.content-dropzone").waitFor({ state: "visible", timeout: 60_000 });
 
   const nonce = `tc-addressed-${crypto.randomUUID()}`;
-  const markdown = `# Addressed share proof\n\nnonce: ${nonce}\n\nrecipient: ${"<set below>"}\n`;
-  await page.setInputFiles('input[name="document"]', { name: "stage2-proof.md", mimeType: "text/markdown", buffer: Buffer.from(new TextEncoder().encode(markdown.replace("<set below>", recipient.address))) });
+  const markdown = `# Addressed share proof\n\nnonce: ${nonce}\n`;
+  await page.setInputFiles('input[name="document"]', { name: "stage2-proof.md", mimeType: "text/markdown", buffer: Buffer.from(new TextEncoder().encode(markdown)) });
   await page.locator("div.content-chosen").waitFor({ state: "visible", timeout: 30_000 });
 
   await page.check('input[name="recipient"][value="exactEmail"]');
@@ -237,7 +243,7 @@ try {
     }
     const value = parsed?.authorization ?? parsed;
     if (value !== undefined) {
-      writeFileSync(resolve(RUN_DIR, "delivery-authorization.json"), JSON.stringify(parsed, null, 2));
+      writeFileSync(resolve(RUN_DIR, "delivery-authorization.json"), JSON.stringify(redactValue(parsed), null, 2));
       record("openCredentialsAudience !== nodeAudience", value.openCredentialsAudience !== value.nodeAudience, `${value.openCredentialsAudience} vs ${value.nodeAudience}`);
       record("openCredentialsAudience !== returnOrigin", value.openCredentialsAudience !== value.returnOrigin, `${value.openCredentialsAudience} vs ${value.returnOrigin}`);
       record("openCredentialsAudience === the configured credentialsOrigin", value.openCredentialsAudience === "https://witness.credentials.org", String(value.openCredentialsAudience));
@@ -281,7 +287,7 @@ try {
       isInvitation(message, text) && /tinycloud/i.test(String(message.from)),
       `from=${message.from} subject=${JSON.stringify(message.subject)}`,
     );
-    writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), text);
+    writeFileSync(resolve(RUN_DIR, "invitation-email.txt"), redactString(text));
 
     const links = extractUrls(text).filter((url) => url.includes("/s/"));
     record("the invitation carries a share link", links.length > 0, links.map((url) => url.replace(/#.*/, "#<redacted>")).join(" "));
@@ -294,27 +300,20 @@ try {
   // -------------------------------------------------------------- recipient
   const recipientContext = await browser.newContext({ acceptDownloads: true });
   const recipientPage = await recipientContext.newPage();
+  const recipientOpenKeyRequests = [];
+  let recipientRendered = false;
   recipientPage.on("console", (message2) => log(`[recipient console ${message2.type()}] ${message2.text()}`));
   recipientPage.on("pageerror", (error) => log(`[recipient pageerror] ${error.message}`));
   recipientPage.on("response", (response) => {
     if (/registry|\/api\/share\/|node\.tinycloud|credentials\.org|openkey/.test(response.url())) log(`[recipient res ${response.status()}] ${response.request().method()} ${response.url()}`);
   });
+  recipientPage.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== OPENKEY_REQUEST_ORIGIN && url.hostname !== "openkey.so" && !url.hostname.endsWith(".openkey.so")) return;
+    recipientOpenKeyRequests.push({ phase: recipientRendered ? "after-render" : "before-render", method: request.method(), path: url.pathname });
+  });
   recipientPage.on("requestfailed", (request) => log(`[recipient reqfailed] ${request.method()} ${request.url()} — ${request.failure()?.errorText}`));
-  const { cdp: recipientCdp, authenticatorId: recipientAuthenticatorId } = await attachVirtualAuthenticator(recipientContext, recipientPage);
-  let recipientAccount = process.env.FRESH_ACCOUNT === "1" ? undefined : loadAccount(RECIPIENT_ACCOUNT_PATH);
-  if (recipientAccount === undefined) {
-    recipientAccount = await registerFreshAccount(recipientPage, recipientCdp, recipientAuthenticatorId, log);
-    saveAccount(RECIPIENT_ACCOUNT_PATH, recipientAccount);
-  } else {
-    log(`[openkey recipient] reusing account ${recipientAccount.address}`);
-    await restoreCredential(recipientCdp, recipientAuthenticatorId, recipientAccount.credential);
-  }
   await recipientPage.goto(recipientLink, { waitUntil: "domcontentloaded" });
-
-  const verify = recipientPage.getByRole("button", { name: /^confirm email$/i });
-  await verify.waitFor({ timeout: 60_000 });
-  const stopRecipientAutopilot = startOpenKeyAutopilot(recipientPage, log);
-  await verify.click();
 
   const acquisitionDeadline = Date.now() + 180_000;
   let acquisitionReady = false;
@@ -337,10 +336,11 @@ try {
   }
   record("the SDK embedded credential element rendered in the Share page", acquisitionReady, acquisitionFailure || undefined);
   if (!acquisitionReady) {
-    writeFileSync(resolve(RUN_DIR, "recipient-pre-acquisition.txt"), await recipientPage.evaluate(() => document.body?.innerText ?? ""));
+    writeFileSync(resolve(RUN_DIR, "recipient-pre-acquisition.txt"), redactString(await recipientPage.evaluate(() => document.body?.innerText ?? "")));
     await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient-pre-acquisition.png"), fullPage: true });
     throw new Error("embedded credential acquisition controls did not render");
   }
+  const saveVisibleBeforeRender = await recipientPage.locator("button.viewer-save-to-tinycloud").isVisible().catch(() => false);
 
   const otpMail = await waitForMessage(
     recipient.inbox,
@@ -385,15 +385,65 @@ try {
     await recipientPage.waitForTimeout(2_000);
   }
   record("the recipient reads the exact shared document", rendered.includes(nonce), `nonce ${nonce}`);
-  writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), rendered);
+  recipientRendered = rendered.includes(nonce);
+  record(
+    "the accountless receiver made zero OpenKey requests before render",
+    recipientOpenKeyRequests.every((request) => request.phase !== "before-render"),
+    `${recipientOpenKeyRequests.filter((request) => request.phase === "before-render").length} requests`,
+  );
+  record("the accountless receiver opened no additional page before render", recipientContext.pages().length === 1, `${recipientContext.pages().length} pages`);
+  record(
+    "the receiver session key is held in sessionStorage",
+    await recipientPage.evaluate(() => sessionStorage.getItem("tinycloud.share.receiver-session.v1") !== null),
+  );
+  writeFileSync(resolve(RUN_DIR, "recipient-rendered.txt"), redactString(rendered));
   await recipientPage.screenshot({ path: resolve(RUN_DIR, "recipient.png"), fullPage: true });
+
+  const save = recipientPage.locator("button.viewer-save-to-tinycloud");
+  const saveVisible = await save.isVisible().catch(() => false);
+  record("Save to TinyCloud appears only after render", !saveVisibleBeforeRender && recipientRendered && saveVisible);
+  if (!saveVisible) throw new Error("post-render Save to TinyCloud action did not appear");
+
+  const { cdp: recipientCdp, authenticatorId: recipientAuthenticatorId } = await attachVirtualAuthenticator(recipientContext, recipientPage);
+  const recipientAccount = loadAccount(RECIPIENT_ACCOUNT_PATH) ?? loadAccount(ACCOUNT_PATH);
+  if (recipientAccount === undefined) throw new Error("post-render save requires the OpenKey account created by this run");
+  log(`[openkey recipient] reusing account ${recipientAccount.address}`);
+  await restoreCredential(recipientCdp, recipientAuthenticatorId, recipientAccount.credential);
+  const stopRecipientAutopilot = startOpenKeyAutopilot(recipientPage, log);
+  await save.click();
+
+  const saveDeadline = Date.now() + 420_000;
+  let saveText = "";
+  let saveError = "";
+  while (Date.now() < saveDeadline) {
+    await recipientPage.evaluate(() => {
+      const host = document.querySelector("tinycloud-space-modal");
+      const create = host?.shadowRoot?.querySelector('button[data-action="create"]');
+      if (create instanceof HTMLButtonElement) create.click();
+    }).catch(() => {});
+    saveText = (await save.textContent().catch(() => "")) ?? "";
+    saveError = (await recipientPage.locator(".viewer-save-status[role=alert]").textContent().catch(() => "")) ?? "";
+    if (/Saved to Files for you/i.test(saveText) || saveError.length > 0) break;
+    await recipientPage.waitForTimeout(1_000);
+  }
   stopRecipientAutopilot();
+  record(
+    "OpenKey starts only after the explicit Save action",
+    recipientOpenKeyRequests.some((request) => request.phase === "after-render")
+      && recipientOpenKeyRequests.every((request) => request.phase !== "before-render"),
+    `${recipientOpenKeyRequests.filter((request) => request.phase === "after-render").length} post-render requests`,
+  );
+  record(
+    "Save creates and reads back the authenticated Files for you copy",
+    /Saved to Files for you/i.test(saveText) && saveError.length === 0,
+    saveError || saveText,
+  );
   stopAutopilot();
 } catch (error) {
   record("stage 2 completed", false, `${error.name}: ${error.message}`);
   log(error.stack ?? String(error));
 } finally {
-  writeFileSync(resolve(RUN_DIR, "network.json"), JSON.stringify(captured, null, 2));
+  writeFileSync(resolve(RUN_DIR, "network.json"), JSON.stringify(redactValue(captured), null, 2));
   await browser.close();
 }
 
