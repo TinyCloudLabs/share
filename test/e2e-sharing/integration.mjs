@@ -538,14 +538,17 @@ async function startFixtures(tempRoot) {
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
   await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000, node);
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
-  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
-  const readiness = await (await fetch(`${nodeDescriptor.url}/share/v2/readiness`)).json();
+  const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
   const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
   if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) {
     throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
   }
+  if (typeof readiness.enforcerDid !== "string" || !readiness.enforcerDid.startsWith("did:key:")) {
+    throw new Error("real Node v2 readiness omitted its Ed25519 enforcer DID");
+  }
+  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: readiness.enforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
   const readinessFile = join(tempRoot, "share-email-readiness.json");
@@ -672,7 +675,7 @@ async function startShare(tempRoot, fixtures) {
   if (!shareAsset) throw new Error("Share build did not produce its main browser bundle");
   await recordArtifactDigest("shareBundle", shareAsset);
   const shareLaunchEnv = buildShareHostLaunchEnv({
-    host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.nodeId,
+    host: "127.0.0.1", port, trustBundlePath: trustPath, registryUploadKeyPath: join(tempRoot, "registry-upload.key"), nodeEnforcerDid: fixtures.nodeDescriptor.enforcerDid,
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
