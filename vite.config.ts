@@ -142,6 +142,7 @@ function shareHostAdapter(): Plugin {
     try { adapter = createShareHostFromEnv(); return adapter; }
     catch (error) {
       if (process.env.SHARE_DEPLOY_STARTUP === "true") throw error;
+      console.error("local Share host configuration failed", error);
       return undefined;
     }
   };

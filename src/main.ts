@@ -132,7 +132,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       holderDid: holder.did,
       buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
     });
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
     if (resolved.state === "recipient-did-authorization-required") {
       const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
       const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
@@ -160,7 +160,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
             trustedNode: shareTrustedNode,
             holderDid: tinycloud.sessionDid,
           });
-          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
+          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
           await presentShare(root, next, { shareUrl: shareHref });
           return next;
         },
