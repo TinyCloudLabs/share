@@ -47,8 +47,8 @@ async function readBody(request: import("node:http").IncomingMessage): Promise<U
   return result;
 }
 
-async function listen(server: import("node:net").Server): Promise<number> {
-  await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); });
+async function listen(server: import("node:net").Server, port = 0): Promise<number> {
+  await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolveListen); });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("local listener did not publish a port");
   return address.port;
@@ -163,12 +163,31 @@ function optionValue(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+function httpsOriginOption(name: string): string | undefined {
+  const raw = optionValue(name);
+  if (raw === undefined) return undefined;
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") throw new Error(`${name} must be an exact HTTPS origin with no credentials, path, query, or fragment`);
+  return parsed.origin;
+}
+
+function portOption(name: string): number | undefined {
+  const raw = optionValue(name);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 65_535) throw new Error(`${name} must be an integer from 1 through 65535`);
+  return parsed;
+}
+
 const smoke = process.argv.includes("--smoke");
 const testManualReplace = process.argv.includes("--test-manual-replace");
 const siteOnly = process.argv.includes("--site-only");
 const replaceArtifact = process.argv.includes("--replace-artifact") || testManualReplace;
+const requestedPublicOrigin = httpsOriginOption("--public-origin");
+const requestedListenPort = portOption("--listen-port");
 
 async function main(): Promise<void> {
+  if (!siteOnly && (requestedPublicOrigin !== undefined || requestedListenPort !== undefined)) throw new Error("--public-origin and --listen-port require --site-only");
   process.umask(0o077);
   const temp = await mkdtemp(join(tmpdir(), "tinycloud-manual-share-"));
   await chmod(temp, 0o700);
@@ -255,9 +274,11 @@ async function main(): Promise<void> {
     const registryPort = await listen(registry);
     const registryLocal = "http://127.0.0.1:" + registryPort;
     httpsServer = createHttpsServer({ cert: await readFile(certificate.cert), key: await readFile(certificate.key) }, (_request, response) => response.writeHead(503, { "cache-control": "no-store" }).end("starting"));
-    const publicPort = await listen(httpsServer);
-    const publicOrigin = "https://share.localhost:" + publicPort;
-    const nodeAudience = "did:web:share.localhost";
+    const publicPort = await listen(httpsServer, requestedListenPort);
+    const localOrigin = "https://share.localhost:" + publicPort;
+    const publicOrigin = requestedPublicOrigin ?? localOrigin;
+    const publicUrl = new URL(publicOrigin);
+    const nodeAudience = "did:web:" + publicUrl.hostname;
     const invitationKid = nodeAudience + "#invitation-key-1";
     const nodeDescriptorPath = join(temp, "node.json");
     const issuerPublic = b64(ed25519.getPublicKey(new Uint8Array(32).fill(0x43)));
@@ -308,7 +329,7 @@ async function main(): Promise<void> {
       process.env.SHARE_HERMETIC_COMPOSITION = "true";
       process.env.SHARE_HERMETIC_UPSTREAMS_JSON = JSON.stringify({ node: { origin: publicOrigin, transportOrigin: nodeLocal }, credentials: { origin: publicOrigin, transportOrigin: nodeLocal }, registry: { origin: localRegistryOrigin, transportOrigin: registryLocal } });
       process.env.VITE_SHARE_REGISTRY_URL = publicOrigin + "/registry";
-      vite = await createViteServer({ root, server: { middlewareMode: true }, appType: "spa" });
+      vite = await createViteServer({ root, server: { middlewareMode: true, allowedHosts: [publicUrl.hostname], hmr: { server: httpsServer, host: publicUrl.hostname, clientPort: Number(publicUrl.port || "443"), protocol: "wss" } }, appType: "spa" });
       httpsServer.removeAllListeners("request");
       httpsServer.on("request", (request, response) => {
         vite!.middlewares(request, response, () => { if (!response.headersSent) response.writeHead(404).end(); });
@@ -418,7 +439,7 @@ async function main(): Promise<void> {
     process.env.SHARE_HERMETIC_COMPOSITION = "true";
     process.env.SHARE_HERMETIC_UPSTREAMS_JSON = JSON.stringify({ node: { origin: publicOrigin, transportOrigin: nodeLocal }, credentials: { origin: publicOrigin, transportOrigin: credentialsLocal }, registry: { origin: publicOrigin, transportOrigin: registryLocal } });
     process.env.VITE_SHARE_REGISTRY_URL = publicOrigin + "/registry";
-    vite = await createViteServer({ root, server: { middlewareMode: true }, appType: "spa" });
+    vite = await createViteServer({ root, server: { middlewareMode: true, allowedHosts: [publicUrl.hostname], hmr: { server: httpsServer, host: publicUrl.hostname, clientPort: Number(publicUrl.port || "443"), protocol: "wss" } }, appType: "spa" });
     const forward = async (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, origin: string): Promise<void> => {
       const bytes = await readBody(request);
       const result = await fetch(origin + (request.url || "/"), { method: request.method || "GET", headers: { origin: publicOrigin, "content-type": request.headers["content-type"] || "application/json" }, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }) });
