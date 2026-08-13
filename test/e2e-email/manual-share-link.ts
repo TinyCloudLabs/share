@@ -346,6 +346,7 @@ async function main(): Promise<void> {
       process.env.SHARE_TEST_BINDINGS_JSON = "{}";
       process.env.SHARE_HERMETIC_COMPOSITION = "true";
       process.env.SHARE_HERMETIC_UPSTREAMS_JSON = JSON.stringify({ node: { origin: nodePublicOrigin, transportOrigin: nodeLocal }, credentials: { origin: publicOrigin, transportOrigin: nodeLocal }, registry: { origin: localRegistryOrigin, transportOrigin: registryLocal } });
+      process.env.SHARE_REGISTRY_UPLOAD_KEY_PATH = join(temp, "registry-upload.key");
       process.env.VITE_SHARE_REGISTRY_URL = publicOrigin + "/registry";
       vite = await createViteServer({ root, plugins: [allowHtmlConnectOrigin(nodePublicOrigin)], server: { middlewareMode: true, allowedHosts: [publicUrl.hostname], hmr: { server: httpsServer, host: publicUrl.hostname, clientPort: Number(publicUrl.port || "443"), protocol: "wss" } }, appType: "spa" });
       httpsServer.removeAllListeners("request");

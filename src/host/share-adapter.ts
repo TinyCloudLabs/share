@@ -768,11 +768,11 @@ function shareOriginAllowed(origin: string | null, options: ShareHostOptions): b
   return origin === null || origin === options.bundle.public.shareOrigin || ((options.testMode || options.hermeticComposition === true) && LOOPBACK_ORIGIN.test(origin)) || (options.hermeticBrowserOrigin !== undefined && origin === options.hermeticBrowserOrigin);
 }
 
-function sessionValid(request: Request, options: ShareHostOptions, sessions: Map<string, ShareSession>): ShareSession | undefined {
+function sessionValid(request: Request, options: ShareHostOptions, sessions: Map<string, ShareSession>, allowTestFixture = true): ShareSession | undefined {
   const origin = request.headers.get("origin");
   if (!shareOriginAllowed(origin, options)) return undefined;
   const value = sessionCookie(request);
-  if (value === undefined) return options.testMode ? { userId: "fixture", expiresAt: Date.now() + 300_000, capabilities: new Map() } : undefined;
+  if (value === undefined) return options.testMode && allowTestFixture ? { userId: "fixture", expiresAt: Date.now() + 300_000, capabilities: new Map() } : undefined;
   const session = sessions.get(value);
   if (session === undefined || session.expiresAt <= Date.now()) { if (session !== undefined) sessions.delete(value); return undefined; }
   return session;
@@ -1343,7 +1343,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
           if (registryResponse.status === 401 || registryResponse.status === 403) return response(502, { error: { code: "registry_upload_rejected" } });
           return registryResponse;
         }
-        const session = sessionValid(request, options, sessions); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
+        const session = sessionValid(request, options, sessions, false); if (session === undefined) return response(401, { error: { code: "authentication_required" } });
         if (((request.headers?.get("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "") !== "application/vnd.ipld.raw") return response(400, { error: { code: "upload_content_type_invalid" } });
         const bytes = await boundedUpload(request, LINK_ONLY_BLOB_LIMIT);
         // The registry authorization binds to the session token, but the durable

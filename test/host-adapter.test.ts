@@ -572,6 +572,21 @@ describe("production trust and host boundaries", () => {
       expect(firstKey).toMatchObject({ alg: "Ed25519" });
       expect(firstKey.publicKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect((await stat(keyPath)).mode & 0o777).toBe(0o600);
+      const unauthenticatedUpload = await first.handler(new Request(
+        "https://share.tinycloud.xyz/api/share/link-only/registry/blobs",
+        {
+          method: "POST",
+          headers: {
+            origin: "https://share.tinycloud.xyz",
+            "content-type": "application/vnd.ipld.raw",
+            "if-none-match": "*",
+            "x-delete-after": new Date(Date.now() + 60_000).toISOString(),
+          },
+          body: new Uint8Array([1]).buffer,
+        },
+      ));
+      expect(unauthenticatedUpload.status).toBe(401);
+      expect(await unauthenticatedUpload.json()).toEqual({ error: { code: "authentication_required" } });
 
       const second = createShareHostFromEnv({
         SHARE_TRUST_BUNDLE: JSON.stringify(value),
