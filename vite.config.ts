@@ -211,7 +211,14 @@ function securityHeaders(): Plugin {
       try {
         const bundle = loadTrustBundle();
         const path = (req.url ?? "").split("?")[0] ?? "";
-        for (const [name, value] of Object.entries(securityHeadersForPath(bundle, path))) res.setHeader(name, value);
+        const headers = securityHeadersForPath(bundle, path);
+        const locked = new Map(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), { name, value }]));
+        const setHeader = res.setHeader.bind(res);
+        res.setHeader = ((name: string, value: string | number | readonly string[]) => {
+          const replacement = locked.get(name.toLowerCase());
+          return replacement === undefined ? setHeader(name, value) : setHeader(replacement.name, replacement.value);
+        }) as typeof res.setHeader;
+        for (const [name, value] of Object.entries(headers)) setHeader(name, value);
       } catch (error) {
         if (process.env.SHARE_DEPLOY_STARTUP === "true") { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); return; }
         void error;

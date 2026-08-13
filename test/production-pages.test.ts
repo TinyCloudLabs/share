@@ -90,6 +90,9 @@ describe("Cloudflare Pages static asset boundaries", () => {
   it("ships a strict landing-page CSP and referrer boundary", () => {
     const html = readFileSync("index.html", "utf8");
     expect(html).toMatch(/http-equiv="Content-Security-Policy"/);
+    expect(html).not.toMatch(/http-equiv="Content-Security-Policy"[^>]+frame-ancestors/);
+    expect(readFileSync("how-it-works.html", "utf8")).not.toMatch(/http-equiv="Content-Security-Policy"[^>]+frame-ancestors/);
+    expect(readFileSync("viewer.html", "utf8")).not.toMatch(/http-equiv="Content-Security-Policy"[^>]+frame-ancestors/);
     expect(readFileSync("public/_headers", "utf8")).toMatch(/\/\n(?:  .+\n)*  Content-Security-Policy: default-src 'none';/);
     expect(cloudflareHeaders(validateTrustBundle(trustBundle()))).toMatch(/\/\n(?:  .+\n)*  Content-Security-Policy: default-src 'none';/);
     expect(readFileSync("share.html", "utf8")).toContain("https://tee.node.tinycloud.xyz");
