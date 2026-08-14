@@ -49,7 +49,7 @@ async function shareNonce(): Promise<NonceResponse> {
   });
   if (!nonceResponse.ok) throw fail("signInService", "share sign-in nonce endpoint rejected the request");
   const challenge = await nonceResponse.json() as NonceResponse;
-  if (!/^[A-Za-z0-9]{32}$/.test(challenge.nonce) || !Number.isFinite(Date.parse(challenge.expiresAt))) throw fail("signInService", "share sign-in challenge is malformed");
+  if (!/^[A-Za-z0-9_-]{32}$/.test(challenge.nonce) || !Number.isFinite(Date.parse(challenge.expiresAt))) throw fail("signInService", "share sign-in challenge is malformed");
   return challenge;
 }
 
