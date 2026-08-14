@@ -235,6 +235,10 @@ textarea:focus-visible {
   color: var(--accent);
 }
 
+.agent-instructions code {
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .site-shell {
     width: min(100% - 2rem, 1400px);

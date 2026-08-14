@@ -21,7 +21,11 @@ import {
 } from "@tinycloud/share-registry/dev-server";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_CONTENT_BYTES, createBearerShare } from "../src/create.js";
+import {
+  DEFAULT_EXPIRES_MS,
+  MAX_CONTENT_BYTES,
+  createBearerShare,
+} from "../src/create.js";
 import { parseDuration } from "../src/duration.js";
 
 const REGISTRY_BASE = "http://registry.local";
@@ -97,9 +101,9 @@ describe("createBearerShare", () => {
   });
 
   it("defaults expiry to 30 days from now and stores retention on BOTH blobs", async () => {
-    const now = Date.parse("2026-07-13T12:00:00.000Z");
+    const now = Date.now();
     const result = await create({ now: () => now });
-    expect(result.expiry).toBe("2026-08-12T12:00:00.000Z");
+    expect(result.expiry).toBe(new Date(now + DEFAULT_EXPIRES_MS).toISOString());
     for (const cid of [result.envelopeCid, result.contentCid]) {
       const record = registry.store.get(cid);
       expect(record).toBeDefined();
