@@ -29,7 +29,7 @@ import {
   createDevRegistry,
   type DevRegistry,
 } from "@tinycloud/share-registry/dev-server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MERMAID_SANDBOX_IFRAME_CLASS,
@@ -243,6 +243,14 @@ describe("bearer e2e: create → share → open → render", () => {
       (button) => button.textContent === "Download original",
     );
     expect(download).toBeDefined();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const copyText = root.querySelector<HTMLButtonElement>(".viewer-copy-text");
+    expect(copyText?.textContent).toBe("Copy text");
+    copyText!.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(MARKDOWN));
+    await vi.waitFor(() => expect(copyText?.textContent).toBe("Copied"));
+    expect(root.querySelector(".viewer-copy-text-status")?.textContent).toBe("Markdown copied.");
 
     // Mermaid rendered through the sandbox path, re-sanitized, in the frame
     const svgHost = body.querySelector(".viewer-mermaid");

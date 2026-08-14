@@ -13,6 +13,7 @@ import {
 import type { ResolveResult } from "./resolve.js";
 import { renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { renderSafeContent } from "./content.js";
+import { copyWithFallback } from "../share/link-only.js";
 
 function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>): string {
   const metadata = (result.envelope as unknown as { readonly metadata?: { readonly filename?: unknown } }).metadata;
@@ -66,6 +67,37 @@ function appendDownloadAction(
     URL.revokeObjectURL(href);
   });
   footer.insertBefore(button, hint);
+}
+
+function appendMarkdownCopyAction(root: HTMLElement, container: HTMLElement, source: string): void {
+  const doc = root.ownerDocument;
+  const tools = doc.createElement("div");
+  tools.className = "viewer-document-tools";
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.className = "viewer-copy-text";
+  button.textContent = "Copy text";
+  const status = doc.createElement("span");
+  status.className = "viewer-copy-text-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  button.addEventListener("click", () => {
+    void copyWithFallback(source).then(() => {
+      button.textContent = "Copied";
+      status.removeAttribute("role");
+      status.textContent = "Markdown copied.";
+    }).catch(() => {
+      button.textContent = "Copy text";
+      status.setAttribute("role", "alert");
+      status.textContent = "Copy failed. Allow clipboard access and try again.";
+    });
+  });
+  tools.append(button, status);
+  container.before(tools);
+}
+
+function decodeMarkdown(bytes: Uint8Array): string | undefined {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return undefined; }
 }
 
 /**
@@ -130,15 +162,19 @@ export async function presentShare(
   // downgrade the presentation; anything else renders as a document.
   const mode = result.envelope.display.mode === "source" ? "source" : "document";
   try {
+    let markdownSource: string | undefined;
     if (result.contentBytes !== undefined) {
-      await renderSafeContent(container, result.contentBytes, {
+      const kind = await renderSafeContent(container, result.contentBytes, {
         mediaType: signedMediaType(result),
         filename: downloadName(result),
         byteLength: result.contentBytes.byteLength,
       }, options);
+      if (kind === "markdown") markdownSource = decodeMarkdown(result.contentBytes);
     } else {
-      await renderMarkdownInto(container, result.content as string, mode, options);
+      markdownSource = result.content as string;
+      await renderMarkdownInto(container, markdownSource, mode, options);
     }
+    if (markdownSource !== undefined) appendMarkdownCopyAction(root, container, markdownSource);
     appendDownloadAction(root, result);
     if (options.saveToTinyCloud !== undefined) {
       appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
