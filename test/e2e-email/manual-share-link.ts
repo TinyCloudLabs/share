@@ -6,16 +6,16 @@ import { mkdtemp, mkdir, open, readFile, rename, rm, stat, chmod } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { createServer as createViteServer, type ViteDevServer } from "vite";
+import { createServer as createViteServer, type Plugin, type ViteDevServer } from "vite";
 import { ed25519 } from "@noble/curves/ed25519";
-import { canonicalize, didKeyFromEd25519PublicKey, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, computeCid, didKeyFromEd25519PublicKey, fromBase64Url, open as openEnvelope, parseShareUrl, shareEnvelopeSchema, toBase64Url } from "@tinycloud/share-envelope";
+import { createBearerShare } from "../../packages/cli/src/create.ts";
 import { createShareLink } from "../../packages/share-sdk/src/index.ts";
 import { createHttpTransport } from "../../src/email-share/transport.ts";
 import { issueEmailClaimCredential } from "../../src/email-share/claim.ts";
 import { readClaimedShare } from "../../src/email-share/node-client.ts";
 import { verifyProductionEmailShare } from "../../src/email-share/runtime.ts";
 import { validateSharePublicBinding, type SharePublicConfig } from "../../src/email-share/config.ts";
-import { resolveShare } from "../../src/viewer/resolve.ts";
 import { createExportableTestHolder, exportExportableTestHolder } from "./manual-holder.ts";
 import { writeEmailPreview } from "./manual-email-preview.ts";
 import type { ContentSource } from "../../src/email-share/protocol.ts";
@@ -24,8 +24,12 @@ type Json = Record<string, any>;
 const execFile = promisify(execFileCallback);
 const root = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(root, "../../../..");
-const nodeRoot = resolve(root, "../../../tinycloud-node/feat/email-claim-n4-integration");
-const credentialsRoot = resolve(root, "../../../opencredentials/feat/email-claim-o4-integration");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE
+  ?? resolve(root, "../../../tinycloud-node/feat/email-claim-n4-integration");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE
+  ?? resolve(root, "../../../opencredentials/feat/email-claim-o4-integration");
+const credentialsTarget = process.env.OPENCREDENTIALS_CARGO_TARGET_DIR
+  ?? resolve(workspaceRoot, ".context/build-cache/opencredentials-manual-share");
 const defaultArtifactPath = resolve(workspaceRoot, ".context/manual-share-link.json");
 const email = "sam@tinycloud.xyz";
 
@@ -43,8 +47,8 @@ async function readBody(request: import("node:http").IncomingMessage): Promise<U
   return result;
 }
 
-async function listen(server: import("node:net").Server): Promise<number> {
-  await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolveListen); });
+async function listen(server: import("node:net").Server, port = 0): Promise<number> {
+  await new Promise<void>((resolveListen, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolveListen); });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("local listener did not publish a port");
   return address.port;
@@ -159,11 +163,46 @@ function optionValue(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
+function httpsOriginOption(name: string): string | undefined {
+  const raw = optionValue(name);
+  if (raw === undefined) return undefined;
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") throw new Error(`${name} must be an exact HTTPS origin with no credentials, path, query, or fragment`);
+  return parsed.origin;
+}
+
+function portOption(name: string): number | undefined {
+  const raw = optionValue(name);
+  if (raw === undefined) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 65_535) throw new Error(`${name} must be an integer from 1 through 65535`);
+  return parsed;
+}
+
+function allowHtmlConnectOrigin(origin: string): Plugin {
+  return {
+    name: "manual-share-connect-origin",
+    enforce: "post",
+    transformIndexHtml(html) {
+      return html.replace(/(<meta http-equiv="Content-Security-Policy" content=")([^"]+)(">)/g, (_tag, start: string, policy: string, end: string) => {
+        const rewritten = policy.replace(/connect-src ([^;]+)/, (directive, sources: string) => sources.split(/\s+/).includes(origin) ? directive : `connect-src ${sources} ${origin}`);
+        return start + rewritten + end;
+      });
+    },
+  };
+}
+
 const smoke = process.argv.includes("--smoke");
 const testManualReplace = process.argv.includes("--test-manual-replace");
+const siteOnly = process.argv.includes("--site-only");
 const replaceArtifact = process.argv.includes("--replace-artifact") || testManualReplace;
+const requestedPublicOrigin = httpsOriginOption("--public-origin");
+const requestedNodePublicOrigin = httpsOriginOption("--node-public-origin");
+const requestedListenPort = portOption("--listen-port");
+const requestedNodeListenPort = portOption("--node-listen-port");
 
 async function main(): Promise<void> {
+  if (!siteOnly && (requestedPublicOrigin !== undefined || requestedNodePublicOrigin !== undefined || requestedListenPort !== undefined || requestedNodeListenPort !== undefined)) throw new Error("--public-origin, --node-public-origin, --listen-port, and --node-listen-port require --site-only");
   process.umask(0o077);
   const temp = await mkdtemp(join(tmpdir(), "tinycloud-manual-share-"));
   await chmod(temp, 0o700);
@@ -217,6 +256,16 @@ async function main(): Promise<void> {
     registry = createHttpServer((request, response) => void (async () => {
       const pathname = new URL(request.url || "/", "http://registry").pathname;
       const last = pathname.split("/").pop() || "";
+      if (request.method === "POST" && pathname === "/blobs") {
+        const blob = await readBody(request);
+        const cid = await computeCid(blob);
+        const deleteAfter = request.headers["x-delete-after"];
+        if (typeof deleteAfter !== "string") { response.writeHead(400).end(); return; }
+        if (blobs.has(cid)) { response.writeHead(412).end(); return; }
+        blobs.set(cid, blob);
+        response.writeHead(201, headers()).end(JSON.stringify({ cid, deleteAfter }));
+        return;
+      }
       if (request.method === "POST" && pathname === "/bindings") {
         const value = JSON.parse(new TextDecoder().decode(await readBody(request))) as Json;
         bindings.set(String(value.shareCid), validateSharePublicBinding(value) as Json);
@@ -240,14 +289,19 @@ async function main(): Promise<void> {
     const registryPort = await listen(registry);
     const registryLocal = "http://127.0.0.1:" + registryPort;
     httpsServer = createHttpsServer({ cert: await readFile(certificate.cert), key: await readFile(certificate.key) }, (_request, response) => response.writeHead(503, { "cache-control": "no-store" }).end("starting"));
-    const publicPort = await listen(httpsServer);
-    const publicOrigin = "https://share.localhost:" + publicPort;
-    const nodeAudience = "did:web:share.localhost";
+    const publicPort = await listen(httpsServer, requestedListenPort);
+    const localOrigin = "https://share.localhost:" + publicPort;
+    const publicOrigin = requestedPublicOrigin ?? localOrigin;
+    const publicUrl = new URL(publicOrigin);
+    const nodePublicOrigin = requestedNodePublicOrigin ?? publicOrigin;
+    const nodeAudience = "did:web:" + new URL(nodePublicOrigin).hostname;
     const invitationKid = nodeAudience + "#invitation-key-1";
     const nodeDescriptorPath = join(temp, "node.json");
     const issuerPublic = b64(ed25519.getPublicKey(new Uint8Array(32).fill(0x43)));
     const keysSecret = Buffer.alloc(32, 9).toString("base64url");
-    node = spawn("cargo", ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublic, "--keys-secret", keysSecret, "--target-origin", publicOrigin, "--return-origin", publicOrigin, "--node-audience", nodeAudience, "--invitation-kid", invitationKid], { cwd: nodeRoot, detached: true, stdio: ["ignore", "ignore", "pipe"] });
+    const nodeArguments = ["run", "--quiet", "-p", "tinycloud-node-production-e2e", "--features", "mounted-fixture", "--", "--descriptor", nodeDescriptorPath, "--issuer-public-key", issuerPublic, "--keys-secret", keysSecret, "--target-origin", nodePublicOrigin, "--return-origin", publicOrigin, "--node-audience", nodeAudience, "--invitation-kid", invitationKid];
+    if (requestedNodeListenPort !== undefined) nodeArguments.push("--listen-port", String(requestedNodeListenPort));
+    node = spawn("cargo", nodeArguments, { cwd: nodeRoot, detached: true, stdio: ["ignore", "ignore", "pipe"] });
     let nodeOutput = "";
     node.stderr?.on("data", (chunk) => { nodeOutput = (nodeOutput + String(chunk)).slice(-2000); });
     node.on("exit", () => { if (nodeOutput.length > 0) nodeOutput = nodeOutput.slice(-2000); });
@@ -267,19 +321,55 @@ async function main(): Promise<void> {
       signer: { publicKey: senderPublicKey, sign: async (input: any) => ed25519.sign(new TextEncoder().encode((input.purpose === "envelope" ? "xyz.tinycloud.share/envelope/v1\0" : "xyz.tinycloud.share/invite-authorization/v1\0") + input.message), senderSeed) },
       shareOrigin: publicOrigin, delegation: scope.delegation, delegationCid: scope.delegationCid,
       authorityMaterialHandle: scope.authorityMaterialHandle, authorityMaterialDigest: scope.authorityMaterialDigest,
-      authorityMaterial: scope.authorityMaterial, targetOrigin: publicOrigin, nodeAudience, spaceId: source.space,
+      authorityMaterial: scope.authorityMaterial, targetOrigin: nodePublicOrigin, nodeAudience, spaceId: source.space,
       documentName: "TinyCloud policy payload test", senderTrust: "verified", expiresAt: fixture.expiresAt,
-      trustedNode: { targetOrigin: publicOrigin, nodeAudience, invitationKid, invitationPublicKey: fromBase64Url(scope.trustedNode.invitationPublicKey), keyVersion: 1, enabled: true },
+      trustedNode: { targetOrigin: nodePublicOrigin, nodeAudience, invitationKid, invitationPublicKey: fromBase64Url(scope.trustedNode.invitationPublicKey), keyVersion: 1, enabled: true },
     };
     const policy = {
         recipientEmail: email, source, action: source.action, resource: source.path, expiresAt: fixture.expiresAt,
-        target: { origin: publicOrigin, nodeAudience, spaceId: source.space }, policyCid: fixture.policyCid,
+        target: { origin: nodePublicOrigin, nodeAudience, spaceId: source.space }, policyCid: fixture.policyCid,
         policyDigest: digest(canonicalize(scope.policy)), contentSourceDigest: scope.expectedContentSourceDigest,
         delegationCid: scope.delegationCid, authorityMaterialDigest: scope.authorityMaterialDigest,
         policyBytes, policyAuthorityCid: scope.authorityMaterial.mapping.policyAuthorityCid,
         policyAuthorityBytes: scope.authorityMaterial.policyAuthorityBytes, policyEnforcementCid: scope.authorityMaterial.mapping.policyEnforcementCid,
         policyEnforcementBytes: scope.authorityMaterial.policyEnforcementBytes,
     };
+    if (siteOnly) {
+      const trustBundle = descriptor.trustBundle as Json;
+      const localRegistryOrigin = "https://registry.localhost";
+      process.env.SHARE_TRUST_BUNDLE = JSON.stringify({ ...trustBundle, shareOrigin: publicOrigin, returnOrigin: publicOrigin, registryOrigin: localRegistryOrigin, credentialsOrigin: publicOrigin, emailOrigin: publicOrigin, nodeOrigin: nodePublicOrigin, nodeAudience, nodeInvitationKid: invitationKid });
+      process.env.SHARE_TRUST_BUNDLE_ALLOW_TEST = "true";
+      process.env.SHARE_SENDER_ENABLED = "false";
+      process.env.SHARE_ACCOUNTLESS_RECEIVER_ENABLED = "false";
+      delete process.env.SHARE_SENDER_PRIVATE_KEY;
+      delete process.env.SHARE_SENDER_CAPABILITY_JSON;
+      process.env.SHARE_TEST_BINDINGS_JSON = "{}";
+      process.env.SHARE_HERMETIC_COMPOSITION = "true";
+      process.env.SHARE_HERMETIC_UPSTREAMS_JSON = JSON.stringify({ node: { origin: nodePublicOrigin, transportOrigin: nodeLocal }, credentials: { origin: publicOrigin, transportOrigin: nodeLocal }, registry: { origin: localRegistryOrigin, transportOrigin: registryLocal } });
+      process.env.SHARE_REGISTRY_UPLOAD_KEY_PATH = join(temp, "registry-upload.key");
+      process.env.VITE_SHARE_REGISTRY_URL = publicOrigin + "/registry";
+      vite = await createViteServer({ root, plugins: [allowHtmlConnectOrigin(nodePublicOrigin)], server: { middlewareMode: true, allowedHosts: [publicUrl.hostname], hmr: { server: httpsServer, host: publicUrl.hostname, clientPort: Number(publicUrl.port || "443"), protocol: "wss" } }, appType: "spa" });
+      httpsServer.removeAllListeners("request");
+      httpsServer.on("request", (request, response) => {
+        vite!.middlewares(request, response, () => { if (!response.headersSent) response.writeHead(404).end(); });
+      });
+      const created = await createBearerShare({
+        content: new TextEncoder().encode("# Local TinyCloud share\n\nEdit the Share UI, refresh, and keep iterating locally.\n"),
+        filename: "local-share.md",
+        registryBaseUrl: registryLocal,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        origin: publicOrigin,
+        viewerOrigin: publicOrigin,
+        nodeAudience,
+        spaceId: source.space,
+      });
+      console.log("local-share-site ready " + publicOrigin + "/share");
+      console.log("local-share-link ready " + created.url);
+      console.log("local-share-node ready " + nodePublicOrigin);
+      console.log("local-share-edit-root " + root);
+      await new Promise<void>((resolveWait) => { process.once("SIGINT", resolveWait); process.once("SIGTERM", resolveWait); });
+      return;
+    }
     const createAuthorizedLink = (lane: "browser" | "api") => createShareLink({
       email, source, scope: scopeForShare, shareId: `manual-share-${lane}-${Date.now()}-${b64(randomBytes(8))}`,
       expiresAt: fixture.expiresAt, now: new Date(Date.now() - 1000).toISOString(), policy,
@@ -291,12 +381,32 @@ async function main(): Promise<void> {
           const signature = ed25519.sign(new TextEncoder().encode("xyz.tinycloud.share/invite-authorization/v1\0" + canonicalize(request)), senderSeed);
           const result = await fetch(nodeLocal + "/share/v1/invitations/authorize", { method: "POST", headers: { ...headers(), origin: publicOrigin }, body: JSON.stringify({ request, proof: { alg: "EdDSA", kid: senderDid + "#" + senderDid.slice(8), signature: b64(signature) } }) });
           if (!result.ok) { const failure = (await result.json().catch(() => ({}))) as Json; throw new Error(`mounted Node rejected ${lane} invitation authorization status=${result.status} code=${String(failure.error?.code || "unknown")} diagnostics=${nodeOutput.slice(-1200)}`); }
-          bindings.set(binding.shareCid as string, { shareId: binding.shareId, policyCid: binding.policyCid, expiry: binding.expiry, delegationCid: binding.delegationCid, authorityMaterialHandle: binding.authorityMaterialHandle, authorityMaterialDigest: binding.authorityMaterialDigest, contentSource: source, contentSourceDigest: scope.expectedContentSourceDigest, action: source.action, resource: source.path });
+          bindings.set(binding.shareCid as string, {
+            shareId: binding.shareId,
+            policyCid: binding.policyCid,
+            expiry: binding.expiry,
+            contentSourceDigest: scope.expectedContentSourceDigest,
+            actionDigest: digest(canonicalize(source.action)),
+            resourceDigest: digest(canonicalize(source.path)),
+          });
         },
       },
     });
     const apiLink = await createAuthorizedLink("api");
     const browserLink = await createAuthorizedLink("browser");
+    const resolveLegacyPolicyShare = async (shareUrl: string) => {
+      const parsed = parseShareUrl(shareUrl, { expectedOrigin: publicOrigin });
+      const blob = blobs.get(parsed.ciphertextCid);
+      if (blob === undefined) throw new Error("manual share envelope is missing from the local registry");
+      try {
+        const envelope = shareEnvelopeSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await openEnvelope(blob, parsed.key32))));
+        if (envelope.authorizationTarget.kind !== "policy") throw new Error("manual share is not policy addressed");
+        const policy = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(fromBase64Url(envelope.authorizationTarget.policyBytes))) as Record<string, unknown>;
+        return { state: "policy-email-claim-required" as const, envelope, shareCid: parsed.ciphertextCid, policy };
+      } finally {
+        parsed.key32.fill(0);
+      }
+    };
     const apiInvitationId = b64(randomBytes(16));
     const apiClaimSecret = b64(randomBytes(32));
     const browserInvitationId = b64(randomBytes(16));
@@ -304,7 +414,7 @@ async function main(): Promise<void> {
     if (apiInvitationId === browserInvitationId || apiClaimSecret === browserClaimSecret) throw new Error("manual invitation material collided");
     const commonProofScope = { policyCid: fixture.policyCid, delegationCid: scope.delegationCid, authorityMaterialHandle: scope.authorityMaterialHandle, authorityMaterialDigest: scope.authorityMaterialDigest, contentSource: source, contentSourceDigest: scope.expectedContentSourceDigest, targetOrigin: publicOrigin, nodeAudience, recipientEmail: email };
     const credentialDescriptorPath = join(temp, "credentials.json");
-    credentials = spawn("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRoot, "rust/opencredentials_witness/Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-proof-fixture"], { cwd: resolve(credentialsRoot, "rust/opencredentials_witness"), detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, BIND_ADDR: "127.0.0.1:0", PROOF_SCOPE_JSON: JSON.stringify({ shareCid: apiLink.shareCid, shareId: apiLink.shareId, ...commonProofScope }), PROOF_INVITATIONS_JSON: JSON.stringify({ apiInvitation: { invitationId: apiInvitationId, claimSecret: apiClaimSecret, expiresAt: fixture.expiresAt, scope: { shareCid: apiLink.shareCid, shareId: apiLink.shareId, ...commonProofScope } }, browserInvitation: { invitationId: browserInvitationId, claimSecret: browserClaimSecret, expiresAt: fixture.expiresAt, scope: { shareCid: browserLink.shareCid, shareId: browserLink.shareId, ...commonProofScope } } }), PROOF_INVITATION_ID: apiInvitationId, PROOF_CLAIM_SECRET: apiClaimSecret, PROOF_EXPIRES_AT: fixture.expiresAt } });
+    credentials = spawn("cargo", ["run", "--quiet", "--manifest-path", resolve(credentialsRoot, "rust/opencredentials_witness/Cargo.toml"), "--features", "email-claim-fixture", "--bin", "email-claim-proof-fixture"], { cwd: resolve(credentialsRoot, "rust/opencredentials_witness"), detached: true, stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, CARGO_TARGET_DIR: credentialsTarget, BIND_ADDR: "127.0.0.1:0", PROOF_SCOPE_JSON: JSON.stringify({ shareCid: apiLink.shareCid, shareId: apiLink.shareId, ...commonProofScope }), PROOF_INVITATIONS_JSON: JSON.stringify({ apiInvitation: { invitationId: apiInvitationId, claimSecret: apiClaimSecret, expiresAt: fixture.expiresAt, scope: { shareCid: apiLink.shareCid, shareId: apiLink.shareId, ...commonProofScope } }, browserInvitation: { invitationId: browserInvitationId, claimSecret: browserClaimSecret, expiresAt: fixture.expiresAt, scope: { shareCid: browserLink.shareCid, shareId: browserLink.shareId, ...commonProofScope } } }), PROOF_INVITATION_ID: apiInvitationId, PROOF_CLAIM_SECRET: apiClaimSecret, PROOF_EXPIRES_AT: fixture.expiresAt } });
     let credentialOutput = "";
     credentials.stdout?.on("data", (chunk) => { credentialOutput += String(chunk); });
     let credentialDescriptor: Json | undefined;
@@ -321,15 +431,15 @@ async function main(): Promise<void> {
       return fetch(origin + parsed.pathname, init);
     };
     const config: SharePublicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: publicOrigin, registryOrigin: publicOrigin, nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, emailOrigin: publicOrigin, nodeAudience, enforcerDid: scope.enforcerDid ?? nodeAudience, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerEnabled: true, nodeInvitationKid: invitationKid, nodeInvitationPublicKey: b64(fromBase64Url(scope.trustedNode.invitationPublicKey)), nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: issuerPublic, environment: "test" };
-    const resolved = await resolveShare(apiLink.shareUrl, { registryBaseUrl: registryLocal });
-    if (resolved.state !== "policy-email-claim-required") throw new Error("manual share did not resolve as a policy claim");
+    const resolved = await resolveLegacyPolicyShare(apiLink.shareUrl);
+    if (resolved.state !== "policy-email-claim-required") throw new Error(`manual share did not resolve as a policy claim (state=${resolved.state}, detail=${"detail" in resolved ? resolved.detail : "none"})`);
     const binding = bindings.get(apiLink.shareCid);
     if (binding === undefined) throw new Error("manual authoritative binding is missing");
     const verified = await verifyProductionEmailShare({ envelope: resolved.envelope, shareCid: resolved.shareCid, policy: resolved.policy, config, binding: validateSharePublicBinding(binding) });
     const holder = await createExportableTestHolder();
     const transport = createHttpTransport({ nodeOrigin: publicOrigin, credentialsOrigin: publicOrigin, fetchFn: directFetch });
-    const browserResolved = await resolveShare(browserLink.shareUrl, { registryBaseUrl: registryLocal });
-    if (browserResolved.state !== "policy-email-claim-required") throw new Error("browser invitation did not resolve as an unredeemed policy claim");
+    const browserResolved = await resolveLegacyPolicyShare(browserLink.shareUrl);
+    if (browserResolved.state !== "policy-email-claim-required") throw new Error(`browser invitation did not resolve as an unredeemed policy claim (state=${browserResolved.state}, detail=${"detail" in browserResolved ? browserResolved.detail : "none"})`);
     const browserBinding = bindings.get(browserLink.shareCid);
     if (browserBinding === undefined) throw new Error("browser authoritative binding is missing");
     await verifyProductionEmailShare({ envelope: browserResolved.envelope, shareCid: browserResolved.shareCid, policy: browserResolved.policy, config, binding: validateSharePublicBinding(browserBinding) });
@@ -349,7 +459,7 @@ async function main(): Promise<void> {
     process.env.SHARE_HERMETIC_COMPOSITION = "true";
     process.env.SHARE_HERMETIC_UPSTREAMS_JSON = JSON.stringify({ node: { origin: publicOrigin, transportOrigin: nodeLocal }, credentials: { origin: publicOrigin, transportOrigin: credentialsLocal }, registry: { origin: publicOrigin, transportOrigin: registryLocal } });
     process.env.VITE_SHARE_REGISTRY_URL = publicOrigin + "/registry";
-    vite = await createViteServer({ root, server: { middlewareMode: true }, appType: "spa" });
+    vite = await createViteServer({ root, server: { middlewareMode: true, allowedHosts: [publicUrl.hostname], hmr: { server: httpsServer, host: publicUrl.hostname, clientPort: Number(publicUrl.port || "443"), protocol: "wss" } }, appType: "spa" });
     const forward = async (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, origin: string): Promise<void> => {
       const bytes = await readBody(request);
       const result = await fetch(origin + (request.url || "/"), { method: request.method || "GET", headers: { origin: publicOrigin, "content-type": request.headers["content-type"] || "application/json" }, ...(bytes.length === 0 ? {} : { body: bytes.buffer as ArrayBuffer }) });
@@ -422,4 +532,4 @@ async function main(): Promise<void> {
   } finally { await cleanupOnce(); }
 }
 
-void main().catch((error) => { console.error("manual-share-link blocked: " + (error instanceof Error ? error.message.slice(0, 4000) : "unknown")); process.exitCode = 1; });
+void main().catch((error) => { console.error("manual-share-link blocked: " + (error instanceof Error ? (error.stack ?? error.message).slice(0, 4000) : "unknown")); process.exitCode = 1; });

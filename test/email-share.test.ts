@@ -134,6 +134,36 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(replaceState).toHaveBeenCalledWith(null, "", "/s/inline");
   });
 
+  it("accepts a keyless greenfield public share after scrubbing the URL", () => {
+    const href = "https://share.tinycloud.xyz/s/bafkreipublic";
+    const loc = new URL(href);
+    const replaceState = vi.fn();
+    expect(captureAndScrubLaunch(loc as unknown as Location, { replaceState } as unknown as History)).toEqual({ shareHref: href });
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/s/bafkreipublic");
+  });
+
+  it("recalls a scrubbed compact bearer key for reloads in the same tab", () => {
+    const cid = `b${"a".repeat(58)}`;
+    const key = "A".repeat(43);
+    const stored = new Map<string, string>();
+    const tabStorage = {
+      getItem: (name: string) => stored.get(name) ?? null,
+      setItem: (name: string, value: string) => { stored.set(name, value); },
+    } as Storage;
+    const first = new URL(`https://share.tinycloud.xyz/s/${cid}#k=${key}`);
+    expect(captureAndScrubLaunch(first as unknown as Location, { replaceState: vi.fn() } as unknown as History, tabStorage)?.shareHref).toBe(first.href);
+
+    const reloaded = new URL(`https://share.tinycloud.xyz/s/${cid}`);
+    expect(captureAndScrubLaunch(reloaded as unknown as Location, { replaceState: vi.fn() } as unknown as History, tabStorage)?.shareHref).toBe(first.href);
+  });
+
+  it("never persists invitation or claim material for an exact-email link", () => {
+    const setItem = vi.fn();
+    const loc = new URL(`https://share.tinycloud.xyz/s/b${"a".repeat(58)}#k=${"A".repeat(43)}&i=${"B".repeat(22)}&c=${"C".repeat(43)}`);
+    expect(captureAndScrubLaunch(loc as unknown as Location, { replaceState: vi.fn() } as unknown as History, { setItem } as unknown as Storage)).toBeDefined();
+    expect(setItem).not.toHaveBeenCalled();
+  });
+
   it("preserves the local-part and lowercases only the domain", () => {
     expect(canonicalEmail("Alice.O+Notes@EXAMPLE.COM")).toBe("Alice.O+Notes@example.com");
     expect(() => canonicalEmail(" Alice@example.com")).toThrow();

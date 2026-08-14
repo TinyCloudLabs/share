@@ -46,20 +46,18 @@ export interface ShareComposerModel {
 /** Everything the composer can default before the sender has supplied content. */
 export type ComposerDefaults = Omit<ShareComposerModel, "content" | "resource">;
 
-export type ExpiryChoice = "24h" | "7d" | "30d" | "90d";
+export type ExpiryChoice = "24h" | "7d" | "30d";
 
 export const EXPIRY_CHOICES: readonly (readonly [ExpiryChoice, string])[] = [
   ["24h", "24 hours"],
   ["7d", "7 days"],
   ["30d", "30 days"],
-  ["90d", "90 days"],
 ];
 
 const EXPIRY_MS: Record<ExpiryChoice, number> = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
-  "90d": 90 * 24 * 60 * 60 * 1000,
 };
 
 export const DEFAULT_EXPIRY_CHOICE: ExpiryChoice = "7d";
@@ -210,7 +208,6 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
     throw validationFailure("deliveryRecipient");
   }
-  if (!model.encryption) throw validationFailure("plaintext");
   const projected = projectCapabilities(model);
   return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
 }

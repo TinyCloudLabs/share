@@ -104,9 +104,10 @@ function renderOk(
   root.replaceChildren();
   const doc = root.ownerDocument;
 
-  // Top bar: filename · shared by <name> (unverified) · read-only
+  // Compact provenance: filename, sender trust, and access mode. This stays
+  // visually subordinate to the document the recipient came here to read.
   const bar = el(doc, "header", "viewer-bar");
-  bar.append(el(doc, "span", "viewer-filename", `\u{1F4C4} ${filenameOf(envelope)}`));
+  bar.append(el(doc, "span", "viewer-filename", filenameOf(envelope)));
   const sender = envelope.display.senderName;
   bar.append(
     el(
@@ -114,11 +115,11 @@ function renderOk(
       "span",
       "viewer-sender",
       sender !== undefined && sender.length > 0
-        ? `shared by ${sender}${senderVerified ? " (verified)" : " (unverified)"}`
-        : senderVerified ? "shared by a verified TinyCloud sender" : "shared via link (sender unverified)",
+        ? `${sender} · ${senderVerified ? "verified sender" : "sender unverified"}`
+        : senderVerified ? "Verified sender" : "Sender unverified",
     ),
   );
-  bar.append(el(doc, "span", "viewer-mode", "read-only"));
+  bar.append(el(doc, "span", "viewer-mode", "Read-only"));
   root.append(bar);
 
   // Bearer honesty note (§2.1: bearer shares are self-asserted; trust is
@@ -128,7 +129,7 @@ function renderOk(
       doc,
       "p",
       access === "policy" ? "viewer-addressed-note" : "viewer-bearer-note",
-      access === "policy" ? "This share is addressed to an approved recipient policy. Access was checked before opening." : "Anyone with this link can open it. We can't confirm who sent it.",
+      access === "policy" ? "Access checked for the approved recipient." : "Anyone with the link can open it.",
     ),
   );
 
@@ -173,17 +174,15 @@ function renderOk(
     el(doc, "span", "viewer-expiry", `Expires ${formatExpiry(envelope.expiry)}`),
   );
   // The opened view keeps a visible Copy link (user amendment 2026-07-24).
-  // Reloading /s/<cid> without the scrubbed `#k=` fails, so the recipient
-  // needs a safe way to keep the working link. The complete URL lives only in
-  // this closure: never as text, an href, or any other DOM attribute.
+  // The complete URL lives only in this closure: never as text, an href, or
+  // any other DOM attribute. Compact bearer keys are retained separately in
+  // tab-scoped storage so a reload survives the address-bar scrub.
   if (shareUrl !== undefined) {
     const copyStatus = el(doc, "span", "viewer-copy-status", "");
     copyStatus.id = "viewer-copy-status";
     copyStatus.setAttribute("role", "status");
     copyStatus.setAttribute("aria-live", "polite");
-    // The warning §6.2 asks for: the key fragment is scrubbed from the address
-    // bar on purpose, so the URL on screen will NOT reopen this document.
-    const hint = el(doc, "span", "viewer-copy-hint", "The address bar no longer holds this link — copy it if you need to open this again.");
+    const hint = el(doc, "span", "viewer-copy-hint", "This tab can reload safely. Copy the full link to open it somewhere else.");
     hint.id = "viewer-copy-hint";
     const copy = el(doc, "button", "viewer-copy-link", "Copy link");
     copy.type = "button";

@@ -13,19 +13,27 @@ import { createRegisteredPolicyAuthority, createShareV2HolderBindingArtifact, SH
 // recipient route must do no decorative work before its URL secret is scrubbed.
 const viewerRoot = document.getElementById("viewer");
 
+async function loadViewerStyles(): Promise<void> {
+  await Promise.all([
+    import("./email-share/recipient.css"),
+    import("./viewer/viewer.css"),
+  ]);
+  document.documentElement.classList.remove("viewer-first-paint");
+}
+
 if (viewerRoot !== null) {
   if (new URLSearchParams(window.location.search).get("sender-launch") === "1") {
+    void loadViewerStyles();
     void bootSenderViewer(viewerRoot);
   } else {
   // This is intentionally the first recipient-side operation. The complete
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
-  const captured = captureAndScrubLaunch(window.location, window.history);
+  const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
   const launch = captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
     ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
     : captured;
-  void import("./email-share/recipient.css");
-  void import("./viewer/viewer.css");
+  void loadViewerStyles();
   void bootRecipient(viewerRoot, launch);
   }
 }
@@ -53,14 +61,13 @@ async function bootSenderViewer(root: HTMLElement): Promise<void> {
       try {
         const parsed = new URL(url);
         if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("origin");
-        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history);
+        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history, window.sessionStorage);
         if (captured === undefined) throw new Error("launch");
         launched = true;
         window.clearTimeout(timeout);
         port.close();
         window.opener = null;
-        void import("./email-share/recipient.css");
-        void import("./viewer/viewer.css");
+        void loadViewerStyles();
         void bootRecipient(root, captured);
       } catch {
         loading.textContent = "The private share was invalid or expired.";
@@ -132,7 +139,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       holderDid: holder.did,
       buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
     });
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
     if (resolved.state === "recipient-did-authorization-required") {
       const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
       const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
@@ -160,7 +167,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
             trustedNode: shareTrustedNode,
             holderDid: tinycloud.sessionDid,
           });
-          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
+          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
           await presentShare(root, next, { shareUrl: shareHref });
           return next;
         },

@@ -22,6 +22,7 @@ import { nativePayload } from "./policy-v2.js";
 import { verifyNodeProof } from "../email-share/node-verifier.js";
 import { type TrustedNode } from "../email-share/protocol.js";
 import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import { resolvePlaintextShare } from "../share/plaintext-share.js";
 
 export type UnsupportedReason = "policy-target" | "recipient-did-target" | "prefix-resource";
 
@@ -105,6 +106,15 @@ export async function resolveShare(href: string, options: ResolveShareOptions): 
   let addressedEnvelope: ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3 | undefined;
   let addressedCid: string | undefined;
   try {
+    // Keyless public manifests are resolved before the encrypted-envelope
+    // receiver; malformed or encrypted links still fall through fail-closed.
+    const plaintext = await resolvePlaintextShare(href, { expectedOrigin: options.expectedOrigin ?? "https://share.tinycloud.xyz", registryBaseUrl: options.registryBaseUrl, fetchFn: options.fetchFn ?? globalThis.fetch, ...(options.now === undefined ? {} : { now: options.now }) });
+    if (plaintext !== undefined) {
+      const envelope = presentationEnvelope({ protocol: "tinycloud-share", version: 1, shareId: plaintext.cid, origin: plaintext.manifest.origin, target: { kind: "bearer", origin: plaintext.manifest.origin, nodeAudience: "public", spaceId: "public" }, resource: { kind: "exact", path: plaintext.manifest.filename }, actions: ["read"], expiresAt: plaintext.manifest.expiresAt, display: { filename: plaintext.manifest.filename }, content: { cid: plaintext.manifest.contentCid } }, { filename: plaintext.manifest.filename, mediaType: plaintext.manifest.mediaType });
+      let content: string | undefined;
+      try { content = new TextDecoder("utf-8", { fatal: true }).decode(plaintext.bytes); } catch { }
+      return { state: "ok", access: "bearer", envelope, senderVerified: false, contentBytes: plaintext.bytes, ...(content === undefined ? {} : { content }) };
+    }
     const received = await receiveShare(href, {
       registryBaseUrl: options.registryBaseUrl,
       expectedOrigin: options.expectedOrigin ?? "https://share.tinycloud.xyz",

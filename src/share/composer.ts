@@ -4,11 +4,12 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { ContentSource } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, nativeProjectionHashHex, registerUnifiedPolicy, requestAttestedEnforcerBinding, signV3Envelope, type UnifiedOwnerRootFactory } from "./unified-delegation.js";
-import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
+import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
+import { plaintextHistoryRecord, publishPlaintextShare } from "./plaintext-share.js";
 
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
@@ -27,11 +28,11 @@ export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerS
 /** Delivery stays post-link: a missing mail bridge must never destroy a valid link. */
 export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
 
-/** Upper bound on the owner-space listing that backs the library picker. */
+/** Upper bound on the application-namespace listing that backs the library picker. */
 export const OWNER_LIBRARY_LIMIT = 1000;
 
 /**
- * Prefixes the application owns in the sender's space. `tinycloud.vault`
+ * Prefixes the application owns in its storage namespace. `tinycloud.vault`
  * stores the sender history under `vault/`, and the first run with a real
  * space listing duly offered `vault/sender-history/v1/entries/...` as things
  * to share. Those are the app's own encrypted bookkeeping records, not the
@@ -292,6 +293,11 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
     if (body.cid !== input.cid || typeof body.deleteAfter !== "string") throw fail("save", "the Share registry returned an invalid upload receipt");
     return { cid: input.cid, deleteAfter: body.deleteAfter };
   };
+  if (!model.encryption) {
+    const plain = await publishPlaintextShare({ bytes, filename: file.name, mediaType: file.type.trim() || "application/octet-stream", expiresAt: model.expiresAt, origin: options.origin, inline: model.linkFormat === "inline", upload: async (cid, blob, deleteAfter) => { await uploadBlob({ cid, blob, deleteAfter, contentLength: blob.byteLength }); } });
+    const record = plaintextHistoryRecord({ cid: plain.cid, url: plain.url, filename: file.name, origin: options.origin, expiresAt: model.expiresAt, registeredAt: new Date(options.now?.() ?? Date.now()).toISOString() });
+    return { url: plain.url, cid: plain.cid, format: model.linkFormat, expiresAt: model.expiresAt, record };
+  }
   const result = await publishShare({
     source: bytes,
     filename: file.name,
@@ -479,9 +485,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const filename = contentFilename(model.content);
   if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
   const resourceKind = model.resource.kind;
+  const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;
   const resourcePath = resourceKind === "prefix"
-    ? `shares/${shareId}`
-    : (model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
+    ? `${sharePrefix}${shareId}`
+    : (model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${filename}`);
   if (resourcePath.length === 0 || (resourceKind === "exact" && resourcePath.endsWith("/"))) throw fail("filename", "owner share resource filename is invalid");
   const source = { kind: "kv" as const, space: spaceId, path: resourcePath, action: "tinycloud.kv/get" as const };
   const policyActionOrder = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
@@ -560,7 +567,8 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
   const libraryContent = contentSource(model.content);
   const selectedSource = libraryContent?.kind === "kv" ? libraryContent : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
-  const resourcePath = model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`;
+  const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;
+  const resourcePath = model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${filename}`;
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "v3 owner share has no storage space");
   const network = ownerEncryptionNetwork(options.openKeyAddress);
@@ -833,7 +841,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   back.addEventListener("click", () => options.onBack());
   const header = el(doc, "header", "sender-header");
   const shortAddress = options.openKeyAddress.length > 12 ? `${options.openKeyAddress.slice(0, 6)}…${options.openKeyAddress.slice(-4)}` : options.openKeyAddress;
-  header.append(el(doc, "p", "sender-kicker", `Signed in · ${shortAddress}`), el(doc, "h1", "sender-title", "Share a file"), el(doc, "p", "sender-lede", "Encrypted in your browser. You get a private link — we never send it for you unless you ask."));
+  header.append(el(doc, "p", "sender-kicker", `Signed in · ${shortAddress}`), el(doc, "h1", "sender-title", "Share a file"), el(doc, "p", "sender-lede", "Choose who can open it, when it expires, and whether to encrypt it. We never send it unless you ask."));
 
   const form = el(doc, "form", "sender-form composer-form") as HTMLFormElement;
   form.noValidate = true;
@@ -940,8 +948,14 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   advanced.append(el(doc, "summary", "composer-advanced-summary", "Advanced settings"));
   const formatLabel = el(doc, "label", "field-label", "Link style"); const format = el(doc, "select", "field-input") as HTMLSelectElement; format.name = "format"; for (const [value, label] of [["compact", "Short link (recommended)"], ["inline", "Self-contained link — very long, works without our servers"]] as const) { const option = el(doc, "option", "", label) as HTMLOptionElement; option.value = value; format.append(option); } formatLabel.append(format);
   const encryptionGroup = el(doc, "div", "composer-section encryption-group");
-  const encryptionLabel = el(doc, "label", "toggle-option encryption-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryption.disabled = true; encryptionLabel.append(encryption, el(doc, "span", "encryption-title", "Encrypted"));
-  encryptionGroup.append(encryptionLabel, el(doc, "p", "scope-note encryption-note", "Content and share details are encrypted before they leave this browser. Encryption is required for sharing."));
+  const encryptionLabel = el(doc, "label", "toggle-option encryption-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryptionLabel.append(encryption, el(doc, "span", "encryption-title", "Encrypt this share"));
+  const encryptionNote = el(doc, "p", "scope-note encryption-note", "Content and share details are encrypted before they leave this browser.");
+  encryptionGroup.append(encryptionLabel, encryptionNote);
+  encryption.addEventListener("change", () => {
+    encryptionNote.textContent = encryption.checked
+      ? "Content and share details are encrypted before they leave this browser."
+      : "Encryption is off. Anyone you share with may be able to read the content in transit or storage.";
+  });
   const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
   advanced.append(formatLabel, deliveryLabel, saveAsLabel);
@@ -1215,7 +1229,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     const tinycloud = options.tinycloud;
     const spaceId = tinycloud?.spaceId;
     if (tinycloud === undefined || spaceId === undefined || spaceId.length === 0) return;
-    const listing = await tinycloud.kvForSpace(spaceId).list({ limit: OWNER_LIBRARY_LIMIT });
+    const listing = await tinycloud.kvForSpace(spaceId).list({ path: SHARE_APPLICATION_PREFIX, limit: OWNER_LIBRARY_LIMIT });
     if (!listing.ok) return;
     ownerLibrarySpaceId = spaceId;
     for (const entry of ownerLibraryEntries(listing.data.keys)) addLibraryOption(entry.path, entry.kind, spaceId);
@@ -1298,7 +1312,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         };
         const model = validateComposerModel(modelInput);
         projectCapabilities(model);
-        submit.disabled = true; setStatus(status, "Creating your link", "Encrypting in your browser. No email is being sent.", "encrypting");
+        submit.disabled = true; setStatus(status, "Creating your link", model.encryption ? "Encrypting in your browser. No email is being sent." : "Publishing without encryption. No email is being sent.", "encrypting");
         created = options.createShare === undefined ? await defaultCreate(files, model, options) : await options.createShare({ file, files, model });
         if (options.persistShare !== undefined) {
           const save = async (): Promise<void> => options.persistShare!({ share: created!, model, file, files });
@@ -1316,7 +1330,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           }
         }
         progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
-        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your private link is ready"), el(doc, "span", "sender-status-detail", "Saved to your shares. Copy it now, or find it again any time."));
+        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", model.encryption ? "Your encrypted link is ready" : "Your link is ready"), el(doc, "span", "sender-status-detail", model.encryption ? "Saved encrypted to your shares. Copy it now, or find it again any time." : "Saved to your shares without encryption. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";

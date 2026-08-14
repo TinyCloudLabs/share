@@ -68,26 +68,40 @@ export const PREVIEW_FRAME_CSP =
  * typography. Fixed content — must never interpolate untrusted input.
  */
 const PREVIEW_STYLES = `
-:root { color-scheme: light; }
+:root {
+  color-scheme: light dark;
+  --preview-bg: #ffffff;
+  --preview-ink: #1a1c21;
+  --preview-line: #dce4ef;
+  --preview-code: #f3f5f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --preview-bg: #12151e;
+    --preview-ink: #e2e8f0;
+    --preview-line: #30384a;
+    --preview-code: #1b2130;
+  }
+}
 body {
   margin: 0;
   padding: 1.25rem;
-  color: #000000;
-  background: transparent;
+  color: var(--preview-ink);
+  background: var(--preview-bg);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 16px;
   line-height: 1.55;
 }
 pre {
-  background: #f3f3f3;
-  border: 1px solid #000000;
+  background: var(--preview-code);
+  border: 1px solid var(--preview-line);
   border-radius: 0;
   padding: 1rem;
   overflow-x: auto;
 }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
 table { border-collapse: collapse; }
-th, td { border: 1px solid #000000; padding: 0.45rem 0.65rem; }
+th, td { border: 1px solid var(--preview-line); padding: 0.45rem 0.65rem; }
 img { max-width: 100%; }
 .viewer-mermaid { margin: 1rem 0; overflow-x: auto; }
 .viewer-mermaid svg { max-width: 100%; height: auto; }

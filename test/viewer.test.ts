@@ -267,9 +267,9 @@ describe("bearer single-file share (happy path)", () => {
 
     const text = root.textContent ?? "";
     expect(text).toContain("report.md");
-    expect(text).toContain("shared by Adam (unverified)"); // never a checkmark
+    expect(text).toContain("Adam · sender unverified"); // never a checkmark
     expect(text).not.toContain("✓");
-    expect(text).toContain("read-only");
+    expect(text).toContain("Read-only");
     expect(text).toContain("Expires");
     // A pointer-less envelope has no bytes to show → honest placeholder that
     // does NOT leak the sender's internal path or the node origin.
@@ -308,8 +308,8 @@ describe("bearer single-file share (happy path)", () => {
       senderVerified: true,
     };
     renderViewerState(root, result);
-    expect(root.textContent).toContain("addressed to an approved recipient policy");
-    expect(root.textContent).not.toContain("Anyone with this link can open it");
+    expect(root.textContent).toContain("Access checked for the approved recipient");
+    expect(root.textContent).not.toContain("Anyone with the link can open it");
   });
 
   it("zeroes the fragment key after decryption", async () => {
@@ -768,7 +768,7 @@ describe("opened view exposes a working Copy link (P1-9)", () => {
     expect(copy, "the opened view must offer Copy link").toBeDefined();
     // §6.2: the scrub is deliberate, so the opened view must SAY the address
     // bar will not reopen this — never restore the fragment.
-    expect(root.querySelector("#viewer-copy-hint")?.textContent).toContain("address bar no longer holds this link");
+    expect(root.querySelector("#viewer-copy-hint")?.textContent).toContain("This tab can reload safely");
     copy!.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(url));
     await vi.waitFor(() =>
@@ -1094,6 +1094,9 @@ describe("scriptless preview frame (spec §3.3) — the last boundary", () => {
       `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_FRAME_CSP}">`,
     );
     expect(docHtml).toContain('<meta name="referrer" content="no-referrer">');
+    expect(docHtml).toContain("color-scheme: light dark");
+    expect(docHtml).toContain("@media (prefers-color-scheme: dark)");
+    expect(docHtml).not.toContain("color-scheme: light;");
     expect(docHtml).toContain("<body><p>x</p></body>");
   });
 

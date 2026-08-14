@@ -41,8 +41,15 @@ pre-issued capability descriptor) are not a supported deployment shape; the
 production entrypoint and `npm run check:deploy-config` both refuse to start
 if any are set. Sender identity is established exclusively through an
 authenticated OpenKey/SDK wallet session (`POST /api/share/auth/openkey`),
-which the Share host verifies against the signed SIWE-style message before
-issuing a session. `SHARE_SENDER_ENABLED=true` also requires a usable durable
+which the Share host verifies against the same manifest-bearing SIWE message
+the TinyCloud SDK signs. The browser asks for one user approval, reuses that
+proof for Share authentication, and sends subsequent bootstrap signatures to
+OpenKey's bounded delegated signer. Share data uses the enshrined
+`applications` space under `xyz.tinycloud.share/`; custom space hosting is
+outside OpenKey's zero-gesture bootstrap allowlist. The host accepts the SDK's
+delegated `did:key` SIWE URI, but still requires its own single-use nonce, exact
+Share domain, a ReCap resource, a one-hour session expiry, and the controlling
+wallet signature before issuing a session. `SHARE_SENDER_ENABLED=true` also requires a usable durable
 binding-store path, and sender enablement requires `nodeEnabled=true`. The
 Phala CVM deployment uses `Dockerfile.share-api` and
 `compose.share-api.yml`; mount secrets through the CVM secret manager and keep

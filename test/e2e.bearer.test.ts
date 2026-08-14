@@ -29,7 +29,7 @@ import {
   createDevRegistry,
   type DevRegistry,
 } from "@tinycloud/share-registry/dev-server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MERMAID_SANDBOX_IFRAME_CLASS,
@@ -238,11 +238,44 @@ describe("bearer e2e: create → share → open → render", () => {
     expect(body.querySelector("strong")?.textContent).toBe("bearer");
     // Chrome stays in the privileged document: filename + unverified sender
     expect(root.textContent).toContain("q3-report.md");
-    expect(root.textContent).toContain("shared by Adam (unverified)");
+    expect(root.textContent).toContain("Adam · sender unverified");
     const download = Array.from(root.querySelectorAll("button")).find(
       (button) => button.textContent === "Download original",
     );
     expect(download).toBeDefined();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const copyText = root.querySelector<HTMLButtonElement>(".viewer-copy-text");
+    const copyStatus = root.querySelector<HTMLElement>(".viewer-copy-text-status");
+    expect(copyText?.textContent).toBe("Copy text");
+    vi.useFakeTimers();
+    try {
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledWith(MARKDOWN);
+      expect(copyText?.textContent).toBe("Copy text");
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(copyStatus?.textContent).toBe("");
+
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(copyText?.textContent).toBe("Copy text");
+      expect(copyStatus?.getAttribute("role")).toBe("alert");
+      expect(copyStatus?.textContent).toBe("Copy failed. Allow clipboard access and try again.");
+    } finally {
+      vi.useRealTimers();
+    }
 
     // Mermaid rendered through the sandbox path, re-sanitized, in the frame
     const svgHost = body.querySelector(".viewer-mermaid");
