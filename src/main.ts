@@ -20,7 +20,7 @@ if (viewerRoot !== null) {
   // This is intentionally the first recipient-side operation. The complete
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
-  const captured = captureAndScrubLaunch(window.location, window.history);
+  const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
   const launch = captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
     ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
     : captured;
@@ -53,7 +53,7 @@ async function bootSenderViewer(root: HTMLElement): Promise<void> {
       try {
         const parsed = new URL(url);
         if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("origin");
-        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history);
+        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history, window.sessionStorage);
         if (captured === undefined) throw new Error("launch");
         launched = true;
         window.clearTimeout(timeout);
