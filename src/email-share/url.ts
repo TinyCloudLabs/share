@@ -14,6 +14,9 @@ export function captureAndScrubLaunch(loc: Location, history: History): Captured
   // query as well as the fragment before any later code can observe history.
   history.replaceState(null, "", loc.pathname);
   if (loc.search !== "") return undefined;
+  if (hash === "" && /^\/s\/b[a-z2-7]+$/.test(loc.pathname)) {
+    return { shareHref: href };
+  }
   const match = LAUNCH.exec(hash);
   if (match !== null && match[1] !== undefined) {
     const parsed = new URL(href);

@@ -19,7 +19,7 @@ import {
   createDevRegistry,
   type DevRegistry,
 } from "@tinycloud/share-registry/dev-server";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_CONTENT_BYTES, createBearerShare } from "../src/create.js";
 import { parseDuration } from "../src/duration.js";
@@ -98,14 +98,18 @@ describe("createBearerShare", () => {
 
   it("defaults expiry to 30 days from now and stores retention on BOTH blobs", async () => {
     const now = Date.parse("2026-07-13T12:00:00.000Z");
-    const result = await create({ now: () => now });
-    expect(result.expiry).toBe("2026-08-12T12:00:00.000Z");
-    for (const cid of [result.envelopeCid, result.contentCid]) {
-      const record = registry.store.get(cid);
-      expect(record).toBeDefined();
-      // The dev registry clamps to ITS OWN Date.now()+30d horizon; retention
-      // must exist and never exceed the requested expiry.
-      expect(record!.deleteAfter).toBeLessThanOrEqual(Date.parse(result.expiry));
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const result = await create({ now: () => now });
+      expect(result.expiry).toBe("2026-08-12T12:00:00.000Z");
+      for (const cid of [result.envelopeCid, result.contentCid]) {
+        const record = registry.store.get(cid);
+        expect(record).toBeDefined();
+        expect(record!.deleteAfter).toBe(Date.parse(result.expiry));
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 

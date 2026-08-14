@@ -159,16 +159,5 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
 }
 
 function openSenderViewer(url: string, live: HTMLElement): void {
-  const child = window.open("/viewer?sender-launch=1", "_blank", "noreferrer");
-  if (child === null) { live.textContent = "The viewer window was blocked. Allow pop-ups and try again."; return; }
-  const channel = new MessageChannel();
-  let delivered = false;
-  const timeout = window.setTimeout(() => { if (!delivered) { channel.port1.close(); live.textContent = "The viewer didn't open. Try again."; } }, 10_000);
-  channel.port1.onmessage = (event): void => {
-    if (delivered || event.data?.type !== "tinycloud-sender-ready") return;
-    delivered = true;
-    window.clearTimeout(timeout);
-    try { channel.port1.postMessage({ type: "tinycloud-sender-launch", url }); child.opener = null; } catch { live.textContent = "The viewer could not be opened."; }
-  };
-  try { child.postMessage({ type: "tinycloud-sender-channel" }, window.location.origin, [channel.port2]); } catch { window.clearTimeout(timeout); channel.port1.close(); live.textContent = "The viewer could not be opened."; }
+  try { window.open(url, "_self", "noreferrer"); } catch { live.textContent = "The viewer could not be opened."; }
 }

@@ -163,10 +163,10 @@ describe("share composer model", () => {
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "recipientDid", value: "did:key:z6Mkexample" } }))).toThrow("That recipient option isn't available yet");
   });
 
-  it("rejects unsafe plaintext attempts and never permits bearer plaintext", () => {
-    expect(() => validateComposerModel(modelWith(textContent, { encryption: false }))).toThrow(/must stay encrypted/i);
+  it("preserves the sender's encryption choice for every available recipient mode", () => {
+    expect(validateComposerModel(modelWith(textContent, { encryption: false }))).toMatchObject({ encryption: false, recipient: { kind: "bearer" } });
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" }, resource: { kind: "exact", path: "docs/readme.md" } };
-    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false, encryptionAcknowledged: true }))).toThrow(/must stay encrypted/i);
+    expect(validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false, encryptionAcknowledged: true }))).toMatchObject({ encryption: false, recipient: { kind: "exactEmail", value: "reader@example.com" } });
   });
 
   it("rejects prefix content until the encrypted shared-key contract exists", () => {
@@ -407,7 +407,7 @@ describe("share composer access controls", () => {
     const expiryInputs = Array.from(expiryFieldset.querySelectorAll<HTMLInputElement>("input[name=expiry]"));
     expect(root.querySelector("select[name=expiry]")).toBeNull();
     expect(expiryFieldset.querySelector("legend")?.textContent).toBe("Link expires");
-    expect(expiryInputs.map((input) => input.value)).toEqual(["24h", "7d", "30d", "90d"]);
+    expect(expiryInputs.map((input) => input.value)).toEqual(["24h", "7d", "30d"]);
     expect(expiryInputs.filter((input) => input.checked).map((input) => input.value)).toEqual(["7d"]);
     expect(root.querySelector(".composer-note")?.textContent).toContain("can't be revoked early");
 
@@ -420,7 +420,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows unsupported recipient choices as intentionally unavailable and keeps encryption required", () => {
+  it("shows unsupported recipient choices as intentionally unavailable and lets the sender turn encryption off", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -442,17 +442,35 @@ describe("share composer access controls", () => {
     const encryption = root.querySelector<HTMLInputElement>("input[name=encryption]")!;
     expect(advanced.contains(encryption)).toBe(false);
     expect(encryption.checked).toBe(true);
-    expect(encryption.disabled).toBe(true);
-    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encrypted");
-    expect(root.querySelector(".encryption-group")?.textContent).toContain("required for sharing");
+    expect(encryption.disabled).toBe(false);
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encrypt this share");
+    encryption.click();
+    expect(encryption.checked).toBe(false);
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encryption is off");
     expect(advanced.contains(root.querySelector("input[name=delivery-email]"))).toBe(true);
     expect(advanced.querySelector("input[name=recipient]")).toBeNull();
     expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
     expect(root.querySelector<HTMLSelectElement>("select[name=format]")!.options[0]!.textContent).toBe("Short link (recommended)");
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
-    expect(encryption.checked).toBe(true);
-    expect(encryption.disabled).toBe(true);
+    expect(encryption.checked).toBe(false);
+    expect(encryption.disabled).toBe(false);
+  });
+
+  it("submits the unchecked encryption choice without changing who can receive it", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const submitted: ShareComposerModel[] = [];
+    mountShareComposer(root, {
+      ...baseOptions(),
+      createShare: async ({ model }) => { submitted.push(model); return { url: "https://share.tinycloud.xyz/s/plain", cid: "plain", format: model.linkFormat }; },
+    });
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["public"], "public.txt", { type: "text/plain" })] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLInputElement>("input[name=encryption]")!.click();
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(submitted).toHaveLength(1));
+    expect(submitted[0]).toMatchObject({ encryption: false, recipient: { kind: "bearer" } });
   });
 
   it("does not select or submit unavailable domain and device recipients", () => {

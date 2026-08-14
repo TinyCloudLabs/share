@@ -9,7 +9,7 @@ function fakeVault(): IDataVaultService {
     put: async (key: string, value: unknown) => { store.set(key, value); return { ok: true, data: undefined }; },
     get: async (key: string) => store.has(key) ? { ok: true, data: store.get(key) } : { ok: false, error: { code: "NOT_FOUND", message: "missing" } },
     delete: async (key: string) => { store.delete(key); return { ok: true, data: undefined }; },
-    listPage: async ({ prefix, limit }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => ({ ok: true, data: { keys: [...store.keys()].filter((key) => key.startsWith(prefix)).slice(0, limit), truncated: false } }),
+    listPage: async ({ prefix, removePrefix, limit }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => ({ ok: true, data: { keys: [...store.keys()].filter((key) => key.startsWith(prefix)).slice(0, limit).map((key) => removePrefix ? key.slice(prefix.length) : key), truncated: false } }),
   } as unknown as IDataVaultService;
 }
 

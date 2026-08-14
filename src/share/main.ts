@@ -1,7 +1,7 @@
 import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./openkey-session.js";
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
-import { authFailureMessage } from "./sender-failure.js";
+import { authFailureMessage, fail } from "./sender-failure.js";
 import { requestAddressedDelivery } from "./delivery.js";
 
 const LIBRARY_ROUTE = "#/library";
@@ -143,6 +143,8 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   // then read the authenticated legacy list for compatibility.
   const tinycloud = await createTinyCloudClient(session, config, [], (message) => { status.textContent = message; });
   const capabilities = await loadAuthenticatedCapabilities();
+  const unlocked = await tinycloud.vault.unlock();
+  if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
   app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), capabilities };
   (root as HTMLElement).replaceChildren(view);
   if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {

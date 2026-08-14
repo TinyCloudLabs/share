@@ -310,7 +310,7 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--share-line); border
 .composer-advanced > *:not(summary) { margin-right: 16px; margin-left: 16px; }
 .encryption-group { display: grid; gap: 5px; margin-bottom: 18px; padding: 14px 16px; border: 1px solid var(--share-line); border-radius: 8px; background: var(--share-faint); }
 .encryption-option { margin: 0; color: var(--share-ink); }
-.encryption-option input:disabled { opacity: 1; cursor: default; }
+.encryption-option input { cursor: pointer; }
 .encryption-title { font-weight: 650; }
 .encryption-note { margin: 0 0 0 27px; }
 .delivery-field[hidden] { display: none; }

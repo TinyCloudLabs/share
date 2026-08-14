@@ -423,7 +423,7 @@ describe("production trust and host boundaries", () => {
     });
     const endpoint =
       "https://share.tinycloud.xyz/api/share/link-only/registry/blobs";
-    const deleteAfter = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const deleteAfter = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const upload = (body: Uint8Array, cookie?: string, contentType = "application/vnd.ipld.raw") =>
       host.handler(
         new Request(endpoint, {

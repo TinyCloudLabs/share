@@ -178,6 +178,15 @@ function request(
 }
 
 describe("production link-only registry authorization", () => {
+  it("accepts the advertised 30-day retention boundary and rejects longer retention", async () => {
+    const bytes = new Uint8Array([3, 0]);
+    const thirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    expect((await worker.fetch(request(bytes, thirtyDays), env())).status).toBe(201);
+
+    const beyondThirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000 + 60_000).toISOString();
+    expect((await worker.fetch(request(new Uint8Array([3, 1]), beyondThirtyDays), env())).status).toBe(401);
+  });
+
   it("denies missing, tampered, wrong-audience, expired, and replayed authorizations", async () => {
     const bytes = new Uint8Array([2, 4, 6]);
     const deleteAfter = new Date(Date.now() + 60_000).toISOString();

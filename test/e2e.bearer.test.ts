@@ -238,7 +238,7 @@ describe("bearer e2e: create → share → open → render", () => {
     expect(body.querySelector("strong")?.textContent).toBe("bearer");
     // Chrome stays in the privileged document: filename + unverified sender
     expect(root.textContent).toContain("q3-report.md");
-    expect(root.textContent).toContain("shared by Adam (unverified)");
+    expect(root.textContent).toContain("Adam · sender unverified");
     const download = Array.from(root.querySelectorAll("button")).find(
       (button) => button.textContent === "Download original",
     );

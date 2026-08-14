@@ -73,4 +73,16 @@ describe("sender home canonical lifecycle adapters", () => {
     expect(onNavigate).toHaveBeenCalledWith("#/new");
     expect(root.querySelector(".composer-form")).toBeNull();
   });
+
+  it("opens a stored share in the current tab without a popup handoff", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+    await history.save(record("open-me", { kind: "bearer" }));
+    vi.spyOn(window, "open").mockReturnValue(window);
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')).not.toBeNull());
+    root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')!.click();
+    await vi.waitFor(() => expect(window.open).toHaveBeenCalled());
+    expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/s/test", "_self", "noreferrer");
+  });
 });

@@ -134,6 +134,14 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(replaceState).toHaveBeenCalledWith(null, "", "/s/inline");
   });
 
+  it("accepts a keyless greenfield public share after scrubbing the URL", () => {
+    const href = "https://share.tinycloud.xyz/s/bafkreipublic";
+    const loc = new URL(href);
+    const replaceState = vi.fn();
+    expect(captureAndScrubLaunch(loc as unknown as Location, { replaceState } as unknown as History)).toEqual({ shareHref: href });
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/s/bafkreipublic");
+  });
+
   it("preserves the local-part and lowercases only the domain", () => {
     expect(canonicalEmail("Alice.O+Notes@EXAMPLE.COM")).toBe("Alice.O+Notes@example.com");
     expect(() => canonicalEmail(" Alice@example.com")).toThrow();

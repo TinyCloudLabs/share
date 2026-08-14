@@ -33,6 +33,12 @@ function shareIdFromKey(value: string): string | undefined {
   return shareId.length > 0 && shareId.length <= 512 ? shareId : undefined;
 }
 
+function shareIdFromListedValue(value: string): string | undefined {
+  const qualified = shareIdFromKey(value);
+  if (qualified !== undefined) return qualified;
+  return value.length > 0 && value.length <= 512 && /^[A-Za-z0-9_-]+$/.test(value) ? value : undefined;
+}
+
 function unwrap(value: VaultValue): unknown {
   if (value !== null && typeof value === "object" && Object.hasOwn(value, "value")) return (value as { readonly value: unknown }).value;
   return value;
@@ -64,14 +70,15 @@ export class EncryptedSenderShareRecordStorage implements SenderShareRecordStora
       list?: (options: { prefix: string; removePrefix: boolean; limit: number }) => Promise<{ ok: boolean; data?: string[] }>;
     };
     const listed = vault.listPage !== undefined
-      ? await vault.listPage({ prefix: SENDER_HISTORY_PREFIX, removePrefix: false, limit: 1000 })
-      : await vault.list?.({ prefix: SENDER_HISTORY_PREFIX, removePrefix: false, limit: 1000 });
+      ? await vault.listPage({ prefix: SENDER_HISTORY_PREFIX, removePrefix: true, limit: 1000 })
+      : await vault.list?.({ prefix: SENDER_HISTORY_PREFIX, removePrefix: true, limit: 1000 });
     if (listed === undefined || !listed.ok || listed.data === undefined) throw new Error("sender-history-list-failed");
     const keys = Array.isArray(listed.data) ? listed.data : listed.data.keys;
     const records: SenderShareRecord[] = [];
     for (const key of keys) {
-      if (shareIdFromKey(key) === undefined) continue;
-      const result = await this.vault.get<VaultValue>(key);
+      const shareId = shareIdFromListedValue(key);
+      if (shareId === undefined) continue;
+      const result = await this.vault.get<VaultValue>(recordKey(shareId));
       if (!result.ok) continue;
       const value = unwrap(result.data);
       if (isRecord(value)) records.push(value);
