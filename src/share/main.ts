@@ -138,8 +138,11 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     import("./sender-history.js"),
   ]);
   const config = await loadSharePublicConfig();
+  // Production no longer issues server-held upload capabilities. Establish
+  // the owner session first, using that same SIWE proof for the Share host,
+  // then read the authenticated legacy list for compatibility.
+  const tinycloud = await createTinyCloudClient(session, config, [], (message) => { status.textContent = message; });
   const capabilities = await loadAuthenticatedCapabilities();
-  const tinycloud = await createTinyCloudClient(session, config, capabilities, (message) => { status.textContent = message; });
   app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), capabilities };
   (root as HTMLElement).replaceChildren(view);
   if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {

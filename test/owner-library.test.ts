@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { OWNER_LIBRARY_LIMIT, OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
-import { filesForYouPermissions, historyPermissions, ownerSpacePermissions } from "../src/share/openkey-session.js";
+import { filesForYouPermissions, historyPermissions, ownerSpacePermissions, SHARE_APPLICATION_PREFIX, SHARE_APPLICATION_SPACE } from "../src/share/openkey-session.js";
 
 /**
  * TC-344. The library picker used to be fed only by `GET
@@ -97,20 +97,20 @@ function extendsGrant(grant: string, requested: string): boolean {
 describe("owner space permissions", () => {
   it("grants the exact current sender-history Vault prefix", () => {
     expect(historyPermissions()).toEqual([
-      { service: "tinycloud.vault", space: "share", path: "sender-history/v2/records/", actions: ["put", "get", "list", "del"], skipPrefix: true },
+      { service: "tinycloud.vault", space: SHARE_APPLICATION_SPACE, path: "sender-history/v2/records/", actions: ["put", "get", "list", "del"], skipPrefix: true },
     ]);
   });
 
   it("limits recipient imports to the versioned Files for you prefix", () => {
     expect(filesForYouPermissions()).toEqual([
-      { service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"] },
+      { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}files-for-you/v1/`, actions: ["get", "put", "list"], skipPrefix: true },
     ]);
   });
 
-  it("reads the whole space but writes only under shares/", () => {
+  it("reads the Share application namespace but writes only under its shares/ child", () => {
     expect(ownerSpacePermissions()).toEqual([
-      { service: "tinycloud.kv", space: "share", path: "", actions: ["get", "list", "metadata"] },
-      { service: "tinycloud.kv", space: "share", path: "shares/", actions: ["put"] },
+      { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: SHARE_APPLICATION_PREFIX, actions: ["get", "list", "metadata"], skipPrefix: true },
+      { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}shares/`, actions: ["put"], skipPrefix: true },
     ]);
   });
 
@@ -120,7 +120,7 @@ describe("owner space permissions", () => {
     // an object, and a pass-through branch already gated on `shares/`. If
     // `put` is ever re-widened back to the whole space this fails.
     for (const entry of ownerSpacePermissions()) {
-      if (entry.actions.includes("put")) expect(entry.path).toBe("shares/");
+      if (entry.actions.includes("put")) expect(entry.path).toBe(`${SHARE_APPLICATION_PREFIX}shares/`);
     }
   });
 
@@ -128,24 +128,22 @@ describe("owner space permissions", () => {
     for (const entry of ownerSpacePermissions()) expect(entry.actions).not.toContain("del");
   });
 
-  it("uses the empty whole-service path for reads, never '/'", () => {
-    // A "/" path is encoded by the recap encoder as `<space>/<service>//`,
-    // which the node's byte-prefix resource matching can never extend.
+  it("uses a canonical trailing-slash application prefix for reads, never '/'", () => {
     for (const entry of ownerSpacePermissions()) expect(entry.path).not.toBe("/");
     const read = ownerSpacePermissions().find((entry) => entry.actions.includes("get"))!;
-    expect(read.path).toBe("");
-    expect(encodeRecapResource("space", "kv", read.path)).toBe("space/kv");
+    expect(read.path).toBe(SHARE_APPLICATION_PREFIX);
+    expect(encodeRecapResource("space", "kv", read.path)).toBe(`space/kv/${SHARE_APPLICATION_PREFIX}`);
     expect(encodeRecapResource("space", "kv", "/")).toBe("space/kv//");
   });
 
   it("encodes the write grant as a prefix the write targets actually extend", () => {
     const write = ownerSpacePermissions().find((entry) => entry.actions.includes("put"))!;
     const grant = encodeRecapResource("space", "kv", write.path);
-    expect(grant).toBe("space/kv/shares/");
+    expect(grant).toBe(`space/kv/${SHARE_APPLICATION_PREFIX}shares/`);
     // The three write targets the owner path produces.
-    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc"))).toBe(true);
-    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc/report.md"))).toBe(true);
-    expect(extendsGrant(grant, encodeRecapResource("space", "kv", "shares/abc/nested/report.md"))).toBe(true);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", `${SHARE_APPLICATION_PREFIX}shares/abc`))).toBe(true);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", `${SHARE_APPLICATION_PREFIX}shares/abc/report.md`))).toBe(true);
+    expect(extendsGrant(grant, encodeRecapResource("space", "kv", `${SHARE_APPLICATION_PREFIX}shares/abc/nested/report.md`))).toBe(true);
     // And what it deliberately no longer reaches.
     expect(extendsGrant(grant, encodeRecapResource("space", "kv", "report.md"))).toBe(false);
     expect(extendsGrant(grant, encodeRecapResource("space", "kv", "vault/sender-history/v1/entries/1/2"))).toBe(false);
@@ -156,7 +154,7 @@ describe("owner space permissions", () => {
   it("keeps the read grant covering every key the picker can offer", () => {
     const read = ownerSpacePermissions().find((entry) => entry.actions.includes("get"))!;
     const grant = encodeRecapResource("space", "kv", read.path);
-    for (const key of ["report.md", "shares/abc/report.md", "a/b/c"]) {
+    for (const key of [`${SHARE_APPLICATION_PREFIX}report.md`, `${SHARE_APPLICATION_PREFIX}shares/abc/report.md`, `${SHARE_APPLICATION_PREFIX}a/b/c`]) {
       expect(extendsGrant(grant, encodeRecapResource("space", "kv", key))).toBe(true);
     }
     expect(read.actions).toEqual(["get", "list", "metadata"]);

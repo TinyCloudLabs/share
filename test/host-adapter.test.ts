@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { ed25519 } from "@noble/curves/ed25519";
 import { privateKeyToAccount } from "viem/accounts";
+import { SiweMessage } from "siwe";
 import { didKeyFromEd25519PublicKey, toBase64Url } from "@tinycloud/share-envelope";
 import { loadSharePublicConfig, trustedNodeFromConfig, validateSharePublicConfig } from "../src/email-share/config.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
@@ -75,13 +76,24 @@ function capability(scope: Record<string, any>, source: Record<string, unknown>,
   } });
 }
 
-async function openKeySignIn(host: ReturnType<typeof createShareHostFromEnv>, account: ReturnType<typeof privateKeyToAccount>) {
+async function openKeySignIn(host: ReturnType<typeof createShareHostFromEnv>, account: ReturnType<typeof privateKeyToAccount>, recap = "urn:recap:eyJhdHQiOnt9LCJwcmYiOltdfQ") {
   const nonceResponse = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey/nonce", { headers: { origin: "https://share.tinycloud.xyz" } }));
   const { nonce } = await nonceResponse.json() as { nonce: string };
   const issuedAt = new Date().toISOString();
-  const message = ["share.tinycloud.xyz wants you to sign in with your Ethereum account:", account.address, "", "Sign in to TinyCloud Share.", "", "URI: https://share.tinycloud.xyz", "Version: 1", `Nonce: ${nonce}`, `Issued At: ${issuedAt}`].join("\n");
+  const message = new SiweMessage({
+    domain: "share.tinycloud.xyz",
+    address: account.address,
+    statement: "Sign in to TinyCloud Share.",
+    uri: "did:key:z6Mktjt7aSXwSUMCrXdJZwaewdcvEA1u1EMjS3hYrgNuiuKc#z6Mktjt7aSXwSUMCrXdJZwaewdcvEA1u1EMjS3hYrgNuiuKc",
+    version: "1",
+    chainId: 1,
+    nonce,
+    issuedAt,
+    expirationTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    resources: [recap],
+  }).prepareMessage();
   const signature = await account.signMessage({ message });
-  const body = { address: account.address, signature, message, nonce, issuedAt };
+  const body = { signature, message };
   const response = await host.handler(new Request("https://share.tinycloud.xyz/api/share/auth/openkey", { method: "POST", headers: { origin: "https://share.tinycloud.xyz", "content-type": "application/json" }, body: JSON.stringify(body) }));
   return { body, response, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
 }
@@ -218,6 +230,14 @@ describe("production trust and host boundaries", () => {
     const host = createShareHostFromEnv({ SHARE_SENDER_ENABLED: "true", SHARE_TRUST_BUNDLE: JSON.stringify(value), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true", SHARE_SENDER_PRIVATE_KEY: toBase64Url(new Uint8Array(32).fill(9)), SHARE_SENDER_CAPABILITY_JSON: capability(scope, source) });
     const response = await host.handler(new Request("http://share.tinycloud.xyz/api/share/capability"));
     expect(response.status).toBe(200);
+  });
+
+  it("accepts a bounded manifest ReCap larger than the legacy sign-in message limit", async () => {
+    const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(bundle()), SHARE_TRUST_BUNDLE_ALLOW_TEST: "true" });
+    const account = privateKeyToAccount(`0x${"31".repeat(32)}`);
+    const ceremony = await openKeySignIn(host, account, `urn:recap:${"A".repeat(5_000)}`);
+    expect(ceremony.body.message.length).toBeGreaterThan(4096);
+    expect(ceremony.response.status).toBe(200);
   });
 
   it("authenticates a user, issues an opaque secure session, and never accepts the configured secret as a cookie", async () => {

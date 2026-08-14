@@ -4,7 +4,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { ContentSource } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
 import { createSiblingRoots, createUnifiedPolicy, contentSourceDigestHex, nativeProjectionHashHex, registerUnifiedPolicy, requestAttestedEnforcerBinding, signV3Envelope, type UnifiedOwnerRootFactory } from "./unified-delegation.js";
-import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork } from "./openkey-session.js";
+import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
@@ -27,11 +27,11 @@ export const OWNER_SDK_PRIMITIVES = ["createDelegatedShareKey", "canonicalOwnerS
 /** Delivery stays post-link: a missing mail bridge must never destroy a valid link. */
 export const OWNER_TINYCLOUD_DELIVERY_METHODS = ["authorizeShareDelivery"] as const;
 
-/** Upper bound on the owner-space listing that backs the library picker. */
+/** Upper bound on the application-namespace listing that backs the library picker. */
 export const OWNER_LIBRARY_LIMIT = 1000;
 
 /**
- * Prefixes the application owns in the sender's space. `tinycloud.vault`
+ * Prefixes the application owns in its storage namespace. `tinycloud.vault`
  * stores the sender history under `vault/`, and the first run with a real
  * space listing duly offered `vault/sender-history/v1/entries/...` as things
  * to share. Those are the app's own encrypted bookkeeping records, not the
@@ -479,9 +479,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const filename = contentFilename(model.content);
   if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
   const resourceKind = model.resource.kind;
+  const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;
   const resourcePath = resourceKind === "prefix"
-    ? `shares/${shareId}`
-    : (model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`);
+    ? `${sharePrefix}${shareId}`
+    : (model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${filename}`);
   if (resourcePath.length === 0 || (resourceKind === "exact" && resourcePath.endsWith("/"))) throw fail("filename", "owner share resource filename is invalid");
   const source = { kind: "kv" as const, space: spaceId, path: resourcePath, action: "tinycloud.kv/get" as const };
   const policyActionOrder = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
@@ -560,7 +561,8 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
   const libraryContent = contentSource(model.content);
   const selectedSource = libraryContent?.kind === "kv" ? libraryContent : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
-  const resourcePath = model.resource.path.startsWith("shares/") && selectedSource === undefined ? model.resource.path : `shares/${shareId}/${filename}`;
+  const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;
+  const resourcePath = model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${filename}`;
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "v3 owner share has no storage space");
   const network = ownerEncryptionNetwork(options.openKeyAddress);
@@ -1215,7 +1217,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     const tinycloud = options.tinycloud;
     const spaceId = tinycloud?.spaceId;
     if (tinycloud === undefined || spaceId === undefined || spaceId.length === 0) return;
-    const listing = await tinycloud.kvForSpace(spaceId).list({ limit: OWNER_LIBRARY_LIMIT });
+    const listing = await tinycloud.kvForSpace(spaceId).list({ path: SHARE_APPLICATION_PREFIX, limit: OWNER_LIBRARY_LIMIT });
     if (!listing.ok) return;
     ownerLibrarySpaceId = spaceId;
     for (const entry of ownerLibraryEntries(listing.data.keys)) addLibraryOption(entry.path, entry.kind, spaceId);

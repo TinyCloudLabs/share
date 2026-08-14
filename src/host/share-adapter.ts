@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readF
 import { open, stat, unlink } from "node:fs/promises";
 import { ed25519 } from "@noble/curves/ed25519";
 import { verifyMessage } from "viem";
+import { SiweMessage } from "siwe";
 import { CID } from "multiformats/cid";
 import { sha256 } from "multiformats/hashes/sha2";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -66,6 +67,7 @@ function isCanonicalRecipientDid(value: string): boolean {
 }
 
 const MAX_BODY = 128 * 1024;
+const MAX_SIWE_MESSAGE_BYTES = 32 * 1024;
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" };
 const B64_128 = /^[A-Za-z0-9_-]{22}$/;
 const B64_256 = /^[A-Za-z0-9_-]{43}$/;
@@ -446,6 +448,10 @@ export interface ShareHostOptions {
 function response(status: number, body: unknown, headers: Record<string, string> = {}): Response { return new Response(JSON.stringify(body), { status, headers: { ...JSON_HEADERS, ...headers } }); }
 function generic(status = 400): Response { return response(status, { error: { code: "capability_unavailable" } }); }
 function safeString(value: unknown, label: string): string { if (typeof value !== "string" || value.length === 0 || value.length > 4096) throw new Error(label); return value; }
+function safeSiweMessage(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > MAX_SIWE_MESSAGE_BYTES) throw new Error("message");
+  return value;
+}
 function hash(value: string): string { return createHash("sha256").update(value).digest("base64url"); }
 function hashBytes(value: Uint8Array): string { return createHash("sha256").update(value).digest("base64url"); }
 
@@ -716,6 +722,56 @@ function openKeyMessage(origin: string, address: string, nonce: string, issuedAt
     `Nonce: ${nonce}`,
     `Issued At: ${issuedAt}`,
   ].join("\n");
+}
+
+interface ShareAuthenticationProof {
+  readonly address: string;
+  readonly issuedAt: string;
+  readonly message: string;
+  readonly nonce: string;
+  readonly signature: string;
+}
+
+function tinyCloudSessionProof(body: Record<string, unknown>, origin: string): ShareAuthenticationProof | undefined {
+  if (Object.keys(body).sort().join(",") !== "message,signature") return undefined;
+  const message = safeSiweMessage(body.message);
+  const signature = safeString(body.signature, "signature");
+  let parsed: SiweMessage;
+  try { parsed = new SiweMessage(message); } catch { return undefined; }
+  const issuedAt = parsed.issuedAt;
+  const expirationTime = parsed.expirationTime;
+  const now = Date.now();
+  const issuedTime = Date.parse(issuedAt ?? "");
+  const expiration = Date.parse(expirationTime ?? "");
+  const delegatedUri = /^did:key:(z[1-9A-HJ-NP-Za-km-z]+)#\1$/.test(parsed.uri);
+  if (
+    parsed.prepareMessage() !== message ||
+    parsed.domain !== new URL(origin).host ||
+    (parsed.uri !== origin && !delegatedUri) ||
+    parsed.version !== "1" ||
+    parsed.chainId !== 1 ||
+    !EVM_ADDRESS.test(parsed.address) ||
+    !/^[A-Za-z0-9]{32}$/.test(parsed.nonce) ||
+    !/^0x[0-9a-fA-F]{130}$/.test(signature) ||
+    !Number.isFinite(issuedTime) ||
+    Math.abs(now - issuedTime) > OPENKEY_NONCE_TTL_MS ||
+    !Number.isFinite(expiration) ||
+    expiration <= now ||
+    expiration > issuedTime + 2 * 60 * 60 * 1000 ||
+    parsed.resources?.some((resource) => resource.startsWith("urn:recap:")) !== true
+  ) return undefined;
+  return { address: parsed.address, issuedAt: issuedAt!, message, nonce: parsed.nonce, signature };
+}
+
+function legacyOpenKeyProof(body: Record<string, unknown>, origin: string): ShareAuthenticationProof | undefined {
+  if (Object.keys(body).sort().join(",") !== "address,issuedAt,message,nonce,signature") return undefined;
+  const address = safeString(body.address, "address");
+  const signature = safeString(body.signature, "signature");
+  const message = safeString(body.message, "message");
+  const nonce = safeString(body.nonce, "nonce");
+  const issuedAt = safeString(body.issuedAt, "issuedAt");
+  if (message !== openKeyMessage(origin, address, nonce, issuedAt)) return undefined;
+  return { address, issuedAt, message, nonce, signature };
 }
 
 function sessionCookie(request: Request): string | undefined { return cookie(request, "share_session"); }
@@ -1148,7 +1204,7 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
         // it saves: evicting the oldest live challenge lets an unauthenticated
         // burst cancel a victim's pending sign-in before they submit it.
         for (const [value, expiresAt] of openKeyNonces) if (expiresAt <= now) openKeyNonces.delete(value);
-        const nonce = toBase64Url(randomBytes(24));
+        const nonce = randomBytes(16).toString("hex");
         const expiresAt = now + OPENKEY_NONCE_TTL_MS;
         openKeyNonces.set(nonce, expiresAt);
         return response(200, { nonce, expiresAt: new Date(expiresAt).toISOString() });
@@ -1156,16 +1212,13 @@ export function createShareHostAdapter(options: ShareHostOptions): { handler(req
       if (url.pathname === "/api/share/auth/openkey" && request.method === "POST") {
         if (!shareOriginAllowed(request.headers.get("origin"), options)) return generic(403);
         const body = await boundedJson(request);
-        if (Object.keys(body).sort().join(",") !== "address,issuedAt,message,nonce,signature") return generic(400);
-        const address = safeString(body.address, "address");
-        const signature = safeString(body.signature, "signature");
-        const message = safeString(body.message, "message");
-        const nonce = safeString(body.nonce, "nonce");
-        const issuedAt = safeString(body.issuedAt, "issuedAt");
+        const proof = tinyCloudSessionProof(body, options.bundle.public.shareOrigin) ?? legacyOpenKeyProof(body, options.bundle.public.shareOrigin);
+        if (proof === undefined) return generic(400);
+        const { address, signature, message, nonce, issuedAt } = proof;
         const nonceExpiry = openKeyNonces.get(nonce);
         openKeyNonces.delete(nonce);
         const issuedTime = Date.parse(issuedAt);
-        if (!EVM_ADDRESS.test(address) || !/^0x[0-9a-fA-F]{130}$/.test(signature) || !/^[A-Za-z0-9_-]{32}$/.test(nonce) || nonceExpiry === undefined || nonceExpiry <= Date.now() || !Number.isFinite(issuedTime) || Math.abs(Date.now() - issuedTime) > OPENKEY_NONCE_TTL_MS || message !== openKeyMessage(options.bundle.public.shareOrigin, address, nonce, issuedAt)) return generic(401);
+        if (!EVM_ADDRESS.test(address) || !/^0x[0-9a-fA-F]{130}$/.test(signature) || !/^[A-Za-z0-9]{32}$/.test(nonce) || nonceExpiry === undefined || nonceExpiry <= Date.now() || !Number.isFinite(issuedTime) || Math.abs(Date.now() - issuedTime) > OPENKEY_NONCE_TTL_MS) return generic(401);
         let valid = false;
         try { valid = await verifyMessage({ address: address as `0x${string}`, message, signature: signature as `0x${string}` }); } catch { valid = false; }
         if (!valid) return generic(401);
