@@ -243,7 +243,7 @@ describe("bearer e2e: create → share → open → render", () => {
       (button) => button.textContent === "Download original",
     );
     expect(download).toBeDefined();
-    const writeText = vi.fn(async () => undefined);
+    const writeText = vi.fn<() => Promise<void>>(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const copyText = root.querySelector<HTMLButtonElement>(".viewer-copy-text");
     const copyStatus = root.querySelector<HTMLElement>(".viewer-copy-text-status");
@@ -266,12 +266,28 @@ describe("bearer e2e: create → share → open → render", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(copyStatus?.textContent).toBe("");
 
+      let finishFirstCopy: (() => void) | undefined;
+      writeText.mockImplementationOnce(() => new Promise<void>((resolve) => { finishFirstCopy = resolve; }));
+      copyText!.click();
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      finishFirstCopy!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledTimes(4);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(copyStatus?.textContent).toBe("");
+
       writeText.mockRejectedValueOnce(new Error("denied"));
       Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
       copyText!.click();
       await vi.advanceTimersByTimeAsync(0);
       expect(copyText?.textContent).toBe("Copy text");
       expect(copyStatus?.getAttribute("role")).toBe("alert");
+      expect(copyStatus?.textContent).toBe("Copy failed. Allow clipboard access and try again.");
+      await vi.advanceTimersByTimeAsync(3_000);
       expect(copyStatus?.textContent).toBe("Copy failed. Allow clipboard access and try again.");
     } finally {
       vi.useRealTimers();

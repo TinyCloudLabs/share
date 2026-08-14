@@ -47,7 +47,7 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-mode { color: var(--ink-soft); font: 650 0.72rem/1 var(--mono); }
 
 .viewer-content { padding: 28px 0; }
-.viewer-document-tools { display: flex; min-height: 44px; align-items: center; justify-content: flex-end; gap: 10px; margin: 12px 0 -16px; }
+.viewer-document-tools { display: grid; min-height: 44px; justify-items: end; gap: 4px; margin: 12px 0 -16px; }
 .viewer-copy-text { min-height: 36px; padding: 6px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-raised); color: var(--ink-soft); font: 650 0.72rem/1 var(--mono); cursor: pointer; }
 .viewer-copy-text:hover { border-color: var(--ink-faint); color: var(--ink); }
 .viewer-copy-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }

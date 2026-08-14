@@ -82,12 +82,15 @@ function appendMarkdownCopyAction(root: HTMLElement, container: HTMLElement, sou
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  let copyAttempt = 0;
   button.addEventListener("click", () => {
+    const attempt = ++copyAttempt;
     if (statusTimer !== undefined) {
       clearTimeout(statusTimer);
       statusTimer = undefined;
     }
     void copyWithFallback(source).then(() => {
+      if (attempt !== copyAttempt) return;
       button.textContent = "Copy text";
       status.setAttribute("role", "status");
       status.textContent = "Markdown copied.";
@@ -96,6 +99,7 @@ function appendMarkdownCopyAction(root: HTMLElement, container: HTMLElement, sou
         statusTimer = undefined;
       }, 3_000);
     }).catch(() => {
+      if (attempt !== copyAttempt) return;
       button.textContent = "Copy text";
       status.setAttribute("role", "alert");
       status.textContent = "Copy failed. Allow clipboard access and try again.";
