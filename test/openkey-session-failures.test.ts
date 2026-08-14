@@ -64,8 +64,8 @@ function stubEndpoints(responses: Record<string, Response>): void {
   }));
 }
 
-function nonceOk(): Response {
-  return new Response(JSON.stringify({ nonce: NONCE, expiresAt: new Date(Date.now() + 60_000).toISOString() }), { status: 200, headers: { "content-type": "application/json" } });
+function nonceOk(nonce = NONCE): Response {
+  return new Response(JSON.stringify({ nonce, expiresAt: new Date(Date.now() + 60_000).toISOString() }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 async function connectedSession() {
@@ -96,6 +96,15 @@ describe("consolidated OpenKey sign-in", () => {
   it("tags a malformed Share nonce as `signInService`", async () => {
     const error = await clientRejection({ "/auth/openkey/nonce": new Response(JSON.stringify({ nonce: "short", expiresAt: "not-a-date" }), { status: 200, headers: { "content-type": "application/json" } }) });
     expect(senderFailureKind(error)).toBe("signInService");
+  });
+
+  it("accepts the URL-safe base64 nonce shape returned by production", async () => {
+    const productionNonce = "RrVTUh38nUV9-PasPlVuGhNZOFbJO_dq";
+    stubEndpoints({ "/auth/openkey/nonce": nonceOk(productionNonce), "/api/share/auth/openkey": new Response(null, { status: 200 }) });
+    const session = await connectedSession();
+    const { createTinyCloudClient } = await import("../src/share/openkey-session.js");
+    await createTinyCloudClient(session, { shareOrigin: "https://share.example", nodeOrigin: "https://node.example" } as never, [], () => undefined);
+    expect(state.signIn).toHaveBeenCalledWith({ nonce: productionNonce });
   });
 
   it("tags a rejected consolidated session proof as `account`", async () => {
