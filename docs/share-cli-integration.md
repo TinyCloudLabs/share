@@ -13,9 +13,11 @@ fragment is bearer authority and must not be written to logs, shell history,
 analytics, referrers, or cross-origin messages.
 
 ```sh
-SHARE_ORIGIN="${SHARE_URL%%/s/*}"
-printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share inspect --stdin --json --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"
-printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share receive --stdin --stdout --max-bytes 10485760 --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"
+SHARE_PUBLIC_URL="${SHARE_URL%%#*}"
+SHARE_ORIGIN="${SHARE_PUBLIC_URL%%/s/*}"
+test "$SHARE_ORIGIN" != "$SHARE_PUBLIC_URL" || { printf 'Invalid TinyCloud Share URL\n' >&2; exit 2; }
+printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@0.9.0 share inspect --stdin --json --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"
+printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@0.9.0 share receive --stdin --stdout --max-bytes 10485760 --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"
 ```
 
 For the agent receive path, accept only a link whose viewer origin is pinned to
@@ -30,7 +32,7 @@ contained within it.
 Legacy `tc1:` links are read only and require an explicit bridge:
 
 ```sh
-printf '%s' "$TC1_URL" | npx -y @tinycloud/cli@latest share migrate - --stdin
+printf '%s' "$TC1_URL" | npx -y @tinycloud/cli@0.9.0 share migrate - --stdin
 ```
 
 The CLI's bearer publisher accepts the host's existing authenticated upload
