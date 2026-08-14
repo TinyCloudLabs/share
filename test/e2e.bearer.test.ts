@@ -246,11 +246,36 @@ describe("bearer e2e: create → share → open → render", () => {
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const copyText = root.querySelector<HTMLButtonElement>(".viewer-copy-text");
+    const copyStatus = root.querySelector<HTMLElement>(".viewer-copy-text-status");
     expect(copyText?.textContent).toBe("Copy text");
-    copyText!.click();
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(MARKDOWN));
-    await vi.waitFor(() => expect(copyText?.textContent).toBe("Copied"));
-    expect(root.querySelector(".viewer-copy-text-status")?.textContent).toBe("Markdown copied.");
+    vi.useFakeTimers();
+    try {
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledWith(MARKDOWN);
+      expect(copyText?.textContent).toBe("Copy text");
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writeText).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(copyStatus?.textContent).toBe("Markdown copied.");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(copyStatus?.textContent).toBe("");
+
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn(() => false) });
+      copyText!.click();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(copyText?.textContent).toBe("Copy text");
+      expect(copyStatus?.getAttribute("role")).toBe("alert");
+      expect(copyStatus?.textContent).toBe("Copy failed. Allow clipboard access and try again.");
+    } finally {
+      vi.useRealTimers();
+    }
 
     // Mermaid rendered through the sandbox path, re-sanitized, in the frame
     const svgHost = body.querySelector(".viewer-mermaid");

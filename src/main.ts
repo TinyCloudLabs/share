@@ -13,8 +13,17 @@ import { createRegisteredPolicyAuthority, createShareV2HolderBindingArtifact, SH
 // recipient route must do no decorative work before its URL secret is scrubbed.
 const viewerRoot = document.getElementById("viewer");
 
+async function loadViewerStyles(): Promise<void> {
+  await Promise.all([
+    import("./email-share/recipient.css"),
+    import("./viewer/viewer.css"),
+  ]);
+  document.documentElement.classList.remove("viewer-first-paint");
+}
+
 if (viewerRoot !== null) {
   if (new URLSearchParams(window.location.search).get("sender-launch") === "1") {
+    void loadViewerStyles();
     void bootSenderViewer(viewerRoot);
   } else {
   // This is intentionally the first recipient-side operation. The complete
@@ -24,8 +33,7 @@ if (viewerRoot !== null) {
   const launch = captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
     ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
     : captured;
-  void import("./email-share/recipient.css");
-  void import("./viewer/viewer.css");
+  void loadViewerStyles();
   void bootRecipient(viewerRoot, launch);
   }
 }
@@ -59,8 +67,7 @@ async function bootSenderViewer(root: HTMLElement): Promise<void> {
         window.clearTimeout(timeout);
         port.close();
         window.opener = null;
-        void import("./email-share/recipient.css");
-        void import("./viewer/viewer.css");
+        void loadViewerStyles();
         void bootRecipient(root, captured);
       } catch {
         loading.textContent = "The private share was invalid or expired.";

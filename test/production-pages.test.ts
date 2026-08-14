@@ -73,6 +73,28 @@ describe("agent receive instructions", () => {
   });
 });
 
+describe("viewer critical first paint", () => {
+  it("keeps the fallback shell hidden on the intentional background until post-scrub styles apply", () => {
+    const html = readFileSync("viewer.html", "utf8");
+    const criticalStyle = html.indexOf("html.viewer-first-paint body { visibility: hidden; }");
+    const fallbackShell = html.indexOf('<aside class="site-shell" aria-label="Agent instructions">');
+    const application = html.indexOf('<script type="module" src="/src/main.ts"></script>');
+    expect(html).toContain('<html lang="en" class="viewer-first-paint">');
+    expect(html).toContain("html { min-height: 100%; background: #f8f9fb; }");
+    expect(html).toContain("@media (prefers-color-scheme: dark) { html { background: #0b0e14; } }");
+    expect(criticalStyle).toBeGreaterThan(-1);
+    expect(criticalStyle).toBeLessThan(fallbackShell);
+    expect(fallbackShell).toBeLessThan(application);
+
+    const main = readFileSync("src/main.ts", "utf8");
+    const scrub = main.indexOf("captureAndScrubLaunch(window.location");
+    const styles = main.indexOf("void loadViewerStyles();", scrub);
+    expect(scrub).toBeGreaterThan(-1);
+    expect(styles).toBeGreaterThan(scrub);
+    expect(main).toContain('document.documentElement.classList.remove("viewer-first-paint")');
+  });
+});
+
 describe("Cloudflare Pages static asset boundaries", () => {
   it("ships a script-free top-level 404 page so missing modules are not rewritten to the app shell", () => {
     const html = readFileSync("public/404.html", "utf8");

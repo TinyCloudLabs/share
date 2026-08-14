@@ -81,11 +81,20 @@ function appendMarkdownCopyAction(root: HTMLElement, container: HTMLElement, sou
   status.className = "viewer-copy-text-status";
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
+  let statusTimer: ReturnType<typeof setTimeout> | undefined;
   button.addEventListener("click", () => {
+    if (statusTimer !== undefined) {
+      clearTimeout(statusTimer);
+      statusTimer = undefined;
+    }
     void copyWithFallback(source).then(() => {
-      button.textContent = "Copied";
-      status.removeAttribute("role");
+      button.textContent = "Copy text";
+      status.setAttribute("role", "status");
       status.textContent = "Markdown copied.";
+      statusTimer = setTimeout(() => {
+        status.textContent = "";
+        statusTimer = undefined;
+      }, 3_000);
     }).catch(() => {
       button.textContent = "Copy text";
       status.setAttribute("role", "alert");

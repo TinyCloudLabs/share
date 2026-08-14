@@ -1,7 +1,19 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="viewer-first-paint">
 <head>
 <meta charset="utf-8">
+<!--
+  The recipient's external styles remain post-scrub dynamic imports: fetching
+  them before main.ts captures and clears the fragment would weaken that
+  synchronous security boundary. This tiny inline guard gives WebKit an
+  intentional first paint without exposing the fallback shell while those
+  styles load. main.ts lifts it only after both stylesheets are applied.
+-->
+<style>
+html { min-height: 100%; background: #f8f9fb; }
+html.viewer-first-paint body { visibility: hidden; }
+@media (prefers-color-scheme: dark) { html { background: #0b0e14; } }
+</style>
 <!--
   Strict CSP for the VIEWER route (viewer spec §2). This meta tag is the
   in-document baseline; production must additionally serve these as HTTP
