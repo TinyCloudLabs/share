@@ -63,6 +63,16 @@ describe("sender page boot state", () => {
   });
 });
 
+describe("agent receive instructions", () => {
+  it("derives the trusted viewer and registry from the complete link", () => {
+    const html = readFileSync("viewer.html", "utf8");
+    expect(html).toContain('SHARE_ORIGIN="${SHARE_URL%%/s/*}"');
+    expect(html).toContain('--viewer-origin "$SHARE_ORIGIN"');
+    expect(html).toContain('--registry "$SHARE_ORIGIN/registry"');
+    expect(html).not.toContain("share inspect - --json</code>");
+  });
+});
+
 describe("Cloudflare Pages static asset boundaries", () => {
   it("ships a script-free top-level 404 page so missing modules are not rewritten to the app shell", () => {
     const html = readFileSync("public/404.html", "utf8");

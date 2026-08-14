@@ -71,7 +71,10 @@
 </div>
 <div id="viewer" tabindex="-1"></div>
 <aside class="site-shell" aria-label="Agent instructions">
-  <p>For an agent-safe receive path, pipe this complete link locally to <code>npx -y @tinycloud/cli@latest share inspect - --json</code> or <code>npx -y @tinycloud/cli@latest share receive - --output .</code>. The fragment is the bearer authority; never log or forward it.</p>
+  <p>For an agent-safe receive path, keep the complete link in <code>SHARE_URL</code> without printing it, then derive the trusted viewer and same-origin registry from that link:</p>
+  <p><code>SHARE_ORIGIN="${SHARE_URL%%/s/*}"; printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share inspect - --json --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"</code></p>
+  <p><code>SHARE_ORIGIN="${SHARE_URL%%/s/*}"; printf '%s' "$SHARE_URL" | npx -y @tinycloud/cli@latest share receive - --output . --viewer-origin "$SHARE_ORIGIN" --registry "$SHARE_ORIGIN/registry"</code></p>
+  <p>The fragment is the bearer authority; never print, log, or forward it.</p>
 </aside>
 <footer class="site-shell app-site-footer micro">
   <span class="footer-brand">
