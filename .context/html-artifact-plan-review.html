@@ -171,8 +171,8 @@
     <ul>
       <li>Canonical relative paths: NFC, forward slashes only, no empty / dot / dot-dot segments, no controls, backslashes, encoded separator/dot aliases, absolute URLs, or duplicate case-folded canonical keys.</li>
       <li>Limits: 1,000 files listed, 100 MB authorized source ceiling, 10 MB render aggregate including encoded output, 5 MB per rendered text file, 16 CSS import levels, and 10,000 transformed references. Any limit failure aborts the whole render.</li>
-      <li>HTML transforms: stylesheets become inline styles; classic external scripts become inline classic scripts in document order; images, fonts, media, and static assets become data URLs; relative anchors to known HTML documents become controlled in-bundle navigation requests.</li>
-      <li>External URLs, protocol-relative URLs, unsafe schemes, <code>&lt;base&gt;</code>, forms, meta refresh, module/async/defer scripts, direct script navigation APIs, workers, nested frames, inline HTML event-handler attributes, and unsupported active embeds fail closed. External classic sources are embedded with case-insensitive closing-script escaping.</li>
+      <li>HTML transforms: stylesheets become inline styles; classic external scripts become inline classic scripts in document order; images, fonts, media, and static assets become data URLs; stylesheet <code>media</code> values are validated before wrapping; unsupported <code>&lt;link&gt;</code> relations fail closed; relative anchors to known HTML documents become controlled in-bundle navigation requests.</li>
+      <li>External URLs, protocol-relative URLs, unsafe schemes, <code>&lt;base&gt;</code>, forms, meta refresh, module/async/defer scripts, direct script navigation APIs, workers, nested frames, inline HTML event-handler attributes, and unsupported active embeds fail closed. External classic sources are embedded with case-insensitive closing-script escaping, and benign local helpers named <code>open</code> remain allowed so the gate only rejects explicit browser-navigation primitives.</li>
     </ul>
 
     <h3>2. Sender detection and nested path preservation</h3>
@@ -188,6 +188,7 @@
       <li>Add an app-served <code>/artifact-sandbox.html</code> builder and Vite output analogous to Mermaid’s proven frame.</li>
       <li>Parent iframe sandbox is exactly <code>allow-scripts</code>. The served bridge self-checks <code>self.origin === "null"</code>, requires a per-frame 128-bit nonce, and accepts messages only from its parent.</li>
       <li>The bridge creates a second sandboxed <code>srcdoc</code> iframe for artifact code, also with exactly <code>allow-scripts</code>. Its inherited CSP allows inline classic scripts/styles and data/blob static assets but has <code>default-src 'none'</code>, <code>connect-src 'none'</code>, <code>form-action 'none'</code>, <code>object-src 'none'</code>, defense-in-depth <code>navigate-to 'none'</code>, and no top-navigation capability. Any unexpected child load destroys the render.</li>
+      <li>The bridge also listens for the documented restore chord from the inner artifact frame and forwards a narrow, nonce-bound restore message to the parent chrome so permanent hide is reversible even when focus stays inside the sandbox.</li>
       <li>Parent replies are checked by source window, opaque <code>"null"</code> origin, nonce, id, and strict shape. Destroying the controller rejects pending renders and removes the frame.</li>
     </ul>
 
@@ -243,6 +244,8 @@
       <li><strong>Execution:</strong> fixture CSS, nested image/font/static asset, and classic script load; interaction works; parent DOM, storage, cookie, opener, top navigation, and fetch isolation probes fail.</li>
       <li><strong>Viewer routing:</strong> marked prefix selects artifact mode; ordinary prefix stays folder mode; exact/bearer results are unchanged.</li>
       <li><strong>Chrome:</strong> expanded, collapsed, reopen, permanent hide, keyboard restore, Web Share, clipboard fallback, storage denial, and URL-not-in-DOM are tested.</li>
+      <li><strong>Chrome recovery:</strong> the documented restore chord works even after permanent hide while focus remains inside the sandboxed artifact frame.</li>
+      <li><strong>Classic scripts:</strong> a local helper named <code>open</code> is accepted, while explicit browser-navigation primitives still fail closed.</li>
       <li><strong>Accessibility:</strong> semantic names, focus-visible, keyboard order, live state, 44 px target, reduced motion, forced colors, and mobile safe areas are asserted or visually inspected.</li>
       <li><strong>Failures:</strong> malformed, missing asset, unsupported feature, offline/denied, and render limit states show approved recovery copy and never exception text.</li>
       <li><strong>Release:</strong> <code>npm test</code>, <code>npm run typecheck</code>, <code>npm run build</code>, and the narrowest safe sharing e2e pass; desktop/mobile screenshots are inspected; PR CI is all green before squash merge.</li>

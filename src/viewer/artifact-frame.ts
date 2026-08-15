@@ -76,6 +76,10 @@ export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
         post({type:"result",id:activeId,ok:true});
         return;
       }
+      if(childData&&childData.type==="artifact-restore-controls"){
+        post({type:"artifact-restore-controls"});
+        return;
+      }
       if(childData&&childData.type==="navigate"&&typeof childData.path==="string"){show(childData.path,childData.fragment);}
     }
   });
