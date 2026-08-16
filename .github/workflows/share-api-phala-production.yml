@@ -101,7 +101,9 @@ jobs:
             git merge-base --is-ancestor "${SHARE_COMMIT}" "origin/${GITHUB_REF_NAME}" || { echo "::error::Manual images must name a commit reachable from protected main."; exit 1; }
           fi
           [[ "${IMAGE}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Image must be an immutable Share API digest."; exit 1; }
-          gh attestation verify "${IMAGE}" --repo "${GITHUB_REPOSITORY}"
+          # Attestation validity alone is insufficient: require its signed
+          # source digest to be the exact main commit recorded for this release.
+          gh attestation verify "${IMAGE}" --repo "${GITHUB_REPOSITORY}" --source-digest "${SHARE_COMMIT}"
           echo "${{ github.token }}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           raw="$(docker buildx imagetools inspect "${IMAGE}" --raw)"
           if echo "${raw}" | jq -e '.manifests' >/dev/null; then
@@ -172,7 +174,10 @@ jobs:
           while [ "$SECONDS" -lt "$deadline" ]; do
             ps="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json 2>/dev/null || echo '{}')"
             # target image must be running; a stale healthy predecessor is not success.
-            target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.image == $image or .image == $iid or .image_id == $iid) and .state == "running")] | length')"
+            # Do not treat a running process as a healthy release. Phala CLI
+            # versions expose the Docker health status as health, health_status,
+            # or state.health; require one of those explicit healthy values.
+            target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.image == $image or .image == $iid or .image_id == $iid) and .state == "running" and (.health == "healthy" or .health_status == "healthy" or .state.health? == "healthy"))] | length')"
             readiness="$(curl --fail --silent --show-error --max-time 10 https://share.tinycloud.xyz/health/readiness 2>/dev/null || true)"
             if [ "$target" -ge 1 ] && echo "$readiness" | jq -e '.authReady == true and (.senderReady | type == "boolean")' >/dev/null; then converged=true; break; fi
             sleep 15
