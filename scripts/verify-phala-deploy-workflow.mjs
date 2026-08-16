@@ -47,7 +47,12 @@ assert.match(workflow, /\.commit == \$commit/);
 assert.match(workflow, /git merge-base --is-ancestor/);
 assert.match(
   workflow,
-  /gh attestation verify "\$\{IMAGE\}" --repo "\$\{GITHUB_REPOSITORY\}" --source-digest "\$\{SHARE_COMMIT\}"/,
+  /share_commit must be a protected-main 40-character SHA/,
+);
+assert.match(workflow, /git checkout --detach "\$\{SHARE_COMMIT\}"/);
+assert.match(
+  workflow,
+  /gh attestation verify "oci:\/\/\$\{IMAGE\}" --repo "\$\{GITHUB_REPOSITORY\}" --signer-workflow "\$\{GITHUB_SERVER_URL\}\/\$\{GITHUB_REPOSITORY\}\/.github\/workflows\/share-api-image\.yml" --source-digest "\$\{SHARE_COMMIT\}"/,
 );
 assert.match(
   workflow,

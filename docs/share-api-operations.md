@@ -95,9 +95,11 @@ manual dispatch must explicitly provide one). GitHub production variables
 Manual dispatch is for digest-pinned rollback/recovery only: it requires the
 attested image digest and its protected-main `share_commit`, and checks the
 commit remains reachable from main. It verifies the image attestation with
-`--source-digest` set to that exact commit, so an attestation from another
-commit cannot be paired with an arbitrary main ancestor. All image-workflow
-actions are commit-pinned.
+`--source-digest` set to that exact commit and binds the signer to the image
+workflow, so an attestation from another commit or workflow cannot be paired
+with an arbitrary main ancestor. Manual recovery checks out that source commit
+before rendering its configuration provenance, rather than using a later
+protected-main checkout. All image-workflow actions are commit-pinned.
 To roll back, dispatch the known-good digest and commit; the currently running
 digest is captured as the new immutable rollback target. Each deployment waits for the target `share-api`
 container to report Docker health `healthy`, then checks public `https://share.tinycloud.xyz` readiness,

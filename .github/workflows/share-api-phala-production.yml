@@ -97,13 +97,17 @@ jobs:
           else
             IMAGE="${DISPATCH_IMAGE}"
             SHARE_COMMIT="${DISPATCH_SHARE_COMMIT}"
+            [[ "${SHARE_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::share_commit must be a protected-main 40-character SHA."; exit 1; }
             git fetch --no-tags origin "${GITHUB_REF_NAME}"
             git merge-base --is-ancestor "${SHARE_COMMIT}" "origin/${GITHUB_REF_NAME}" || { echo "::error::Manual images must name a commit reachable from protected main."; exit 1; }
+            # Render the exact reviewed compose/configuration that the selected
+            # image commit used, rather than today's main checkout.
+            git checkout --detach "${SHARE_COMMIT}"
           fi
           [[ "${IMAGE}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Image must be an immutable Share API digest."; exit 1; }
           # Attestation validity alone is insufficient: require its signed
           # source digest to be the exact main commit recorded for this release.
-          gh attestation verify "${IMAGE}" --repo "${GITHUB_REPOSITORY}" --source-digest "${SHARE_COMMIT}"
+          gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/share-api-image.yml" --source-digest "${SHARE_COMMIT}"
           echo "${{ github.token }}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           raw="$(docker buildx imagetools inspect "${IMAGE}" --raw)"
           if echo "${raw}" | jq -e '.manifests' >/dev/null; then
