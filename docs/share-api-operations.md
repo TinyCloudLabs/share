@@ -99,7 +99,8 @@ commit remains reachable from main. It verifies the image attestation with
 workflow, so an attestation from another commit or workflow cannot be paired
 with an arbitrary main ancestor. Manual recovery checks out that source commit
 before rendering its configuration provenance, rather than using a later
-protected-main checkout. All image-workflow actions are commit-pinned.
+protected-main checkout; the workflow retains full main history for this
+ancestor proof. All image-workflow actions are commit-pinned.
 To roll back, dispatch the known-good digest and commit; the currently running
 digest is captured as the new immutable rollback target. Each deployment waits for the target `share-api`
 container to report Docker health `healthy`, then checks public `https://share.tinycloud.xyz` readiness,

@@ -45,6 +45,7 @@ assert.match(
 );
 assert.match(workflow, /\.commit == \$commit/);
 assert.match(workflow, /git merge-base --is-ancestor/);
+assert.match(workflow, /fetch-depth: 0/);
 assert.match(
   workflow,
   /share_commit must be a protected-main 40-character SHA/,

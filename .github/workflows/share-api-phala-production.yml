@@ -55,6 +55,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          # Manual rollback verifies an older protected-main commit before
+          # checking it out; retain main's full ancestry for that proof.
+          fetch-depth: 0
 
       - name: Require the protected default branch
         run: |
