@@ -170,7 +170,7 @@ jobs:
           set -euo pipefail
           # No -e flags: Phala's sealed tunnel/token and service settings remain
           # untouched. The rendered compose changes only public image/provenance.
-          phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}" --public-logs
+          phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}"
 
       - name: Wait for CVM, container, public readiness, and OpenKey proof contract
         env:

@@ -68,10 +68,12 @@ assert.match(compose, /share-api-state:\/var\/lib\/tinycloud\/share/);
 assert.match(workflow, /target image.*state == "running".*health.*healthy/s);
 assert.doesNotMatch(workflow, /phala "\$\{DEPLOY_ARGS\[@\]\}"[^\n]*-e/);
 assert.doesNotMatch(workflow, /DEPLOY_ARGS\+=\(-e /);
+assert.doesNotMatch(workflow, /--public-logs/);
 const imageWorkflow = readFileSync(
   new URL("../.github/workflows/share-api-image.yml", import.meta.url),
   "utf8",
 );
+assert.match(imageWorkflow, /- compose\.share-api\.yml/);
 for (const action of [
   "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
   "docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435",

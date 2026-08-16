@@ -17,6 +17,7 @@ on:
       - public/**
       - packages/**
       - config/**
+      - compose.share-api.yml
       - vite.config.ts
       - tsconfig.json
       - "*.html"
