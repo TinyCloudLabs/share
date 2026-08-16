@@ -69,6 +69,7 @@ assert.match(workflow, /target image.*state == "running".*health.*healthy/s);
 assert.doesNotMatch(workflow, /phala "\$\{DEPLOY_ARGS\[@\]\}"[^\n]*-e/);
 assert.doesNotMatch(workflow, /DEPLOY_ARGS\+=\(-e /);
 assert.doesNotMatch(workflow, /--public-logs/);
+assert.match(workflow, /phala deploy.*--no-public-logs/);
 const imageWorkflow = readFileSync(
   new URL("../.github/workflows/share-api-image.yml", import.meta.url),
   "utf8",

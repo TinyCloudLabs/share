@@ -84,7 +84,7 @@ environment. Deployments serialize; they never create a CVM. Configure only
 the production-environment `PHALA_CLOUD_API_KEY` secret and the CVM ID and
 release-provenance variables there. Changes to the rendered
 `compose.share-api.yml` also publish a reviewed main image and therefore enter
-this release path. The deploy does not expose CVM logs publicly.
+this release path. The deploy explicitly disables public CVM logs.
 
 The workflow passes no `phala -e` flags. The sealed tunnel token and all other
 sealed environment inputs remain intact; it writes only the digest and public
