@@ -71,3 +71,27 @@ attach `api.share.tinycloud.xyz` through authenticated Cloudflare, set the
 Pages variable, and deploy Functions. Verify public TLS, readiness, nonce,
 well-known JSON, and the sender boundary. Roll back by restoring the prior
 Pages deployment and CVM image/commit. Do not send email during smoke tests.
+
+## Automated Phala release path
+
+`.github/workflows/share-api-phala-production.yml` runs only after the
+successful `Share API image` workflow for `main`, and uses that commit's
+`sha-<commit>` image tag solely to resolve a digest. It verifies the GitHub
+build attestation before updating the existing
+`PHALA_SHARE_API_CVM_ID` (default `share-api`) under the protected GitHub
+`production` environment. Deployments serialize; they never create a CVM.
+
+The workflow passes no `phala -e` flags. The sealed tunnel token and all other
+sealed environment inputs remain intact; it writes only the digest and public
+strict release-provenance record into a temporary compose file. It retains the
+currently-running immutable `share-api` digest as the rollback target (or a
+manual dispatch must explicitly provide one). GitHub production variables
+`SHARE_NODE_COMMIT`, `SHARE_OPEN_CREDENTIALS_COMMIT`, `SHARE_SDK_COMMIT`, and
+`SHARE_MIGRATION_VERSION` are required to form provenance.
+
+Manual dispatch is for digest-pinned rollback/recovery only and still verifies
+the image attestation. Each deployment waits for the target `share-api`
+container to run, then checks public `https://share.tinycloud.xyz` readiness,
+the published trust contract, and the exact OpenKey nonce/proof boundary. A
+failed check leaves the workflow failed for operator rollback; it never rolls
+forward using a tag or changes sealed inputs.

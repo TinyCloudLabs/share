@@ -1,0 +1,157 @@
+name: Deploy Share API To Phala Production
+
+on:
+  workflow_run:
+    workflows: [Share API image]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Exact previously-attested Share API image digest to deploy.
+        required: true
+        type: string
+      rollback_image:
+        description: Exact known-good image digest retained as this release's rollback target.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  attestations: read
+
+concurrency:
+  group: share-api-phala-production
+  cancel-in-progress: false
+
+env:
+  PHALA_CLI_VERSION: 1.1.19
+  PHALA_CVM_ID: ${{ vars.PHALA_SHARE_API_CVM_ID || 'share-api' }}
+
+jobs:
+  deploy:
+    # A workflow_run event is trusted only after the image workflow passed for
+    # main. Manual dispatch is intentionally retained for a digest-pinned
+    # rollback/recovery, but can never use a mutable tag.
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Require the protected default branch
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
+            test "${{ github.event.workflow_run.head_branch }}" = "${{ github.event.repository.default_branch }}"
+          else
+            test "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}"
+          fi
+
+      - name: Install Phala CLI
+        run: npm install -g "phala@${PHALA_CLI_VERSION}"
+
+      - name: Select and attest immutable image
+        env:
+          DISPATCH_IMAGE: ${{ inputs.image }}
+          IMAGE_WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
+            tag="ghcr.io/tinycloudlabs/share-api:sha-${IMAGE_WORKFLOW_SHA}"
+            digest="$(docker buildx imagetools inspect "${tag}" --format '{{.Digest}}')"
+            IMAGE="ghcr.io/tinycloudlabs/share-api@${digest}"
+          else
+            IMAGE="${DISPATCH_IMAGE}"
+          fi
+          [[ "${IMAGE}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Image must be an immutable Share API digest."; exit 1; }
+          gh attestation verify "${IMAGE}" --repo "${GITHUB_REPOSITORY}"
+          raw="$(docker buildx imagetools inspect "${IMAGE}" --raw)"
+          if echo "${raw}" | jq -e '.manifests' >/dev/null; then
+            platform="$(echo "${raw}" | jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest')"
+            test -n "${platform}" && test "${platform}" != null || { echo "::error::Share image has no linux/amd64 manifest."; exit 1; }
+            raw="$(docker buildx imagetools inspect "ghcr.io/tinycloudlabs/share-api@${platform}" --raw)"
+          fi
+          image_config_digest="$(echo "${raw}" | jq -r '.config.digest')"
+          [[ "${image_config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Could not resolve target image configuration digest."; exit 1; }
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "IMAGE_CONFIG_DIGEST=${image_config_digest}" >> "$GITHUB_ENV"
+          echo "SHARE_COMMIT=${IMAGE_WORKFLOW_SHA:-$GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Resolve immutable rollback target from the existing CVM
+        env:
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+          DISPATCH_ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
+        run: |
+          set -euo pipefail
+          test -n "${PHALA_API_KEY}" || { echo "::error::Missing PHALA production credential."; exit 1; }
+          rollback="${DISPATCH_ROLLBACK_IMAGE}"
+          if [ -z "${rollback}" ]; then
+            rollback="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json | jq -r '[.containers[]? | select(.name == "share-api" or .names[]? == "share-api") | .image | select(type == "string" and test("^ghcr\\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$"))][0] // empty')"
+          fi
+          [[ "${rollback}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::The existing CVM must expose an immutable Share API image, or supply rollback_image for manual recovery."; exit 1; }
+          test "${rollback}" != "${IMAGE}" || { echo "::error::Rollback target must differ from the candidate image."; exit 1; }
+          echo "ROLLBACK_IMAGE=${rollback}" >> "$GITHUB_ENV"
+          echo "ROLLBACK_RELEASE_ID=rollback-${rollback##*@sha256:}" >> "$GITHUB_ENV"
+
+      - name: Render public release provenance without replacing sealed environment
+        env:
+          NODE_COMMIT: ${{ vars.SHARE_NODE_COMMIT }}
+          OPEN_CREDENTIALS_COMMIT: ${{ vars.SHARE_OPEN_CREDENTIALS_COMMIT }}
+          SDK_COMMIT: ${{ vars.SHARE_SDK_COMMIT }}
+          MIGRATION_VERSION: ${{ vars.SHARE_MIGRATION_VERSION }}
+        run: |
+          set -euo pipefail
+          for value in "$SHARE_COMMIT" "$NODE_COMMIT" "$OPEN_CREDENTIALS_COMMIT" "$SDK_COMMIT"; do [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::All release source commits must be protected 40-character SHA values."; exit 1; }; done
+          [[ "${MIGRATION_VERSION}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || { echo "::error::SHARE_MIGRATION_VERSION must be a reviewed immutable identifier."; exit 1; }
+          configuration_digest="sha256:$(sha256sum config/trust-bundle.production.json | cut -d' ' -f1)"
+          provenance="$(jq -cn --arg releaseId "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --arg shareCommit "$SHARE_COMMIT" --arg nodeCommit "$NODE_COMMIT" --arg openCredentialsCommit "$OPEN_CREDENTIALS_COMMIT" --arg sdkCommit "$SDK_COMMIT" --arg shareApiImage "$IMAGE" --arg configurationDigest "$configuration_digest" --arg migrationVersion "$MIGRATION_VERSION" --arg rollbackImage "$ROLLBACK_IMAGE" --arg rollbackReleaseId "$ROLLBACK_RELEASE_ID" '{releaseId:$releaseId,shareCommit:$shareCommit,nodeCommit:$nodeCommit,openCredentialsCommit:$openCredentialsCommit,sdkCommit:$sdkCommit,shareApiImage:$shareApiImage,configurationDigest:$configurationDigest,migrationVersion:$migrationVersion,rollbackImage:$rollbackImage,rollbackReleaseId:$rollbackReleaseId}')"
+          IMAGE="$IMAGE" PROVENANCE="$provenance" OUTPUT="$RUNNER_TEMP/share-api.phala.yml" node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          let compose = readFileSync("compose.share-api.yml", "utf8");
+          compose = compose
+            .replace("${SHARE_API_IMAGE:?set SHARE_API_IMAGE to the exact merged-main GHCR digest}", process.env.IMAGE)
+            .replace("${SHARE_RELEASE_PROVENANCE:?set the immutable reviewed release provenance manifest}", `'${process.env.PROVENANCE}'`);
+          if (compose.includes("${SHARE_API_IMAGE") || compose.includes("${SHARE_RELEASE_PROVENANCE")) throw new Error("release render left a required placeholder");
+          writeFileSync(process.env.OUTPUT, compose, { mode: 0o600 });
+          NODE
+          echo "RENDERED_COMPOSE=${RUNNER_TEMP}/share-api.phala.yml" >> "$GITHUB_ENV"
+
+      - name: Deploy in place without sealed environment writes
+        env:
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+        run: |
+          set -euo pipefail
+          # No -e flags: Phala's sealed tunnel/token and service settings remain
+          # untouched. The rendered compose changes only public image/provenance.
+          phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}" --public-logs
+
+      - name: Wait for CVM, container, public readiness, and OpenKey proof contract
+        env:
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600)); converged=false
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            ps="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json 2>/dev/null || echo '{}')"
+            # target image must be running; a stale healthy predecessor is not success.
+            target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.image == $image or .image == $iid or .image_id == $iid) and .state == "running")] | length')"
+            readiness="$(curl --fail --silent --show-error --max-time 10 https://share.tinycloud.xyz/health/readiness 2>/dev/null || true)"
+            if [ "$target" -ge 1 ] && echo "$readiness" | jq -e '.authReady == true and (.senderReady | type == "boolean")' >/dev/null; then converged=true; break; fi
+            sleep 15
+          done
+          [ "$converged" = true ] || { echo "::error::CVM did not converge on the target image and public readiness."; exit 1; }
+          config="$(curl --fail --silent --show-error https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json)"
+          echo "$config" | jq -e '.version == "tinycloud.share-email-claim/config-v1" and .shareOrigin == "https://share.tinycloud.xyz" and (.nodeEnabled | type == "boolean") and (.issuerEnabled | type == "boolean")' >/dev/null
+          nonce="$(curl --fail --silent --show-error -H 'Origin: https://share.tinycloud.xyz' https://share.tinycloud.xyz/api/share/auth/openkey/nonce)"
+          echo "$nonce" | jq -e 'keys | sort == ["expiresAt", "nonce"] and (.nonce | test("^[A-Za-z0-9_-]{20,}$")) and (.expiresAt | type == "string")' >/dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST -H 'Origin: https://share.tinycloud.xyz' -H 'content-type: application/json' --data '{}' https://share.tinycloud.xyz/api/share/auth/openkey)" = 400
