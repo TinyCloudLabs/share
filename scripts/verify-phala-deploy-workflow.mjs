@@ -11,11 +11,14 @@ for (const fragment of [
   "workflows: [Share API image]",
   "branches: [main]",
   "workflow_dispatch:",
+  "share_commit:",
   "environment: production",
   "group: share-api-phala-production",
   "cancel-in-progress: false",
   "--cvm-id \"${PHALA_CVM_ID}\"",
   "gh attestation verify",
+  "gh run download",
+  "share-api-image-digest",
   "SHARE_RELEASE_PROVENANCE",
   "https://share.tinycloud.xyz/health/readiness",
   "https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json",
@@ -24,6 +27,11 @@ for (const fragment of [
 
 assert.match(workflow, /github\.event\.workflow_run\.conclusion == 'success'/);
 assert.match(workflow, /github\.event\.workflow_run\.head_branch == github\.event\.repository\.default_branch/);
+assert.match(workflow, /\.commit == \$commit/);
+assert.match(workflow, /git merge-base --is-ancestor/);
+assert.match(workflow, /PHALA_CVM_ID: \$\{\{ vars\.PHALA_SHARE_API_CVM_ID \}\}/);
+assert.doesNotMatch(workflow, /PHALA_API_KEY: \$\{\{ secrets\.PHALA_API_KEY \}\}/);
+assert.doesNotMatch(workflow, /share-api:sha-\$\{IMAGE_WORKFLOW_SHA\}/);
 assert.match(compose, /share-api-state:\/var\/lib\/tinycloud\/share/);
 assert.match(workflow, /target image.*state == "running"/s);
 assert.doesNotMatch(workflow, /phala "\$\{DEPLOY_ARGS\[@\]\}"[^\n]*-e/);

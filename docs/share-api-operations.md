@@ -75,11 +75,14 @@ Pages deployment and CVM image/commit. Do not send email during smoke tests.
 ## Automated Phala release path
 
 `.github/workflows/share-api-phala-production.yml` runs only after the
-successful `Share API image` workflow for `main`, and uses that commit's
-`sha-<commit>` image tag solely to resolve a digest. It verifies the GitHub
-build attestation before updating the existing
-`PHALA_SHARE_API_CVM_ID` (default `share-api`) under the protected GitHub
-`production` environment. Deployments serialize; they never create a CVM.
+successful `Share API image` workflow for `main`. That image workflow records
+its build-action digest as a retained artifact; the deploy workflow downloads
+that exact artifact by the successful workflow-run ID rather than resolving a
+mutable tag. It verifies the GitHub build attestation before updating the
+existing `PHALA_SHARE_API_CVM_ID` under the protected GitHub `production`
+environment. Deployments serialize; they never create a CVM. Configure only
+the production-environment `PHALA_CLOUD_API_KEY` secret and the CVM ID and
+release-provenance variables there.
 
 The workflow passes no `phala -e` flags. The sealed tunnel token and all other
 sealed environment inputs remain intact; it writes only the digest and public
@@ -89,8 +92,11 @@ manual dispatch must explicitly provide one). GitHub production variables
 `SHARE_NODE_COMMIT`, `SHARE_OPEN_CREDENTIALS_COMMIT`, `SHARE_SDK_COMMIT`, and
 `SHARE_MIGRATION_VERSION` are required to form provenance.
 
-Manual dispatch is for digest-pinned rollback/recovery only and still verifies
-the image attestation. Each deployment waits for the target `share-api`
+Manual dispatch is for digest-pinned rollback/recovery only: it requires the
+attested image digest and its protected-main `share_commit`, and checks the
+commit remains reachable from main. It still verifies the image attestation.
+To roll back, dispatch the known-good digest and commit; the currently running
+digest is captured as the new immutable rollback target. Each deployment waits for the target `share-api`
 container to run, then checks public `https://share.tinycloud.xyz` readiness,
 the published trust contract, and the exact OpenKey nonce/proof boundary. A
 failed check leaves the workflow failed for operator rollback; it never rolls

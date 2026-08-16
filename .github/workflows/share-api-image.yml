@@ -56,3 +56,23 @@ jobs:
           subject-name: ghcr.io/tinycloudlabs/share-api
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+      # This artifact is the build action's output, rather than a later lookup
+      # of the mutable sha-* tag. The production workflow consumes it by this
+      # exact successful workflow-run id.
+      - name: Record the published immutable image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg commit "${GITHUB_SHA}" \
+            --arg digest "${IMAGE_DIGEST}" \
+            --arg image "ghcr.io/tinycloudlabs/share-api@${IMAGE_DIGEST}" \
+            '{commit:$commit,digest:$digest,image:$image}' \
+            > "${RUNNER_TEMP}/share-api-image-digest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: share-api-image-digest
+          path: ${{ runner.temp }}/share-api-image-digest.json
+          if-no-files-found: error
+          retention-days: 90

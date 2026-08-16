@@ -11,14 +11,20 @@ on:
         description: Exact previously-attested Share API image digest to deploy.
         required: true
         type: string
+      share_commit:
+        description: Protected-main commit that produced the manually selected image.
+        required: true
+        type: string
       rollback_image:
         description: Exact known-good image digest retained as this release's rollback target.
         required: false
         type: string
 
 permissions:
+  actions: read
   contents: read
   attestations: read
+  packages: read
 
 concurrency:
   group: share-api-phala-production
@@ -26,7 +32,7 @@ concurrency:
 
 env:
   PHALA_CLI_VERSION: 1.1.19
-  PHALA_CVM_ID: ${{ vars.PHALA_SHARE_API_CVM_ID || 'share-api' }}
+  PHALA_CVM_ID: ${{ vars.PHALA_SHARE_API_CVM_ID }}
 
 jobs:
   deploy:
@@ -41,10 +47,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     permissions:
+      actions: read
       contents: read
       attestations: read
+      packages: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
@@ -56,6 +64,22 @@ jobs:
           else
             test "${GITHUB_REF_NAME}" = "${{ github.event.repository.default_branch }}"
           fi
+          [[ "${PHALA_CVM_ID}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::PHALA_SHARE_API_CVM_ID must name the existing CVM."; exit 1; }
+
+      - name: Recover the exact successful image workflow output
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          gh run download "${IMAGE_WORKFLOW_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name share-api-image-digest --dir "${RUNNER_TEMP}/share-api-image"
+          test -f "${RUNNER_TEMP}/share-api-image/share-api-image-digest.json" || { echo "::error::Successful image workflow did not retain its digest artifact."; exit 1; }
+          jq -e \
+            --arg commit "${{ github.event.workflow_run.head_sha }}" \
+            --arg imagePrefix 'ghcr.io/tinycloudlabs/share-api@sha256:' \
+            '.commit == $commit and (.digest | test("^sha256:[0-9a-f]{64}$")) and .image == ($imagePrefix + (.digest | ltrimstr("sha256:")))' \
+            "${RUNNER_TEMP}/share-api-image/share-api-image-digest.json" >/dev/null
 
       - name: Install Phala CLI
         run: npm install -g "phala@${PHALA_CLI_VERSION}"
@@ -63,18 +87,22 @@ jobs:
       - name: Select and attest immutable image
         env:
           DISPATCH_IMAGE: ${{ inputs.image }}
+          DISPATCH_SHARE_COMMIT: ${{ inputs.share_commit }}
           IMAGE_WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = workflow_run ]; then
-            tag="ghcr.io/tinycloudlabs/share-api:sha-${IMAGE_WORKFLOW_SHA}"
-            digest="$(docker buildx imagetools inspect "${tag}" --format '{{.Digest}}')"
-            IMAGE="ghcr.io/tinycloudlabs/share-api@${digest}"
+            IMAGE="$(jq -r '.image' "${RUNNER_TEMP}/share-api-image/share-api-image-digest.json")"
+            SHARE_COMMIT="${IMAGE_WORKFLOW_SHA}"
           else
             IMAGE="${DISPATCH_IMAGE}"
+            SHARE_COMMIT="${DISPATCH_SHARE_COMMIT}"
+            git fetch --no-tags origin "${GITHUB_REF_NAME}"
+            git merge-base --is-ancestor "${SHARE_COMMIT}" "origin/${GITHUB_REF_NAME}" || { echo "::error::Manual images must name a commit reachable from protected main."; exit 1; }
           fi
           [[ "${IMAGE}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Image must be an immutable Share API digest."; exit 1; }
           gh attestation verify "${IMAGE}" --repo "${GITHUB_REPOSITORY}"
+          echo "${{ github.token }}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           raw="$(docker buildx imagetools inspect "${IMAGE}" --raw)"
           if echo "${raw}" | jq -e '.manifests' >/dev/null; then
             platform="$(echo "${raw}" | jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest')"
@@ -85,11 +113,11 @@ jobs:
           [[ "${image_config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Could not resolve target image configuration digest."; exit 1; }
           echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
           echo "IMAGE_CONFIG_DIGEST=${image_config_digest}" >> "$GITHUB_ENV"
-          echo "SHARE_COMMIT=${IMAGE_WORKFLOW_SHA:-$GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "SHARE_COMMIT=${SHARE_COMMIT}" >> "$GITHUB_ENV"
 
       - name: Resolve immutable rollback target from the existing CVM
         env:
-          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           DISPATCH_ROLLBACK_IMAGE: ${{ inputs.rollback_image }}
         run: |
           set -euo pipefail
@@ -128,7 +156,7 @@ jobs:
 
       - name: Deploy in place without sealed environment writes
         env:
-          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           set -euo pipefail
           # No -e flags: Phala's sealed tunnel/token and service settings remain
@@ -137,7 +165,7 @@ jobs:
 
       - name: Wait for CVM, container, public readiness, and OpenKey proof contract
         env:
-          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY || secrets.PHALA_API_KEY }}
+          PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
           set -euo pipefail
           deadline=$((SECONDS + 600)); converged=false
