@@ -71,3 +71,43 @@ attach `api.share.tinycloud.xyz` through authenticated Cloudflare, set the
 Pages variable, and deploy Functions. Verify public TLS, readiness, nonce,
 well-known JSON, and the sender boundary. Roll back by restoring the prior
 Pages deployment and CVM image/commit. Do not send email during smoke tests.
+
+## Automated Phala release path
+
+`.github/workflows/share-api-phala-production.yml` runs only after the
+successful `Share API image` workflow for `main`. That image workflow records
+its build-action digest as a retained artifact; the deploy workflow downloads
+that exact artifact by the successful workflow-run ID rather than resolving a
+mutable tag. It verifies the GitHub build attestation before updating the
+existing `PHALA_SHARE_API_CVM_ID` under the protected GitHub `production`
+environment. Deployments serialize; they never create a CVM. Configure only
+the production-environment `PHALA_CLOUD_API_KEY` secret and the CVM ID and
+release-provenance variables there. Changes to the rendered
+`compose.share-api.yml` also publish a reviewed main image and therefore enter
+this release path. The deploy explicitly disables public CVM logs.
+
+The workflow passes no `phala -e` flags. The sealed tunnel token and all other
+sealed environment inputs remain intact; it writes only the digest and public
+strict release-provenance record into a temporary compose file. It retains the
+currently-running immutable `share-api` digest as the rollback target (or a
+manual dispatch must explicitly provide one). GitHub production variables
+`SHARE_NODE_COMMIT`, `SHARE_OPEN_CREDENTIALS_COMMIT`, `SHARE_SDK_COMMIT`, and
+`SHARE_MIGRATION_VERSION` are required to form provenance.
+
+Manual dispatch is for digest-pinned rollback/recovery only: it requires the
+attested image digest and its protected-main `share_commit`, and checks the
+commit remains reachable from main. It verifies the image attestation with
+`--source-digest` set to that exact commit and binds the signer to the image
+workflow, so an attestation from another commit or workflow cannot be paired
+with an arbitrary main ancestor. Manual recovery checks out that source commit
+before rendering its configuration provenance, rather than using a later
+protected-main checkout; the workflow retains full main history for this
+ancestor proof. All image-workflow actions are commit-pinned.
+To roll back, dispatch the known-good digest and commit; the currently running
+digest is captured as the new immutable rollback target. Each deployment waits
+for the exact target `share-api` image/configuration to be running, then uses
+public `https://share.tinycloud.xyz` readiness as the health gate because the
+Phala CLI does not currently expose Docker health in `ps --json`. It also checks
+the published trust contract and the exact OpenKey nonce/proof boundary. A
+failed check leaves the workflow failed for operator rollback; it never rolls
+forward using a tag or changes sealed inputs.
