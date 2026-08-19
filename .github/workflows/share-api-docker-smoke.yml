@@ -91,7 +91,7 @@ jobs:
             sleep 2
           done
           test "$(curl -fsS http://127.0.0.1:8788/health/readiness)" = '{"authReady":true,"senderReady":true}'
-          test "$(curl -fsSI http://127.0.0.1:8788/.well-known/tinycloud-share/config.json | tr -d '\r' | awk -F': ' 'tolower($1) == "x-tinycloud-share-accountless-receiver" { print tolower($2) }')" = enabled
+          test "$(curl -fsS -D - -o /dev/null http://127.0.0.1:8788/.well-known/tinycloud-share/config.json | tr -d '\r' | awk -F': ' 'tolower($1) == "x-tinycloud-share-accountless-receiver" { print tolower($2) }')" = enabled
           curl -fsS http://127.0.0.1:8788/.well-known/tinycloud-share/config.json > "$RUNNER_TEMP/committed-config.json"
           jq -e --slurpfile committed config/trust-bundle.production.json '
             .shareOrigin == $committed[0].shareOrigin and
