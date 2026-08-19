@@ -176,6 +176,7 @@ async function installInterception(page, services, fixtureOrigin) {
     if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
+      if (url.pathname === "/share/v3") return proxy(request, services.credentialsOrigin, { cors: true, entry });
       return proxy(request, fixtureOrigin, { cors: true, entry });
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
