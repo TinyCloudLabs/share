@@ -65,6 +65,11 @@ export interface PublishSharePolicyInput {
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly transport: PolicyAccessTransport;
+  /** Establish the owner-signed generic issuance parent before publication. */
+  readonly prepareParent?: (input: {
+    readonly policyId: string;
+    readonly capability: ReturnType<typeof readOnlyCeiling>[number];
+  }) => Promise<void>;
 }
 
 export interface PublishSharePolicyResult {
@@ -174,6 +179,11 @@ export async function publishSharePolicyToEngine(
     },
     signer,
   );
+
+  await input.prepareParent?.({
+    policyId: policy.policyId,
+    capability: readOnlyCeiling(input)[0]!,
+  });
 
   const { registeredPolicyIds } = await publishSignedPolicyObjects({
     endpoint: input.engine.endpoint,

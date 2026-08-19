@@ -7,7 +7,7 @@ import { createUnifiedPolicy, contentSourceDigestHex, signV3Envelope, type Unifi
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
-import { createFetchPolicyAccessTransport } from "@tinycloud/sdk-core/policy-access";
+import { createFetchPolicyAccessTransport, registerPolicyParentDelegation, requestCredentialInvitationDelivery } from "@tinycloud/sdk-core/policy-access";
 import { sha256 } from "@noble/hashes/sha256";
 import { publishSharePolicyToEngine } from "./policy-engine-publish.js";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
@@ -623,6 +623,40 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       createdAt,
       expiresAt,
       transport: policyEngineTransport,
+      prepareParent: async ({ policyId, capability }) => {
+        const parentKv = capabilities.find((candidate) => candidate.kind === "kv");
+        if (parentKv === undefined) throw fail("internal", "policy parent has no KV capability");
+        const parentExpiresAt = new Date(Math.min(Date.parse(expiresAt), Date.parse(createdAt) + 31 * 24 * 60 * 60 * 1000));
+        const root = await createOwnerRoot({
+          ownerDid,
+          role: "policy-authority",
+          audienceDid: config.policyEngineGrantIssuerDid!,
+          policyId,
+          policyDigestHex: policy.policyDigestHex,
+          policyCid: policy.policyCid,
+          contentSourceDigestHex: sourceDigest,
+          capabilityCeilingHashHex: sourceDigest,
+          nativeProjectionHashHex: sourceDigest,
+          notBefore: new Date(createdAt),
+          expiresAt: parentExpiresAt,
+          nodeAudience: config.nodeAudience,
+          capabilities: [{ ...parentKv, actions: ["tinycloud.kv/get"] }],
+        });
+        await registerPolicyParentDelegation({
+          policyEngineEndpoint: config.policyEngineOrigin!,
+          ownerNodeEndpoint: config.nodeOrigin,
+          ownerNodeSpaceId: spaceId,
+          ownerDid,
+          authorization: root.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
+          delegationCid: root.cid,
+          nativeResource: unifiedSource.kvResource,
+          policyCapability: capability,
+          transport: createFetchPolicyAccessTransport({
+            originPolicy: { allowedOrigins: [config.policyEngineOrigin!, config.nodeOrigin] },
+            fetchFn,
+          }),
+        });
+      },
     });
     const enforcerDid = config.enforcerDid;
     const envelope = await signV3Envelope({
@@ -689,12 +723,40 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       link: url,
       filename,
     };
+    const deliveryNonce = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
     return {
       url,
       cid: stored.cid,
       format: model.linkFormat,
       expiresAt,
       record,
+      ...(deliveryEmail === undefined ? {} : {
+        notify: async () => {
+          const now = new Date();
+          const shareExpirySeconds = Math.floor((Date.parse(expiresAt) - now.getTime()) / 1000);
+          if (shareExpirySeconds <= 0) throw new Error("We couldn't send that email. The link above still works.");
+          const transport = createFetchPolicyAccessTransport({
+            originPolicy: { allowedOrigins: [config.policyEngineOrigin!, config.credentialsOrigin] },
+            fetchFn,
+          });
+          await requestCredentialInvitationDelivery({
+            policyEngineEndpoint: config.policyEngineOrigin!,
+            deliveryEndpoint: config.credentialsOrigin,
+            policyId: publishedPolicy.policyId,
+            resource: unifiedSource.kvResource,
+            credentialType: "opencredentials.email/v1",
+            returnLink: url,
+            envelopeRef: stored.cid,
+            audience: config.credentialsOrigin,
+            signerDid: ownerDid,
+            signDigest: options.signUnifiedPolicy!,
+            transport,
+            nonce: deliveryNonce,
+            now,
+            ttlSeconds: Math.min(300, shareExpirySeconds),
+          });
+        },
+      }),
     };
   } finally {
     key.fill(0);
