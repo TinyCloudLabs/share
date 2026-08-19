@@ -53,6 +53,7 @@ const pickFromLibrary = ["eval", "(()=>{const link=document.querySelector('.cont
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-production-live");
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-production-live");
+const policyEngineRoot = process.env.POLICY_ENGINE_WORKTREE ?? join(workspaceRoot, "worktrees/policy-engine/feat-plaintext-exact-email-share");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const artifactPath = process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
 const lockPath = join(tmpdir(), "tinycloud-sharing-e2e.lock");
@@ -232,7 +233,13 @@ function run(command, args, cwd, env = {}) {
 }
 
 async function assertReleaseInputs() {
-  const repositories = tc465Joined ? [
+  const repositories = tc500Joined ? [
+    { name: "share", path: shareRoot, branch: "skgbafa/tc-500-accountless-email-claim", pr: "98" },
+    { name: "node", path: nodeRoot, branch: "main" },
+    { name: "opencredentials", path: credentialsRoot, branch: "main" },
+    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-500-accountless-browser-interop", pr: "408" },
+    { name: "policy-engine", path: policyEngineRoot, branch: "feat/plaintext-exact-email-share", pr: "12" },
+  ] : tc465Joined ? [
     { name: "share", path: shareRoot, branch: "skgbafa/tc-465-share-receiver-credentials", pr: "78" },
     { name: "node", path: nodeRoot, branch: "skgbafa/tc-470-holder-credential-admission", pr: "210" },
     { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-462-credential-flow-opencredentials-785732297208", pr: "117" },
@@ -262,6 +269,9 @@ async function assertReleaseInputs() {
   checks.push(localUnpushedMode
     ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
     : `Release inputs verified clean with matching upstream, remote, and GitHub PR heads; committed tree digests recorded for ${Object.keys(launchInputDigests).join(", ")}.`);
+  if (tc500Joined) {
+    throw new Error("accountless joined gate is blocked: OpenCredentials main has reusable email/OTP issuance but no reviewed sender-authorized, replay/rate-limited invitation-delivery contract; the only available share delivery requires a Node-signed /share/* authorization, which this architecture forbids");
+  }
 }
 async function waitFor(url, timeoutMs = 60_000, child) {
   const deadline = Date.now() + timeoutMs;

@@ -17,7 +17,7 @@ import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const tc500 = process.argv.includes("--tc-500");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-node-1.15.0-release" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/tinycloud-node" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
 const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-accountless-share-receive" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/OpenCredentials" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");

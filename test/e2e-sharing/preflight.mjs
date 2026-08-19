@@ -38,7 +38,7 @@ export async function verifyReleaseInputRepository(repository, { localUnpushedMo
   const { head, digest } = repositoryHeadDigest(repository.path);
   if (!localUnpushedMode) {
     assertLocalMatchesUpstreamAndRemote(repository.name, repository.path, repository.branch, head);
-    assertLocalMatchesPr(repository.name, repository.path, repository.pr, head);
+    if (repository.pr !== undefined) assertLocalMatchesPr(repository.name, repository.path, repository.pr, head);
   }
   return { head, digest };
 }
