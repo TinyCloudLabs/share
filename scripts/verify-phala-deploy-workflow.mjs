@@ -57,6 +57,10 @@ assert.match(
 );
 assert.match(
   workflow,
+  /- name: Select and attest immutable image\n\s+env:\n\s+GH_TOKEN: \$\{\{ github\.token \}\}/,
+);
+assert.match(
+  workflow,
   /PHALA_CVM_ID: \$\{\{ vars\.PHALA_SHARE_API_CVM_ID \}\}/,
 );
 assert.doesNotMatch(
