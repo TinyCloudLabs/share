@@ -80,17 +80,19 @@ its build-action digest as a retained artifact; the deploy workflow downloads
 that exact artifact by the successful workflow-run ID rather than resolving a
 mutable tag. It verifies the GitHub build attestation before updating the
 existing `PHALA_SHARE_API_CVM_ID` under the protected GitHub `production`
-environment. Deployments serialize; they never create a CVM. Configure only
-the production-environment `PHALA_CLOUD_API_KEY` secret and the CVM ID and
-release-provenance variables there. Changes to the rendered
+environment. Deployments serialize; they never create a CVM. Configure the
+production-environment `PHALA_CLOUD_API_KEY` and `CLOUDFLARE_TUNNEL_TOKEN`
+secrets plus the CVM ID and release-provenance variables there. Changes to the rendered
 `compose.share-api.yml` also publish a reviewed main image and therefore enter
 this release path. The deploy explicitly disables public CVM logs.
 
-The workflow passes no `phala -e` flags. The sealed tunnel token and all other
-sealed environment inputs remain intact; it writes only the digest and public
-strict release-provenance record into a temporary compose file. It retains the
-currently-running immutable `share-api` digest as the rollback target (or a
-manual dispatch must explicitly provide one). GitHub production variables
+Phala replaces sealed environment state during every deploy. The workflow
+therefore reseals the Cloudflare tunnel token on every update. The public trust
+bundle is selected from `config/trust-bundle.production.json` inside the
+attested image and is not sealed. No other production secret or environment
+input is required. The workflow retains the currently-running immutable
+`share-api` digest as the rollback target (or a manual dispatch must explicitly
+provide one). GitHub production variables
 `SHARE_NODE_COMMIT`, `SHARE_OPEN_CREDENTIALS_COMMIT`, `SHARE_SDK_COMMIT`, and
 `SHARE_MIGRATION_VERSION` are required to form provenance.
 
@@ -110,4 +112,4 @@ public `https://share.tinycloud.xyz` readiness as the health gate because the
 Phala CLI does not currently expose Docker health in `ps --json`. It also checks
 the published trust contract and the exact OpenKey nonce/proof boundary. A
 failed check leaves the workflow failed for operator rollback; it never rolls
-forward using a tag or changes sealed inputs.
+forward using a tag or deploys an incomplete sealed environment.

@@ -12,34 +12,21 @@ services:
       SHARE_BINDING_STORE_PATH: ${SHARE_BINDING_STORE_PATH:-/var/lib/tinycloud/share/bindings.ndjson}
       SHARE_REGISTRY_UPLOAD_KEY_PATH: /var/lib/tinycloud/share/registry-upload.key
       SHARE_SENDER_ROOT_KEY_PATH: /var/lib/tinycloud/share/sender-root.key
-      # Where the trust document comes from. Written as a literal, not a
-      # `${...}` substitution, on purpose: the trust bundle holds no secret
+      # The trust document is pinned inside the immutable image. Written as a
+      # literal, not a `${...}` substitution, on purpose: the bundle holds no secret
       # (five public origins, two did:web ids, two key ids, two PUBLIC Ed25519
       # keys, two versions, two booleans), so changing it should be a reviewed
       # edit to a tracked file rather than a rewrite of the CVM's sealed
-      # environment — which can only be replaced wholesale and would take the
-      # co-sealed CLOUDFLARE_TUNNEL_TOKEN with it.
-      #
-      #   environment (default, matches production today)
-      #       -> decode SHARE_TRUST_BUNDLE_BASE64 from sealed storage
-      #   committed
-      #       -> use config/trust-bundle.production.json from the pinned image
-      SHARE_TRUST_BUNDLE_SOURCE: environment
-      SHARE_TRUST_BUNDLE_BASE64: ${SHARE_TRUST_BUNDLE_BASE64-}
+      # environment. Phala replaces sealed environment state on each deploy,
+      # so production seals only the Cloudflare tunnel token.
+      SHARE_TRUST_BUNDLE_SOURCE: committed
       SHARE_RELEASE_PROVENANCE: ${SHARE_RELEASE_PROVENANCE:?set the immutable reviewed release provenance manifest}
     command:
       - /bin/sh
       - -eu
       - -c
       - |
-        if [ "$$SHARE_TRUST_BUNDLE_SOURCE" = committed ]; then
-          unset SHARE_TRUST_BUNDLE_BASE64
-        else
-          [ -n "$$SHARE_TRUST_BUNDLE_BASE64" ] || { echo 'SHARE_TRUST_BUNDLE_SOURCE=environment requires SHARE_TRUST_BUNDLE_BASE64' >&2; exit 1; }
-          printf '%s' "$$SHARE_TRUST_BUNDLE_BASE64" | base64 -d > /tmp/share-trust-bundle.json
-          export SHARE_TRUST_BUNDLE_FILE=/tmp/share-trust-bundle.json
-          unset SHARE_TRUST_BUNDLE_BASE64
-        fi
+        unset SHARE_TRUST_BUNDLE_BASE64
         [ -n "$$SHARE_AUTH_USERS_JSON" ] || unset SHARE_AUTH_USERS_JSON
         exec npm run start:deploy
     volumes:
@@ -47,7 +34,13 @@ services:
     read_only: true
     tmpfs: [/tmp]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health/readiness').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
