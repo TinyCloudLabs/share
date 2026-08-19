@@ -134,7 +134,7 @@ jobs:
           test -n "${PHALA_API_KEY}" || { echo "::error::Missing PHALA production credential."; exit 1; }
           rollback="${DISPATCH_ROLLBACK_IMAGE}"
           if [ -z "${rollback}" ]; then
-            rollback="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json | jq -r '[.containers[]? | select(.name == "share-api" or .names[]? == "share-api") | .image | select(type == "string" and test("^ghcr\\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$"))][0] // empty')"
+            rollback="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json | jq -r '[.containers[]? | select(.name == "share-api" or .names[]? == "/share-api" or .names[]? == "share-api") | .image | select(type == "string" and test("^ghcr\\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$"))][0] // empty')"
           fi
           [[ "${rollback}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::The existing CVM must expose an immutable Share API image, or supply rollback_image for manual recovery."; exit 1; }
           test "${rollback}" != "${IMAGE}" || { echo "::error::Rollback target must differ from the candidate image."; exit 1; }
