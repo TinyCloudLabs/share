@@ -613,26 +613,32 @@ async function startFixtures(tempRoot) {
   // differ from the audience actually enrolled in the trust bundle below —
   // only nodeInvitationPublicKey is taken from it; the enforcer DID is
   // always read back from the trust bundle Node was actually launched with.
-  const nodeDescriptorJson = execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" });
-  const nodePublic = JSON.parse(nodeDescriptorJson);
+  const nodePublic = tc500Joined
+    ? { nodeInvitationPublicKey: Buffer.from(ed25519.getPublicKey(Buffer.alloc(32, 77))).toString("base64url") }
+    : JSON.parse(execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" }));
   const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
   const nodeTrustBundleJson = trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey);
   await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
-  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...buildNodeLaunchEnv(tempRoot, trustBundlePath) });
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...(tc500Joined ? { TINYCLOUD_STORAGE__DATADIR: join(tempRoot, "node-data") } : buildNodeLaunchEnv(tempRoot, trustBundlePath)) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/share/v2/readiness`, 180_000, node);
+  await waitFor(`${nodeOrigin}/${tc500Joined ? "info" : "share/v2/readiness"}`, 180_000, node);
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
-  const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
-  const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
-  if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) {
-    throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
-  }
   const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
-  const shareV2Capability = assertNodeShareV2Capability(nodeInfo);
-  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: shareV2Capability.enforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
-  checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
+  let nodeEnforcerDid = nodeEnforcerAudience;
+  if (tc500Joined) {
+    assert.equal((await fetch(`${nodeOrigin}/share/v2/readiness`)).status, 404, "generic Node unexpectedly exposed /share/* authority");
+    checks.push("real current-main Node exposed generic /delegate and /invoke with no /share/* route.");
+  } else {
+    const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
+    const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
+    if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
+    const shareV2Capability = assertNodeShareV2Capability(nodeInfo);
+    nodeEnforcerDid = shareV2Capability.enforcerDid;
+    checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
+  }
+  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: nodeEnforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
 
   await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
   const readinessFile = join(tempRoot, "share-email-readiness.json");
