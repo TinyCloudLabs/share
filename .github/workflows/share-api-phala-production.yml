@@ -89,6 +89,7 @@ jobs:
 
       - name: Select and attest immutable image
         env:
+          GH_TOKEN: ${{ github.token }}
           DISPATCH_IMAGE: ${{ inputs.image }}
           DISPATCH_SHARE_COMMIT: ${{ inputs.share_commit }}
           IMAGE_WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
