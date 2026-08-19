@@ -64,6 +64,10 @@ assert.match(
   workflow,
   /PHALA_CVM_ID: \$\{\{ vars\.PHALA_SHARE_API_CVM_ID \}\}/,
 );
+assert.match(
+  workflow,
+  /select\(\.name == "share-api" or \.names\[\]\? == "\/share-api" or \.names\[\]\? == "share-api"\)/,
+);
 assert.doesNotMatch(
   workflow,
   /PHALA_API_KEY: \$\{\{ secrets\.PHALA_API_KEY \}\}/,
