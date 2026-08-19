@@ -74,6 +74,16 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(workflow, /share-api:sha-\$\{IMAGE_WORKFLOW_SHA\}/);
 assert.match(compose, /share-api-state:\/var\/lib\/tinycloud\/share/);
+assert.match(compose, /SHARE_TRUST_BUNDLE_SOURCE: committed/);
+assert.doesNotMatch(compose, /SHARE_TRUST_BUNDLE_BASE64:/);
+assert.match(
+  workflow,
+  /CLOUDFLARE_TUNNEL_TOKEN: \$\{\{ secrets\.CLOUDFLARE_TUNNEL_TOKEN \}\}/,
+);
+assert.match(
+  workflow,
+  /--env "CLOUDFLARE_TUNNEL_TOKEN=\$\{CLOUDFLARE_TUNNEL_TOKEN\}"/,
+);
 assert.match(
   workflow,
   /exact candidate image\/configuration.*public readiness contract as the health signal/s,

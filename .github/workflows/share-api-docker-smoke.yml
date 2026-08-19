@@ -1,7 +1,18 @@
 name: Share API Docker smoke
 on:
   pull_request:
-    paths: [Dockerfile.share-api, compose.share-api.yml, src/**, public/**, config/**, packages/**, package*.json, scripts/validate-deploy-config.mjs, .github/workflows/share-api-docker-smoke.yml]
+    paths:
+      [
+        Dockerfile.share-api,
+        compose.share-api.yml,
+        src/**,
+        public/**,
+        config/**,
+        packages/**,
+        package*.json,
+        scripts/validate-deploy-config.mjs,
+        .github/workflows/share-api-docker-smoke.yml,
+      ]
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -15,9 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Validate the sealed production compose shape
-        env:
-          SHARE_TRUST_BUNDLE_BASE64: eyJ2ZXJzaW9uIjoidGlueWNsb3VkLnNoYXJlLWVtYWlsLXRydXN0LWJ1bmRsZS92MSJ9
+      - name: Validate the production compose shape
         run: |
           docker compose -f compose.share-api.yml config --format json > "$RUNNER_TEMP/compose.json"
           jq -e '
@@ -30,22 +39,11 @@ jobs:
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITY_JSON") | not) and
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITIES_JSON") | not) and
             .services["share-api"].environment.SHARE_AUTH_USERS_JSON == "" and
-            (.services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 | test("^[A-Za-z0-9+/=]+$")) and
-            .services["share-api"].environment.SHARE_TRUST_BUNDLE_SOURCE == "environment" and
+            (.services["share-api"].environment | has("SHARE_TRUST_BUNDLE_BASE64") | not) and
+            .services["share-api"].environment.SHARE_TRUST_BUNDLE_SOURCE == "committed" and
+            .services.cloudflared.environment.TUNNEL_TOKEN == "test-only-compose-token" and
             .services.cloudflared.depends_on["share-api"].condition == "service_healthy"
           ' "$RUNNER_TEMP/compose.json" >/dev/null
-      # TC-372. The unsealed selector must resolve with SHARE_TRUST_BUNDLE_BASE64
-      # absent entirely — that is the whole point of flipping it, and it must not
-      # reintroduce the `:?` requirement that forces a sealed-environment rewrite.
-      - name: Validate the committed-source compose shape with no sealed bundle
-        run: |
-          sed 's/^      SHARE_TRUST_BUNDLE_SOURCE: environment$/      SHARE_TRUST_BUNDLE_SOURCE: committed/' \
-            compose.share-api.yml > "$RUNNER_TEMP/compose.committed.yml"
-          docker compose -f "$RUNNER_TEMP/compose.committed.yml" config --format json > "$RUNNER_TEMP/compose-committed.json"
-          jq -e '
-            .services["share-api"].environment.SHARE_TRUST_BUNDLE_SOURCE == "committed" and
-            .services["share-api"].environment.SHARE_TRUST_BUNDLE_BASE64 == ""
-          ' "$RUNNER_TEMP/compose-committed.json" >/dev/null
       - run: docker build -f Dockerfile.share-api -t share-api-smoke .
       - run: |
           mkdir -p "$RUNNER_TEMP/share-state"

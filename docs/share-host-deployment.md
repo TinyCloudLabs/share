@@ -86,7 +86,7 @@ Required production variables:
 - `SHARE_SENDER_ENABLED`: optional strict boolean string. Omitted or `false`
   selects auth-only mode; `true` enables the sender and requires a healthy
   wallet-rooted authentication path and a usable durable binding store.
-- `SHARE_TRUST_BUNDLE_SOURCE`: `environment` (default) or `committed`. See
+- `SHARE_TRUST_BUNDLE_SOURCE`: `committed` in production. See
   "Where the trust bundle comes from" below.
 - `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`: the strict
   `tinycloud.share-email-trust-bundle/v1` public document also mounted into
@@ -142,11 +142,11 @@ document as a plain, unsealed, read-only JSON file.
 
 Two sources are supported, selected by `SHARE_TRUST_BUNDLE_SOURCE`:
 
-- `environment` (the default, and what production runs today): the host reads
+- `environment` (available for non-production compositions): the host reads
   `SHARE_TRUST_BUNDLE` or `SHARE_TRUST_BUNDLE_FILE`. In the CVM,
   `compose.share-api.yml` base64-decodes `SHARE_TRUST_BUNDLE_BASE64` out of
   Phala sealed environment storage into `/tmp`.
-- `committed`: the host reads `config/trust-bundle.production.json`, the
+- `committed` (the production setting): the host reads `config/trust-bundle.production.json`, the
   reviewed document baked into the image. No trust material is in the
   environment at all.
 
@@ -183,7 +183,7 @@ key change — a node redeploy that rotates the derived key, a second node —
 should follow too:
 
 1. Read the real key. `curl -fsS
-   https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys` and take
+https://tee.node.tinycloud.xyz/.well-known/tinycloud/node-keys` and take
    `shareInvitationPublicKey`.
 2. Edit the one `"nodeInvitationPublicKey"` line in
    `config/trust-bundle.production.json`. Change nothing else.
@@ -195,7 +195,7 @@ should follow too:
    `SHARE_TRUST_BUNDLE_SOURCE: committed`. Do not submit an environment file:
    the sealed `CLOUDFLARE_TUNNEL_TOKEN` must not be rewritten.
 6. Verify. `curl -fsS
-   https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json` reports
+https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json` reports
    the new key, and `/health/readiness` still reports `authReady: true`.
 
 Two other holders of the same value must move in the same change, or delivery

@@ -164,14 +164,17 @@ jobs:
           NODE
           echo "RENDERED_COMPOSE=${RUNNER_TEMP}/share-api.phala.yml" >> "$GITHUB_ENV"
 
-      - name: Deploy in place without sealed environment writes
+      - name: Deploy in place with the complete sealed environment
         env:
           PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
         run: |
           set -euo pipefail
-          # No -e flags: Phala's sealed tunnel/token and service settings remain
-          # untouched. The rendered compose changes only public image/provenance.
-          phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}" --no-public-logs
+          test -n "${CLOUDFLARE_TUNNEL_TOKEN}" || { echo "::error::Missing Cloudflare production tunnel credential."; exit 1; }
+          # Phala replaces sealed environment state on deploy. The trust bundle
+          # is public and pinned in the image, so the tunnel token is the entire
+          # production sealed environment and must be supplied every time.
+          phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}" --env "CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}" --no-public-logs
 
       - name: Wait for CVM, candidate container, public readiness, and OpenKey proof contract
         env:
