@@ -65,7 +65,15 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(workflow, /share-api:sha-\$\{IMAGE_WORKFLOW_SHA\}/);
 assert.match(compose, /share-api-state:\/var\/lib\/tinycloud\/share/);
-assert.match(workflow, /target image.*state == "running".*health.*healthy/s);
+assert.match(
+  workflow,
+  /exact candidate image\/configuration.*public readiness contract as the health signal/s,
+);
+assert.match(workflow, /\.state == "running"/);
+assert.match(
+  workflow,
+  /if \[ "\$target" -ge 1 \] && echo "\$readiness" \| jq -e '\.authReady == true and \(\.senderReady \| type == "boolean"\)'/,
+);
 assert.doesNotMatch(workflow, /phala "\$\{DEPLOY_ARGS\[@\]\}"[^\n]*-e/);
 assert.doesNotMatch(workflow, /DEPLOY_ARGS\+=\(-e /);
 assert.doesNotMatch(workflow, /--public-logs/);

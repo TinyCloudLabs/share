@@ -172,7 +172,7 @@ jobs:
           # untouched. The rendered compose changes only public image/provenance.
           phala deploy --api-key "${PHALA_API_KEY}" --cvm-id "${PHALA_CVM_ID}" --compose "${RENDERED_COMPOSE}" --no-public-logs
 
-      - name: Wait for CVM, container, public readiness, and OpenKey proof contract
+      - name: Wait for CVM, candidate container, public readiness, and OpenKey proof contract
         env:
           PHALA_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
@@ -180,11 +180,11 @@ jobs:
           deadline=$((SECONDS + 600)); converged=false
           while [ "$SECONDS" -lt "$deadline" ]; do
             ps="$(phala ps --api-key "${PHALA_API_KEY}" "${PHALA_CVM_ID}" --json 2>/dev/null || echo '{}')"
-            # target image must be running; a stale healthy predecessor is not success.
-            # Do not treat a running process as a healthy release. Phala CLI
-            # versions expose the Docker health status as health, health_status,
-            # or state.health; require one of those explicit healthy values.
-            target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.image == $image or .image == $iid or .image_id == $iid) and .state == "running" and (.health == "healthy" or .health_status == "healthy" or .state.health? == "healthy"))] | length')"
+            # The Phala CLI currently omits Docker health from `ps --json`.
+            # Require the exact candidate image/configuration to be running so
+            # a stale predecessor cannot satisfy the gate, then use the
+            # application's public readiness contract as the health signal.
+            target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.name == "share-api" or .names[]? == "/share-api" or .names[]? == "share-api") and (.image == $image or .image == $iid or .image_id == $iid) and .state == "running")] | length')"
             readiness="$(curl --fail --silent --show-error --max-time 10 https://share.tinycloud.xyz/health/readiness 2>/dev/null || true)"
             if [ "$target" -ge 1 ] && echo "$readiness" | jq -e '.authReady == true and (.senderReady | type == "boolean")' >/dev/null; then converged=true; break; fi
             sleep 15

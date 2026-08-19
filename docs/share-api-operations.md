@@ -104,8 +104,10 @@ before rendering its configuration provenance, rather than using a later
 protected-main checkout; the workflow retains full main history for this
 ancestor proof. All image-workflow actions are commit-pinned.
 To roll back, dispatch the known-good digest and commit; the currently running
-digest is captured as the new immutable rollback target. Each deployment waits for the target `share-api`
-container to report Docker health `healthy`, then checks public `https://share.tinycloud.xyz` readiness,
-the published trust contract, and the exact OpenKey nonce/proof boundary. A
+digest is captured as the new immutable rollback target. Each deployment waits
+for the exact target `share-api` image/configuration to be running, then uses
+public `https://share.tinycloud.xyz` readiness as the health gate because the
+Phala CLI does not currently expose Docker health in `ps --json`. It also checks
+the published trust contract and the exact OpenKey nonce/proof boundary. A
 failed check leaves the workflow failed for operator rollback; it never rolls
 forward using a tag or changes sealed inputs.
