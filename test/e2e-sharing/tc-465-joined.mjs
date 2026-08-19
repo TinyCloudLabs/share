@@ -427,6 +427,13 @@ function routeAfter(label, after, predicate) {
 
 function escaped(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
+function shareUrlFromMail(message) {
+  const values = stringsIn(message).flatMap((candidate) => [...candidate.matchAll(/https:\/\/share\.tinycloud\.xyz\/s\/[^\s"'<>]+/g)].map((match) => match[0]));
+  const value = values.sort((left, right) => Number(right.includes("?i=") && right.includes("#k=")) - Number(left.includes("?i=") && left.includes("#k=")) || right.length - left.length)[0];
+  if (value === undefined) throw new Error("captured mail did not contain the generated Share invitation URL");
+  return value.replaceAll("&amp;", "&");
+}
+
 async function main() {
   const control = await mkdtemp(join(tmpdir(), tc500 ? "tinycloud-tc500-" : "tinycloud-tc465-"));
   await chmod(control, 0o700);
@@ -475,9 +482,11 @@ async function main() {
     await waitForText(page, "Shared by me.", 60_000);
     await clickText(page, "New share");
     await page.waitForSelector('input[name="recipient"][value="exactEmail"]', { timeout: 60_000 });
+    const recipientEmail = "sam@tinycloud.xyz";
+    await fetch(`${services.mailOrigin}/emails/reset`, { method: "POST" });
     await page.evaluate(() => { window.__tc465Copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (value) => { window.__tc465Copied = value; return Promise.resolve(); } } }); });
     await page.click('input[name="recipient"][value="exactEmail"]');
-    await page.type("input[name=recipient-value]", "sam@tinycloud.xyz");
+    await page.type("input[name=recipient-value]", recipientEmail);
     const upload = await page.$("input[name=document]");
     assert(upload, "share upload control is missing");
     await upload.uploadFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
@@ -513,6 +522,24 @@ async function main() {
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
 
+    await page.click("button.confirm-notification");
+    await waitForText(page, "Invitation requested", 30_000);
+    const mailDeadline = Date.now() + 30_000;
+    let deliveredMail;
+    while (Date.now() < mailDeadline) {
+      const state = await (await fetch(`${services.mailOrigin}/emails`, { cache: "no-store" })).json();
+      deliveredMail = state.messages?.find((message) => stringsIn(message?.payload).includes(recipientEmail));
+      if (deliveredMail !== undefined) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+    }
+    assert(deliveredMail !== undefined, "exact-email notification was not captured by the mail fixture");
+    const deliveredShareUrl = shareUrlFromMail(deliveredMail.payload);
+    assert.equal(new URL(deliveredShareUrl).pathname, new URL(shareUrl).pathname, "delivered invitation changed the Share CID");
+    assert.match(deliveredShareUrl, /\?i=[A-Za-z0-9_-]+#k=[A-Za-z0-9_-]+$/, "delivered invitation omitted claim or decryption material");
+    await page.click("button.composer-back");
+    await waitForText(page, "All shares", 30_000);
+    assert.equal(await page.$$eval(".sender-history-row", (rows) => rows.length), 1, "delivered share was not retained in sender history");
+
     if (tc500) {
       const receiverContext = await browser.createBrowserContext();
       const receiverPage = await receiverContext.newPage();
@@ -522,7 +549,7 @@ async function main() {
     }
     receiverTargetBaseline = new Set(browser.targets());
     receiverJourneyStarted = true;
-    await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
+    await page.goto(deliveredShareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     if (!tc500) {
       await waitForText(page, "Confirm your email to open this");
       await page.click("button.viewer-primary-action");
@@ -666,12 +693,15 @@ async function main() {
     }
 
     const chain = [
+      "delivery:email", "sender-history:reload",
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
       ...(tc500 ? ["credential:session-custody", "policy-v4:challenge", "policy-v4:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
       "delegate", `invoke:${kvResource}`, "decrypt", "render",
       ...(tc500 ? ["save:openkey", "save:write", "save:readback"] : []),
     ];
     const statuses = tc500 ? {
+      delivery: deliveredMail !== undefined,
+      senderLibrary: true,
       acquisition: result.sequence > create.sequence,
       sessionCredential: policyChallenge.sequence > result.sequence,
       policyV4: policyMint.sequence > policyChallenge.sequence,
@@ -711,6 +741,7 @@ async function main() {
         receiverDid,
         presentationJti: policyMint.body.presentation.jti,
         acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
+        deliveredMailIdSha256: createHash("sha256").update(String(deliveredMail.id)).digest("hex"),
       } : {
         shareCid,
         policyCid,
