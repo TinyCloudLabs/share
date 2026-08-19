@@ -34,6 +34,7 @@ import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-laun
 import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
 import { buildDstackResponsePayload, ed25519PublicKey, parseDstackRequest, formatHttpResponse } from "./dstack-issuer.mjs";
 import { nodeEnforcerAudienceFromTrustBundle } from "./node-enforcer-audience.mjs";
+import { assertNodeShareV2Capability } from "./node-capability.mjs";
 import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
 import { safeFailedTelemetry } from "./failure-diagnostic.mjs";
 import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
@@ -551,10 +552,9 @@ async function startFixtures(tempRoot) {
   if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) {
     throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
   }
-  if (typeof readiness.enforcerDid !== "string" || !readiness.enforcerDid.startsWith("did:key:")) {
-    throw new Error("real Node v2 readiness omitted its Ed25519 enforcer DID");
-  }
-  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: readiness.enforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
+  const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
+  const shareV2Capability = assertNodeShareV2Capability(nodeInfo);
+  const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: shareV2Capability.enforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
   checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
 
   await runOnce("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
