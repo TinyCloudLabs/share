@@ -53,8 +53,9 @@ assert.match(
 assert.match(workflow, /git checkout --detach "\$\{SHARE_COMMIT\}"/);
 assert.match(
   workflow,
-  /gh attestation verify "oci:\/\/\$\{IMAGE\}" --repo "\$\{GITHUB_REPOSITORY\}" --signer-workflow "\$\{GITHUB_SERVER_URL\}\/\$\{GITHUB_REPOSITORY\}\/.github\/workflows\/share-api-image\.yml" --source-digest "\$\{SHARE_COMMIT\}"/,
+  /gh attestation verify "oci:\/\/\$\{IMAGE\}" --repo "\$\{GITHUB_REPOSITORY\}" --signer-workflow "\$\{GITHUB_REPOSITORY\}\/.github\/workflows\/share-api-image\.yml" --source-digest "\$\{SHARE_COMMIT\}"/,
 );
+assert.match(workflow, /docker login ghcr\.io.*gh attestation verify/s);
 assert.match(
   workflow,
   /- name: Select and attest immutable image\n\s+env:\n\s+GH_TOKEN: \$\{\{ github\.token \}\}/,
