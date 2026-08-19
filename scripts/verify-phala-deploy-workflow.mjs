@@ -74,6 +74,10 @@ assert.match(
   workflow,
   /if \[ "\$target" -ge 1 \] && echo "\$readiness" \| jq -e '\.authReady == true and \(\.senderReady \| type == "boolean"\)'/,
 );
+assert.match(
+  workflow,
+  /\(\(keys \| sort\) == \["expiresAt", "nonce"\]\) and \(\.nonce \| test/,
+);
 assert.doesNotMatch(workflow, /phala "\$\{DEPLOY_ARGS\[@\]\}"[^\n]*-e/);
 assert.doesNotMatch(workflow, /DEPLOY_ARGS\+=\(-e /);
 assert.doesNotMatch(workflow, /--public-logs/);

@@ -193,5 +193,5 @@ jobs:
           config="$(curl --fail --silent --show-error https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json)"
           echo "$config" | jq -e '.version == "tinycloud.share-email-claim/config-v1" and .shareOrigin == "https://share.tinycloud.xyz" and (.nodeEnabled | type == "boolean") and (.issuerEnabled | type == "boolean")' >/dev/null
           nonce="$(curl --fail --silent --show-error -H 'Origin: https://share.tinycloud.xyz' https://share.tinycloud.xyz/api/share/auth/openkey/nonce)"
-          echo "$nonce" | jq -e 'keys | sort == ["expiresAt", "nonce"] and (.nonce | test("^[A-Za-z0-9_-]{20,}$")) and (.expiresAt | type == "string")' >/dev/null
+          echo "$nonce" | jq -e '((keys | sort) == ["expiresAt", "nonce"]) and (.nonce | test("^[A-Za-z0-9_-]{20,}$")) and (.expiresAt | type == "string")' >/dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST -H 'Origin: https://share.tinycloud.xyz' -H 'content-type: application/json' --data '{}' https://share.tinycloud.xyz/api/share/auth/openkey)" = 400
