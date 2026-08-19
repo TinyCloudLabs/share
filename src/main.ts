@@ -116,7 +116,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // Held only for the accountless route, which decrypts the body in this tab
     // rather than asking the node to decrypt it.
     let linkKey: Uint8Array | undefined;
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, onKeyParsed: (key32) => { linkKey = key32; }, ...(authorization === undefined ? {} : { authorization }) });
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, onKeyParsed: (key32) => { linkKey = new Uint8Array(key32); }, ...(authorization === undefined ? {} : { authorization }) });
     if (resolved.state === "recipient-did-authorization-required") {
       const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
       const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
