@@ -139,7 +139,10 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       holderDid: holder.did,
       buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
     });
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, ...(authorization === undefined ? {} : { authorization }) });
+    // Held only for the accountless route, which decrypts the body in this tab
+    // rather than asking the node to decrypt it.
+    let linkKey: Uint8Array | undefined;
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, onKeyParsed: (key32) => { linkKey = key32; }, ...(authorization === undefined ? {} : { authorization }) });
     if (resolved.state === "recipient-did-authorization-required") {
       const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
       const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
@@ -170,6 +173,37 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
           await presentShare(root, next, { shareUrl: shareHref });
           return next;
+        },
+      });
+      return;
+    }
+    // The accountless route: the owner named a Policy Engine inside the signed
+    // envelope, so the recipient can present a delivered-email credential
+    // directly and never touch an identity provider. Selected on the signed
+    // bytes, not on deployment config alone — the receiver additionally
+    // requires the named engine to be the one this deployment trusts, so
+    // neither side can redirect the presentation on its own.
+    if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3 && resolved.envelope.policyEngine !== undefined) {
+      if (linkKey === undefined) {
+        renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
+        return;
+      }
+      const [{ mountAccountlessReceiver }, { tinycloud }] = await Promise.all([
+        import("./viewer/accountless-receiver.js"),
+        import("@tinycloud/web-sdk-wasm"),
+      ]);
+      const accountlessEnvelope = resolved.envelope;
+      mountAccountlessReceiver(root, {
+        envelope: accountlessEnvelope,
+        shareCid: resolved.shareCid,
+        config: shareConfig,
+        contentKey: linkKey,
+        // Generic node invocation signing from the WASM SDK. No session, no
+        // account, no OpenKey: the only key is the receiver's ephemeral one.
+        invoke: tinycloud.invoke,
+        openerOrigin: window.location.origin,
+        onComplete: async (content) => {
+          await presentShare(root, { state: "ok", access: "policy", envelope: accountlessEnvelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
         },
       });
       return;

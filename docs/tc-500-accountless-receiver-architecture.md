@@ -76,6 +76,45 @@ They are optional during rollout. When they are absent:
   guards *on top of* the engine's, and the engine's accountless admission is
   strictly narrower than its enrolled-agent path.
 
+## What is proven, and what is not
+
+Being precise about this matters more than the design description above, because
+the previous iteration of this document described a flow that had never been
+executed anywhere.
+
+**Proven against real processes.** `npm run test:e2e:policy-engine-publish`
+boots the real `policy-engine-http` binary and runs Share's own sender code
+against it over HTTP. It proves the sender→engine hop end to end: the three
+owner-signed objects are the bytes the Rust engine accepts, the engine commits
+them, a challenge for the published policy then succeeds and is bound to the
+engine's audience with a replay nonce, re-publishing an unchanged share is
+idempotent, and an owner that has not enrolled this engine's grant issuer is
+refused with `policy_engine_record.grant_issuer_authority`. No mock stands on
+either side of that boundary.
+
+**Proven by unit tests only.** `readAccountlessShare` and the accountless
+receiver's admission rules, engine-trust pinning, holder freshness, and egress
+pinning. The engine, issuer, and node are stubbed transports in those tests.
+
+**Not proven.** The joined delivered-email browser trace — real invitation email
+→ OTP → direct engine presentation → generic `/delegate` + `/invoke` →
+ciphertext → local decrypt → render — has not been run. Two things still block
+it:
+
+1. **The sender does not emit `policyEngine` into the envelope yet.** The
+   composer still registers its policy on the node's `/share/v3/policies` and
+   builds the v3 envelope around that registration. Until it publishes to the
+   engine instead and signs the binding in, the accountless route in `main.ts`
+   is reachable but never selected.
+2. **The body is encrypted to a TinyCloud encryption network, not to a
+   locally-held content key.** The accountless receiver decrypts in the tab, so
+   it needs a wrapped content key carried in the sealed envelope. Today the
+   ciphertext can only be opened by asking the node to decrypt it, which is
+   exactly the role this correction removes from the node.
+
+Both are sender-side changes in `src/share/composer.ts`. Neither is blocked by
+an external artifact or authority; they are simply not done.
+
 ## Rollout order
 
 1. **policy-engine** — accountless `ephemeral-holder` binding and exact-email
