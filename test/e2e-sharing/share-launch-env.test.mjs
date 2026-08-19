@@ -67,6 +67,19 @@ test("share host launch env routes every proxied upstream to loopback, never to 
   }
 });
 
+test("share host launch env can bind the standalone policy engine to loopback", () => {
+  const env = buildShareHostLaunchEnv({
+    ...baseArgs(),
+    policyEngineCanonicalOrigin: "https://policy.tinycloud.xyz",
+    policyEngineTransportOrigin: "http://127.0.0.1:4700",
+  });
+  const routes = JSON.parse(env.SHARE_HERMETIC_UPSTREAMS_JSON);
+  assert.deepEqual(routes.policyEngine, {
+    origin: "https://policy.tinycloud.xyz",
+    transportOrigin: "http://127.0.0.1:4700",
+  });
+});
+
 test("share host launch env never sets static authority, fixture, allow-test, or binding-store variables", () => {
   const env = buildShareHostLaunchEnv(baseArgs());
 

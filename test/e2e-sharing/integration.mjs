@@ -778,6 +778,7 @@ async function startShare(tempRoot, fixtures) {
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
+    ...(tc500Joined ? { policyEngineCanonicalOrigin: canonical.policy, policyEngineTransportOrigin: fixtures.policyEngineOrigin } : {}),
     ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
   // The joined browser keeps the production OpenKey URL and transports it to
