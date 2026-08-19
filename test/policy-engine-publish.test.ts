@@ -48,6 +48,7 @@ async function publish(transport: { request: (request: { method: string; url: st
     ownerDid: OWNER_DID,
     sign: async (bytes) => ed25519.sign(bytes, OWNER_SEED),
     recipientEmail: "sam@tinycloud.xyz",
+    credentialIssuerDid: "did:web:issuer.credentials.org",
     kvResource: `${SPACE}/kv/${RESOURCE_PATH}`,
     capabilitySpace: SPACE,
     resourcePath: RESOURCE_PATH,

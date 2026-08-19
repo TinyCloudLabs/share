@@ -616,6 +616,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       ownerDid,
       sign: options.signUnifiedPolicy,
       recipientEmail: model.recipient.value!,
+      credentialIssuerDid: config.issuerDid,
       kvResource: unifiedSource.kvResource,
       capabilitySpace: spaceId,
       resourcePath,

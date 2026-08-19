@@ -56,6 +56,8 @@ export interface PublishSharePolicyInput {
   readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
   /** Exact recipient address, already canonicalized by the composer. */
   readonly recipientEmail: string;
+  /** Credential issuer pinned by the verified Share deployment config. */
+  readonly credentialIssuerDid: string;
   /** Exact TinyCloud KV resource holding the ciphertext. */
   readonly kvResource: string;
   /** Space-scoped capability slice the grant may never exceed. */
@@ -166,6 +168,7 @@ export async function publishSharePolicyToEngine(
             emailDomains: [domainOf(input.recipientEmail)],
             emails: [input.recipientEmail],
           },
+          authority: { acceptedIssuers: [input.credentialIssuerDid] },
         },
       },
       grant: {
