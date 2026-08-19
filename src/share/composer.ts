@@ -94,24 +94,6 @@ export interface ShareDeliveryAuthorizationReceipt {
   readonly proof: unknown;
 }
 
-interface V3DeliveryTinyCloud {
-  authorizeShareDeliveryV3(input: {
-    readonly envelope: Record<string, unknown>;
-    readonly sealedEnvelope: string;
-    readonly envelopeKey: string;
-    readonly shareCid: string;
-    readonly resourcePath: string;
-    readonly recipientEmail: string;
-    readonly shareUrl: string;
-    readonly documentName: string;
-    readonly expiresAt: string;
-    readonly nodeProof: { readonly kid: string; readonly publicKey: Uint8Array };
-    readonly credentialsAudience: string;
-  }): Promise<ShareDeliveryAuthorizationReceipt>;
-}
-
-export const OWNER_TINYCLOUD_V3_DELIVERY_METHODS = ["authorizeShareDeliveryV3"] as const;
-
 /** Which of `names` the TinyCloud session does not provide as callable methods, in `names` order. */
 export function missingTinyCloudMethods(tinycloud: unknown, names: readonly string[]): readonly string[] {
   const record = (tinycloud ?? {}) as Record<string, unknown>;
@@ -690,8 +672,6 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const url = model.linkFormat === "inline"
       ? await encodeInlineShareUrl({ origin: config.shareOrigin, ciphertext: stored.blob, key32: key })
       : encodeShareUrl({ origin: config.shareOrigin, ciphertextCid: stored.cid, key32: key });
-    const sealedEnvelope = toBase64Url(stored.blob);
-    const envelopeKey = toBase64Url(key);
     const record: SenderShareRecord = {
       shareId,
       policyCid: publishedPolicy.policyId,
@@ -715,32 +695,6 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
       format: model.linkFormat,
       expiresAt,
       record,
-      ...(deliveryEmail === undefined ? {} : { notify: async () => {
-        const deliveryTinyCloud = tinycloud as unknown as V3DeliveryTinyCloud;
-        if (missingTinyCloudMethods(deliveryTinyCloud, OWNER_TINYCLOUD_V3_DELIVERY_METHODS).length > 0) {
-          throw new Error("We couldn't send that email. The link above still works.");
-        }
-        const receipt = await deliveryTinyCloud.authorizeShareDeliveryV3({
-          envelope: envelope as unknown as Record<string, unknown>,
-          sealedEnvelope,
-          envelopeKey,
-          shareCid: stored.cid,
-          resourcePath,
-          recipientEmail: deliveryEmail,
-          shareUrl: url,
-          documentName: filename,
-          expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString(),
-          nodeProof: { kid: config.nodeInvitationKid, publicKey: fromBase64Url(config.nodeInvitationPublicKey) },
-          credentialsAudience: config.credentialsOrigin,
-        });
-        if (options.notify === undefined) throw new Error("We couldn't send that email. The link above still works.");
-        await options.notify({
-          share: { url, cid: stored.cid, format: model.linkFormat, expiresAt, record },
-          recipient: deliveryEmail,
-          matcher: model.recipient.kind,
-          deliveryAuthorization: receipt,
-        });
-      } }),
     };
   } finally {
     key.fill(0);

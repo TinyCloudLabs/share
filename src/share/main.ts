@@ -2,7 +2,6 @@ import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./op
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
-import { requestAddressedDelivery } from "./delivery.js";
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
@@ -84,7 +83,7 @@ function renderLibrary(current: SenderApp, token: number): void {
 }
 
 function renderComposer(current: SenderApp, token: number): void {
-  void Promise.all([import("./composer.js"), import("../email-share/config.js")]).then(([{ mountShareComposer }, { loadSharePublicConfig }]) => {
+  void import("./composer.js").then(({ mountShareComposer }) => {
     if (token !== renderToken) return;
     mountShareComposer(view, {
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
@@ -96,15 +95,6 @@ function renderComposer(current: SenderApp, token: number): void {
       signUnifiedPolicy: (bytes) => current.tinycloud.signSessionBytes(bytes),
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
-      notify: async ({ share, deliveryAuthorization }) => {
-        if (deliveryAuthorization === undefined) throw new Error("The invitation request was not accepted. The link above still works.");
-        const config = await loadSharePublicConfig();
-        await requestAddressedDelivery({
-          emailOrigin: config.emailOrigin,
-          shareUrl: share.url,
-          deliveryAuthorization,
-        });
-      },
       persistShare: async ({ share }) => {
         if (share.record !== undefined) {
           await current.history.save(share.record);

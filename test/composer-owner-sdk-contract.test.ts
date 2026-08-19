@@ -27,6 +27,7 @@ describe("the unified owner-share authority boundary", () => {
     expect(source).toContain("options.signUnifiedPolicy");
     expect(source).toContain("publishSharePolicyToEngine");
     expect(source).not.toContain("requestAttestedEnforcerBinding");
+    expect(source).not.toContain("authorizeShareDeliveryV3");
   });
 
   it("stores locally sealed ciphertext and binds the wrapped key and digest into the envelope", async () => {
