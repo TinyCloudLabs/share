@@ -8,6 +8,7 @@ import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, 
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
 import { createFetchPolicyAccessTransport } from "@tinycloud/sdk-core/policy-access";
+import { sha256 } from "@noble/hashes/sha256";
 import { publishSharePolicyToEngine } from "./policy-engine-publish.js";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
@@ -594,8 +595,8 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     const encrypted = await seal(plaintext, contentKey);
     plaintext.fill(0);
     const wrappedKey = await seal(contentKey, key);
-    const ciphertextDigestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(encrypted.blob).buffer));
-    const wrappedKeyDigestBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(wrappedKey.blob).buffer));
+    const ciphertextDigestBytes = sha256(new Uint8Array(encrypted.blob));
+    const wrappedKeyDigestBytes = sha256(new Uint8Array(wrappedKey.blob));
     const ciphertextDigest = toBase64Url(ciphertextDigestBytes);
     const wrappedKeyDigestHex = [...wrappedKeyDigestBytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     const encryptionNetwork = network;

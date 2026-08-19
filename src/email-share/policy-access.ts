@@ -22,6 +22,7 @@ import {
   type PolicyAccessTransport,
 } from "@tinycloud/sdk-core/policy-access";
 import type { InvokeFunction } from "@tinycloud/sdk-services";
+import { sha256 } from "@noble/hashes/sha256";
 import { ENVELOPE_AAD_LABEL, SEALED_BLOB_VERSION, toBase64Url } from "@tinycloud/share-envelope";
 import type { SharePublicConfig } from "./config.js";
 
@@ -162,9 +163,7 @@ export async function readAccountlessShare(
   });
 
   const { ciphertext } = await session.readEncrypted(input.resourcePath);
-  const ciphertextDigest = toBase64Url(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(ciphertext).buffer)),
-  );
+  const ciphertextDigest = toBase64Url(sha256(ciphertext));
   if (ciphertextDigest !== input.expectedCiphertextDigest) {
     throw new PolicyAccessError(
       "decrypt-failed",
