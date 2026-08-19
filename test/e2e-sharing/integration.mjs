@@ -681,6 +681,7 @@ async function startFixtures(tempRoot) {
     resendEndpoint: `${mail}/emails`, postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
   });
   if (tc500Joined) Object.assign(credentialsLaunchEnv, {
+    CREDENTIAL_ACQUISITION_EMAIL_CAPABILITY: "true",
     CREDENTIAL_INVITATION_CAPABILITY: "true",
     CREDENTIAL_INVITATION_POLICY_ENGINE_DIDS: JSON.stringify([policyGrantIssuerDid]),
     CREDENTIAL_INVITATION_RETURN_ORIGINS: canonical.share,
