@@ -9,12 +9,14 @@ publish a receiver that cannot be sent an exact-email share. Compose defaults
 `/var/lib/tinycloud/share/bindings.ndjson` volume path. In that mode
 both flags may be explicitly set to `false` together for an auth-only rollback;
 binding-store settings are then ignored even if stale values remain in the
-environment. `/health/readiness` reports
+environment. In that explicit rollback mode `/health/readiness` reports
 `{ "authReady": true, "senderReady": false }`, and signing and binding remain
-fail-closed with JSON `503 sender_not_ready`. The trust bundle may truthfully
-set `nodeEnabled=false` while retaining the validated public node identity;
-OpenKey authentication remains ready, the public configuration preserves the
-disabled status, and no email-share authority is asserted.
+fail-closed with JSON `503 sender_not_ready`. In the default composition,
+readiness instead requires `senderReady: true` before rollout convergence. The
+trust bundle may truthfully set `nodeEnabled=false` while retaining the
+validated public node identity; OpenKey authentication remains ready, the
+public configuration preserves the disabled status, and no email-share
+authority is asserted.
 
 An authenticated OpenKey session can still create a possession-based encrypted
 share. Its only write path is `POST /api/share/link-only/registry/blobs`: raw,
@@ -87,8 +89,10 @@ Required production variables:
   image digest, configuration digest, migration version, and an immutable
   rollback image/release target. The deploy validator rejects a composition
   without this manifest or with a mismatched Share image.
-- `SHARE_SENDER_ENABLED`: optional strict boolean string. Omitted or `false`
-  selects auth-only mode; `true` enables the sender and requires a healthy
+- `SHARE_SENDER_ENABLED`: optional strict boolean string. In the reviewed
+  Compose production composition, omission resolves to `true`; set it and
+  `SHARE_ACCOUNTLESS_RECEIVER_ENABLED` to `false` together only for the
+  explicit auth-only rollback. Sender enablement requires a healthy
   wallet-rooted authentication path and a usable durable binding store.
 - `SHARE_TRUST_BUNDLE_SOURCE`: `committed` in production. See
   "Where the trust bundle comes from" below.
