@@ -73,13 +73,9 @@ export interface OwnerRootInput {
   readonly capabilities: readonly UnifiedPolicyCapability[];
 }
 
-export type PolicyIssuanceParentInput = Omit<OwnerRootInput, "role"> & {
-  readonly role: "policy-issuance";
-};
-
 /** The additive SDK hook used by Share; it is deliberately not a share read/session API. */
 export interface UnifiedOwnerRootFactory {
-  createOwnerRoot(input: OwnerRootInput | PolicyIssuanceParentInput): Promise<PortableDelegationLike>;
+  createOwnerRoot(input: OwnerRootInput): Promise<PortableDelegationLike>;
 }
 
 export interface UnifiedPolicyRegistration {

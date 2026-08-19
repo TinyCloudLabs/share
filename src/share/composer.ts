@@ -535,7 +535,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   };
 }
 
-async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions, createOwnerRoot: UnifiedOwnerRootFactory["createOwnerRoot"]): Promise<ComposerShareResult> {
+async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions, _createOwnerRoot: UnifiedOwnerRootFactory["createOwnerRoot"]): Promise<ComposerShareResult> {
   if (!model.encryption) throw fail("plaintext", "v3 owner-policy shares require encryption");
   const tinycloud = options.tinycloud;
   if (tinycloud === undefined) throw fail("session", "v3 owner share has no TinyCloud session");
@@ -628,31 +628,20 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         const parentKv = capabilities.find((candidate) => candidate.kind === "kv");
         if (parentKv === undefined) throw fail("internal", "policy parent has no KV capability");
         const parentExpiresAt = new Date(Math.min(Date.parse(expiresAt), Date.parse(createdAt) + 31 * 24 * 60 * 60 * 1000));
-        const root = await createOwnerRoot({
-          ownerDid,
-          role: "policy-issuance",
-          audienceDid: config.policyEngineGrantIssuerDid!,
-          policyId,
-          policyDigestHex: policy.policyDigestHex,
-          policyCid: policy.policyCid,
-          contentSourceDigestHex: sourceDigest,
-          capabilityCeilingHashHex: sourceDigest,
-          nativeProjectionHashHex: sourceDigest,
-          notBefore: new Date(createdAt),
-          expiresAt: parentExpiresAt,
-          nodeAudience: config.nodeAudience,
-          capabilities: [{ ...parentKv, actions: ["tinycloud.kv/get"] }],
-        });
+        const root = await tinycloud.delegateTo(
+          config.policyEngineGrantIssuerDid!,
+          [{ service: "tinycloud.kv", space: spaceId, path: resourcePath, actions: ["tinycloud.kv/get"] }],
+          { expiry: parentExpiresAt.getTime() - Date.now() },
+        );
         await registerPolicyParentDelegation({
           policyEngineEndpoint: config.policyEngineOrigin!,
-          nodeEndpoint: config.nodeOrigin,
           ownerDid,
-          authorization: root.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
-          delegationCid: root.cid,
+          authorization: root.delegation.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
+          delegationCid: root.delegation.cid,
           nativeResource: unifiedSource.kvResource,
           policyCapability: capability,
           transport: createFetchPolicyAccessTransport({
-            originPolicy: { allowedOrigins: [config.nodeOrigin, config.policyEngineOrigin!] },
+            originPolicy: { allowedOrigins: [config.policyEngineOrigin!] },
             fetchFn,
           }),
         });
