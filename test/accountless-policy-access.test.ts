@@ -13,6 +13,7 @@ import { deriveDelegationCid } from "@tinycloud/sdk-core/requester";
 import { POLICY_ENGINE_ROUTES, upstreamForPath } from "../src/host/upstream.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
 import { ed25519 } from "@noble/curves/ed25519";
+import { open, seal } from "@tinycloud/share-envelope";
 
 const GRANT_ISSUER_SEED = new Uint8Array(32).fill(6);
 function didKey(publicKey: Uint8Array): string {
@@ -108,7 +109,7 @@ describe("share public config policy engine binding", () => {
 });
 
 describe("share host policy engine proxy", () => {
-  const bundle = validateTrustBundle({
+  const RAW_BUNDLE = {
     version: "tinycloud.share-email-trust-bundle/v1",
     shareOrigin: "https://share.tinycloud.xyz",
     returnOrigin: "https://share.tinycloud.xyz",
@@ -134,6 +135,16 @@ describe("share host policy engine proxy", () => {
     ),
     issuerKeyVersion: 1,
     issuerEnabled: true,
+  };
+  const bundle = validateTrustBundle(RAW_BUNDLE);
+
+  it("refuses an engine origin whose audience or grant issuer is missing", () => {
+    const { policyEngineAudience: _audience, ...withoutAudience } = RAW_BUNDLE;
+    void _audience;
+    expect(() => validateTrustBundle(withoutAudience)).toThrow();
+    expect(() => validateTrustBundle({ ...RAW_BUNDLE, policyEngineAudience: "" })).toThrow();
+    expect(() => validateTrustBundle({ ...RAW_BUNDLE, policyEngineGrantIssuerDid: "did:web:not.a.key" })).toThrow();
+    expect(validateTrustBundle(RAW_BUNDLE).public.policyEngineGrantIssuerDid).toBe(GRANT_ISSUER_DID);
   });
 
   it("routes only the two frozen v0 routes, and to the engine not the node", () => {
@@ -164,22 +175,11 @@ describe("accountless receiver read", () => {
     const contentKey = new Uint8Array(32).fill(12);
     const body = "# shared with you\n";
 
-    const nonce = new Uint8Array(12).fill(4);
-    const aesKey = await crypto.subtle.importKey(
-      "raw",
-      contentKey,
-      "AES-GCM",
-      false,
-      ["encrypt"],
-    );
-    const sealed = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: nonce },
-        aesKey,
-        new TextEncoder().encode(body),
-      ),
-    );
-    const ciphertext = Uint8Array.from([0x01, ...nonce, ...sealed]);
+    // Sealed exactly the way the Share sender seals every other blob, so the
+    // receiver is proven against the real primitive rather than a hand-rolled
+    // AES-GCM layout.
+    const { blob: ciphertext } = await seal(new TextEncoder().encode(body), contentKey);
+    expect(new TextDecoder().decode(await open(ciphertext, contentKey))).toBe(body);
 
     const CAPABILITY_HASH = requestedCapabilitiesHashHex([
       {

@@ -22,7 +22,18 @@ import {
   type PolicyAccessTransport,
 } from "@tinycloud/sdk-core/policy-access";
 import type { InvokeFunction } from "@tinycloud/sdk-services";
+import { ENVELOPE_AAD_LABEL, SEALED_BLOB_VERSION } from "@tinycloud/share-envelope";
 import type { SharePublicConfig } from "./config.js";
+
+/**
+ * Policy-gated bodies are sealed with the same primitive as every other Share
+ * blob (`seal()` from `@tinycloud/share-envelope`): one version byte, a 12-byte
+ * nonce, then AES-256-GCM bound to the envelope AAD label. Decrypting with the
+ * SDK's generic `decryptLocally` therefore has to supply that AAD, or a blob
+ * the sender sealed correctly would fail authentication and look like a wrong
+ * key.
+ */
+const SEALED_BODY_AAD = new TextEncoder().encode(ENVELOPE_AAD_LABEL);
 
 export interface SharePolicyEngineBinding {
   readonly endpoint: string;
@@ -152,7 +163,8 @@ export async function readAccountlessShare(
   const plaintext = await decryptLocally({
     ciphertext,
     key: input.contentKey,
-    versionByte: 0x01,
+    versionByte: SEALED_BLOB_VERSION,
+    aad: SEALED_BODY_AAD,
   });
   return { plaintext, session };
 }

@@ -83,6 +83,20 @@ function origin(value: unknown, label: string): string {
   return value;
 }
 
+// The engine binding is only as trustworthy as its weakest member: an endpoint
+// with a missing audience or grant issuer would let the browser accept a
+// delegation from anyone who can answer on that origin, so all three are
+// validated here rather than coerced with String().
+function policyEngineAudience(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) throw new Error("policyEngineAudience must be a non-empty string");
+  return value;
+}
+
+function policyEngineGrantIssuerDid(value: unknown): string {
+  if (typeof value !== "string" || !/^did:key:z[1-9A-HJ-NP-Za-km-z]+$/.test(value)) throw new Error("policyEngineGrantIssuerDid must be a did:key");
+  return value;
+}
+
 function rejectProductionPlaceholders(value: string): void {
   if (/(?:node\.example|127\.0\.0\.1|localhost|fixture|test|seed|placeholder)/i.test(value)) throw new Error("production trust bundle contains a placeholder or loopback value");
 }
@@ -109,8 +123,8 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
       ? {}
       : {
           policyEngineOrigin: origin(root.policyEngineOrigin, "policyEngineOrigin"),
-          policyEngineAudience: String(root.policyEngineAudience),
-          policyEngineGrantIssuerDid: String(root.policyEngineGrantIssuerDid),
+          policyEngineAudience: policyEngineAudience(root.policyEngineAudience),
+          policyEngineGrantIssuerDid: policyEngineGrantIssuerDid(root.policyEngineGrantIssuerDid),
         }),
     nodeOrigin: origin(root.nodeOrigin, "nodeOrigin"),
     nodeAudience: String(root.nodeAudience),
