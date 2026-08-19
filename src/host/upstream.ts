@@ -1,11 +1,20 @@
 import type { ShareTrustBundle } from "./trust-bundle.js";
 
-export type ShareUpstream = "node" | "credentials" | "registry";
+export type ShareUpstream = "node" | "credentials" | "registry" | "policy-engine";
 
 export interface ShareUpstreamOrigins {
   readonly node: string;
   readonly credentials: string;
   readonly registry: string;
+  /**
+   * The standalone Policy Engine. The recipient browser presents its
+   * credential here directly, so Share proxies the two frozen v0 routes and
+   * nothing else. Node is never in this path (TC-500).
+   *
+   * Absent until a deployment enrols one, in which case the policy-engine
+   * route is simply unavailable — it must never fall back to the node.
+   */
+  readonly policyEngine?: string;
 }
 
 export const UPSTREAM_BODY_LIMIT = 128 * 1024;
@@ -17,6 +26,8 @@ export const NATIVE_SHARE_BODY_LIMIT = Math.floor((100 * 1024 * 1024 / 3) * 4) +
 export const REGISTRY_UPLOAD_BODY_LIMIT = 100 * 1024 * 1024 + (1 + 12 + 16);
 export const SHARE_V2_BODY_LIMIT = 100 * 1024 * 1024;
 const SHARE_V3_POLICY_ROUTES: readonly string[] = ["/share/v3/policy/challenges", "/share/v3/policy/delegations"];
+/** The complete frozen Policy Engine surface a recipient browser may reach. */
+export const POLICY_ENGINE_ROUTES: readonly string[] = ["/policy/v0/challenge", "/policy/v0/resolve"];
 const REQUEST_HEADERS = new Set([
   "accept",
   "authorization",
@@ -83,6 +94,10 @@ function routePolicy(path: string, method: string): { readonly service: ShareUps
         : ["/share/v1/invitations/authorize", "/share/v1/policy/challenges", "/share/v1/policy/session", "/share/v1/read"];
     if (upper !== "POST" || !allowed.includes(path)) throw new Error("upstream method is not allowed");
     return { service: "node", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: path === "/share/v2/invoke" ? SHARE_V2_BODY_LIMIT : UPSTREAM_BODY_LIMIT };
+  }
+  if (POLICY_ENGINE_ROUTES.includes(path)) {
+    if (upper !== "POST") throw new Error("upstream method is not allowed");
+    return { service: "policy-engine", requestTypes: ["application/json"], responseTypes: ["application/json"], maxBody: UPSTREAM_BODY_LIMIT };
   }
   if (path === "/delegate" || path === "/invoke") {
     if (upper !== "POST") throw new Error("upstream method is not allowed");
@@ -202,17 +217,22 @@ function route(value: unknown, expectedOrigin: string, label: string): HermeticR
  */
 export function resolveShareUpstreams(bundle: ShareTrustBundle, env: NodeJS.ProcessEnv = process.env): ShareUpstreamOrigins {
   if (LEGACY_TRANSPORT_ENV.some((name) => env[name] !== undefined)) throw new Error("legacy Share transport overrides are forbidden; use the explicit hermetic resolver");
-  const defaults = { node: bundle.public.nodeOrigin, credentials: bundle.public.credentialsOrigin, registry: bundle.public.registryOrigin } as const;
+  const defaults = { node: bundle.public.nodeOrigin, credentials: bundle.public.credentialsOrigin, registry: bundle.public.registryOrigin, ...(bundle.public.policyEngineOrigin === undefined ? {} : { policyEngine: bundle.public.policyEngineOrigin }) } as const;
   const raw = env.SHARE_HERMETIC_UPSTREAMS_JSON;
   if (raw === undefined) return defaults;
   if (env.SHARE_HERMETIC_COMPOSITION !== "true") throw new Error("SHARE_HERMETIC_UPSTREAMS_JSON requires SHARE_HERMETIC_COMPOSITION=true");
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw new Error("SHARE_HERMETIC_UPSTREAMS_JSON must be valid JSON"); }
-  const routes = exactRecord(value, ["node", "credentials", "registry"], "SHARE_HERMETIC_UPSTREAMS_JSON");
+  // `policyEngine` is optional so an existing hermetic composition keeps
+  // working; when it is absent the policy-engine route stays on its bundle
+  // origin rather than silently falling back to the node.
+  const routes = exactRecord(value, Object.hasOwn(value as object, "policyEngine") ? ["node", "credentials", "registry", "policyEngine"] : ["node", "credentials", "registry"], "SHARE_HERMETIC_UPSTREAMS_JSON");
   const node = route(routes.node, defaults.node, "hermetic node route");
   const credentials = route(routes.credentials, defaults.credentials, "hermetic credentials route");
   const registry = route(routes.registry, defaults.registry, "hermetic registry route");
-  return { node: node.transportOrigin, credentials: credentials.transportOrigin, registry: registry.transportOrigin };
+  const policyEngineDefault = "policyEngine" in defaults ? (defaults as { policyEngine?: string }).policyEngine : undefined;
+  const policyEngine = routes.policyEngine === undefined || policyEngineDefault === undefined ? policyEngineDefault : route(routes.policyEngine, policyEngineDefault, "hermetic policy engine route").transportOrigin;
+  return { node: node.transportOrigin, credentials: credentials.transportOrigin, registry: registry.transportOrigin, ...(policyEngine === undefined ? {} : { policyEngine }) };
 }
 
 export function upstreamForPath(bundle: ShareTrustBundle, path: string, env: NodeJS.ProcessEnv = process.env): { readonly service: ShareUpstream; readonly origin: string } | undefined {
@@ -220,6 +240,9 @@ export function upstreamForPath(bundle: ShareTrustBundle, path: string, env: Nod
   if (path === "/info") return { service: "node", origin: origins.node };
   if (peerPath(path) !== undefined) return { service: "node", origin: origins.node };
   if (path === "/encryption/networks" || /^\/encryption\/networks\/[^/]+(?:\/decrypt|\/revoke)?$/.test(path) || /^\/.well-known\/encryption\/network\/[^/]+$/.test(path)) return { service: "node", origin: origins.node };
+  // Fail closed: with no enrolled engine there is no origin to reach, and
+  // silently substituting the node would put a policy decision back inside it.
+  if (POLICY_ENGINE_ROUTES.includes(path)) return origins.policyEngine === undefined ? undefined : { service: "policy-engine", origin: origins.policyEngine };
   if (path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || SHARE_V3_POLICY_ROUTES.includes(path)) return { service: "node", origin: origins.node };
   if (path === "/delegate" || path === "/invoke") return { service: "node", origin: origins.node };
   if (/^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path)) return { service: "registry", origin: origins.registry };

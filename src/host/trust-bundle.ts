@@ -31,6 +31,14 @@ export interface ShareTrustBundle {
      * like a signature problem for eleven days.
      */
     readonly emailOrigin: string;
+    /**
+     * The standalone Policy Engine. Optional while the accountless receiver
+     * rolls out; when absent the policy-engine proxy route has no origin to
+     * reach and the receiver falls back to the legacy Node-brokered path.
+     */
+    readonly policyEngineOrigin?: string;
+    readonly policyEngineAudience?: string;
+    readonly policyEngineGrantIssuerDid?: string;
     readonly nodeOrigin: string;
     readonly nodeAudience: string;
     readonly nodeInvitationKid: string;
@@ -87,7 +95,7 @@ function senderSecret(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 export function validateTrustBundle(value: unknown, allowTest = false, privateKey?: string): ShareTrustBundle {
-  const root = exactObject(value, ["version", "shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "emailOrigin", "nodeOrigin", "nodeAudience", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "nodeEnabled", "issuerDid", "issuerVct", "issuerKid", "issuerPublicKey", "issuerKeyVersion", "issuerEnabled"], "trust bundle");
+  const root = exactObject(value, ["version", "shareOrigin", "returnOrigin", "registryOrigin", "credentialsOrigin", "emailOrigin", ...(Object.hasOwn(value as object, "policyEngineOrigin") ? ["policyEngineOrigin", "policyEngineAudience", "policyEngineGrantIssuerDid"] : []), "nodeOrigin", "nodeAudience", "nodeInvitationKid", "nodeInvitationPublicKey", "nodeKeyVersion", "nodeEnabled", "issuerDid", "issuerVct", "issuerKid", "issuerPublicKey", "issuerKeyVersion", "issuerEnabled"], "trust bundle");
   const environment = allowTest ? "test" : "production";
   if (root.version !== TRUST_VERSION) throw new Error("trust bundle version is unsupported");
   if (typeof root.nodeKeyVersion !== "number" || !Number.isSafeInteger(root.nodeKeyVersion) || typeof root.issuerKeyVersion !== "number" || !Number.isSafeInteger(root.issuerKeyVersion) || typeof root.nodeEnabled !== "boolean" || root.issuerEnabled !== true || root.issuerVct !== "opencredentials.email/v1") throw new Error("trust bundle versions or enablement are invalid");
@@ -97,6 +105,13 @@ export function validateTrustBundle(value: unknown, allowTest = false, privateKe
     registryOrigin: origin(root.registryOrigin, "registryOrigin"),
     credentialsOrigin: origin(root.credentialsOrigin, "credentialsOrigin"),
     emailOrigin: origin(root.emailOrigin, "emailOrigin"),
+    ...(root.policyEngineOrigin === undefined
+      ? {}
+      : {
+          policyEngineOrigin: origin(root.policyEngineOrigin, "policyEngineOrigin"),
+          policyEngineAudience: String(root.policyEngineAudience),
+          policyEngineGrantIssuerDid: String(root.policyEngineGrantIssuerDid),
+        }),
     nodeOrigin: origin(root.nodeOrigin, "nodeOrigin"),
     nodeAudience: String(root.nodeAudience),
     nodeInvitationKid: String(root.nodeInvitationKid),
@@ -187,7 +202,7 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   // sender's `notify` fetches it directly from the page. Omit it and the send
   // dies as a CSP violation in the console, which the composer surfaces as the
   // same generic "We couldn't send that email" as every other failure.
-  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.emailOrigin, bundle.public.registryOrigin, "https://api.openkey.so", ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
+  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.emailOrigin, bundle.public.registryOrigin, ...(bundle.public.policyEngineOrigin === undefined ? [] : [bundle.public.policyEngineOrigin]), "https://api.openkey.so", ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
   // `no-transform` keeps Cloudflare from injecting its analytics beacon into
   // these security-sensitive documents. The third-party script is deliberately
   // absent from the CSP; allowing an edge rewrite would otherwise create a CSP
