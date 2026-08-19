@@ -69,7 +69,9 @@ const registryUploadSeed = Buffer.alloc(32, 7);
 const registryUploadPublicKey = Buffer.from(ed25519.getPublicKey(registryUploadSeed)).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const wallet = privateKeyToAccount(walletPrivateKey);
-const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "/Users/samgbafa/.nvm/versions/node/v20.19.4/bin/agent-browser";
+const agentBrowser = process.env.AGENT_BROWSER_BIN ?? "agent-browser";
+const postgresBin = process.env.SHARING_E2E_POSTGRES_BIN ?? execFileSync("pg_config", ["--bindir"], { encoding: "utf8" }).trim();
+const postgresUser = process.env.SHARING_E2E_POSTGRES_USER ?? process.env.USER ?? "postgres";
 const children = [];
 const ownedPgids = new Set();
 const servers = [];
@@ -399,7 +401,7 @@ function assertPostgresLoadableCertificates(openssl, certificates) {
 
 function assertPostgresAcceptsTls(openssl, postgresUrl, caCertPath) {
   try {
-    execFileSync("/opt/homebrew/opt/postgresql@16/bin/psql", [postgresUrl, "-v", "ON_ERROR_STOP=1", "-tAc", "select 1"], {
+    execFileSync(join(postgresBin, "psql"), [postgresUrl, "-v", "ON_ERROR_STOP=1", "-tAc", "select 1"], {
       encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PGSSLROOTCERT: caCertPath, PGCONNECT_TIMEOUT: "10" },
     });
   } catch (error) {
@@ -482,7 +484,7 @@ async function startFixtures(tempRoot) {
 
   const postgresData = join(tempRoot, "postgres");
   const postgresPort = await freePort();
-  await runOnce("/opt/homebrew/opt/postgresql@16/bin/initdb", ["-D", postgresData, "-A", "trust", "-U", "samgbafa"], shareRoot, { LC_ALL: "C" });
+  await runOnce(join(postgresBin, "initdb"), ["-D", postgresData, "-A", "trust", "-U", postgresUser], shareRoot, { LC_ALL: "C" });
   const postgresTlsDir = join(tempRoot, "postgres-tls");
   await mkdir(postgresTlsDir, { recursive: true });
   const postgresCaKeyPath = join(postgresTlsDir, "ca.key");
@@ -503,14 +505,14 @@ async function startFixtures(tempRoot) {
   await runOnce(openssl.path, ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
   await chmod(postgresServerKeyPath, 0o600);
   assertPostgresLoadableCertificates(openssl, { "certificate authority": postgresCaCertPath, "server certificate": postgresServerCertPath });
-  run("/opt/homebrew/opt/postgresql@16/bin/postgres", ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: "samgbafa" });
+  run(join(postgresBin, "postgres"), ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: postgresUser });
   await waitForTcp(postgresPort);
-  const postgresUrl = postgresConnectionUrl({ user: "samgbafa", host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
+  const postgresUrl = postgresConnectionUrl({ user: postgresUser, host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
   // The certificate is only genuinely good if the *database* accepts it, so
   // complete one verify-full handshake here rather than discovering the
   // problem inside migrate.sh with no mention of openssl anywhere.
   assertPostgresAcceptsTls(openssl, postgresUrl, postgresCaCertPath);
-  checks.push(`hermetic verify-full TLS Postgres persistence started on ${POSTGRES_TLS_HOSTNAME}:${postgresPort} and completed a verify-full handshake against the pinned harness CA.`);
+  checks.push(`hermetic verify-full TLS Postgres persistence started from ${postgresBin} on ${POSTGRES_TLS_HOSTNAME}:${postgresPort} and completed a verify-full handshake against the pinned harness CA.`);
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
