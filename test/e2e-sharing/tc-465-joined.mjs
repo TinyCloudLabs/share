@@ -211,6 +211,9 @@ async function installInterception(page, services, fixtureOrigin) {
       if (String(args[0] ?? "").startsWith("tinycloud share:")) {
         const messages = [];
         let current = args[1];
+        if (current instanceof Error && typeof current.stack === "string") {
+          window.__tc465Diagnostics.productErrorStack = current.stack;
+        }
         for (let depth = 0; depth < 4 && current !== undefined && current !== null; depth += 1) {
           messages.push(String(current?.message ?? current));
           current = current?.cause;
