@@ -440,6 +440,9 @@ export class ShareRecipientClient {
   }
 
   private async establishPolicySessionV3(envelope: ShareEnvelopeV3): Promise<PolicySession> {
+    if (envelope.policyRoot === undefined || envelope.enforcementRoot === undefined) {
+      throw new Error("legacy v3 policy roots are missing");
+    }
     const { claimUnifiedDelegation, requestUnifiedChallenge } = await import("../../../src/share/unified-delegation.js");
     const challenge = await requestUnifiedChallenge({ nodeOrigin: this.options.nodeOrigin, policyCid: envelope.policyCid, recipientDid: this.options.holderDid, requestedCapabilities: envelope.policy.capabilityCeiling, fetchFn: this.fetchFn });
     const material = await this.options.buildPresentation({ challenge: {

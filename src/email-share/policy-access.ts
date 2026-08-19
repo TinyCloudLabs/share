@@ -22,7 +22,7 @@ import {
   type PolicyAccessTransport,
 } from "@tinycloud/sdk-core/policy-access";
 import type { InvokeFunction } from "@tinycloud/sdk-services";
-import { ENVELOPE_AAD_LABEL, SEALED_BLOB_VERSION } from "@tinycloud/share-envelope";
+import { ENVELOPE_AAD_LABEL, SEALED_BLOB_VERSION, toBase64Url } from "@tinycloud/share-envelope";
 import type { SharePublicConfig } from "./config.js";
 
 /**
@@ -99,6 +99,8 @@ export interface ShareAccountlessReadInput {
   readonly credential: string;
   /** Content key the recipient unwrapped locally. */
   readonly contentKey: Uint8Array;
+  /** SHA-256 of the stored ciphertext, bound into the signed envelope. */
+  readonly expectedCiphertextDigest: string;
   readonly holder: EphemeralHolderKey;
   readonly invoke: InvokeFunction;
   readonly transport?: PolicyAccessTransport;
@@ -160,6 +162,15 @@ export async function readAccountlessShare(
   });
 
   const { ciphertext } = await session.readEncrypted(input.resourcePath);
+  const ciphertextDigest = toBase64Url(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(ciphertext).buffer)),
+  );
+  if (ciphertextDigest !== input.expectedCiphertextDigest) {
+    throw new PolicyAccessError(
+      "decrypt-failed",
+      "stored ciphertext does not match the signed envelope",
+    );
+  }
   const plaintext = await decryptLocally({
     ciphertext,
     key: input.contentKey,

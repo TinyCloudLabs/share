@@ -21,7 +21,7 @@
  * Share's trusted configuration, the recipient-facing vocabulary, and nothing
  * else — no protocol, no signing, no route.
  */
-import type { ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import { fromBase64Url, open, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import type { InvokeFunction } from "@tinycloud/sdk-services";
 import {
   PolicyAccessError,
@@ -58,8 +58,8 @@ export interface AccountlessReceiverInput {
   readonly envelope: ShareEnvelopeV3;
   readonly shareCid: string;
   readonly config: SharePublicConfig;
-  /** Content key the recipient unwrapped from the link fragment. */
-  readonly contentKey: Uint8Array;
+  /** Envelope key captured from the link fragment before the URL is scrubbed. */
+  readonly envelopeKey: Uint8Array;
   readonly invoke: InvokeFunction;
   readonly openerOrigin: string;
   readonly transport?: PolicyAccessTransport;
@@ -108,6 +108,7 @@ function accountlessTargetFromEnvelope(envelope: ShareEnvelopeV3) {
     envelope.actions[0] !== "read" ||
     envelope.contentSource.selector !== "exact" ||
     envelope.contentSource.kvResource !== `${envelope.target.spaceId}/kv/${envelope.resource.path}`
+    || envelope.localContent === undefined
   ) {
     throw new AccountlessReceiverError(
       "UNSUPPORTED_SHARE",
@@ -221,31 +222,43 @@ export function openAccountlessShare(
 
       input.onState?.("authorizing-access");
       try {
-        const { plaintext } = await readAccountlessShare({
-          config: input.config,
-          binding: {
-            endpoint: binding.endpoint,
-            audience: binding.audience,
-            grantIssuerDid: binding.grantIssuerDid,
-          },
-          policyId: binding.policyId,
-          capabilitySpace: input.envelope.target.spaceId,
-          nodeSpaceId: input.envelope.target.spaceId,
-          resourcePath: input.envelope.resource.path,
-          requirementId: binding.requirementId,
-          credential: credential.credential,
-          contentKey: input.contentKey,
-          holder,
-          invoke: input.invoke,
-          transport,
-        });
-        input.onState?.("opening-content");
-        return Object.freeze({
-          type: "TinyCloudAccountlessShareContent" as const,
-          version: 1 as const,
-          bytes: plaintext,
-          mediaType: input.envelope.metadata.mediaType ?? "application/octet-stream",
-        });
+        const contentKey = await open(
+          fromBase64Url(input.envelope.localContent!.wrappedKey),
+          input.envelopeKey,
+        );
+        if (contentKey.byteLength !== 32) {
+          throw new AccountlessReceiverError("READ_FAILED", "the wrapped content key is invalid");
+        }
+        try {
+          const { plaintext } = await readAccountlessShare({
+            config: input.config,
+            binding: {
+              endpoint: binding.endpoint,
+              audience: binding.audience,
+              grantIssuerDid: binding.grantIssuerDid,
+            },
+            policyId: binding.policyId,
+            capabilitySpace: input.envelope.target.spaceId,
+            nodeSpaceId: input.envelope.target.spaceId,
+            resourcePath: input.envelope.resource.path,
+            requirementId: binding.requirementId,
+            credential: credential.credential,
+            contentKey,
+            expectedCiphertextDigest: input.envelope.localContent!.ciphertextDigest,
+            holder,
+            invoke: input.invoke,
+            transport,
+          });
+          input.onState?.("opening-content");
+          return Object.freeze({
+            type: "TinyCloudAccountlessShareContent" as const,
+            version: 1 as const,
+            bytes: plaintext,
+            mediaType: input.envelope.metadata.mediaType ?? "application/octet-stream",
+          });
+        } finally {
+          contentKey.fill(0);
+        }
       } catch (cause) {
         throw accessError(cause);
       }

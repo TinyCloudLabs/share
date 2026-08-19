@@ -13,7 +13,7 @@ import { deriveDelegationCid } from "@tinycloud/sdk-core/requester";
 import { POLICY_ENGINE_ROUTES, upstreamForPath } from "../src/host/upstream.js";
 import { validateTrustBundle } from "../src/host/trust-bundle.js";
 import { ed25519 } from "@noble/curves/ed25519";
-import { open, seal } from "@tinycloud/share-envelope";
+import { open, seal, toBase64Url } from "@tinycloud/share-envelope";
 
 const GRANT_ISSUER_SEED = new Uint8Array(32).fill(6);
 function didKey(publicKey: Uint8Array): string {
@@ -288,6 +288,7 @@ describe("accountless receiver read", () => {
       requirementId: "exact-email",
       credential: "eyJ.share.sd-jwt",
       contentKey,
+      expectedCiphertextDigest: toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(ciphertext).buffer))),
       holder,
       invoke: () => ({ Authorization: "invocation" }),
       transport,

@@ -25,19 +25,19 @@ describe("the unified owner-share authority boundary", () => {
     expect(source).not.toMatch(/\bsdk\.(?:createDelegatedShareKey|canonicalOwnerSharePolicy|createPolicyEnforcementDelegation)\s*\(/u);
     expect(source).toContain("options.createUnifiedOwnerRoot");
     expect(source).toContain("options.signUnifiedPolicy");
-    expect(source).toContain("nodeAudience: attestedEnforcerBinding.nodeAudience");
-    expect(source).not.toContain("enforcerDid, nodeAudience: enforcerDid");
+    expect(source).toContain("publishSharePolicyToEngine");
+    expect(source).not.toContain("requestAttestedEnforcerBinding");
   });
 
-  it("commits the encryption SDK's canonical network ID across the v3 policy and envelope", async () => {
+  it("stores locally sealed ciphertext and binds the wrapped key and digest into the envelope", async () => {
     const { readFile } = await import("node:fs/promises");
     const { resolve } = await import("node:path");
     const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
-    expect(source).toContain("const encryptionNetwork = encrypted.data.networkId;");
-    expect(source).toContain("encryptionNetwork, encryptedSymmetricKeyDigestHex:");
-    expect(source).toContain('{ kind: "encryption", resource: encryptionNetwork, action: "tinycloud.encryption/decrypt" }');
-    expect(source).toContain("        encryptionNetwork,\n");
-    expect(source).not.toContain("encryptionNetwork: network");
+    expect(source).toContain("const encrypted = await seal(plaintext, contentKey);");
+    expect(source).toContain("const wrappedKey = await seal(contentKey, key);");
+    expect(source).toContain("const ciphertextDigest = toBase64Url(ciphertextDigestBytes);");
+    expect(source).toContain("keyWrap: \"share-envelope-aes-gcm-v1\"");
+    expect(source).not.toContain("encryptToNetwork");
   });
 
   it("wires the authenticated holder's root factory and signer into the shipped composer", async () => {

@@ -66,6 +66,11 @@ function envelope(overrides: Record<string, unknown> = {}): ShareEnvelopeV3 {
       policyId: `pol_${"a".repeat(52)}`,
       requirementId: "recipient-email",
     },
+    localContent: {
+      keyWrap: "share-envelope-aes-gcm-v1",
+      wrappedKey: Buffer.from(new Uint8Array(61).fill(4)).toString("base64url"),
+      ciphertextDigest: Buffer.from(new Uint8Array(32).fill(5)).toString("base64url"),
+    },
     ...overrides,
   } as unknown as ShareEnvelopeV3;
 }
@@ -75,7 +80,7 @@ function input(overrides: Record<string, unknown> = {}) {
     envelope: envelope(),
     shareCid: "bafkreiaaaa",
     config: config(),
-    contentKey: new Uint8Array(32).fill(9),
+    envelopeKey: new Uint8Array(32).fill(9),
     invoke: () => ({ Authorization: "invocation" }),
     openerOrigin: "https://share.tinycloud.xyz",
     ...overrides,

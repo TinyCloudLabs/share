@@ -103,32 +103,6 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const invite = launch.invite;
     delete launch.invite;
     const shareConfig = await config.loadSharePublicConfig();
-    if (shareConfig.accountlessReceiverEnabled === true) {
-      const { createShareReceiverClient } = await import("./share/receiver.js");
-      const receiverClient = createShareReceiverClient(shareConfig, REGISTRY_BASE_URL);
-      const received = await receiverClient.share.receive(shareHref, {
-        identity: "auto",
-        interaction: { kind: "inline", mountTarget: root },
-      });
-      const content = await received.get();
-      await presentShare(
-        root,
-        { state: "ok", access: "policy", envelope: presentationEnvelope(received.metadata, content), senderVerified: true, contentBytes: content.bytes },
-        {
-          shareUrl: shareHref,
-          saveToTinyCloud: async () => {
-            const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
-            const session = await authenticateWithOpenKey(() => undefined);
-            const accountClient = await createTinyCloudClient(session, shareConfig, [], () => undefined);
-            await received.importInto(accountClient, {
-              namespace: "files-for-you",
-              filename: content.filename,
-            });
-          },
-        },
-      );
-      return;
-    }
     const shareTrustedNode = config.trustedNodeFromConfig(shareConfig);
     const authority = createRegisteredPolicyAuthority({ nodeProof: { kid: shareConfig.nodeInvitationKid, publicKey: fromBase64Url(shareConfig.nodeInvitationPublicKey) }, expectedTarget: { origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, enforcerDid: shareConfig.enforcerDid } });
     const { createHolder } = await import("./email-share/claim.js");
@@ -183,7 +157,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // bytes, not on deployment config alone — the receiver additionally
     // requires the named engine to be the one this deployment trusts, so
     // neither side can redirect the presentation on its own.
-    if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3 && resolved.envelope.policyEngine !== undefined) {
+    if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3 && resolved.envelope.policyEngine !== undefined) {
       if (linkKey === undefined) {
         renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
         return;
@@ -197,7 +171,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
         envelope: accountlessEnvelope,
         shareCid: resolved.shareCid,
         config: shareConfig,
-        contentKey: linkKey,
+        envelopeKey: linkKey,
         // Generic node invocation signing from the WASM SDK. No session, no
         // account, no OpenKey: the only key is the receiver's ephemeral one.
         invoke: tinycloud.invoke,
