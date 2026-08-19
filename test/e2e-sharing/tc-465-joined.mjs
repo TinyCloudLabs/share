@@ -479,7 +479,7 @@ async function main() {
     assert(upload, "share upload control is missing");
     await upload.uploadFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
     await page.click("button.create-link-button");
-    await waitForText(page, "Your private link is ready", 30_000);
+    await waitForText(page, "Your encrypted link is ready", 30_000);
     await clickText(page, "Copy link");
     const shareUrl = await page.evaluate(() => window.__tc465Copied);
     assert.match(shareUrl, /^https:\/\/share\.tinycloud\.xyz\/s\/bafkrei[a-z2-7]{52}/);
