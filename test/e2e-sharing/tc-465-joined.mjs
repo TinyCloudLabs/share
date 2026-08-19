@@ -22,7 +22,7 @@ const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc5
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/OpenCredentials" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
-const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so" };
+const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so", openKeyApi: "https://api.openkey.so" };
 const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const receiverRequests = [];
@@ -180,6 +180,7 @@ async function installInterception(page, services, fixtureOrigin) {
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
     if (url.origin === canonical.openKey) return proxy(request, services.openKeyOrigin, { entry });
+    if (url.origin === canonical.openKeyApi) return proxy(request, services.openKeyOrigin, { cors: true, entry });
     if (url.protocol === "data:" || url.protocol === "blob:" || url.origin === "null") return request.continue();
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
@@ -450,7 +451,7 @@ async function main() {
     await waitForFile(join(control, "services.json"), integration, 20 * 60_000);
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
-    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
+    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1,MAP api.openkey.so 127.0.0.1"] });
     browser.on("targetcreated", (target) => {
       if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
       void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
@@ -467,9 +468,6 @@ async function main() {
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
     await page.waitForFunction(() => { const button = document.querySelector("button.auth-button"); return button !== null && !button.disabled; }, { timeout: 60_000 });
     await page.click("button.auth-button");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 800));
-    await announceWallet(page);
-    await clickText(page, "TinyCloud E2E Wallet");
     await clickText(page, "Create TinyCloud Space", true);
     await waitForText(page, "Shared by me.", 60_000);
     await clickText(page, "New share");
@@ -655,9 +653,6 @@ async function main() {
       const renderedSequence = receiverSequence;
       await page.waitForSelector("button.viewer-save-to-tinycloud", { timeout: 30_000 });
       await page.click("button.viewer-save-to-tinycloud");
-      await new Promise((resolveWait) => setTimeout(resolveWait, 800));
-      await announceWallet(page);
-      await clickText(page, "TinyCloud E2E Wallet", true);
       await clickText(page, "Create TinyCloud Space", true);
       await waitForText(page, "Saved to Files for you", 180_000);
       saveOpenKey = routeAfter("post-render OpenKey start", renderedSequence, (entry) => entry.origin === canonical.openKey);

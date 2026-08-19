@@ -40,6 +40,7 @@ import { safeFailedTelemetry } from "./failure-diagnostic.mjs";
 import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
 import { assertRoutingShimInstalled, loopbackTransportAbortPatterns } from "./loopback-transport.mjs";
 import { OPENSSL_OVERRIDE_ENV, duplicateCertificateExtensions, resolveOpensslBinary, tlsMaterialDiagnostic } from "./openssl-toolchain.mjs";
+import { OPENKEY_TEST_SESSION_TOKEN, openKeyApiCors, openKeyWidgetHtml } from "./openkey-fixture.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 
@@ -423,9 +424,27 @@ async function startFixtures(tempRoot) {
     if (request.method !== "POST") { response.writeHead(405, cors).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => { try { const body = JSON.parse(Buffer.concat(chunks).toString()); const signature = await wallet.signMessage({ message: body.message }); response.writeHead(200, { ...cors, "content-type": "application/json" }).end(JSON.stringify({ address: wallet.address, signature })); } catch { response.writeHead(400, cors).end(); } });
   });
-  const openKeyOrigin = await loopback("OpenKey external-wallet/SIWE widget", (request, response) => {
-    if (!request.url?.startsWith("/widget/")) { response.writeHead(404).end(); return; }
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(`<!doctype html><meta charset="utf-8"><script>parent.postMessage({type:"openkey:ready"},"*");setTimeout(()=>parent.postMessage({type:"openkey:auth:use-external-wallet"},"*"),0);addEventListener("message",e=>{if(e.data&&e.data.type==="openkey:auth:request")parent.postMessage({type:"openkey:auth:use-external-wallet"},"*")});</script>`);
+  const openKeyOrigin = await loopback("OpenKey managed-session/SIWE widget", (request, response) => {
+    const cors = openKeyApiCors(request.headers.origin);
+    if (request.method === "OPTIONS" && request.url === "/api/delegate/sign") { response.writeHead(204, cors).end(); return; }
+    if (request.method === "GET" && request.url?.startsWith("/widget/")) {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(openKeyWidgetHtml(wallet.address));
+      return;
+    }
+    if (request.method !== "POST" || (request.url !== "/sign" && request.url !== "/api/delegate/sign")) { response.writeHead(404).end(); return; }
+    if (request.url === "/api/delegate/sign" && request.headers.authorization !== `Bearer ${OPENKEY_TEST_SESSION_TOKEN}`) { response.writeHead(401, cors).end(); return; }
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", async () => {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        if (typeof body.message !== "string" || body.message.length === 0) throw new Error("message missing");
+        const signature = await wallet.signMessage({ message: body.message });
+        response.writeHead(200, { ...cors, "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ signature }));
+      } catch {
+        response.writeHead(400, cors).end();
+      }
+    });
   });
   await writeFile(join(tempRoot, "registry-upload.key"), registryUploadSeed.toString("base64url"), { flag: "wx", mode: 0o600 });
   const registry = run("bun", ["packages/registry/src/production-server-cli.ts", "--port", "0"], shareRoot, {
