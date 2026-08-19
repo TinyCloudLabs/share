@@ -630,7 +630,7 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         const parentExpiresAt = new Date(Math.min(Date.parse(expiresAt), Date.parse(createdAt) + 31 * 24 * 60 * 60 * 1000));
         const root = await createOwnerRoot({
           ownerDid,
-          role: "policy-authority",
+          role: "policy-issuance",
           audienceDid: config.policyEngineGrantIssuerDid!,
           policyId,
           policyDigestHex: policy.policyDigestHex,
@@ -645,13 +645,14 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         });
         await registerPolicyParentDelegation({
           policyEngineEndpoint: config.policyEngineOrigin!,
+          nodeEndpoint: config.nodeOrigin,
           ownerDid,
           authorization: root.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
           delegationCid: root.cid,
           nativeResource: unifiedSource.kvResource,
           policyCapability: capability,
           transport: createFetchPolicyAccessTransport({
-            originPolicy: { allowedOrigins: [config.policyEngineOrigin!] },
+            originPolicy: { allowedOrigins: [config.nodeOrigin, config.policyEngineOrigin!] },
             fetchFn,
           }),
         });
