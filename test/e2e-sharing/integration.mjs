@@ -268,7 +268,7 @@ async function waitFor(url, timeoutMs = 60_000, child) {
   }
   throw new Error(`timed out waiting for ${url}`);
 }
-async function waitForTcp(port, timeoutMs = 30_000) {
+async function waitForTcp(port, timeoutMs = 30_000, child) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -279,6 +279,10 @@ async function waitForTcp(port, timeoutMs = 30_000) {
       });
       return;
     } catch {}
+    if (child?.exitCode !== null && child?.exitCode !== undefined) {
+      const output = children.find((entry) => entry.child === child)?.output() ?? "";
+      throw new Error(`service exited before loopback TCP port ${port} became ready (${child.exitCode}): ${output.slice(-4000)}`);
+    }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
   throw new Error(`timed out waiting for loopback TCP port ${port}`);
@@ -505,8 +509,8 @@ async function startFixtures(tempRoot) {
   await runOnce(openssl.path, ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
   await chmod(postgresServerKeyPath, 0o600);
   assertPostgresLoadableCertificates(openssl, { "certificate authority": postgresCaCertPath, "server certificate": postgresServerCertPath });
-  run(join(postgresBin, "postgres"), ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: postgresUser });
-  await waitForTcp(postgresPort);
+  const postgres = run(join(postgresBin, "postgres"), ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: postgresUser });
+  await waitForTcp(postgresPort, 30_000, postgres);
   const postgresUrl = postgresConnectionUrl({ user: postgresUser, host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
   // The certificate is only genuinely good if the *database* accepts it, so
   // complete one verify-full handshake here rather than discovering the
