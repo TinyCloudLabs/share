@@ -572,6 +572,7 @@ async function main() {
     assert.match(deliveredShareUrl, tc500 ? /#k=[A-Za-z0-9_-]+$/ : /\?i=[A-Za-z0-9_-]+#k=[A-Za-z0-9_-]+$/, "delivered invitation omitted decryption material");
     await page.click("button.composer-back");
     await waitForText(page, "All shares", 30_000);
+    await page.waitForSelector(".sender-history-row", { timeout: 30_000 });
     assert.equal(await page.$$eval(".sender-history-row", (rows) => rows.length), 1, "delivered share was not retained in sender history");
 
     if (tc500) {
