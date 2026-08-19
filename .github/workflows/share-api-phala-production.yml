@@ -109,10 +109,10 @@ jobs:
             git checkout --detach "${SHARE_COMMIT}"
           fi
           [[ "${IMAGE}" =~ ^ghcr\.io/tinycloudlabs/share-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::Image must be an immutable Share API digest."; exit 1; }
+          echo "${{ github.token }}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
           # Attestation validity alone is insufficient: require its signed
           # source digest to be the exact main commit recorded for this release.
-          gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/share-api-image.yml" --source-digest "${SHARE_COMMIT}"
-          echo "${{ github.token }}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}" --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/share-api-image.yml" --source-digest "${SHARE_COMMIT}"
           raw="$(docker buildx imagetools inspect "${IMAGE}" --raw)"
           if echo "${raw}" | jq -e '.manifests' >/dev/null; then
             platform="$(echo "${raw}" | jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest')"
