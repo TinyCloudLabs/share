@@ -509,7 +509,7 @@ async function startFixtures(tempRoot) {
   await runOnce(openssl.path, ["x509", "-req", "-in", postgresServerCsrPath, "-CA", postgresCaCertPath, "-CAkey", postgresCaKeyPath, "-CAcreateserial", "-out", postgresServerCertPath, "-days", "1", "-extfile", postgresServerExtPath], postgresTlsDir);
   await chmod(postgresServerKeyPath, 0o600);
   assertPostgresLoadableCertificates(openssl, { "certificate authority": postgresCaCertPath, "server certificate": postgresServerCertPath });
-  const postgres = run(join(postgresBin, "postgres"), ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: postgresUser });
+  const postgres = run(join(postgresBin, "postgres"), ["-D", postgresData, "-h", "127.0.0.1,::1", "-p", String(postgresPort), "-c", "unix_socket_directories=", "-c", "ssl=on", "-c", `ssl_cert_file=${postgresServerCertPath}`, "-c", `ssl_key_file=${postgresServerKeyPath}`, "-c", `ssl_ca_file=${postgresCaCertPath}`], shareRoot, { PGUSER: postgresUser });
   await waitForTcp(postgresPort, 30_000, postgres);
   const postgresUrl = postgresConnectionUrl({ user: postgresUser, host: POSTGRES_TLS_HOSTNAME, port: postgresPort, database: "postgres" });
   // The certificate is only genuinely good if the *database* accepts it, so
