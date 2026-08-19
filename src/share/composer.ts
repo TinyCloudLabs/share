@@ -644,15 +644,13 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
         });
         await registerPolicyParentDelegation({
           policyEngineEndpoint: config.policyEngineOrigin!,
-          ownerNodeEndpoint: config.nodeOrigin,
-          ownerNodeSpaceId: spaceId,
           ownerDid,
           authorization: root.delegationHeader.Authorization.replace(/^Bearer\s+/i, ""),
           delegationCid: root.cid,
           nativeResource: unifiedSource.kvResource,
           policyCapability: capability,
           transport: createFetchPolicyAccessTransport({
-            originPolicy: { allowedOrigins: [config.policyEngineOrigin!, config.nodeOrigin] },
+            originPolicy: { allowedOrigins: [config.policyEngineOrigin!] },
             fetchFn,
           }),
         });
