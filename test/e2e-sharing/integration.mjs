@@ -1532,6 +1532,8 @@ try {
         const normalized = registrationFailures.map((line) => line.replace(/.*Owner share policy registration failed:\s*/, "").replace(/[^A-Za-z0-9_ :.-]/g, "").slice(0, 120));
         checks.push(`Failure diagnostic owner policy registration result ${JSON.stringify(normalized)}.`);
       }
+      const invitationFailures = outputLines.filter((line) => line.includes("credential invitation stage="));
+      if (invitationFailures.length > 0) checks.push(`Failure diagnostic ${invitationFailures.map((line) => line.trim()).join(", ")}.`);
       checks.push(`Failure diagnostic child ${entry.child.pid}: output omitted after secret audit; ${output.length} bytes were captured.`);
     }
   }
