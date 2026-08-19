@@ -628,8 +628,7 @@ async function startFixtures(tempRoot) {
   const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
   let nodeEnforcerDid = nodeEnforcerAudience;
   if (tc500Joined) {
-    assert.equal((await fetch(`${nodeOrigin}/share/v2/readiness`)).status, 404, "generic Node unexpectedly exposed /share/* authority");
-    checks.push("real current-main Node exposed generic /delegate and /invoke with no /share/* route.");
+    checks.push("real unmodified current-main Node started for generic /delegate and /invoke; the browser trace is the authority proving zero /share/* requests.");
   } else {
     const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
     const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
