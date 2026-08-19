@@ -247,7 +247,11 @@ async function assertReleaseInputs() {
     launchInputDigests[repository.name] = { head, digest };
   }
   const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
-  await runOnce("bun", ["run", "build"], sdkRoot);
+  // Build the browser SDK and its workspace dependencies from the selected
+  // source tree without accepting a previously cached bundle. A stale
+  // web-sdk artifact can otherwise hide share-envelope/share-sdk changes and
+  // make the joined browser exercise different code from the direct audit.
+  await runOnce("bunx", ["turbo", "build", "--force", "--filter=@tinycloud/web-sdk..."], sdkRoot);
   // TC-345. One statement of the rule, shared with startShare() and with
   // `npm run check:web-sdk-link`; every failure names `npm run link:web-sdk`.
   const expectedWebSdk = assertWebSdkLink(shareRoot, sdkRoot);
