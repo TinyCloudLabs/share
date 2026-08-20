@@ -617,9 +617,11 @@ async function main() {
     let otpSubmitted;
     try {
       if (tc500) {
-        await waitForText(page, "Confirm your email to open this");
-        await clickText(page, "Email me a code");
-        await waitForText(page, "Enter the code we just emailed you.");
+        await page.waitForFunction(() => {
+          const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+          return root?.querySelector('input[name="otp"]') instanceof HTMLInputElement
+            && root?.querySelector('button[type="submit"]') instanceof HTMLButtonElement;
+        }, { timeout: 60_000 });
         const otpDeadline = Date.now() + 30_000;
         let code;
         while (Date.now() < otpDeadline && code === undefined) {
@@ -629,8 +631,14 @@ async function main() {
           if (code === undefined) await new Promise((resolveWait) => setTimeout(resolveWait, 150));
         }
         assert.match(code ?? "", /^\d{6}$/, "OpenCredentials OTP email did not contain a six-digit code");
-        await page.type('input[name="otp"]', code);
-        await page.click('form.viewer-otp-form button[type="submit"]');
+        await page.evaluate((otp) => {
+          const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+          const input = root?.querySelector('input[name="otp"]');
+          const submit = root?.querySelector('button[type="submit"]');
+          if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) throw new Error("embedded OTP controls disappeared");
+          input.value = otp;
+          submit.click();
+        }, code);
         otpSubmitted = { jsonValue: async () => true };
       } else {
         otpSubmitted = await page.waitForFunction(() => {
