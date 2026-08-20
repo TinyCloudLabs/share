@@ -818,7 +818,7 @@ async function main() {
         policyCid,
         resource: kvResource,
         receiverDid,
-        delegationCid: policyMint.responseBody.delegation.delegationId,
+        delegationCid: policyMint.responseBody.sessionCid,
         acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
         deliveredMailIdSha256: createHash("sha256").update(String(deliveredMail.id)).digest("hex"),
       } : {
