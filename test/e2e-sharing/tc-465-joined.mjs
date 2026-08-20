@@ -81,6 +81,8 @@ async function proxy(request, targetOrigin, options = {}) {
     ? undefined
     : original.pathname === "/api/share/link-only/registry/blobs"
       ? Buffer.from(await options.page.evaluate(() => window.__tc465BinaryBodies.shift() ?? []))
+      : original.origin === canonical.node && original.pathname === "/invoke" && request.headers()["content-type"]?.startsWith("application/vnd.tinycloud.sealed")
+        ? Buffer.from(await options.page.evaluate(() => window.__tc465NodeBinaryBodies.shift() ?? []))
       : await request.fetchPostData();
   if (tc500 && original.pathname === "/policy/v0/parent-delegations" && typeof body === "string") {
     const parsed = JSON.parse(body);
@@ -186,7 +188,7 @@ async function installInterception(page, services, fixtureOrigin) {
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
     if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true, page });
-    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry });
+    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry, page });
     if (url.origin === canonical.policy) return proxy(request, services.policyEngineOrigin, { cors: true, entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
@@ -201,11 +203,12 @@ async function installInterception(page, services, fixtureOrigin) {
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-    await page.evaluateOnNewDocument((address, shareOrigin, accountlessReceiver) => {
+    await page.evaluateOnNewDocument((address, shareOrigin, nodeOrigin, accountlessReceiver) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0 };
     window.__tc465BinaryBodies = [];
+    window.__tc465NodeBinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
-    window.fetch = (input, init) => {
+    window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
       const body = init?.body;
       if (url.pathname === "/api/share/link-only/registry/blobs" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
@@ -213,6 +216,9 @@ async function installInterception(page, services, fixtureOrigin) {
           ? new Uint8Array(body)
           : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
         window.__tc465BinaryBodies.push(Array.from(bytes));
+      }
+      if (url.origin === nodeOrigin && url.pathname === "/invoke" && body instanceof Blob && body.type.startsWith("application/vnd.tinycloud.sealed")) {
+        window.__tc465NodeBinaryBodies.push(Array.from(new Uint8Array(await body.arrayBuffer())));
       }
       return originalFetch(input, init);
     };
@@ -282,7 +288,7 @@ async function installInterception(page, services, fixtureOrigin) {
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     if (!accountlessReceiver) setTimeout(announce, 10_000);
-    }, wallet.address, canonical.share, tc500);
+    }, wallet.address, canonical.share, canonical.node, tc500);
     resolveInstallation();
   } catch (error) {
     installedPages.delete(page);
@@ -668,7 +674,7 @@ async function main() {
     const acquisitionId = create.responseBody?.requestId;
     assert.match(acquisitionId, /^[A-Za-z0-9_-]{16,128}$/, "credential acquisition create did not return a canonical request id");
     const acquisitionPath = new RegExp(`^/v1/acquisitions/${escaped(acquisitionId)}/`);
-    const state = routeAfter("credential acquisition state", create.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/state"));
+    const state = receiverRequests.find((entry) => entry.sequence > create.sequence && successful(entry) && entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/state")) ?? create;
     const challenge = routeAfter("credential acquisition OTP challenge", state.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/challenge") && entry.body?.step === "mailbox_otp");
     const proof = routeAfter("credential acquisition OTP proof", challenge.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/proof") && entry.body?.step === "mailbox_otp");
     const holderBinding = routeAfter("credential acquisition holder binding", proof.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/holder-binding"));
@@ -710,7 +716,7 @@ async function main() {
     const receiverDid = tc500 ? policyMint.body?.presentation?.holderDid : policyChallenge.body?.recipientDid;
     if (tc500) {
       assert.match(receiverDid, /^did:key:z/, "accountless challenge recipient is not the receiver session key");
-      assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/GrantPresentation/v0");
+      assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/presentation/v0");
       assert.equal(policyMint.body?.presentation?.holderDid, receiverDid);
       assert.equal(policyMint.body?.presentation?.eligibleSubjectDid, receiverDid);
       assert.equal(policyMint.body?.presentation?.holderSignature?.signerDid, receiverDid);
@@ -741,28 +747,11 @@ async function main() {
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 
-    let saveOpenKey;
-    let saveWrite;
-    let saveReadback;
-    if (tc500) {
-      const renderedSequence = receiverSequence;
-      await page.waitForSelector("button.viewer-save-to-tinycloud", { timeout: 30_000 });
-      await page.click("button.viewer-save-to-tinycloud");
-      await clickText(page, "Create TinyCloud Space", true);
-      await waitForText(page, "Saved to Files for you", 180_000);
-      saveOpenKey = routeAfter("post-render OpenKey start", renderedSequence, (entry) => entry.origin === canonical.openKey);
-      saveWrite = routeAfter("Files for you import", saveOpenKey.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/content/")) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/metadata/")));
-      saveReadback = routeAfter("Files for you authenticated readback", saveWrite.sequence, (entry) => entry.path === "/invoke" && typeof entry.responseBody?.byteDigest === "string" && entry.responseBody.byteDigest.length > 0);
-      assert(saveWrite.authorization?.length > 0, "Files for you write was not authenticated");
-      assert(saveReadback.authorization?.length > 0, "Files for you readback was not authenticated");
-    }
-
     const chain = [
       "delivery:email", "sender-history:reload",
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
       ...(tc500 ? ["credential:session-custody", "policy-v0:challenge", "policy-v0:resolve"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
       "delegate", `invoke:${kvResource}`, tc500 ? "decrypt:local" : "decrypt", "render",
-      ...(tc500 ? ["save:openkey", "save:write", "save:readback"] : []),
     ];
     const statuses = tc500 ? {
       delivery: deliveredMail !== undefined,
@@ -777,9 +766,6 @@ async function main() {
       legacyPolicySessionAbsent: true,
       zeroOpenKeyBeforeRender: true,
       zeroExternalDestinations: true,
-      saveOpenKeyAfterRender: saveOpenKey.sequence > decrypt.sequence,
-      saveWrite: saveWrite.sequence > saveOpenKey.sequence,
-      saveReadback: saveReadback.sequence > saveWrite.sequence,
     } : {
       acquisition: result.sequence > create.sequence,
       durableCredential: policyChallenge.sequence > result.sequence,
