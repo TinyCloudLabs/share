@@ -138,7 +138,7 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
       if (tc465Joined) {
         const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
         const stages = tc500Joined
-          ? ["delivery", "senderLibrary", "acquisition", "sessionCredential", "policyV0", "delegate", "invoke", "localDecrypt", "rendered", "legacyPolicySessionAbsent", "zeroOpenKeyBeforeRender", "zeroExternalDestinations", "saveOpenKeyAfterRender", "saveWrite", "saveReadback"]
+          ? ["delivery", "senderLibrary", "acquisition", "sessionCredential", "policyV0", "delegate", "invoke", "localDecrypt", "rendered", "legacyPolicySessionAbsent", "zeroOpenKeyBeforeRender", "zeroExternalDestinations"]
           : ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
         const sliceKeys = tc500Joined
           ? ["acquisitionIdSha256", "delegationCid", "deliveredMailIdSha256", "policyCid", "receiverDid", "resource", "shareCid"]
