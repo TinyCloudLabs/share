@@ -164,6 +164,19 @@ async function installInterception(page, services, fixtureOrigin) {
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
     const headers = request.headers();
+    if (tc500 && url.origin === canonical.node && url.pathname === "/policy/v3/deliveries/authorize" && request.method() === "POST") {
+      const body = JSON.parse(request.postData());
+      const { requestBodyDigest, ...unsigned } = body;
+      const returnLink = new URL(body.shareUrl);
+      console.error(`delivery-debug:${JSON.stringify({
+        digestMatches: createHash("sha256").update(canonicalize(unsigned)).digest("base64url") === requestBodyDigest,
+        jtiBytes: fromBase64Url(body.jti).byteLength,
+        returnOriginMatches: returnLink.origin === canonical.share,
+        returnPathMatches: returnLink.pathname === `/s/${body.shareCid}`,
+        returnKeyMatches: returnLink.hash === `#k=${body.envelopeKey}`,
+        expiresInRange: Date.parse(body.expiresAt) > Date.now() && Date.parse(body.expiresAt) <= Date.now() + 5 * 60 * 1000,
+      })}`);
+    }
     if (tc500 && url.origin === canonical.witness && url.pathname === "/v1/credential-invitations" && request.method() === "POST") {
       invitationDeliveryRequest = request.postData();
     }
