@@ -5,7 +5,7 @@ const state = vi.hoisted(() => ({
   authenticate: vi.fn(),
   createAccountClient: vi.fn(),
   receive: vi.fn(),
-  mountAccountlessReceiver: vi.fn(),
+  receiveWithSdk: vi.fn(),
   get: vi.fn(),
   importInto: vi.fn(),
   resolve: vi.fn(),
@@ -63,8 +63,8 @@ vi.mock("../src/share/receiver.js", () => ({
   createShareReceiverClient: () => ({ share: { receive: (...args: unknown[]) => state.receive(...args) } }),
 }));
 
-vi.mock("../src/viewer/accountless-receiver.js", () => ({
-  mountAccountlessReceiver: (...args: unknown[]) => state.mountAccountlessReceiver(...args),
+vi.mock("../src/viewer/sdk-accountless-receiver.js", () => ({
+  receiveWithSdk: (...args: unknown[]) => state.receiveWithSdk(...args),
 }));
 
 vi.mock("@tinycloud/web-sdk-wasm", () => ({ tinycloud: { invoke: vi.fn() } }));
@@ -83,7 +83,7 @@ beforeEach(() => {
   state.authenticate.mockReset();
   state.createAccountClient.mockReset();
   state.receive.mockReset();
-  state.mountAccountlessReceiver.mockReset();
+  state.receiveWithSdk.mockReset();
   state.get.mockReset();
   state.importInto.mockReset();
   state.resolve.mockReset();
@@ -107,11 +107,10 @@ beforeEach(() => {
     policy: { schema: "xyz.tinycloud.policy/policy/v2" },
     shareCid: "bafkreicredentialshare",
   };
-  state.resolve.mockImplementation(async (_href: string, options: { onKeyParsed?: (key: Uint8Array) => void }) => {
-    options.onKeyParsed?.(new Uint8Array(32));
+  state.resolve.mockImplementation(async () => {
     return state.resolved;
   });
-  state.mountAccountlessReceiver.mockImplementation((_root: HTMLElement, options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
+  state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
     void options.onComplete({ bytes: new TextEncoder().encode("opened") });
   });
   state.receive.mockResolvedValue({
@@ -148,9 +147,11 @@ describe("first-class accountless receiver", () => {
     await import("../src/main.js");
     await vi.waitFor(() => expect(state.presented).toHaveLength(1));
 
-    expect(state.mountAccountlessReceiver).toHaveBeenCalledWith(
-      document.getElementById("viewer"),
-      expect.objectContaining({ envelopeKey: expect.any(Uint8Array), openerOrigin: window.location.origin }),
+    expect(state.receiveWithSdk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: document.getElementById("viewer"),
+        shareUrl: "https://share.tinycloud.xyz/s/test#k=secret",
+      }),
     );
     expect(state.receive).not.toHaveBeenCalled();
     expect(state.authenticate).not.toHaveBeenCalled();
