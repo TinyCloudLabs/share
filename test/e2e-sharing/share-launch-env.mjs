@@ -68,7 +68,7 @@ export const HERMETIC_UPSTREAM_SERVICES = Object.freeze(["credentials", "node", 
 // is exactly "true", the object names exactly node/credentials/registry, each
 // `origin` is byte-equal to the corresponding bundle origin, and each
 // `transportOrigin` is loopback. Anything else throws at Share host startup.
-export function hermeticUpstreamRoutes({ canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, registryTransportOrigin, policyEngineCanonicalOrigin, policyEngineTransportOrigin }) {
+export function hermeticUpstreamRoutes({ canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, registryTransportOrigin }) {
   if (typeof canonicalOrigins !== "object" || canonicalOrigins === null || Array.isArray(canonicalOrigins)) throw new Error("canonicalOrigins must be an object naming exactly credentials, node, and registry");
   const named = Object.keys(canonicalOrigins).sort();
   if (named.length !== HERMETIC_UPSTREAM_SERVICES.length || named.some((key, index) => key !== HERMETIC_UPSTREAM_SERVICES[index])) throw new Error("canonicalOrigins must be an object naming exactly credentials, node, and registry");
@@ -82,15 +82,10 @@ export function hermeticUpstreamRoutes({ canonicalOrigins, nodeTransportOrigin, 
     if (typeof origin !== "string" || !/^https:\/\/[a-z0-9.-]+$/.test(origin)) throw new Error(`canonicalOrigins.${service} must be the exact https trust-bundle origin`);
     routes[service] = { origin, transportOrigin: loopbackOrigin(transportOrigins[service], `${service}TransportOrigin`) };
   }
-  if ((policyEngineCanonicalOrigin === undefined) !== (policyEngineTransportOrigin === undefined)) throw new Error("policy engine canonical and transport origins must be supplied together");
-  if (policyEngineCanonicalOrigin !== undefined) {
-    if (typeof policyEngineCanonicalOrigin !== "string" || !/^https:\/\/[a-z0-9.-]+$/.test(policyEngineCanonicalOrigin)) throw new Error("policyEngineCanonicalOrigin must be the exact https trust-bundle origin");
-    routes.policyEngine = { origin: policyEngineCanonicalOrigin, transportOrigin: loopbackOrigin(policyEngineTransportOrigin, "policyEngineTransportOrigin") };
-  }
   return routes;
 }
 
-export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin, canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, policyEngineCanonicalOrigin, policyEngineTransportOrigin, senderBindingStore }) {
+export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryUploadKeyPath, nodeEnforcerDid, openKeyOrigin, walletOrigin, shareOrigin, registryOrigin, canonicalOrigins, nodeTransportOrigin, credentialsTransportOrigin, senderBindingStore }) {
   // Validated under its own label first so the SHARE_HERMETIC_REGISTRY_ORIGIN
   // contract keeps reporting `registryOrigin` rather than the transport alias.
   const registry = loopbackOrigin(registryOrigin, "registryOrigin");
@@ -101,8 +96,6 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     // The registry transport is the same real local registry process the
     // Share host's own registry client already points at.
     registryTransportOrigin: registry,
-    policyEngineCanonicalOrigin,
-    policyEngineTransportOrigin,
   });
   if (senderBindingStore !== undefined && (typeof senderBindingStore !== "object" || senderBindingStore === null || Array.isArray(senderBindingStore) || Object.keys(senderBindingStore).sort().join(",") !== "path,root" || typeof senderBindingStore.root !== "string" || typeof senderBindingStore.path !== "string" || !senderBindingStore.path.startsWith(`${senderBindingStore.root}/`))) throw new Error("senderBindingStore must name an exact root and descendant path");
   return {
@@ -129,7 +122,6 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
       node: routes.node,
       credentials: routes.credentials,
       registry: routes.registry,
-      ...(routes.policyEngine === undefined ? {} : { policyEngine: routes.policyEngine }),
     }),
   };
 }
