@@ -140,7 +140,12 @@ async function serveCredentialsApp(request) {
   const file = requested.startsWith("assets/") || extname(requested) !== "" ? join(credentialsApp, "dist", requested) : join(credentialsApp, "dist/index.html");
   let body;
   try { body = await readFile(file); } catch { body = await readFile(join(credentialsApp, "dist/index.html")); }
-  await request.respond({ status: 200, headers: { "content-type": contentTypes[extname(file)] ?? "text/html; charset=utf-8", "cache-control": "no-store" }, body });
+  const origin = request.headers().origin;
+  await request.respond({ status: 200, headers: {
+    "content-type": contentTypes[extname(file)] ?? "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    ...(origin === canonical.share || origin === canonical.interaction ? { "access-control-allow-origin": origin, vary: "Origin" } : {}),
+  }, body });
 }
 
 async function installInterception(page, services, fixtureOrigin) {
