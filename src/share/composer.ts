@@ -462,7 +462,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const config = await loadSharePublicConfig();
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
-  const shareId = crypto.randomUUID().replaceAll("-", "");
+  const shareId = crypto.randomUUID();
   const selectedSource = contentSource(model.content)?.kind === "kv" ? contentSource(model.content) as Extract<NonNullable<ReturnType<typeof contentSource>>, { kind: "kv" }> : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
   const filename = contentFilename(model.content);
@@ -541,6 +541,13 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       registerPolicy: (input) => tinycloud.registerPolicy(input),
     },
     upload: { uploadBlob, fetchFn: options.fetchFn ?? globalThis.fetch },
+    publishBinding: async (binding) => {
+      const response = await (options.fetchFn ?? globalThis.fetch)("/api/share/bindings", {
+        method: "POST", credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer",
+        headers: { "content-type": "application/json" }, body: JSON.stringify(binding),
+      });
+      if (!response.ok) throw fail("save", "addressed envelope binding was rejected");
+    },
   });
   const record = historyRecordForPublishedShare(published);
   return {
