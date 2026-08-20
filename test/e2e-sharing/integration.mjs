@@ -681,6 +681,8 @@ async function startFixtures(tempRoot) {
     resendEndpoint: `${mail}/emails`, postgresUrl, postgresCaCert: postgresCaCertPath, migrationsDir, readinessFile,
   });
   if (tc500Joined) Object.assign(credentialsLaunchEnv, {
+    SHARE_EMAIL_CAPABILITY: "false",
+    SHARE_EMAIL_DATABASE_MODE: "durable-postgres",
     CREDENTIAL_ACQUISITION_EMAIL_CAPABILITY: "true",
     CREDENTIAL_INVITATION_CAPABILITY: "true",
     CREDENTIAL_INVITATION_POLICY_ENGINE_DIDS: JSON.stringify([policyGrantIssuerDid]),
@@ -695,9 +697,12 @@ async function startFixtures(tempRoot) {
   let credentialsReady = false;
   while (Date.now() < credentialsDeadline) {
     try {
-      const response = await fetch(`${credentialsOrigin}/share-email/readiness`);
-      const body = await response.json().catch(() => null);
-      assertCredentialsReadinessBody(response.status, body, credentialsCapabilityId);
+      const response = await fetch(`${credentialsOrigin}/${tc500Joined ? "health" : "share-email/readiness"}`);
+      if (tc500Joined) assert.equal(response.status, 200, "OpenCredentials health endpoint was not ready");
+      else {
+        const body = await response.json().catch(() => null);
+        assertCredentialsReadinessBody(response.status, body, credentialsCapabilityId);
+      }
       credentialsReady = true;
       break;
     } catch {}
@@ -709,6 +714,8 @@ async function startFixtures(tempRoot) {
     throw new Error(`OpenCredentials readiness did not become ready: ${redactSecrets(rawOutput.slice(-4000), [credentialsLaunchEnv.RESEND_API_KEY, credentialsLaunchEnv.RESEND_WEBHOOK_SECRET])}`);
   }
   if (tc500Joined) {
+    const retiredNodeDelivery = await fetch(`${credentialsOrigin}/share/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(retiredNodeDelivery.status, 404, "retired Node-authorized Share delivery route remained mounted");
     const invitationCors = await fetch(`${credentialsOrigin}/v1/credential-invitations`, { method: "OPTIONS", headers: { origin: canonical.share, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
     assert.equal(invitationCors.status, 200, "OpenCredentials invitation browser CORS preflight failed");
     assert.equal(invitationCors.headers.get("access-control-allow-origin"), canonical.share, "OpenCredentials did not allow the Share browser origin");
