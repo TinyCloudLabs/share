@@ -195,24 +195,6 @@ function parseProof(value: unknown): SignedProof {
   return object as unknown as SignedProof;
 }
 
-function parseAuthorization(value: unknown): AuthorizedInvitation {
-  const outer = exact(value, ["authorization", "proof"]);
-  const raw = record(outer.authorization);
-  if (raw.version === 2) {
-    const required = ["type", "version", "jti", "reportAbuseToken", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "recipientMatcher", "deliveryEmail", "shareUrl", "actions", "resource", "requestBodyDigest", "idempotencyKey"];
-    const optional: string[] = [];
-    if (Object.keys(raw).some((key) => !required.includes(key) && !optional.includes(key)) || required.some((key) => !Object.hasOwn(raw, key))) throw new ShareTransportError("unknown");
-    const authorization = raw;
-    if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 2 || (authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") || !Array.isArray(authorization.actions) || typeof authorization.resource !== "string" || typeof authorization.shareUrl !== "string" || typeof authorization.requestBodyDigest !== "string" || typeof authorization.idempotencyKey !== "string") throw new ShareTransportError("unknown");
-    try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
-    return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
-  }
-  const authorization = exact(raw, ["type", "version", "jti", "senderDid", "shareCid", "shareId", "policyCid", "delegationCid", "authorityMaterialHandle", "authorityMaterialDigest", "recipientEmail", "targetOrigin", "nodeAudience", "returnOrigin", "documentName", "senderTrust", "contentSource", "contentSourceDigest", "shareExpiresAt", "issuedAt", "expiresAt", "reportAbuseToken"]);
-  if (authorization.type !== "TinyCloudShareInviteAuthorization" || authorization.version !== 1 || authorization.senderTrust !== "verified" && authorization.senderTrust !== "unverified") throw new ShareTransportError("unknown");
-  try { validateSource(authorization.contentSource as ContentSource); } catch { throw new ShareTransportError("unknown"); }
-  return { authorization: { ...authorization, contentSource: validateSource(authorization.contentSource as ContentSource) } as never, proof: parseProof(outer.proof) };
-}
-
 function parsePolicyChallenge(value: unknown): { readonly challenge: Record<string, unknown>; readonly proof: SignedProof } {
   const object = exact(value, ["challenge", "proof"]);
   const challenge = exact(object.challenge, ["type", "version", "challengeId", "nonce", "shareCid", "shareId", "delegationCid", "policyCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSource", "contentSourceDigest", "holderDid", "targetOrigin", "nodeAudience", "action", "actions", "resource", "requestBodyDigest", "issuedAt", "expiresAt", "enforcerDid"]);
@@ -245,10 +227,12 @@ export function createHttpTransport(input: { readonly nodeOrigin: string; readon
     if ((parsed.protocol !== "https:" && !sameOriginProxy) || parsed.origin !== origin) throw new TypeError("Trusted service origins must be canonical HTTPS origins or the same-origin Share proxy.");
   }
   const fetchFn = input.fetchFn ?? globalThis.fetch.bind(globalThis);
-  const postNode = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.nodeOrigin, path, { method: "POST", body: JSON.stringify(body) });
   const postCredentials = <T>(path: string, body: Record<string, unknown>) => jsonRequest<T>(fetchFn, input.credentialsOrigin, path, { method: "POST", body: JSON.stringify(body) });
   return {
-    authorizeInvitation: async (body) => parseAuthorization(await postNode<unknown>("/share/v1/invitations/authorize", body)),
+    // Node mounts no /share data plane. Invitation authorization is part of
+    // the reusable SDK's embedded Policy/v3 flow, so this obsolete v1
+    // operation has no network fallback either.
+    authorizeInvitation: async () => { throw new ShareTransportError("capability-unavailable"); },
     requestDelivery: async (body) => {
       const { idempotencyKey, ...payload } = body;
       return parseAccepted(await jsonRequest(fetchFn, input.credentialsOrigin, "/v1/share-email/invitations", { method: "POST", body: JSON.stringify(payload), ...(typeof idempotencyKey === "string" ? { headers: { "idempotency-key": idempotencyKey } } : {}) }));
