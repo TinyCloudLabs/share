@@ -34,7 +34,6 @@ import { buildCredentialsLaunchEnv, buildMigrationEnv } from "./credentials-laun
 import { assertCredentialsReadinessBody, redactSecrets } from "./credentials-readiness.mjs";
 import { buildDstackResponsePayload, ed25519PublicKey, parseDstackRequest, formatHttpResponse } from "./dstack-issuer.mjs";
 import { nodeEnforcerAudienceFromTrustBundle } from "./node-enforcer-audience.mjs";
-import { assertNodeShareV2Capability } from "./node-capability.mjs";
 import { POSTGRES_TLS_HOSTNAME, postgresConnectionUrl, postgresServerCertExtensionFile } from "./postgres-tls-config.mjs";
 import { safeFailedTelemetry } from "./failure-diagnostic.mjs";
 import { routeTelemetryFetchArgs, normalizeTelemetryFetchArgs } from "./browser-telemetry-route.mjs";
@@ -586,21 +585,16 @@ async function startFixtures(tempRoot) {
   await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
   const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...(genericNode ? { TINYCLOUD_STORAGE__DATADIR: join(tempRoot, "node-data") } : buildNodeLaunchEnv(tempRoot, trustBundlePath)) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/${genericNode ? "info" : "share/v2/readiness"}`, 180_000, node);
+  const nodeReady = await waitFor(`${nodeOrigin}/${genericNode ? "info" : "healthz"}`, 180_000, node);
+  assert.equal(nodeReady.status, 200, "real Node health endpoint was not ready");
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
   const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
-  let nodeEnforcerDid = nodeEnforcerAudience;
+  let nodeEnforcerDid = nodeInfo.nodeId;
+  assert.match(nodeEnforcerDid, /^did:key:/, "real Node /info omitted its Ed25519 enforcer DID");
   if (genericNode) {
     checks.push("real generic Node started for /delegate and /invoke without Share-specific features or trust configuration.");
-  } else {
-    const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
-    const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
-    if (readiness.ready !== true || Object.values(readinessChecks).some((value) => value !== true)) throw new Error(`real Node v2 readiness incomplete: ${JSON.stringify({ ready: readiness.ready, checks: readinessChecks })}`);
-    const shareV2Capability = assertNodeShareV2Capability(nodeInfo);
-    nodeEnforcerDid = shareV2Capability.enforcerDid;
-    checks.push(`real Node v2 readiness ${JSON.stringify({ ready: true, checks: readinessChecks })}.`);
   }
   const nodeDescriptor = { url: nodeOrigin, nodeId: nodeEnforcerAudience, enforcerDid: nodeEnforcerDid, trustedNode: { invitationPublicKey: nodePublic.nodeInvitationPublicKey } };
 
