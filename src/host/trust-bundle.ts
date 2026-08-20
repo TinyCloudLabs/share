@@ -187,7 +187,7 @@ export function securityHeadersForPath(bundle: ShareTrustBundle, pathname: strin
   // sender's `notify` fetches it directly from the page. Omit it and the send
   // dies as a CSP violation in the console, which the composer surfaces as the
   // same generic "We couldn't send that email" as every other failure.
-  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, bundle.public.emailOrigin, bundle.public.registryOrigin, "https://api.openkey.so", ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
+  const connect = ["'self'", bundle.public.nodeOrigin, bundle.public.credentialsOrigin, "https://credentials.org", bundle.public.emailOrigin, bundle.public.registryOrigin, "https://api.openkey.so", ...(openKeyFrame.startsWith("http://127.0.0.1") ? [openKeyFrame] : []), ...walletConnect].join(" ");
   // `no-transform` keeps Cloudflare from injecting its analytics beacon into
   // these security-sensitive documents. The third-party script is deliberately
   // absent from the CSP; allowing an edge rewrite would otherwise create a CSP
