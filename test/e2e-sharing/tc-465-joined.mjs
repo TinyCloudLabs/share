@@ -572,6 +572,21 @@ async function main() {
     assert(deliveredMail !== undefined, "exact-email notification was not captured by the mail fixture");
     if (tc500) {
       assert.equal(typeof invitationDeliveryRequest, "string", "generic invitation delivery request was not captured");
+      const deliveryContract = JSON.parse(invitationDeliveryRequest);
+      assert.equal(deliveryContract.request.policyId, binding.body.policyCid, "invitation policy binding changed after admission");
+      assert.equal(deliveryContract.request.recipient, recipientEmail, "invitation recipient binding changed after admission");
+      assert.equal(deliveryContract.request.resource, exactKvResource, "invitation resource binding changed after admission");
+      assert.equal(deliveryContract.request.credentialType, "opencredentials.email/v1", "invitation credential type changed after admission");
+      assert.equal(deliveryContract.request.envelopeRef, shareCid, "invitation envelope binding changed after admission");
+      assert.equal(deliveryContract.request.audience, canonical.witness, "invitation audience changed after admission");
+      assert.equal(deliveryContract.admission.recipient, deliveryContract.request.recipient, "admission and invitation recipients differ");
+      assert.equal(deliveryContract.admission.resource, deliveryContract.request.resource, "admission and invitation resources differ");
+      assert.deepEqual(deliveryContract.admission.actions, ["tinycloud.kv/get"], "delivery admission was not read-only");
+      assert.equal(deliveryContract.admission.senderKeyDid, deliveryContract.proof.kid, "delivery proof did not use the admitted sender key");
+      assert.equal(deliveryContract.admission.returnLink, deliveryContract.request.returnLink, "admission and invitation return links differ");
+      assert.equal(deliveryContract.admission.expiresAt, deliveryContract.request.expiresAt, "admission and invitation expiries differ");
+      const invitationTtl = (Date.parse(deliveryContract.request.expiresAt) - Date.parse(deliveryContract.request.issuedAt)) / 1_000;
+      assert(invitationTtl > 0 && invitationTtl <= 900, "invitation expiry was not positively bounded to fifteen minutes");
       const beforeReplay = (await (await fetch(`${services.mailOrigin}/emails`)).json()).messages.length;
       const replay = await fetch(`${services.credentialsOrigin}/v1/credential-invitations`, { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: invitationDeliveryRequest });
       assert.equal(replay.status, 202, "identical invitation replay was not idempotently accepted");
@@ -721,6 +736,14 @@ async function main() {
       assert.equal(policyMint.body?.presentation?.eligibleSubjectDid, receiverDid);
       assert.equal(policyMint.body?.presentation?.holderSignature?.signerDid, receiverDid);
       assert.equal(policyMint.body?.presentation?.holderBinding?.type, "ephemeral-holder");
+      const minted = parseCompactUcanAuthorization(policyMint.responseBody?.delegation?.encoded, policyMint.responseBody?.delegation?.delegationId);
+      assert.equal(minted.payload.aud, receiverDid, "delegation audience was not the proven ephemeral holder");
+      assert(minted.payload.iss.startsWith(`${policyMint.responseBody?.delegation?.issuerDid}#`), "delegation issuer metadata did not match the signed token");
+      assert.deepEqual(Object.keys(minted.payload.att), [kvResource], "delegation was not exact-resource scoped");
+      assert.deepEqual(Object.keys(minted.payload.att[kvResource]), ["tinycloud.kv/get"], "delegation was not read-only");
+      assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
+      assert.equal(minted.payload.fct[0]?.["xyz.tinycloud.policy/policyId"], policyCid, "delegation policy fact did not match the presented policy");
+      assert.equal(minted.payload.fct[0]?.["xyz.tinycloud.policy/delegationMode"], "terminal", "delegation was not terminal");
     } else {
       credentialSpaceId = policyMint.body?.credentialSpaceId;
       assert.equal(typeof credentialSpaceId, "string", "Policy/v3 mint omitted the recipient credentials space");
@@ -766,6 +789,13 @@ async function main() {
       legacyPolicySessionAbsent: true,
       zeroOpenKeyBeforeRender: true,
       zeroExternalDestinations: true,
+      registryMetadataOnly: true,
+      exactInvitationBindings: true,
+      invitationReplayIdempotent: true,
+      invitationNonceRebindingRejected: true,
+      browserCors: true,
+      exactDelegationBindings: true,
+      zeroNodeShareRoutes: true,
     } : {
       acquisition: result.sequence > create.sequence,
       durableCredential: policyChallenge.sequence > result.sequence,
