@@ -11,12 +11,7 @@ export interface AddressedDeliveryInput {
 }
 
 export async function requestAddressedDelivery(input: AddressedDeliveryInput): Promise<void> {
-  const version = typeof input.deliveryAuthorization.authorization === "object"
-    && input.deliveryAuthorization.authorization !== null
-    && (input.deliveryAuthorization.authorization as { readonly version?: unknown }).version === 3
-    ? 3
-    : 2;
-  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/share/v${version}`, {
+  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/share/v2`, {
     method: "POST",
     credentials: "omit",
     redirect: "error",

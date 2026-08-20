@@ -33,7 +33,7 @@ describe("addressed delivery boundary", () => {
     expect(Object.keys(JSON.parse(String(init?.body))).sort()).toEqual(["authorization", "proof", "shareUrl"]);
   });
 
-  it("routes a v3 receipt to the v3 worker without rewriting its root bindings", async () => {
+  it("posts a v3 policy receipt to the existing delivery service without rewriting its root bindings", async () => {
     const authorization = Object.freeze({
       type: "TinyCloudShareDeliveryAuthorization",
       version: 3,
@@ -51,7 +51,7 @@ describe("addressed delivery boundary", () => {
     });
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe("https://worker.example/share/v3");
+    expect(url).toBe("https://worker.example/share/v2");
     expect(JSON.parse(String(init?.body))).toEqual({
       authorization,
       proof,
