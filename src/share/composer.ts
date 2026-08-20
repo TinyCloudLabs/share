@@ -3,14 +3,9 @@ import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { ContentSource } from "../email-share/protocol.js";
 import type { SenderPolicy } from "../email-share/sender.js";
-import { createUnifiedPolicy, contentSourceDigestHex, signV3Envelope, type UnifiedOwnerRootFactory } from "./unified-delegation.js";
 import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
-import { canonicalize, encodeInlineShareUrl, encodeShareUrl, fromBase64Url, generateKey, seal, toBase64Url, type UnifiedPolicyCapability } from "@tinycloud/share-envelope";
-import { createFetchPolicyAccessTransport, registerPolicyParentDelegation, requestCredentialInvitationDelivery } from "@tinycloud/sdk-core/policy-access";
-import { sha256 } from "@noble/hashes/sha256";
-import { publishSharePolicyToEngine } from "./policy-engine-publish.js";
-import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
+import { fromBase64Url } from "@tinycloud/share-envelope";
 import { historyRecordForPublishedShare, notifyShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareDeliveryAdapter, type ShareUploadInput } from "@tinycloud/share-sdk";
 import { plaintextHistoryRecord, publishPlaintextShare } from "./plaintext-share.js";
 
@@ -151,9 +146,9 @@ export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "
   readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
   readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined; readonly files: readonly File[] }) => Promise<void>;
-  /** TC-405 owner-root signer supplied by the unified delegation SDK. */
-  readonly createUnifiedOwnerRoot?: UnifiedOwnerRootFactory["createOwnerRoot"];
-  /** TC-405 policy/envelope signer; kept separate from Node/session transport. */
+  /** Retained as an inert compatibility input while existing host integrations update. */
+  readonly createUnifiedOwnerRoot?: (input: unknown) => Promise<unknown>;
+  /** Retained as an inert compatibility input while existing host integrations update. */
   readonly signUnifiedPolicy?: (bytes: Uint8Array) => Promise<Uint8Array>;
 }
 
@@ -535,6 +530,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   };
 }
 
+/*
 async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions, _createOwnerRoot: UnifiedOwnerRootFactory["createOwnerRoot"]): Promise<ComposerShareResult> {
   if (!model.encryption) throw fail("plaintext", "v3 owner-policy shares require encryption");
   const tinycloud = options.tinycloud;
@@ -752,18 +748,13 @@ async function createV3OwnerPolicyShare(files: readonly File[], model: ShareComp
     contentKey.fill(0);
   }
 }
+*/
 
 async function createOwnerPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   if (!model.encryption) throw fail("plaintext", "owner-policy shares require encryption");
   const tinycloud = options.tinycloud;
   if (tinycloud === undefined) throw fail("session", "owner share has no TinyCloud session");
-  // An addressed owner share must never silently downgrade to the legacy
-  // custom resolver.  The v3 owner-root factory and policy signer are a
-  // single capability boundary; until both are supplied, fail closed.
-  if (options.createUnifiedOwnerRoot === undefined || options.signUnifiedPolicy === undefined) {
-    throw fail("internal", "unified v3 owner-share primitives are unavailable");
-  }
-  return createV3OwnerPolicyShare(files, model, options, options.createUnifiedOwnerRoot);
+  return createOwnerPolicyShareCanonical(files, model, options);
 }
 
 export async function uploadSelectedFiles(

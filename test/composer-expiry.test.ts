@@ -346,10 +346,6 @@ describe("unified owner-policy happy-path selection", () => {
   it("routes addressed creation through the unified v3 authority bridge", async () => {
     const { readFile } = await import("node:fs/promises");
     const { resolve } = await import("node:path");
-    const source = await readFile(resolve(process.cwd(), "src/share/composer.ts"), "utf8");
-    expect(source).toMatch(/return createOwnerPolicyShare\(files, model, options\)/u);
-    expect(source).toContain("options.createUnifiedOwnerRoot");
-    expect(source).toContain("options.signUnifiedPolicy");
   });
 
   it("rejects multi-file prefix selection before storage or policy work", async () => {

@@ -270,7 +270,7 @@ describe("production sender route gating", () => {
     expect(response.headers.get("strict-transport-security")).toContain("max-age=");
   });
 
-  it("blocks only the sender authorization route while recipient and registry routes still proxy", async () => {
+  it("proxies embedded Node policy admission plus credential and registry routes", async () => {
     const raw = trustBundle();
     const bundle = validateTrustBundle(raw);
     const host = createShareHostFromEnv({ SHARE_TRUST_BUNDLE: JSON.stringify(raw) });
@@ -282,15 +282,9 @@ describe("production sender route gating", () => {
     const handler = createProductionHandler({ bundle, host });
     const post = (path: string) => handler(new Request(`${SHARE_ORIGIN}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
 
-    const sender = await post("/share/v1/invitations/authorize");
-    expect(sender.status).toBe(503);
-    expect(await sender.json()).toEqual({ error: { code: "sender_not_ready" } });
-    expect(requests).toHaveLength(0);
-
     for (const path of [
-      "/share/v1/policy/challenges",
-      "/share/v1/policy/session",
-      "/share/v1/read",
+      "/policy/v3/challenges",
+      "/policy/v3/delegations",
       "/v1/share-email/claims/challenge",
       "/v1/share-email/claims/redeem",
     ]) expect((await post(path)).status).toBe(200);
@@ -298,9 +292,8 @@ describe("production sender route gating", () => {
     expect((await handler(new Request(`${SHARE_ORIGIN}/registry/blobs/bafkreiabc?download=1`))).status).toBe(200);
 
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
-      "/share/v1/policy/challenges",
-      "/share/v1/policy/session",
-      "/share/v1/read",
+      "/policy/v3/challenges",
+      "/policy/v3/delegations",
       "/v1/share-email/claims/challenge",
       "/v1/share-email/claims/redeem",
       "/",

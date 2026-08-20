@@ -21,7 +21,7 @@ function dynamic(path: string): boolean {
     path === "/api/share/sender-identity" ||
     path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/bafkrei[a-z0-9]+\/raw$/.test(path) ||
     path.startsWith("/api/share/link-only/registry/") ||
-    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/share/v1/") || path.startsWith("/share/v2/") || path === "/share/v3/policy/challenges" || path === "/share/v3/policy/delegations" || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
+    path === "/registry" || path.startsWith("/registry/") || path.startsWith("/policy/v3/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
 }
 
 function rewrite(path: string): string {
@@ -32,9 +32,7 @@ function rewrite(path: string): string {
   return path;
 }
 
-export function senderOnlyRoute(path: string): boolean {
-  return path === "/share/v1/invitations/authorize";
-}
+export function senderOnlyRoute(_path: string): boolean { return false; }
 
 function json(status: number, code: string): Response {
   return new Response(JSON.stringify({ error: { code } }), { status, headers: JSON_HEADERS });
@@ -46,7 +44,6 @@ function requestBodyLimit(path: string): number {
   // limit to reach that gate instead of rejecting it at the generic JSON
   // request limit.
   if (path === "/invoke") return NATIVE_SHARE_BODY_LIMIT;
-  if (path.startsWith("/share/v2/")) return 100 * 1024 * 1024;
   if (path === "/api/share/link-only/registry/blobs" || path === "/registry" || path.startsWith("/registry/")) return REGISTRY_UPLOAD_BODY_LIMIT;
   return DEFAULT_REQUEST_BODY_LIMIT;
 }
@@ -181,7 +178,7 @@ export function startProductionServer(env: NodeJS.ProcessEnv = process.env): Ret
   const server = createServer((request, response) => {
     void incomingRequest(request).then(handler).then((result) => send(response, result)).catch((error) => {
       // A 503 with a path and no cause is unactionable: the sharing harness hit
-      // exactly this on /share/v2/policies and could say nothing beyond the
+      // exactly this on an unavailable admission route and could say nothing beyond the
       // status. The error class and message go to server-side stderr only;
       // the response body is unchanged.
       console.error(`share-host stage=request-error path=${(request.url ?? "/").split("?")[0] ?? "/"} error=${error instanceof Error ? `${error.name}: ${error.message}`.slice(0, 200) : typeof error}`);
