@@ -730,8 +730,11 @@ async function main() {
       const minted = parseCompactUcanAuthorization(policyMint.responseBody?.authorization, policyMint.responseBody?.sessionCid);
       assert.equal(minted.payload.aud, receiverDid, "delegation audience was not the proven ephemeral holder");
       assert.equal(minted.payload.iss, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "delegation issuer did not match the embedded Node audience");
-      assert.deepEqual(Object.keys(minted.payload.att), [kvResource], "delegation was not exact-resource scoped");
+      const encryptionCapability = publishedEnvelope.policy.capabilityCeiling.find((capability) => capability.kind === "encryption");
+      assert(encryptionCapability, "published policy omitted its exact encryption resource");
+      assert.deepEqual(Object.keys(minted.payload.att).sort(), [kvResource, encryptionCapability.resource].sort(), "delegation was not exact-resource scoped");
       assert.deepEqual(Object.keys(minted.payload.att[kvResource]), ["tinycloud.kv/get"], "delegation was not read-only");
+      assert.deepEqual(Object.keys(minted.payload.att[encryptionCapability.resource]), ["tinycloud.encryption/decrypt"], "delegation did not limit key unwrap to the exact encryption network");
       assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
       assert.equal(minted.payload.fct[0]?.["xyz.tinycloud.policy/policyId"], policyCid, "delegation policy fact did not match the presented policy");
       assert.equal(minted.payload.fct[0]?.["xyz.tinycloud.policy/delegationMode"], "terminal", "delegation was not terminal");
@@ -745,8 +748,10 @@ async function main() {
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
     assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
-    const decrypt = tc500 ? { sequence: invoke.sequence + 1 } : routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path));
-    if (tc500) assert.equal(receiverRequests.some((entry) => entry.sequence > invoke.sequence && entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1"), false, "accountless receiver delegated decryption instead of decrypting locally");
+    const decrypt = tc500
+      ? routeAfter("ordinary generic decrypt invocation", invoke.sequence, (entry) => entry.method === "POST" && entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1")
+      : routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path));
+    if (tc500) assert.equal(receiverRequests.some((entry) => entry.sequence > invoke.sequence && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path)), false, "accountless receiver used a specialized decrypt route");
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
     if (tc500) assert.equal(receiverRequests.some((entry) => entry.origin === canonical.node && entry.path.startsWith("/share/")), false, "accountless receiver used a Node /share/* route");
     assert.equal(receiverTargets.length, 0, `embedded credential acquisition created browser targets: ${JSON.stringify(receiverTargets)}`);
@@ -765,7 +770,7 @@ async function main() {
       "delivery:email", "sender-history:reload",
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
       ...(tc500 ? ["credential:session-custody", "policy-v3:challenge", "policy-v3:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
-      "delegate", `invoke:${kvResource}`, tc500 ? "decrypt:local" : "decrypt", "render",
+      "delegate", `invoke:${kvResource}`, tc500 ? "invoke:decrypt" : "decrypt", "decrypt:local", "render",
     ];
     const statuses = tc500 ? {
       delivery: deliveredMail !== undefined,
@@ -775,7 +780,8 @@ async function main() {
       policyV3: policyMint.sequence > policyChallenge.sequence,
       delegate: delegate.sequence > policyMint.sequence,
       invoke: invoke.sequence > delegate.sequence,
-      localDecrypt: decrypt.sequence > invoke.sequence,
+      genericDecrypt: decrypt.sequence > invoke.sequence,
+      localDecrypt: rendered,
       rendered,
       legacyPolicySessionAbsent: true,
       zeroOpenKeyBeforeRender: true,
