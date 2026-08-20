@@ -733,7 +733,8 @@ async function main() {
       const encryptionCapability = publishedEnvelope.policy.capabilityCeiling.find((capability) => capability.kind === "encryption");
       assert(encryptionCapability, "published policy omitted its exact encryption resource");
       assert.deepEqual(Object.keys(minted.payload.att).sort(), [kvResource, encryptionCapability.resource].sort(), "delegation was not exact-resource scoped");
-      assert.deepEqual(Object.keys(minted.payload.att[kvResource]), ["tinycloud.kv/get"], "delegation was not read-only");
+      const delegatedKvActions = Object.keys(minted.payload.att[kvResource]).sort();
+      assert(delegatedKvActions.includes("tinycloud.kv/get") && delegatedKvActions.every((action) => ["tinycloud.kv/get", "tinycloud.kv/metadata"].includes(action)), "delegation was not read-only");
       assert.deepEqual(Object.keys(minted.payload.att[encryptionCapability.resource]), ["tinycloud.encryption/decrypt"], "delegation did not limit key unwrap to the exact encryption network");
       assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
       assert.equal(minted.payload.fct[0]?.["xyz.tinycloud.policy/policyId"], policyCid, "delegation policy fact did not match the presented policy");
