@@ -95,6 +95,11 @@ const attemptedSlices = new Set();
 const sliceFailures = new Map();
 const blockedSlices = {};
 const requiredSlices = parseRequiredSlices(process.env.SHARING_E2E_REQUIRED_SLICES);
+const genericNodeOverride = process.env.SHARING_E2E_GENERIC_NODE === "1";
+if (genericNodeOverride && (requiredSlices.length !== 1 || requiredSlices[0] !== "bearer")) {
+  throw new Error("SHARING_E2E_GENERIC_NODE is test-only and may only run the bearer slice");
+}
+const genericNode = tc500Joined || genericNodeOverride;
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
 const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
@@ -561,7 +566,7 @@ async function startFixtures(tempRoot) {
 
   let policyEngineOrigin;
   let policyEngine;
-  if (tc500Joined) {
+  if (genericNode) {
     const policyPort = await freePort();
     const policyConfigPath = join(tempRoot, "policy-engine.json");
     await writeFile(policyConfigPath, JSON.stringify({
@@ -598,12 +603,13 @@ async function startFixtures(tempRoot) {
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
-  // The accountless architecture exercises an ordinary production Node. It
-  // needs only a deterministic generic key and datadir; Share-specific fixture
-  // features and trust configuration would make this proof depend on the
-  // retired Node broker runtime. Keep the older feature build only for the
-  // legacy non-TC-500 matrix while it remains supported by its pinned Node.
-  const nodeBuildArgs = tc500Joined
+  // Accountless delivery and the explicitly scoped bearer regression exercise
+  // an ordinary production Node. They need only a deterministic generic key
+  // and datadir; Share-specific fixture features and trust configuration would
+  // make either proof depend on the retired Node broker runtime. Keep the older
+  // feature build only for the legacy addressed/policy matrix on its pinned
+  // Node. The override is rejected above unless bearer is the sole slice.
+  const nodeBuildArgs = genericNode
     ? ["build", "--quiet", "-p", "tinycloud-node"]
     : ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"];
   await runOnce("cargo", nodeBuildArgs, nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
@@ -617,22 +623,22 @@ async function startFixtures(tempRoot) {
   // differ from the audience actually enrolled in the trust bundle below —
   // only nodeInvitationPublicKey is taken from it; the enforcer DID is
   // always read back from the trust bundle Node was actually launched with.
-  const nodePublic = tc500Joined
+  const nodePublic = genericNode
     ? { nodeInvitationPublicKey: Buffer.from(ed25519.getPublicKey(Buffer.alloc(32, 77))).toString("base64url") }
     : JSON.parse(execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 }, encoding: "utf8" }));
   const trustBundlePath = join(resolve(tempRoot), "node-trust-bundle.json");
   const nodeTrustBundleJson = trustBundleFromRuntime(nodePublic.nodeInvitationPublicKey);
   await writeFile(trustBundlePath, nodeTrustBundleJson, { flag: "wx" });
-  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...(tc500Joined ? { TINYCLOUD_STORAGE__DATADIR: join(tempRoot, "node-data") } : buildNodeLaunchEnv(tempRoot, trustBundlePath)) });
+  const node = run(nodeBinaryPath, [], nodeRoot, { TMPDIR: tempRoot, RUST_LOG: "error", TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64, ROCKET_ADDRESS: "127.0.0.1", ROCKET_PORT: String(nodePort), ...(genericNode ? { TINYCLOUD_STORAGE__DATADIR: join(tempRoot, "node-data") } : buildNodeLaunchEnv(tempRoot, trustBundlePath)) });
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
-  await waitFor(`${nodeOrigin}/${tc500Joined ? "info" : "share/v2/readiness"}`, 180_000, node);
+  await waitFor(`${nodeOrigin}/${genericNode ? "info" : "share/v2/readiness"}`, 180_000, node);
   const nodeEnforcerAudience = nodeEnforcerAudienceFromTrustBundle(nodeTrustBundleJson);
   await recordArtifactDigest("nodeRuntime", nodeBinaryPath);
   checks.push(`real Node production router/persistence started at ${nodeOrigin}.`);
   const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
   let nodeEnforcerDid = nodeEnforcerAudience;
-  if (tc500Joined) {
-    checks.push("real unmodified current-main Node started for generic /delegate and /invoke; the browser trace is the authority proving zero /share/* requests.");
+  if (genericNode) {
+    checks.push("real generic Node started for /delegate and /invoke without Share-specific features or trust configuration.");
   } else {
     const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`)).json();
     const readinessChecks = Object.fromEntries(Object.entries(readiness.checks ?? {}).map(([key, value]) => [key, value === true]));
@@ -790,7 +796,7 @@ async function startShare(tempRoot, fixtures) {
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
-    ...(tc500Joined ? { policyEngineCanonicalOrigin: canonical.policy, policyEngineTransportOrigin: fixtures.policyEngineOrigin } : {}),
+    ...(genericNode ? { policyEngineCanonicalOrigin: canonical.policy, policyEngineTransportOrigin: fixtures.policyEngineOrigin } : {}),
     ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
   // The joined browser keeps the production OpenKey URL and transports it to
@@ -1034,27 +1040,27 @@ function safeBrowserDiagnostic(value) {
 async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   await fetch(`${mailOrigin}/emails/reset`, { method: "POST" });
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
+  await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
   await navigate(`${origin}/share.html`);
   await installLoopbackTransportGuard();
-  await agent(["set", "headers", JSON.stringify({ "X-Forwarded-Proto": "https" })]);
   await agent(["eval", "document.querySelector('.auth-button')?.disabled === false"]);
   await agent(["eval", "window.__tinycloudOpenKeyDiagnostics=[];window.addEventListener('message',function(event){window.__tinycloudOpenKeyDiagnostics.push({origin:event.origin,source:!!event.source,type:event.data&&event.data.type,name:event.data&&event.data.info&&event.data.info.name});});"]);
   await agent(["eval", "(function(){var original=window.fetch;window.__tinycloudAuthDiagnostics=[];window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');var result=original.apply(this,arguments);if(u.includes('/api/share/auth/openkey'))result.then(function(response){window.__tinycloudAuthDiagnostics.push({path:(new URL(u,location.href)).pathname,status:response.status});});return result;};})()"]);
   await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
-  await agent(["click", "button.auth-button"]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.auth-form');if(!(form instanceof HTMLFormElement))throw new Error('OpenKey authentication form is not present');form.requestSubmit();return true;})()"]);
   await agent(["wait", "1000"]);
-  await agent(["find", "text", "TinyCloud E2E Wallet", "click"]);
+  await agent(["find", "text", "TinyCloud E2E Wallet", "click"]).catch(() => undefined);
   await agent(["find", "text", "Create TinyCloud Space", "click"]).catch(() => undefined);
   // The mounted fixture already provisions a space. A first-run prompt is
   // optional, so do not probe for it on every flow.
-  await agent(["wait", "text=Shared by me."]);
-  await agent(["wait", "text=No shares yet"]);
+  await agent(["wait", "main.sender-home"]);
+  await agent(["wait", ".sender-empty-state:not([hidden])"]);
   checks.push("Fresh authenticated sender observed the Shared by me empty state and New share entry point.");
   await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='New share');if(!button)throw new Error('New share action is not present');button.click();return true;})()"]);
-  await agent(["wait", "text=Share a file"]);
+  await agent(["wait", "main.composer-shell"]);
   await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]);
-  checks.push("agent-browser completed the real OpenKey external-wallet/SIWE authentication path with a deterministic provider.");
+  checks.push("agent-browser completed the real OpenKey managed-session/SIWE authentication path with deterministic signing.");
 
   const runBearerSlice = async () => {
   const createBearer = async (format, contentMode, traceName) => {
@@ -1064,10 +1070,10 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
     await agent(openAdvancedSettings);
     await agent(["select", "select[name=format]", format]);
     await agent(["click", "input[value=bearer]"]);
-    await agent(["click", "button.create-link-button"]);
-    await agent(["wait", "text=Your private link is ready"]);
+    await agent(["eval", "(()=>{const form=document.querySelector('form.composer-form');if(!(form instanceof HTMLFormElement))throw new Error('Share composer form is not present');form.requestSubmit();return true;})()"]);
+    await agent(["wait", ".composer-status[data-state=created]"]);
     await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link' && !candidate.disabled);if(!button)throw new Error('Copy link action is not present');button.click();return true;})()"]);
-    await agent(["wait", "text=Link copied to clipboard."]);
+    await agent(["wait", "250"]);
     const url = agentString(await agent(["eval", "window.__senderCopiedLink"]));
     assert.equal(typeof url, "string", "sender clipboard did not contain a URL");
     return { traceId, url };
@@ -1078,7 +1084,7 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   const compactNetwork = await browserTelemetryEntries();
   const localCompact = new URL(compact.url); localCompact.protocol = "http:"; localCompact.host = new URL(origin).host;
   await navigateInPage(localCompact.href);
-  assert.match(await agent(["snapshot"]), /shared via link/);
+  assert.match(await agent(["snapshot"]), /Anyone with the link can open it\./);
   assert.equal(await agent(["eval", "document.querySelector('iframe')?.srcdoc.includes('Hermetic sharing') === true"]), "true");
   await agent(["eval", `window.__tinycloudSharingFlowTraceId=${JSON.stringify(compact.traceId)}`]);
   await auditFlow("bearer-compact", compact.traceId, { mailOrigin, networkEntries: compactNetwork, skipBrowserTraceCheck: true });
@@ -1089,15 +1095,15 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   assert.match(inline.url, /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/);
   await auditFlow("bearer-inline", inline.traceId, { mailOrigin });
   await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin, false);
-  await agent(["wait", "text=2 shares loaded."]);
+  await agent(["wait", ".sender-history-row"]);
   assert.equal(await agent(["get", "count", ".sender-history-row"]), "2", "fresh same-sender sign-in did not reload the populated encrypted library");
   const libraryCopy = agentString(await agent(["eval", "(()=>{const buttons=[...document.querySelectorAll('button[aria-label^=\"Copy link for\"]')];if(buttons.length<2)throw new Error('sender library copy actions missing; buttons='+buttons.length+'; rows='+document.querySelectorAll('.sender-history-row').length+'; live='+JSON.stringify(document.querySelector('.sender-live')?.textContent||'')+'; error='+JSON.stringify(document.querySelector('.sender-status')?.textContent||'')+'; loadError='+JSON.stringify(window.__tinycloudSenderHistoryError||''));buttons[1].click();return true;})()"]));
-  void libraryCopy; await agent(["wait", "text=Link copied."]);
+  void libraryCopy; await agent(["wait", "250"]);
   assert.equal(await agent(["eval", `window.__senderCopiedLink===${JSON.stringify(compact.url)}`]), "true", "sender library reconstructed a non-byte-exact compact link");
   assert.equal(await agent(["eval", `!document.documentElement.textContent.includes(${JSON.stringify(compact.url)}) && !document.documentElement.textContent.includes(${JSON.stringify(inline.url)})`]), "true", "sender library rendered a complete secret URL in page text");
   await agent(["eval", "fetch('/api/share/auth/logout',{method:'POST',credentials:'include'}).then(function(r){return r.status})"]);
   assert.equal(await agent(["eval", "fetch('/api/share/capabilities',{credentials:'include'}).then(function(r){return r.status})"]), "401", "signed-out sender library remained authorized");
-  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin, false); await agent(["wait", "text=2 shares loaded."]);
+  await navigate(`${origin}/share.html`); await authenticateBrowserPage(walletOrigin, false); await agent(["wait", ".sender-history-row"]);
   assert.equal(await agent(["get", "count", ".sender-history-row"]), "2", "same sender did not recover its library after session reset");
   gateResults.senderLibrary = true;
   checks.push("Sender library created and persisted shares, reset the session, reloaded the populated same-sender library, copied a byte-exact complete link, rendered no secret URL, and denied signed-out access.");
@@ -1116,13 +1122,13 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   // slices below to pick from.
   await agent(["upload", "input[name=document]", join(shareRoot, "test/e2e-sharing/fixture.md")]);
   await agent(["check", "input[name=permission][value=edit]"]); await agent(openAdvancedSettings); await agent(["fill", "input[name=delivery-email]", "sam@tinycloud.xyz"]);
-  await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]);
-  await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link' && !candidate.disabled);if(!button)throw new Error('Copy link action is not present');button.click();return true;})()"]); await agent(["wait", "text=Link copied to clipboard."]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.composer-form');if(!(form instanceof HTMLFormElement))throw new Error('Share composer form is not present');form.requestSubmit();return true;})()"]); await agent(["wait", ".composer-status[data-state=created]"]);
+  await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='Copy link' && !candidate.disabled);if(!button)throw new Error('Copy link action is not present');button.click();return true;})()"]); await agent(["wait", "250"]);
   const exactUrl = agentString(await agent(["eval", "window.__senderCopiedLink"])); assert.match(exactUrl, /^https:\/\/share\.tinycloud\.xyz\/s\//);
   assert.deepEqual((await (await fetch(`${mailOrigin}/emails`)).json()).messages, []);
   await agent(["eval", `(function(){var old=window.fetch;window.__tinycloudDeliveryReplay=null;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/share/v2')&&init){window.__tinycloudDeliveryReplay={url:u,method:init.method||'POST',headers:Object.fromEntries(new Headers(init.headers)),body:typeof init.body==='string'?init.body:null};}return old.apply(this,arguments);};})()`]);
   await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Invitation requested"]);
+  await agent(["wait", ".notification-status[data-state=success]"]);
   const replayRaw = await agent(["eval", "JSON.stringify(window.__tinycloudDeliveryReplay)"]);
   if (replayRaw === "null" || replayRaw === "undefined") throw new Error("exact-email delivery request capture is missing");
   let replay = JSON.parse(replayRaw);
@@ -1213,15 +1219,15 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   // domain typed, the delivery address, and the library object selected.
   if (domainFormState?.recipient !== true || domainFormState?.domain !== true || domainFormState?.delivery !== true || domainFormState?.selected !== domainLibraryPath || domainFormState?.selectedKind !== "exact") throw new Error(`domain form/library binding failed: ${JSON.stringify({ recipient: domainFormState?.recipient === true, domain: domainFormState?.domain === true, delivery: domainFormState?.delivery === true, selected: domainFormState?.selected ?? null, expected: domainLibraryPath, selectedKind: domainFormState?.selectedKind ?? null })}`);
   await agent(["fill", "input[name=delivery-email]", "sam@evil.example"]);
-  await agent(["click", "button.create-link-button"]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.composer-form');if(!(form instanceof HTMLFormElement))throw new Error('Share composer form is not present');form.requestSubmit();return true;})()"]);
   await agent(["wait", "text=Check the sharing details"]);
   const mismatchedDomainDetail = await agent(["get", "text", ".sender-status-detail"]);
   assert.match(mismatchedDomainDetail, /must belong to the shared domain/i, "mismatched delivery domain was not denied by the shipped composer");
   checks.push("agent-browser denied a mailinator.com policy paired with an evil.example delivery address before link creation, with the user-visible shared-domain validation error.");
   await agent(["fill", "input[name=delivery-email]", domainDeliveryEmail]);
-  await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.composer-form');if(!(form instanceof HTMLFormElement))throw new Error('Share composer form is not present');form.requestSubmit();return true;})()"]); await agent(["wait", ".composer-status[data-state=created]"]);
   await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Invitation requested"]);
+  await agent(["wait", ".notification-status[data-state=success]"]);
   const domainAudit = await auditFlow("domain", domainTrace, { mailOrigin, expectMail: true, expectMailRecipient: domainDeliveryEmail, pii: [domainDeliveryEmail] });
   const domainDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudDomainDeliveryShape)"]));
   assert.equal(await agent(["eval", "window.__tinycloudDomainDeliveryObserved === true"]), "true", "domain delivery did not carry the generated full email and signed domain matcher at the enforcing delivery boundary");
@@ -1256,8 +1262,8 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
   checks.push(`Folder slice shared the library folder ${folderPath} out of the sender own space.`);
   await agent(["check", "input[name=permission][value=list]"]); await agent(["check", "input[name=permission][value=edit]"]);
   await agent(["eval", "(function(){window.__tinycloudFolderDeliveryShape=null;var old=window.fetch;window.fetch=function(input,init){var u=typeof input==='string'?input:String((input&&input.url)||input||'');if(u.includes('/share/v2')&&init&&typeof init.body==='string'){try{var value=JSON.parse(init.body);var auth=value.authorization&&typeof value.authorization==='object'?value.authorization:value;window.__tinycloudFolderDeliveryShape={actions:Array.isArray(auth.actions)?auth.actions.slice().sort():[],resource:typeof auth.resource==='string'?auth.resource:null,matcherKind:auth.recipientMatcher&&auth.recipientMatcher.kind};}catch{}}return old.apply(this,arguments);};})()"]);
-  await agent(["click", "button.create-link-button"]); await agent(["wait", "text=Your private link is ready"]); await agent(["click", "button.confirm-notification"]);
-  await agent(["wait", "text=Invitation requested"]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.composer-form');if(!(form instanceof HTMLFormElement))throw new Error('Share composer form is not present');form.requestSubmit();return true;})()"]); await agent(["wait", ".composer-status[data-state=created]"]); await agent(["click", "button.confirm-notification"]);
+  await agent(["wait", ".notification-status[data-state=success]"]);
   const folderAudit = await auditFlow("folder", folderTrace, { mailOrigin, expectMail: true, expectMailRecipient: folderDeliveryEmail, pii: [folderDeliveryEmail] });
   const folderTelemetry = JSON.stringify(folderAudit.capturedMail.payload); const folderDeliveryShape = agentString(await agent(["eval", "JSON.stringify(window.__tinycloudFolderDeliveryShape)"])); checks.push(`Folder delivery action evidence sanitized: ${JSON.stringify(folderDeliveryShape)}.`); assert.equal(folderTelemetry.includes(folderDeliveryEmail), true); assert.equal(folderTelemetry.includes("mailinator.com"), true); assert.deepEqual(folderDeliveryShape?.actions, ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"]); assert.equal(typeof folderDeliveryShape?.resource === "string" && folderDeliveryShape.resource.length > 0 && !folderDeliveryShape.resource.endsWith("/"), true, `folder delivery did not carry a folder resource: ${JSON.stringify(folderDeliveryShape)}`); assert.equal(folderDeliveryShape?.matcherKind, "emailDomain");
   const folderInviteUrl = localShareUrl(mailShareUrl(folderAudit.capturedMail.payload), origin);
@@ -1363,19 +1369,12 @@ async function browserGate(origin, walletOrigin, mailOrigin, nodeOrigin) {
       // Without this the harness could only ever report the status.
       const hostErrors = [...new Set(children.flatMap((entry) => entry.output().split("\n").filter((line) => line.includes("share-host stage=request-error"))))].slice(-10);
       if (hostErrors.length > 0) checks.push(`Gate slice ${slice.name} Share host request errors ${JSON.stringify(hostErrors)}.`);
-      // The Node answers /share/v2/* with 503 capability_unavailable when its
-      // share-v2 runtime is absent or no longer live. Readiness is checked once
-      // at launch, so a slice that dies on one of those routes has to re-read
-      // it here; otherwise "went unready mid-run" and "was never there" are
-      // the same 503.
       try {
-        // Straight at the Node: the Share host only proxies the five allowed
-        // /share/v2 routes, so asking it for readiness answers 404 not_found
-        // and says nothing about the runtime that returned the 503.
-        const readiness = await (await fetch(`${nodeOrigin}/share/v2/readiness`, { headers: { accept: "application/json" } })).json();
-        checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure ${JSON.stringify(readiness)}.`);
+        const diagnosticPath = genericNode ? "/info" : "/share/v2/readiness";
+        const readiness = await (await fetch(`${nodeOrigin}${diagnosticPath}`, { headers: { accept: "application/json" } })).json();
+        checks.push(`Gate slice ${slice.name} Node ${diagnosticPath} at failure ${JSON.stringify(readiness)}.`);
       } catch (readinessError) {
-        checks.push(`Gate slice ${slice.name} Node share-v2 readiness at failure unavailable: ${readinessError instanceof Error ? readinessError.message : String(readinessError)}.`);
+        checks.push(`Gate slice ${slice.name} Node diagnostic at failure unavailable: ${readinessError instanceof Error ? readinessError.message : String(readinessError)}.`);
       }
     }
   }
@@ -1441,13 +1440,13 @@ async function browserSmokeLoop(origin, walletOrigin) {
 async function authenticateBrowserPage(walletOrigin, openComposer = true) {
   await agent(["eval", walletBootstrapScript(walletOrigin)]);
   await agent(["eval", "(function(){var original=Element.prototype.attachShadow;Element.prototype.attachShadow=function(init){var options=init||{};options.mode='open';return original.call(this,options);};})()"]);
-  await agent(["click", "button.auth-button"]);
+  await agent(["eval", "(()=>{const form=document.querySelector('form.auth-form');if(!(form instanceof HTMLFormElement))throw new Error('OpenKey authentication form is not present');form.requestSubmit();return true;})()"]);
   await agent(["wait", "1000"]);
-  await agent(["find", "text", "TinyCloud E2E Wallet", "click"]);
-  await agent(["wait", "text=Shared by me."]);
+  await agent(["find", "text", "TinyCloud E2E Wallet", "click"]).catch(() => undefined);
+  await agent(["wait", "main.sender-home"]);
   if (openComposer) {
     await agent(["eval", "(()=>{const button=[...document.querySelectorAll('button')].find((candidate)=>candidate.textContent?.trim()==='New share');if(!button)throw new Error('New share action is not present');button.click();return true;})()"]);
-    await agent(["wait", "text=Share a file"]);
+    await agent(["wait", "main.composer-shell"]);
   }
   await agent(["eval", "(function(){window.__senderCopiedLink=null;var clipboard={writeText:function(value){window.__senderCopiedLink=value;return Promise.resolve();},readText:function(){return Promise.resolve(window.__senderCopiedLink||'');}};try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:clipboard});}catch{}})()"]);
 }

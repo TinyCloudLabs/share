@@ -28,7 +28,7 @@ export function openKeyApiCors(origin) {
   return {
     "access-control-allow-origin": origin,
     "access-control-allow-methods": "POST, OPTIONS",
-    "access-control-allow-headers": "authorization, content-type",
+    "access-control-allow-headers": "authorization, content-type, x-forwarded-proto",
     vary: "Origin",
   };
 }
