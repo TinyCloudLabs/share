@@ -151,33 +151,25 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       });
       return;
     }
-    // The accountless route: the owner named a Policy Engine inside the signed
-    // envelope, so the recipient can present a delivered-email credential
-    // directly and never touch an identity provider. Selected on the signed
-    // bytes, not on deployment config alone — the receiver additionally
-    // requires the named engine to be the one this deployment trusts, so
-    // neither side can redirect the presentation on its own.
-    if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3 && resolved.envelope.policyEngine !== undefined) {
-      if (linkKey === undefined) {
-        renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
-        return;
-      }
-      const [{ mountAccountlessReceiver }, { tinycloud }] = await Promise.all([
-        import("./viewer/accountless-receiver.js"),
-        import("@tinycloud/web-sdk-wasm"),
-      ]);
+    // Accountless receive is an SDK contract.  Share hosts only its inline UI
+    // and renders the locally decrypted result; the SDK performs embedded Node
+    // policy admission followed by generic /delegate and /invoke.
+    if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
+      const { receiveWithSdk } = await import("./viewer/sdk-accountless-receiver.js");
       const accountlessEnvelope = resolved.envelope;
-      mountAccountlessReceiver(root, {
-        envelope: accountlessEnvelope,
-        shareCid: resolved.shareCid,
+      await receiveWithSdk({
+        root,
+        shareUrl: shareHref,
+        registryBaseUrl: REGISTRY_BASE_URL,
         config: shareConfig,
-        envelopeKey: linkKey,
-        // Generic node invocation signing from the WASM SDK. No session, no
-        // account, no OpenKey: the only key is the receiver's ephemeral one.
-        invoke: tinycloud.invoke,
-        openerOrigin: window.location.origin,
         onComplete: async (content) => {
-          await presentShare(root, { state: "ok", access: "policy", envelope: accountlessEnvelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
+          await presentShare(root, {
+            state: "ok",
+            access: "policy",
+            envelope: accountlessEnvelope,
+            senderVerified: true,
+            contentBytes: content.bytes,
+          }, { shareUrl: shareHref });
         },
       });
       return;
