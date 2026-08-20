@@ -17,12 +17,12 @@ import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const tc500 = process.argv.includes("--tc-500");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/tinycloud-node" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
-const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-accountless-share-receive" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/opencredentials/feat/share-delivery-ttl-window" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-embedded-policy-runtime" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
+const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-embedded-policy-access" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/opencredentials/tc-500-remove-policy-dns" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
-const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", policy: "https://policy.tinycloud.xyz", interaction: "https://credentials.org", openKey: "https://openkey.so", openKeyApi: "https://api.openkey.so" };
+const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so", openKeyApi: "https://api.openkey.so" };
 const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const receiverRequests = [];
@@ -84,15 +84,6 @@ async function proxy(request, targetOrigin, options = {}) {
       : original.origin === canonical.node && original.pathname === "/invoke" && request.headers()["content-type"]?.startsWith("application/vnd.tinycloud.sealed")
         ? Buffer.from(await options.page.evaluate(() => window.__tc465NodeBinaryBodies.shift() ?? []))
       : await request.fetchPostData();
-  if (tc500 && original.pathname === "/policy/v0/parent-delegations" && typeof body === "string") {
-    const parsed = JSON.parse(body);
-    const [header, payload] = String(parsed.authorization).split(".");
-    const decode = (segment) => JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
-    await writeFile(join(workspaceRoot, ".context/tc-500-parent-profile.json"), JSON.stringify({
-      header: decode(header), payload: decode(payload), expectedCid: parsed.expectedCid,
-      ownerDid: parsed.ownerDid, capabilityBounds: parsed.capabilityBounds,
-    }, null, 2));
-  }
   const response = await fetch(target, {
     method,
     headers: headersForFetch(request, options.forwardedHttps),
@@ -189,11 +180,10 @@ async function installInterception(page, services, fixtureOrigin) {
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
     if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true, page });
     if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry, page });
-    if (url.origin === canonical.policy) return proxy(request, services.policyEngineOrigin, { cors: true, entry });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
       if (tc500) return proxy(request, services.credentialsOrigin, { cors: true, entry });
-      if (url.pathname === "/share/v3") return proxy(request, services.credentialsOrigin, { cors: true, entry });
+      if (!tc500 && url.pathname === "/share/v3") return proxy(request, services.credentialsOrigin, { cors: true, entry });
       return proxy(request, fixtureOrigin, { cors: true, entry });
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
@@ -484,13 +474,12 @@ async function main() {
       TINYCLOUD_NODE_WORKTREE: nodeRoot,
       TINYCLOUD_JS_SDK_WORKTREE: sdkRoot,
       OPENCREDENTIALS_WORKTREE: credentialsRoot,
-      POLICY_ENGINE_WORKTREE: process.env.POLICY_ENGINE_WORKTREE ?? join(workspaceRoot, "worktrees/policy-engine/feat-plaintext-exact-email-share"),
     };
     integration = spawn(process.execPath, [join(shareRoot, "test/e2e-sharing/integration.mjs")], { cwd: shareRoot, env: compositionEnv, stdio: ["ignore", "inherit", "inherit"] });
     await waitForFile(join(control, "services.json"), integration, 20 * 60_000);
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
-    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP policy.tinycloud.xyz 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1,MAP api.openkey.so 127.0.0.1"] });
+    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1,MAP api.openkey.so 127.0.0.1"] });
     browser.on("targetcreated", (target) => {
       if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
       void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
@@ -552,9 +541,7 @@ async function main() {
       assert.equal(enforcementRoot.payload.fct[0]?.enforcerDid, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root fact does not match the attested enforcement DID");
     }
     const exactKvResource = publishedEnvelope.contentSource.kvResource;
-    const binding = tc500
-      ? { status: 200, body: { version: 3, shareCid, policyCid: publishedEnvelope.policyEngine.policyId } }
-      : await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
+    const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
@@ -710,35 +697,26 @@ async function main() {
       credentialSpaceId = credentialRead.responseBody.ownerDid;
     }
 
-    const policyChallenge = tc500
-      ? routeAfter("standalone Policy Engine challenge", policyStartSequence, (entry) => entry.origin === canonical.policy && entry.path === "/policy/v0/challenge" && entry.method === "POST")
-      : routeAfter("Policy/v3 challenge", policyStartSequence, (entry) => entry.path === "/share/v3/policy/challenges" && entry.method === "POST");
+    const policyChallenge = routeAfter("embedded Node Policy/v3 challenge", policyStartSequence, (entry) => entry.origin === canonical.node && entry.path === "/policy/v3/challenges" && entry.method === "POST");
     if (tc500) {
       assert.equal(receiverRequests.some((entry) => entry.sequence > result.sequence && entry.sequence < policyChallenge.sequence && entry.path === "/invoke"), false, "accountless credential custody touched TinyCloud account storage");
     }
-    const policyCid = tc500 ? policyChallenge.body?.policyId : policyChallenge.body?.policyCid;
+    const policyCid = policyChallenge.body?.policyCid;
     assert.equal(policyCid, binding.body.policyCid, "Policy/v3 challenge did not bind the published policy CID");
-    const policyMint = tc500
-      ? routeAfter("standalone Policy Engine resolve", policyChallenge.sequence, (entry) => entry.origin === canonical.policy && entry.path === "/policy/v0/resolve" && entry.method === "POST" && entry.body?.presentation?.policyId === policyCid)
-      : routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
-    const requestedKv = tc500
-      ? policyMint.body?.presentation?.requestedCapabilities?.find((capability) => capability?.service === "tinycloud.kv")
-      : policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
-    const kvResource = tc500 ? `${requestedKv?.space}/kv/${requestedKv?.path}` : requestedKv?.resource;
+    const policyMint = routeAfter("embedded Node Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.origin === canonical.node && entry.path === "/policy/v3/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
+    const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
+    const kvResource = requestedKv?.resource;
     assert.equal(kvResource, exactKvResource, "policy presentation did not request the envelope's exact TinyCloud KV resource");
-    assert.deepEqual(requestedKv.actions, tc500 ? ["tinycloud.kv/get"] : ["tinycloud.kv/get", "tinycloud.kv/metadata"]);
+    assert(requestedKv.actions.includes("tinycloud.kv/get") && !requestedKv.actions.some((action) => action === "tinycloud.kv/put" || action === "tinycloud.kv/list"), "policy presentation was not read-only");
 
-    const receiverDid = tc500 ? policyMint.body?.presentation?.holderDid : policyChallenge.body?.recipientDid;
+    const receiverDid = policyChallenge.body?.recipientDid;
     if (tc500) {
       assert.match(receiverDid, /^did:key:z/, "accountless challenge recipient is not the receiver session key");
-      assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/presentation/v0");
+      assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/presentation/v4");
       assert.equal(policyMint.body?.presentation?.holderDid, receiverDid);
-      assert.equal(policyMint.body?.presentation?.eligibleSubjectDid, receiverDid);
-      assert.equal(policyMint.body?.presentation?.holderSignature?.signerDid, receiverDid);
-      assert.equal(policyMint.body?.presentation?.holderBinding?.type, "ephemeral-holder");
-      const minted = parseCompactUcanAuthorization(policyMint.responseBody?.delegation?.encoded, policyMint.responseBody?.delegation?.delegationId);
+      const minted = parseCompactUcanAuthorization(policyMint.responseBody?.authorization, policyMint.responseBody?.sessionCid);
       assert.equal(minted.payload.aud, receiverDid, "delegation audience was not the proven ephemeral holder");
-      assert(minted.payload.iss.startsWith(`${policyMint.responseBody?.delegation?.issuerDid}#`), "delegation issuer metadata did not match the signed token");
+      assert(minted.payload.iss.startsWith(`${canonical.node.replace("https://", "did:web:")}#`), "delegation issuer did not match embedded Node");
       assert.deepEqual(Object.keys(minted.payload.att), [kvResource], "delegation was not exact-resource scoped");
       assert.deepEqual(Object.keys(minted.payload.att[kvResource]), ["tinycloud.kv/get"], "delegation was not read-only");
       assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
@@ -752,7 +730,7 @@ async function main() {
     if (!tc500) assert.deepEqual(policyMint.body?.presentation?.requestedCapabilities, policyChallenge.body.requestedCapabilities, "Policy/v3 mint substituted the challenged capability slice");
 
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
-    assert.equal(delegate.authorization, tc500 ? policyMint.responseBody?.delegation?.encoded : policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
+    assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
     const decrypt = tc500 ? { sequence: invoke.sequence + 1 } : routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path));
     if (tc500) assert.equal(receiverRequests.some((entry) => entry.sequence > invoke.sequence && entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1"), false, "accountless receiver delegated decryption instead of decrypting locally");
@@ -766,14 +744,14 @@ async function main() {
       assert.equal(diagnostics.walletRequests, 0, "accountless receive requested a wallet provider before render");
     }
     assert.equal(receiverRequests.some((entry) => entry.origin === canonical.interaction), false, "embedded credential acquisition navigated to credentials.org");
-    const allowedOrigins = new Set([canonical.share, canonical.node, canonical.witness, canonical.policy, canonical.openKey, "null"]);
+    const allowedOrigins = new Set([canonical.share, canonical.node, canonical.witness, canonical.openKey, "null"]);
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 
     const chain = [
       "delivery:email", "sender-history:reload",
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
-      ...(tc500 ? ["credential:session-custody", "policy-v0:challenge", "policy-v0:resolve"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
+      ...(tc500 ? ["credential:session-custody", "policy-v3:challenge", "policy-v3:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
       "delegate", `invoke:${kvResource}`, tc500 ? "decrypt:local" : "decrypt", "render",
     ];
     const statuses = tc500 ? {
@@ -781,7 +759,7 @@ async function main() {
       senderLibrary: true,
       acquisition: result.sequence > create.sequence,
       sessionCredential: policyChallenge.sequence > result.sequence,
-      policyV0: policyMint.sequence > policyChallenge.sequence,
+      policyV3: policyMint.sequence > policyChallenge.sequence,
       delegate: delegate.sequence > policyMint.sequence,
       invoke: invoke.sequence > delegate.sequence,
       localDecrypt: decrypt.sequence > invoke.sequence,

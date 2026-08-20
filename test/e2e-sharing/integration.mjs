@@ -22,7 +22,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 import { ed25519 } from "@noble/curves/ed25519";
-import { base58btc } from "multiformats/bases/base58";
 import { privateKeyToAccount } from "viem/accounts";
 import { buildNodeLaunchEnv } from "./node-launch-env.mjs";
 import { buildShareHostLaunchEnv } from "./share-launch-env.mjs";
@@ -44,6 +43,8 @@ import { OPENSSL_OVERRIDE_ENV, duplicateCertificateExtensions, resolveOpensslBin
 import { OPENKEY_TEST_SESSION_TOKEN, openKeyApiCors, openKeyWidgetHtml } from "./openkey-fixture.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
+const tc500Joined = process.env.SHARING_E2E_TC500_JOINED === "1";
+const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1" || tc500Joined;
 
 // The composer infers what is being shared from what the sender does: there
 // is no content-mode control to drive. These helpers exercise the three real
@@ -52,9 +53,8 @@ const pasteIntoDropzone = (text) => ["eval", `(()=>{const transfer=new DataTrans
 const openAdvancedSettings = ["eval", "(()=>{const drawer=document.querySelector('details.composer-advanced');if(!drawer)throw new Error('advanced settings are not present');drawer.open=true;return true;})()"];
 const pickFromLibrary = ["eval", "(()=>{const link=document.querySelector('.content-dropzone .dropzone-library');if(!link)throw new Error('library picker is not present');link.click();return true;})()"];
 const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/feat/sharing-production-live");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, "worktrees/opencredentials/feat/sharing-production-live");
-const policyEngineRoot = process.env.POLICY_ENGINE_WORKTREE ?? join(workspaceRoot, "worktrees/policy-engine/feat-plaintext-exact-email-share");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500Joined ? "worktrees/tinycloud-node/skgbafa/tc-500-embedded-policy-runtime" : "worktrees/tinycloud-node/feat/sharing-production-live");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500Joined ? "worktrees/opencredentials/tc-500-remove-policy-dns" : "worktrees/opencredentials/feat/sharing-production-live");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const artifactPath = process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, ".context/sharing-experience-e2e-result.json");
 const lockPath = join(tmpdir(), "tinycloud-sharing-e2e.lock");
@@ -63,16 +63,10 @@ const canonical = Object.freeze({
   node: "https://node.tinycloud.xyz",
   credentials: "https://witness.credentials.org",
   registry: "https://registry.tinycloud.xyz",
-  policy: "https://policy.tinycloud.xyz",
 });
-const tc500Joined = process.env.SHARING_E2E_TC500_JOINED === "1";
-const tc465Joined = process.env.SHARING_E2E_TC465_JOINED === "1" || tc500Joined;
 const walletPrivateKey = `0x${"55".repeat(32)}`;
 const issuerSeed = Buffer.alloc(32, tc465Joined ? 67 : 0x47);
 const issuerPublicKey = ed25519PublicKey(issuerSeed).toString("base64url");
-const policyGrantSeed = Buffer.alloc(32, 91);
-const policyGrantPublicKey = ed25519.getPublicKey(policyGrantSeed);
-const policyGrantIssuerDid = `did:key:${base58btc.encode(Uint8Array.from([0xed, 0x01, ...policyGrantPublicKey]))}`;
 const registryUploadSeed = Buffer.alloc(32, 7);
 const registryUploadPublicKey = Buffer.from(ed25519.getPublicKey(registryUploadSeed)).toString("base64url");
 const nodeKeysSecret = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
@@ -99,7 +93,9 @@ const genericNodeOverride = process.env.SHARING_E2E_GENERIC_NODE === "1";
 if (genericNodeOverride && (requiredSlices.length !== 1 || requiredSlices[0] !== "bearer")) {
   throw new Error("SHARING_E2E_GENERIC_NODE is test-only and may only run the bearer slice");
 }
-const genericNode = tc500Joined || genericNodeOverride;
+// TC-500 uses the candidate Node's embedded policy runtime.  Only the
+// isolated bearer regression keeps a generic Node override.
+const genericNode = genericNodeOverride;
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
 const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
@@ -131,7 +127,6 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
     registryOrigin: fixtures.registryOrigin,
     nodeOrigin: fixtures.nodeOrigin,
     credentialsOrigin: fixtures.credentialsOrigin,
-    policyEngineOrigin: fixtures.policyEngineOrigin,
     mailOrigin: fixtures.mailOrigin,
     openKeyOrigin: fixtures.openKeyOrigin,
     walletOrigin: fixtures.walletOrigin,
@@ -143,7 +138,7 @@ async function waitForExternalProductJourney(fixtures, localShareOrigin) {
       if (tc465Joined) {
         const evidence = JSON.parse(await readFile(join(resolvedControlDir, "tc465-result.json"), "utf8"));
         const stages = tc500Joined
-          ? ["delivery", "senderLibrary", "acquisition", "sessionCredential", "policyV0", "delegate", "invoke", "localDecrypt", "rendered", "legacyPolicySessionAbsent", "zeroOpenKeyBeforeRender", "zeroExternalDestinations", "registryMetadataOnly", "exactInvitationBindings", "invitationReplayIdempotent", "invitationNonceRebindingRejected", "browserCors", "exactDelegationBindings", "zeroNodeShareRoutes"]
+          ? ["delivery", "senderLibrary", "acquisition", "sessionCredential", "policyV3", "delegate", "invoke", "localDecrypt", "rendered", "legacyPolicySessionAbsent", "zeroOpenKeyBeforeRender", "zeroExternalDestinations", "registryMetadataOnly", "exactInvitationBindings", "invitationReplayIdempotent", "invitationNonceRebindingRejected", "browserCors", "exactDelegationBindings", "zeroNodeShareRoutes"]
           : ["acquisition", "durableCredential", "policyV3Challenge", "policyV3Mint", "delegate", "invoke", "decrypt", "rendered", "legacyPolicySessionAbsent", "zeroExternalDestinations"];
         const sliceKeys = tc500Joined
           ? ["acquisitionIdSha256", "delegationCid", "deliveredMailIdSha256", "policyCid", "receiverDid", "resource", "shareCid"]
@@ -209,14 +204,11 @@ function canonicalJson(value) {
 // covering exactly what it covered before TC-379 split the two origins apart.
 // Production keeps them distinct; see `config/trust-bundle.production.json`.
 function trustBundleFromRuntime(nodePublicKey) {
-  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, policyEngineOrigin: canonical.policy, policyEngineAudience: canonical.policy, policyEngineGrantIssuerDid: policyGrantIssuerDid, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: tc465Joined ? "did:web:issuer.credentials.org#controller" : "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
+  return JSON.stringify({ version: "tinycloud.share-email-trust-bundle/v1", shareOrigin: canonical.share, returnOrigin: canonical.share, registryOrigin: canonical.registry, credentialsOrigin: canonical.credentials, emailOrigin: canonical.credentials, nodeOrigin: canonical.node, nodeAudience: "did:web:node.tinycloud.xyz", nodeInvitationKid: "did:web:node.tinycloud.xyz#invitation-key-1", nodeInvitationPublicKey: nodePublicKey, nodeKeyVersion: 1, nodeEnabled: true, issuerDid: "did:web:issuer.credentials.org", issuerVct: "opencredentials.email/v1", issuerKid: tc465Joined ? "did:web:issuer.credentials.org#controller" : "did:web:issuer.credentials.org#email-signing-key-1", issuerPublicKey, issuerKeyVersion: 1, issuerEnabled: true });
 }
 function credentialsTrustBundleFromRuntime(nodePublicKey) {
   const bundle = JSON.parse(trustBundleFromRuntime(nodePublicKey));
   delete bundle.emailOrigin;
-  delete bundle.policyEngineOrigin;
-  delete bundle.policyEngineAudience;
-  delete bundle.policyEngineGrantIssuerDid;
   return JSON.stringify(bundle);
 }
 async function freePort() {
@@ -248,11 +240,10 @@ function run(command, args, cwd, env = {}) {
 
 async function assertReleaseInputs() {
   const repositories = tc500Joined ? [
-    { name: "share", path: shareRoot, branch: "skgbafa/tc-500-accountless-email-claim", pr: "98" },
-    { name: "node", path: nodeRoot, branch: "main" },
-    { name: "opencredentials", path: credentialsRoot, branch: "feat/generic-credential-invitation-delivery" },
-    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-500-accountless-browser-interop", pr: "408" },
-    { name: "policy-engine", path: policyEngineRoot, branch: "feat/plaintext-exact-email-share", pr: "12" },
+    { name: "share", path: shareRoot, branch: "skgbafa/tc-500-embedded-share-sdk", pr: "99" },
+    { name: "node", path: nodeRoot, branch: "skgbafa/tc-500-embedded-policy-runtime", pr: "226" },
+    { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-500-remove-policy-dns", pr: "125" },
+    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-500-embedded-policy-access", pr: "410" },
   ] : tc465Joined ? [
     { name: "share", path: shareRoot, branch: "skgbafa/tc-465-share-receiver-credentials", pr: "78" },
     { name: "node", path: nodeRoot, branch: "skgbafa/tc-470-holder-credential-admission", pr: "210" },
@@ -564,42 +555,6 @@ async function startFixtures(tempRoot) {
   assertPostgresAcceptsTls(openssl, postgresUrl, postgresCaCertPath);
   checks.push(`hermetic verify-full TLS Postgres persistence started from ${postgresBin} on ${POSTGRES_TLS_HOSTNAME}:${postgresPort} and completed a verify-full handshake against the pinned harness CA.`);
 
-  let policyEngineOrigin;
-  let policyEngine;
-  if (genericNode) {
-    const policyPort = await freePort();
-    const policyConfigPath = join(tempRoot, "policy-engine.json");
-    await writeFile(policyConfigPath, JSON.stringify({
-      audience: canonical.policy,
-      challengeTtlSeconds: 300,
-      acceptedSuites: ["eddsa-ed25519-sha256-jcs-v1"],
-      challengeSignerSeedBase64Url: Buffer.alloc(32, 73).toString("base64url"),
-      grantIssuerDid: policyGrantIssuerDid,
-      grantIssuerSignerSeedBase64Url: policyGrantSeed.toString("base64url"),
-      parentDelegations: [],
-      issuerKeys: {
-        "did:web:issuer.credentials.org": {
-          params: { OKP: { public_key: [...ed25519.getPublicKey(issuerSeed)] } },
-        },
-      },
-      signedObjects: [],
-      demoOperationsEnabled: false,
-      demoOperationsBearerToken: null,
-    }), { flag: "wx", mode: 0o600 });
-    await runOnce("cargo", ["build", "--quiet", "-p", "policy-engine-http"], policyEngineRoot);
-    const policyBinary = join(policyEngineRoot, "target/debug/policy-engine-http");
-    policyEngine = run(policyBinary, [], policyEngineRoot, {
-      POLICY_ENGINE_HTTP_CONFIG: policyConfigPath,
-      POLICY_ENGINE_HTTP_BIND: `127.0.0.1:${policyPort}`,
-    });
-    policyEngineOrigin = `http://127.0.0.1:${policyPort}`;
-    await waitFor(`${policyEngineOrigin}/policy/v0/challenge`, 60_000, policyEngine);
-    const policyCors = await fetch(`${policyEngineOrigin}/policy/v0/challenge`, { method: "OPTIONS", headers: { origin: canonical.share, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
-    assert.equal(policyCors.status, 200, "Policy Engine browser CORS preflight failed");
-    assert(["*", canonical.share].includes(policyCors.headers.get("access-control-allow-origin")), "Policy Engine did not allow the Share browser origin");
-    await recordArtifactDigest("policyEngineRuntime", policyBinary);
-    checks.push(`real standalone Policy Engine started at ${policyEngineOrigin} with its grant and delivery signer pinned.`);
-  }
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
@@ -695,7 +650,7 @@ async function startFixtures(tempRoot) {
     SHARE_EMAIL_DATABASE_MODE: "durable-postgres",
     CREDENTIAL_ACQUISITION_EMAIL_CAPABILITY: "true",
     CREDENTIAL_INVITATION_CAPABILITY: "true",
-    CREDENTIAL_INVITATION_POLICY_ENGINE_DIDS: JSON.stringify([policyGrantIssuerDid]),
+    CREDENTIAL_INVITATION_POLICY_ENGINE_DIDS: JSON.stringify([nodeDescriptor.enforcerDid]),
     CREDENTIAL_INVITATION_RETURN_ORIGINS: canonical.share,
     CREDENTIAL_INVITATION_AUDIENCE: canonical.credentials,
   });
@@ -731,7 +686,7 @@ async function startFixtures(tempRoot) {
     assert.equal(invitationCors.headers.get("access-control-allow-origin"), canonical.share, "OpenCredentials did not allow the Share browser origin");
   }
   checks.push(`real OpenCredentials production router/store (dstack-derived issuer key, durable verify-full Postgres) started at ${credentialsOrigin}.`);
-  return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, policyEngineOrigin, mailOrigin: mail, mailMessages, mailReplays };
+  return { walletOrigin, openKeyOrigin, registryOrigin, nodeOrigin: nodeDescriptor.url, nodeDescriptor, credentialsOrigin, mailOrigin: mail, mailMessages, mailReplays };
 }
 
 /*
@@ -796,7 +751,6 @@ async function startShare(tempRoot, fixtures) {
     openKeyOrigin: fixtures.openKeyOrigin, walletOrigin: fixtures.walletOrigin, shareOrigin: origin, registryOrigin: fixtures.registryOrigin,
     canonicalOrigins: { credentials: canonical.credentials, node: canonical.node, registry: canonical.registry },
     nodeTransportOrigin: fixtures.nodeOrigin, credentialsTransportOrigin: fixtures.credentialsOrigin,
-    ...(genericNode ? { policyEngineCanonicalOrigin: canonical.policy, policyEngineTransportOrigin: fixtures.policyEngineOrigin } : {}),
     ...(tc465Joined ? { senderBindingStore: { root: tempRoot, path: join(tempRoot, "bindings.ndjson") } } : {}),
   });
   // The joined browser keeps the production OpenKey URL and transports it to

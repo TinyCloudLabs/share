@@ -44,23 +44,9 @@ application that is not Share can drive the identical flow through the SDK, and
 
 ## Configuration
 
-`SharePublicConfig` and the trust bundle gain three fields that must arrive
-together, because an endpoint without its pinned audience and grant issuer is
-unverifiable trust:
-
-```jsonc
-"policyEngineOrigin": "https://policy.tinycloud.xyz",
-"policyEngineAudience": "urn:tinycloud:policy-engine:prod",
-"policyEngineGrantIssuerDid": "did:key:z6Mk…"
-```
-
-They are optional during rollout. When they are absent:
-
-- `policyEngineBindingFromConfig` returns `undefined` rather than inventing an
-  endpoint, and the deployment keeps the legacy receiver;
-- `/policy/v0/challenge` and `/policy/v0/resolve` are **not routable** through
-  the Share host. They never fall back to the node — substituting the node
-  there would put the policy decision straight back inside it.
+`SharePublicConfig` names the canonical Node origin and its public credential
+issuer key. The browser sends policy admission only to that Node origin at
+`/policy/v3/*`; Share does not configure, proxy, or trust a policy origin.
 
 ## What is deliberately unchanged
 
@@ -117,14 +103,11 @@ an external artifact or authority; they are simply not done.
 
 ## Rollout order
 
-1. **policy-engine** — accountless `ephemeral-holder` binding and exact-email
-   evidence. Deploy first: nothing downstream works without it, and it is
-   additive, so deploying it alone changes no existing behaviour.
+1. **Node** — embedded accountless policy admission and exact-email evidence.
+   Deploy first: nothing downstream works without it.
 2. **js-sdk** — `@tinycloud/sdk-core/policy-access`. Publish second; it is a new
    entry point and adds no behaviour to existing ones.
-3. **share** — this change. Ship third, with `policyEngineOrigin` unset, so the
-   receiver is unchanged in production. Enrol the engine per-environment to
-   turn the accountless receiver on.
+3. **share** — this change. Ship third, using the Node-owned `/policy/v3/*`
+   admission contract.
 
-Rollback is removing the three config fields, which returns the deployment to
-the legacy receiver with no code change.
+Rollback is disabling accountless receiving at the Node/SDK rollout gate.
