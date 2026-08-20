@@ -729,7 +729,7 @@ async function main() {
       assert.equal(policyMint.body?.presentation?.holderDid, receiverDid);
       const minted = parseCompactUcanAuthorization(policyMint.responseBody?.authorization, policyMint.responseBody?.sessionCid);
       assert.equal(minted.payload.aud, receiverDid, "delegation audience was not the proven ephemeral holder");
-      assert(minted.payload.iss.startsWith(`${canonical.node.replace("https://", "did:web:")}#`), "delegation issuer did not match embedded Node");
+      assert.equal(minted.payload.iss, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "delegation issuer did not match the embedded Node audience");
       assert.deepEqual(Object.keys(minted.payload.att), [kvResource], "delegation was not exact-resource scoped");
       assert.deepEqual(Object.keys(minted.payload.att[kvResource]), ["tinycloud.kv/get"], "delegation was not read-only");
       assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
