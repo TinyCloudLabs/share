@@ -82,6 +82,15 @@ async function proxy(request, targetOrigin, options = {}) {
     : original.pathname === "/api/share/link-only/registry/blobs"
       ? Buffer.from(await options.page.evaluate(() => window.__tc465BinaryBodies.shift() ?? []))
       : await request.fetchPostData();
+  if (tc500 && original.pathname === "/policy/v0/parent-delegations" && typeof body === "string") {
+    const parsed = JSON.parse(body);
+    const [header, payload] = String(parsed.authorization).split(".");
+    const decode = (segment) => JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+    await writeFile(join(workspaceRoot, ".context/tc-500-parent-profile.json"), JSON.stringify({
+      header: decode(header), payload: decode(payload), expectedCid: parsed.expectedCid,
+      ownerDid: parsed.ownerDid, capabilityBounds: parsed.capabilityBounds,
+    }, null, 2));
+  }
   const response = await fetch(target, {
     method,
     headers: headersForFetch(request, options.forwardedHttps),
