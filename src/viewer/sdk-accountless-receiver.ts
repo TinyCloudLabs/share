@@ -1,6 +1,5 @@
-import { TinyCloudWeb } from "@tinycloud/web-sdk";
-import { fromBase64Url } from "@tinycloud/share-envelope";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { createShareReceiverClient } from "../share/receiver.js";
 
 /**
  * The Share app owns presentation, while the web SDK owns the receiver
@@ -18,18 +17,7 @@ export async function receiveWithSdk(input: {
   mountTarget.className = "viewer-credential-acquisition";
   input.root.replaceChildren(mountTarget);
 
-  const tinycloud = new TinyCloudWeb({
-    shareReceiver: {
-      origin: window.location.origin,
-      expectedShareOrigin: input.config.shareOrigin,
-      registryBaseUrl: input.registryBaseUrl,
-      trustedNode: {
-        invitationKid: input.config.nodeInvitationKid,
-        invitationPublicKey: fromBase64Url(input.config.nodeInvitationPublicKey),
-      },
-      expectedEnforcerDid: input.config.enforcerDid,
-    },
-  });
+  const tinycloud = createShareReceiverClient(input.config, input.registryBaseUrl);
   const received = await tinycloud.share.receive(input.shareUrl, {
     identity: "auto",
     interaction: { kind: "inline", mountTarget },
