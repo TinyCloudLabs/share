@@ -257,9 +257,13 @@ export function createHttpTransport(input: { readonly nodeOrigin: string; readon
     activate: async (body) => parseActivationAccepted(await postCredentials("/v1/share-email/claims/activate", body)),
     claimChallenge: async (body) => parseClaimChallenge(await postCredentials("/v1/share-email/claims/challenge", body)),
     claimRedeem: async (body) => parseCredential(await postCredentials("/v1/share-email/claims/redeem", body)),
-    policyChallenge: async (body) => parsePolicyChallenge(await postNode("/share/v1/policy/challenges", body)),
-    policySession: async (body) => parsePolicySession(await postNode("/share/v1/policy/session", body)),
-    read: async (body) => parseRead(await postNode("/share/v1/read", body)),
+    // Addressed-share admission is exclusively the reusable SDK's embedded
+    // Node Policy/v3 flow.  These obsolete v1 operations deliberately have
+    // no network fallback, so an old caller cannot revive a Node /share data
+    // plane.
+    policyChallenge: async () => { throw new ShareTransportError("capability-unavailable"); },
+    policySession: async () => { throw new ShareTransportError("capability-unavailable"); },
+    read: async () => { throw new ShareTransportError("capability-unavailable"); },
   };
 }
 

@@ -80,10 +80,7 @@ async function bootSenderViewer(root: HTMLElement): Promise<void> {
 }
 
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined): Promise<void> {
-  const [{ appendRecipientForgetAction, renderRecipientInvalid, renderRecipientLoading, renderRecipientState }, { createClaimController }] = await Promise.all([
-    import("./email-share/view.js"),
-    import("./email-share/claim.js"),
-  ]);
+  const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   renderRecipientLoading(root);
   if (launch === undefined) {
     renderRecipientInvalid(root, "Part of this link is missing. Copy the whole link from the message you received — including everything after the # — and paste it into a new tab.");
@@ -91,66 +88,16 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   }
 
   try {
-    const [{ REGISTRY_BASE_URL }, { resolveShare, createBrowserAddressedAuthorization, presentationEnvelope }, { presentShare }, config, runtime] = await Promise.all([
+    const [{ REGISTRY_BASE_URL }, { resolveShare }, { presentShare }, config] = await Promise.all([
       import("./viewer/config.js"),
       import("./viewer/resolve.js"),
       import("./viewer/present.js"),
       import("./email-share/config.js"),
-      import("./email-share/runtime.js"),
     ]);
     const shareHref = launch.shareHref;
     launch.shareHref = "";
-    const invite = launch.invite;
-    delete launch.invite;
     const shareConfig = await config.loadSharePublicConfig();
-    const shareTrustedNode = config.trustedNodeFromConfig(shareConfig);
-    const authority = createRegisteredPolicyAuthority({ nodeProof: { kid: shareConfig.nodeInvitationKid, publicKey: fromBase64Url(shareConfig.nodeInvitationPublicKey) }, expectedTarget: { origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, enforcerDid: shareConfig.enforcerDid } });
-    const { createHolder } = await import("./email-share/claim.js");
-    const holder = invite === undefined ? undefined : await createHolder();
-    const authorization = invite === undefined || holder === undefined ? undefined : createBrowserAddressedAuthorization({
-      nodeOrigin: shareConfig.nodeOrigin,
-      trustedNode: shareTrustedNode,
-      holderDid: holder.did,
-      buildPresentation: async ({ challenge, envelope, policy }) => buildV2Presentation({ challenge, envelope, policy, invite, publicConfig: shareConfig, shareCid: "", holder }),
-    });
-    // Held only for the accountless route, which decrypts the body in this tab
-    // rather than asking the node to decrypt it.
-    let linkKey: Uint8Array | undefined;
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, onKeyParsed: (key32) => { linkKey = new Uint8Array(key32); }, ...(authorization === undefined ? {} : { authorization }) });
-    if (resolved.state === "recipient-did-authorization-required") {
-      const { mountRecipientDidAuthorization } = await import("./viewer/recipient-did.js");
-      const expectedDid = resolved.envelope.recipientMatcher.kind === "recipientDid" ? resolved.envelope.recipientMatcher.value : "";
-      const { beginBrowserAddressedChallenge } = await import("./viewer/resolve.js");
-      const challenge = await beginBrowserAddressedChallenge({ envelope: resolved.envelope, nodeOrigin: shareConfig.nodeOrigin, trustedNode: shareTrustedNode, holderDid: expectedDid });
-      mountRecipientDidAuthorization(root, {
-        expectedDid,
-        resume: async () => {
-          const { authenticateWithOpenKey, createTinyCloudClient } = await import("./share/openkey-session.js");
-          const session = await authenticateWithOpenKey(() => undefined);
-          const tinycloud = await createTinyCloudClient(session, shareConfig, [], () => undefined);
-          if (tinycloud.sessionDid !== expectedDid) throw new Error("recipient-did-mismatch");
-          const restored = (tinycloud as unknown as { readonly session?: { readonly delegationHeader?: { readonly Authorization?: unknown }; readonly delegationCid?: unknown } }).session;
-          if (typeof restored?.delegationHeader?.Authorization !== "string" || typeof restored.delegationCid !== "string") throw new Error("openkey-session-delegation-missing");
-          const proof = await buildOpenKeyAuthorizationProof({
-            challenge,
-            envelope: resolved.envelope,
-            holderDid: tinycloud.sessionDid,
-            credential: restored.delegationHeader.Authorization,
-            delegationCid: restored.delegationCid,
-            sign: (bytes) => tinycloud.signSessionBytes(bytes),
-          });
-          const didAuthorization = createBrowserAddressedAuthorization({
-            nodeOrigin: shareConfig.nodeOrigin,
-            trustedNode: shareTrustedNode,
-            holderDid: tinycloud.sessionDid,
-          });
-          const next = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin, trustedPolicyAuthority: authority, authorization: didAuthorization, authorizationResumeToken: challenge.challengeId, authorizationProof: proof });
-          await presentShare(root, next, { shareUrl: shareHref });
-          return next;
-        },
-      });
-      return;
-    }
+    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
     // policy admission followed by generic /delegate and /invoke.
@@ -174,79 +121,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       });
       return;
     }
-    if (resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
-      const { mountCredentialReceiver } = await import("./viewer/credential-receiver.js");
-      const interruptedOperation = Object.freeze({
-        type: "TinyCloudInterruptedShareRead" as const,
-        version: 1 as const,
-        shareCid: resolved.shareCid,
-        envelope: resolved.envelope,
-      });
-      let activeClient: Promise<import("./share/openkey-session.js").ShareTinyCloud> | undefined;
-      mountCredentialReceiver(root, {
-        share: { envelope: resolved.envelope, policy: resolved.policy, shareCid: resolved.shareCid },
-        operation: interruptedOperation,
-        openerOrigin: window.location.origin,
-        connect: () => {
-          if (activeClient !== undefined) return activeClient;
-          const attempt = import("./share/openkey-session.js").then(async ({ authenticateWithOpenKey, createTinyCloudClient }) => {
-            const session = await authenticateWithOpenKey(() => undefined);
-            return createTinyCloudClient(session, shareConfig, [], () => undefined);
-          });
-          activeClient = attempt;
-          void attempt.catch(() => {
-            if (activeClient === attempt) activeClient = undefined;
-          });
-          return attempt;
-        },
-        onComplete: async (content) => {
-          await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, contentBytes: content.bytes }, { shareUrl: shareHref });
-        },
-      });
-      return;
-    }
-    if (resolved.state !== "policy-email-claim-required") {
-      await presentShare(root, resolved, { shareUrl: shareHref });
-      return;
-    }
-    if (invite === undefined) {
-      renderRecipientInvalid(root, "Part of this link is missing. Ask the sender to share it again.");
-      return;
-    }
-    const shareUrl = `${shareHref}&i=${invite.invitationId}&c=${invite.claimSecret}`;
-
-    renderRecipientLoading(root, "Checking…");
-    const publicConfig = await config.loadSharePublicConfig();
-    const credentialTrust = config.credentialTrustFromConfig(publicConfig);
-    runtime.assertProductionCredentialTrust(credentialTrust);
-    const trustedNode = config.trustedNodeFromConfig(publicConfig);
-    const binding = await config.loadSharePublicBinding(resolved.shareCid);
-    const share = Object.freeze({
-      ...(await runtime.verifyProductionEmailShare({ envelope: resolved.envelope, shareCid: resolved.shareCid, policy: resolved.policy, config: publicConfig, binding })),
-      trustedNode,
-    });
-    const transport = (await import("./email-share/transport.js")).createHttpTransport({ nodeOrigin: publicConfig.nodeOrigin, credentialsOrigin: publicConfig.credentialsOrigin });
-    const facts: RecipientFacts = { envelope: resolved.envelope, share, shareUrl };
-    let controller: ClaimController;
-    let contentShown = false;
-    const render = (state: ClaimState): void => renderRecipientState(root, facts, state, actions);
-    const showContent = async (content: string): Promise<void> => {
-      if (contentShown) return;
-      contentShown = true;
-      await presentShare(root, { state: "ok", access: "policy", envelope: resolved.envelope, senderVerified: true, content }, { shareUrl });
-      appendRecipientForgetAction(root, () => controller.forget());
-    };
-    const readDocument = async (): Promise<void> => {
-      const content = await controller.read();
-      if (content !== undefined) await showContent(content);
-    };
-    const open = async (): Promise<void> => { await controller.openDocument(); if (controller.state.state === "claimed") await readDocument(); };
-    const retry = async (): Promise<void> => { await controller.retry(); if (controller.state.state === "claimed") await readDocument(); };
-    const submitOtp = async (code: string): Promise<void> => { await controller.submitOtp(code); if (controller.state.state === "claimed") await readDocument(); };
-    const actions: RecipientViewActions = { onOpen: () => { void open(); }, onRetry: () => { void retry(); }, onUseOtp: () => controller.useOtp(), onOtp: (code) => { void submitOtp(code); }, onResend: () => { void controller.resend(); }, onForget: () => controller.forget() };
-    controller = createClaimController({ share, invitationId: invite.invitationId, claimSecret: invite.claimSecret, transport, credentialTrust });
-    controller.subscribe(render);
-    render({ state: "ready", emailHint: share.recipientHint });
+    await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed", error);
     const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)

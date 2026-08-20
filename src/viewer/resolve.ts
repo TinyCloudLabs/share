@@ -8,19 +8,11 @@
 import {
   receiveShare,
   ShareReceiveError,
-  createAddressedAuthorization,
-  ShareRecipientClient,
-  type ShareNodeTrust,
-  type SharePresentationMaterial,
   type ShareMetadata,
   type ShareAuthorizationAdapter,
   type ShareAuthorizedContent,
   type SharePolicyAuthority,
 } from "@tinycloud/share-sdk";
-import type { SharePolicyChallenge as PolicyChallenge, SharePresentationMaterial as PolicyPresentationMaterial } from "@tinycloud/share-sdk";
-import { nativePayload } from "./policy-v2.js";
-import { verifyNodeProof } from "../email-share/node-verifier.js";
-import { type TrustedNode } from "../email-share/protocol.js";
 import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { resolvePlaintextShare } from "../share/plaintext-share.js";
 
@@ -56,51 +48,6 @@ export interface ResolveShareOptions {
   readonly authorizationProof?: unknown;
 }
 
-export interface BrowserAddressedAuthorizationOptions {
-  readonly nodeOrigin: string;
-  readonly trustedNode: TrustedNode;
-  readonly holderDid: string;
-  readonly buildPresentation?: (input: { readonly challenge: PolicyChallenge; readonly envelope: ShareEnvelopeV2; readonly policy: Record<string, unknown> }) => Promise<PolicyPresentationMaterial | Record<string, unknown>>;
-  readonly fetchFn?: typeof fetch;
-}
-
-/**
- * The holder ceremony is injected into the SDK's authorization interface.
- * The client below is a transport adapter; it does not parse share links or
- * perform a second envelope/content verification pipeline.
- */
-export function createBrowserAddressedAuthorization(input: BrowserAddressedAuthorizationOptions): ShareAuthorizationAdapter<ShareAuthorizedContent> {
-  const trust: ShareNodeTrust = { invitationKid: input.trustedNode.invitationKid, invitationPublicKey: input.trustedNode.invitationPublicKey };
-  return createAddressedAuthorization({
-    nodeOrigin: input.nodeOrigin,
-    trustedNode: trust,
-    holderDid: input.holderDid,
-    ...(input.fetchFn === undefined ? {} : { fetchFn: input.fetchFn }),
-    ...(input.buildPresentation === undefined ? {} : { buildPresentation: async ({ challenge, envelope, policy }): Promise<SharePresentationMaterial> => input.buildPresentation!({ challenge: challenge as PolicyChallenge, envelope, policy }) as Promise<SharePresentationMaterial> }),
-  });
-}
-
-/**
- * Start the SDK's explicit challenge step without creating a session. The
- * browser keeps the returned challenge in memory until the user completes the
- * OpenKey ceremony, then supplies the SDK resume proof to resolveShare.
- */
-export async function beginBrowserAddressedChallenge(input: {
-  readonly envelope: ShareEnvelopeV2;
-  readonly nodeOrigin: string;
-  readonly trustedNode: TrustedNode;
-  readonly holderDid: string;
-  readonly fetchFn?: typeof fetch;
-}): Promise<PolicyChallenge> {
-  const client = new ShareRecipientClient({
-    nodeOrigin: input.nodeOrigin,
-    trustedNode: { invitationKid: input.trustedNode.invitationKid, invitationPublicKey: input.trustedNode.invitationPublicKey },
-    holderDid: input.holderDid,
-    envelope: input.envelope,
-    ...(input.fetchFn === undefined ? {} : { fetchFn: input.fetchFn }),
-  });
-  return client.beginChallenge(input.envelope) as Promise<PolicyChallenge>;
-}
 
 export async function resolveShare(href: string, options: ResolveShareOptions): Promise<ResolveResult> {
   let addressedEnvelope: ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3 | undefined;
