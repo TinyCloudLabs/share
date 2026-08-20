@@ -598,11 +598,15 @@ async function startFixtures(tempRoot) {
 
   const nodePort = await freePort();
   const nodeKeysSecretB64 = nodeKeysSecret.toString("base64url");
-  // This composition deliberately injects deterministic issuer and node keys.
-  // `mounted-fixture` is Node's explicit guard for accepting that material;
-  // `local-tee` only supplies the local key-derived TeeContext and correctly
-  // leaves the production trust-bundle placeholder rejection enabled.
-  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
+  // The accountless architecture exercises an ordinary production Node. It
+  // needs only a deterministic generic key and datadir; Share-specific fixture
+  // features and trust configuration would make this proof depend on the
+  // retired Node broker runtime. Keep the older feature build only for the
+  // legacy non-TC-500 matrix while it remains supported by its pinned Node.
+  const nodeBuildArgs = tc500Joined
+    ? ["build", "--quiet", "-p", "tinycloud-node"]
+    : ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"];
+  await runOnce("cargo", nodeBuildArgs, nodeRoot, { TINYCLOUD_KEYS_SECRET: nodeKeysSecretB64 });
   const nodeBinaryPath = join(nodeRoot, "target/debug/tinycloud");
   // Export the public invitation descriptor before launch (it only needs the
   // key material, not a running server) so the canonical trust bundle can be
