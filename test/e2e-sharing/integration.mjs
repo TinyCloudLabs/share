@@ -701,7 +701,7 @@ async function startFixtures(tempRoot) {
     const rawOutput = children.find((entry) => entry.child === credentials)?.output() ?? "";
     throw new Error(`OpenCredentials readiness did not become ready: ${redactSecrets(rawOutput.slice(-4000), [credentialsLaunchEnv.RESEND_API_KEY, credentialsLaunchEnv.RESEND_WEBHOOK_SECRET])}`);
   }
-  if (registryPackageMode) {
+  if (tc500Joined) {
     const retiredNodeDelivery = await fetch(`${credentialsOrigin}/share/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     assert.equal(retiredNodeDelivery.status, 404, "retired Node-authorized Share delivery route remained mounted");
     const invitationCors = await fetch(`${credentialsOrigin}/v1/credential-invitations`, { method: "OPTIONS", headers: { origin: canonical.share, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
@@ -736,7 +736,7 @@ function assertLoopbackShareUpstreams(launchEnv) {
 }
 
 async function startShare(tempRoot, fixtures) {
-  if (tc500Joined) {
+  if (registryPackageMode) {
     const registryWebSdk = join(shareRoot, "node_modules/@tinycloud/web-sdk/dist/index.mjs");
     await stat(registryWebSdk);
     await recordArtifactDigest("registryWebSdkRuntime", registryWebSdk);
