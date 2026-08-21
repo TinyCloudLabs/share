@@ -25,7 +25,8 @@ export interface RegistryEnv {
   UPLOAD_AUTHORIZATION?: DurableObjectNamespace;
   MAX_BLOB_BYTES?: string;
 }
-const CORS = { "access-control-allow-origin": "https://share.tinycloud.xyz", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,accept,if-none-match,x-delete-after,x-tinycloud-authorization", "access-control-max-age": "86400", "strict-transport-security": "max-age=31536000; includeSubDomains", vary: "Origin" };
+// Registry clients run on arbitrary sites; signed authorizations protect writes.
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,HEAD,POST,PUT,OPTIONS", "access-control-allow-headers": "content-type,accept,if-none-match,x-delete-after,x-tinycloud-authorization", "access-control-max-age": "86400", "strict-transport-security": "max-age=31536000; includeSubDomains" };
 const LINK_PROXY_ORIGIN = "https://registry.tinycloud.xyz";
 const LINK_AUTHORIZATION_DOMAIN = "xyz.tinycloud.share/registry-authorization/v1\0";
 const LINK_AUTHORIZATION_TTL_MS = 2 * 60 * 1000;
@@ -259,8 +260,6 @@ const worker = { async fetch(request: Request, env: RegistryEnv): Promise<Respon
     return new Response(null, { status: 308, headers: { ...CORS, location: `https://${url.host}${url.pathname}${url.search}` } });
   }
   const origin = request.headers.get("origin");
-  const linkProxyUpload = (request.method === "POST" || request.method === "PUT") && url.pathname === "/blobs" && origin === LINK_PROXY_ORIGIN;
-  if (origin && origin !== "https://share.tinycloud.xyz" && !linkProxyUpload) return json(403, { error: "origin-not-allowed" });
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (request.method === "POST" && url.pathname === "/internal/upload-authorizations") {
     const authorizedStore = await authorizeStoreRequest(request, env);
