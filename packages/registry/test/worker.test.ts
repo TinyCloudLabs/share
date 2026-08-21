@@ -177,6 +177,32 @@ function request(
   });
 }
 
+describe("production registry CORS", () => {
+  it("allows location lookups from any SDK origin", async () => {
+    const response = await worker.fetch(new Request(
+      `${ORIGIN}/v1/locations/${encodeURIComponent("did:pkh:eip155:1:0xd559CCd9EB87c530A9a349262669386dE93cf412")}`,
+      { headers: { origin: "https://listen.tinycloud.xyz" } },
+    ), env());
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("allows preflight requests from any SDK origin", async () => {
+    const response = await worker.fetch(new Request(`${ORIGIN}/v1/locations/example`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "GET",
+      },
+    }), env());
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+  });
+});
+
 describe("production link-only registry authorization", () => {
   it("accepts the advertised 30-day retention boundary and rejects longer retention", async () => {
     const bytes = new Uint8Array([3, 0]);
