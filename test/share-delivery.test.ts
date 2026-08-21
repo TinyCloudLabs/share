@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { requestAddressedDelivery } from "../src/share/delivery.js";
 
 describe("addressed delivery boundary", () => {
-  it("posts the unchanged v2 Node receipt only to the email Worker", async () => {
+  it("posts the unchanged generic invitation only to OpenCredentials", async () => {
     const credentialsOrigin = "https://credentials.example";
     const emailOrigin = "https://worker.example";
-    const authorization = Object.freeze({ type: "TinyCloudShareDeliveryAuthorization", version: 2, jti: "test-jti" });
+    const request = Object.freeze({ returnLink: "share-url-with-private-fragment" });
+    const admission = Object.freeze({ schema: "xyz.tinycloud.policy/delivery-admission/v0" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "test-signature" });
     const shareUrl = "share-url-with-private-fragment";
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
@@ -13,13 +14,13 @@ describe("addressed delivery boundary", () => {
     await requestAddressedDelivery({
       emailOrigin,
       shareUrl,
-      deliveryAuthorization: { authorization, proof },
+      deliveryAuthorization: { request, admission, proof },
       fetchFn,
     });
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe(`${emailOrigin}/share/v2`);
+    expect(url).toBe(`${emailOrigin}/v1/credential-invitations`);
     expect(String(url)).not.toContain(credentialsOrigin);
     expect(init).toMatchObject({
       method: "POST",
@@ -29,33 +30,29 @@ describe("addressed delivery boundary", () => {
     });
     expect(init?.headers).toEqual({ accept: "application/json", "content-type": "application/json" });
     expect(init).not.toHaveProperty("referrer");
-    expect(JSON.parse(String(init?.body))).toEqual({ authorization, proof, shareUrl });
-    expect(Object.keys(JSON.parse(String(init?.body))).sort()).toEqual(["authorization", "proof", "shareUrl"]);
+    expect(JSON.parse(String(init?.body))).toEqual({ request, admission, proof });
+    expect(Object.keys(JSON.parse(String(init?.body))).sort()).toEqual(["admission", "proof", "request"]);
   });
 
-  it("routes a v3 receipt to the v3 worker without rewriting its root bindings", async () => {
-    const authorization = Object.freeze({
-      type: "TinyCloudShareDeliveryAuthorization",
-      version: 3,
-      policyRootCid: "policy-root",
-      enforcementRootCid: "enforcement-root",
-    });
+  it("posts a v3 policy receipt to the existing delivery service without rewriting its root bindings", async () => {
+    const request = Object.freeze({ returnLink: "share-url-with-private-fragment" });
+    const admission = Object.freeze({ schema: "xyz.tinycloud.policy/delivery-admission/v0", policyId: "policy" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "signature" });
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
       emailOrigin: "https://worker.example",
       shareUrl: "share-url-with-private-fragment",
-      deliveryAuthorization: { authorization, proof },
+      deliveryAuthorization: { request, admission, proof },
       fetchFn,
     });
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe("https://worker.example/share/v3");
+    expect(url).toBe("https://worker.example/v1/credential-invitations");
     expect(JSON.parse(String(init?.body))).toEqual({
-      authorization,
+      request,
+      admission,
       proof,
-      shareUrl: "share-url-with-private-fragment",
     });
   });
 });

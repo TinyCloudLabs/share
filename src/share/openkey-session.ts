@@ -29,6 +29,8 @@ interface NonceResponse {
 const OPENKEY_ORIGIN = import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so";
 export const SHARE_APPLICATION_SPACE = "applications";
 export const SHARE_APPLICATION_PREFIX = "xyz.tinycloud.share/";
+export const FILES_FOR_YOU_SPACE = "files-for-you";
+export const FILES_FOR_YOU_PREFIX = "v1/";
 export const MAX_SHARE_FILE_BYTES = 100 * 1024 * 1024;
 
 export async function authenticateWithOpenKey(onStatus: (message: string) => void): Promise<OpenKeyShareSession> {
@@ -159,7 +161,7 @@ export function credentialSpacePermissions(): PermissionEntry[] {
 
 /** Private, recipient-owned copies created only by the post-render save action. */
 export function filesForYouPermissions(): PermissionEntry[] {
-  return [{ service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}files-for-you/v1/`, actions: ["get", "put", "list"], skipPrefix: true }];
+  return [{ service: "tinycloud.kv", space: FILES_FOR_YOU_SPACE, path: FILES_FOR_YOU_PREFIX, actions: ["get", "put", "list"], skipPrefix: true }];
 }
 
 export function ownerEncryptionNetwork(address: string): string {

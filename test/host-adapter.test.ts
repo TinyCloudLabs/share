@@ -148,7 +148,7 @@ describe("production trust and host boundaries", () => {
   it("derives every sensitive upstream from the authoritative trust tuple when overrides are omitted", () => {
     const value = validateTrustBundle(bundle("production"), false);
     expect(resolveShareUpstreams(value, {})).toEqual({ node: value.public.nodeOrigin, credentials: value.public.credentialsOrigin, registry: value.public.registryOrigin });
-    expect(upstreamForPath(value, "/share/v1/read", {})).toEqual({ service: "node", origin: value.public.nodeOrigin });
+    expect(upstreamForPath(value, "/policy/v3/challenges", {})).toEqual({ service: "node", origin: value.public.nodeOrigin });
     expect(upstreamForPath(value, "/v1/share-email/claims/redeem", {})).toEqual({ service: "credentials", origin: value.public.credentialsOrigin });
     expect(upstreamForPath(value, "/registry/blobs", {})).toEqual({ service: "registry", origin: value.public.registryOrigin });
   });

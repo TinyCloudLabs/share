@@ -32,8 +32,8 @@ jobs:
           jq -e '
             .services["share-api"].build == null and
             .services["share-api"].ports == null and
-            .services["share-api"].environment.SHARE_SENDER_ENABLED == "false" and
-            .services["share-api"].environment.SHARE_ACCOUNTLESS_RECEIVER_ENABLED == "false" and
+            .services["share-api"].environment.SHARE_SENDER_ENABLED == "true" and
+            .services["share-api"].environment.SHARE_ACCOUNTLESS_RECEIVER_ENABLED == "true" and
             .services["share-api"].environment.SHARE_BINDING_STORE_PATH == "/var/lib/tinycloud/share/bindings.ndjson" and
             (.services["share-api"].environment | has("SHARE_SENDER_PRIVATE_KEY") | not) and
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITY_JSON") | not) and
@@ -69,14 +69,20 @@ jobs:
           curl -fsS http://127.0.0.1:8787/health/readiness
           test "$(curl -fsS http://127.0.0.1:8787/health/readiness)" = '{"authReady":true,"senderReady":false}'
           test "$(curl -sS -o /tmp/nonce.json -w '%{http_code}' http://127.0.0.1:8787/api/share/auth/openkey/nonce)" = 400
-          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 400
+          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 405
       # TC-372. Boot the image with NO trust material in the environment at all
       # and prove it publishes the committed production trust, unchanged.
-      - name: Boot from the committed trust bundle with an empty environment
+      - name: Boot the exact-email default from committed trust
         run: |
+          mkdir -p "$RUNNER_TEMP/share-enabled-state"
+          chmod 0777 "$RUNNER_TEMP/share-enabled-state"
           docker run -d --name share-api-committed -p 8788:8787 --read-only --tmpfs /tmp \
-            -e SHARE_SENDER_ENABLED=false \
+            -e SHARE_SENDER_ENABLED=true \
+            -e SHARE_ACCOUNTLESS_RECEIVER_ENABLED=true \
             -e SHARE_TRUST_BUNDLE_SOURCE=committed \
+            -e SHARE_BINDING_STORE_PATH=/var/lib/tinycloud/share/bindings.ndjson \
+            -e SHARE_SENDER_ROOT_KEY_PATH=/var/lib/tinycloud/share/sender-root.key \
+            -v "$RUNNER_TEMP/share-enabled-state:/var/lib/tinycloud/share" \
             share-api-smoke
           attempt=0
           until curl -fsS http://127.0.0.1:8788/health/readiness; do
@@ -84,6 +90,8 @@ jobs:
             test "$attempt" -lt 30
             sleep 2
           done
+          test "$(curl -fsS http://127.0.0.1:8788/health/readiness)" = '{"authReady":true,"senderReady":true}'
+          test "$(curl -fsS -D - -o /dev/null http://127.0.0.1:8788/.well-known/tinycloud-share/config.json | tr -d '\r' | awk -F': ' 'tolower($1) == "x-tinycloud-share-accountless-receiver" { print tolower($2) }')" = enabled
           curl -fsS http://127.0.0.1:8788/.well-known/tinycloud-share/config.json > "$RUNNER_TEMP/committed-config.json"
           jq -e --slurpfile committed config/trust-bundle.production.json '
             .shareOrigin == $committed[0].shareOrigin and

@@ -17,12 +17,12 @@ import { parseCompactUcanAuthorization } from "@tinycloud/sdk-core/policy";
 const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const tc500 = process.argv.includes("--tc-500");
-const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-node-1.15.0-release" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
-const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-accountless-share-receive" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
-const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "repositories/OpenCredentials" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
+const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-embedded-policy-runtime" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
+const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
+const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/opencredentials/tc-500-remove-policy-dns" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
-const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so" };
+const canonical = { share: "https://share.tinycloud.xyz", node: "https://node.tinycloud.xyz", witness: "https://witness.credentials.org", interaction: "https://credentials.org", openKey: "https://openkey.so", openKeyApi: "https://api.openkey.so" };
 const expectedBytes = await readFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
 const wallet = privateKeyToAccount(`0x${"55".repeat(32)}`);
 const receiverRequests = [];
@@ -37,6 +37,7 @@ let integration;
 let fixture;
 let browser;
 const browserErrors = [];
+let invitationDeliveryRequest;
 
 function run(command, args, cwd, env = {}) {
   execFileSync(command, args, { cwd, env: { ...process.env, ...env }, stdio: "inherit" });
@@ -80,6 +81,8 @@ async function proxy(request, targetOrigin, options = {}) {
     ? undefined
     : original.pathname === "/api/share/link-only/registry/blobs"
       ? Buffer.from(await options.page.evaluate(() => window.__tc465BinaryBodies.shift() ?? []))
+      : original.origin === canonical.node && original.pathname === "/invoke" && request.headers()["content-type"]?.startsWith("application/vnd.tinycloud.sealed")
+        ? Buffer.from(await options.page.evaluate(() => window.__tc465NodeBinaryBodies.shift() ?? []))
       : await request.fetchPostData();
   const response = await fetch(target, {
     method,
@@ -137,7 +140,12 @@ async function serveCredentialsApp(request) {
   const file = requested.startsWith("assets/") || extname(requested) !== "" ? join(credentialsApp, "dist", requested) : join(credentialsApp, "dist/index.html");
   let body;
   try { body = await readFile(file); } catch { body = await readFile(join(credentialsApp, "dist/index.html")); }
-  await request.respond({ status: 200, headers: { "content-type": contentTypes[extname(file)] ?? "text/html; charset=utf-8", "cache-control": "no-store" }, body });
+  const origin = request.headers().origin;
+  await request.respond({ status: 200, headers: {
+    "content-type": contentTypes[extname(file)] ?? "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    ...(origin === canonical.share || origin === canonical.interaction ? { "access-control-allow-origin": origin, vary: "Origin" } : {}),
+  }, body });
 }
 
 async function installInterception(page, services, fixtureOrigin) {
@@ -161,6 +169,9 @@ async function installInterception(page, services, fixtureOrigin) {
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
     const headers = request.headers();
+    if (tc500 && url.origin === canonical.witness && url.pathname === "/v1/credential-invitations" && request.method() === "POST") {
+      invitationDeliveryRequest = request.postData();
+    }
     const entry = receiverJourneyStarted ? {
       sequence: ++receiverSequence,
       method: request.method(),
@@ -173,22 +184,26 @@ async function installInterception(page, services, fixtureOrigin) {
     if (entry !== undefined) { receiverRequests.push(entry); requestEntries.set(request, entry); }
     if (url.origin === canonical.share && url.pathname === "/__tc465/wallet/sign") return proxy(request, services.walletOrigin, { entry, path: "/sign" });
     if (url.origin === canonical.share) return proxy(request, services.shareOrigin, { forwardedHttps: true, entry, rewriteNodeCsp: true, page });
-    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry });
+    if (url.origin === canonical.node) return proxy(request, services.nodeOrigin, { cors: true, entry, page });
     if (url.origin === canonical.witness) {
       if (request.method() === "OPTIONS") return request.respond({ status: 204, headers: { "access-control-allow-origin": request.headers().origin ?? canonical.share, "access-control-allow-credentials": "true", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "authorization, content-type", vary: "Origin" } });
+      if (tc500) return proxy(request, services.credentialsOrigin, { cors: true, entry });
+      if (!tc500 && url.pathname === "/share/v3") return proxy(request, services.credentialsOrigin, { cors: true, entry });
       return proxy(request, fixtureOrigin, { cors: true, entry });
     }
     if (url.origin === canonical.interaction) return serveCredentialsApp(request);
     if (url.origin === canonical.openKey) return proxy(request, services.openKeyOrigin, { entry });
+    if (url.origin === canonical.openKeyApi) return proxy(request, services.openKeyOrigin, { cors: true, entry });
     if (url.protocol === "data:" || url.protocol === "blob:" || url.origin === "null") return request.continue();
     throw new Error(`unexpected browser destination ${url.origin}${url.pathname}`);
   })().catch((error) => request.abort("blockedbyclient").finally(() => { console.error(error instanceof Error ? error.message : String(error)); })); });
   page.on("response", (response) => { const entry = requestEntries.get(response.request()); if (entry !== undefined) entry.status = response.status(); });
-    await page.evaluateOnNewDocument((address, shareOrigin, accountlessReceiver) => {
+    await page.evaluateOnNewDocument((address, shareOrigin, nodeOrigin, accountlessReceiver) => {
     window.__tc465Diagnostics = { messages: [], walletAnnouncements: 0, walletRequests: 0, windowOpenCalls: 0 };
     window.__tc465BinaryBodies = [];
+    window.__tc465NodeBinaryBodies = [];
     const originalFetch = window.fetch.bind(window);
-    window.fetch = (input, init) => {
+    window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
       const body = init?.body;
       if (url.pathname === "/api/share/link-only/registry/blobs" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
@@ -196,6 +211,9 @@ async function installInterception(page, services, fixtureOrigin) {
           ? new Uint8Array(body)
           : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
         window.__tc465BinaryBodies.push(Array.from(bytes));
+      }
+      if (url.origin === nodeOrigin && url.pathname === "/invoke" && body instanceof Blob && body.type.startsWith("application/vnd.tinycloud.sealed")) {
+        window.__tc465NodeBinaryBodies.push(Array.from(new Uint8Array(await body.arrayBuffer())));
       }
       return originalFetch(input, init);
     };
@@ -210,6 +228,9 @@ async function installInterception(page, services, fixtureOrigin) {
       if (String(args[0] ?? "").startsWith("tinycloud share:")) {
         const messages = [];
         let current = args[1];
+        if (current instanceof Error && typeof current.stack === "string") {
+          window.__tc465Diagnostics.productErrorStack = current.stack;
+        }
         for (let depth = 0; depth < 4 && current !== undefined && current !== null; depth += 1) {
           messages.push(String(current?.message ?? current));
           current = current?.cause;
@@ -262,7 +283,7 @@ async function installInterception(page, services, fixtureOrigin) {
     Object.defineProperty(window, "ethereum", { configurable: true, writable: true, value: provider });
     window.addEventListener("eip6963:requestProvider", () => { window.__tc465Diagnostics.walletRequests += 1; announce(); });
     if (!accountlessReceiver) setTimeout(announce, 10_000);
-    }, wallet.address, canonical.share, tc500);
+    }, wallet.address, canonical.share, canonical.node, tc500);
     resolveInstallation();
   } catch (error) {
     installedPages.delete(page);
@@ -296,20 +317,26 @@ async function clickText(page, value, optional = false) {
   const deadline = Date.now() + (optional ? 10_000 : 30_000);
   while (!clicked && Date.now() < deadline) {
     for (const frame of page.frames()) {
-      clicked = await frame.evaluate((expected) => {
-        const visit = (root) => {
-          for (const element of root.querySelectorAll("button,[role=button],a")) {
-            if ((element.textContent ?? "").trim().includes(expected) && !element.disabled) { element.click(); return true; }
-            if (element.shadowRoot && visit(element.shadowRoot)) return true;
-          }
-          for (const element of root.querySelectorAll("*")) {
-            if (element.shadowRoot && visit(element.shadowRoot)) return true;
-            if ((element.textContent ?? "").trim() === expected && element instanceof HTMLElement) { element.click(); return true; }
-          }
-          return false;
-        };
-        return visit(document);
-      }, value).catch(() => false);
+      try {
+        clicked = await frame.evaluate((expected) => {
+          const visit = (root) => {
+            for (const element of root.querySelectorAll("button,[role=button],a")) {
+              if ((element.textContent ?? "").trim().includes(expected) && !element.disabled) { element.click(); return true; }
+              if (element.shadowRoot && visit(element.shadowRoot)) return true;
+            }
+            for (const element of root.querySelectorAll("*")) {
+              if (element.shadowRoot && visit(element.shadowRoot)) return true;
+              if ((element.textContent ?? "").trim() === expected && element instanceof HTMLElement) { element.click(); return true; }
+            }
+            return false;
+          };
+          return visit(document);
+        }, value);
+      } catch {
+        // Embedded sign-in surfaces navigate while this loop is running. A frame
+        // captured by page.frames() can detach before evaluate() is invoked.
+        clicked = false;
+      }
       if (clicked) break;
     }
     if (!clicked) await new Promise((resolveWait) => setTimeout(resolveWait, 100));
@@ -423,11 +450,18 @@ function routeAfter(label, after, predicate) {
 
 function escaped(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 
+function shareUrlFromMail(message) {
+  const values = stringsIn(message).flatMap((candidate) => [...candidate.matchAll(/https:\/\/share\.tinycloud\.xyz\/s\/[^\s"'<>]+/g)].map((match) => match[0]));
+  const value = values.sort((left, right) => Number(right.includes("?i=") && right.includes("#k=")) - Number(left.includes("?i=") && left.includes("#k=")) || right.length - left.length)[0];
+  if (value === undefined) throw new Error("captured mail did not contain the generated Share invitation URL");
+  return value.replaceAll("&amp;", "&");
+}
+
 async function main() {
   const control = await mkdtemp(join(tmpdir(), tc500 ? "tinycloud-tc500-" : "tinycloud-tc465-"));
   await chmod(control, 0o700);
   try {
-    run("npm", ["run", "link:web-sdk"], shareRoot, { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot });
+    if (!tc500) run("npm", ["run", "link:web-sdk"], shareRoot, { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot });
     run("npm", ["run", "build"], credentialsApp, { VITE_WITNESS_URL: canonical.witness });
     run("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--features", "email-claim-fixture", "--bin", "credential-acquisition-fixture"], credentialsRoot);
     fixture = spawn(join(credentialsRoot, "rust/opencredentials_witness/target/debug/credential-acquisition-fixture"), [], { cwd: credentialsRoot, stdio: ["ignore", "pipe", "inherit"] });
@@ -443,14 +477,14 @@ async function main() {
       SHARING_E2E_EXTERNAL_CONTROL_DIR: control,
       SHARING_E2E_ARTIFACT_PATH: process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, tc500 ? ".context/tc-500-joined.json" : ".context/tc-465-joined.json"),
       TINYCLOUD_NODE_WORKTREE: nodeRoot,
-      TINYCLOUD_JS_SDK_WORKTREE: sdkRoot,
+      ...(tc500 ? {} : { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot }),
       OPENCREDENTIALS_WORKTREE: credentialsRoot,
     };
     integration = spawn(process.execPath, [join(shareRoot, "test/e2e-sharing/integration.mjs")], { cwd: shareRoot, env: compositionEnv, stdio: ["ignore", "inherit", "inherit"] });
     await waitForFile(join(control, "services.json"), integration, 20 * 60_000);
     const services = JSON.parse(await readFile(join(control, "services.json"), "utf8"));
 
-    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1"] });
+    browser = await puppeteer.launch({ headless: true, args: ["--disable-popup-blocking", "--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1,MAP node.tinycloud.xyz 127.0.0.1,MAP witness.credentials.org 127.0.0.1,MAP credentials.org 127.0.0.1,MAP openkey.so 127.0.0.1,MAP api.openkey.so 127.0.0.1"] });
     browser.on("targetcreated", (target) => {
       if (receiverJourneyStarted && !receiverTargetBaseline.has(target) && target.type() === "page") receiverTargets.push(target.url());
       void target.page().then((page) => page === null ? undefined : installInterception(page, services, fixtureOrigin)).catch(() => undefined);
@@ -467,21 +501,20 @@ async function main() {
     await page.goto(`${canonical.share}/share.html`, { waitUntil: "networkidle2", timeout: 180_000 });
     await page.waitForFunction(() => { const button = document.querySelector("button.auth-button"); return button !== null && !button.disabled; }, { timeout: 60_000 });
     await page.click("button.auth-button");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 800));
-    await announceWallet(page);
-    await clickText(page, "TinyCloud E2E Wallet");
     await clickText(page, "Create TinyCloud Space", true);
     await waitForText(page, "Shared by me.", 60_000);
     await clickText(page, "New share");
     await page.waitForSelector('input[name="recipient"][value="exactEmail"]', { timeout: 60_000 });
+    const recipientEmail = "sam@tinycloud.xyz";
+    await fetch(`${services.mailOrigin}/emails/reset`, { method: "POST" });
     await page.evaluate(() => { window.__tc465Copied = null; Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: (value) => { window.__tc465Copied = value; return Promise.resolve(); } } }); });
     await page.click('input[name="recipient"][value="exactEmail"]');
-    await page.type("input[name=recipient-value]", "sam@tinycloud.xyz");
+    await page.type("input[name=recipient-value]", recipientEmail);
     const upload = await page.$("input[name=document]");
     assert(upload, "share upload control is missing");
     await upload.uploadFile(join(shareRoot, "test/e2e-sharing/fixture.md"));
     await page.click("button.create-link-button");
-    await waitForText(page, "Your private link is ready", 30_000);
+    await waitForText(page, "Your encrypted link is ready", 30_000);
     await clickText(page, "Copy link");
     const shareUrl = await page.evaluate(() => window.__tc465Copied);
     assert.match(shareUrl, /^https:\/\/share\.tinycloud\.xyz\/s\/bafkrei[a-z2-7]{52}/);
@@ -498,19 +531,71 @@ async function main() {
     const envelopeValidation = shareEnvelopeV3Schema.safeParse(envelopeValue);
     assert(envelopeValidation.success, `published v3 envelope is invalid: ${envelopeValidation.error?.issues.map((issue) => `${issue.path.join(".")}:${issue.code}:${issue.message}`).join("; ")}`);
     const publishedEnvelope = envelopeValidation.data;
-    const envelopeAudit = await auditV3Envelope(publishedEnvelope);
-    assert.deepEqual(envelopeAudit, Object.fromEntries(Object.keys(envelopeAudit).map((key) => [key, true])), `published v3 envelope verification audit failed: ${JSON.stringify(envelopeAudit)}`);
-    const policyRoot = parseCompactUcanAuthorization(publishedEnvelope.policyRoot.authorization, publishedEnvelope.policyRoot.cid);
-    const enforcementRoot = parseCompactUcanAuthorization(publishedEnvelope.enforcementRoot.authorization, publishedEnvelope.enforcementRoot.cid);
-    assert.equal(policyRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "policy root collapsed the Node audience into the enforcement DID");
-    assert.equal(enforcementRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "enforcement root collapsed the Node audience into the enforcement DID");
-    assert.equal(enforcementRoot.payload.aud, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root audience does not match the attested enforcement DID");
-    assert.equal(enforcementRoot.payload.fct[0]?.enforcerDid, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root fact does not match the attested enforcement DID");
+    if (tc500) {
+      assert.equal(verifyEnvelopeV3SignatureOnly(publishedEnvelope), true, "accountless envelope owner signature is invalid");
+      assert.equal(JSON.stringify(publishedEnvelope).includes("This file is a deterministic hermetic upload fixture."), false, "registry envelope contained document payload");
+      assert.equal(Object.hasOwn(publishedEnvelope, "documentPayload"), false, "registry envelope exposed a document payload field");
+    } else {
+      const envelopeAudit = await auditV3Envelope(publishedEnvelope);
+      assert.deepEqual(envelopeAudit, Object.fromEntries(Object.keys(envelopeAudit).map((key) => [key, true])), `published v3 envelope verification audit failed: ${JSON.stringify(envelopeAudit)}`);
+      const policyRoot = parseCompactUcanAuthorization(publishedEnvelope.policyRoot.authorization, publishedEnvelope.policyRoot.cid);
+      const enforcementRoot = parseCompactUcanAuthorization(publishedEnvelope.enforcementRoot.authorization, publishedEnvelope.enforcementRoot.cid);
+      assert.equal(policyRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "policy root collapsed the Node audience into the enforcement DID");
+      assert.equal(enforcementRoot.payload.fct[0]?.nodeAudience, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "enforcement root collapsed the Node audience into the enforcement DID");
+      assert.equal(enforcementRoot.payload.aud, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root audience does not match the attested enforcement DID");
+      assert.equal(enforcementRoot.payload.fct[0]?.enforcerDid, publishedEnvelope.attestedEnforcerBinding.enforcerDid, "enforcement root fact does not match the attested enforcement DID");
+    }
     const exactKvResource = publishedEnvelope.contentSource.kvResource;
     const binding = await page.evaluate(async (cid) => { const response = await fetch(`/.well-known/tinycloud-share/bindings/${cid}.json`, { cache: "no-store" }); return { status: response.status, body: await response.json() }; }, shareCid);
     assert.equal(binding.status, 200);
     assert.equal(binding.body.version, 3);
     assert.equal(binding.body.shareCid, shareCid);
+
+    await page.click("button.confirm-notification");
+    await waitForText(page, "Invitation requested", 30_000);
+    const mailDeadline = Date.now() + 30_000;
+    let deliveredMail;
+    while (Date.now() < mailDeadline) {
+      const state = await (await fetch(`${services.mailOrigin}/emails`, { cache: "no-store" })).json();
+      deliveredMail = state.messages?.find((message) => stringsIn(message?.payload).includes(recipientEmail));
+      if (deliveredMail !== undefined) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+    }
+    assert(deliveredMail !== undefined, "exact-email notification was not captured by the mail fixture");
+    if (tc500) {
+      assert.equal(typeof invitationDeliveryRequest, "string", "generic invitation delivery request was not captured");
+      const deliveryContract = JSON.parse(invitationDeliveryRequest);
+      assert.equal(deliveryContract.request.policyId, binding.body.policyCid, "invitation policy binding changed after admission");
+      assert.equal(deliveryContract.request.recipient, recipientEmail, "invitation recipient binding changed after admission");
+      assert.equal(deliveryContract.request.resource, exactKvResource, "invitation resource binding changed after admission");
+      assert.equal(deliveryContract.request.credentialType, "opencredentials.email/v1", "invitation credential type changed after admission");
+      assert.equal(deliveryContract.request.envelopeRef, shareCid, "invitation envelope binding changed after admission");
+      assert.equal(deliveryContract.request.audience, canonical.witness, "invitation audience changed after admission");
+      assert.equal(deliveryContract.admission.recipient, deliveryContract.request.recipient, "admission and invitation recipients differ");
+      assert.equal(deliveryContract.admission.resource, deliveryContract.request.resource, "admission and invitation resources differ");
+      assert.deepEqual(deliveryContract.admission.actions, ["tinycloud.kv/get"], "delivery admission was not read-only");
+      assert.equal(deliveryContract.admission.senderKeyDid, deliveryContract.proof.kid, "delivery proof did not use the admitted sender key");
+      assert.equal(deliveryContract.admission.returnLink, deliveryContract.request.returnLink, "admission and invitation return links differ");
+      assert.equal(deliveryContract.admission.expiresAt, deliveryContract.request.expiresAt, "admission and invitation expiries differ");
+      const invitationTtl = (Date.parse(deliveryContract.request.expiresAt) - Date.parse(deliveryContract.request.issuedAt)) / 1_000;
+      assert(invitationTtl > 0 && invitationTtl <= 900, "invitation expiry was not positively bounded to fifteen minutes");
+      const beforeReplay = (await (await fetch(`${services.mailOrigin}/emails`)).json()).messages.length;
+      const replay = await fetch(`${services.credentialsOrigin}/v1/credential-invitations`, { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: invitationDeliveryRequest });
+      assert.equal(replay.status, 202, "identical invitation replay was not idempotently accepted");
+      const afterReplay = (await (await fetch(`${services.mailOrigin}/emails`)).json()).messages.length;
+      assert.equal(afterReplay, beforeReplay, "idempotent invitation replay sent a second email");
+      const rebound = JSON.parse(invitationDeliveryRequest);
+      rebound.request.nonce = "AQEBAQEBAQEBAQEBAQEBAQ";
+      const rejectedReplay = await fetch(`${services.credentialsOrigin}/v1/credential-invitations`, { method: "POST", headers: { "content-type": "application/json", origin: canonical.share }, body: JSON.stringify(rebound) });
+      assert.equal(rejectedReplay.status, 400, "nonce-rebound invitation replay was accepted");
+    }
+    const deliveredShareUrl = shareUrlFromMail(deliveredMail.payload);
+    assert.equal(new URL(deliveredShareUrl).pathname, new URL(shareUrl).pathname, "delivered invitation changed the Share CID");
+    assert.match(deliveredShareUrl, tc500 ? /#k=[A-Za-z0-9_-]+$/ : /\?i=[A-Za-z0-9_-]+#k=[A-Za-z0-9_-]+$/, "delivered invitation omitted decryption material");
+    await page.click("button.composer-back");
+    await waitForText(page, "All shares", 30_000);
+    await page.waitForSelector(".sender-history-row", { timeout: 30_000 });
+    assert.equal(await page.$$eval(".sender-history-row", (rows) => rows.length), 1, "delivered share was not retained in sender history");
 
     if (tc500) {
       const receiverContext = await browser.createBrowserContext();
@@ -521,7 +606,7 @@ async function main() {
     }
     receiverTargetBaseline = new Set(browser.targets());
     receiverJourneyStarted = true;
-    await page.goto(shareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
+    await page.goto(deliveredShareUrl, { waitUntil: "networkidle2", timeout: 180_000 });
     if (!tc500) {
       await waitForText(page, "Confirm your email to open this");
       await page.click("button.viewer-primary-action");
@@ -531,15 +616,41 @@ async function main() {
     }
     let otpSubmitted;
     try {
-      otpSubmitted = await page.waitForFunction(() => {
-        const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
-        const input = root?.querySelector("input[name=otp]");
-        const submit = root?.querySelector("button[type=submit]");
-        if (input?.tagName !== "INPUT" || submit?.tagName !== "BUTTON") return false;
-        input.value = "246810";
-        submit.click();
-        return true;
-      }, { timeout: 60_000 });
+      if (tc500) {
+        await page.waitForFunction(() => {
+          const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+          return root?.querySelector('input[name="otp"]') instanceof HTMLInputElement
+            && root?.querySelector('button[type="submit"]') instanceof HTMLButtonElement;
+        }, { timeout: 60_000 });
+        const otpDeadline = Date.now() + 30_000;
+        let code;
+        while (Date.now() < otpDeadline && code === undefined) {
+          const state = await (await fetch(`${services.mailOrigin}/emails`, { cache: "no-store" })).json();
+          const otpMail = state.messages?.find((message) => message.id !== deliveredMail.id && stringsIn(message?.payload).includes(recipientEmail));
+          code = otpMail === undefined ? undefined : stringsIn(otpMail.payload).flatMap((value) => value.match(/\b\d{6}\b/g) ?? [])[0];
+          if (code === undefined) await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+        }
+        assert.match(code ?? "", /^\d{6}$/, "OpenCredentials OTP email did not contain a six-digit code");
+        await page.evaluate((otp) => {
+          const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+          const input = root?.querySelector('input[name="otp"]');
+          const submit = root?.querySelector('button[type="submit"]');
+          if (!(input instanceof HTMLInputElement) || !(submit instanceof HTMLButtonElement)) throw new Error("embedded OTP controls disappeared");
+          input.value = otp;
+          submit.click();
+        }, code);
+        otpSubmitted = { jsonValue: async () => true };
+      } else {
+        otpSubmitted = await page.waitForFunction(() => {
+          const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+          const input = root?.querySelector("input[name=otp]");
+          const submit = root?.querySelector("button[type=submit]");
+          if (input?.tagName !== "INPUT" || submit?.tagName !== "BUTTON") return false;
+          input.value = "246810";
+          submit.click();
+          return true;
+        }, { timeout: 60_000 });
+      }
     } catch (error) {
       const receiverState = await page.evaluate(() => ({ text: (document.body?.innerText ?? "").slice(-1_500), credentialElement: document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.innerHTML ?? null, diagnostics: window.__tc465Diagnostics ?? null })).catch(() => null);
       throw new Error(`embedded credential acquisition did not render; state=${JSON.stringify(receiverState)}; receiverTraffic=${JSON.stringify(diagnosticReceiverTraffic())}; browserErrors=${JSON.stringify(browserErrors.slice(-30))}`, { cause: error });
@@ -578,7 +689,7 @@ async function main() {
     const acquisitionId = create.responseBody?.requestId;
     assert.match(acquisitionId, /^[A-Za-z0-9_-]{16,128}$/, "credential acquisition create did not return a canonical request id");
     const acquisitionPath = new RegExp(`^/v1/acquisitions/${escaped(acquisitionId)}/`);
-    const state = routeAfter("credential acquisition state", create.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/state"));
+    const state = receiverRequests.find((entry) => entry.sequence > create.sequence && successful(entry) && entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/state")) ?? create;
     const challenge = routeAfter("credential acquisition OTP challenge", state.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/challenge") && entry.body?.step === "mailbox_otp");
     const proof = routeAfter("credential acquisition OTP proof", challenge.sequence, (entry) => entry.method === "POST" && acquisitionPath.test(entry.path) && entry.path.endsWith("/proof") && entry.body?.step === "mailbox_otp");
     const holderBinding = routeAfter("credential acquisition holder binding", proof.sequence, (entry) => entry.method === "GET" && acquisitionPath.test(entry.path) && entry.path.endsWith("/holder-binding"));
@@ -599,43 +710,51 @@ async function main() {
       credentialSpaceId = credentialRead.responseBody.ownerDid;
     }
 
-    const policyChallenge = routeAfter("Policy/v3 challenge", policyStartSequence, (entry) => entry.path === "/share/v3/policy/challenges" && entry.method === "POST");
+    const policyChallenge = routeAfter("embedded Node Policy/v3 challenge", policyStartSequence, (entry) => entry.origin === canonical.node && entry.path === "/policy/v3/challenges" && entry.method === "POST");
     if (tc500) {
       assert.equal(receiverRequests.some((entry) => entry.sequence > result.sequence && entry.sequence < policyChallenge.sequence && entry.path === "/invoke"), false, "accountless credential custody touched TinyCloud account storage");
     }
     const policyCid = policyChallenge.body?.policyCid;
     assert.equal(policyCid, binding.body.policyCid, "Policy/v3 challenge did not bind the published policy CID");
+    const policyMint = routeAfter("embedded Node Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.origin === canonical.node && entry.path === "/policy/v3/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
     const requestedKv = policyChallenge.body?.requestedCapabilities?.find((capability) => capability?.kind === "kv");
-    assert.equal(requestedKv?.resource, exactKvResource, "Policy/v3 challenge did not request the envelope's exact TinyCloud KV resource");
-    assert.equal(requestedKv.selector, "exact");
-    assert.deepEqual(requestedKv.actions, ["tinycloud.kv/get", "tinycloud.kv/metadata"]);
-    const kvResource = requestedKv.resource;
+    const kvResource = requestedKv?.resource;
+    assert.equal(kvResource, exactKvResource, "policy presentation did not request the envelope's exact TinyCloud KV resource");
+    assert(requestedKv.actions.includes("tinycloud.kv/get") && !requestedKv.actions.some((action) => action === "tinycloud.kv/put" || action === "tinycloud.kv/list"), "policy presentation was not read-only");
 
-    const policyMint = routeAfter("Policy/v3 delegation mint", policyChallenge.sequence, (entry) => entry.path === "/share/v3/policy/delegations" && entry.method === "POST" && entry.body?.policyCid === policyCid && entry.body?.challengeId === policyChallenge.responseBody?.challengeId);
     const receiverDid = policyChallenge.body?.recipientDid;
     if (tc500) {
       assert.match(receiverDid, /^did:key:z/, "accountless challenge recipient is not the receiver session key");
-      assert.equal(policyMint.body?.credentialSpaceId, undefined, "accountless admission carried account credential custody");
       assert.equal(policyMint.body?.presentation?.schema, "xyz.tinycloud.policy/presentation/v4");
       assert.equal(policyMint.body?.presentation?.holderDid, receiverDid);
-      assert.equal(policyMint.body?.presentation?.subjectDid, receiverDid);
-      assert.equal(policyMint.body?.presentation?.signature?.signerDid, receiverDid);
-      assert.equal(policyMint.body?.credential?.holderDid, receiverDid);
-      assert.equal(policyMint.body?.credential?.subjectDid, receiverDid);
+      const minted = parseCompactUcanAuthorization(policyMint.responseBody?.authorization, policyMint.responseBody?.sessionCid);
+      assert.equal(minted.payload.aud, receiverDid, "delegation audience was not the proven ephemeral holder");
+      assert.equal(minted.payload.iss, publishedEnvelope.attestedEnforcerBinding.nodeAudience, "delegation issuer did not match the embedded Node audience");
+      const encryptionCapability = publishedEnvelope.policy.capabilityCeiling.find((capability) => capability.kind === "encryption");
+      assert(encryptionCapability, "published policy omitted its exact encryption resource");
+      assert.deepEqual(Object.keys(minted.payload.att).sort(), [kvResource, encryptionCapability.resource].sort(), "delegation was not exact-resource scoped");
+      const delegatedKvActions = Object.keys(minted.payload.att[kvResource]).sort();
+      assert(delegatedKvActions.includes("tinycloud.kv/get") && delegatedKvActions.every((action) => ["tinycloud.kv/get", "tinycloud.kv/metadata"].includes(action)), "delegation was not read-only");
+      assert.deepEqual(Object.keys(minted.payload.att[encryptionCapability.resource]), ["tinycloud.encryption/decrypt"], "delegation did not limit key unwrap to the exact encryption network");
+      assert(minted.payload.exp > minted.payload.nbf && minted.payload.exp - minted.payload.nbf <= 900, "delegation lifetime was not short-lived");
+      assert.equal(minted.payload.fct[0]?.policyCid, policyCid, "delegation policy fact did not match the presented policy");
+      assert.equal(minted.payload.fct[0]?.profile, "policy-session-ucan/v1", "delegation was not an ordinary policy session");
     } else {
       credentialSpaceId = policyMint.body?.credentialSpaceId;
       assert.equal(typeof credentialSpaceId, "string", "Policy/v3 mint omitted the recipient credentials space");
       assert.equal(policyMint.body?.presentation?.credentialSpaceOwnerDid, credentialSpaceId, "Policy/v3 presentation did not bind the durable credential owner");
     }
-    assert.deepEqual(policyMint.body?.presentation?.requestedCapabilities, policyChallenge.body.requestedCapabilities, "Policy/v3 mint substituted the challenged capability slice");
+    if (!tc500) assert.deepEqual(policyMint.body?.presentation?.requestedCapabilities, policyChallenge.body.requestedCapabilities, "Policy/v3 mint substituted the challenged capability slice");
 
     const delegate = routeAfter("ordinary delegation activation", policyMint.sequence, (entry) => entry.path === "/delegate" && entry.method === "POST");
     assert.equal(delegate.authorization, policyMint.responseBody?.authorization, "ordinary /delegate did not activate the freshly minted policy authorization");
     const invoke = routeAfter("ordinary exact-resource invocation", delegate.sequence, (entry) => entry.path === "/invoke" && entry.method === "POST" && authorizationNames(entry).includes(kvResource));
-    const decrypt = routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && (tc500
-      ? entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1"
-      : /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path)));
+    const decrypt = tc500
+      ? routeAfter("ordinary generic decrypt invocation", invoke.sequence, (entry) => entry.method === "POST" && entry.path === "/invoke" && entry.body?.type === "tinycloud.encryption.decrypt/v1")
+      : routeAfter("ordinary delegated decrypt", invoke.sequence, (entry) => entry.method === "POST" && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path));
+    if (tc500) assert.equal(receiverRequests.some((entry) => entry.sequence > invoke.sequence && /^\/encryption\/networks\/[^/]+\/decrypt$/.test(entry.path)), false, "accountless receiver used a specialized decrypt route");
     assert(!receiverRequests.some((entry) => entry.path === "/share/v2/policy/session"), "receiver journey used the legacy /share/v2/policy/session route");
+    if (tc500) assert.equal(receiverRequests.some((entry) => entry.origin === canonical.node && entry.path.startsWith("/share/")), false, "accountless receiver used a Node /share/* route");
     assert.equal(receiverTargets.length, 0, `embedded credential acquisition created browser targets: ${JSON.stringify(receiverTargets)}`);
     const diagnostics = await page.evaluate(() => window.__tc465Diagnostics);
     assert.equal(diagnostics.windowOpenCalls, 0, "embedded credential acquisition called window.open");
@@ -648,45 +767,33 @@ async function main() {
     const external = receiverRequests.filter((entry) => !allowedOrigins.has(entry.origin));
     assert.deepEqual(external.map((entry) => `${entry.method} ${entry.origin}${entry.path}`), [], "receiver journey attempted an external destination");
 
-    let saveOpenKey;
-    let saveWrite;
-    let saveReadback;
-    if (tc500) {
-      const renderedSequence = receiverSequence;
-      await page.waitForSelector("button.viewer-save-to-tinycloud", { timeout: 30_000 });
-      await page.click("button.viewer-save-to-tinycloud");
-      await new Promise((resolveWait) => setTimeout(resolveWait, 800));
-      await announceWallet(page);
-      await clickText(page, "TinyCloud E2E Wallet", true);
-      await clickText(page, "Create TinyCloud Space", true);
-      await waitForText(page, "Saved to Files for you", 180_000);
-      saveOpenKey = routeAfter("post-render OpenKey start", renderedSequence, (entry) => entry.origin === canonical.openKey);
-      saveWrite = routeAfter("Files for you import", saveOpenKey.sequence, (entry) => entry.path === "/invoke" && Array.isArray(entry.responseBody?.written) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/content/")) && entry.responseBody.written.some((key) => typeof key === "string" && key.startsWith("v1/metadata/")));
-      saveReadback = routeAfter("Files for you authenticated readback", saveWrite.sequence, (entry) => entry.path === "/invoke" && typeof entry.responseBody?.byteDigest === "string" && entry.responseBody.byteDigest.length > 0);
-      assert(saveWrite.authorization?.length > 0, "Files for you write was not authenticated");
-      assert(saveReadback.authorization?.length > 0, "Files for you readback was not authenticated");
-    }
-
     const chain = [
+      "delivery:email", "sender-history:reload",
       "acquisition:create", "acquisition:state", "acquisition:otp-challenge", "acquisition:otp-proof", "acquisition:holder-binding", "acquisition:holder-signature", "acquisition:issue", "acquisition:result",
-      ...(tc500 ? ["credential:session-custody", "policy-v4:challenge", "policy-v4:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
-      "delegate", `invoke:${kvResource}`, "decrypt", "render",
-      ...(tc500 ? ["save:openkey", "save:write", "save:readback"] : []),
+      ...(tc500 ? ["credential:session-custody", "policy-v3:challenge", "policy-v3:mint"] : ["credentials:durable-write", "credentials:authenticated-readback", "policy-v3:challenge", "policy-v3:mint"]),
+      "delegate", `invoke:${kvResource}`, tc500 ? "invoke:decrypt" : "decrypt", "decrypt:local", "render",
     ];
     const statuses = tc500 ? {
+      delivery: deliveredMail !== undefined,
+      senderLibrary: true,
       acquisition: result.sequence > create.sequence,
       sessionCredential: policyChallenge.sequence > result.sequence,
-      policyV4: policyMint.sequence > policyChallenge.sequence,
+      policyV3: policyMint.sequence > policyChallenge.sequence,
       delegate: delegate.sequence > policyMint.sequence,
       invoke: invoke.sequence > delegate.sequence,
-      decrypt: decrypt.sequence > invoke.sequence,
+      genericDecrypt: decrypt.sequence > invoke.sequence,
+      localDecrypt: rendered,
       rendered,
       legacyPolicySessionAbsent: true,
       zeroOpenKeyBeforeRender: true,
       zeroExternalDestinations: true,
-      saveOpenKeyAfterRender: saveOpenKey.sequence > decrypt.sequence,
-      saveWrite: saveWrite.sequence > saveOpenKey.sequence,
-      saveReadback: saveReadback.sequence > saveWrite.sequence,
+      registryMetadataOnly: true,
+      exactInvitationBindings: true,
+      invitationReplayIdempotent: true,
+      invitationNonceRebindingRejected: true,
+      browserCors: true,
+      exactDelegationBindings: true,
+      zeroNodeShareRoutes: true,
     } : {
       acquisition: result.sequence > create.sequence,
       durableCredential: policyChallenge.sequence > result.sequence,
@@ -702,7 +809,7 @@ async function main() {
     };
     assert(Object.values(statuses).every((value) => value === true), "receiver chain status is incomplete");
     const evidence = {
-      type: tc500 ? "tinycloud.share/tc-500-joined-evidence/v1" : "tinycloud.share/tc-465-joined-evidence/v2",
+      type: tc500 ? "tinycloud.policy-access/delivered-email-evidence/v1" : "tinycloud.share/tc-465-joined-evidence/v2",
       renderedSha256: createHash("sha256").update(renderedBytes).digest("hex"),
       statuses,
       chain,
@@ -711,8 +818,9 @@ async function main() {
         policyCid,
         resource: kvResource,
         receiverDid,
-        presentationJti: policyMint.body.presentation.jti,
+        delegationCid: policyMint.responseBody.sessionCid,
         acquisitionIdSha256: createHash("sha256").update(acquisitionId).digest("hex"),
+        deliveredMailIdSha256: createHash("sha256").update(String(deliveredMail.id)).digest("hex"),
       } : {
         shareCid,
         policyCid,

@@ -1,9 +1,11 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   authenticate: vi.fn(),
   createAccountClient: vi.fn(),
   receive: vi.fn(),
+  receiveWithSdk: vi.fn(),
   get: vi.fn(),
   importInto: vi.fn(),
   resolve: vi.fn(),
@@ -33,6 +35,9 @@ vi.mock("../src/email-share/config.js", () => ({
     registryOrigin: "https://registry.tinycloud.xyz",
     nodeOrigin: "https://node.example",
     credentialsOrigin: "https://credentials.example",
+    policyEngineOrigin: "https://policy.example",
+    policyEngineAudience: "tinycloud://policy-engine",
+    policyEngineGrantIssuerDid: "did:key:z6MkGrantIssuer",
     accountlessReceiverEnabled: true,
     nodeAudience: "did:web:node.example",
     enforcerDid: "did:web:node.example",
@@ -58,6 +63,12 @@ vi.mock("../src/share/receiver.js", () => ({
   createShareReceiverClient: () => ({ share: { receive: (...args: unknown[]) => state.receive(...args) } }),
 }));
 
+vi.mock("../src/viewer/sdk-accountless-receiver.js", () => ({
+  receiveWithSdk: (...args: unknown[]) => state.receiveWithSdk(...args),
+}));
+
+vi.mock("@tinycloud/web-sdk-wasm", () => ({ tinycloud: { invoke: vi.fn() } }));
+
 vi.mock("@tinycloud/share-sdk", () => ({ createRegisteredPolicyAuthority: () => ({}) }));
 
 vi.mock("../src/share/openkey-session.js", () => ({
@@ -72,6 +83,7 @@ beforeEach(() => {
   state.authenticate.mockReset();
   state.createAccountClient.mockReset();
   state.receive.mockReset();
+  state.receiveWithSdk.mockReset();
   state.get.mockReset();
   state.importInto.mockReset();
   state.resolve.mockReset();
@@ -81,6 +93,13 @@ beforeEach(() => {
     recipientMatcher: { kind: "exactEmail", value: "reader@example.com" },
     display: { filename: "report.md" },
     metadata: { filename: "report.md", mediaType: "text/plain" },
+    policyEngine: {
+      endpoint: "https://policy.example",
+      audience: "tinycloud://policy-engine",
+      grantIssuerDid: "did:key:z6MkGrantIssuer",
+      policyId: "urn:tinycloud:policy:test",
+      requirementId: "urn:tinycloud:requirement:test",
+    },
   };
   state.resolved = {
     state: "policy-v2-claim-required",
@@ -88,7 +107,12 @@ beforeEach(() => {
     policy: { schema: "xyz.tinycloud.policy/policy/v2" },
     shareCid: "bafkreicredentialshare",
   };
-  state.resolve.mockResolvedValue(state.resolved);
+  state.resolve.mockImplementation(async () => {
+    return state.resolved;
+  });
+  state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
+    void options.onComplete({ bytes: new TextEncoder().encode("opened") });
+  });
   state.receive.mockResolvedValue({
     identity: { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: "session", origin: "https://share.tinycloud.xyz" },
     shareId: "share-500",
@@ -118,29 +142,22 @@ beforeEach(() => {
   state.importInto.mockResolvedValue({ status: "imported", path: "files-for-you/v1/content/share-500/report.md", byteDigest: "digest" });
 });
 
-describe("TC-500 first-class accountless receiver", () => {
-  it("renders through share.receive with zero OpenKey calls, then signs in only for explicit save", async () => {
+describe("first-class accountless receiver", () => {
+  it("routes through the reusable accountless reader with zero OpenKey calls", async () => {
     await import("../src/main.js");
     await vi.waitFor(() => expect(state.presented).toHaveLength(1));
 
-    expect(state.receive).toHaveBeenCalledWith(
-      "https://share.tinycloud.xyz/s/test#k=secret",
-      expect.objectContaining({ identity: "auto", interaction: { kind: "inline", mountTarget: document.getElementById("viewer") } }),
+    expect(state.receiveWithSdk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: document.getElementById("viewer"),
+        shareUrl: "https://share.tinycloud.xyz/s/test#k=secret",
+      }),
     );
+    expect(state.receive).not.toHaveBeenCalled();
     expect(state.authenticate).not.toHaveBeenCalled();
-    expect(state.resolve).not.toHaveBeenCalled();
+    expect(state.resolve).toHaveBeenCalledTimes(1);
     expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
 
-    const accountClient = { session: () => ({}) };
-    state.authenticate.mockResolvedValue({});
-    state.createAccountClient.mockResolvedValue(accountClient);
-    const save = state.presented[0]!.options.saveToTinyCloud as () => Promise<void>;
-    await save();
-
-    expect(state.authenticate).toHaveBeenCalledTimes(1);
-    expect(state.importInto).toHaveBeenCalledWith(accountClient, {
-      namespace: "files-for-you",
-      filename: "report.md",
-    });
+    expect(state.createAccountClient).not.toHaveBeenCalled();
   });
 });

@@ -5,8 +5,11 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     environment:
-      SHARE_SENDER_ENABLED: ${SHARE_SENDER_ENABLED:-false}
-      SHARE_ACCOUNTLESS_RECEIVER_ENABLED: ${SHARE_ACCOUNTLESS_RECEIVER_ENABLED:-false}
+      # Exact-email sharing is the production composition. Operators can still
+      # set both flags to false together for an explicit rollback, but an
+      # ordinary reviewed image rollout must not silently ship auth-only.
+      SHARE_SENDER_ENABLED: ${SHARE_SENDER_ENABLED:-true}
+      SHARE_ACCOUNTLESS_RECEIVER_ENABLED: ${SHARE_ACCOUNTLESS_RECEIVER_ENABLED:-true}
       SHARE_AUTH_USERS_JSON: ${SHARE_AUTH_USERS_JSON-}
       SHARE_BINDING_STORE_ROOT: /var/lib/tinycloud/share
       SHARE_BINDING_STORE_PATH: ${SHARE_BINDING_STORE_PATH:-/var/lib/tinycloud/share/bindings.ndjson}

@@ -49,7 +49,7 @@ test("share host launch env carries the exact host/port/trust/registry/node/herm
 });
 
 // TC-306. This is the assertion whose absence let the harness proxy
-// /delegate, /invoke, /share/v1/*, /share/v2/*, /info and /v1/share-email/* to
+// /delegate, /invoke, /policy/v3/*, /info and /v1/share-email/* to
 // the public production node for thirteen rounds of fixes while the locally
 // built node under test received zero browser requests. Every route
 // src/host/upstream.ts can return is one of these three origins, so requiring
@@ -65,6 +65,17 @@ test("share host launch env routes every proxied upstream to loopback, never to 
     assert.equal(route.origin, canonicalOrigins[service], `${service} route must name the exact trust-bundle origin it replaces`);
     assert.match(route.transportOrigin, /^http:\/\/127\.0\.0\.1:[1-9][0-9]*$/, `${service} must resolve to a loopback origin`);
   }
+});
+
+test("share host launch env has no standalone policy-engine route", () => {
+  const env = buildShareHostLaunchEnv({
+    ...baseArgs(),
+    // Unknown inputs must not change the three-service production resolver.
+    policyEngineCanonicalOrigin: "https://retired.example",
+    policyEngineTransportOrigin: "http://127.0.0.1:4700",
+  });
+  const routes = JSON.parse(env.SHARE_HERMETIC_UPSTREAMS_JSON);
+  assert.equal(Object.hasOwn(routes, "policyEngine"), false);
 });
 
 test("share host launch env never sets static authority, fixture, allow-test, or binding-store variables", () => {

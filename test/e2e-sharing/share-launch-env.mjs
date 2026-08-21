@@ -118,6 +118,10 @@ export function buildShareHostLaunchEnv({ host, port, trustBundlePath, registryU
     SHARE_HERMETIC_BROWSER_ORIGIN: loopbackOrigin(shareOrigin, "shareOrigin"),
     SHARE_HERMETIC_REGISTRY_ORIGIN: registry,
     SHARE_HERMETIC_COMPOSITION: "true",
-    SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({ node: routes.node, credentials: routes.credentials, registry: routes.registry }),
+    SHARE_HERMETIC_UPSTREAMS_JSON: JSON.stringify({
+      node: routes.node,
+      credentials: routes.credentials,
+      registry: routes.registry,
+    }),
   };
 }

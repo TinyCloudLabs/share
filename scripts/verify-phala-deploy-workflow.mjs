@@ -91,8 +91,9 @@ assert.match(
 assert.match(workflow, /\.state == "running"/);
 assert.match(
   workflow,
-  /if \[ "\$target" -ge 1 \] && echo "\$readiness" \| jq -e '\.authReady == true and \(\.senderReady \| type == "boolean"\)'/,
+  /if \[ "\$target" -ge 1 \] && echo "\$readiness" \| jq -e '\.authReady == true and \.senderReady == true'/,
 );
+assert.match(workflow, /x-tinycloud-share-accountless-receiver/);
 assert.match(
   workflow,
   /\(\(keys \| sort\) == \["expiresAt", "nonce"\]\) and \(\.nonce \| test/,

@@ -103,7 +103,7 @@ describe("owner space permissions", () => {
 
   it("limits recipient imports to the versioned Files for you prefix", () => {
     expect(filesForYouPermissions()).toEqual([
-      { service: "tinycloud.kv", space: SHARE_APPLICATION_SPACE, path: `${SHARE_APPLICATION_PREFIX}files-for-you/v1/`, actions: ["get", "put", "list"], skipPrefix: true },
+      { service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"], skipPrefix: true },
     ]);
   });
 

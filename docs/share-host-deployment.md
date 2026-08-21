@@ -1,16 +1,22 @@
 # Share host deployment
 
-The auth-only composition is intentional and is the default:
-`SHARE_SENDER_ENABLED` is `false` when omitted. Compose defaults
+Exact-email sharing is the production default: the reviewed Compose file sets
+both `SHARE_SENDER_ENABLED` and `SHARE_ACCOUNTLESS_RECEIVER_ENABLED` to `true`
+when no explicit value is supplied. This keeps the durable sender-binding path
+and the first-class accountless receiver coupled: a normal image rollout cannot
+publish a receiver that cannot be sent an exact-email share. Compose defaults
 `SHARE_BINDING_STORE_PATH` to the persistent
 `/var/lib/tinycloud/share/bindings.ndjson` volume path. In that mode
-binding-store settings are ignored even if stale values remain in the
-environment. `/health/readiness` reports
+both flags may be explicitly set to `false` together for an auth-only rollback;
+binding-store settings are then ignored even if stale values remain in the
+environment. In that explicit rollback mode `/health/readiness` reports
 `{ "authReady": true, "senderReady": false }`, and signing and binding remain
-fail-closed with JSON `503 sender_not_ready`. The trust bundle may truthfully
-set `nodeEnabled=false` while retaining the validated public node identity;
-OpenKey authentication remains ready, the public configuration preserves the
-disabled status, and no email-share authority is asserted.
+fail-closed with JSON `503 sender_not_ready`. In the default composition,
+readiness instead requires `senderReady: true` before rollout convergence. The
+trust bundle may truthfully set `nodeEnabled=false` while retaining the
+validated public node identity; OpenKey authentication remains ready, the
+public configuration preserves the disabled status, and no email-share
+authority is asserted.
 
 An authenticated OpenKey session can still create a possession-based encrypted
 share. Its only write path is `POST /api/share/link-only/registry/blobs`: raw,
@@ -83,8 +89,10 @@ Required production variables:
   image digest, configuration digest, migration version, and an immutable
   rollback image/release target. The deploy validator rejects a composition
   without this manifest or with a mismatched Share image.
-- `SHARE_SENDER_ENABLED`: optional strict boolean string. Omitted or `false`
-  selects auth-only mode; `true` enables the sender and requires a healthy
+- `SHARE_SENDER_ENABLED`: optional strict boolean string. In the reviewed
+  Compose production composition, omission resolves to `true`; set it and
+  `SHARE_ACCOUNTLESS_RECEIVER_ENABLED` to `false` together only for the
+  explicit auth-only rollback. Sender enablement requires a healthy
   wallet-rooted authentication path and a usable durable binding store.
 - `SHARE_TRUST_BUNDLE_SOURCE`: `committed` in production. See
   "Where the trust bundle comes from" below.

@@ -190,12 +190,13 @@ jobs:
             # application's public readiness contract as the health signal.
             target="$(echo "$ps" | jq --arg image "$IMAGE" --arg iid "$IMAGE_CONFIG_DIGEST" '[.containers[]? | select((.name == "share-api" or .names[]? == "/share-api" or .names[]? == "share-api") and (.image == $image or .image == $iid or .image_id == $iid) and .state == "running")] | length')"
             readiness="$(curl --fail --silent --show-error --max-time 10 https://share.tinycloud.xyz/health/readiness 2>/dev/null || true)"
-            if [ "$target" -ge 1 ] && echo "$readiness" | jq -e '.authReady == true and (.senderReady | type == "boolean")' >/dev/null; then converged=true; break; fi
+            if [ "$target" -ge 1 ] && echo "$readiness" | jq -e '.authReady == true and .senderReady == true' >/dev/null; then converged=true; break; fi
             sleep 15
           done
           [ "$converged" = true ] || { echo "::error::CVM did not converge on the target image and public readiness."; exit 1; }
           config="$(curl --fail --silent --show-error https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json)"
           echo "$config" | jq -e '.version == "tinycloud.share-email-claim/config-v1" and .shareOrigin == "https://share.tinycloud.xyz" and (.nodeEnabled | type == "boolean") and (.issuerEnabled | type == "boolean")' >/dev/null
+          test "$(curl --fail --silent --show-error -D - -o /dev/null https://share.tinycloud.xyz/.well-known/tinycloud-share/config.json | tr -d '\r' | awk -F': ' 'tolower($1) == "x-tinycloud-share-accountless-receiver" { print tolower($2) }')" = enabled
           nonce="$(curl --fail --silent --show-error -H 'Origin: https://share.tinycloud.xyz' https://share.tinycloud.xyz/api/share/auth/openkey/nonce)"
           echo "$nonce" | jq -e '((keys | sort) == ["expiresAt", "nonce"]) and (.nonce | test("^[A-Za-z0-9_-]{20,}$")) and (.expiresAt | type == "string")' >/dev/null
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' -X POST -H 'Origin: https://share.tinycloud.xyz' -H 'content-type: application/json' --data '{}' https://share.tinycloud.xyz/api/share/auth/openkey)" = 400

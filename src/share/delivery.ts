@@ -1,5 +1,6 @@
 export interface SignedDeliveryAuthorization {
-  readonly authorization: unknown;
+  readonly request: { readonly returnLink: string };
+  readonly admission: unknown;
   readonly proof: unknown;
 }
 
@@ -11,22 +12,14 @@ export interface AddressedDeliveryInput {
 }
 
 export async function requestAddressedDelivery(input: AddressedDeliveryInput): Promise<void> {
-  const version = typeof input.deliveryAuthorization.authorization === "object"
-    && input.deliveryAuthorization.authorization !== null
-    && (input.deliveryAuthorization.authorization as { readonly version?: unknown }).version === 3
-    ? 3
-    : 2;
-  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/share/v${version}`, {
+  if (input.deliveryAuthorization.request.returnLink !== input.shareUrl) throw new Error("The invitation request is not bound to this share link.");
+  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/v1/credential-invitations`, {
     method: "POST",
     credentials: "omit",
     redirect: "error",
     referrerPolicy: "no-referrer",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({
-      authorization: input.deliveryAuthorization.authorization,
-      proof: input.deliveryAuthorization.proof,
-      shareUrl: input.shareUrl,
-    }),
+    body: JSON.stringify(input.deliveryAuthorization),
   });
   if (!response.ok) throw new Error("The invitation request was not accepted. The link above still works.");
 }

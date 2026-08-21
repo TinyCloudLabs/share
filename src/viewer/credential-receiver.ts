@@ -195,6 +195,7 @@ function assertDurableCredential(result: CredentialEnsureResultLike, readback: S
 function requestedReadCapabilities(share: VerifiedCredentialShare) {
   const envelope = share.envelope;
   if (!envelope.actions.includes("read") || envelope.resource.kind !== "exact"
+    || envelope.policyRoot === undefined || envelope.enforcementRoot === undefined
     || envelope.policyRoot.role !== "policy-authority" || envelope.enforcementRoot.role !== "policy-enforcement"
     || envelope.contentSource.kvResource !== `${envelope.target.spaceId}/kv/${envelope.resource.path}`
     || envelope.contentSource.selector !== "exact" || envelope.contentSource.encryptionNetwork !== envelope.encryptionNetwork) {
@@ -248,12 +249,15 @@ export async function runCredentialReceiver(input: {
   let admission: Awaited<ReturnType<ActiveCredentialClient["credentials"]["admitPolicy"]>>;
   try {
     type Policy = Parameters<ActiveCredentialClient["credentials"]["admitPolicy"]>[0]["policy"];
+    const policyRoot = input.share.envelope.policyRoot;
+    const enforcementRoot = input.share.envelope.enforcementRoot;
+    if (policyRoot === undefined || enforcementRoot === undefined) throw new Error("legacy v3 policy roots are missing");
     admission = await client.credentials.admitPolicy({
       ensured,
       policy: input.share.policy as unknown as Policy,
       policyCid: input.share.envelope.policyCid,
-      policyRootCid: input.share.envelope.policyRoot.cid,
-      enforcementRootCid: input.share.envelope.enforcementRoot.cid,
+      policyRootCid: policyRoot.cid,
+      enforcementRootCid: enforcementRoot.cid,
       requirement,
       requestedCapabilities,
       nodeOrigin: input.share.envelope.target.origin,
@@ -268,6 +272,7 @@ export async function runCredentialReceiver(input: {
   input.onState?.("opening-content");
   try {
     const envelope = input.operation.envelope;
+    if (envelope.attestedEnforcerBinding === undefined) throw new Error("legacy v3 enforcer binding is missing");
     const read = await client.kvForSpace(envelope.target.spaceId).get<Uint8Array>(envelope.resource.path, { binary: true, ...(input.signal === undefined ? {} : { signal: input.signal }) });
     if (!read.ok || !ArrayBuffer.isView(read.data.data) || read.data.data.BYTES_PER_ELEMENT !== 1) throw new Error("ordinary KV read failed");
     const encoded = new TextDecoder("utf-8", { fatal: true }).decode(read.data.data);
