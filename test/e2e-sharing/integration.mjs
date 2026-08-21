@@ -102,6 +102,10 @@ if (genericNodeOverride && (requiredSlices.length !== 1 || requiredSlices[0] !==
 // TC-500 uses the candidate Node's embedded policy runtime.  Only the
 // isolated bearer regression keeps a generic Node override.
 const genericNode = genericNodeOverride;
+const registryPackageMode = tc500Joined || process.env.SHARING_E2E_REGISTRY_PACKAGES === "1";
+if (registryPackageMode && !tc500Joined && !genericNode) {
+  throw new Error("SHARING_E2E_REGISTRY_PACKAGES is test-only and may only run the generic Node bearer slice");
+}
 const runId = `sharing-e2e-${process.pid}-${randomUUID()}`;
 const localUnpushedMode = process.env.SHARING_E2E_LOCAL_UNPUSHED === "1";
 const externalControlDir = process.env.SHARING_E2E_EXTERNAL_CONTROL_DIR;
@@ -245,7 +249,7 @@ function run(command, args, cwd, env = {}) {
 }
 
 async function assertReleaseInputs() {
-  const repositories = tc500Joined ? [
+  const repositories = (tc500Joined ? [
     { name: "share", path: shareRoot, branch: "skgbafa/tc-500-embedded-share-sdk", pr: "99" },
     { name: "node", path: nodeRoot, branch: "skgbafa/tc-500-embedded-policy-runtime", pr: "226" },
     { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-500-remove-policy-dns", pr: "125" },
@@ -259,12 +263,12 @@ async function assertReleaseInputs() {
     { name: "node", path: nodeRoot, branch: "feat/sharing-production-live", pr: "168" },
     { name: "opencredentials", path: credentialsRoot, branch: "feat/sharing-production-live", pr: "113" },
     { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "feat/sharing-production-live", pr: "361" },
-  ];
+  ]).filter((repository) => !registryPackageMode || repository.name !== "js-sdk");
   for (const repository of repositories) {
     const { head, digest } = await verifyReleaseInputRepository(repository, { localUnpushedMode });
     launchInputDigests[repository.name] = { head, digest };
   }
-  if (tc500Joined) {
+  if (registryPackageMode) {
     const manifest = JSON.parse(await readFile(join(shareRoot, "package.json"), "utf8"));
     const lock = JSON.parse(await readFile(join(shareRoot, "package-lock.json"), "utf8"));
     for (const [name, version] of Object.entries(tc500RegistryPackages)) {
@@ -280,7 +284,7 @@ async function assertReleaseInputs() {
       assert.equal((await lstat(installedPackagePath)).isSymbolicLink(), false, `${name} is linked instead of registry-installed`);
       await recordArtifactDigest(`registry:${name}`, installedManifestPath);
     }
-    checks.push(`TC-500 registry packages verified at exact installed versions with npm registry lock entries: ${JSON.stringify(tc500RegistryPackages)}.`);
+    checks.push(`Registry packages verified at exact installed versions with npm registry lock entries: ${JSON.stringify(tc500RegistryPackages)}.`);
   } else {
     const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
     // Build the browser SDK and its workspace dependencies from the selected
@@ -697,7 +701,7 @@ async function startFixtures(tempRoot) {
     const rawOutput = children.find((entry) => entry.child === credentials)?.output() ?? "";
     throw new Error(`OpenCredentials readiness did not become ready: ${redactSecrets(rawOutput.slice(-4000), [credentialsLaunchEnv.RESEND_API_KEY, credentialsLaunchEnv.RESEND_WEBHOOK_SECRET])}`);
   }
-  if (tc500Joined) {
+  if (registryPackageMode) {
     const retiredNodeDelivery = await fetch(`${credentialsOrigin}/share/v2`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     assert.equal(retiredNodeDelivery.status, 404, "retired Node-authorized Share delivery route remained mounted");
     const invitationCors = await fetch(`${credentialsOrigin}/v1/credential-invitations`, { method: "OPTIONS", headers: { origin: canonical.share, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
@@ -1369,7 +1373,7 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   const scopedRepositories = {
     share: shareRoot,
     node: nodeRoot,
-    ...(tc500Joined ? {} : { jsSdk: resolveJsSdkWorktree(process.env, workspaceRoot) }),
+    ...(registryPackageMode ? {} : { jsSdk: resolveJsSdkWorktree(process.env, workspaceRoot) }),
     openCredentials: credentialsRoot,
   };
   const repositoryDigests = {};
