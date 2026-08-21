@@ -17,7 +17,7 @@ import { createServer as httpServer } from "node:http";
 import { createConnection, createServer as netServer } from "node:net";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
@@ -82,6 +82,13 @@ const flowAudits = [];
 const serverTraceIds = [];
 const launchInputDigests = {};
 const gateResults = { exactEmail: false, domain: false, bearer: false, editConflict: false, folder: false, notification: false, denialMatrix: false, senderLibrary: false, browser: false };
+const tc500RegistryPackages = Object.freeze({
+  "@tinycloud/node-sdk": "3.0.0-beta.8",
+  "@tinycloud/sdk-core": "3.0.0-beta.8",
+  "@tinycloud/web-sdk": "3.0.0-beta.8",
+  "@tinycloud/share-sdk": "0.3.0-beta.2",
+  "@tinycloud/share-envelope": "0.2.1-beta.2",
+});
 // TC-307. Per-slice bookkeeping, so "never attempted" stays distinguishable
 // from "attempted and failed" all the way into the artifact.
 const attemptedSlices = new Set();
@@ -242,7 +249,6 @@ async function assertReleaseInputs() {
     { name: "share", path: shareRoot, branch: "skgbafa/tc-500-embedded-share-sdk", pr: "99" },
     { name: "node", path: nodeRoot, branch: "skgbafa/tc-500-embedded-policy-runtime", pr: "226" },
     { name: "opencredentials", path: credentialsRoot, branch: "skgbafa/tc-500-remove-policy-dns", pr: "125" },
-    { name: "js-sdk", path: resolveJsSdkWorktree(process.env, workspaceRoot), branch: "skgbafa/tc-500-embedded-policy-access", pr: "410" },
   ] : tc465Joined ? [
     { name: "share", path: shareRoot, branch: "skgbafa/tc-465-share-receiver-credentials", pr: "78" },
     { name: "node", path: nodeRoot, branch: "skgbafa/tc-470-holder-credential-admission", pr: "210" },
@@ -258,17 +264,36 @@ async function assertReleaseInputs() {
     const { head, digest } = await verifyReleaseInputRepository(repository, { localUnpushedMode });
     launchInputDigests[repository.name] = { head, digest };
   }
-  const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
-  // Build the browser SDK and its workspace dependencies from the selected
-  // source tree without accepting a previously cached bundle. A stale
-  // web-sdk artifact can otherwise hide share-envelope/share-sdk changes and
-  // make the joined browser exercise different code from the direct audit.
-  await runOnce("bunx", ["turbo", "build", "--force", "--filter=@tinycloud/web-sdk..."], sdkRoot);
-  // TC-345. One statement of the rule, shared with startShare() and with
-  // `npm run check:web-sdk-link`; every failure names `npm run link:web-sdk`.
-  const expectedWebSdk = assertWebSdkLink(shareRoot, sdkRoot);
-  await stat(join(expectedWebSdk, "dist/index.mjs"));
-  launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
+  if (tc500Joined) {
+    const manifest = JSON.parse(await readFile(join(shareRoot, "package.json"), "utf8"));
+    const lock = JSON.parse(await readFile(join(shareRoot, "package-lock.json"), "utf8"));
+    for (const [name, version] of Object.entries(tc500RegistryPackages)) {
+      const installedPackagePath = join(shareRoot, "node_modules", ...name.split("/"));
+      const installedManifestPath = join(installedPackagePath, "package.json");
+      const installed = JSON.parse(await readFile(installedManifestPath, "utf8"));
+      const locked = lock.packages?.[`node_modules/${name}`];
+      assert.equal(manifest.dependencies?.[name], version, `${name} manifest version is not the TC-500 registry release`);
+      assert.equal(lock.packages?.[""]?.dependencies?.[name], version, `${name} root lock version is not exact`);
+      assert.equal(locked?.version, version, `${name} installed lock version is not exact`);
+      assert.match(locked?.resolved ?? "", /^https:\/\/registry\.npmjs\.org\//, `${name} lock entry is not registry-backed`);
+      assert.equal(installed.version, version, `${name} installed version is not exact`);
+      assert.equal((await lstat(installedPackagePath)).isSymbolicLink(), false, `${name} is linked instead of registry-installed`);
+      await recordArtifactDigest(`registry:${name}`, installedManifestPath);
+    }
+    checks.push(`TC-500 registry packages verified at exact installed versions with npm registry lock entries: ${JSON.stringify(tc500RegistryPackages)}.`);
+  } else {
+    const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
+    // Build the browser SDK and its workspace dependencies from the selected
+    // source tree without accepting a previously cached bundle. A stale
+    // web-sdk artifact can otherwise hide share-envelope/share-sdk changes and
+    // make the joined browser exercise different code from the direct audit.
+    await runOnce("bunx", ["turbo", "build", "--force", "--filter=@tinycloud/web-sdk..."], sdkRoot);
+    // TC-345. One statement of the rule, shared with startShare() and with
+    // `npm run check:web-sdk-link`; every failure names `npm run link:web-sdk`.
+    const expectedWebSdk = assertWebSdkLink(shareRoot, sdkRoot);
+    await stat(join(expectedWebSdk, "dist/index.mjs"));
+    launchInputDigests.jsSdkArtifacts = { path: join(expectedWebSdk, "dist/index.mjs"), digest: createHash("sha256").update(await readFile(join(expectedWebSdk, "dist/index.mjs"))).digest("hex") };
+  }
   if (!localUnpushedMode) releaseInputsVerified = true;
   checks.push(localUnpushedMode
     ? `Local unpushed preflight verified clean worktrees for ${repositories.map((repository) => repository.name).join(", ")}; committed local heads/digests recorded without requiring upstream/remote/PR match.`
@@ -707,12 +732,19 @@ function assertLoopbackShareUpstreams(launchEnv) {
 }
 
 async function startShare(tempRoot, fixtures) {
-  const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
-  const expectedSdkLink = assertWebSdkLink(shareRoot, sdkRoot);
-  await runOnce("npm", ["run", "build"], sdkRoot);
-  await stat(join(expectedSdkLink, "dist/index.mjs"));
-  await recordArtifactDigest("jsSdkWebRuntime", join(expectedSdkLink, "dist/index.mjs"));
-  checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
+  if (tc500Joined) {
+    const registryWebSdk = join(shareRoot, "node_modules/@tinycloud/web-sdk/dist/index.mjs");
+    await stat(registryWebSdk);
+    await recordArtifactDigest("registryWebSdkRuntime", registryWebSdk);
+    checks.push("Share dependency resolved to the installed @tinycloud/web-sdk registry package.");
+  } else {
+    const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
+    const expectedSdkLink = assertWebSdkLink(shareRoot, sdkRoot);
+    await runOnce("npm", ["run", "build"], sdkRoot);
+    await stat(join(expectedSdkLink, "dist/index.mjs"));
+    await recordArtifactDigest("jsSdkWebRuntime", join(expectedSdkLink, "dist/index.mjs"));
+    checks.push(`Share dependency resolved to the built js-sdk worktree at ${expectedSdkLink}.`);
+  }
   const port = await freePort();
   const trustPath = join(tempRoot, "trust.json");
   const origin = `http://127.0.0.1:${port}`;
@@ -1337,7 +1369,7 @@ async function writeArtifact(status, summary, extraBlockers = [], sliceEvidence 
   const scopedRepositories = {
     share: shareRoot,
     node: nodeRoot,
-    jsSdk: resolveJsSdkWorktree(process.env, workspaceRoot),
+    ...(tc500Joined ? {} : { jsSdk: resolveJsSdkWorktree(process.env, workspaceRoot) }),
     openCredentials: credentialsRoot,
   };
   const repositoryDigests = {};

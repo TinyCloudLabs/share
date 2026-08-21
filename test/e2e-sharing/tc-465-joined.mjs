@@ -18,7 +18,7 @@ const shareRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const tc500 = process.argv.includes("--tc-500");
 const nodeRoot = process.env.TINYCLOUD_NODE_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/tinycloud-node/skgbafa/tc-500-embedded-policy-runtime" : "worktrees/tinycloud-node/skgbafa/tc-470-holder-credential-admission");
-const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/js-sdk/skgbafa/tc-500-embedded-policy-access" : "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
+const sdkRoot = process.env.TINYCLOUD_JS_SDK_WORKTREE ?? join(workspaceRoot, "worktrees/js-sdk/skgbafa/tc-470-policy-credential-presentation");
 const credentialsRoot = process.env.OPENCREDENTIALS_WORKTREE ?? join(workspaceRoot, tc500 ? "worktrees/opencredentials/tc-500-remove-policy-dns" : "worktrees/opencredentials/skgbafa/tc-462-credential-flow-opencredentials-785732297208");
 const credentialsManifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
 const credentialsApp = join(credentialsRoot, "apps/open-credentials");
@@ -461,7 +461,7 @@ async function main() {
   const control = await mkdtemp(join(tmpdir(), tc500 ? "tinycloud-tc500-" : "tinycloud-tc465-"));
   await chmod(control, 0o700);
   try {
-    run("npm", ["run", "link:web-sdk"], shareRoot, { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot });
+    if (!tc500) run("npm", ["run", "link:web-sdk"], shareRoot, { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot });
     run("npm", ["run", "build"], credentialsApp, { VITE_WITNESS_URL: canonical.witness });
     run("cargo", ["build", "--quiet", "--manifest-path", credentialsManifest, "--features", "email-claim-fixture", "--bin", "credential-acquisition-fixture"], credentialsRoot);
     fixture = spawn(join(credentialsRoot, "rust/opencredentials_witness/target/debug/credential-acquisition-fixture"), [], { cwd: credentialsRoot, stdio: ["ignore", "pipe", "inherit"] });
@@ -477,7 +477,7 @@ async function main() {
       SHARING_E2E_EXTERNAL_CONTROL_DIR: control,
       SHARING_E2E_ARTIFACT_PATH: process.env.SHARING_E2E_ARTIFACT_PATH ?? join(workspaceRoot, tc500 ? ".context/tc-500-joined.json" : ".context/tc-465-joined.json"),
       TINYCLOUD_NODE_WORKTREE: nodeRoot,
-      TINYCLOUD_JS_SDK_WORKTREE: sdkRoot,
+      ...(tc500 ? {} : { TINYCLOUD_JS_SDK_WORKTREE: sdkRoot }),
       OPENCREDENTIALS_WORKTREE: credentialsRoot,
     };
     integration = spawn(process.execPath, [join(shareRoot, "test/e2e-sharing/integration.mjs")], { cwd: shareRoot, env: compositionEnv, stdio: ["ignore", "inherit", "inherit"] });
