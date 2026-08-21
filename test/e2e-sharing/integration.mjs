@@ -280,11 +280,22 @@ async function assertReleaseInputs() {
       assert.equal(lock.packages?.[""]?.dependencies?.[name], version, `${name} root lock version is not exact`);
       assert.equal(locked?.version, version, `${name} installed lock version is not exact`);
       assert.match(locked?.resolved ?? "", /^https:\/\/registry\.npmjs\.org\//, `${name} lock entry is not registry-backed`);
+      // A registry URL alone does not pin bytes: without a subresource
+      // integrity value the install is whatever the registry served. The
+      // cutover claims published artifacts, so the lock must carry the hash
+      // that binds them.
+      assert.match(locked?.integrity ?? "", /^sha512-[A-Za-z0-9+/]+={0,2}$/, `${name} lock entry has no registry integrity hash`);
       assert.equal(installed.version, version, `${name} installed version is not exact`);
       assert.equal((await lstat(installedPackagePath)).isSymbolicLink(), false, `${name} is linked instead of registry-installed`);
       await recordArtifactDigest(`registry:${name}`, installedManifestPath);
     }
-    checks.push(`Registry packages verified at exact installed versions with npm registry lock entries: ${JSON.stringify(tc500RegistryPackages)}.`);
+    // The five packages above were vendored candidate tarballs before this
+    // cutover. Proving those five are registry-backed does not prove the tree
+    // stopped consuming vendored candidates: any dependency reintroduced as
+    // `file:vendor/...` would slip past a per-package check.
+    const vendored = Object.entries(lock.packages ?? {}).filter(([, entry]) => typeof entry?.resolved === "string" && entry.resolved.startsWith("file:")).map(([path, entry]) => `${path} -> ${entry.resolved}`);
+    assert.deepEqual(vendored, [], `lockfile still resolves packages from local tarballs: ${vendored.join(", ")}`);
+    checks.push(`Registry packages verified at exact installed versions with integrity-pinned npm registry lock entries and no file: tarball resolutions: ${JSON.stringify(tc500RegistryPackages)}.`);
   } else {
     const sdkRoot = repositories.find((repository) => repository.name === "js-sdk").path;
     // Build the browser SDK and its workspace dependencies from the selected
