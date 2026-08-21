@@ -1,12 +1,5 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
-import type { RecipientFacts, RecipientViewActions } from "./email-share/view.js";
-import { canonicalize, fromBase64Url, toBase64Url, type ContentSource } from "@tinycloud/share-envelope";
-import { SIGNATURE_DOMAINS } from "./email-share/protocol.js";
-import { digestBytes, digestText } from "./email-share/node-verifier.js";
-import type { VerifiedExactEmailShare } from "./email-share/verified-share.js";
-import type { ClaimController, ClaimState } from "./email-share/claim.js";
 import type { ResolveResult } from "./viewer/resolve.js";
-import { createRegisteredPolicyAuthority, createShareV2HolderBindingArtifact, SHARE_V2_PROTOCOL } from "@tinycloud/share-sdk";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
 // <div id="viewer">. There is no non-viewer branch here on purpose: the
@@ -129,96 +122,4 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
-}
-
-async function buildOpenKeyAuthorizationProof(input: {
-  readonly challenge: import("@tinycloud/share-sdk").SharePolicyChallenge;
-  readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2;
-  readonly holderDid: string;
-  readonly credential: string;
-  readonly delegationCid: string;
-  readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
-}): Promise<Record<string, unknown>> {
-  const authority = input.envelope.ownerAuthority;
-  if (authority === undefined) throw new Error("addressed-owner-authority-missing");
-  const nativeAction = (action: string): string => action === "list" ? "tinycloud.kv/list" : action === "edit" ? "tinycloud.kv/put" : "tinycloud.kv/get";
-  const actions = [...new Set(input.envelope.actions.map(nativeAction))].sort();
-  const action = input.envelope.actions.includes("list") ? "tinycloud.kv/list" : input.envelope.actions.includes("edit") ? "tinycloud.kv/put" : "tinycloud.kv/get";
-  const policyCid = input.envelope.authorizationTarget.kind === "policy" ? input.envelope.authorizationTarget.policyCid : "";
-  if (input.credential.length === 0 || input.delegationCid.length === 0) throw new Error("openkey-session-delegation-missing");
-  const credentialDigest = await digestText(input.credential);
-  const enforcerDid = input.challenge.enforcerDid;
-  if (enforcerDid === undefined) throw new Error("share-v2-challenge-enforcer-missing");
-  const presentation = {
-    type: "TinyCloudSharePolicyPresentation",
-    version: 2,
-    challengeId: input.challenge.challengeId,
-    nonce: input.challenge.nonce,
-    shareCid: authority.shareCid,
-    shareId: input.envelope.shareId,
-    delegationCid: input.envelope.delegationCid,
-    policyCid,
-    contentSource: input.envelope.contentSource,
-    contentSourceDigest: input.envelope.contentSourceDigest,
-    holderDid: input.holderDid,
-    targetOrigin: input.envelope.target.origin,
-    nodeAudience: input.envelope.target.nodeAudience,
-    enforcerDid,
-    credentialDigest,
-    action,
-    actions,
-    resource: input.envelope.resource.path.replace(/\/$/, ""),
-    requestBodyDigest: input.challenge.requestBodyDigest,
-    issuedAt: new Date().toISOString(),
-    expiresAt: input.challenge.expiresAt,
-    jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
-  };
-  const jti = presentation.jti;
-  const signedBytes = new TextEncoder().encode(`${SHARE_V2_PROTOCOL.sessionDomain}${canonicalize(presentation)}`);
-  const signature = toBase64Url(await input.sign(signedBytes));
-  const presentationProof = { alg: "EdDSA", kid: `${input.holderDid}#${input.holderDid.slice("did:key:".length)}`, signature };
-  const holderBinding = await createShareV2HolderBindingArtifact({
-    holderDid: input.holderDid,
-    sign: input.sign,
-    message: {
-      type: SHARE_V2_PROTOCOL.holderBindingType,
-      version: SHARE_V2_PROTOCOL.holderBindingVersion,
-      holderDid: input.holderDid,
-      challengeId: input.challenge.challengeId,
-      challengeNonce: input.challenge.nonce,
-      shareId: input.envelope.shareId,
-      policyCid,
-      credentialDigest,
-      delegationCid: input.delegationCid,
-      targetOrigin: input.envelope.target.origin,
-      nodeAudience: input.envelope.target.nodeAudience,
-      enforcerDid,
-      expiresAt: input.challenge.expiresAt,
-      jti,
-    },
-  });
-  return { presentation, presentationProof, proof: presentationProof, nonce: input.challenge.nonce, credential: input.credential, holderDid: input.holderDid, holderBinding, sign: input.sign };
-}
-
-async function buildV2Presentation(input: { readonly challenge: import("@tinycloud/share-sdk").SharePolicyChallenge; readonly envelope: import("@tinycloud/share-envelope").ShareEnvelopeV2; readonly policy: Record<string, unknown>; readonly invite: { readonly invitationId: string; readonly claimSecret: string }; readonly shareCid: string; readonly publicConfig: Awaited<ReturnType<typeof import("./email-share/config.js").loadSharePublicConfig>>; readonly holder: import("./email-share/claim.js").HolderKey }): Promise<import("@tinycloud/share-sdk").SharePresentationMaterial> {
-  const ownerOuter = input.envelope.ownerAuthority?.outerEnvelope as Record<string, unknown> | undefined;
-  const outerSource = ownerOuter?.contentSource as Record<string, unknown> | undefined;
-  const source = (outerSource === undefined ? input.policy.contentSource : { ...outerSource, action: input.challenge.action }) as ContentSource;
-  const recipientEmail = input.envelope.deliveryEmail ?? "";
-  if (source.kind !== "kv" && source.kind !== "sql") throw new Error("We couldn't read this share. Ask the sender for a fresh link.");
-  const [{ issueEmailClaimCredential }, { createHttpTransport }, { credentialTrustFromConfig }] = await Promise.all([
-    import("./email-share/claim.js"), import("./email-share/transport.js"), import("./email-share/config.js"),
-  ]);
-  const transport = createHttpTransport({ nodeOrigin: input.publicConfig.nodeOrigin, credentialsOrigin: input.publicConfig.credentialsOrigin });
-  const claimShare = {
-    shareId: input.envelope.shareId, shareCid: input.envelope.ownerAuthority?.shareCid ?? input.shareCid, policyCid: input.envelope.authorizationTarget.kind === "policy" ? input.envelope.authorizationTarget.policyCid : "", recipientEmail, recipientMatcher: input.policy.recipientMatcher as import("@tinycloud/share-envelope").RecipientMatcher, recipientHint: recipientEmail === "" ? "verified domain mailbox" : `${recipientEmail.slice(0, 1)}***@${recipientEmail.split("@").at(-1) ?? ""}`, expiry: input.envelope.expiry, nodeOrigin: input.envelope.target.origin, nodeAudience: input.envelope.target.nodeAudience, requestOrigin: input.publicConfig.shareOrigin, delegationCid: input.envelope.delegationCid, authorityMaterialHandle: input.envelope.authorityMaterialHandle, authorityMaterialDigest: input.envelope.authorityMaterialDigest, contentSource: source, contentSourceDigest: ownerOuter?.contentSourceDigest as string ?? input.envelope.contentSourceDigest, action: source.action, resource: source.path, trustedNode: { targetOrigin: input.publicConfig.nodeOrigin, nodeAudience: input.publicConfig.nodeAudience, invitationKid: input.publicConfig.nodeInvitationKid, invitationPublicKey: fromBase64Url(input.publicConfig.nodeInvitationPublicKey), keyVersion: input.publicConfig.nodeKeyVersion, enabled: input.publicConfig.nodeEnabled },
-  } as VerifiedExactEmailShare;
-  const claim = await issueEmailClaimCredential({ share: claimShare, invitationId: input.invite.invitationId, mailboxProof: input.invite.claimSecret, method: "magic", holder: input.holder, transport, credentialTrust: credentialTrustFromConfig(input.publicConfig) });
-  const credentialDigest = await digestText(claim.credential);
-  const claimantEmail = claim.email;
-  const holderBinding = { type: "TinyCloudEmailClaimHolderBinding", version: 1, redemptionId: input.envelope.shareId, invitationId: input.shareCid, claimNonce: input.challenge.nonce, challengeNonce: input.challenge.nonce, shareCid: input.envelope.ownerAuthority?.shareCid ?? input.shareCid, shareId: input.envelope.shareId, policyCid: claimShare.policyCid, contentSource: source, contentSourceDigest: ownerOuter?.contentSourceDigest as string ?? input.envelope.contentSourceDigest, emailHash: await digestText(claimantEmail), holderDid: input.holder.did, credentialDigest, targetOrigin: input.envelope.target.origin, nodeAudience: input.envelope.target.nodeAudience, audience: input.envelope.target.nodeAudience, enforcerDid: input.challenge.enforcerDid, requestOrigin: input.envelope.target.origin, challengeId: input.challenge.challengeId, challengeRequestDigest: input.challenge.requestBodyDigest, issuedAt: new Date().toISOString(), expiresAt: input.challenge.expiresAt, jti: toBase64Url(crypto.getRandomValues(new Uint8Array(16))) };
-  const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", input.holder.privateKey, new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${canonicalize(holderBinding)}`)));
-  const holderJcs = canonicalize(holderBinding);
-  const holderSignedBytes = new TextEncoder().encode(`${SIGNATURE_DOMAINS.holderBinding}${holderJcs}`);
-  return { holderDid: input.holder.did, credential: claim.credential, credentialDigest, holderBinding: { name: "holderBinding", domain: SIGNATURE_DOMAINS.holderBinding, signerDid: input.holder.did, message: holderBinding, jcs: holderJcs, messageDigest: await digestText(holderJcs), signedBytesDigest: await digestBytes(holderSignedBytes), signatureDigest: await digestBytes(signature), signature: { alg: "EdDSA", kid: `${input.holder.did}#${input.holder.did.slice("did:key:".length)}`, value: toBase64Url(signature) } }, proof: { alg: "EdDSA", kid: `${input.holder.did}#${input.holder.did.slice("did:key:".length)}`, signature: toBase64Url(signature) }, sign: async (bytes) => new Uint8Array(await crypto.subtle.sign("Ed25519", input.holder.privateKey, bytes as unknown as BufferSource)), email: claimantEmail };
 }

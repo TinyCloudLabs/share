@@ -61,7 +61,7 @@ function withSecurityHeaders(bundle: ShareTrustBundle, path: string, result: Res
 }
 
 function requiresHttps(path: string): boolean {
-  return path.startsWith("/api/") || path === "/delegate" || path === "/invoke" || path.startsWith("/registry") || path.startsWith("/share/") || path.startsWith("/v1/");
+  return path.startsWith("/api/") || path === "/delegate" || path === "/invoke" || path.startsWith("/registry") || path.startsWith("/v1/");
 }
 
 function rejectPlaintext(request: Request, path: string): Response | undefined {
