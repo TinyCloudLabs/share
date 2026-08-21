@@ -75,6 +75,10 @@ assert.doesNotMatch(
 assert.doesNotMatch(workflow, /share-api:sha-\$\{IMAGE_WORKFLOW_SHA\}/);
 assert.match(compose, /share-api-state:\/var\/lib\/tinycloud\/share/);
 assert.match(compose, /SHARE_TRUST_BUNDLE_SOURCE: committed/);
+assert.match(
+  compose,
+  /SHARE_NODE_ENFORCER_DID: did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi/,
+);
 assert.doesNotMatch(compose, /SHARE_TRUST_BUNDLE_BASE64:/);
 assert.match(
   workflow,

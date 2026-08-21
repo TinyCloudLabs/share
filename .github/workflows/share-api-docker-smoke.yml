@@ -34,6 +34,7 @@ jobs:
             .services["share-api"].ports == null and
             .services["share-api"].environment.SHARE_SENDER_ENABLED == "true" and
             .services["share-api"].environment.SHARE_ACCOUNTLESS_RECEIVER_ENABLED == "true" and
+            .services["share-api"].environment.SHARE_NODE_ENFORCER_DID == "did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi" and
             .services["share-api"].environment.SHARE_BINDING_STORE_PATH == "/var/lib/tinycloud/share/bindings.ndjson" and
             (.services["share-api"].environment | has("SHARE_SENDER_PRIVATE_KEY") | not) and
             (.services["share-api"].environment | has("SHARE_SENDER_CAPABILITY_JSON") | not) and
@@ -80,6 +81,7 @@ jobs:
             -e SHARE_SENDER_ENABLED=true \
             -e SHARE_ACCOUNTLESS_RECEIVER_ENABLED=true \
             -e SHARE_TRUST_BUNDLE_SOURCE=committed \
+            -e SHARE_NODE_ENFORCER_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi \
             -e SHARE_BINDING_STORE_PATH=/var/lib/tinycloud/share/bindings.ndjson \
             -e SHARE_SENDER_ROOT_KEY_PATH=/var/lib/tinycloud/share/sender-root.key \
             -v "$RUNNER_TEMP/share-enabled-state:/var/lib/tinycloud/share" \
@@ -97,6 +99,7 @@ jobs:
             .shareOrigin == $committed[0].shareOrigin and
             .nodeOrigin == $committed[0].nodeOrigin and
             .nodeAudience == $committed[0].nodeAudience and
+            .enforcerDid == "did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi" and
             .credentialsOrigin == $committed[0].credentialsOrigin and
             .emailOrigin == $committed[0].emailOrigin and
             .registryOrigin == $committed[0].registryOrigin and
