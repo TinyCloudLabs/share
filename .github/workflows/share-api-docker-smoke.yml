@@ -69,7 +69,7 @@ jobs:
           curl -fsS http://127.0.0.1:8787/health/readiness
           test "$(curl -fsS http://127.0.0.1:8787/health/readiness)" = '{"authReady":true,"senderReady":false}'
           test "$(curl -sS -o /tmp/nonce.json -w '%{http_code}' http://127.0.0.1:8787/api/share/auth/openkey/nonce)" = 400
-          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 404
+          test "$(curl -sS -o /tmp/sender.json -w '%{http_code}' -X POST http://127.0.0.1:8787/share/v1/invitations/authorize -H 'content-type: application/json' --data '{}')" = 405
       # TC-372. Boot the image with NO trust material in the environment at all
       # and prove it publishes the committed production trust, unchanged.
       - name: Boot the exact-email default from committed trust
