@@ -151,7 +151,7 @@ export async function verifyDeliveryAuthorization(receipt: DeliveryReceipt, trus
       registryUrl: trust.registryOrigin,
       ownerDid: envelope.policy.ownerDid,
       nodeOrigin: envelope.target.origin,
-      nodeDid: envelope.target.nodeAudience,
+      nodeDid: envelope.attestedEnforcerBinding.nodeAudience,
       ...(trust.fetch === undefined ? {} : { fetch: trust.fetch }),
     });
   } catch {

@@ -21,7 +21,11 @@ describe("Share public routing config", () => {
 
   it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
     const headers = readFileSync("public/_headers", "utf8");
-    expect(headers).toContain("connect-src 'self' https:;");
-    expect(headers).not.toContain("https://tee.node.tinycloud.xyz");
+    const documents = ["share.html", "viewer.html"].map((path) => readFileSync(path, "utf8"));
+    for (const policy of [headers, ...documents]) {
+      expect(policy).toContain("connect-src 'self' https:;");
+      expect(policy).not.toContain("https://tee.node.tinycloud.xyz");
+      expect(policy).not.toContain("http://127.0.0.1:");
+    }
   });
 });

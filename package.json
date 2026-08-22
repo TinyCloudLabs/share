@@ -15,7 +15,8 @@
     "link:web-sdk": "node scripts/link-web-sdk.mjs",
     "check:web-sdk-link": "node scripts/link-web-sdk.mjs --check",
     "test:e2e:artifact": "node test/e2e-html-artifact.mjs",
-    "test:e2e:native-bearer": "node scripts/link-web-sdk.mjs --check --require-env && npm run build && tsx test/e2e-native-bearer/integration.mjs",
+    "test:e2e:native-bearer": "node scripts/link-web-sdk.mjs --check && npm run build && tsx test/e2e-native-bearer/integration.mjs",
+    "test:e2e:native-addressed": "node scripts/link-web-sdk.mjs --check && tsx test/e2e-native-addressed/integration.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

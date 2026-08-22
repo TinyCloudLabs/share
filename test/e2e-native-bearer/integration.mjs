@@ -24,6 +24,16 @@ function config() {
   return JSON.stringify({ version: "tinycloud.share/config-v2", shareOrigin: "https://share.example", registryOrigin: "https://registry.example", credentialsOrigin: "https://credentials.example", emailOrigin: "https://email.example", accountlessReceiverEnabled: true, environment: "test" });
 }
 
+function advertiseHttpsNode(shareUrl, actualOrigin) {
+  const encoded = new URL(shareUrl).hash.slice("#tc1=".length);
+  const token = decodeURIComponent(encoded);
+  assert(token.startsWith("tc1:"), "native bearer token prefix is invalid");
+  const payload = JSON.parse(Buffer.from(token.slice("tc1:".length), "base64url").toString("utf8"));
+  assert.equal(payload.host, actualOrigin, "native bearer token did not bind the hermetic owner node");
+  payload.host = configuredNodeOrigin;
+  return `#tc1=${encodeURIComponent(`tc1:${Buffer.from(JSON.stringify(payload)).toString("base64url")}`)}`;
+}
+
 async function startViewer(ownerOrigin) {
   let server;
   server = createServer(async (request, response) => {
@@ -33,10 +43,7 @@ async function startViewer(ownerOrigin) {
     }
     const file = pathname === "/viewer" ? "viewer.html" : pathname.replace(/^\//, "") || "index.html";
     try {
-      let body = await readFile(resolve(root, "dist", file));
-      if (file === "viewer.html") {
-        body = Buffer.from(body.toString("utf8").replace("connect-src 'self'", `connect-src 'self' ${configuredNodeOrigin} ${ownerOrigin}`));
-      }
+      const body = await readFile(resolve(root, "dist", file));
       response.writeHead(200, { "content-type": mime[extname(file)] ?? "application/octet-stream" }); response.end(body);
     } catch { response.writeHead(404); response.end("not found"); }
   });
@@ -93,7 +100,10 @@ async function main() {
     assert.deepEqual(record.resource, { kind: "exact", path });
     assert.deepEqual(record.actions, ["tinycloud.kv/get"]);
 
-    const url = `${viewer.origin}/viewer${new URL(share.url).hash}`;
+    // The hermetic Node listens on HTTP, but the production CSP intentionally
+    // admits only HTTPS owner nodes. Advertise an HTTPS origin in the portable
+    // link and route that browser request to the same hermetic Node below.
+    const url = `${viewer.origin}/viewer${advertiseHttpsNode(share.url, fixture.host)}`;
     const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
     try {
       const traffic = [];

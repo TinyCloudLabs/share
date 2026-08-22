@@ -288,6 +288,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
   const node = await resolveOwnerShareNode(tinycloud);
+  // Addressed recipients and api.share verify this session-signed discovery
+  // record before admitting credentials or sending email. Publish it before
+  // content storage so a registry failure cannot leave an orphaned object.
+  await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
   const shareId = crypto.randomUUID();
   const selectedSource = contentSource(model.content)?.kind === "kv" ? contentSource(model.content) as Extract<NonNullable<ReturnType<typeof contentSource>>, { kind: "kv" }> : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
