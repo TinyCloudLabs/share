@@ -90,7 +90,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const shareHref = launch.shareHref;
     launch.shareHref = "";
     const shareConfig = await config.loadSharePublicConfig();
-    if (new URL(shareHref).pathname === "/" && new URL(shareHref).search === "" && new URL(shareHref).hash.startsWith("#tc1=")) {
+    if (new URL(shareHref).pathname === "/viewer" && new URL(shareHref).search === "" && new URL(shareHref).hash.startsWith("#tc1=")) {
       const [{ createShareReceiverClient }, { receiveNativeBearerAccess }] = await Promise.all([
         import("./share/receiver.js"),
         import("./viewer/native-bearer.js"),

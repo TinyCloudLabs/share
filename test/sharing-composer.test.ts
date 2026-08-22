@@ -539,7 +539,7 @@ describe("share composer access controls", () => {
     vi.spyOn(Date, "now").mockReturnValue(fixed);
 
     const puts = vi.fn(async () => ({ ok: true }));
-    const generate = vi.fn(async () => ({ ok: true as const, data: { token: "delegation" } }));
+    const generate = vi.fn(async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date(expectedExpiry) } }));
 
     const root = document.createElement("div");
     document.body.append(root);
@@ -547,7 +547,7 @@ describe("share composer access controls", () => {
     mountShareComposer(root, {
       ...baseOptions(),
       now: () => fixed,
-      tinycloud: { kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn() } } as never,
+      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn() } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
@@ -566,7 +566,7 @@ describe("share composer access controls", () => {
     expect(captured!.share.expiresAt).toBe(expectedExpiry);
     expect(puts).toHaveBeenCalledOnce();
     expect(generate).toHaveBeenCalledWith(expect.objectContaining({ actions: ["tinycloud.kv/get"], expiry: new Date(expectedExpiry) }));
-    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/#tc1=delegation");
+    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
   });
 
   it("publishes a non-UTF-8 file through the real link-only creation path", async () => {
@@ -577,7 +577,7 @@ describe("share composer access controls", () => {
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
-      tinycloud: { kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation" } }), receive: vi.fn() } } as never,
+      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }), receive: vi.fn() } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
@@ -593,7 +593,7 @@ describe("share composer access controls", () => {
     await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
     expect(captured!.model.content).toMatchObject({ kind: "file" });
     expect(puts).toHaveBeenCalledWith(expect.any(String), new Uint8Array([0, 255, 1]), { contentType: "application/octet-stream" });
-    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/#tc1=delegation");
+    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
   });
 
   it("a link-only share never persists an ungranted action", async () => {

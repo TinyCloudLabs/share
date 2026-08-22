@@ -263,14 +263,14 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   // only persistence and SharingService as its only authority protocol.  The
   // random object key makes the delegation an exact, single-object grant.
   const nativePath = `${SHARE_APPLICATION_PREFIX}shares/${crypto.randomUUID()}/${selectedFilePath(file)}`;
-  const url = await composeNativeBearer(options.tinycloud, {
+  const nativeShare = await composeNativeBearer(options.tinycloud, {
     path: nativePath,
     bytes,
     expiresAt: new Date(model.expiresAt),
     viewerOrigin: options.origin,
     contentType: file.type.trim() || "application/octet-stream",
   });
-  return { url, cid: nativePath, format: model.linkFormat, expiresAt: model.expiresAt };
+  return { url: nativeShare.url, cid: nativePath, format: model.linkFormat, expiresAt: nativeShare.expiresAt.toISOString(), delegationCid: nativeShare.delegationCid };
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
