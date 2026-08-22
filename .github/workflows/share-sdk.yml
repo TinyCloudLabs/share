@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: TinyCloudLabs/js-sdk
-          ref: 891891d23c177a8064d5d888e49380c45ba0a4e5
+          ref: 7ad5095de316f0e5242ebeb652df7c2e4f3bdfb3
           path: .cross-repo/js-sdk
       # Bun otherwise discovers Share's parent workspace and installs the
       # published SDK dependencies inside this nested checkout. Move the
@@ -44,6 +44,7 @@ jobs:
       - name: Build reviewed SDK packages
         working-directory: ${{ runner.temp }}/tinycloud-js-sdk
         run: |
+          bun run --cwd packages/bootstrap build
           bun run --cwd packages/sdk-services build
           bun run --cwd packages/share-envelope build
           bun run --cwd packages/share-sdk build
