@@ -5,6 +5,7 @@ export interface CapturedLaunch {
 
 const LAUNCH = /^#k=([A-Za-z0-9_-]{43})(?:&i=([A-Za-z0-9_-]{22})(?:&c=([A-Za-z0-9_-]{43}))?)?$/;
 const INLINE_LAUNCH = /^#v=2&p=([A-Za-z0-9_-]+)$/;
+const NATIVE_LAUNCH = /^#tc1=([^&]+)$/;
 const MAX_INLINE_LAUNCH_HASH = 700_000;
 const RELOAD_KEY_PREFIX = "tinycloud.share.bearer-key.v1:";
 
@@ -37,6 +38,19 @@ export function captureAndScrubLaunch(loc: Location, history: History, storage?:
   // query as well as the fragment before any later code can observe history.
   history.replaceState(null, "", loc.pathname);
   if (loc.search !== "") return undefined;
+  // Native SharingService links are rooted at the viewer and carry all
+  // receiver key/delegation material in one opaque fragment. Do not accept
+  // pre-cutover path or query variants.
+  if (loc.pathname === "/") {
+    const native = NATIVE_LAUNCH.exec(hash);
+    if (native !== null) {
+      const parsed = new URL(href);
+      const token = new URLSearchParams(hash.slice(1)).get("tc1");
+      if (token === null || token.length === 0) return undefined;
+      parsed.hash = `tc1=${encodeURIComponent(token)}`;
+      return { shareHref: parsed.href };
+    }
+  }
   if (hash === "" && /^\/s\/b[a-z2-7]+$/.test(loc.pathname)) {
     return { shareHref: recalledBearerHref(storage, href, loc.pathname) ?? href };
   }

@@ -96,9 +96,7 @@ function renderComposer(current: SenderApp, token: number): void {
       persistShare: async ({ share }) => {
         if (share.record !== undefined) {
           await current.history.save(share.record);
-          return;
         }
-        throw new Error("share publisher returned no canonical history record");
       },
     });
   });

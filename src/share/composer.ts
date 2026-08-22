@@ -7,10 +7,10 @@ import { createTinyCloudUploader, MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, 
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, fromBase64Url, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
-import { historyRecordForPublishedShare, publishAddressedShare, publishShare, type SenderShareRecord, type ShareUploadInput } from "@tinycloud/share-sdk";
+import { historyRecordForPublishedShare, publishAddressedShare, type SenderShareRecord, type ShareUploadInput } from "@tinycloud/share-sdk";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { requestAddressedDelivery } from "./delivery.js";
-import { plaintextHistoryRecord, publishPlaintextShare } from "./plaintext-share.js";
+import { composeNativeBearer } from "./native-bearer.js";
 
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
@@ -257,44 +257,20 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   }
   if (files.length !== 1) throw fail("linkOnlyFolder", "link-only sharing supports one exact file");
   if (file === undefined) throw fail("content", "link-only share has no file");
+  if (options.tinycloud === undefined) throw fail("session", "TinyCloud owner session is unavailable");
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const registryBaseUrl = `${options.registryOrigin ?? options.origin}/api/share/link-only/registry`;
-  const fetchFn = options.fetchFn ?? globalThis.fetch;
-  const uploadBlob = async (input: ShareUploadInput): Promise<{ readonly cid: string; readonly deleteAfter: string }> => {
-    const response = await fetchFn(`${registryBaseUrl}/blobs`, {
-      method: "POST",
-      credentials: "include",
-      cache: "no-store",
-      redirect: "error",
-      referrerPolicy: "no-referrer",
-      headers: { "content-type": "application/vnd.ipld.raw", "if-none-match": "*", "x-delete-after": input.deleteAfter },
-      body: input.blob as BodyInit,
-    });
-    if (response.status === 401 || response.status === 403) throw fail("session", "your Share session is no longer authorized");
-    if (!response.ok) throw fail("save", "the Share registry rejected the encrypted blob");
-    const body = await response.json() as { readonly cid?: unknown; readonly deleteAfter?: unknown };
-    if (body.cid !== input.cid || typeof body.deleteAfter !== "string") throw fail("save", "the Share registry returned an invalid upload receipt");
-    return { cid: input.cid, deleteAfter: body.deleteAfter };
-  };
-  if (!model.encryption) {
-    const plain = await publishPlaintextShare({ bytes, filename: file.name, mediaType: file.type.trim() || "application/octet-stream", expiresAt: model.expiresAt, origin: options.origin, inline: model.linkFormat === "inline", upload: async (cid, blob, deleteAfter) => { await uploadBlob({ cid, blob, deleteAfter, contentLength: blob.byteLength }); } });
-    const record = plaintextHistoryRecord({ cid: plain.cid, url: plain.url, filename: file.name, origin: options.origin, expiresAt: model.expiresAt, registeredAt: new Date(options.now?.() ?? Date.now()).toISOString() });
-    return { url: plain.url, cid: plain.cid, format: model.linkFormat, expiresAt: model.expiresAt, record };
-  }
-  const result = await publishShare({
-    source: bytes,
-    filename: file.name,
-    mediaType: file.type.trim() || "application/octet-stream",
-    allowBinary: true,
-    target: { kind: "bearer" },
+  // The bearer slice uses the owner's authenticated applications space as its
+  // only persistence and SharingService as its only authority protocol.  The
+  // random object key makes the delegation an exact, single-object grant.
+  const nativePath = `${SHARE_APPLICATION_PREFIX}shares/${crypto.randomUUID()}/${selectedFilePath(file)}`;
+  const url = await composeNativeBearer(options.tinycloud, {
+    path: nativePath,
+    bytes,
     expiresAt: new Date(model.expiresAt),
-    origin: options.origin,
-    inline: model.linkFormat === "inline",
-    ...(options.now === undefined ? {} : { now: options.now }),
-    registryBaseUrl,
-    uploadBlob,
+    viewerOrigin: options.origin,
+    contentType: file.type.trim() || "application/octet-stream",
   });
-  return { url: result.url, cid: result.link.cid, format: model.linkFormat, expiresAt: result.metadata.expiresAt, record: historyRecordForPublishedShare(result) };
+  return { url, cid: nativePath, format: model.linkFormat, expiresAt: model.expiresAt };
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {

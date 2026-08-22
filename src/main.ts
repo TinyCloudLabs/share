@@ -90,6 +90,30 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const shareHref = launch.shareHref;
     launch.shareHref = "";
     const shareConfig = await config.loadSharePublicConfig();
+    if (new URL(shareHref).pathname === "/" && new URL(shareHref).search === "" && new URL(shareHref).hash.startsWith("#tc1=")) {
+      const [{ createShareReceiverClient }, { receiveNativeBearerAccess }] = await Promise.all([
+        import("./share/receiver.js"),
+        import("./viewer/native-bearer.js"),
+      ]);
+      // The fragment was already captured and scrubbed before config or this
+      // SDK construction. Receiving the capability is the first network work.
+      const access = await receiveNativeBearerAccess(createShareReceiverClient(shareConfig, REGISTRY_BASE_URL).sharing, shareHref);
+      const { presentationEnvelope } = await import("./viewer/resolve.js");
+      await presentShare(root, {
+        state: "ok",
+        access: "bearer",
+        senderVerified: false,
+        contentBytes: access.bytes,
+        envelope: presentationEnvelope({
+          shareId: access.path,
+          target: { kind: "bearer", origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, spaceId: "applications" },
+          resource: { kind: "exact", path: access.path },
+          display: access.path.split("/").at(-1) === undefined ? {} : { filename: access.path.split("/").at(-1)! },
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        }),
+      }, { shareUrl: shareHref });
+      return;
+    }
     const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node

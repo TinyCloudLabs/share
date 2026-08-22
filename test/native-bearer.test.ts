@@ -11,10 +11,10 @@ describe("TinyCloud-native bearer happy path", () => {
         calls.push(`delegate:${params.path}:${params.actions.join(",")}`);
         return { ok: true as const, data: { token: "tc1:bearer" } };
       },
-      receive: async (token: string) => ({ ok: true as const, data: { path: "applications/a.bin", kv: { get: async (path: string) => { calls.push(`get:${token}:${path}`); return { ok: true as const, data: { data: bytes } }; } } } }),
+      receive: async (token: string) => ({ ok: true as const, data: { path: "xyz.tinycloud.share/shares/a.bin", kv: { get: async (path: string) => { calls.push(`get:${token}:${path}`); return { ok: true as const, data: { data: bytes } }; } } } }),
     };
-    const url = await composeNativeBearer({ kv: { put: async (path, value) => { calls.push(`put:${path}:${Array.from(value)}`); return { ok: true }; } }, sharing }, { path: "applications/a.bin", bytes, expiresAt: new Date("2030-01-01T00:00:00Z"), viewerOrigin: "https://viewer.example" });
+    const url = await composeNativeBearer({ kvForSpace: (space) => ({ put: async (path, value) => { calls.push(`put:${space}:${path}:${Array.from(value)}`); return { ok: true }; } }), sharing }, { path: "xyz.tinycloud.share/shares/a.bin", bytes, expiresAt: new Date("2030-01-01T00:00:00Z"), viewerOrigin: "https://viewer.example" });
     await expect(receiveNativeBearer(sharing, url)).resolves.toEqual(bytes);
-    expect(calls).toEqual(["put:applications/a.bin:0,1,2,255", "delegate:applications/a.bin:tinycloud.kv/get", "get:tc1:bearer:applications/a.bin"]);
+    expect(calls).toEqual(["put:applications:xyz.tinycloud.share/shares/a.bin:0,1,2,255", "delegate:xyz.tinycloud.share/shares/a.bin:tinycloud.kv/get", "get:tc1:bearer:"]);
   });
 });

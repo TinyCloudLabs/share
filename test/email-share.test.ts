@@ -124,6 +124,15 @@ describe("exact-email share UI protocol boundaries", () => {
     expect(captureAndScrubLaunch(query as unknown as Location, { replaceState: vi.fn() } as unknown as History)).toBeUndefined();
   });
 
+  it("captures and scrubs a fragment-only native share before any receiver work", () => {
+    const loc = new URL("https://share.tinycloud.xyz/#tc1=opaque-private-key-and-delegation");
+    const replaceState = vi.fn();
+    expect(captureAndScrubLaunch(loc as unknown as Location, { replaceState } as unknown as History)).toEqual({ shareHref: loc.href });
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/");
+    expect(captureAndScrubLaunch(new URL("https://share.tinycloud.xyz/?tc1=opaque-private-key-and-delegation") as unknown as Location, { replaceState: vi.fn() } as unknown as History)).toBeUndefined();
+    expect(captureAndScrubLaunch(new URL("https://share.tinycloud.xyz/share/tc1=opaque-private-key-and-delegation") as unknown as Location, { replaceState: vi.fn() } as unknown as History)).toBeUndefined();
+  });
+
   it("preserves a bounded inline v2 launch before the viewer imports", () => {
     const payload = "A".repeat(256);
     const loc = new URL(`https://share.tinycloud.xyz/s/inline#v=2&p=${payload}`);
