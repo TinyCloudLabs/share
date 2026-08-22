@@ -1,10 +1,7 @@
-import { LinkOnlyShareError } from "./link-only.js";
-
 /** Sender-facing failure vocabulary. Raw error details only reach console.debug. */
 export type SenderFailureKind =
   | "session"
   | "content"
-  | "format"
   | "account"
   | "source"
   | "rejected"
@@ -39,7 +36,6 @@ export type SenderFailureKind =
 export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   session: "Your session expired. Reload and sign in again.",
   content: "Pick the file you want to share.",
-  format: "This share can't be made self-contained. Use the short link instead.",
   account: "Your account isn't set up for sharing yet. Contact support.",
   source: "You don't have access to that file any more. Pick another one.",
   rejected: "We couldn't create that link. Try again, or pick a different file.",
@@ -87,9 +83,6 @@ export function senderFailureKind(error: unknown): SenderFailureKind {
 }
 
 export function senderFailureMessage(error: unknown): string {
-  // Link-only's authored messages are already swept human copy and are more
-  // specific than its four-value kind enum. New messages must stay free of protocol vocabulary.
-  if (error instanceof LinkOnlyShareError) return error.message;
   return SENDER_FAILURE[senderFailureKind(error)];
 }
 

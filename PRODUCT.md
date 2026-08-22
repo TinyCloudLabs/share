@@ -1,33 +1,26 @@
 # Product
 
-## Register
-
-product
-
 ## Users
 
-An OpenKey-authenticated sender can upload or author text and binary resources, choose bearer or addressed policies, read/list/edit permissions, compact or inline formats, and optional delivery. After a share reaches its canonical state, one sender-private encrypted history entry is written in the authenticated `share` space. The sender home lists those entries with cursor pagination and can decrypt the exact link on demand to copy or open it. A recipient opening that link from a clean browser still receives the established fragment protocol and completes the addressed claim flow when required.
+An OpenKey-authenticated sender selects or uploads a file, chooses bearer or addressed access, and creates a revocable TinyCloud delegation. The sender's encrypted Vault keeps the canonical share record. A recipient opens the link, satisfies any recipient policy, and reads the encrypted content from the owner's TinyCloud node.
 
-## Product Purpose
+## Product purpose
 
-TinyCloud Sharing encrypts selected content in the sender's browser, stores CID-addressed encrypted bytes, and returns compact or inline links whose fragment holds the bearer or envelope material. The sender library stores the complete link and sender-facing metadata only inside a network-encrypted Vault value; public keys, metadata, bindings, logs, analytics, and unauthenticated responses contain no link fragment, claim secret, exact-email policy, or private authority material. Success means the sender can later recover the identical link in a fresh browser signed into the same OpenKey account. Links created before sender history was introduced are not backfilled and are recoverable only when the sender still possesses the complete URL and explicitly imports it.
+TinyCloud Sharing demonstrates TinyCloud itself: content stays in the owner's TinyCloud space, access is delegated through TinyCloud, invocation is enforced by the owner's node, and revocation acts on the delegation rather than on a copied blob.
 
-## Brand Personality
+Bearer links are secret `/viewer#tc1=…` capabilities. Addressed/email links are public `/viewer?tc2=…` signed policy envelopes; possession is necessary for discovery but not sufficient for access. Email delivery is optional and occurs only after the owner node authorizes the exact recipient, resource, link, label, issuer/audience, short expiry, and single-use nonce.
 
-Quietly technical, trustworthy, humane. The experience should feel like a careful security tool made legible for people: explicit about boundaries, calm during waiting, and warm without pretending that cryptography is magic.
+There is no Share-host content database, R2/IPFS share blob store, capability registry, binding service, signing proxy, policy resolver, or content proxy. Pre-cutover links are not supported.
 
-## Anti-references
+## Brand personality
 
-Avoid generic SaaS dashboards, fake success celebrations, unverifiable delivery claims, opaque security jargon, decorative gradients, and any design that makes a destructive or irreversible action look like a casual link click.
+Quietly technical, trustworthy, and humane. State security boundaries plainly and never imply that creating a link sent an email or that an email granted access.
 
-## Design Principles
+## Design principles
 
-- Tell the truth about each boundary: a possession link is the authority, and creating one does not send an email.
-- Make the safe path obvious: one primary action, scoped facts, and recovery guidance beside every failure.
-- Keep secrets and protocol mechanics out of view code; render only derived, user-safe summaries.
-- Give exact scope a human shape: show the selected file, read-only possession semantics, and expiry before creation.
-- Treat accessibility and low-connectivity behavior as part of the security model, not polish after the fact.
-
-## Accessibility & Inclusion
-
-Target WCAG 2.2 AA. Use semantic labels, keyboard-first controls, visible focus, status announcements, text alternatives for diagrams, high-contrast state colors, and reduced-motion behavior. Never rely on color alone. Support narrow mobile layouts and browser capability failures without trapping the user.
+- Make the owner's TinyCloud node visibly authoritative.
+- Keep bearer secrets in fragments and out of network requests.
+- Treat addressed policy metadata as public and content encryption as the confidentiality boundary.
+- Show exact resource, recipient, permissions, expiry, and revocation state.
+- Make failed email delivery preserve the already-created share.
+- Target WCAG 2.2 AA and keyboard-first, narrow-screen operation.

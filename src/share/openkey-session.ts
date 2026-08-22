@@ -2,8 +2,6 @@ import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { createOpenKeyCallbackSigningStrategy, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
-import type { ContentSource, SenderScope } from "../email-share/protocol.js";
-import type { SenderPolicy } from "../email-share/sender.js";
 import { fail } from "./sender-failure.js";
 
 export interface OpenKeyShareSession {
@@ -12,19 +10,7 @@ export interface OpenKeyShareSession {
   readonly auth: AuthResult;
 }
 
-export interface UploadCapability {
-  readonly capabilityId?: string;
-  readonly scope: SenderScope;
-  readonly source: ContentSource;
-  readonly policy: Pick<SenderPolicy, "policyCid" | "policyBytes" | "policyDigest">;
-}
-
 export type ShareTinyCloud = TinyCloudWeb;
-
-interface NonceResponse {
-  readonly nonce: string;
-  readonly expiresAt: string;
-}
 
 const OPENKEY_ORIGIN = import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so";
 export const SHARE_APPLICATION_SPACE = "applications";
@@ -40,34 +26,6 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
   if (openkey.getSessionToken() === null) throw fail("signInService", "OpenKey did not provide a delegated signing session");
   onStatus("OpenKey connected.");
   return { address: auth.address, openkey, auth };
-}
-
-async function shareNonce(): Promise<NonceResponse> {
-  const nonceResponse = await fetch("/api/share/auth/openkey/nonce", {
-    credentials: "include",
-    cache: "no-store",
-    redirect: "error",
-    referrerPolicy: "no-referrer",
-  });
-  if (!nonceResponse.ok) throw fail("signInService", "share sign-in nonce endpoint rejected the request");
-  const challenge = await nonceResponse.json() as NonceResponse;
-  if (!/^[A-Za-z0-9_-]{32}$/.test(challenge.nonce) || !Number.isFinite(Date.parse(challenge.expiresAt))) throw fail("signInService", "share sign-in challenge is malformed");
-  return challenge;
-}
-
-async function authenticateShareHost(message: string, signature: string): Promise<void> {
-  const verified = await fetch("/api/share/auth/openkey", {
-    method: "POST",
-    credentials: "include",
-    cache: "no-store",
-    redirect: "error",
-    referrerPolicy: "no-referrer",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ message, signature }),
-  });
-  // TC-335: this used to be rendered verbatim into the sign-in wall, banned
-  // vocabulary and all. The kind is what the wall reads; the detail is for logs.
-  if (!verified.ok) throw fail("account", "OpenKey account does not control an authorized sharing space");
 }
 
 function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
@@ -101,48 +59,12 @@ function openKeySigningStrategy(session: OpenKeyShareSession) {
   };
 }
 
-function writePermissions(capabilities: readonly UploadCapability[]): PermissionEntry[] {
-  const seen = new Set<string>();
-  const permissions: PermissionEntry[] = [];
-  for (const candidate of capabilities) {
-    if (candidate.source.kind !== "kv") continue;
-    const key = `${candidate.source.space}\0${candidate.source.path}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    // Manifest space names are resolved by the Web SDK into the authenticated
-  // sender's owned `share` SpaceId. The policy source retains the native
-  // fixture space and is still used at the signed capability boundary.
-    permissions.push({ service: "tinycloud.kv", space: "share", path: candidate.source.path, actions: ["put"], skipPrefix: true });
-  }
-  return permissions;
-}
-
 /*
- * TC-344. The owner-policy path (`createOwnerPolicyShare`) is the only path
- * the shipped app takes for an addressed share. It works inside the sender's
- * enshrined `applications` space, bounded to the
- * `xyz.tinycloud.share/` namespace: it lists that namespace to build the
- * library picker, reads a picked object or folder, and writes the shared copy
- * under `xyz.tinycloud.share/shares/<shareId>/`.
- *
- * Until now the manifest's only KV grants came from `writePermissions`, i.e.
- * were derived from server-issued sender capabilities. No authenticated path
- * issues those any more — `docs/share-host-deployment.md` records that the
- * wallet-rooted capability-issuance path is not yet a supported shape, and
- * `GET /api/share/capabilities` consequently returns `[]` for every session.
- * So the session was built with no KV authority at all and every addressed
- * share failed the instant it touched storage.
- *
- * This wallet-rooted grant delegates nothing to the Share host and adds no
- * server-held material. Both halves are prefix grants: reads stay inside the
- * application's namespace and writes stay inside its `shares/` child. The
- * trailing slashes are significant because the resource matcher treats them
- * as byte-prefix boundaries. Sender-history writes are not affected:
- * they go through `tinycloud.vault`, which resolves to its own
- * `vault/sender-history/v2/records/` KV grant in `historyPermissions`.
- *
- * `del` is absent on purpose. Nothing here deletes, and this grant is the
- * sender's application namespace.
+ * The owner-policy path works only inside the authenticated sender's
+ * applications space. Reads build the library picker; new encrypted share
+ * objects are written below `xyz.tinycloud.share/shares/`. These grants never
+ * delegate authority or content to the static Share host. The trailing slash
+ * is a resource boundary, and `del` is deliberately absent.
  */
 export function ownerSpacePermissions(): PermissionEntry[] {
   return [
@@ -173,7 +95,6 @@ export function ownerEncryptionNetwork(address: string): string {
 export async function createTinyCloudClient(
   session: OpenKeyShareSession,
   config: SharePublicConfig,
-  capabilities: readonly UploadCapability[],
   onStatus: (message: string) => void,
 ): Promise<ShareTinyCloud> {
   const manifest: Manifest = {
@@ -187,20 +108,19 @@ export async function createTinyCloudClient(
     includePublicSpace: false,
     permissions: [
       ...ownerSpacePermissions(),
-      ...writePermissions(capabilities),
       ...historyPermissions(),
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
     ],
   };
-  const nodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : config.nodeOrigin;
+  const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
   const tinycloud = new TinyCloudWeb({
     provider: new OpenKeyProvider(session.openkey, session.auth),
     signStrategy: openKeySigningStrategy(session),
-    tinycloudHosts: [nodeHost],
+    ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
     tinycloudFallbackHosts: null,
-    tinycloudRegistryUrl: null,
+    tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
     autoDiscoverLocalNode: false,
     autoCreateSpace: true,
     autoBootstrapAccount: false,
@@ -215,39 +135,11 @@ export async function createTinyCloudClient(
     notifications: { popups: false },
   });
   onStatus("Connecting to your encrypted TinyCloud…");
-  const challenge = await shareNonce();
-  const signedSession = await tinycloud.signIn({ nonce: challenge.nonce });
-  await authenticateShareHost(signedSession.siwe, signedSession.signature);
+  await tinycloud.signIn();
   // The Web SDK's manifest bootstrap reads the canonical account space even
   // when the application data space is named explicitly. Host that owned
   // account space through the real SIWE flow before the first manifest read.
   await tinycloud.ensureOwnedSpaceHosted("account");
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
-}
-
-export async function createTinyCloudUploader(
-  session: OpenKeyShareSession,
-  config: SharePublicConfig,
-  capabilities: readonly UploadCapability[],
-  onStatus: (message: string) => void,
-  existingTinyCloud?: ShareTinyCloud,
-): Promise<(file: File, capability: UploadCapability, resourcePath?: string) => Promise<void>> {
-  const permissions = writePermissions(capabilities);
-  if (permissions.length === 0) throw fail("internal", "account has no uploadable sharing path");
-  const tinycloud = existingTinyCloud ?? await createTinyCloudClient(session, config, capabilities, onStatus);
-
-  return async (file, capability, resourcePath = capability.source.path) => {
-    if (capability.source.kind !== "kv") throw fail("internal", "file upload requires a KV source");
-    if (file.size === 0) throw fail("emptyFile", "uploaded document is empty");
-    if (file.size > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document exceeds 100 MB");
-    const content = new Uint8Array(await file.arrayBuffer());
-    if (content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
-    const contentType = file.type.trim().length > 0 ? file.type : "application/octet-stream";
-    if (resourcePath.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(resourcePath) || /[\\\u0000-\u001f\u007f]/.test(resourcePath) || resourcePath.split("/").some((segment) => segment.length === 0)) throw fail("internal", "upload target is not a canonical resource path");
-    const sourcePrefix = capability.source.path.endsWith("/") ? capability.source.path : `${capability.source.path}/`;
-    if (resourcePath !== capability.source.path && !resourcePath.startsWith(sourcePrefix)) throw fail("internal", "upload target is outside the authenticated writable path");
-    const stored = await tinycloud.kvForSpace(capability.source.space).put(resourcePath, content, { contentType });
-    if (!stored.ok) throw fail("upload", stored.error.message || "TinyCloud could not store this document.");
-  };
 }

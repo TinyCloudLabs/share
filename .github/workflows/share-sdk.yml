@@ -3,10 +3,10 @@ name: Share SDK merge gates
 # No `paths:` filter on purpose. This workflow is the repository's merge gate,
 # and every previous attempt to enumerate what it depends on has been wrong:
 # `npm test` already reads index.html, share.html, viewer.html, public/_headers
-# and public/404.html (test/production-pages.test.ts) and imports all of `src/`,
+# and public/404.html and imports all of `src/`,
 # none of which the old filter matched — so the gate silently skipped PRs it
 # would have failed on. `npm run typecheck` widens the surface again to `src`,
-# `functions`, `packages`, `test`, `vite.config.ts` and `tsconfig.json`.
+# `packages`, `test`, `vite.config.ts` and `tsconfig.json`.
 # Running unconditionally is cheaper than keeping that list correct.
 on:
   pull_request:
@@ -18,6 +18,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Share and js-sdk ship as separate repositories. Until the companion
+      # SDK release is published, test this PR against the exact reviewed
+      # source commit instead of silently falling back to an older npm API.
+      - uses: actions/checkout@v4
+        with:
+          repository: TinyCloudLabs/js-sdk
+          ref: 9b64481a71aecddc7276bdc7ab76d51b1c18b5bc
+          path: .cross-repo/js-sdk
+      - uses: actions/checkout@v4
+        with:
+          repository: TinyCloudLabs/tinycloud-node
+          ref: 64be9a6807826bbfa69a43ef050049a3efee566a
+          path: .cross-repo/tinycloud-node
+      # Bun otherwise discovers Share's parent workspace and installs the
+      # published SDK dependencies inside this nested checkout. Move the
+      # companion checkout to an independent workspace before installing it.
+      - name: Isolate reviewed companion workspaces
+        run: |
+          mv .cross-repo/js-sdk "${RUNNER_TEMP}/tinycloud-js-sdk"
+          mv .cross-repo/tinycloud-node "${RUNNER_TEMP}/tinycloud-node"
+      - name: Verify the shared TS/Rust addressed-link vector
+        run: cmp "${RUNNER_TEMP}/tinycloud-js-sdk/packages/share-envelope/test/vectors/addressed-link-canonicalization.json" "${RUNNER_TEMP}/tinycloud-node/tinycloud-node-server/test-fixtures/tc-498-addressed-link-canonicalization.json"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -26,10 +48,40 @@ jobs:
         with:
           bun-version: "1.2.0"
       - run: npm ci
-      # Fails the merge gate on a type error. `test/e2e-prod` is excluded from
-      # the root tsconfig because its `playwright` dependency is not installed
-      # by this `npm ci`; check it with `npm run typecheck` inside that
-      # directory, after `npm install` there.
+      - run: bun install --frozen-lockfile
+        working-directory: ${{ runner.temp }}/tinycloud-js-sdk
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build reviewed SDK packages
+        working-directory: ${{ runner.temp }}/tinycloud-js-sdk
+        run: |
+          bun run --cwd packages/sdk-rs build:wasm:node
+          bun run --cwd packages/sdk-rs/packages/node build
+          bun run --cwd packages/sdk-rs build:wasm:web
+          bun run --cwd packages/sdk-rs/packages/web build
+          bun run --cwd packages/bootstrap build
+          bun run --cwd packages/sdk-services build
+          bun run --cwd packages/share-envelope build
+          bun run --cwd packages/share-sdk build
+          bun run --cwd packages/sdk-core build
+          bun run --cwd packages/node-sdk build
+          bun run --cwd packages/web-sdk build
+      - name: Link and verify reviewed SDK packages
+        env:
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ runner.temp }}/tinycloud-js-sdk
+        run: |
+          npm run link:web-sdk
+          npm run check:web-sdk-link
+      # Fail the merge gate on a type error before running the browser and
+      # email-worker unit suites.
       - run: npm run typecheck
       - run: npm test
-      - run: node --test scripts/validate-deploy-config.test.mjs
+      - name: Prove native owner-node sharing and revocation in a browser
+        env:
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ runner.temp }}/tinycloud-js-sdk
+        run: npm run test:e2e:native-bearer
+      - name: Prove real Node addressed delivery through api.share
+        env:
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ runner.temp }}/tinycloud-js-sdk
+          TINYCLOUD_NODE_WORKTREE: ${{ runner.temp }}/tinycloud-node
+        run: npm run test:e2e:native-addressed

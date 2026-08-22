@@ -1,14 +1,10 @@
 /**
- * `POST /share/v2` or `/share/v3` — send one authorized share invitation.
+ * `POST /v1/email` — send one Node-authorized TinyCloud invitation.
  *
- * Sibling of `@tinycloud/share-registry`: same account, same deploy path,
- * same "a signed contract, not a session, is the authority" model.
- *
- * NOTHING IS LOGGED. The share URL carries the decryption key in its
- * fragment, so it is a secret; the recipient address is PII; the Resend key
- * is a credential. There is no `console` call anywhere in this package, and a
- * test asserts that stays true. Callers learn what happened from the
- * response body, and operators from the `share_email_deliveries` table.
+ * The URL contains public, signed delegation metadata. Shared content remains
+ * encrypted on the owner's TinyCloud node; this service receives no bearer
+ * fragment or content key. The recipient address is still PII and the Resend
+ * key is still a credential, so neither is logged.
  */
 
 import {
@@ -20,7 +16,7 @@ import {
   type Refusal,
   type RefusalReason,
 } from "./protocol.js";
-import { renderInvitationEmail, type SenderTrust } from "./email.js";
+import { renderInvitationEmail } from "./email.js";
 import { sendViaResend } from "./resend.js";
 import { finalizeDelivery, reserveDelivery, type D1DatabaseLike } from "./store.js";
 
@@ -31,13 +27,12 @@ export interface EmailEnv {
   readonly RESEND_API_KEY?: string;
   /** `TinyCloud Share <invite@share.tinycloud.xyz>`. */
   readonly EMAIL_FROM?: string;
-  /** The Node's enrolled invitation key id and raw base64url public key. */
-  readonly NODE_INVITATION_KID?: string;
-  readonly NODE_INVITATION_PUBLIC_KEY?: string;
-  readonly NODE_ORIGIN?: string;
-  /** The audience the Node stamps into `openCredentialsAudience`. */
+  /** The audience stamped into the one-shot delivery authorization. */
   readonly DELIVERY_AUDIENCE?: string;
   readonly SHARE_ORIGIN?: string;
+  readonly REGISTRY_ORIGIN?: string;
+  /** Test seam only; production uses global fetch for registry and node identity checks. */
+  readonly TRUST_FETCH?: typeof fetch;
   /** Test seam only; production leaves this unset and uses api.resend.com. */
   readonly RESEND_ENDPOINT?: string;
 }
@@ -83,27 +78,22 @@ function json(status: number, body: unknown, headers: Record<string, string>): R
 
 /**
  * Every piece of configuration this Worker needs, or nothing. Absent or
- * malformed configuration is a refusal, never a default — in particular
- * there is no built-in node key, because production currently publishes a
- * development fixture as `nodeInvitationPublicKey` (TC-359/TC-369) and
- * baking any key in here would make that fixture permanently trusted.
+ * malformed configuration is a refusal, never a default. Node identity is
+ * anchored by the owner's signed registry record plus the target's live
+ * `/info` identity; pinning one deployment key would reject self-hosted nodes.
  */
 function configure(env: EmailEnv): { readonly trust: DeliveryTrust; readonly apiKey: string; readonly from: string } | Refusal {
   const {
-    NODE_INVITATION_KID: kid,
-    NODE_INVITATION_PUBLIC_KEY: publicKey,
-    NODE_ORIGIN: nodeOrigin,
     DELIVERY_AUDIENCE: deliveryAudience,
     SHARE_ORIGIN: shareOrigin,
+    REGISTRY_ORIGIN: registryOrigin,
     RESEND_API_KEY: apiKey,
     EMAIL_FROM: from,
   } = env;
   if (
-    typeof kid !== "string" || kid.length === 0 ||
-    typeof publicKey !== "string" || publicKey.length === 0 ||
-    typeof nodeOrigin !== "string" || nodeOrigin.length === 0 ||
     typeof deliveryAudience !== "string" || deliveryAudience.length === 0 ||
     typeof shareOrigin !== "string" || shareOrigin.length === 0 ||
+    typeof registryOrigin !== "string" || registryOrigin.length === 0 ||
     typeof apiKey !== "string" || apiKey.length === 0 ||
     typeof from !== "string" || from.length === 0 ||
     env.DELIVERIES === undefined || env.DELIVERIES === null
@@ -112,11 +102,10 @@ function configure(env: EmailEnv): { readonly trust: DeliveryTrust; readonly api
   }
   return {
     trust: {
-      nodeInvitationKid: kid,
-      nodeInvitationPublicKey: publicKey,
-      nodeOrigin,
       deliveryAudience,
       shareOrigin,
+      registryOrigin,
+      ...(env.TRUST_FETCH === undefined ? {} : { fetch: env.TRUST_FETCH }),
     },
     apiKey,
     from,
@@ -185,15 +174,15 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
   if (parsed === null) return deny("malformed");
 
   const now = Date.now();
-  const verified = await verifyDeliveryAuthorization(parsed, trust, now);
+  const verified = await verifyDeliveryAuthorization(parsed, { ...trust, signal: request.signal }, now);
   if (!verified.ok) return deny(verified.reason);
 
-  const { authorization } = verified;
+  const { recipient, shareCid, shareUrl, label, shareExpiresAt, idempotencyKey } = verified;
   const at = new Date(now).toISOString();
   const reserved = await reserveDelivery(env.DELIVERIES, {
-    idempotencyKey: authorization.idempotencyKey,
-    shareCid: authorization.shareCid,
-    recipientDigest: await digest(authorization.deliveryEmail.toLowerCase()),
+    idempotencyKey,
+    shareCid,
+    recipientDigest: await digest(recipient),
     at,
   });
   if (reserved.outcome === "unavailable") return deny("store-unavailable");
@@ -204,7 +193,7 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
       200,
       {
         status: "duplicate",
-        idempotencyKey: authorization.idempotencyKey,
+        idempotencyKey,
         providerMessageId: reserved.providerMessageId,
       },
       headers,
@@ -212,20 +201,19 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
   }
 
   const message = renderInvitationEmail({
-    magicUrl: authorization.shareUrl,
-    documentName: authorization.documentName,
-    senderTrust: authorization.senderTrust as SenderTrust,
-    expiresAt: authorization.shareExpiresAt,
-    reportAbuseUrl: `${trust.shareOrigin}/report?t=${encodeURIComponent(authorization.reportAbuseToken)}`,
+    magicUrl: shareUrl,
+    documentName: label,
+    expiresAt: shareExpiresAt,
+    reportAbuseUrl: `${trust.shareOrigin}/report`,
   });
 
   const sent = await sendViaResend(
     {
-      to: authorization.deliveryEmail,
+      to: recipient,
       subject: message.subject,
       html: message.html,
       text: message.text,
-      idempotencyKey: authorization.idempotencyKey,
+      idempotencyKey,
     },
     {
       apiKey,
@@ -235,7 +223,7 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
   );
 
   await finalizeDelivery(env.DELIVERIES, {
-    idempotencyKey: authorization.idempotencyKey,
+    idempotencyKey,
     status: sent.ok ? "sent" : "failed",
     providerMessageId: sent.ok ? sent.providerMessageId : null,
     at: new Date().toISOString(),
@@ -268,7 +256,7 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
     202,
     {
       status: "sent",
-      idempotencyKey: authorization.idempotencyKey,
+      idempotencyKey,
       providerMessageId: sent.providerMessageId,
     },
     headers,
@@ -286,7 +274,7 @@ const worker = {
       // Presence only — never the values.
       return json(200, { ready: !("ok" in configured) }, headers);
     }
-    if (request.method === "POST" && (url.pathname === "/share/v2" || url.pathname === "/share/v3")) return deliver(request, env);
+    if (request.method === "POST" && url.pathname === "/v1/email") return deliver(request, env);
     return json(404, { error: "not-found" }, headers);
   },
 };

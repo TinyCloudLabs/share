@@ -3,15 +3,7 @@ import { describe, expect, it } from "vitest";
 import { OWNER_LIBRARY_LIMIT, OWNER_LIBRARY_RESERVED_PREFIXES, ownerLibraryEntries } from "../src/share/composer.js";
 import { filesForYouPermissions, historyPermissions, ownerSpacePermissions, SHARE_APPLICATION_PREFIX, SHARE_APPLICATION_SPACE } from "../src/share/openkey-session.js";
 
-/**
- * TC-344. The library picker used to be fed only by `GET
- * /api/share/capabilities`, which returns `[]` for every session in every
- * shape that can legally launch, so it was always empty and every library
- * flow ended at "Choose what to share". It is now derived from the sender's
- * own space listing. These tests pin the two halves of that: what the
- * derivation offers, and the KV authority the session must hold for the
- * owner path to be able to read and write that space at all.
- */
+/** The library is the sender's own TinyCloud applications-space listing. */
 describe("owner library entries", () => {
   it("offers each object without inventing a prefix authority", () => {
     expect(ownerLibraryEntries(["shares/abc/report.md"])).toEqual([
