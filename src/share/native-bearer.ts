@@ -1,4 +1,4 @@
-import { createNativeShare, type NativeSharingService } from "@tinycloud/share-sdk";
+import { createNativeShare, type NativeSharingService, type SenderShareRecord } from "@tinycloud/share-sdk";
 
 export { createNativeShare, openNativeShare, parseNativeShareUrl, type NativeSharingService } from "@tinycloud/share-sdk";
 
@@ -25,4 +25,28 @@ export async function composeNativeBearer(
   });
   if (share.spaceId !== spaceId) throw new Error("TinyCloud delegation authority does not match the authenticated owner space");
   return share;
+}
+
+/** Build the exact sender-history record used by the production bearer composer. */
+export function nativeBearerHistoryRecord(input: {
+  readonly share: Awaited<ReturnType<typeof composeNativeBearer>>;
+  readonly path: string;
+  readonly filename: string;
+  readonly target: { readonly origin: string; readonly nodeAudience: string };
+  readonly registeredAt?: Date;
+}): SenderShareRecord {
+  const registeredAt = input.registeredAt ?? new Date();
+  return {
+    shareId: input.share.delegationCid,
+    enforcementDelegationCid: input.share.delegationCid,
+    target: { ...input.target, spaceId: input.share.spaceId },
+    resource: { kind: "exact", path: input.path },
+    actions: ["tinycloud.kv/get"],
+    recipientMatcher: { kind: "bearer" },
+    targetKind: "bearer",
+    registeredAt: registeredAt.toISOString(),
+    expiresAt: input.share.expiresAt.toISOString(),
+    link: input.share.url,
+    filename: input.filename,
+  };
 }

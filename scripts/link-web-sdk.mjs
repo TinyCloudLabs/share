@@ -23,6 +23,10 @@ import { assertWebSdkLink, resolveJsSdkWorktree, webSdkLinkPath, webSdkTargetPat
 
 const shareRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
+const requireConfiguredWorktree = process.argv.includes("--require-env");
+if (requireConfiguredWorktree && !process.env.TINYCLOUD_JS_SDK_WORKTREE?.trim()) {
+  throw new Error("TINYCLOUD_JS_SDK_WORKTREE is required so this test cannot silently select a sibling or published SDK");
+}
 const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
 const linkPath = webSdkLinkPath(shareRoot);
 const targetPath = webSdkTargetPath(sdkRoot);

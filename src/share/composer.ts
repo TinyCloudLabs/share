@@ -10,7 +10,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { historyRecordForPublishedShare, publishAddressedShare, type SenderShareRecord, type ShareUploadInput } from "@tinycloud/share-sdk";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { requestAddressedDelivery } from "./delivery.js";
-import { composeNativeBearer } from "./native-bearer.js";
+import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
@@ -275,19 +275,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   const target = options.nativeHistoryTarget;
   if (target === undefined) throw fail("session", "TinyCloud node identity is unavailable");
   const expiresAt = nativeShare.expiresAt.toISOString();
-  const record: SenderShareRecord = {
-    shareId: nativeShare.delegationCid,
-    enforcementDelegationCid: nativeShare.delegationCid,
-    target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: nativeShare.spaceId },
-    resource: { kind: "exact", path: nativePath },
-    actions: ["tinycloud.kv/get"],
-    recipientMatcher: { kind: "bearer" },
-    targetKind: "bearer",
-    registeredAt: new Date().toISOString(),
-    expiresAt,
-    link: nativeShare.url,
-    filename: file.name,
-  };
+  const record = nativeBearerHistoryRecord({ share: nativeShare, path: nativePath, filename: file.name, target });
   return { url: nativeShare.url, cid: nativePath, format: model.linkFormat, expiresAt, delegationCid: nativeShare.delegationCid, record };
 }
 
