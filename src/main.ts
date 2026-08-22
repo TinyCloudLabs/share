@@ -109,11 +109,11 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           version: 1,
           shareId: access.path,
           origin: shareConfig.shareOrigin,
-          target: { kind: "bearer", origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, spaceId: "applications" },
+          target: { kind: "bearer", origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, spaceId: access.spaceId },
           resource: { kind: "exact", path: access.path },
           actions: ["tinycloud.kv/get"],
           display: access.path.split("/").at(-1) === undefined ? {} : { filename: access.path.split("/").at(-1)! },
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          expiresAt: access.expiresAt,
         }),
       }, { shareUrl: shareHref });
       return;

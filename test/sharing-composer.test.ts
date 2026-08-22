@@ -538,22 +538,8 @@ describe("share composer access controls", () => {
     const expectedExpiry = new Date(fixed + 24 * 60 * 60 * 1000).toISOString();
     vi.spyOn(Date, "now").mockReturnValue(fixed);
 
-    const registry = createDevRegistry();
-    const requests: Array<{ readonly url: string; readonly headers: Headers }> = [];
-    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
-      const url = new URL(String(input));
-      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
-      requests.push({ url: url.toString(), headers: new Headers(init?.headers) });
-      const target = new URL(
-        url.pathname.replace("/api/share/link-only/registry", ""),
-        "http://registry.local",
-      );
-      return registry.handler(new Request(target, {
-        ...init,
-        body,
-        duplex: "half",
-      } as RequestInit));
-    };
+    const puts = vi.fn(async () => ({ ok: true }));
+    const generate = vi.fn(async () => ({ ok: true as const, data: { token: "delegation" } }));
 
     const root = document.createElement("div");
     document.body.append(root);
@@ -561,7 +547,7 @@ describe("share composer access controls", () => {
     mountShareComposer(root, {
       ...baseOptions(),
       now: () => fixed,
-      fetchFn: authenticatedRegistryFetch,
+      tinycloud: { kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn() } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
@@ -578,35 +564,20 @@ describe("share composer access controls", () => {
     await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
     expect(captured!.model.expiresAt).toBe(expectedExpiry);
     expect(captured!.share.expiresAt).toBe(expectedExpiry);
-    expect(requests).toHaveLength(2);
-    for (const request of requests) {
-      expect(request.url).toContain("/api/share/link-only/registry/blobs");
-      expect(request.headers.get("x-delete-after")).toBe(expectedExpiry);
-    }
+    expect(puts).toHaveBeenCalledOnce();
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ actions: ["tinycloud.kv/get"], expiry: new Date(expectedExpiry) }));
+    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/#tc1=delegation");
   });
 
   it("publishes a non-UTF-8 file through the real link-only creation path", async () => {
-    const registry = createDevRegistry();
-    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
-      const url = new URL(String(input));
-      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
-      const target = new URL(
-        url.pathname.replace("/api/share/link-only/registry", ""),
-        "http://registry.local",
-      );
-      return registry.handler(new Request(target, {
-        ...init,
-        body,
-        duplex: "half",
-      } as RequestInit));
-    };
+    const puts = vi.fn(async (_path: string, bytes: Uint8Array) => ({ ok: true, bytes }));
 
     const root = document.createElement("div");
     document.body.append(root);
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
-      fetchFn: authenticatedRegistryFetch,
+      tinycloud: { kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation" } }), receive: vi.fn() } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
@@ -621,7 +592,8 @@ describe("share composer access controls", () => {
 
     await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: 5_000 });
     expect(captured!.model.content).toMatchObject({ kind: "file" });
-    expect(captured!.share.url).toMatch(/^https:\/\/share\.tinycloud\.xyz\/s\/[^#]+#k=/u);
+    expect(puts).toHaveBeenCalledWith(expect.any(String), new Uint8Array([0, 255, 1]), { contentType: "application/octet-stream" });
+    expect(captured!.share.url).toBe("https://share.tinycloud.xyz/#tc1=delegation");
   });
 
   it("a link-only share never persists an ungranted action", async () => {

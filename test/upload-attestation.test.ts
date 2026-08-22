@@ -134,7 +134,7 @@ async function shippedRegistrySetup(root: string): Promise<{ host: ReturnType<ty
       for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
       const requestInit: RequestInit = {
         method: incoming.method ?? "GET",
-        headers: Object.entries(incoming.headers).flatMap(([name, value]) => value === undefined ? [] : [[name, Array.isArray(value) ? value.join(", ") : value]]),
+        headers: Object.entries(incoming.headers).flatMap(([name, value]): [string, string][] => value === undefined ? [] : [[name, Array.isArray(value) ? value.join(", ") : value]]),
       };
       if (incoming.method !== "GET" && incoming.method !== "HEAD") requestInit.body = Buffer.concat(chunks);
       const request = new Request(`http://127.0.0.1:${(server.address() as { port: number }).port}${incoming.url ?? "/"}`, requestInit);
