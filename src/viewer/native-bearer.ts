@@ -1,10 +1,15 @@
-import { openNativeShare, type NativeSharingService } from "@tinycloud/share-sdk";
+import type { NativeSharingService } from "../share/native-bearer.js";
 
 type ReceivedAccess = { readonly ok: true; readonly data: { readonly path: string; readonly spaceId: string; readonly delegation: { readonly expiry: Date }; readonly kv: { get(path: string): Promise<{ readonly ok: boolean; readonly data?: { readonly data?: Uint8Array } }> } } } | { readonly ok: false; readonly error: { readonly message: string } };
 
 /** Receive the fragment token through TinyCloud SDK and invoke the delegated owner path. */
 export async function receiveNativeBearerAccess(sharing: NativeSharingService, href: string): Promise<{ readonly path: string; readonly spaceId: string; readonly expiresAt: string; readonly bytes: Uint8Array }> {
-  const received = await openNativeShare(sharing, href) as ReceivedAccess;
+  const url = new URL(href);
+  if (url.search || url.pathname !== "/viewer") throw new TypeError("native shares must carry tc1 only in the /viewer URL fragment");
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  const token = fragment.get("tc1");
+  if (!token || fragment.size !== 1) throw new TypeError("missing native share fragment");
+  const received = await sharing.receive(token, { autoSubdelegate: false, useSessionKey: false }) as ReceivedAccess;
   if (!received.ok) throw new Error(received.error.message);
   // SharingService configures the received KV service with the delegated
   // exact key as its prefix. An empty relative key therefore invokes that

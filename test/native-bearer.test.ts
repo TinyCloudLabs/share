@@ -26,4 +26,20 @@ describe("TinyCloud-native bearer happy path", () => {
     };
     await expect(receiveNativeBearer(revoked, "https://viewer.example/viewer#tc1=revoked")).rejects.toThrow("revoked");
   });
+
+  it("refuses root, legacy-path, query, and mixed native links before receive", async () => {
+    let received = 0;
+    const sharing = {
+      generate: async () => ({ ok: true as const, data: { token: "unused", delegation: { cid: "unused" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }),
+      receive: async () => { received += 1; return { ok: false as const, error: { message: "unexpected" } }; },
+    };
+    for (const url of [
+      "https://viewer.example/#tc1=token",
+      "https://viewer.example/s/token",
+      "https://viewer.example/viewer?tc1=token",
+      "https://viewer.example/viewer?legacy=1#tc1=token",
+      "https://viewer.example/viewer#tc1=token&legacy=1",
+    ]) await expect(receiveNativeBearer(sharing, url)).rejects.toThrow();
+    expect(received).toBe(0);
+  });
 });
