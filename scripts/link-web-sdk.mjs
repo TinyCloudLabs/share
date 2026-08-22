@@ -28,7 +28,7 @@ const sdkRoot = resolve(configuredWorktree);
 const linkPath = resolve(shareRoot, "node_modules/@tinycloud/web-sdk");
 const targetPath = resolve(sdkRoot, "packages/web-sdk");
 const checkOnly = process.argv.includes("--check");
-const companionPackages = ["sdk-core", "share-envelope", "share-sdk"];
+const companionPackages = ["sdk-services", "sdk-core", "node-sdk", "share-envelope", "share-sdk"];
 
 function assertPackageLink(packageName, packagePath, expectedPath) {
   const expected = realpathSync(expectedPath);

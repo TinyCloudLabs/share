@@ -26,6 +26,11 @@ jobs:
           repository: TinyCloudLabs/js-sdk
           ref: 891891d23c177a8064d5d888e49380c45ba0a4e5
           path: .cross-repo/js-sdk
+      # Bun otherwise discovers Share's parent workspace and installs the
+      # published SDK dependencies inside this nested checkout. Move the
+      # companion checkout to an independent workspace before installing it.
+      - name: Isolate reviewed SDK workspace
+        run: mv .cross-repo/js-sdk "${RUNNER_TEMP}/tinycloud-js-sdk"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -35,18 +40,19 @@ jobs:
           bun-version: "1.2.0"
       - run: npm ci
       - run: bun install --frozen-lockfile
-        working-directory: .cross-repo/js-sdk
+        working-directory: ${{ runner.temp }}/tinycloud-js-sdk
       - name: Build reviewed SDK packages
-        working-directory: .cross-repo/js-sdk
+        working-directory: ${{ runner.temp }}/tinycloud-js-sdk
         run: |
-          bun run --cwd packages/sdk-core build
+          bun run --cwd packages/sdk-services build
           bun run --cwd packages/share-envelope build
-          bun run --cwd packages/node-sdk build
           bun run --cwd packages/share-sdk build
+          bun run --cwd packages/sdk-core build
+          bun run --cwd packages/node-sdk build
           bun run --cwd packages/web-sdk build
       - name: Link and verify reviewed SDK packages
         env:
-          TINYCLOUD_JS_SDK_WORKTREE: ${{ github.workspace }}/.cross-repo/js-sdk
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ runner.temp }}/tinycloud-js-sdk
         run: |
           npm run link:web-sdk
           npm run check:web-sdk-link
@@ -56,5 +62,5 @@ jobs:
       - run: npm test
       - name: Prove native owner-node sharing and revocation in a browser
         env:
-          TINYCLOUD_JS_SDK_WORKTREE: ${{ github.workspace }}/.cross-repo/js-sdk
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ runner.temp }}/tinycloud-js-sdk
         run: npm run test:e2e:native-bearer
