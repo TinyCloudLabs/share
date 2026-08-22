@@ -54,3 +54,7 @@ jobs:
       # email-worker unit suites.
       - run: npm run typecheck
       - run: npm test
+      - name: Prove native owner-node sharing and revocation in a browser
+        env:
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ github.workspace }}/.cross-repo/js-sdk
+        run: npm run test:e2e:native-bearer
