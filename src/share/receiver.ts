@@ -7,14 +7,14 @@ import type { SharePublicConfig } from "../email-share/config.js";
  * may restore a real TinyCloud session, but an OpenKey cookie alone cannot
  * turn this into the account branch.
  */
-export function createShareReceiverClient(
+export async function createShareReceiverClient(
   config: SharePublicConfig,
   registryBaseUrl: string,
-): TinyCloudWeb {
+): Promise<TinyCloudWeb> {
   const nodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true"
     ? window.location.origin
     : config.nodeOrigin;
-  return new TinyCloudWeb({
+  return TinyCloudWeb.create({
     tinycloudHosts: [nodeHost],
     tinycloudFallbackHosts: null,
     tinycloudRegistryUrl: null,

@@ -17,7 +17,7 @@ export async function receiveWithSdk(input: {
   mountTarget.className = "viewer-credential-acquisition";
   input.root.replaceChildren(mountTarget);
 
-  const tinycloud = createShareReceiverClient(input.config, input.registryBaseUrl);
+  const tinycloud = await createShareReceiverClient(input.config, input.registryBaseUrl);
   const received = await tinycloud.share.receive(input.shareUrl, {
     identity: "auto",
     interaction: { kind: "inline", mountTarget },

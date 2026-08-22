@@ -19,6 +19,7 @@
     "check:web-sdk-link": "node scripts/link-web-sdk.mjs --check",
     "test:e2e:sharing": "npm run check:web-sdk-link && SHARING_E2E_LOCAL_UNPUSHED=1 node test/e2e-sharing/integration.mjs",
     "test:e2e:artifact": "node test/e2e-html-artifact.mjs",
+    "test:e2e:native-bearer": "npm run build && tsx test/e2e-native-bearer/integration.ts",
     "test:e2e:sharing:release": "npm run check:web-sdk-link && node test/e2e-sharing/integration.mjs",
     "test:e2e:tc-465": "node test/e2e-sharing/tc-465-joined.mjs",
     "test:e2e:tc-500": "node test/e2e-sharing/tc-465-joined.mjs --tc-500",

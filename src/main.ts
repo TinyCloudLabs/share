@@ -81,11 +81,9 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   }
 
   try {
-    const [{ REGISTRY_BASE_URL }, { resolveShare }, { presentShare }, config] = await Promise.all([
-      import("./viewer/config.js"),
-      import("./viewer/resolve.js"),
-      import("./viewer/present.js"),
+    const [config, { presentShare }] = await Promise.all([
       import("./email-share/config.js"),
+      import("./viewer/present.js"),
     ]);
     const shareHref = launch.shareHref;
     launch.shareHref = "";
@@ -97,7 +95,8 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       ]);
       // The fragment was already captured and scrubbed before config or this
       // SDK construction. Receiving the capability is the first network work.
-      const access = await receiveNativeBearerAccess(createShareReceiverClient(shareConfig, REGISTRY_BASE_URL).sharing, shareHref);
+      const receiver = await createShareReceiverClient(shareConfig, shareConfig.registryOrigin);
+      const access = await receiveNativeBearerAccess(receiver.sharing, shareHref);
       const { presentationEnvelope } = await import("./viewer/resolve.js");
       await presentShare(root, {
         state: "ok",
@@ -118,6 +117,10 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       }, { shareUrl: shareHref });
       return;
     }
+    const [{ REGISTRY_BASE_URL }, { resolveShare }] = await Promise.all([
+      import("./viewer/config.js"),
+      import("./viewer/resolve.js"),
+    ]);
     const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
@@ -144,7 +147,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     }
     await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
-    console.debug("tinycloud share: recipient request failed", error);
+    console.debug("tinycloud share: recipient request failed", error instanceof Error ? error.message : error);
     const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
       ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
       : "This invitation could not be verified. Ask the sender for a fresh invitation.";
