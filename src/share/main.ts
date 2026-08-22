@@ -97,9 +97,8 @@ function renderComposer(current: SenderApp, token: number): void {
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       persistShare: async ({ share }) => {
-        if (share.record !== undefined) {
-          await current.history.save(share.record);
-        }
+        if (share.record === undefined) throw new Error("share publisher returned no canonical history record");
+        await current.history.save(share.record);
       },
     });
   });
