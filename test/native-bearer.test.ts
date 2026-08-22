@@ -11,10 +11,11 @@ describe("TinyCloud-native bearer happy path", () => {
         calls.push(`delegate:${params.path}:${params.actions.join(",")}`);
         return { ok: true as const, data: { token: "tc1:bearer", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } };
       },
+      decodeLink: () => ({ path: "xyz.tinycloud.share/shares/a.bin", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }),
       receive: async (token: string) => ({ ok: true as const, data: { path: "xyz.tinycloud.share/shares/a.bin", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", delegation: { expiry: new Date("2030-01-01T00:00:00.000Z") }, kv: { get: async (path: string) => { calls.push(`get:${token}:${path}`); return { ok: true as const, data: { data: bytes } }; } } } }),
     };
     const share = await composeNativeBearer({ spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: (space) => ({ put: async (path, value) => { calls.push(`put:${space}:${path}:${Array.from(value)}`); return { ok: true }; } }), sharing }, { path: "xyz.tinycloud.share/shares/a.bin", bytes, expiresAt: new Date("2030-01-01T00:00:00Z"), viewerOrigin: "https://viewer.example" });
-    expect(share).toEqual({ url: "https://viewer.example/viewer#tc1=tc1%3Abearer", delegationCid: "bafy-native-delegation", expiresAt: new Date("2030-01-01T00:00:00.000Z") });
+    expect(share).toEqual({ url: "https://viewer.example/viewer#tc1=tc1%3Abearer", delegationCid: "bafy-native-delegation", expiresAt: new Date("2030-01-01T00:00:00.000Z"), spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" });
     await expect(receiveNativeBearer(sharing, share.url)).resolves.toEqual(bytes);
     expect(calls).toEqual(["put:tinycloud:pkh:eip155:1:0xabc:applications:xyz.tinycloud.share/shares/a.bin:0,1,2,255", "delegate:xyz.tinycloud.share/shares/a.bin:tinycloud.kv/get", "get:tc1:bearer:"]);
   });
@@ -23,6 +24,7 @@ describe("TinyCloud-native bearer happy path", () => {
     const revoked = {
       receive: async () => ({ ok: false as const, error: { message: "Sharing link has been revoked" } }),
       generate: async () => ({ ok: true as const, data: { token: "unused", delegation: { cid: "unused" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }),
+      decodeLink: () => ({ path: "unused", spaceId: "unused" }),
     };
     await expect(receiveNativeBearer(revoked, "https://viewer.example/viewer#tc1=revoked")).rejects.toThrow("revoked");
   });
@@ -31,6 +33,7 @@ describe("TinyCloud-native bearer happy path", () => {
     let received = 0;
     const sharing = {
       generate: async () => ({ ok: true as const, data: { token: "unused", delegation: { cid: "unused" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }),
+      decodeLink: () => ({ path: "unused", spaceId: "unused" }),
       receive: async () => { received += 1; return { ok: false as const, error: { message: "unexpected" } }; },
     };
     for (const url of [

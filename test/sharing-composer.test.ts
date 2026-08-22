@@ -547,7 +547,7 @@ describe("share composer access controls", () => {
     mountShareComposer(root, {
       ...baseOptions(),
       now: () => fixed,
-      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn() } } as never,
+      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
@@ -578,7 +578,7 @@ describe("share composer access controls", () => {
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
-      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }), receive: vi.fn() } } as never,
+      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }), receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
       loadCapabilities: async () => [],
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });

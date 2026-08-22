@@ -278,7 +278,7 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   const record: SenderShareRecord = {
     shareId: nativeShare.delegationCid,
     enforcementDelegationCid: nativeShare.delegationCid,
-    target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: options.tinycloud.spaceId! },
+    target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: nativeShare.spaceId },
     resource: { kind: "exact", path: nativePath },
     actions: ["tinycloud.kv/get"],
     recipientMatcher: { kind: "bearer" },
