@@ -13,7 +13,7 @@ import {
 import type { ResolveResult } from "./resolve.js";
 import { renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { renderSafeContent } from "./content.js";
-import { copyWithFallback } from "../share/link-only.js";
+import { copyWithFallback } from "../share/clipboard.js";
 
 function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>): string {
   const metadata = (result.envelope as unknown as { readonly metadata?: { readonly filename?: unknown } }).metadata;

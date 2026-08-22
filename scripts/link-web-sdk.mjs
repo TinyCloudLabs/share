@@ -2,14 +2,14 @@
 
 /*
  * TC-345. Restores (or, with --check, only verifies) the
- * `node_modules/@tinycloud/web-sdk` symlink into the js-sdk worktree the
- * sharing harness is configured to exercise.
+ * `node_modules/@tinycloud/web-sdk` symlink into the explicit js-sdk worktree
+ * the native sharing proof is configured to exercise.
  *
  * `npm install` writes the published registry package over that path. Until
  * now the link was restored by hand, so a run could exercise the published
  * SDK while reporting on local SDK changes. `npm run link:web-sdk` is the
- * remedy every assertion in test/e2e-sharing/web-sdk-link.mjs names, and
- * `npm run check:web-sdk-link` is the loud, dependency-free preflight.
+ * repair and `npm run check:web-sdk-link` is the loud, dependency-free
+ * preflight.
  *
  * This script is deliberately not a `postinstall` hook: production and CI
  * installs have no js-sdk worktree to link to, and a hook that silently
@@ -19,26 +19,34 @@
 import { lstatSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import process from "node:process";
-import { assertWebSdkLink, resolveJsSdkWorktree, webSdkLinkPath, webSdkTargetPath } from "../test/e2e-sharing/web-sdk-link.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "..");
-const workspaceRoot = resolve(shareRoot, "../../../../");
-const requireConfiguredWorktree = process.argv.includes("--require-env");
-if (requireConfiguredWorktree && !process.env.TINYCLOUD_JS_SDK_WORKTREE?.trim()) {
-  throw new Error("TINYCLOUD_JS_SDK_WORKTREE is required so this test cannot silently select a sibling or published SDK");
-}
-const sdkRoot = resolveJsSdkWorktree(process.env, workspaceRoot);
-const linkPath = webSdkLinkPath(shareRoot);
-const targetPath = webSdkTargetPath(sdkRoot);
+const configuredWorktree = process.env.TINYCLOUD_JS_SDK_WORKTREE?.trim();
+if (!configuredWorktree) throw new Error("TINYCLOUD_JS_SDK_WORKTREE is required so this command cannot silently select a sibling or published SDK");
+const sdkRoot = resolve(configuredWorktree);
+const linkPath = resolve(shareRoot, "node_modules/@tinycloud/web-sdk");
+const targetPath = resolve(sdkRoot, "packages/web-sdk");
 const checkOnly = process.argv.includes("--check");
 const companionPackages = ["sdk-core", "share-envelope", "share-sdk"];
 
+function assertPackageLink(packageName, packagePath, expectedPath) {
+  const expected = realpathSync(expectedPath);
+  let stat;
+  try { stat = lstatSync(packagePath); }
+  catch (error) {
+    if (error?.code === "ENOENT") throw new Error(`${packageName} link is missing; run \`npm run link:web-sdk\``);
+    throw error;
+  }
+  if (!stat.isSymbolicLink()) throw new Error(`${packageName} is a real directory, so the proof would exercise a published package; run \`npm run link:web-sdk\``);
+  const actual = realpathSync(packagePath);
+  if (actual !== expected) throw new Error(`${packageName} resolves to ${actual}, expected ${expected}; run \`npm run link:web-sdk\``);
+  return actual;
+}
+
 if (checkOnly) {
-  const resolved = assertWebSdkLink(shareRoot, sdkRoot);
+  const resolved = assertPackageLink("@tinycloud/web-sdk", linkPath, targetPath);
   for (const packageName of companionPackages) {
-    const actual = realpathSync(resolve(shareRoot, "node_modules", "@tinycloud", packageName));
-    const expected = realpathSync(resolve(sdkRoot, "packages", packageName));
-    if (actual !== expected) throw new Error(`node_modules/@tinycloud/${packageName} resolves to ${actual}, expected ${expected}; run \`npm run link:web-sdk\``);
+    assertPackageLink(`@tinycloud/${packageName}`, resolve(shareRoot, "node_modules", "@tinycloud", packageName), resolve(sdkRoot, "packages", packageName));
   }
   console.log(`@tinycloud/web-sdk resolves to the js-sdk worktree under test: ${resolved}`);
   process.exit(0);
@@ -56,5 +64,5 @@ for (const packageName of companionPackages) {
   rmSync(companionLink, { recursive: true, force: true });
   symlinkSync(companionTarget, companionLink);
 }
-const resolved = assertWebSdkLink(shareRoot, sdkRoot);
+const resolved = assertPackageLink("@tinycloud/web-sdk", linkPath, targetPath);
 console.log(`linked ${linkPath} -> ${resolved} with ${companionPackages.join(", ")}`);

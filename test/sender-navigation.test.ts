@@ -38,14 +38,12 @@ vi.mock("../src/share/capability-list.js", () => ({
 vi.mock("../src/email-share/config.js", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadSharePublicConfig: async () => ({
-    version: "tinycloud.share-email-claim/config-v1",
+    version: "tinycloud.share/config-v2",
     shareOrigin: "https://share.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
-    nodeOrigin: "https://tee.node.tinycloud.xyz",
     credentialsOrigin: "https://witness.credentials.org",
-    nodeAudience: "did:web:tee.node.tinycloud.xyz",
-    enforcerDid: "did:web:tee.node.tinycloud.xyz",
-    nodeEnabled: true,
+    emailOrigin: "https://api.share.tinycloud.xyz",
+    accountlessReceiverEnabled: true,
   }),
 }));
 

@@ -18,7 +18,7 @@ import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud
 
 import type { ResolveResult, UnsupportedReason } from "./resolve.js";
 import { focusViewerRoot } from "./focus.js";
-import { copyWithFallback } from "../share/link-only.js";
+import { copyWithFallback } from "../share/clipboard.js";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -75,11 +75,6 @@ const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: strin
     title: "We can't open this link",
     detail:
       "We couldn't read who this was shared with, so nothing was opened. Ask the sender for a fresh link.",
-  },
-  "recipient-did-target": {
-    title: "We can't open this link",
-    detail:
-      "Sign-in-with-a-key shares aren't supported yet. Ask the sender to share it by email instead.",
   },
   "prefix-resource": {
     title: "Folder sharing isn't available yet",
@@ -231,14 +226,8 @@ export function renderViewerState(
   switch (result.state) {
     case "ok":
       return renderOk(root, result.envelope, result.content !== undefined, result.access ?? "bearer", result.senderVerified, options.shareUrl);
-    case "policy-email-claim-required":
-      renderErrorState(root, "Confirm your email to open this", "Open this document from the link in the invitation email the sender asked us to send.");
-      return null;
-    case "policy-v2-claim-required":
-      renderErrorState(root, "Confirm your email to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
-      return null;
-    case "recipient-did-authorization-required":
-      renderErrorState(root, "Confirm this OpenKey device", "Continue with OpenKey to confirm the current session before opening this share.");
+    case "policy-authorization-required":
+      renderErrorState(root, "Confirm your identity to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
       return null;
     case "invalid-link":
       renderErrorState(
@@ -261,13 +250,6 @@ export function renderViewerState(
         "This share doesn't match its link. We won't open it. Ask the sender for a fresh link.",
       );
       return null;
-    case "decrypt-failed":
-      renderErrorState(
-        root,
-        "Couldn't unlock this share",
-        "We couldn't unlock this. Copy the whole link from the message you received and try again.",
-      );
-      return null;
     case "envelope-invalid":
       renderErrorState(
         root,
@@ -282,25 +264,11 @@ export function renderViewerState(
         "This share failed its security check — it may have been altered. We won't open it.",
       );
       return null;
-    case "capability-invalid":
-      renderErrorState(
-        root,
-        "We can't open this link",
-        "This link isn't put together correctly. Ask the sender for a fresh one.",
-      );
-      return null;
     case "expired":
       renderErrorState(
         root,
         "This share has expired",
         `It expired on ${formatExpiry(result.expiresAt)}. Ask the sender for a fresh link.`,
-      );
-      return null;
-    case "content-fetch-failed":
-      renderErrorState(
-        root,
-        "The file isn't available",
-        "The file isn't available any more. Ask the sender to share it again.",
       );
       return null;
     case "content-integrity-failed":

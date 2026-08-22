@@ -1,19 +1,18 @@
-import { openNativeShare, type NativeSharingService } from "@tinycloud/share-sdk";
+import { parseNativeShareUrl } from "@tinycloud/share-sdk";
+import { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-type ReceivedAccess = { readonly ok: true; readonly data: { readonly path: string; readonly spaceId: string; readonly delegation: { readonly expiry: Date }; readonly kv: { get(path: string, options?: { readonly binary?: boolean }): Promise<{ readonly ok: boolean; readonly data?: { readonly data?: Uint8Array } }> } } } | { readonly ok: false; readonly error: { readonly message: string } };
+type ReceivedAccess = { readonly ok: true; readonly data: { readonly data: unknown; readonly path: string; readonly spaceId: string; readonly host: string; readonly delegation: { readonly expiry: Date | string } } } | { readonly ok: false; readonly error: { readonly message: string } };
 
 /** Receive the fragment token through TinyCloud SDK and invoke the delegated owner path. */
-export async function receiveNativeBearerAccess(sharing: NativeSharingService, href: string): Promise<{ readonly path: string; readonly spaceId: string; readonly expiresAt: string; readonly bytes: Uint8Array }> {
-  const received = await openNativeShare(sharing, href) as ReceivedAccess;
+export async function receiveNativeBearerAccess(href: string, receive: (token: string) => Promise<unknown> = (token) => TinyCloudWeb.receiveShare<Uint8Array>(token, undefined, { binary: true })): Promise<{ readonly path: string; readonly spaceId: string; readonly ownerNodeOrigin: string; readonly expiresAt: string; readonly bytes: Uint8Array }> {
+  const received = await receive(parseNativeShareUrl(href)) as ReceivedAccess;
   if (!received.ok) throw new Error(received.error.message);
-  // SharingService configures the received KV service with the delegated
-  // exact key as its prefix. An empty relative key therefore invokes that
-  // exact key once; repeating `path` would turn it into `path/path`.
-  const read = await received.data.kv.get("", { binary: true });
-  if (!read.ok || !(read.data?.data instanceof Uint8Array)) throw new Error("TinyCloud owner node denied shared read");
-  return { path: received.data.path, spaceId: received.data.spaceId, expiresAt: received.data.delegation.expiry.toISOString(), bytes: read.data.data.slice() };
+  if (!(received.data.data instanceof Uint8Array)) throw new Error("TinyCloud owner node returned invalid shared bytes");
+  const expiresAt = new Date(received.data.delegation.expiry);
+  if (!Number.isFinite(expiresAt.getTime())) throw new Error("TinyCloud delegation expiry is invalid");
+  return { path: received.data.path, spaceId: received.data.spaceId, ownerNodeOrigin: received.data.host, expiresAt: expiresAt.toISOString(), bytes: received.data.data.slice() };
 }
 
-export async function receiveNativeBearer(sharing: NativeSharingService, href: string): Promise<Uint8Array> {
-  return (await receiveNativeBearerAccess(sharing, href)).bytes;
+export async function receiveNativeBearer(href: string, receive?: (token: string) => Promise<unknown>): Promise<Uint8Array> {
+  return (await receiveNativeBearerAccess(href, receive)).bytes;
 }

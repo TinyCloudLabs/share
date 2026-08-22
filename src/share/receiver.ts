@@ -1,4 +1,3 @@
-import { fromBase64Url } from "@tinycloud/share-envelope";
 import { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 
@@ -9,15 +8,14 @@ import type { SharePublicConfig } from "../email-share/config.js";
  */
 export async function createShareReceiverClient(
   config: SharePublicConfig,
-  registryBaseUrl: string,
 ): Promise<TinyCloudWeb> {
   const nodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true"
     ? window.location.origin
-    : config.nodeOrigin;
+    : undefined;
   return TinyCloudWeb.create({
-    tinycloudHosts: [nodeHost],
+    ...(nodeHost === undefined ? {} : { tinycloudHosts: [nodeHost] }),
     tinycloudFallbackHosts: null,
-    tinycloudRegistryUrl: null,
+    tinycloudRegistryUrl: nodeHost === undefined ? config.registryOrigin : null,
     autoDiscoverLocalNode: false,
     autoCreateSpace: false,
     domain: new URL(config.shareOrigin).hostname,
@@ -26,15 +24,7 @@ export async function createShareReceiverClient(
     shareReceiver: {
       origin: window.location.origin,
       expectedShareOrigin: config.shareOrigin,
-      registryBaseUrl,
       credentialDiscoveryUrl: `${config.credentialsOrigin}/.well-known/opencredentials`,
-      // Unified v3 envelopes target the attested Ed25519 enforcer DID. The
-      // deployment's did:web nodeAudience remains the public routing identity.
-      expectedEnforcerDid: config.enforcerDid,
-      trustedNode: {
-        invitationKid: config.nodeInvitationKid,
-        invitationPublicKey: fromBase64Url(config.nodeInvitationPublicKey),
-      },
     },
   });
 }

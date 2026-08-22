@@ -13,9 +13,7 @@ import {
   type ComposerContent,
   type ShareComposerModel,
 } from "../src/share/composer-model.js";
-import { canonicalUploadFiles, mountShareComposer, selectedFilePath, type ComposerShareResult } from "../src/share/composer.js";
-import { createDevRegistry } from "@tinycloud/share-registry/dev-server";
-import { LinkOnlyShareError } from "../src/share/link-only.js";
+import { canonicalUploadFiles, mountShareComposer, resolveOwnerShareNode, selectedFilePath, type ComposerShareResult } from "../src/share/composer.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-failure.js";
 
 /**
@@ -31,7 +29,6 @@ import { fail, SENDER_FAILURE, senderFailureMessage } from "../src/share/sender-
 const EXPECTED_SENDER_COPY = {
   session: "Your session expired. Reload and sign in again.",
   content: "Pick the file you want to share.",
-  format: "This share can't be made self-contained. Use the short link instead.",
   account: "Your account isn't set up for sharing yet. Contact support.",
   source: "You don't have access to that file any more. Pick another one.",
   rejected: "We couldn't create that link. Try again, or pick a different file.",
@@ -116,14 +113,24 @@ function chooseExpiry(root: HTMLElement, value: string): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function baseOptions(): { openKeyAddress: string; origin: string; nativeHistoryTarget: { origin: string; nodeAudience: string }; onBack: () => void } {
-  return { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", nativeHistoryTarget: { origin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz" }, onBack: () => undefined };
+function baseOptions(): { openKeyAddress: string; origin: string; onBack: () => void } {
+  return { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined };
 }
 
 describe("share composer model", () => {
-  it("defaults to an encrypted, short, read-only, link-only share expiring in 7 days", () => {
+  it("binds every share target to the authenticated owner's registry-resolved Node", async () => {
+    const activeNodeIdentity = vi.fn(async () => ({ origin: "https://alice-node.example", nodeDid: "did:key:z6MkAliceNode" }));
+    await expect(resolveOwnerShareNode({ activeNodeIdentity } as never)).resolves.toEqual({
+      origin: "https://alice-node.example",
+      nodeAudience: "did:key:z6MkAliceNode",
+      enforcerDid: "did:key:z6MkAliceNode",
+    });
+    expect(activeNodeIdentity).toHaveBeenCalledOnce();
+  });
+
+  it("defaults to an encrypted, read-only, link-only share expiring in 7 days", () => {
     const defaults = defaultComposerModel(Date.parse("2026-07-27T00:00:00.000Z"));
-    expect(defaults).toMatchObject({ linkFormat: "compact", encryption: true, permissions: ["read"], recipient: { kind: "bearer" } });
+    expect(defaults).toMatchObject({ encryption: true, permissions: ["read"], recipient: { kind: "bearer" } });
     expect(defaults.expiresAt).toBe("2026-08-03T00:00:00.000Z");
     expect(defaults).not.toHaveProperty("notify");
   });
@@ -193,7 +200,7 @@ describe("share composer content picker", () => {
   it("turns a pasted block of text into an editable draft in place, with no mode chosen", async () => {
     const root = document.createElement("div"); document.body.append(root);
     let received: { file?: File; model?: ShareComposerModel } = {};
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: async ({ file, model }) => { received = { ...(file === undefined ? {} : { file }), model }; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
+    mountShareComposer(root, { ...baseOptions(), createShare: async ({ file, model }) => { received = { ...(file === undefined ? {} : { file }), model }; return { url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "cid" }; } });
     const drop = root.querySelector<HTMLElement>(".content-dropzone")!;
     paste(drop, { text: "# Hermetic sharing\n\nPasted in the browser." });
     const author = root.querySelector<HTMLTextAreaElement>("textarea[name=author-content]")!;
@@ -289,7 +296,7 @@ describe("share composer content picker", () => {
   ])("infers file content from %s", async (_label, act) => {
     const root = document.createElement("div"); document.body.append(root);
     let received: { file?: File; model?: ShareComposerModel } = {};
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: async ({ file, model }) => { received = { ...(file === undefined ? {} : { file }), model }; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
+    mountShareComposer(root, { ...baseOptions(), createShare: async ({ file, model }) => { received = { ...(file === undefined ? {} : { file }), model }; return { url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "cid" }; } });
     const file = new File([new Uint8Array([0, 255, 1, 2])], "photo.bin", { type: "application/octet-stream" });
     act(root, file);
     expect(root.querySelector<HTMLElement>(".content-chosen")!.hidden).toBe(false);
@@ -307,7 +314,6 @@ describe("share composer content picker", () => {
     const createShare = vi.fn();
     mountShareComposer(root, {
       ...baseOptions(),
-      loadCapabilities: async () => [],
       createShare: createShare as never,
     });
     expect(root.querySelector<HTMLInputElement>("input[name=document]")!.multiple).toBe(false);
@@ -353,33 +359,10 @@ describe("share composer content picker", () => {
     expect(canonicalUploadFiles(canonical).map(selectedFilePath)).toEqual(["assets/a.txt", "assets/b.txt"]);
   });
 
-  it("selects a real library source and preserves the canonical source boundary", async () => {
-    const root = document.createElement("div"); document.body.append(root);
-    let selected: ShareComposerModel | undefined;
-    const capability = { capabilityId: "cap-1", scope: {}, source: { kind: "kv" as const, space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" as const }, policy: {} as never };
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [capability], createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(selected?.content).toEqual({ kind: "library", source: capability.source, resource: { kind: "exact", path: capability.source.path } });
-    expect(selected?.resource).toEqual({ kind: "exact", path: capability.source.path });
-  });
-
-  it("does not offer a library prefix until folder encryption is supported", async () => {
-    const root = document.createElement("div"); document.body.append(root);
-    const capability = { capabilityId: "cap-folder", scope: { prefixes: ["docs"] }, source: { kind: "kv" as const, space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" as const }, policy: {} as never };
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [capability] });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    root.querySelector<HTMLButtonElement>(".dropzone-library")!.click();
-    const options = Array.from(root.querySelector<HTMLSelectElement>("select[name=kv-source]")!.options);
-    expect(options.some((option) => option.value === "docs/" || option.dataset.resourceKind === "prefix")).toBe(false);
-  });
-
   it("refuses to submit with nothing chosen, and says what to do", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const createShare = vi.fn();
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: createShare as never });
+    mountShareComposer(root, { ...baseOptions(), createShare: createShare as never });
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(createShare).not.toHaveBeenCalled();
@@ -402,14 +385,14 @@ describe("share composer access controls", () => {
   it("offers the expiry control it used to hardcode, states the consequence, and carries the choice into the model", async () => {
     const root = document.createElement("div"); document.body.append(root);
     let selected: ShareComposerModel | undefined;
-    mountShareComposer(root, { ...baseOptions(), loadCapabilities: async () => [], createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }; } });
+    mountShareComposer(root, { ...baseOptions(), createShare: async ({ model }) => { selected = model; return { url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "cid" }; } });
     const expiryFieldset = root.querySelector<HTMLFieldSetElement>("fieldset.expiry-field")!;
     const expiryInputs = Array.from(expiryFieldset.querySelectorAll<HTMLInputElement>("input[name=expiry]"));
     expect(root.querySelector("select[name=expiry]")).toBeNull();
     expect(expiryFieldset.querySelector("legend")?.textContent).toBe("Link expires");
     expect(expiryInputs.map((input) => input.value)).toEqual(["24h", "7d", "30d"]);
     expect(expiryInputs.filter((input) => input.checked).map((input) => input.value)).toEqual(["7d"]);
-    expect(root.querySelector(".composer-note")?.textContent).toContain("can't be revoked early");
+    expect(root.querySelector(".composer-note")?.textContent).toContain("revoke it earlier from All shares");
 
     chooseExpiry(root, "24h");
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
@@ -438,7 +421,6 @@ describe("share composer access controls", () => {
     expect(recipientOptions.map((input) => input.disabled)).toEqual([false, true, true, false]);
     expect(recipientOptions.slice(1, 3).map((input) => input.closest("label")?.getAttribute("aria-disabled"))).toEqual(["true", "true"]);
     expect(advanced.open).toBe(false);
-    expect(advanced.contains(root.querySelector("select[name=format]"))).toBe(true);
     const encryption = root.querySelector<HTMLInputElement>("input[name=encryption]")!;
     expect(advanced.contains(encryption)).toBe(false);
     expect(encryption.checked).toBe(true);
@@ -450,7 +432,7 @@ describe("share composer access controls", () => {
     expect(advanced.contains(root.querySelector("input[name=delivery-email]"))).toBe(true);
     expect(advanced.querySelector("input[name=recipient]")).toBeNull();
     expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
-    expect(root.querySelector<HTMLSelectElement>("select[name=format]")!.options[0]!.textContent).toBe("Short link (recommended)");
+    expect(root.querySelector("select[name=format]")).toBeNull();
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
     expect(encryption.checked).toBe(false);
@@ -462,7 +444,7 @@ describe("share composer access controls", () => {
     const submitted: ShareComposerModel[] = [];
     mountShareComposer(root, {
       ...baseOptions(),
-      createShare: async ({ model }) => { submitted.push(model); return { url: "https://share.tinycloud.xyz/s/plain", cid: "plain", format: model.linkFormat }; },
+      createShare: async ({ model }) => { submitted.push(model); return { url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "plain" }; },
     });
     const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
     Object.defineProperty(input, "files", { configurable: true, value: [new File(["public"], "public.txt", { type: "text/plain" })] });
@@ -517,8 +499,7 @@ describe("share composer access controls", () => {
     let persisted: ShareComposerModel | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
-      loadCapabilities: async () => [],
-      createShare: async ({ model }) => ({ url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }),
+      createShare: async () => ({ url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "cid" }),
       persistShare: async ({ model }) => { persisted = model; },
     });
     const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
@@ -547,8 +528,7 @@ describe("share composer access controls", () => {
     mountShareComposer(root, {
       ...baseOptions(),
       now: () => fixed,
-      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
-      loadCapabilities: async () => [],
+      tinycloud: { activeNodeIdentity: async () => ({ origin: "https://owner-node.example", nodeDid: "did:key:z6MkOwnerNode" }), spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
 
@@ -567,7 +547,7 @@ describe("share composer access controls", () => {
     expect(puts).toHaveBeenCalledOnce();
     expect(generate).toHaveBeenCalledWith(expect.objectContaining({ actions: ["tinycloud.kv/get"], expiry: new Date(expectedExpiry) }));
     expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
-    expect(captured!.share.record).toMatchObject({ enforcementDelegationCid: "bafy-native-delegation", target: { origin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }, resource: { kind: "exact" }, actions: ["tinycloud.kv/get"], recipientMatcher: { kind: "bearer" }, expiresAt: expectedExpiry, filename: "expiry.txt" });
+    expect(captured!.share.record).toMatchObject({ enforcementDelegationCid: "bafy-native-delegation", target: { origin: "https://owner-node.example", nodeAudience: "did:key:z6MkOwnerNode", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }, resource: { kind: "exact" }, actions: ["tinycloud.kv/get"], recipientMatcher: { kind: "bearer" }, expiresAt: expectedExpiry, filename: "expiry.txt" });
   });
 
   it("publishes a non-UTF-8 file through the real link-only creation path", async () => {
@@ -578,8 +558,7 @@ describe("share composer access controls", () => {
     let captured: { readonly share: ComposerShareResult; readonly model: ShareComposerModel } | undefined;
     mountShareComposer(root, {
       ...baseOptions(),
-      tinycloud: { spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }), receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
-      loadCapabilities: async () => [],
+      tinycloud: { activeNodeIdentity: async () => ({ origin: "https://owner-node.example", nodeDid: "did:key:z6MkOwnerNode" }), spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate: async () => ({ ok: true as const, data: { token: "delegation", delegation: { cid: "bafy-native-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }), receive: vi.fn(), decodeLink: () => ({ path: "synthetic", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }) } } as never,
       persistShare: async ({ share, model }) => { captured = { share, model }; },
     });
 
@@ -597,56 +576,13 @@ describe("share composer access controls", () => {
     expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
   });
 
-  it("a link-only share never persists an ungranted action", async () => {
-    const registry = createDevRegistry();
-    const authenticatedRegistryFetch: typeof fetch = async (input, init) => {
-      const url = new URL(String(input));
-      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
-      const target = new URL(
-        url.pathname.replace("/api/share/link-only/registry", ""),
-        "http://registry.local",
-      );
-      return registry.handler(new Request(target, {
-        ...init,
-        body,
-        duplex: "half",
-      } as RequestInit));
-    };
-
-    const root = document.createElement("div");
-    document.body.append(root);
-    const persisted: Array<{ readonly share: ComposerShareResult; readonly model: ShareComposerModel }> = [];
-    mountShareComposer(root, {
-      ...baseOptions(),
-      fetchFn: authenticatedRegistryFetch,
-      loadCapabilities: async () => [],
-      persistShare: async ({ share, model }) => { persisted.push({ share, model }); },
-    });
-
-    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
-    Object.defineProperty(input, "files", {
-      configurable: true,
-      value: [new File(["hostile permission"], "hostile.txt", { type: "text/plain" })],
-    });
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-    root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!.checked = true;
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-
-    await vi.waitFor(() => expect(persisted.length > 0 || root.querySelector<HTMLElement>(".composer-status")?.dataset.state === "error-invalid").toBe(true));
-    expect(persisted.some(({ model }) => model.permissions.includes("edit"))).toBe(false);
-    // The guard must reach the sender as its own actionable copy. It is the one
-    // validateComposerModel throw that the sender-failure table could silently
-    // swallow into the generic "internal" message if it were left untagged.
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(EXPECTED_SENDER_COPY.linkOnlyActions);
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).not.toBe(EXPECTED_SENDER_COPY.internal);
-  });
 });
 
 describe("share composer navigation", () => {
   it("offers a way back to the library from the empty composer and from the result", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const onBack = vi.fn();
-    mountShareComposer(root, { ...baseOptions(), onBack, loadCapabilities: async () => [], createShare: async ({ model }) => ({ url: "https://share.tinycloud.xyz/s/example", cid: "cid", format: model.linkFormat }) });
+    mountShareComposer(root, { ...baseOptions(), onBack, createShare: async () => ({ url: "https://share.tinycloud.xyz/viewer#tc1=opaque", cid: "cid" }) });
     const back = root.querySelector<HTMLButtonElement>("button.composer-back")!;
     expect(back.textContent).toContain("All shares");
     back.click();
@@ -691,9 +627,8 @@ describe("share composer sender failures", () => {
     expect(root.querySelector(".composer-status")?.textContent).not.toContain("node action bounds exceeded");
   });
 
-  it("classifies untagged, link-only, network, and model-validation failures", () => {
+  it("classifies untagged, network, and model-validation failures", () => {
     expect(senderFailureMessage(new Error("delegation envelope CID mismatch"))).toBe(EXPECTED_SENDER_COPY.internal);
-    expect(senderFailureMessage(new LinkOnlyShareError("file", "Choose a .txt, .md, or .markdown file."))).toBe("Choose a .txt, .md, or .markdown file.");
     expect(senderFailureMessage(new TypeError("Failed to fetch"))).toBe(EXPECTED_SENDER_COPY.offline);
 
     let validationError: unknown;
@@ -748,7 +683,7 @@ describe("share composer sender failures", () => {
  * exposure from `copyWithFallback`.
  */
 describe("share composer clipboard-denied fallback (TC-334)", () => {
-  const SHARE_URL = "https://share.tinycloud.xyz/s/bafyexample#k=SECRET-KEY-MATERIAL";
+  const SHARE_URL = "https://share.tinycloud.xyz/viewer#tc1=SECRET-CAPABILITY-MATERIAL";
 
   /** Every way a string can be read back out of the live tree. */
   function exposures(root: HTMLElement, value: string): readonly string[] {
@@ -768,8 +703,7 @@ describe("share composer clipboard-denied fallback (TC-334)", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, {
       ...baseOptions(),
-      loadCapabilities: async () => [],
-      createShare: async ({ model }) => ({ url: SHARE_URL, cid: "bafyexample", format: model.linkFormat }),
+      createShare: async () => ({ url: SHARE_URL, cid: "bafyexample" }),
       copyText: async () => { throw new Error("clipboard unavailable"); },
     });
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });

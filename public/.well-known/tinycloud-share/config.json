@@ -1,0 +1,8 @@
+{
+  "version": "tinycloud.share/config-v2",
+  "shareOrigin": "https://share.tinycloud.xyz",
+  "registryOrigin": "https://registry.tinycloud.xyz",
+  "credentialsOrigin": "https://witness.credentials.org",
+  "emailOrigin": "https://api.share.tinycloud.xyz",
+  "accountlessReceiverEnabled": true
+}

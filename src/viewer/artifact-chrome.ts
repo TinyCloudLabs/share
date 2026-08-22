@@ -1,4 +1,4 @@
-import { copyWithFallback } from "../share/link-only.js";
+import { copyWithFallback } from "../share/clipboard.js";
 
 const STORAGE_PREFIX = "tinycloud:artifact-chrome:v1:";
 

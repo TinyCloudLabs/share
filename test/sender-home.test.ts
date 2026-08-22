@@ -28,7 +28,7 @@ function record(shareId: string, recipientMatcher: SenderShareRecord["recipientM
     registeredAt: "2026-07-24T12:00:00.000Z",
     expiresAt: "2026-07-31T12:00:00.000Z",
     ...(recipientMatcher.kind === "bearer" ? {} : { enforcementDelegationCid: `delegation-${shareId}` }),
-    link: "https://share.example.invalid/s/test",
+    link: "https://share.example.invalid/viewer#tc1=opaque",
     filename: `${shareId}.md`,
   };
 }
@@ -53,7 +53,7 @@ describe("sender home canonical lifecycle adapters", () => {
     expect(root.querySelector('button[aria-label="Revoke leave-me.md"]')).not.toBeNull();
   });
 
-  it("explains why bearer retention cannot be revoked", async () => {
+  it("explains why an imported bearer link without delegation authority cannot be revoked", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
     await history.save(record("bearer", { kind: "bearer" }));
@@ -83,6 +83,6 @@ describe("sender home canonical lifecycle adapters", () => {
     await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')).not.toBeNull());
     root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')!.click();
     await vi.waitFor(() => expect(window.open).toHaveBeenCalled());
-    expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/s/test", "_self", "noreferrer");
+    expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/viewer#tc1=opaque", "_self", "noreferrer");
   });
 });

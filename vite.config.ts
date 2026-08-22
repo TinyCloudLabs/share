@@ -2,12 +2,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
-import {
-  defineConfig,
-  type Plugin,
-  type PreviewServer,
-  type ViteDevServer,
-} from "vite";
+import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 
 import {
   MERMAID_SANDBOX_HTTP_HEADERS,
@@ -19,221 +14,84 @@ import {
   ARTIFACT_SANDBOX_PATH,
   buildArtifactSandboxHtml,
 } from "./src/viewer/artifact-frame.ts";
-import { createShareHostFromEnv } from "./src/host/share-adapter.ts";
-import { senderOnlyRoute } from "./src/host/production-server.ts";
-import { cloudflareHeaders, loadTrustBundle, securityHeadersForPath } from "./src/host/trust-bundle.ts";
-import { assertSafeUpstreamQuery, sanitizeUpstreamRequest, sanitizeUpstreamResponse, upstreamForPath, upstreamPathFor } from "./src/host/upstream.ts";
 
-/**
- * Serve viewer.html on /s/<cid> routes (dev + preview). The spec site stays
- * at / (index.html) — untouched. In production the static host needs the
- * same rewrite rule: /s/* → /viewer.html.
- */
+/** Share is a static UX. Every live authority/data operation goes to TinyCloud. */
 function shareRouteRewrite(): Plugin {
   const rewrite = (url: string | undefined): string | undefined => {
-    const path = (url ?? "").split("?")[0] ?? "";
-    // Fragment (#k=…) never reaches the server, so matching the path only
-    // is exact. CID charset per the link codec: lowercase base32.
-    if (/^\/s\/[a-z2-7]+$/.test(path) || path === "/s/inline") return "/viewer.html";
+    const path = (url ?? "").split("?", 1)[0] ?? "";
     if (path === "/share") return "/share.html";
     if (path === "/viewer") return "/viewer.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
   };
-  return {
-    name: "share-route-rewrite",
-    configureServer(server) {
-      server.middlewares.use((req, _res, next) => {
-        const target = rewrite(req.url);
-        if (target !== undefined) req.url = target;
-        next();
-      });
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use((req, _res, next) => {
-        const target = rewrite(req.url);
-        if (target !== undefined) req.url = target;
-        next();
-      });
-    },
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    server.middlewares.use((request, _response, next) => {
+      const target = rewrite(request.url);
+      if (target !== undefined) request.url = target;
+      next();
+    });
   };
+  return { name: "share-route-rewrite", configureServer: serve, configurePreviewServer: serve };
 }
 
-/**
- * Serve (dev/preview) and emit (build) the mermaid sandbox document at
- * MERMAID_SANDBOX_PATH: the shared HTML builder (src/viewer/mermaid-frame.ts)
- * with the version-pinned, self-hosted mermaid IIFE bundle INLINED — the
- * frame's CSP allows only inline scripts (no network at all), per viewer
- * spec §3.2. Static hosts serve the emitted asset as-is.
- */
+function staticSecurityHeaders(): Plugin {
+  const serve = (server: ViteDevServer | PreviewServer): void => {
+    server.middlewares.use((_request, response, next) => {
+      response.setHeader("cache-control", "no-store, no-transform");
+      response.setHeader("referrer-policy", "no-referrer");
+      response.setHeader("x-content-type-options", "nosniff");
+      next();
+    });
+  };
+  return { name: "share-static-security-headers", configureServer: serve, configurePreviewServer: serve };
+}
+
 function mermaidSandboxHtml(): Plugin {
   let html: string | undefined;
   const getHtml = (): string => {
     if (html === undefined) {
       const require = createRequire(import.meta.url);
-      html = buildMermaidSandboxHtml(
-        readFileSync(require.resolve("mermaid/dist/mermaid.min.js"), "utf8"),
-      );
+      html = buildMermaidSandboxHtml(readFileSync(require.resolve("mermaid/dist/mermaid.min.js"), "utf8"));
     }
     return html;
   };
   const serve = (server: ViteDevServer | PreviewServer): void => {
-    server.middlewares.use((req, res, next) => {
-      const path = (req.url ?? "").split("?")[0] ?? "";
-      if (path !== MERMAID_SANDBOX_PATH) {
-        next();
-        return;
-      }
-      res.setHeader("content-type", "text/html; charset=utf-8");
-      // Refuse third-party embedding: frame-ancestors MUST arrive as an
-      // HTTP header (a <meta> CSP cannot carry it). PRODUCTION static hosts
-      // must send these same headers for this path — the build ships a
-      // public/_headers rule for Cloudflare Pages; any other host needs the
-      // equivalent configuration.
-      for (const [name, value] of MERMAID_SANDBOX_HTTP_HEADERS) {
-        res.setHeader(name, value);
-      }
-      res.end(getHtml());
+    server.middlewares.use((request, response, next) => {
+      if ((request.url ?? "").split("?", 1)[0] !== MERMAID_SANDBOX_PATH) { next(); return; }
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      for (const [name, value] of MERMAID_SANDBOX_HTTP_HEADERS) response.setHeader(name, value);
+      response.end(getHtml());
     });
   };
   return {
     name: "mermaid-sandbox-html",
     configureServer: serve,
     configurePreviewServer: serve,
-    generateBundle() {
-      this.emitFile({
-        type: "asset",
-        fileName: MERMAID_SANDBOX_PATH.slice(1),
-        source: getHtml(),
-      });
-    },
+    generateBundle() { this.emitFile({ type: "asset", fileName: MERMAID_SANDBOX_PATH.slice(1), source: getHtml() }); },
   };
 }
 
 function artifactSandboxHtml(): Plugin {
   const html = buildArtifactSandboxHtml();
   const serve = (server: ViteDevServer | PreviewServer): void => {
-    server.middlewares.use((req, res, next) => {
-      const path = (req.url ?? "").split("?")[0] ?? "";
-      if (path !== ARTIFACT_SANDBOX_PATH) {
-        next();
-        return;
-      }
-      res.setHeader("content-type", "text/html; charset=utf-8");
-      for (const [name, value] of ARTIFACT_SANDBOX_HTTP_HEADERS) res.setHeader(name, value);
-      res.end(html);
+    server.middlewares.use((request, response, next) => {
+      if ((request.url ?? "").split("?", 1)[0] !== ARTIFACT_SANDBOX_PATH) { next(); return; }
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      for (const [name, value] of ARTIFACT_SANDBOX_HTTP_HEADERS) response.setHeader(name, value);
+      response.end(html);
     });
   };
   return {
     name: "artifact-sandbox-html",
     configureServer: serve,
     configurePreviewServer: serve,
-    generateBundle() {
-      this.emitFile({ type: "asset", fileName: ARTIFACT_SANDBOX_PATH.slice(1), source: html });
-    },
+    generateBundle() { this.emitFile({ type: "asset", fileName: ARTIFACT_SANDBOX_PATH.slice(1), source: html }); },
   };
 }
-
-function shareHostAdapter(): Plugin {
-  let adapter: ReturnType<typeof createShareHostFromEnv> | undefined;
-  const route = (path: string): boolean => path === "/.well-known/tinycloud-share/config.json" || path === "/api/share/auth/openkey/nonce" || path === "/api/share/auth/openkey" || path === "/api/share/auth/login" || path === "/api/share/auth/logout" || path === "/api/share/capability" || path === "/api/share/capabilities" || path === "/api/share/sign" || path === "/api/share/bindings" || path.startsWith("/.well-known/tinycloud-share/bindings/") || /^\/s\/[a-z2-7]+\/raw$/.test(path) || path.startsWith("/api/share/link-only/registry/") || path === "/registry" || path.startsWith("/registry/") || path.startsWith("/policy/v3/") || path === "/delegate" || path === "/invoke" || path.startsWith("/v1/share-email/");
-  const ensure = (): ReturnType<typeof createShareHostFromEnv> | undefined => {
-    if (adapter !== undefined) return adapter;
-    try { adapter = createShareHostFromEnv(); return adapter; }
-    catch (error) {
-      if (process.env.SHARE_DEPLOY_STARTUP === "true") throw error;
-      console.error("local Share host configuration failed", error);
-      return undefined;
-    }
-  };
-  const serve = (server: ViteDevServer | PreviewServer): void => {
-    if (process.env.SHARE_DEPLOY_STARTUP === "true") ensure();
-    server.middlewares.use((req, res, next) => {
-      const path = (req.url ?? "").split("?")[0] ?? "";
-      if (!route(path)) { next(); return; }
-      const host = ensure();
-      if (host === undefined) { res.writeHead(503, JSON_HEADERS); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); return; }
-      const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
-      req.on("end", () => void (async () => {
-        const body = Buffer.concat(chunks);
-        const bundle = loadTrustBundle();
-        const upstream = upstreamForPath(bundle, path);
-        if (upstream !== undefined) {
-          assertSafeUpstreamQuery(path, new URL(req.url ?? path, "http://share.invalid").search);
-          if (!host.readiness.senderReady && senderOnlyRoute(path)) {
-            res.writeHead(503, JSON_HEADERS);
-            res.end(JSON.stringify({ error: { code: "sender_not_ready" } }));
-            return;
-          }
-          const method = req.method ?? "GET";
-          const headers = sanitizeUpstreamRequest(path, method, new Headers(Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string"))), body.length, bundle.public.shareOrigin);
-          const requestUrl = new URL(req.url ?? path, "http://share.invalid");
-          const targetPath = upstream.service === "registry" ? (path.startsWith("/registry") ? path.slice("/registry".length) || "/" : upstreamPathFor(path)) : path;
-          const target = new URL(`${targetPath}${path.startsWith("/s/") ? "" : requestUrl.search}`, upstream.origin);
-          const upstreamResponse = await fetch(target, { method, headers, redirect: "error", ...(body.length === 0 ? {} : { body: body.buffer as ArrayBuffer }) });
-          const result = sanitizeUpstreamResponse(path, method, upstreamResponse);
-          res.writeHead(result.status, Object.fromEntries(result.headers));
-          res.end(Buffer.from(await result.arrayBuffer()));
-          return;
-        }
-        const requestInit: RequestInit & { duplex?: "half" } = { method: req.method ?? "GET", headers: Object.fromEntries(Object.entries(req.headers).filter((entry): entry is [string, string] => typeof entry[1] === "string")), ...(body.length === 0 ? {} : { body: new Uint8Array(body), duplex: "half" }) };
-        const response = await host.handler(new Request(`http://${req.headers.host ?? "127.0.0.1"}${req.url ?? path}`, requestInit));
-        res.writeHead(response.status, Object.fromEntries(response.headers));
-        res.end(Buffer.from(await response.arrayBuffer()));
-      })().catch(() => { if (!res.headersSent) res.writeHead(500, JSON_HEADERS); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); }));
-    });
-  };
-  return {
-    name: "share-host-adapter",
-    configureServer: serve,
-    configurePreviewServer: serve,
-    generateBundle() {
-      // `SHARE_TRUST_BUNDLE_SOURCE=committed` is a third source: the reviewed,
-      // non-secret document in the repository. It lets a deploy build emit
-      // `_headers` and the public config with no secret material in the
-      // environment at all.
-      if (process.env.SHARE_TRUST_BUNDLE_SOURCE !== "committed" && process.env.SHARE_TRUST_BUNDLE === undefined && process.env.SHARE_TRUST_BUNDLE_FILE === undefined) {
-        if (process.env.SHARE_DEPLOY_BUILD === "true") throw new Error("SHARE_TRUST_BUNDLE is required for deploy builds");
-        return;
-      }
-      const bundle = loadTrustBundle();
-      const publicConfig = { version: "tinycloud.share-email-claim/config-v1", shareOrigin: bundle.public.shareOrigin, registryOrigin: bundle.public.registryOrigin, nodeOrigin: bundle.public.nodeOrigin, credentialsOrigin: bundle.public.credentialsOrigin, emailOrigin: bundle.public.emailOrigin, nodeAudience: bundle.public.nodeAudience, nodeEnabled: bundle.public.nodeEnabled, issuerDid: bundle.public.issuerDid, issuerVct: bundle.public.issuerVct, issuerEnabled: bundle.public.issuerEnabled, nodeInvitationKid: bundle.public.nodeInvitationKid, nodeInvitationPublicKey: bundle.public.nodeInvitationPublicKey, nodeKeyVersion: bundle.public.nodeKeyVersion, issuerKeyVersion: bundle.public.issuerKeyVersion, issuerPublicKey: bundle.public.issuerPublicKey, ...(bundle.environment === "test" ? { environment: "test" as const } : {}) };
-      this.emitFile({ type: "asset", fileName: ".well-known/tinycloud-share/config.json", source: `${JSON.stringify(publicConfig)}\n` });
-      this.emitFile({ type: "asset", fileName: "_headers", source: cloudflareHeaders(bundle) });
-    },
-  };
-}
-
-function securityHeaders(): Plugin {
-  const serve = (server: ViteDevServer | PreviewServer): void => {
-    server.middlewares.use((req, res, next) => {
-      try {
-        const bundle = loadTrustBundle();
-        const path = (req.url ?? "").split("?")[0] ?? "";
-        const headers = securityHeadersForPath(bundle, path);
-        const locked = new Map(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), { name, value }]));
-        const setHeader = res.setHeader.bind(res);
-        res.setHeader = ((name: string, value: string | number | readonly string[]) => {
-          const replacement = locked.get(name.toLowerCase());
-          return replacement === undefined ? setHeader(name, value) : setHeader(replacement.name, replacement.value);
-        }) as typeof res.setHeader;
-        for (const [name, value] of Object.entries(headers)) setHeader(name, value);
-      } catch (error) {
-        if (process.env.SHARE_DEPLOY_STARTUP === "true") { res.writeHead(503, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { code: "capability_unavailable" } })); return; }
-        void error;
-      }
-      next();
-    });
-  };
-  return { name: "share-security-headers", configureServer: serve, configurePreviewServer: serve };
-}
-
-const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 
 export default defineConfig({
   base: "/",
-  plugins: [shareRouteRewrite(), securityHeaders(), mermaidSandboxHtml(), artifactSandboxHtml(), shareHostAdapter()],
+  plugins: [shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(), artifactSandboxHtml()],
   build: {
     rollupOptions: {
       input: {

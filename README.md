@@ -1,46 +1,20 @@
 # TinyCloud Sharing
 
-The UX blueprint, specs, wireframes, and spec site for **TinyCloud Sharing** (share.tinycloud.xyz) — email-addressed, end-to-end verifiable share links where possession of the link is necessary but not sufficient: addressed shares also require proof.
+TinyCloud Sharing is the browser UX for TinyCloud's native delegation and invocation protocol. It does not store shared content or run a parallel capability service.
 
-## Repo map
+## Architecture
 
-| Path | What it is |
-|---|---|
-| [`specs/sharing-ux-blueprint.md`](specs/sharing-ux-blueprint.md) | UX blueprint — sender flow, human-recipient flow, agent-recipient flow, link anatomy, claim protocol, decision record |
-| [`specs/sharing-viewer-and-registry.md`](specs/sharing-viewer-and-registry.md) | Viewer product (share.tinycloud.xyz) + share registry service spec |
-| [`docs/html-artifact-sharing.md`](docs/html-artifact-sharing.md) | HTML artifact bundle format, isolation model, limits, and chrome recovery |
-| [`wireframes/`](wireframes/) | 14 low-fi SVG wireframes + [`annotations.md`](wireframes/annotations.md) — the canonical, annotated source of truth |
-| `index.html`, `src/`, `public/` | The Vite spec site rendering the blueprint as a single page |
+- The sender writes content to the sender's TinyCloud applications space.
+- Bearer sharing creates one read-only TinyCloud delegation and transports it in the secret `#tc1` fragment.
+- DID, email, and policy sharing create signed Policy/v3 metadata. The public, fragment-free `?tc2` invitation points back to encrypted content on the owner's node.
+- The recipient proves the required identity, then invokes the owner's TinyCloud node under that delegation or policy.
+- `registry.tinycloud.xyz` discovers a user's TinyCloud node. It is not a share blob store.
+- `api.share.tinycloud.xyz/v1/email` verifies a node- and sender-signed, short-lived, single-use delivery receipt and sends the exact invitation through Resend. It cannot mint access, read or proxy content, store capabilities, or resolve policy.
 
-The agent-facing CLI contract and cross-repository release gate are documented in
-[`docs/share-cli-integration.md`](docs/share-cli-integration.md).
+See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the protocol boundaries and [docs/html-artifact-sharing.md](docs/html-artifact-sharing.md) for artifact rendering.
 
-Note: `wireframes/` is canonical; `public/wireframes/` is a build-time copy used as site assets. Re-sync after editing SVGs with `npm run sync:wireframes`.
+## Development
 
-## Local dev
+`npm install`, then use `npm run dev`, `npm test`, `npm run typecheck`, and `npm run build`.
 
-```bash
-npm install
-npm run dev
-```
-
-## Build
-
-```bash
-npm run build
-```
-
-Output goes to `dist/`.
-
-## Deploying to Cloudflare Pages
-
-- Framework preset: **Vite**
-- Build command: `npm run build:deploy` with the deployment variables in
-  [`docs/share-host-deployment.md`](docs/share-host-deployment.md)
-- Build output directory: `dist`
-
-One-liner alternative:
-
-```bash
-npx wrangler pages deploy dist --project-name share
-```
+The Vite output in `dist/` is a static Cloudflare Pages site. The only server-side package in this repository is the optional email-delivery Worker under `packages/email/`.

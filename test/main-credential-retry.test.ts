@@ -14,37 +14,23 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
-  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/s/test#k=secret" }),
+  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/viewer?tc2=test" }),
 }));
 
 vi.mock("../src/email-share/view.js", () => ({
-  appendRecipientForgetAction: () => undefined,
   renderRecipientInvalid: () => undefined,
   renderRecipientLoading: () => undefined,
-  renderRecipientState: () => undefined,
-}));
-
-vi.mock("../src/email-share/claim.js", () => ({
-  createHolder: async () => undefined,
-  createClaimController: () => ({ state: { state: "idle" }, subscribe: () => undefined }),
 }));
 
 vi.mock("../src/email-share/config.js", () => ({
   loadSharePublicConfig: async () => ({
+    version: "tinycloud.share/config-v2",
     shareOrigin: "https://share.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
-    nodeOrigin: "https://node.example",
     credentialsOrigin: "https://credentials.example",
-    policyEngineOrigin: "https://policy.example",
-    policyEngineAudience: "tinycloud://policy-engine",
-    policyEngineGrantIssuerDid: "did:key:z6MkGrantIssuer",
+    emailOrigin: "https://api.share.tinycloud.xyz",
     accountlessReceiverEnabled: true,
-    nodeAudience: "did:web:node.example",
-    enforcerDid: "did:web:node.example",
-    nodeInvitationKid: "did:web:node.example#key-1",
-    nodeInvitationPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
   }),
-  trustedNodeFromConfig: () => ({ did: "did:web:node.example" }),
 }));
 
 vi.mock("../src/viewer/resolve.js", () => ({
@@ -102,9 +88,8 @@ beforeEach(() => {
     },
   };
   state.resolved = {
-    state: "policy-v2-claim-required",
+    state: "policy-authorization-required",
     envelope,
-    policy: { schema: "xyz.tinycloud.policy/policy/v2" },
     shareCid: "bafkreicredentialshare",
   };
   state.resolve.mockImplementation(async () => {
@@ -150,7 +135,7 @@ describe("first-class accountless receiver", () => {
     expect(state.receiveWithSdk).toHaveBeenCalledWith(
       expect.objectContaining({
         root: document.getElementById("viewer"),
-        shareUrl: "https://share.tinycloud.xyz/s/test#k=secret",
+        shareUrl: "https://share.tinycloud.xyz/viewer?tc2=test",
       }),
     );
     expect(state.receive).not.toHaveBeenCalled();

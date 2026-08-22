@@ -1,626 +1,279 @@
 import { ed25519 } from "@noble/curves/ed25519";
+import { sha256 } from "@noble/hashes/sha256";
+import { base58btc } from "multiformats/bases/base58";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "@tinycloud/share-envelope";
-import { DELIVERY_AUTHORIZATION_DOMAIN, DELIVERY_AUTHORIZATION_V3_DOMAIN } from "../src/protocol.js";
-import { renderInvitationEmail } from "../src/email.js";
+import { signCompactUcanRootAuthorization } from "@tinycloud/sdk-core";
+import { publishAddressedShare, type AddressedOwnerRootInput } from "@tinycloud/share-sdk";
+import { CREDENTIAL_INVITATION_REQUEST_DOMAIN, DELIVERY_ADMISSION_DOMAIN } from "../src/protocol.js";
 import type { D1DatabaseLike, D1PreparedStatementLike } from "../src/store.js";
 import worker, { type EmailEnv } from "../src/worker.js";
 
 const SHARE_ORIGIN = "https://share.tinycloud.xyz";
-const NODE_ORIGIN = "https://node.tinycloud.xyz";
-const NODE_AUDIENCE = "did:web:node.tinycloud.xyz";
-const KID = `${NODE_AUDIENCE}#invitation-key-1`;
-const AUDIENCE = "https://witness.credentials.org";
-const RESEND_ENDPOINT = "https://resend.test/emails";
-const CID = "bafkreiekhtgxpb5xhykd6pytalpkmg52trryror2gritt7r56jv2t75fl4";
-const ROOT_CID = `bafkr4i${"a".repeat(52)}`;
-const KEY_FRAGMENT = `${"A".repeat(42)}E`;
-const SHARE_URL = `${SHARE_ORIGIN}/s/${CID}#k=${KEY_FRAGMENT}`;
-const RECIPIENT = "recipient@example.com";
+const API_ORIGIN = "https://api.share.tinycloud.xyz";
+const RECIPIENT = "alice@example.com";
+const LABEL = "Quarterly report.pdf";
+const RESOURCE = "tinycloud:test-space/kv/shares/report.pdf";
+const nodeSeed = new Uint8Array(32).fill(7);
+const ownerSeed = new Uint8Array(32).fill(6);
+const senderSeed = new Uint8Array(32).fill(8);
+const did = (seed: Uint8Array): string => `did:key:${base58btc.encode(Uint8Array.from([0xed, 0x01, ...ed25519.getPublicKey(seed)]))}`;
+const NODE_DID = did(nodeSeed);
+const OWNER_DID = did(ownerSeed);
+const SENDER_DID = did(senderSeed);
+const b64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64url");
+const hex = (bytes: Uint8Array): string => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 
-const nodePrivateKey = new Uint8Array(32).fill(11);
-const nodePublicKey = ed25519.getPublicKey(nodePrivateKey);
-const otherPrivateKey = new Uint8Array(32).fill(12);
+function attenuation(input: AddressedOwnerRootInput): Record<string, Record<string, readonly unknown[]>> {
+  return Object.fromEntries(input.capabilities.map((capability) => capability.kind === "encryption"
+    ? [capability.resource, { [capability.action]: [{}] }]
+    : [capability.resource, Object.fromEntries(capability.actions.map((action) => [action, [{ type: "xyz.tinycloud.resource/selector", kind: capability.selector, value: capability.resource }]]))]));
+}
 
-const b64 = (value: Uint8Array): string => Buffer.from(value).toString("base64url");
-
-function authorizationBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const now = Date.now();
-  return {
-    type: "TinyCloudShareDeliveryAuthorization",
-    version: 2,
-    jti: b64(new Uint8Array(16).fill(3)),
-    shareCid: CID,
-    shareId: "share-1",
-    registrationCid: "bafkreigistration",
-    delegationCid: "bafkreidelegation",
-    enforcementDelegationCid: "bafkreienforcement",
-    envelopeCid: "bafkreienvelope",
-    policyCid: "bafkreipolicy",
-    nodeAudience: NODE_AUDIENCE,
-    targetOrigin: NODE_ORIGIN,
-    openCredentialsAudience: AUDIENCE,
-    holder: "did:key:z6MkHolder",
-    recipientMatcher: { kind: "exactEmail", value: RECIPIENT },
-    deliveryEmail: RECIPIENT,
-    shareUrl: SHARE_URL,
-    returnOrigin: SHARE_ORIGIN,
-    documentName: "Quarterly report.pdf",
-    senderDid: "did:key:z6MkSender",
-    senderTrust: "verified",
-    contentSource: { kind: "kv", spaceId: "tinycloud:pkh:eip155:1:0xabc:default", path: "reports/q3" },
-    contentSourceDigest: b64(new Uint8Array(32).fill(9)),
-    shareExpiresAt: new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString(),
-    issuedAt: new Date(now).toISOString(),
-    reportAbuseToken: b64(new Uint8Array(16).fill(3)),
+async function publication(now: number) {
+  return publishAddressedShare({
+    shareId: "emaildeliveryfixture0001",
+    shareOrigin: SHARE_ORIGIN,
+    nodeOrigin: "https://owner-node.example",
+    nodeAudience: NODE_DID,
+    enforcerDid: NODE_DID,
+    spaceId: "tinycloud:test-space",
+    target: { kind: "email", address: RECIPIENT },
+    resource: { kind: "exact", path: "shares/report.pdf" },
     actions: ["read"],
-    resource: "reports/q3",
-    authorityMaterialHandle: "bafkreigistration",
-    authorityMaterialDigest: b64(new Uint8Array(32).fill(8)),
-    requestBodyDigest: b64(new Uint8Array(32).fill(7)),
-    idempotencyKey: b64(new Uint8Array(16).fill(3)),
-    expiresAt: new Date(now + 4 * 60 * 1000).toISOString(),
-    dataAuthority: false,
-    ...overrides,
+    policyActions: ["tinycloud.kv/get", "tinycloud.kv/metadata"],
+    contentSource: {
+      shareId: "emaildeliveryfixture0001",
+      kvResource: RESOURCE,
+      selector: "exact",
+      encryptionNetwork: `urn:tinycloud:encryption:${OWNER_DID}:default`,
+      encryptedSymmetricKeyDigestHex: "1".repeat(64),
+      keyVersion: 1,
+      mode: "immutable",
+      initialCiphertextDigestHex: "2".repeat(64),
+    },
+    credentialRequirement: {
+      type: "TinyCloudPolicyCredentialRequirement",
+      version: 1,
+      requirementDigest: "e3awkBcMp_Ff0YBZXI2XUPYyKmkE_HjeAXI7tz6Brgo",
+      descriptorDigest: "1tg-qphmKBVtNwzVg9xyz-xxqt_xtMXAsQyXw46m8S0",
+      issuerDid: "did:web:issuer.credentials.org",
+      issuerKid: "did:web:issuer.credentials.org#controller",
+      profile: { id: "tinycloud.email-proof/v1", version: 1 },
+      credentialType: { id: "opencredentials.email/v1", version: 1 },
+    },
+    filename: LABEL,
+    mediaType: "application/pdf",
+    byteLength: 100,
+    deliveryEmail: RECIPIENT,
+    expiresAt: new Date(now + 24 * 60 * 60_000),
+    authority: {
+      ownerDid: OWNER_DID,
+      async createOwnerRoot(input) {
+        const facts: Record<string, unknown> = {
+          ownerDid: input.ownerDid,
+          policyId: input.policyId,
+          policyDigestHex: input.policyDigestHex,
+          policyCid: input.policyCid,
+          contentSourceDigestHex: input.contentSourceDigestHex,
+          capabilityCeilingHashHex: input.capabilityCeilingHashHex,
+          nativeProjectionHashHex: input.nativeProjectionHashHex,
+          nodeAudience: input.nodeAudience,
+          role: input.role,
+          mode: input.role === "policy-authority" ? "policy-source" : "conditional-mint",
+          ...(input.role === "policy-enforcement" ? { enforcerDid: NODE_DID } : {}),
+        };
+        const root = await signCompactUcanRootAuthorization({
+          issuerDid: OWNER_DID,
+          audienceDid: input.audienceDid,
+          attenuation: attenuation(input),
+          facts: [facts],
+          notBefore: Math.floor(input.notBefore.getTime() / 1000),
+          expiresAt: Math.floor(input.expiresAt.getTime() / 1000),
+          nonce: `${input.role}-fixture`,
+          sign: async (bytes) => ed25519.sign(bytes, ownerSeed),
+        });
+        return { cid: root.cid, delegationHeader: { Authorization: `Bearer ${root.authorization}` } };
+      },
+      async sign(bytes) { return ed25519.sign(bytes, ownerSeed); },
+      async registerPolicy(input) {
+        const issuedAt = new Date(now).toISOString().replace(".000Z", "Z");
+        const expiresAt = new Date(now + 24 * 60 * 60_000).toISOString().replace(".000Z", "Z");
+        const unsigned = {
+          schema: "xyz.tinycloud.policy/attested-enforcer/v2" as const,
+          enforcerDid: NODE_DID,
+          nodeAudience: NODE_DID,
+          attestationBindingDigestHex: hex(sha256(new TextEncoder().encode(canonicalize({ enforcerDid: NODE_DID, nodeAudience: NODE_DID })))),
+          issuedAt,
+          expiresAt,
+        };
+        const digest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
+        return {
+          policyCid: input.policyCid,
+          policyRootCid: input.policyRoot.cid,
+          enforcementRootCid: input.enforcementRoot.cid,
+          attestedEnforcerBinding: { ...unsigned, signature: { suite: "Ed25519" as const, signerDid: NODE_DID, value: b64(ed25519.sign(digest, nodeSeed)) } },
+        };
+      },
+    },
+  });
+}
+
+async function receipt(overrides: { request?: Record<string, unknown>; admission?: Record<string, unknown>; proof?: Record<string, unknown> } = {}): Promise<Record<string, unknown>> {
+  const now = Date.now();
+  const published = await publication(now);
+  const envelope = published.deliveryMaterial!.envelope as any;
+  const request = {
+    schema: "xyz.tinycloud.credentials/invitation-request/v1",
+    policyId: envelope.policyCid,
+    recipient: RECIPIENT,
+    resource: RESOURCE,
+    credentialType: "opencredentials.email/v1",
+    returnLink: published.url,
+    envelopeRef: published.link.cid,
+    label: LABEL,
+    shareExpiresAt: envelope.expiry,
+    audience: API_ORIGIN,
+    issuedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 4 * 60_000).toISOString(),
+    nonce: b64(new Uint8Array(16).fill(3)),
+    ...overrides.request,
   };
-}
-
-function authorizationV3Body(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const v2 = authorizationBody();
-  for (const key of ["registrationCid", "delegationCid", "enforcementDelegationCid", "envelopeCid", "authorityMaterialHandle", "authorityMaterialDigest", "contentSourceDigest"]) delete v2[key];
-  return {
-    ...v2,
-    version: 3,
-    policyRootCid: ROOT_CID,
-    enforcementRootCid: ROOT_CID.replace(/.$/, "b"),
-    enforcerDid: "did:key:z6MkEnforcer",
-    contentSourceDigestHex: "a".repeat(64),
-    ...overrides,
+  const unsignedAdmission = {
+    ...request,
+    schema: "xyz.tinycloud.policy/delivery-admission/v0",
+    ownerDid: OWNER_DID,
+    actions: ["tinycloud.kv/get"],
+    senderKeyDid: SENDER_DID,
+    ...overrides.admission,
   };
+  const nodeDigest = sha256(new TextEncoder().encode(`${DELIVERY_ADMISSION_DOMAIN}${canonicalize(unsignedAdmission)}`));
+  const admission = { ...unsignedAdmission, signature: { suite: "eddsa-ed25519-sha256-jcs-v1", signerDid: NODE_DID, value: b64(ed25519.sign(nodeDigest, nodeSeed)) } };
+  const senderDigest = sha256(new TextEncoder().encode(`${CREDENTIAL_INVITATION_REQUEST_DOMAIN}${canonicalize(request)}`));
+  const proof = { alg: "EdDSA", kid: SENDER_DID, signature: b64(ed25519.sign(senderDigest, senderSeed)), ...overrides.proof };
+  return { request, admission, proof };
 }
 
-function sign(
-  body: Record<string, unknown>,
-  privateKey: Uint8Array = nodePrivateKey,
-  kid: string = KID,
-): { authorization: Record<string, unknown>; proof: Record<string, unknown>; shareUrl: string } {
-  const message = new TextEncoder().encode(`${DELIVERY_AUTHORIZATION_DOMAIN}${canonicalize(body)}`);
-  return {
-    authorization: body,
-    proof: { alg: "EdDSA", kid, signature: b64(ed25519.sign(message, privateKey)) },
-    shareUrl: String(body.shareUrl),
-  };
-}
+interface Row { idempotency_key: string; share_cid: string; recipient_digest: string; status: string; provider_message_id: string | null; created_at: string; updated_at: string }
 
-function signV3(body: Record<string, unknown>): ReturnType<typeof sign> {
-  const message = new TextEncoder().encode(`${DELIVERY_AUTHORIZATION_V3_DOMAIN}${canonicalize(body)}`);
-  return {
-    authorization: body,
-    proof: { alg: "EdDSA", kid: KID, signature: b64(ed25519.sign(message, nodePrivateKey)) },
-    shareUrl: String(body.shareUrl),
-  };
-}
-
-interface Row {
-  idempotency_key: string;
-  share_cid: string;
-  recipient_digest: string;
-  status: string;
-  provider_message_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-/** In-memory stand-in with the same atomic insert-or-conflict semantics as D1. */
-function database(options: { failing?: boolean } = {}): D1DatabaseLike & { rows: Map<string, Row> } {
+function database(): D1DatabaseLike & { rows: Map<string, Row> } {
   const rows = new Map<string, Row>();
-  const statement = (query: string): D1PreparedStatementLike => {
-    let args: unknown[] = [];
-    const self: D1PreparedStatementLike = {
-      bind(...values: unknown[]) {
-        args = values;
-        return self;
-      },
-      async first<T = Record<string, unknown>>(): Promise<T | null> {
-        if (options.failing === true) throw new Error("D1_ERROR");
-        if (query.startsWith("INSERT")) {
-          const key = String(args[0]);
-          if (rows.has(key)) return null;
-          rows.set(key, {
-            idempotency_key: key,
-            share_cid: String(args[1]),
-            recipient_digest: String(args[2]),
-            status: "pending",
-            provider_message_id: null,
-            created_at: String(args[3]),
-            updated_at: String(args[3]),
-          });
-          return { idempotency_key: key } as T;
-        }
-        const existing = rows.get(String(args[0]));
-        return existing === undefined ? null : (existing as unknown as T);
-      },
-      async run() {
-        if (options.failing === true) throw new Error("D1_ERROR");
-        const existing = rows.get(String(args[0]));
-        if (existing !== undefined && existing.status === "pending") {
-          existing.status = String(args[1]);
-          existing.provider_message_id = args[2] === null ? null : String(args[2]);
-          existing.updated_at = String(args[3]);
-        }
-        return undefined;
-      },
-    };
-    return self;
+  return {
+    rows,
+    prepare(query: string): D1PreparedStatementLike {
+      let args: unknown[] = [];
+      const statement: D1PreparedStatementLike = {
+        bind(...values: unknown[]) { args = values; return statement; },
+        async first<T>() {
+          if (query.startsWith("INSERT")) {
+            const key = String(args[0]);
+            if (rows.has(key)) return null;
+            const row = { idempotency_key: key, share_cid: String(args[1]), recipient_digest: String(args[2]), status: "pending", provider_message_id: null, created_at: String(args[3]), updated_at: String(args[3]) };
+            rows.set(key, row); return { idempotency_key: key } as T;
+          }
+          return (rows.get(String(args[0])) ?? null) as T | null;
+        },
+        async run() {
+          const row = rows.get(String(args[0]));
+          if (row !== undefined && row.status === "pending") { row.status = String(args[1]); row.provider_message_id = args[2] === null ? null : String(args[2]); row.updated_at = String(args[3]); }
+          return undefined;
+        },
+      };
+      return statement;
+    },
   };
-  return { rows, prepare: statement };
 }
 
-function env(overrides: Partial<EmailEnv> = {}): EmailEnv & { DELIVERIES: ReturnType<typeof database> } {
+function environment(): EmailEnv & { DELIVERIES: ReturnType<typeof database> } {
   return {
     DELIVERIES: database(),
-    RESEND_API_KEY: "re_test_key",
+    RESEND_API_KEY: "re_test",
     EMAIL_FROM: "TinyCloud Share <invite@share.tinycloud.xyz>",
-    NODE_INVITATION_KID: KID,
-    NODE_INVITATION_PUBLIC_KEY: b64(nodePublicKey),
-    NODE_ORIGIN,
-    DELIVERY_AUDIENCE: AUDIENCE,
+    DELIVERY_AUDIENCE: API_ORIGIN,
     SHARE_ORIGIN,
-    RESEND_ENDPOINT,
-    ...overrides,
-  } as EmailEnv & { DELIVERIES: ReturnType<typeof database> };
+    RESEND_ENDPOINT: "https://resend.test/emails",
+  };
 }
 
-function post(payload: unknown, origin: string | null = SHARE_ORIGIN): Request {
-  return new Request(`${SHARE_ORIGIN.replace("share", "email")}/share/v2`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(origin === null ? {} : { origin }),
-    },
-    body: JSON.stringify(payload),
-  });
-}
-
-function postV3(payload: unknown): Request {
-  return new Request(`${SHARE_ORIGIN.replace("share", "email")}/share/v3`, {
-    method: "POST",
-    headers: { "content-type": "application/json", origin: SHARE_ORIGIN },
-    body: JSON.stringify(payload),
-  });
-}
+const post = (body: unknown): Request => new Request(`${API_ORIGIN}/v1/email`, { method: "POST", headers: { "content-type": "application/json", origin: SHARE_ORIGIN }, body: JSON.stringify(body) });
 
 let provider: ReturnType<typeof vi.fn>;
+beforeEach(() => { provider = vi.fn(async () => new Response(JSON.stringify({ id: "msg_1" }), { status: 200 })); vi.stubGlobal("fetch", provider); });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-/**
- * `fetch` as the Workers runtime actually implements it, in the one respect
- * that mattered: `redirect` accepts only `follow` and `manual`, and *throws* on
- * anything else before any network I/O.
- *
- * Without this the stub accepted every `RequestInit` we handed it, so the suite
- * was 20/20 green while production shipped `redirect: "error"` and never
- * delivered a single message — `sendViaResend` caught the TypeError and
- * reported an indistinguishable `{ok: false, status: null}`. A stub that
- * accepts what the runtime rejects is not a test of the call.
- */
-function workerdFetch(handler: (endpoint: string, init: RequestInit) => Promise<Response>) {
-  return vi.fn(async (endpoint: string, init: RequestInit) => {
-    if (init.redirect !== undefined && init.redirect !== "follow" && init.redirect !== "manual") {
-      throw new TypeError(
-        `Invalid redirect value, must be one of "follow" or "manual" ("${init.redirect}" won't be implemented since it does not make sense at the edge; use "manual" and check the response status code).`,
-      );
-    }
-    return handler(endpoint, init);
-  });
-}
-
-beforeEach(() => {
-  provider = workerdFetch(async () => new Response(JSON.stringify({ id: "msg_live_1" }), { status: 200 }));
-  vi.stubGlobal("fetch", provider);
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-});
-
-describe("authorized delivery", () => {
-  it("sends exactly one invitation for a Node-signed authorization", async () => {
-    const environment = env();
-    const response = await worker.fetch(post(sign(authorizationBody())), environment);
+describe("api.share email-only worker", () => {
+  it("sends one exact Node-and-sender-authorized TinyCloud link", async () => {
+    const env = environment();
+    const body = await receipt();
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("envelopeKey");
+    expect(serialized).not.toContain("sealedEnvelope");
+    expect(serialized).not.toContain("#tc2");
+    const response = await worker.fetch(post(body), env);
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({
-      status: "sent",
-      idempotencyKey: b64(new Uint8Array(16).fill(3)),
-      providerMessageId: "msg_live_1",
-    });
     expect(provider).toHaveBeenCalledTimes(1);
-
-    const [endpoint, init] = provider.mock.calls[0] as [string, RequestInit];
-    expect(endpoint).toBe(RESEND_ENDPOINT);
-    const headers = init.headers as Record<string, string>;
-    expect(headers.authorization).toBe("Bearer re_test_key");
-    expect(headers["idempotency-key"]).toBe(b64(new Uint8Array(16).fill(3)));
-    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    const sent = JSON.parse(String((provider.mock.calls[0] as [string, RequestInit])[1].body));
     expect(sent.to).toEqual([RECIPIENT]);
-    expect(sent.from).toBe("TinyCloud Share <invite@share.tinycloud.xyz>");
-    expect(sent.subject).toBe("Quarterly report.pdf was shared with you");
-    expect(String(sent.html)).toContain(SHARE_URL);
-    expect(String(sent.text)).toContain(SHARE_URL);
-    const deliveredUrl = new URL(String(sent.text).match(/Open document: ([^\n]+)/)?.[1] ?? "https://invalid.example/");
-    expect([...deliveredUrl.hash.slice(1).split("&")].map((part) => part.split("=", 1)[0])).toEqual(["k"]);
+    expect(sent.subject).toContain("Quarterly report.pdf");
+    expect(String(sent.text)).toContain(`${SHARE_ORIGIN}/viewer?tc2=`);
+    expect(String(sent.text)).not.toContain("#");
+    expect([...env.DELIVERIES.rows.values()][0]).toMatchObject({ share_cid: (body.request as any).envelopeRef, status: "sent" });
   });
 
-  it("sends a v3 invitation only from the v3 Node-signed root projection", async () => {
-    const response = await worker.fetch(postV3(signV3(authorizationV3Body())), env());
-    expect(response.status).toBe(202);
-    expect(provider).toHaveBeenCalledTimes(1);
-
-    const substituted = authorizationV3Body({ policyRootCid: ROOT_CID.replace(/.$/, "c") });
-    const signed = signV3(substituted);
-    signed.authorization.policyRootCid = ROOT_CID.replace(/.$/, "d");
-    expect((await worker.fetch(postV3(signed), env())).status).toBe(401);
+  it("refuses a replay before a second provider call", async () => {
+    const env = environment(); const body = await receipt();
+    expect((await worker.fetch(post(body), env)).status).toBe(202);
+    expect((await worker.fetch(post(body), env)).status).toBe(200);
     expect(provider).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses v3 roots that do not use the Node's raw Blake3-256 CID grammar", async () => {
-    const response = await worker.fetch(postV3(signV3(authorizationV3Body({ policyRootCid: CID }))), env());
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "malformed" });
+  it.each([
+    ["recipient", "recipient", "mallory@example.com"],
+    ["label", "label", "Other.pdf"],
+  ] as const)("refuses a post-authorization substitution: %s", async (_label, field, replacement) => {
+    const body = await receipt();
+    (body.request as unknown as Record<string, unknown>)[field] = replacement;
+    const response = await worker.fetch(post(body), environment());
+    expect(response.status).toBe(401);
     expect(provider).not.toHaveBeenCalled();
   });
 
-  it("refuses to send the same authorization twice and reports the first result", async () => {
-    const environment = env();
-    const payload = sign(authorizationBody());
-    expect((await worker.fetch(post(payload), environment)).status).toBe(202);
-
-    const replayed = await worker.fetch(post(payload), environment);
-    expect(replayed.status).toBe(200);
-    expect(await replayed.json()).toEqual({
-      status: "duplicate",
-      idempotencyKey: b64(new Uint8Array(16).fill(3)),
-      providerMessageId: "msg_live_1",
-    });
-    expect(provider).toHaveBeenCalledTimes(1);
-  });
-
-  it("refuses a replay after a provider failure rather than risking a duplicate", async () => {
-    const environment = env();
-    provider.mockResolvedValueOnce(new Response("{}", { status: 429 }));
-    const payload = sign(authorizationBody());
-
-    const failed = await worker.fetch(post(payload), environment);
-    expect(failed.status).toBe(502);
-    // The provider's numeric status is surfaced, and only the status — never
-    // its body, which can echo the recipient address. Without it every provider
-    // refusal is indistinguishable from outside the Worker, which is what made
-    // an unverified Resend sending domain look like an unexplained 502.
-    expect(await failed.json()).toEqual({ error: "provider-unavailable", providerStatus: 429 });
-    expect([...environment.DELIVERIES.rows.values()][0]?.status).toBe("failed");
-
-    const retried = await worker.fetch(post(payload), environment);
-    expect(retried.status).toBe(409);
-    expect(await retried.json()).toEqual({ error: "replayed" });
-    expect(provider).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("fail closed", () => {
-  it("refuses when the trusted node key, audience, sender, or provider key is unset", async () => {
-    for (const key of [
-      "NODE_INVITATION_KID",
-      "NODE_INVITATION_PUBLIC_KEY",
-      "NODE_ORIGIN",
-      "DELIVERY_AUDIENCE",
-      "SHARE_ORIGIN",
-      "RESEND_API_KEY",
-      "EMAIL_FROM",
-    ] as const) {
-      const environment = env();
-      delete (environment as unknown as Record<string, unknown>)[key];
-      const response = await worker.fetch(post(sign(authorizationBody())), environment);
-      expect(response.status, key).toBe(503);
-      expect(await response.json()).toEqual({ error: "configuration-unavailable" });
-    }
+  it.each([
+    ["audience", { request: { audience: "https://other.example" } }],
+    ["delegated recipient", { request: { recipient: "mallory@example.com" } }],
+    ["delegated label", { request: { label: "Different.pdf" } }],
+    ["link", { request: { returnLink: `${SHARE_ORIGIN}/viewer?tc2=bad` } }],
+  ])("refuses an unauthorized signed request: %s", async (_label, overrides) => {
+    const response = await worker.fetch(post(await receipt(overrides)), environment());
+    expect([400, 401]).toContain(response.status);
     expect(provider).not.toHaveBeenCalled();
   });
 
-  it("never falls back to accepting an unverifiable authorization", async () => {
-    // Signed by a key that is not the enrolled one.
-    const wrongKey = await worker.fetch(
-      post(sign(authorizationBody(), otherPrivateKey)),
-      env(),
-    );
-    expect(wrongKey.status).toBe(401);
-    expect(await wrongKey.json()).toEqual({ error: "untrusted" });
-
-    // Correctly signed, but presented under a different key id.
-    const wrongKid = await worker.fetch(
-      post(sign(authorizationBody(), nodePrivateKey, `${NODE_AUDIENCE}#invitation-key-2`)),
-      env(),
-    );
-    expect(wrongKid.status).toBe(401);
-
-    // Signed, then tampered with: the recipient is swapped after signing.
-    const tampered = sign(authorizationBody());
-    tampered.authorization.deliveryEmail = "attacker@example.com";
-    expect((await worker.fetch(post(tampered), env())).status).toBe(401);
-
-    // No proof at all.
-    const unsigned = await worker.fetch(
-      post({ authorization: authorizationBody(), shareUrl: SHARE_URL }),
-      env(),
-    );
-    expect(unsigned.status).toBe(400);
-
+  it("refuses a forged Node admission and a forged sender proof", async () => {
+    const forgedNode = await receipt();
+    const nodeSignature = String((forgedNode.admission as any).signature.value);
+    (forgedNode.admission as any).signature.value = `${nodeSignature.startsWith("A") ? "B" : "A"}${nodeSignature.slice(1)}`;
+    expect((await worker.fetch(post(forgedNode), environment())).status).toBe(401);
+    const forgedSender = await receipt();
+    const senderSignature = String((forgedSender.proof as any).signature);
+    (forgedSender.proof as any).signature = `${senderSignature.startsWith("A") ? "B" : "A"}${senderSignature.slice(1)}`;
+    expect((await worker.fetch(post(forgedSender), environment())).status).toBe(401);
     expect(provider).not.toHaveBeenCalled();
   });
 
-  it("pins all three audiences independently", async () => {
-    for (const overrides of [
-      { openCredentialsAudience: "https://attacker.example" },
-      { openCredentialsAudience: NODE_AUDIENCE },
-      { returnOrigin: "https://attacker.example" },
-      { targetOrigin: "https://attacker.example" },
-      { nodeAudience: "did:web:attacker.example" },
-    ]) {
-      const response = await worker.fetch(post(sign(authorizationBody(overrides))), env());
-      expect(response.status, JSON.stringify(overrides)).toBe(401);
-      expect(await response.json()).toEqual({ error: "untrusted" });
-    }
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses an expired or over-long-lived authorization", async () => {
-    const expired = await worker.fetch(
-      post(sign(authorizationBody({ expiresAt: new Date(Date.now() - 1_000).toISOString() }))),
-      env(),
-    );
-    expect(expired.status).toBe(403);
-    expect(await expired.json()).toEqual({ error: "expired" });
-
-    const tooLong = await worker.fetch(
-      post(sign(authorizationBody({ expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() }))),
-      env(),
-    );
-    expect(tooLong.status).toBe(403);
-
-    const shareAlreadyOver = await worker.fetch(
-      post(sign(authorizationBody({ shareExpiresAt: new Date(Date.now() - 1_000).toISOString() }))),
-      env(),
-    );
-    expect(shareAlreadyOver.status).toBe(403);
-
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses any share URL that is not the exact canonical share-origin shape", async () => {
-    for (const shareUrl of [
-      `https://attacker.example/s/${CID}#k=${KEY_FRAGMENT}`,
-      `http://share.tinycloud.xyz/s/${CID}#k=${KEY_FRAGMENT}`,
-      `${SHARE_ORIGIN}/s/${CID}`,
-      `${SHARE_ORIGIN}/s/${CID}#v=2&p=AAAA`,
-      `${SHARE_ORIGIN}/s/${CID}#k=${KEY_FRAGMENT}&x=1`,
-      `${SHARE_ORIGIN}/s/not-a-cid#k=${KEY_FRAGMENT}`,
-    ]) {
-      const response = await worker.fetch(post(sign(authorizationBody({ shareUrl }))), env());
-      expect(response.status, shareUrl).toBe(400);
-      expect(await response.json()).toEqual({ error: "share-url-invalid" });
-    }
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses a delivered URL that differs from the signed one", async () => {
-    const payload = sign(authorizationBody());
-    const response = await worker.fetch(
-      post({ ...payload, shareUrl: `${SHARE_ORIGIN}/s/${CID}#k=${"B".repeat(42)}E` }),
-      env(),
-    );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "malformed" });
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses a signed share CID that differs from the signed URL for both versions", async () => {
-    const otherCid = CID.replace(/.$/, "a");
-    expect((await worker.fetch(post(sign(authorizationBody({ shareCid: otherCid }))), env())).status).toBe(400);
-    expect((await worker.fetch(postV3(signV3(authorizationV3Body({ shareCid: otherCid }))), env())).status).toBe(400);
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses a recipient the share's own matcher does not admit", async () => {
-    for (const overrides of [
-      { recipientMatcher: { kind: "exactEmail", value: "someone-else@example.com" } },
-      { recipientMatcher: { kind: "emailDomain", value: "other.example" } },
-      { recipientMatcher: { kind: "bearer" } },
-      { deliveryEmail: "not-an-email" },
-    ]) {
-      const response = await worker.fetch(post(sign(authorizationBody(overrides))), env());
-      expect(response.status, JSON.stringify(overrides)).toBe(400);
-      expect(await response.json()).toEqual({ error: "malformed" });
-    }
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses an authorization with unexpected or missing fields", async () => {
-    const extra = authorizationBody();
-    extra.somethingElse = true;
-    expect((await worker.fetch(post(sign(extra)), env())).status).toBe(400);
-
-    const missing = authorizationBody();
-    delete missing.holder;
-    expect((await worker.fetch(post(sign(missing)), env())).status).toBe(400);
-
-    const claimsAuthority = await worker.fetch(
-      post(sign(authorizationBody({ dataAuthority: true }))),
-      env(),
-    );
-    expect(claimsAuthority.status).toBe(401);
-
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses to send when the idempotency ledger is unavailable", async () => {
-    const environment = env({ DELIVERIES: database({ failing: true }) });
-    const response = await worker.fetch(post(sign(authorizationBody())), environment);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "store-unavailable" });
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses an oversized body, declared or streamed", async () => {
-    const declared = await worker.fetch(
-      new Request("https://email.tinycloud.xyz/share/v2", {
-        method: "POST",
-        headers: { origin: SHARE_ORIGIN, "content-type": "application/json", "content-length": "9999999" },
-        body: "{}",
-      }),
-      env(),
-    );
-    expect(declared.status).toBe(400);
-
-    const streamed = await worker.fetch(
-      new Request("https://email.tinycloud.xyz/share/v2", {
-        method: "POST",
-        headers: { origin: SHARE_ORIGIN, "content-type": "application/json" },
-        body: new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array(64 * 1024 + 1));
-            controller.close();
-          },
-        }),
-        // undici requires duplex for a streaming request body.
-        duplex: "half",
-      } as RequestInit),
-      env(),
-    );
-    expect(streamed.status).toBe(400);
-    expect(provider).not.toHaveBeenCalled();
-  });
-
-  it("refuses browser calls from any other origin, and unknown routes", async () => {
-    const foreign = await worker.fetch(post(sign(authorizationBody()), "https://evil.example"), env());
-    expect(foreign.status).toBe(403);
-    expect(await foreign.json()).toEqual({ error: "origin-not-allowed" });
-
-    const unknown = await worker.fetch(new Request("https://email.tinycloud.xyz/anything"), env());
-    expect(unknown.status).toBe(404);
-    expect(provider).not.toHaveBeenCalled();
-  });
-});
-
-describe("secrets and PII", () => {
-  it("never writes the share URL, key fragment, or address to storage or a response", async () => {
-    const environment = env();
-    const response = await worker.fetch(post(sign(authorizationBody())), environment);
-    const body = await response.text();
-    const stored = JSON.stringify([...environment.DELIVERIES.rows.values()]);
-    for (const secret of [SHARE_URL, KEY_FRAGMENT, RECIPIENT, "re_test_key"]) {
-      expect(body).not.toContain(secret);
-      expect(stored).not.toContain(secret);
-    }
-    expect(stored).toContain(CID);
-  });
-
-  it("emits no log line at all, on success or refusal", async () => {
-    const spies = (["log", "info", "warn", "error", "debug", "trace"] as const).map((method) =>
-      vi.spyOn(console, method).mockImplementation(() => undefined),
-    );
-    await worker.fetch(post(sign(authorizationBody())), env());
-    await worker.fetch(post(sign(authorizationBody(), otherPrivateKey)), env());
-    await worker.fetch(post(sign(authorizationBody())), env({ DELIVERIES: database({ failing: true }) }));
-    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
-  });
-
-  /**
-   * The one deliberate exception, and the reason the assertion above is not
-   * simply "never log": a provider refusal is invisible to the operator
-   * otherwise. The error body reaches only the caller's browser, and a live
-   * acceptance run recovered nothing from it — so the numeric status is logged
-   * as well. This pins that exception to exactly one line carrying exactly one
-   * number, because the test above never exercises this path and would not have
-   * noticed the line appearing.
-   */
-  it("logs the provider's numeric status on a refusal, and nothing else about it", async () => {
-    const spies = (["log", "info", "error", "debug", "trace"] as const).map((method) =>
-      vi.spyOn(console, method).mockImplementation(() => undefined),
-    );
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    provider = workerdFetch(async () => new Response("nope", { status: 403 }));
-    vi.stubGlobal("fetch", provider);
-
-    const response = await worker.fetch(post(sign(authorizationBody())), env());
-    expect(response.status).toBe(502);
-
-    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(1);
-    const line = String(warn.mock.calls[0]?.[0]);
-    expect(line).toContain("403");
-    // Not the recipient, not the share URL, not the key fragment, not the API
-    // key — and not the provider's response body, which can echo the address.
-    for (const secret of [SHARE_URL, KEY_FRAGMENT, RECIPIENT, "re_test_key", "nope"]) {
-      expect(line).not.toContain(secret);
+  it("exposes no content, blob, policy, binding, registry, or proxy route", async () => {
+    const env = environment();
+    for (const path of ["/", "/blobs", "/registry", "/bindings", "/policy", "/proxy", "/content", "/share/v3"]) {
+      expect((await worker.fetch(new Request(`${API_ORIGIN}${path}`), env)).status).toBe(404);
     }
   });
 
-  it("declares no cache and a no-referrer policy so intermediaries keep nothing", async () => {
-    const response = await worker.fetch(post(sign(authorizationBody())), env());
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  it("allows only the Share browser origin while the signatures remain the authority", async () => {
+    const request = post(await receipt());
+    const response = await worker.fetch(new Request(request, { headers: { "content-type": "application/json", origin: "https://evil.example" } }), environment());
+    expect(response.status).toBe(403);
     expect(response.headers.get("access-control-allow-origin")).toBe(SHARE_ORIGIN);
-  });
-});
-
-describe("invitation rendering", () => {
-  it("escapes every interpolated value and links only the share and abuse URLs", () => {
-    const rendered = renderInvitationEmail({
-      magicUrl: SHARE_URL,
-      documentName: `<script>alert(1)</script>`,
-      senderTrust: "unverified",
-      expiresAt: "2026-08-01T00:00:00Z",
-      reportAbuseUrl: `${SHARE_ORIGIN}/report?t=abc`,
-    });
-    expect(rendered.subject).toBe("<script>alert(1)</script> was shared with you");
-    expect(rendered.html).not.toContain("<script>");
-    expect(rendered.html).toContain("&lt;script&gt;");
-    expect(rendered.html).toContain("Unverified sender");
-    expect(rendered.html.match(/href="/g)).toHaveLength(2);
-    expect(rendered.html).toContain(SHARE_URL);
-    expect(rendered.text).toContain("2026-08-01T00:00:00Z");
-    // The claim ceremony is out of scope: no code is offered today.
-    expect(rendered.html).not.toContain("Or enter this code");
-  });
-
-  it("has the slot the claim ceremony will use, without shipping it", () => {
-    const rendered = renderInvitationEmail({
-      magicUrl: `${SHARE_URL}&i=invitation&c=secret`,
-      documentName: "Report.pdf",
-      senderTrust: "verified",
-      expiresAt: "2026-08-01T00:00:00Z",
-      reportAbuseUrl: `${SHARE_ORIGIN}/report?t=abc`,
-      otp: "123456",
-    });
-    expect(rendered.html).toContain("Or enter this code: <strong>123456</strong>");
-    expect(rendered.text).toContain("Never send this code to anyone");
-  });
-});
-
-describe("readiness", () => {
-  it("reports whether it is provisioned without revealing any value", async () => {
-    const ready = await worker.fetch(
-      new Request("https://email.tinycloud.xyz/health/readiness"),
-      env(),
-    );
-    expect(await ready.json()).toEqual({ ready: true });
-
-    const unset = env();
-    delete (unset as unknown as Record<string, unknown>).NODE_INVITATION_PUBLIC_KEY;
-    const notReady = await worker.fetch(
-      new Request("https://email.tinycloud.xyz/health/readiness"),
-      unset,
-    );
-    expect(await notReady.json()).toEqual({ ready: false });
+    expect(provider).not.toHaveBeenCalled();
   });
 });

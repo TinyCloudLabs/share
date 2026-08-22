@@ -7,11 +7,12 @@ import type { ResolveResult } from "./viewer/resolve.js";
 const viewerRoot = document.getElementById("viewer");
 
 async function loadViewerStyles(): Promise<void> {
+  const documentElement = document.documentElement;
   await Promise.all([
     import("./email-share/recipient.css"),
     import("./viewer/viewer.css"),
   ]);
-  document.documentElement.classList.remove("viewer-first-paint");
+  documentElement.classList.remove("viewer-first-paint");
 }
 
 if (viewerRoot !== null) {
@@ -76,7 +77,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   renderRecipientLoading(root);
   if (launch === undefined) {
-    renderRecipientInvalid(root, "Part of this link is missing. Copy the whole link from the message you received — including everything after the # — and paste it into a new tab.");
+    renderRecipientInvalid(root, "Part of this link is missing. Copy the complete link from the message you received and paste it into a new tab.");
     return;
   }
 
@@ -89,14 +90,10 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     launch.shareHref = "";
     const shareConfig = await config.loadSharePublicConfig();
     if (new URL(shareHref).pathname === "/viewer" && new URL(shareHref).search === "" && new URL(shareHref).hash.startsWith("#tc1=")) {
-      const [{ createShareReceiverClient }, { receiveNativeBearerAccess }] = await Promise.all([
-        import("./share/receiver.js"),
-        import("./viewer/native-bearer.js"),
-      ]);
+      const { receiveNativeBearerAccess } = await import("./viewer/native-bearer.js");
       // The fragment was already captured and scrubbed before config or this
       // SDK construction. Receiving the capability is the first network work.
-      const receiver = await createShareReceiverClient(shareConfig, shareConfig.registryOrigin);
-      const access = await receiveNativeBearerAccess(receiver.sharing, shareHref);
+      const access = await receiveNativeBearerAccess(shareHref);
       const { presentationEnvelope } = await import("./viewer/resolve.js");
       await presentShare(root, {
         state: "ok",
@@ -108,7 +105,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           version: 1,
           shareId: access.path,
           origin: shareConfig.shareOrigin,
-          target: { kind: "bearer", origin: shareConfig.nodeOrigin, nodeAudience: shareConfig.nodeAudience, spaceId: access.spaceId },
+          target: { kind: "bearer", origin: access.ownerNodeOrigin, nodeAudience: "", spaceId: access.spaceId },
           resource: { kind: "exact", path: access.path },
           actions: ["tinycloud.kv/get"],
           display: access.path.split("/").at(-1) === undefined ? {} : { filename: access.path.split("/").at(-1)! },
@@ -117,21 +114,21 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       }, { shareUrl: shareHref });
       return;
     }
-    const [{ REGISTRY_BASE_URL }, { resolveShare }] = await Promise.all([
-      import("./viewer/config.js"),
-      import("./viewer/resolve.js"),
-    ]);
-    const resolved: ResolveResult = await resolveShare(shareHref, { registryBaseUrl: REGISTRY_BASE_URL, expectedOrigin: shareConfig.shareOrigin });
+    const addressedUrl = new URL(shareHref);
+    if (addressedUrl.pathname !== "/viewer" || addressedUrl.hash !== "" || addressedUrl.searchParams.size !== 1 || addressedUrl.searchParams.get("tc2") === null || addressedUrl.search !== `?tc2=${addressedUrl.searchParams.get("tc2")}`) {
+      throw new Error("unsupported pre-native share link");
+    }
+    const { resolveShare } = await import("./viewer/resolve.js");
+    const resolved: ResolveResult = await resolveShare(shareHref, { expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
     // policy admission followed by generic /delegate and /invoke.
-    if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-v2-claim-required" && resolved.envelope.version === 3) {
+    if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-authorization-required") {
       const { receiveWithSdk } = await import("./viewer/sdk-accountless-receiver.js");
       const accountlessEnvelope = resolved.envelope;
       await receiveWithSdk({
         root,
         shareUrl: shareHref,
-        registryBaseUrl: REGISTRY_BASE_URL,
         config: shareConfig,
         onComplete: async (content) => {
           await presentShare(root, {

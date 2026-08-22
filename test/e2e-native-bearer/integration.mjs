@@ -21,7 +21,7 @@ const configuredNodeOrigin = "https://node.test";
 const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".wasm": "application/wasm", ".json": "application/json" };
 
 function config() {
-  return JSON.stringify({ version: "tinycloud.share-email-claim/config-v1", shareOrigin: "https://share.example", registryOrigin: "https://registry.example", nodeOrigin: configuredNodeOrigin, credentialsOrigin: "https://credentials.example", emailOrigin: "https://email.example", nodeAudience: "did:web:node.test", enforcerDid: "did:web:node.test", nodeEnabled: true, issuerDid: "did:web:issuer.example", issuerVct: "opencredentials.email/v1", issuerEnabled: true, nodeInvitationKid: "did:web:node.test#1", nodeInvitationPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nodeKeyVersion: 1, issuerKeyVersion: 1, issuerPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", environment: "test" });
+  return JSON.stringify({ version: "tinycloud.share/config-v2", shareOrigin: "https://share.example", registryOrigin: "https://registry.example", credentialsOrigin: "https://credentials.example", emailOrigin: "https://email.example", accountlessReceiverEnabled: true, environment: "test" });
 }
 
 async function startViewer(ownerOrigin) {
@@ -98,9 +98,13 @@ async function main() {
     try {
       const traffic = [];
       const page = await browser.newPage();
+      const browserErrors = [];
+      page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));
+      page.on("console", (message) => browserErrors.push(`${message.type()}: ${message.text()}`));
       await instrumentPage(page, traffic, fixture.host);
       await page.goto(url, { waitUntil: "networkidle0" });
-      await page.waitForSelector(".viewer-download");
+      try { await page.waitForSelector(".viewer-download"); }
+      catch (error) { throw new Error(`native viewer did not become ready: ${browserErrors.join(" | ")} traffic=${traffic.join(",")} body=${await page.$eval("body", (body) => body.textContent)}`, { cause: error }); }
       assert.equal(await page.evaluate(() => location.hash), "");
       const fetchHashes = await page.evaluate(() => window.__tinycloudFetchHashes);
       assert(fetchHashes.length > 0, "viewer issued no instrumented application fetches");

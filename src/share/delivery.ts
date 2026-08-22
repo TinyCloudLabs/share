@@ -13,7 +13,7 @@ export interface AddressedDeliveryInput {
 
 export async function requestAddressedDelivery(input: AddressedDeliveryInput): Promise<void> {
   if (input.deliveryAuthorization.request.returnLink !== input.shareUrl) throw new Error("The invitation request is not bound to this share link.");
-  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/v1/credential-invitations`, {
+  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/v1/email`, {
     method: "POST",
     credentials: "omit",
     redirect: "error",

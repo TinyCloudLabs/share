@@ -1,19 +1,15 @@
-import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./openkey-session.js";
-import { loadAuthenticatedCapabilities } from "./capability-list.js";
+import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";
-/** Set once the sign-in ceremony is running, so the session probe never interrupts it. */
-let signInStarted = false;
 
 interface SenderApp {
   readonly session: OpenKeyShareSession;
   readonly tinycloud: ShareTinyCloud;
   readonly history: SenderHistoryRepository;
-  readonly capabilities: readonly UploadCapability[];
   readonly config: SharePublicConfig;
 }
 
@@ -44,7 +40,7 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
   if (resumable) submit.focus();
   form.addEventListener("submit", (event) => {
-    event.preventDefault(); signInStarted = true; submit.disabled = true; status.textContent = "Loading secure sign-in…";
+    event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
     void import("./openkey-session.js")
       .then(({ authenticateWithOpenKey }) => authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
@@ -89,13 +85,10 @@ function renderComposer(current: SenderApp, token: number): void {
     if (token !== renderToken) return;
     mountShareComposer(view, {
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
-      registryOrigin: window.location.origin,
       openKeyAddress: current.session.address,
       session: current.session,
       tinycloud: current.tinycloud,
-      nativeHistoryTarget: { origin: current.config.nodeOrigin, nodeAudience: current.config.nodeAudience },
       onBack: () => navigate(LIBRARY_ROUTE),
-      loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       persistShare: async ({ share }) => {
         if (share.record === undefined) throw new Error("share publisher returned no canonical history record");
         await current.history.save(share.record);
@@ -126,14 +119,10 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
     import("./sender-history.js"),
   ]);
   const config = await loadSharePublicConfig();
-  // Production no longer issues server-held upload capabilities. Establish
-  // the owner session first, using that same SIWE proof for the Share host,
-  // then read the authenticated legacy list for compatibility.
-  const tinycloud = await createTinyCloudClient(session, config, [], (message) => { status.textContent = message; });
-  const capabilities = await loadAuthenticatedCapabilities();
+  const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
-  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), capabilities, config };
+  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
   (root as HTMLElement).replaceChildren(view);
   if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {
     // Keep the library the durable home without adding a history entry.
@@ -142,25 +131,4 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   render();
 }
 
-/**
- * Resumability comes only from the server-validated share session: `sessionValid`
- * in src/host/share-adapter.ts returns 401 for a missing, unknown, or expired
- * cookie and deletes expired entries, so a stale cookie can never show
- * "Welcome back". The OpenKey account cookie is deliberately not probed:
- * both production CSP sources omit openkey.so from connect-src, and OpenKey's
- * API restricts credentialed CORS to its own allowlist, so that read cannot
- * succeed from this origin. Widening production CSP for copy-only presentation
- * is not worth it.
- *
- * It is *not* enough to rebuild the session. `OpenKey.connect()` always opens
- * the OpenKey flow, `signMessage` always needs the passkey, and the Web SDK
- * signs a fresh SIWE message on `signIn()` — the SDK exposes no promptless
- * restore. So a positive probe is used to shorten the wall to a single
- * "Continue", never to fake a session that does not exist in this tab.
- */
-async function detectResumableSession(): Promise<boolean> {
-  return fetch("/api/share/capabilities", { credentials: "include", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" }).then((response) => response.ok).catch(() => false);
-}
-
 mountAuthentication(root, false, bootstrap);
-void detectResumableSession().then((resumable) => { if (resumable && app === undefined && !signInStarted) mountAuthentication(root as HTMLElement, true, bootstrap); });

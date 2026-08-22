@@ -7,7 +7,7 @@ import { defineConfig } from "vitest/config";
  * (node environment, their own test dirs). The root `npm test` passes
  * --config explicitly; the packages keep their defaults:
  *   npm run -w @tinycloud/share-envelope test
- *   npm run -w @tinycloud/share-registry test
+ *   npm test -w @tinycloud/share-email
  */
 export default defineConfig({
   test: {

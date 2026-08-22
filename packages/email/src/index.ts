@@ -1,19 +1,14 @@
 export {
-  AUTHORIZATION_KEYS,
-  AUTHORIZATION_V3_KEYS,
   CLOCK_SKEW_MS,
-  DELIVERY_AUTHORIZATION_DOMAIN,
-  DELIVERY_AUTHORIZATION_V3_DOMAIN,
+  CREDENTIAL_INVITATION_REQUEST_DOMAIN,
+  DELIVERY_ADMISSION_DOMAIN,
   MAX_AUTHORIZATION_TTL_MS,
   digest,
   parseDeliveryRequest,
-  parseShareUrl,
   verifyDeliveryAuthorization,
-  type DeliveryAuthorization,
-  type DeliveryAuthorizationV3,
-  type AnyDeliveryAuthorization,
-  type DeliveryProof,
-  type DeliveryRequest,
+  type DeliveryAdmission,
+  type DeliveryReceipt,
+  type InvitationRequest,
   type DeliveryTrust,
   type Refusal,
   type RefusalReason,
@@ -23,7 +18,6 @@ export {
   renderInvitationEmail,
   type InvitationEmailInput,
   type RenderedEmail,
-  type SenderTrust,
 } from "./email.js";
 export { sendViaResend, type ResendConfig, type ResendMessage, type ResendResult } from "./resend.js";
 export {
