@@ -18,6 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Share and js-sdk ship as separate repositories. Until the companion
+      # SDK release is published, test this PR against the exact reviewed
+      # source commit instead of silently falling back to an older npm API.
+      - uses: actions/checkout@v4
+        with:
+          repository: TinyCloudLabs/js-sdk
+          ref: 891891d23c177a8064d5d888e49380c45ba0a4e5
+          path: .cross-repo/js-sdk
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -26,6 +34,22 @@ jobs:
         with:
           bun-version: "1.2.0"
       - run: npm ci
+      - run: bun install --frozen-lockfile
+        working-directory: .cross-repo/js-sdk
+      - name: Build reviewed SDK packages
+        working-directory: .cross-repo/js-sdk
+        run: |
+          bun run --cwd packages/sdk-core build
+          bun run --cwd packages/share-envelope build
+          bun run --cwd packages/node-sdk build
+          bun run --cwd packages/share-sdk build
+          bun run --cwd packages/web-sdk build
+      - name: Link and verify reviewed SDK packages
+        env:
+          TINYCLOUD_JS_SDK_WORKTREE: ${{ github.workspace }}/.cross-repo/js-sdk
+        run: |
+          npm run link:web-sdk
+          npm run check:web-sdk-link
       # Fail the merge gate on a type error before running the browser and
       # email-worker unit suites.
       - run: npm run typecheck

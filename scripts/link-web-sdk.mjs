@@ -11,9 +11,10 @@
  * repair and `npm run check:web-sdk-link` is the loud, dependency-free
  * preflight.
  *
- * This script is deliberately not a `postinstall` hook: production and CI
- * installs have no js-sdk worktree to link to, and a hook that silently
- * succeeds or silently skips is the failure mode this issue exists to remove.
+ * This script is deliberately not a `postinstall` hook: production installs
+ * use published packages, while the cross-repository CI gate supplies an
+ * explicit checkout. A hook that silently succeeds or skips is the failure
+ * mode this issue exists to remove.
  */
 
 import { lstatSync, realpathSync, rmSync, symlinkSync } from "node:fs";
