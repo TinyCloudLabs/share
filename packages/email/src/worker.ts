@@ -174,7 +174,7 @@ async function deliver(request: Request, env: EmailEnv): Promise<Response> {
   if (parsed === null) return deny("malformed");
 
   const now = Date.now();
-  const verified = await verifyDeliveryAuthorization(parsed, trust, now);
+  const verified = await verifyDeliveryAuthorization(parsed, { ...trust, signal: request.signal }, now);
   if (!verified.ok) return deny(verified.reason);
 
   const { recipient, shareCid, shareUrl, label, shareExpiresAt, idempotencyKey } = verified;

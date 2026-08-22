@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: TinyCloudLabs/js-sdk
-          ref: 73405ec89db41b80e16275428638f203d3b09d37
+          ref: 9b64481a71aecddc7276bdc7ab76d51b1c18b5bc
           path: .cross-repo/js-sdk
       - uses: actions/checkout@v4
         with:
@@ -38,6 +38,8 @@ jobs:
         run: |
           mv .cross-repo/js-sdk "${RUNNER_TEMP}/tinycloud-js-sdk"
           mv .cross-repo/tinycloud-node "${RUNNER_TEMP}/tinycloud-node"
+      - name: Verify the shared TS/Rust addressed-link vector
+        run: cmp "${RUNNER_TEMP}/tinycloud-js-sdk/packages/share-envelope/test/vectors/addressed-link-canonicalization.json" "${RUNNER_TEMP}/tinycloud-node/tinycloud-node-server/test-fixtures/tc-498-addressed-link-canonicalization.json"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

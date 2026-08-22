@@ -55,6 +55,7 @@ export interface DeliveryTrust {
   readonly shareOrigin: string;
   readonly registryOrigin: string;
   readonly fetch?: typeof fetch;
+  readonly signal?: AbortSignal;
 }
 
 export interface VerifiedDelivery {
@@ -146,17 +147,6 @@ export async function verifyDeliveryAuthorization(receipt: DeliveryReceipt, trus
   const { request, admission, proof } = receipt;
   const envelope = await parseShareUrl(request.returnLink, trust.shareOrigin, request.envelopeRef);
   if (envelope === null) return refuse("share-url-invalid");
-  try {
-    await verifyOwnerNodeBinding({
-      registryUrl: trust.registryOrigin,
-      ownerDid: envelope.policy.ownerDid,
-      nodeOrigin: envelope.target.origin,
-      nodeDid: envelope.attestedEnforcerBinding.nodeAudience,
-      ...(trust.fetch === undefined ? {} : { fetch: trust.fetch }),
-    });
-  } catch {
-    return refuse("untrusted");
-  }
   const nodeKey = didKeyBytes(envelope.attestedEnforcerBinding.nodeAudience);
   const { signature, ...unsignedAdmission } = admission;
   const nodeDigest = await sha256(`${DELIVERY_ADMISSION_DOMAIN}${canonicalize(unsignedAdmission)}`);
@@ -197,5 +187,20 @@ export async function verifyDeliveryAuthorization(receipt: DeliveryReceipt, trus
   const expiresAt = Date.parse(request.expiresAt);
   const shareExpiresAt = Date.parse(request.shareExpiresAt);
   if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || !Number.isFinite(shareExpiresAt) || issuedAt > now + CLOCK_SKEW_MS || expiresAt <= now || expiresAt <= issuedAt || expiresAt - issuedAt > MAX_AUTHORIZATION_TTL_MS || shareExpiresAt <= now) return refuse("expired");
+  // Only locally valid, short-lived, exact Node-and-sender intent may trigger
+  // outbound discovery. This keeps the public endpoint from becoming an
+  // unsigned registry/Node request primitive.
+  try {
+    await verifyOwnerNodeBinding({
+      registryUrl: trust.registryOrigin,
+      ownerDid: envelope.policy.ownerDid,
+      nodeOrigin: envelope.target.origin,
+      nodeDid: envelope.attestedEnforcerBinding.nodeAudience,
+      ...(trust.fetch === undefined ? {} : { fetch: trust.fetch }),
+      ...(trust.signal === undefined ? {} : { signal: trust.signal }),
+    });
+  } catch {
+    return refuse("untrusted");
+  }
   return { ok: true, receipt, recipient: request.recipient, shareCid: request.envelopeRef, shareUrl: request.returnLink, label: request.label, shareExpiresAt: request.shareExpiresAt, idempotencyKey: request.nonce };
 }

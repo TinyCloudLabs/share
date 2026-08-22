@@ -271,14 +271,17 @@ describe("api.share email-only worker", () => {
   });
 
   it("refuses a forged Node admission and a forged sender proof", async () => {
+    const trustFetch = vi.fn(trustedOwnerNodeFetch);
+    const env = environment(trustFetch as typeof fetch);
     const forgedNode = await receipt();
     const nodeSignature = String((forgedNode.admission as any).signature.value);
     (forgedNode.admission as any).signature.value = `${nodeSignature.startsWith("A") ? "B" : "A"}${nodeSignature.slice(1)}`;
-    expect((await worker.fetch(post(forgedNode), environment())).status).toBe(401);
+    expect((await worker.fetch(post(forgedNode), env)).status).toBe(401);
     const forgedSender = await receipt();
     const senderSignature = String((forgedSender.proof as any).signature);
     (forgedSender.proof as any).signature = `${senderSignature.startsWith("A") ? "B" : "A"}${senderSignature.slice(1)}`;
-    expect((await worker.fetch(post(forgedSender), environment())).status).toBe(401);
+    expect((await worker.fetch(post(forgedSender), env)).status).toBe(401);
+    expect(trustFetch).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
   });
 
