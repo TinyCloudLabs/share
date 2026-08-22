@@ -6,6 +6,7 @@
   "compatibility_date": "2026-07-22",
   "vars": {
     "SHARE_ORIGIN": "https://share.tinycloud.xyz",
+    "REGISTRY_ORIGIN": "https://registry.tinycloud.xyz",
     "DELIVERY_AUDIENCE": "https://api.share.tinycloud.xyz",
     "EMAIL_FROM": "TinyCloud Share <invite@share.tinycloud.xyz>"
   },

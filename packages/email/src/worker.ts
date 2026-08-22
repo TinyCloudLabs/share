@@ -30,6 +30,9 @@ export interface EmailEnv {
   /** The audience stamped into the one-shot delivery authorization. */
   readonly DELIVERY_AUDIENCE?: string;
   readonly SHARE_ORIGIN?: string;
+  readonly REGISTRY_ORIGIN?: string;
+  /** Test seam only; production uses global fetch for registry and node identity checks. */
+  readonly TRUST_FETCH?: typeof fetch;
   /** Test seam only; production leaves this unset and uses api.resend.com. */
   readonly RESEND_ENDPOINT?: string;
 }
@@ -76,19 +79,21 @@ function json(status: number, body: unknown, headers: Record<string, string>): R
 /**
  * Every piece of configuration this Worker needs, or nothing. Absent or
  * malformed configuration is a refusal, never a default. Node identity is
- * carried by the owner-signed v3 envelope and its Node-signed attestation;
- * pinning one deployment key would reject users hosted on other TinyClouds.
+ * anchored by the owner's signed registry record plus the target's live
+ * `/info` identity; pinning one deployment key would reject self-hosted nodes.
  */
 function configure(env: EmailEnv): { readonly trust: DeliveryTrust; readonly apiKey: string; readonly from: string } | Refusal {
   const {
     DELIVERY_AUDIENCE: deliveryAudience,
     SHARE_ORIGIN: shareOrigin,
+    REGISTRY_ORIGIN: registryOrigin,
     RESEND_API_KEY: apiKey,
     EMAIL_FROM: from,
   } = env;
   if (
     typeof deliveryAudience !== "string" || deliveryAudience.length === 0 ||
     typeof shareOrigin !== "string" || shareOrigin.length === 0 ||
+    typeof registryOrigin !== "string" || registryOrigin.length === 0 ||
     typeof apiKey !== "string" || apiKey.length === 0 ||
     typeof from !== "string" || from.length === 0 ||
     env.DELIVERIES === undefined || env.DELIVERIES === null
@@ -99,6 +104,8 @@ function configure(env: EmailEnv): { readonly trust: DeliveryTrust; readonly api
     trust: {
       deliveryAudience,
       shareOrigin,
+      registryOrigin,
+      ...(env.TRUST_FETCH === undefined ? {} : { fetch: env.TRUST_FETCH }),
     },
     apiKey,
     from,

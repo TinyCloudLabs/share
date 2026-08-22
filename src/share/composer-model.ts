@@ -163,7 +163,7 @@ export function defaultComposerModel(now: number = Date.now()): ComposerDefaults
     recipient: { kind: "bearer" },
     permissions: ["read"],
     expiresAt: expiryFromChoice(DEFAULT_EXPIRY_CHOICE, now),
-    encryption: true,
+    encryption: false,
     encryptionAcknowledged: false,
   };
 }
@@ -203,6 +203,7 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
   }
+  if (recipient.kind === "exactEmail" && !model.encryption) throw validationFailure("plaintext");
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {

@@ -4,7 +4,7 @@ import { base58btc } from "multiformats/bases/base58";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "@tinycloud/share-envelope";
-import { signCompactUcanRootAuthorization } from "@tinycloud/sdk-core";
+import { httpUrlToMultiaddr, signCompactUcanRootAuthorization, signLocationRecord } from "@tinycloud/sdk-core";
 import { publishAddressedShare, type AddressedOwnerRootInput } from "@tinycloud/share-sdk";
 import { CREDENTIAL_INVITATION_REQUEST_DOMAIN, DELIVERY_ADMISSION_DOMAIN } from "../src/protocol.js";
 import type { D1DatabaseLike, D1PreparedStatementLike } from "../src/store.js";
@@ -12,6 +12,8 @@ import worker, { type EmailEnv } from "../src/worker.js";
 
 const SHARE_ORIGIN = "https://share.tinycloud.xyz";
 const API_ORIGIN = "https://api.share.tinycloud.xyz";
+const REGISTRY_ORIGIN = "https://registry.tinycloud.xyz";
+const NODE_ORIGIN = "https://owner-node.example";
 const RECIPIENT = "alice@example.com";
 const LABEL = "Quarterly report.pdf";
 const RESOURCE = "tinycloud:test-space/kv/shares/report.pdf";
@@ -24,6 +26,22 @@ const OWNER_DID = did(ownerSeed);
 const SENDER_DID = did(senderSeed);
 const b64 = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64url");
 const hex = (bytes: Uint8Array): string => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+const LOCATION_RECORD = await signLocationRecord({
+  version: 1,
+  subject: OWNER_DID,
+  multiaddrs: [httpUrlToMultiaddr(NODE_ORIGIN)],
+  updated_at: "2026-08-22T00:00:00.000Z",
+  sequence: 1,
+}, { type: "did:key", signBytes: async (bytes) => ed25519.sign(bytes, ownerSeed) });
+
+const trustedOwnerNodeFetch = (async (input: string | URL | Request) => {
+  const url = String(input);
+  if (url === `${REGISTRY_ORIGIN}/v1/locations/${encodeURIComponent(OWNER_DID)}`) {
+    return Response.json({ record: LOCATION_RECORD });
+  }
+  if (url === `${NODE_ORIGIN}/info`) return Response.json({ nodeId: NODE_DID });
+  return new Response(null, { status: 404 });
+}) as typeof fetch;
 
 function attenuation(input: AddressedOwnerRootInput): Record<string, Record<string, readonly unknown[]>> {
   return Object.fromEntries(input.capabilities.map((capability) => capability.kind === "encryption"
@@ -35,7 +53,7 @@ async function publication(now: number) {
   return publishAddressedShare({
     shareId: "emaildeliveryfixture0001",
     shareOrigin: SHARE_ORIGIN,
-    nodeOrigin: "https://owner-node.example",
+    nodeOrigin: NODE_ORIGIN,
     nodeAudience: NODE_DID,
     enforcerDid: NODE_DID,
     spaceId: "tinycloud:test-space",
@@ -185,13 +203,15 @@ function database(): D1DatabaseLike & { rows: Map<string, Row> } {
   };
 }
 
-function environment(): EmailEnv & { DELIVERIES: ReturnType<typeof database> } {
+function environment(trustFetch: typeof fetch = trustedOwnerNodeFetch): EmailEnv & { DELIVERIES: ReturnType<typeof database> } {
   return {
     DELIVERIES: database(),
     RESEND_API_KEY: "re_test",
     EMAIL_FROM: "TinyCloud Share <invite@share.tinycloud.xyz>",
     DELIVERY_AUDIENCE: API_ORIGIN,
     SHARE_ORIGIN,
+    REGISTRY_ORIGIN,
+    TRUST_FETCH: trustFetch,
     RESEND_ENDPOINT: "https://resend.test/emails",
   };
 }
@@ -259,6 +279,13 @@ describe("api.share email-only worker", () => {
     const senderSignature = String((forgedSender.proof as any).signature);
     (forgedSender.proof as any).signature = `${senderSignature.startsWith("A") ? "B" : "A"}${senderSignature.slice(1)}`;
     expect((await worker.fetch(post(forgedSender), environment())).status).toBe(401);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("refuses an internally consistent share whose owner-node binding is not published", async () => {
+    const env = environment((async () => new Response(null, { status: 404 })) as typeof fetch);
+    const response = await worker.fetch(post(await receipt()), env);
+    expect(response.status).toBe(401);
     expect(provider).not.toHaveBeenCalled();
   });
 

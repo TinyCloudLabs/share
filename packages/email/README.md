@@ -7,6 +7,7 @@ The only server-side Share function: send one owner-node-authorized invitation e
 The Worker verifies:
 
 - the v3 envelope's owner signature and complete delegation/root integrity;
+- the owner's signed registry record names the exact target origin, whose live `/info` node DID matches the share attestation;
 - the attested owner Node signature and exact API audience;
 - the sender session-key signature;
 - equality of recipient, resource, policy/share ID, public fragment-free `?tc2` link, label, share expiry, issued/expiry times, and nonce across the request and admission;

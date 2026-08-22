@@ -1,6 +1,7 @@
 /** The email service verifies intent; it never owns content or authority. */
 import { ed25519 } from "@noble/curves/ed25519";
 import { base58btc } from "multiformats/bases/base58";
+import { verifyOwnerNodeBinding } from "@tinycloud/sdk-core";
 import { canonicalize, computeCid, shareEnvelopeV3Schema, verifyEnvelopeV3, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 
 export const CREDENTIAL_INVITATION_REQUEST_DOMAIN = "xyz.tinycloud.credentials/invitation-request/v1\0";
@@ -52,6 +53,8 @@ export interface DeliveryReceipt {
 export interface DeliveryTrust {
   readonly deliveryAudience: string;
   readonly shareOrigin: string;
+  readonly registryOrigin: string;
+  readonly fetch?: typeof fetch;
 }
 
 export interface VerifiedDelivery {
@@ -143,6 +146,17 @@ export async function verifyDeliveryAuthorization(receipt: DeliveryReceipt, trus
   const { request, admission, proof } = receipt;
   const envelope = await parseShareUrl(request.returnLink, trust.shareOrigin, request.envelopeRef);
   if (envelope === null) return refuse("share-url-invalid");
+  try {
+    await verifyOwnerNodeBinding({
+      registryUrl: trust.registryOrigin,
+      ownerDid: envelope.policy.ownerDid,
+      nodeOrigin: envelope.target.origin,
+      nodeDid: envelope.target.nodeAudience,
+      ...(trust.fetch === undefined ? {} : { fetch: trust.fetch }),
+    });
+  } catch {
+    return refuse("untrusted");
+  }
   const nodeKey = didKeyBytes(envelope.attestedEnforcerBinding.nodeAudience);
   const { signature, ...unsignedAdmission } = admission;
   const nodeDigest = await sha256(`${DELIVERY_ADMISSION_DOMAIN}${canonicalize(unsignedAdmission)}`);

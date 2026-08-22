@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { validateSharePublicConfig } from "../src/email-share/config.js";
 
 const current = {
@@ -16,5 +17,11 @@ describe("Share public routing config", () => {
     for (const stale of ["nodeOrigin", "nodeAudience", "enforcerDid", "nodeInvitationPublicKey"]) {
       expect(() => validateSharePublicConfig({ ...current, [stale]: "retired" })).toThrow("unknown or missing fields");
     }
+  });
+
+  it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
+    const headers = readFileSync("public/_headers", "utf8");
+    expect(headers).toContain("connect-src 'self' https:;");
+    expect(headers).not.toContain("https://tee.node.tinycloud.xyz");
   });
 });

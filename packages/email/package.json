@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@noble/curves": "^1.9.2",
+    "@tinycloud/sdk-core": "*",
     "@tinycloud/share-envelope": "*",
     "multiformats": "^13.3.6"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
-    "@tinycloud/sdk-core": "*",
     "@tinycloud/share-sdk": "*",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"

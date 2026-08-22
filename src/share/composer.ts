@@ -605,14 +605,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const advanced = el(doc, "details", "composer-advanced");
   advanced.append(el(doc, "summary", "composer-advanced-summary", "Advanced settings"));
   const encryptionGroup = el(doc, "div", "composer-section encryption-group");
-  const encryptionLabel = el(doc, "label", "toggle-option encryption-option"); const encryption = el(doc, "input", "") as HTMLInputElement; encryption.type = "checkbox"; encryption.name = "encryption"; encryption.checked = true; encryptionLabel.append(encryption, el(doc, "span", "encryption-title", "Encrypt this share"));
-  const encryptionNote = el(doc, "p", "scope-note encryption-note", "Content and share details are encrypted before they leave this browser.");
-  encryptionGroup.append(encryptionLabel, encryptionNote);
-  encryption.addEventListener("change", () => {
-    encryptionNote.textContent = encryption.checked
-      ? "Content and share details are encrypted before they leave this browser."
-      : "Encryption is off. Anyone you share with may be able to read the content in transit or storage.";
-  });
+  const encryptionTitle = el(doc, "strong", "encryption-title", "Stored in your TinyCloud");
+  const encryptionNote = el(doc, "p", "scope-note encryption-note", "Link-only content stays on your TinyCloud node. The complete link is the read capability.");
+  encryptionGroup.append(encryptionTitle, encryptionNote);
   const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
   advanced.append(deliveryLabel, saveAsLabel);
@@ -669,6 +664,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       : "Link-only shares are view-only. Choose a specific person to allow editing.";
     browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
+    encryptionTitle.textContent = addressed ? "Encrypted for the recipient" : "Stored in your TinyCloud";
+    encryptionNote.textContent = addressed
+      ? "Content is encrypted in this browser before it is stored on your TinyCloud node."
+      : "Link-only content stays on your TinyCloud node. The complete link is the read capability.";
     recipientInput.type = "text";
     recipientInput.placeholder = kind === "emailDomain" ? "example.com" : kind === "recipientDid" ? "did:key:z..." : "name@example.com";
     recipientInput.autocomplete = kind === "emailDomain" || kind === "recipientDid" ? "off" : "email";
@@ -880,13 +879,13 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
             : content.kind === "files"
               ? { kind: "prefix", path: "selected-files/" }
               : { kind: "exact", path: uploadPath },
-          encryption: encryption.checked,
+          encryption: kind !== "bearer",
           encryptionAcknowledged: false,
           ...(delivery.value.length > 0 ? { deliveryEmail: delivery.value } : {}),
         };
         const model = validateComposerModel(modelInput);
         projectCapabilities(model);
-        submit.disabled = true; setStatus(status, "Creating your link", model.encryption ? "Encrypting in your browser. No email is being sent." : "Publishing without encryption. No email is being sent.", "encrypting");
+        submit.disabled = true; setStatus(status, "Creating your link", model.encryption ? "Encrypting in your browser, then saving to your TinyCloud. No email is being sent." : "Saving to your TinyCloud. No email is being sent.", "encrypting");
         created = options.createShare === undefined ? await defaultCreate(files, model, options) : await options.createShare({ file, files, model });
         if (options.persistShare !== undefined) {
           const save = async (): Promise<void> => options.persistShare!({ share: created!, model, file, files });
@@ -904,7 +903,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           }
         }
         progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
-        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", model.encryption ? "Your encrypted link is ready" : "Your link is ready"), el(doc, "span", "sender-status-detail", model.encryption ? "Saved encrypted to your shares. Copy it now, or find it again any time." : "Saved to your shares without encryption. Copy it now, or find it again any time."));
+        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your link is ready"), el(doc, "span", "sender-status-detail", model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";

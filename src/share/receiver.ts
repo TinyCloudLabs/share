@@ -24,6 +24,7 @@ export async function createShareReceiverClient(
     shareReceiver: {
       origin: window.location.origin,
       expectedShareOrigin: config.shareOrigin,
+      registryOrigin: config.registryOrigin,
       credentialDiscoveryUrl: `${config.credentialsOrigin}/.well-known/opencredentials`,
     },
   });

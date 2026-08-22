@@ -128,9 +128,9 @@ describe("share composer model", () => {
     expect(activeNodeIdentity).toHaveBeenCalledOnce();
   });
 
-  it("defaults to an encrypted, read-only, link-only share expiring in 7 days", () => {
+  it("defaults to a TinyCloud-native, read-only, link-only share expiring in 7 days", () => {
     const defaults = defaultComposerModel(Date.parse("2026-07-27T00:00:00.000Z"));
-    expect(defaults).toMatchObject({ encryption: true, permissions: ["read"], recipient: { kind: "bearer" } });
+    expect(defaults).toMatchObject({ encryption: false, permissions: ["read"], recipient: { kind: "bearer" } });
     expect(defaults.expiresAt).toBe("2026-08-03T00:00:00.000Z");
     expect(defaults).not.toHaveProperty("notify");
   });
@@ -170,10 +170,11 @@ describe("share composer model", () => {
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "recipientDid", value: "did:key:z6Mkexample" } }))).toThrow("That recipient option isn't available yet");
   });
 
-  it("preserves the sender's encryption choice for every available recipient mode", () => {
+  it("requires encryption for addressed shares while bearer shares stay owner-node native", () => {
     expect(validateComposerModel(modelWith(textContent, { encryption: false }))).toMatchObject({ encryption: false, recipient: { kind: "bearer" } });
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" }, resource: { kind: "exact", path: "docs/readme.md" } };
-    expect(validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false, encryptionAcknowledged: true }))).toMatchObject({ encryption: false, recipient: { kind: "exactEmail", value: "reader@example.com" } });
+    expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false }))).toThrow("Shares must stay encrypted");
+    expect(validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true }))).toMatchObject({ encryption: true, recipient: { kind: "exactEmail", value: "reader@example.com" } });
   });
 
   it("rejects prefix content until the encrypted shared-key contract exists", () => {
@@ -403,7 +404,7 @@ describe("share composer access controls", () => {
     expect(hours).toBeLessThan(24.1);
   });
 
-  it("shows unsupported recipient choices as intentionally unavailable and lets the sender turn encryption off", () => {
+  it("shows unsupported recipient choices and states the actual protection for each available mode", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const recipients = root.querySelector<HTMLFieldSetElement>("fieldset.recipient-section")!;
@@ -421,25 +422,20 @@ describe("share composer access controls", () => {
     expect(recipientOptions.map((input) => input.disabled)).toEqual([false, true, true, false]);
     expect(recipientOptions.slice(1, 3).map((input) => input.closest("label")?.getAttribute("aria-disabled"))).toEqual(["true", "true"]);
     expect(advanced.open).toBe(false);
-    const encryption = root.querySelector<HTMLInputElement>("input[name=encryption]")!;
-    expect(advanced.contains(encryption)).toBe(false);
-    expect(encryption.checked).toBe(true);
-    expect(encryption.disabled).toBe(false);
-    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encrypt this share");
-    encryption.click();
-    expect(encryption.checked).toBe(false);
-    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encryption is off");
+    expect(root.querySelector("input[name=encryption]")).toBeNull();
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("Stored in your TinyCloud");
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("complete link is the read capability");
+    recipientOptions[0]!.click();
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("Encrypted for the recipient");
+    expect(root.querySelector(".encryption-group")?.textContent).toContain("encrypted in this browser");
     expect(advanced.contains(root.querySelector("input[name=delivery-email]"))).toBe(true);
     expect(advanced.querySelector("input[name=recipient]")).toBeNull();
     expect(advanced.textContent).not.toContain("Anyone with an email from this domain");
     expect(root.querySelector("select[name=format]")).toBeNull();
     expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
-    expect(root.querySelector<HTMLElement>(".encryption-group")!.hidden).toBe(false);
-    expect(encryption.checked).toBe(false);
-    expect(encryption.disabled).toBe(false);
   });
 
-  it("submits the unchecked encryption choice without changing who can receive it", async () => {
+  it("submits bearer shares with their actual owner-node storage mode", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const submitted: ShareComposerModel[] = [];
     mountShareComposer(root, {
@@ -449,7 +445,6 @@ describe("share composer access controls", () => {
     const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
     Object.defineProperty(input, "files", { configurable: true, value: [new File(["public"], "public.txt", { type: "text/plain" })] });
     input.dispatchEvent(new Event("change", { bubbles: true }));
-    root.querySelector<HTMLInputElement>("input[name=encryption]")!.click();
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(submitted).toHaveLength(1));
     expect(submitted[0]).toMatchObject({ encryption: false, recipient: { kind: "bearer" } });
