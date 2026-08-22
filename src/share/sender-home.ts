@@ -106,11 +106,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
     if (item.state !== "revoked") {
       const revoke = node(doc, "button", "button button-secondary sender-revoke", "Revoke") as HTMLButtonElement; revoke.type = "button"; revoke.setAttribute("aria-label", `Revoke ${safeName(item.record)}`);
-      if (item.record.recipientMatcher.kind === "bearer") {
-        // A link-only share carries no revocable authority. Show the control
-        // disabled and say why, instead of silently dropping it (P1-3).
+      if (item.record.enforcementDelegationCid === undefined && item.record.ownerDelegationCid === undefined) {
+        // Imported legacy links may not have a revocation authority.
         revoke.disabled = true;
-        revoke.title = "Link-only shares can't be revoked early.";
+        revoke.title = "This saved link can't be revoked because its revocation authority is missing.";
         revoke.classList.add("sender-revoke-unavailable");
       } else {
         revoke.addEventListener("click", () => {

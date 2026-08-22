@@ -116,8 +116,8 @@ function chooseExpiry(root: HTMLElement, value: string): void {
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function baseOptions(): { openKeyAddress: string; origin: string; onBack: () => void } {
-  return { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined };
+function baseOptions(): { openKeyAddress: string; origin: string; nativeHistoryTarget: { origin: string; nodeAudience: string }; onBack: () => void } {
+  return { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", nativeHistoryTarget: { origin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz" }, onBack: () => undefined };
 }
 
 describe("share composer model", () => {
@@ -567,6 +567,7 @@ describe("share composer access controls", () => {
     expect(puts).toHaveBeenCalledOnce();
     expect(generate).toHaveBeenCalledWith(expect.objectContaining({ actions: ["tinycloud.kv/get"], expiry: new Date(expectedExpiry) }));
     expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
+    expect(captured!.share.record).toMatchObject({ enforcementDelegationCid: "bafy-native-delegation", target: { origin: "https://node.tinycloud.xyz", nodeAudience: "did:web:node.tinycloud.xyz", spaceId: "tinycloud:pkh:eip155:1:0xabc:applications" }, resource: { kind: "exact" }, actions: ["tinycloud.kv/get"], recipientMatcher: { kind: "bearer" }, expiresAt: expectedExpiry, filename: "expiry.txt" });
   });
 
   it("publishes a non-UTF-8 file through the real link-only creation path", async () => {

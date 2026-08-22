@@ -132,7 +132,7 @@ export interface ComposerShareResult {
   readonly expiresAt?: string;
   /** Canonical sender history, handed to the encrypted persistence adapter. */
   readonly record?: SenderShareRecord;
-  /** The owner delegation CID backing this share, absent for bearer (possession-only) links. Revoking this CID revokes the share and every delegation derived from it. */
+  /** The revocable delegation CID backing this share. */
   readonly delegationCid?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
   readonly notify?: () => Promise<void>;
@@ -148,6 +148,8 @@ export interface ShareComposerOptions extends Omit<CreateLinkOnlyShareOptions, "
   readonly loadCapabilities?: () => Promise<readonly { readonly capabilityId: string; readonly scope: Record<string, unknown>; readonly source: ContentSource; readonly policy: SenderPolicy }[]>;
   readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
+  /** Node identity captured from the authenticated Share configuration. */
+  readonly nativeHistoryTarget?: { readonly origin: string; readonly nodeAudience: string };
   readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined; readonly files: readonly File[] }) => Promise<void>;
   /** Retained as an inert compatibility input while existing host integrations update. */
   readonly createUnifiedOwnerRoot?: (input: unknown) => Promise<unknown>;
@@ -270,7 +272,23 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
     viewerOrigin: options.origin,
     contentType: file.type.trim() || "application/octet-stream",
   });
-  return { url: nativeShare.url, cid: nativePath, format: model.linkFormat, expiresAt: nativeShare.expiresAt.toISOString(), delegationCid: nativeShare.delegationCid };
+  const target = options.nativeHistoryTarget;
+  if (target === undefined) throw fail("session", "TinyCloud node identity is unavailable");
+  const expiresAt = nativeShare.expiresAt.toISOString();
+  const record: SenderShareRecord = {
+    shareId: nativeShare.delegationCid,
+    enforcementDelegationCid: nativeShare.delegationCid,
+    target: { origin: target.origin, nodeAudience: target.nodeAudience, spaceId: options.tinycloud.spaceId! },
+    resource: { kind: "exact", path: nativePath },
+    actions: ["tinycloud.kv/get"],
+    recipientMatcher: { kind: "bearer" },
+    targetKind: "bearer",
+    registeredAt: new Date().toISOString(),
+    expiresAt,
+    link: nativeShare.url,
+    filename: file.name,
+  };
+  return { url: nativeShare.url, cid: nativePath, format: model.linkFormat, expiresAt, delegationCid: nativeShare.delegationCid, record };
 }
 
 async function createPolicyShare(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {

@@ -1,6 +1,7 @@
 import type { OpenKeyShareSession, ShareTinyCloud, UploadCapability } from "./openkey-session.js";
 import { loadAuthenticatedCapabilities } from "./capability-list.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
+import type { SharePublicConfig } from "../email-share/config.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 
 const LIBRARY_ROUTE = "#/library";
@@ -13,6 +14,7 @@ interface SenderApp {
   readonly tinycloud: ShareTinyCloud;
   readonly history: SenderHistoryRepository;
   readonly capabilities: readonly UploadCapability[];
+  readonly config: SharePublicConfig;
 }
 
 function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>): void {
@@ -91,6 +93,7 @@ function renderComposer(current: SenderApp, token: number): void {
       openKeyAddress: current.session.address,
       session: current.session,
       tinycloud: current.tinycloud,
+      nativeHistoryTarget: { origin: current.config.nodeOrigin, nodeAudience: current.config.nodeAudience },
       onBack: () => navigate(LIBRARY_ROUTE),
       loadCapabilities: async () => current.capabilities.map((candidate) => ({ capabilityId: candidate.capabilityId ?? "", scope: candidate.scope as unknown as Record<string, unknown>, source: candidate.source, policy: candidate.policy as never })),
       persistShare: async ({ share }) => {
@@ -131,7 +134,7 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   const capabilities = await loadAuthenticatedCapabilities();
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
-  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), capabilities };
+  app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), capabilities, config };
   (root as HTMLElement).replaceChildren(view);
   if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {
     // Keep the library the durable home without adding a history entry.

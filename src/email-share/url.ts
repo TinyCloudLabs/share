@@ -41,7 +41,7 @@ export function captureAndScrubLaunch(loc: Location, history: History, storage?:
   // Native SharingService links are rooted at the viewer and carry all
   // receiver key/delegation material in one opaque fragment. Do not accept
   // pre-cutover path or query variants.
-  if (loc.pathname === "/") {
+  if (loc.pathname === "/viewer") {
     const native = NATIVE_LAUNCH.exec(hash);
     if (native !== null) {
       const parsed = new URL(href);
