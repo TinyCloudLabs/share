@@ -16,10 +16,6 @@ async function loadViewerStyles(): Promise<void> {
 }
 
 if (viewerRoot !== null) {
-  if (new URLSearchParams(window.location.search).get("sender-launch") === "1") {
-    void loadViewerStyles();
-    void bootSenderViewer(viewerRoot);
-  } else {
   // This is intentionally the first recipient-side operation. The complete
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
@@ -29,48 +25,6 @@ if (viewerRoot !== null) {
     : captured;
   void loadViewerStyles();
   void bootRecipient(viewerRoot, launch);
-  }
-}
-
-async function bootSenderViewer(root: HTMLElement): Promise<void> {
-  root.replaceChildren();
-  const loading = document.createElement("p");
-  loading.textContent = "Waiting for the private share…";
-  loading.setAttribute("role", "status");
-  root.append(loading);
-  let accepted = false;
-  let launched = false;
-  const timeout = window.setTimeout(() => {
-    if (!launched) loading.textContent = "Couldn't open the preview. Close this tab and try again.";
-  }, 10_000);
-  const receive = (event: MessageEvent): void => {
-    if (accepted || event.origin !== window.location.origin || event.data?.type !== "tinycloud-sender-channel" || event.ports.length !== 1) return;
-    accepted = true;
-    window.removeEventListener("message", receive);
-    const port = event.ports[0]!;
-    port.onmessage = (message): void => {
-      if (message.data?.type !== "tinycloud-sender-launch") return;
-      const url = message.data?.url;
-      if (typeof url !== "string") return;
-      try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("origin");
-        const captured = captureAndScrubLaunch(parsed as unknown as Location, window.history, window.sessionStorage);
-        if (captured === undefined) throw new Error("launch");
-        launched = true;
-        window.clearTimeout(timeout);
-        port.close();
-        window.opener = null;
-        void loadViewerStyles();
-        void bootRecipient(root, captured);
-      } catch {
-        loading.textContent = "The private share was invalid or expired.";
-      }
-    };
-    port.start();
-    try { port.postMessage({ type: "tinycloud-sender-ready" }); } catch { port.close(); }
-  };
-  window.addEventListener("message", receive);
 }
 
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined): Promise<void> {
