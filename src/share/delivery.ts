@@ -13,6 +13,9 @@ export interface AddressedDeliveryInput {
 
 export async function requestAddressedDelivery(input: AddressedDeliveryInput): Promise<void> {
   if (input.deliveryAuthorization.request.returnLink !== input.shareUrl) throw new Error("The invitation request is not bound to this share link.");
+  // OpenCredentials owns invitation delivery. Share only forwards the
+  // owner-node receipt to its deployed generic mail endpoint; it does not
+  // run an admission or mail service.
   const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/v1/email`, {
     method: "POST",
     credentials: "omit",

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { requestAddressedDelivery } from "../src/share/delivery.js";
 
 describe("addressed delivery boundary", () => {
-  it("posts the unchanged node-authorized invitation only to the email API", async () => {
+  it("posts the unchanged node-authorized invitation only to OpenCredentials delivery", async () => {
     const emailOrigin = "https://worker.example";
     const request = Object.freeze({ returnLink: "https://share.example/viewer?tc2=public-policy" });
     const admission = Object.freeze({ schema: "xyz.tinycloud.policy/delivery-admission/v0" });

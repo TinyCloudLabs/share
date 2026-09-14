@@ -42,7 +42,7 @@ vi.mock("../src/email-share/config.js", async (importOriginal) => ({
     shareOrigin: "https://share.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
     credentialsOrigin: "https://witness.credentials.org",
-    emailOrigin: "https://api.share.tinycloud.xyz",
+    emailOrigin: "https://email.tinycloud.xyz",
     accountlessReceiverEnabled: true,
   }),
 }));

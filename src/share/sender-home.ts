@@ -2,6 +2,7 @@ import { copyWithFallback } from "./clipboard.js";
 import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { revokeShare } from "@tinycloud/share-sdk";
+import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
 
 export interface SenderHomeOptions {
   readonly session: OpenKeyShareSession;
@@ -122,6 +123,25 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
               revokeDelegation: async ({ delegationCid }) => {
                 const result = await options.tinycloud.revokeDelegation(delegationCid);
                 if (!result.ok) throw new Error("revoke-rejected");
+              },
+              revokePolicyRoot: async (request) => {
+                const activeNode = await options.tinycloud.activeNodeIdentity();
+                // Sender history is encrypted client state, not authority. Bind
+                // its root identifiers to the currently authenticated owner node
+                // before signing a generic Policy/v3 revocation.
+                if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
+                  throw new Error("revoke-unbound-policy-root");
+                }
+                await revokePolicyRootV3({
+                  nodeOrigin: activeNode.origin,
+                  rootCid: request.rootCid,
+                  targetRole: request.targetRole,
+                  ownerDid: options.tinycloud.credentialHolderDid,
+                  issuerDid: options.tinycloud.credentialHolderDid,
+                  nodeAudience: activeNode.nodeDid,
+                  reason: "share revoked",
+                  sign: (digest) => options.tinycloud.signSessionBytes(digest),
+                });
               },
             },
           }).then((result) => {

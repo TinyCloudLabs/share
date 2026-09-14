@@ -288,8 +288,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
   const node = await resolveOwnerShareNode(tinycloud);
-  // Addressed recipients and api.share verify this session-signed discovery
-  // record before admitting credentials or sending email. Publish it before
+  // The recipient SDK verifies this signed discovery record before contacting
+  // the owner node. Publish it before
   // content storage so a registry failure cannot leave an orphaned object.
   await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
   const shareId = crypto.randomUUID();
@@ -378,6 +378,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
         shareUrl: share.url,
         documentName: filename,
         expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(".000Z", "Z"),
+        // This is OpenCredentials' existing email delivery origin, not a
+        // Share policy or data-plane service.
         deliveryAudience: config.emailOrigin,
       });
       await requestAddressedDelivery({ emailOrigin: config.emailOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
