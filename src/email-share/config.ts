@@ -4,6 +4,8 @@ const CONFIG_VERSION = "tinycloud.share/config-v2" as const;
 export interface SharePublicConfig {
   readonly version: typeof CONFIG_VERSION;
   readonly shareOrigin: string;
+  /** Initial owner-node choice for senders with no signed location record yet. Never used by recipients. */
+  readonly senderBootstrapNodeOrigin: string;
   readonly registryOrigin: string;
   readonly credentialsOrigin: string;
   readonly accountlessReceiverEnabled: boolean;
@@ -27,18 +29,20 @@ function httpsOrigin(value: unknown, name: string): string {
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
   const raw = value as Record<string, unknown>;
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "credentialsOrigin", "accountlessReceiverEnabled", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  const object = exactObject(value, ["version", "shareOrigin", "senderBootstrapNodeOrigin", "registryOrigin", "credentialsOrigin", "accountlessReceiverEnabled", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
   if (object.version !== CONFIG_VERSION) throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
+  const senderBootstrapNodeOrigin = httpsOrigin(object.senderBootstrapNodeOrigin, "senderBootstrapNodeOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.accountlessReceiverEnabled !== "boolean") throw new TypeError("share receiver rollout is invalid");
-  if (environment === "production" && [shareOrigin, registryOrigin, credentialsOrigin].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback value");
+  if (environment === "production" && [shareOrigin, senderBootstrapNodeOrigin, registryOrigin, credentialsOrigin].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback value");
   return Object.freeze({
     version: CONFIG_VERSION,
     shareOrigin,
+    senderBootstrapNodeOrigin,
     registryOrigin,
     credentialsOrigin,
     accountlessReceiverEnabled: object.accountlessReceiverEnabled,

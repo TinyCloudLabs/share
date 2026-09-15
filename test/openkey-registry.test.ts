@@ -34,12 +34,13 @@ describe("Share owner node discovery", () => {
       },
     } as never, {
       shareOrigin: "https://share.tinycloud.xyz",
+      senderBootstrapNodeOrigin: "https://tee.node.tinycloud.xyz",
       registryOrigin: "https://registry.tinycloud.xyz",
     } as never, () => undefined);
 
     expect(state.config).toMatchObject({
       tinycloudRegistryUrl: "https://registry.tinycloud.xyz",
-      tinycloudFallbackHosts: null,
+      tinycloudFallbackHosts: ["https://tee.node.tinycloud.xyz"],
       autoDiscoverLocalNode: false,
     });
     expect(state.config).not.toHaveProperty("tinycloudHosts");

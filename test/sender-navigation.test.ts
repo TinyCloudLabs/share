@@ -40,6 +40,7 @@ vi.mock("../src/email-share/config.js", async (importOriginal) => ({
   loadSharePublicConfig: async () => ({
     version: "tinycloud.share/config-v2",
     shareOrigin: "https://share.tinycloud.xyz",
+    senderBootstrapNodeOrigin: "https://tee.node.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
     credentialsOrigin: "https://witness.credentials.org",
     accountlessReceiverEnabled: true,

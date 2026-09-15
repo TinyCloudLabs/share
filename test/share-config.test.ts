@@ -5,17 +5,23 @@ import { validateSharePublicConfig } from "../src/email-share/config.js";
 const current = {
   version: "tinycloud.share/config-v2",
   shareOrigin: "https://share.tinycloud.xyz",
+  senderBootstrapNodeOrigin: "https://tee.node.tinycloud.xyz",
   registryOrigin: "https://registry.tinycloud.xyz",
   credentialsOrigin: "https://witness.credentials.org",
   accountlessReceiverEnabled: true,
 } as const;
 
 describe("Share public routing config", () => {
-  it("contains no deployment-wide owner Node or invitation key", () => {
+  it("contains only a sender bootstrap choice, never a recipient trust anchor or invitation key", () => {
     expect(validateSharePublicConfig(current)).toEqual(current);
     for (const stale of ["nodeOrigin", "nodeAudience", "enforcerDid", "nodeInvitationPublicKey"]) {
       expect(() => validateSharePublicConfig({ ...current, [stale]: "retired" })).toThrow("unknown or missing fields");
     }
+  });
+
+  it("rejects a loopback or placeholder sender bootstrap node in production", () => {
+    expect(() => validateSharePublicConfig({ ...current, senderBootstrapNodeOrigin: "http://127.0.0.1:8788" })).toThrow();
+    expect(() => validateSharePublicConfig({ ...current, senderBootstrapNodeOrigin: "https://node.example" })).toThrow("placeholder or loopback");
   });
 
   it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
