@@ -43,3 +43,27 @@ opt-in and requires the actual mailed invitation, its Mailinator OTP, and the
 sender's original non-UTF-8 file. It verifies the downloaded local bytes and
 the required OpenCredentials/Policy-v3/delegate/invoke trace, while refusing
 OpenKey or legacy Share traffic. It does not create an invitation itself.
+
+`joined-gate.mjs` is the hermetic release gate. It boots the stable Node
+1.17.1 tree, the current OpenCredentials production tree, and the current
+Location Registry tree, while serving only the candidate static Share build
+at the production origin. It creates the sender share through the real browser
+UI, captures mail through a loopback Resend-compatible sink, and opens the
+invitation in a fresh browser context. Request interception changes only
+transport: browser URLs, Origin headers, CSP, Trusted Types, policy audiences,
+and signed discovery records retain their production values. The stack has no
+Share API or Share registry.
+
+The gate refuses dirty or non-reviewed dependency trees. Defaults are the
+local stable worktrees listed in `native-stack.mjs`; explicit paths may be
+provided with `TC500_NODE_WORKTREE`, `TC500_OPENCREDENTIALS_WORKTREE`, and
+`TC500_REGISTRY_WORKTREE`.
+
+```bash
+npm run test:e2e:native-joined
+```
+
+Its stdout and JSON artifact contain only fixed stage labels, route counts,
+tree digests, and SHA-256 values. Browser console strings, invitation
+fragments, mailbox addresses, OTPs, authorizations, and request bodies remain
+in process memory and are never serialized.
