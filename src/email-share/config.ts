@@ -6,7 +6,6 @@ export interface SharePublicConfig {
   readonly shareOrigin: string;
   readonly registryOrigin: string;
   readonly credentialsOrigin: string;
-  readonly emailOrigin: string;
   readonly accountlessReceiverEnabled: boolean;
   readonly environment?: "production" | "test";
 }
@@ -28,22 +27,20 @@ function httpsOrigin(value: unknown, name: string): string {
 export function validateSharePublicConfig(value: unknown): SharePublicConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError("share config must be an object");
   const raw = value as Record<string, unknown>;
-  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "credentialsOrigin", "emailOrigin", "accountlessReceiverEnabled", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
+  const object = exactObject(value, ["version", "shareOrigin", "registryOrigin", "credentialsOrigin", "accountlessReceiverEnabled", ...(Object.hasOwn(raw, "environment") ? ["environment"] : [])]);
   if (object.version !== CONFIG_VERSION) throw new TypeError("unsupported share config version");
   const shareOrigin = httpsOrigin(object.shareOrigin, "shareOrigin");
   const registryOrigin = httpsOrigin(object.registryOrigin, "registryOrigin");
   const credentialsOrigin = httpsOrigin(object.credentialsOrigin, "credentialsOrigin");
-  const emailOrigin = httpsOrigin(object.emailOrigin, "emailOrigin");
   const environment = object.environment === undefined ? "production" : object.environment;
   if (environment !== "production" && environment !== "test") throw new TypeError("share config environment is invalid");
   if (typeof object.accountlessReceiverEnabled !== "boolean") throw new TypeError("share receiver rollout is invalid");
-  if (environment === "production" && [shareOrigin, registryOrigin, credentialsOrigin, emailOrigin].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback value");
+  if (environment === "production" && [shareOrigin, registryOrigin, credentialsOrigin].some((item) => /(?:node\.example|127\.0\.0\.1|localhost|fixture|test)/i.test(item))) throw new TypeError("production share config contains a placeholder or loopback value");
   return Object.freeze({
     version: CONFIG_VERSION,
     shareOrigin,
     registryOrigin,
     credentialsOrigin,
-    emailOrigin,
     accountlessReceiverEnabled: object.accountlessReceiverEnabled,
     ...(environment === "test" ? { environment: "test" as const } : {}),
   });

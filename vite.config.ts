@@ -21,6 +21,7 @@ function shareRouteRewrite(): Plugin {
     const path = (url ?? "").split("?", 1)[0] ?? "";
     if (path === "/share") return "/share.html";
     if (path === "/viewer") return "/viewer.html";
+    if (path.startsWith("/s/")) return "/viewer.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
   };

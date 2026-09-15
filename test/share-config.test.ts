@@ -7,7 +7,6 @@ const current = {
   shareOrigin: "https://share.tinycloud.xyz",
   registryOrigin: "https://registry.tinycloud.xyz",
   credentialsOrigin: "https://witness.credentials.org",
-  emailOrigin: "https://email.tinycloud.xyz",
   accountlessReceiverEnabled: true,
 } as const;
 
@@ -26,6 +25,16 @@ describe("Share public routing config", () => {
       expect(policy).toContain("connect-src 'self' https:;");
       expect(policy).not.toContain("https://tee.node.tinycloud.xyz");
       expect(policy).not.toContain("http://127.0.0.1:");
+    }
+  });
+
+  it("advertises only the sealed addressed-link form in browser-visible protocol copy", () => {
+    const viewer = readFileSync("viewer.html", "utf8");
+    const product = readFileSync("PRODUCT.md", "utf8");
+    for (const copy of [viewer, product]) {
+      expect(copy).toContain("/s/inline#v=2");
+      expect(copy).not.toContain("/viewer?tc2");
+      expect(copy).not.toContain("policy-v3-tc2");
     }
   });
 });

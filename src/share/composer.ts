@@ -5,7 +5,7 @@ import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX 
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
-import { historyRecordForPublishedShare, publishAddressedShare, type SenderShareRecord } from "@tinycloud/share-sdk";
+import { historyRecordForPublishedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
@@ -345,15 +345,16 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const credentialRequirement = model.recipient.kind === "exactEmail"
     ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
     : undefined;
-  let deliveryMaterial: { readonly envelope: Readonly<Record<string, unknown>>; readonly shareCid: string } | undefined;
+  let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
     shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
     target, resource: { kind: resourceKind, path: resourcePath }, actions: model.permissions, policyActions, contentSource: unifiedSource,
     ...(credentialRequirement === undefined ? {} : { credentialRequirement }),
     filename, mediaType: plaintextType, byteLength,
     ...(deliveryEmail === undefined ? {} : { deliveryEmail }), expiresAt: new Date(model.expiresAt),
-    // The signed policy envelope is public invitation metadata. The only
-    // content bytes are encrypted and stored on the owner's TinyCloud node.
+    // The SDK seals the signed policy envelope into the fragment-only
+    // invitation. The only content bytes are encrypted and stored on the
+    // owner's TinyCloud node.
     onDeliveryMaterial: (material) => { deliveryMaterial = material; },
     authority: {
       ownerDid: tinycloud.credentialHolderDid,
@@ -372,17 +373,19 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       if (deliveryMaterial === undefined) throw new Error("We couldn't send that email. The link above still works.");
       const authorization = await tinycloud.authorizeShareDeliveryV3({
         envelope: deliveryMaterial.envelope as ShareEnvelopeV3,
+        sealedEnvelope: deliveryMaterial.sealedEnvelope,
+        envelopeKey: deliveryMaterial.envelopeKey,
         shareCid: deliveryMaterial.shareCid,
         resourcePath,
         recipientEmail: deliveryEmail,
         shareUrl: share.url,
         documentName: filename,
         expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(".000Z", "Z"),
-        // This is OpenCredentials' existing email delivery origin, not a
-        // Share policy or data-plane service.
-        deliveryAudience: config.emailOrigin,
+        // OpenCredentials verifies and consumes the signed admission at its
+        // generic credential-invitation endpoint.
+        deliveryAudience: config.credentialsOrigin,
       });
-      await requestAddressedDelivery({ emailOrigin: config.emailOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+      await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
     } }),
   };
 }

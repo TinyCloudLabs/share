@@ -5,7 +5,7 @@ export interface SignedDeliveryAuthorization {
 }
 
 export interface AddressedDeliveryInput {
-  readonly emailOrigin: string;
+  readonly credentialsOrigin: string;
   readonly shareUrl: string;
   readonly deliveryAuthorization: SignedDeliveryAuthorization;
   readonly fetchFn?: typeof fetch;
@@ -16,7 +16,7 @@ export async function requestAddressedDelivery(input: AddressedDeliveryInput): P
   // OpenCredentials owns invitation delivery. Share only forwards the
   // owner-node receipt to its deployed generic mail endpoint; it does not
   // run an admission or mail service.
-  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.emailOrigin}/v1/email`, {
+  const response = await (input.fetchFn ?? globalThis.fetch)(`${input.credentialsOrigin}/v1/credential-invitations`, {
     method: "POST",
     credentials: "omit",
     redirect: "error",

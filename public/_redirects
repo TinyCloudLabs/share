@@ -1,3 +1,4 @@
 /viewer /viewer.html 200
+/s/* /viewer.html 200
 /share /share.html 200
 /how-it-works /how-it-works.html 200

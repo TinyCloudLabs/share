@@ -14,7 +14,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
-  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/viewer?tc2=test" }),
+  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: "addressed" }),
 }));
 
 vi.mock("../src/email-share/view.js", () => ({
@@ -28,7 +28,6 @@ vi.mock("../src/email-share/config.js", () => ({
     shareOrigin: "https://share.tinycloud.xyz",
     registryOrigin: "https://registry.tinycloud.xyz",
     credentialsOrigin: "https://credentials.example",
-    emailOrigin: "https://email.tinycloud.xyz",
     accountlessReceiverEnabled: true,
   }),
 }));
@@ -135,7 +134,7 @@ describe("first-class accountless receiver", () => {
     expect(state.receiveWithSdk).toHaveBeenCalledWith(
       expect.objectContaining({
         root: document.getElementById("viewer"),
-        shareUrl: "https://share.tinycloud.xyz/viewer?tc2=test",
+        shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test",
       }),
     );
     expect(state.receive).not.toHaveBeenCalled();

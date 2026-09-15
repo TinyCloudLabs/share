@@ -20,11 +20,12 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
-  const launch = captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1"
-    ? { ...captured, shareHref: `https://share.tinycloud.xyz${new URL(captured.shareHref).pathname}${new URL(captured.shareHref).search}${new URL(captured.shareHref).hash}` }
-    : captured;
+  if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
+    const capturedUrl = new URL(captured.shareHref);
+    captured.shareHref = `https://share.tinycloud.xyz${capturedUrl.pathname}${capturedUrl.search}${capturedUrl.hash}`;
+  }
   void loadViewerStyles();
-  void bootRecipient(viewerRoot, launch);
+  void bootRecipient(viewerRoot, captured);
 }
 
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined): Promise<void> {
@@ -43,7 +44,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const shareHref = launch.shareHref;
     launch.shareHref = "";
     const shareConfig = await config.loadSharePublicConfig();
-    if (new URL(shareHref).pathname === "/viewer" && new URL(shareHref).search === "" && new URL(shareHref).hash.startsWith("#tc1=")) {
+    if (launch.kind === "bearer") {
       const { receiveNativeBearerAccess } = await import("./viewer/native-bearer.js");
       // The fragment was already captured and scrubbed before config or this
       // SDK construction. Receiving the capability is the first network work.
@@ -67,10 +68,6 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
         }),
       }, { shareUrl: shareHref });
       return;
-    }
-    const addressedUrl = new URL(shareHref);
-    if (addressedUrl.pathname !== "/viewer" || addressedUrl.hash !== "" || addressedUrl.searchParams.size !== 1 || addressedUrl.searchParams.get("tc2") === null || addressedUrl.search !== `?tc2=${addressedUrl.searchParams.get("tc2")}`) {
-      throw new Error("unsupported pre-native share link");
     }
     const { resolveShare } = await import("./viewer/resolve.js");
     const resolved: ResolveResult = await resolveShare(shareHref, { expectedOrigin: shareConfig.shareOrigin });
