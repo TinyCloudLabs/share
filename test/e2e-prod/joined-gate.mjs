@@ -161,28 +161,33 @@ async function clickText(page, value, timeout = 60_000) {
 }
 
 async function submitCredentialValue(page, value, expectedType) {
-  const filled = await waitUntil(() => page.evaluate(({ value, expectedType }) => {
-    const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
-    const input = root?.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) return false;
-    if (expectedType === "otp" && input.type !== "text" && input.inputMode !== "numeric" && input.name !== "otp") return false;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (setter === undefined) return false;
-    setter.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    return true;
-  }, { value, expectedType }).catch(() => false), 90_000);
-  if (!filled) return false;
-  await page.evaluate(() => new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
-  return waitUntil(() => page.evaluate(({ value, expectedType }) => {
-    const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
-    const input = root?.querySelector("input");
-    const button = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
-    if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement) || input.value !== value) return false;
-    if (expectedType === "otp" && input.type !== "text" && input.inputMode !== "numeric" && input.name !== "otp") return false;
-    button.click(); return true;
-  }, { value, expectedType }).catch(() => false), 10_000);
+  const input = await waitUntil(async () => {
+    const handle = await page.evaluateHandle((expectedType) => {
+      const candidate = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input");
+      if (!(candidate instanceof HTMLInputElement)) return null;
+      if (expectedType === "otp" && candidate.type !== "text" && candidate.inputMode !== "numeric" && candidate.name !== "otp") return null;
+      return candidate;
+    }, expectedType).catch(() => undefined);
+    return handle?.asElement() ?? undefined;
+  }, 90_000);
+  if (input === undefined) return false;
+  await input.click({ clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await input.type(value);
+  const button = await waitUntil(async () => {
+    const handle = await page.evaluateHandle(({ value, expectedType }) => {
+      const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+      const candidateInput = root?.querySelector("input");
+      const candidateButton = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
+      if (!(candidateInput instanceof HTMLInputElement) || !(candidateButton instanceof HTMLButtonElement) || candidateInput.value !== value) return null;
+      if (expectedType === "otp" && candidateInput.type !== "text" && candidateInput.inputMode !== "numeric" && candidateInput.name !== "otp") return null;
+      return candidateButton;
+    }, { value, expectedType }).catch(() => undefined);
+    return handle?.asElement() ?? undefined;
+  }, 10_000);
+  if (button === undefined) return false;
+  await button.click();
+  return true;
 }
 
 async function downloadExact(page, temporary) {
