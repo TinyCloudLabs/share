@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resendFixtureJsonResponse } from "./native-stack.mjs";
+import { isCredentialOtpMail, resendFixtureJsonResponse } from "./native-stack.mjs";
 
 test("Resend fixture responses declare their exact bounded UTF-8 length", () => {
   const response = resendFixtureJsonResponse({ id: "mail_é" }, { "cache-control": "no-store" });
@@ -9,4 +9,11 @@ test("Resend fixture responses declare their exact bounded UTF-8 length", () => 
   assert.equal(response.headers["content-length"], String(Buffer.byteLength(response.body)));
   assert.equal(response.headers["cache-control"], "no-store");
   assert.deepEqual(JSON.parse(response.body), { id: "mail_é" });
+});
+
+test("OTP selection is bound to the verification subject and exact recipient", () => {
+  const recipient = "unique@example.test";
+  assert.equal(isCredentialOtpMail({ payload: { subject: "Your OpenCredentials verification code", to: [recipient], text: "123456" } }, recipient), true);
+  assert.equal(isCredentialOtpMail({ payload: { subject: "Your TinyCloud share", to: [recipient], text: "Unrelated 654321" } }, recipient), false);
+  assert.equal(isCredentialOtpMail({ payload: { subject: "Your OpenCredentials verification code", to: ["other@example.test"], text: "123456" } }, recipient), false);
 });

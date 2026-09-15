@@ -128,6 +128,13 @@ export function resendFixtureJsonResponse(value, extraHeaders = {}) {
   };
 }
 
+export function isCredentialOtpMail(message, recipient) {
+  const payload = message?.payload;
+  const recipients = Array.isArray(payload?.to) ? payload.to : [payload?.to];
+  return payload?.subject === "Your OpenCredentials verification code"
+    && recipients.includes(recipient);
+}
+
 export async function startNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }) {
   const children = [];
   const servers = [];

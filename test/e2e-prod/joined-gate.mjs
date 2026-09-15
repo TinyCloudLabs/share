@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { startNativeStack } from "./native-stack.mjs";
+import { isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -259,7 +259,7 @@ try {
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
   journeyStage = "recipient-email";
   assert.equal(await submitCredentialValue(recipient, recipientEmail, "email"), true);
-  const otpMail = await waitUntil(() => findMail(stack.mail, (values) => values.some((value) => /\b\d{6}\b/.test(value))), 60_000);
+  const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
   const otp = otpFromMail(otpMail); assert.match(otp ?? "", /^\d{6}$/);
   journeyStage = "recipient-otp";
   assert.equal(await submitCredentialValue(recipient, otp, "otp"), true);
