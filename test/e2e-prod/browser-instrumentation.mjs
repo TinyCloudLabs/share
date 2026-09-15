@@ -1,5 +1,6 @@
 export function installBrowserInstrumentation() {
-  window.__tc500BinaryBodies = [];
+  window.__tc500BinaryBodies = {};
+  window.__tc500BinaryBodySequence = 0;
   window.__tc500Clipboard = [];
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, init) => {
@@ -12,7 +13,12 @@ export function installBrowserInstrumentation() {
     }
     if (url.pathname === "/invoke" && contentType.startsWith("application/vnd.tinycloud.sealed") && (body instanceof Blob || body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
       const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer()) : body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-      window.__tc500BinaryBodies.push(Array.from(bytes));
+      const id = String(++window.__tc500BinaryBodySequence);
+      window.__tc500BinaryBodies[id] = Array.from(bytes);
+      const headers = new Headers(init?.headers ?? request?.headers);
+      headers.set("x-tc500-binary-id", id);
+      if (request !== undefined) input = new Request(request, { headers });
+      else init = { ...init, headers };
     }
     return originalFetch(input, init);
   };

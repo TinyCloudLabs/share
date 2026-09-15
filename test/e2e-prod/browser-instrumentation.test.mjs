@@ -18,8 +18,8 @@ test("captures only the sealed binary invoke body supplied through a Request", a
 
     await window.fetch(request);
 
-    assert.deepEqual(window.__tc500BinaryBodies, [[0, 1, 128, 255]]);
-    assert.equal(forwarded.input, request);
+    assert.deepEqual(window.__tc500BinaryBodies, { 1: [0, 1, 128, 255] });
+    assert.equal(forwarded.input.headers.get("x-tc500-binary-id"), "1");
     assert.equal(forwarded.init, undefined);
   } finally {
     globalThis.window = originalWindow;
