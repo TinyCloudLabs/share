@@ -1,5 +1,6 @@
 import { receiveShare, ShareReceiveError, type ShareMetadata } from "@tinycloud/share-sdk";
 import type { ShareEnvelope, ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import { canonicalShareFilename } from "../filename-policy.js";
 
 export type UnsupportedReason = "policy-target" | "prefix-resource";
 
@@ -43,16 +44,17 @@ export function presentationEnvelope(
   metadata: ShareMetadata,
   content?: { readonly filename: string; readonly mediaType: string },
 ): ShareEnvelope {
+  const filename = content === undefined ? undefined : canonicalShareFilename(content.filename);
   return {
     version: 1,
     shareId: metadata.shareId,
     delegation: "[redacted]",
     authorizationTarget: { kind: "bearerKey", sessionJwk: { kty: "OKP", crv: "Ed25519", x: "" } },
     target: { origin: metadata.target.origin, nodeAudience: metadata.target.nodeAudience, spaceId: metadata.target.spaceId, resource: metadata.resource },
-    display: { ...metadata.display, ...(content === undefined ? {} : { filename: content.filename }) },
+    display: { ...metadata.display, ...(filename === undefined ? {} : { filename }) },
     expiry: metadata.expiresAt,
     signature: { signerDid: "did:key:z6Mkrender-only", algorithm: "Ed25519", value: "" },
-    ...(content === undefined ? {} : { metadata: { filename: content.filename, mediaType: content.mediaType } }),
+    ...(filename === undefined || content === undefined ? {} : { metadata: { filename, mediaType: content.mediaType } }),
   } as unknown as ShareEnvelope;
 }
 

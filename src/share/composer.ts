@@ -9,6 +9,7 @@ import { historyRecordForPublishedShare, publishAddressedShare, type PublishedSh
 import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
+import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
@@ -43,6 +44,7 @@ export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
 
 /** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
 function unsafeLibraryKey(value: string): boolean {
+  if (hasUnsafeFilenameCodePoint(value)) return true;
   for (const character of value) {
     const code = character.codePointAt(0) ?? 0;
     if (code < 0x20 || code === 0x7f || code === 0x5c) return true;
@@ -204,7 +206,12 @@ export function canonicalUploadFiles(selected: readonly File[]): readonly File[]
   const seen = new Set<string>();
   let total = 0;
   for (const [index, input] of selected.entries()) {
-    const name = input.name.normalize("NFC");
+    let name: string;
+    try {
+      name = canonicalShareFilename(input.name);
+    } catch {
+      throw fail("filename", "upload filename is unsafe");
+    }
     const rawPath = browserPaths[index]!;
     const path = rawPath.startsWith(sharedFolderRoot) ? rawPath.slice(sharedFolderRoot.length) : rawPath;
     let canonicalPath: string;
@@ -215,11 +222,7 @@ export function canonicalUploadFiles(selected: readonly File[]): readonly File[]
     }
     const segments = canonicalPath.split("/");
     if (
-      name.length === 0
-      || name.trim() !== name
-      || name === "."
-      || name === ".."
-      || /[\/\\\u0000-\u001f\u007f]/.test(name)
+      name.trim() !== name
       || /%2f|%5c|%2e/i.test(name)
       || segments.at(-1) !== name
       || segments.some((segment) => segment.trim() !== segment || new TextEncoder().encode(segment).byteLength > 240)
@@ -295,8 +298,12 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const shareId = crypto.randomUUID();
   const selectedSource = contentSource(model.content)?.kind === "kv" ? contentSource(model.content) as Extract<NonNullable<ReturnType<typeof contentSource>>, { kind: "kv" }> : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
-  const filename = contentFilename(model.content);
-  if (filename.length === 0 || filename.includes("/") || filename === "." || filename === "..") throw fail("filename", "owner share filename is invalid");
+  let filename: string;
+  try {
+    filename = canonicalShareFilename(contentFilename(model.content));
+  } catch {
+    throw fail("filename", "owner share filename is invalid");
+  }
   const resourceKind = model.resource.kind;
   if (resourceKind !== "exact") throw fail("rejected", "v3 prefix shares require a shared wrapped content key");
   const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;

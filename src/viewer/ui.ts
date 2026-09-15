@@ -19,6 +19,7 @@ import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud
 import type { ResolveResult, UnsupportedReason } from "./resolve.js";
 import { focusViewerRoot } from "./focus.js";
 import { copyWithFallback } from "../share/clipboard.js";
+import { canonicalShareFilename } from "../filename-policy.js";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -36,9 +37,9 @@ type PresentableEnvelope = ShareEnvelope | ShareEnvelopeV2 | ShareEnvelopeV3;
 
 function filenameOf(envelope: PresentableEnvelope): string {
   const fromDisplay = envelope.display.filename;
-  if (fromDisplay !== undefined && fromDisplay.length > 0) return fromDisplay;
+  if (fromDisplay !== undefined && fromDisplay.length > 0) return canonicalShareFilename(fromDisplay);
   const path = envelope.version === 1 ? envelope.target.resource.path : envelope.resource.path;
-  return path.split("/").pop() ?? path;
+  return canonicalShareFilename(path.split("/").pop() ?? path);
 }
 
 function formatExpiry(iso: string): string {

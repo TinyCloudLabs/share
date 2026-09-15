@@ -1,5 +1,6 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
 import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
+import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
 export type ContentSource =
   | { readonly kind: "kv"; readonly space: string; readonly path: string; readonly action: "tinycloud.kv/get" }
@@ -179,7 +180,7 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");
   const canonicalPath = model.resource.kind === "prefix" ? `${body}/` : body;
-  if (body.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(body) || /[\u0000-\u001f\u007f\\]/.test(body) || /%2f|%5c|%2e/i.test(body) || body.split("/").some((segment) => segment.length === 0)) {
+  if (body.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(body) || body.includes("\\") || hasUnsafeFilenameCodePoint(body) || /%2f|%5c|%2e/i.test(body) || body.split("/").some((segment) => segment.length === 0)) {
     throw validationFailure("filename");
   }
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
@@ -199,6 +200,13 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
       : "exact";
   if (model.resource.kind !== inferredResourceKind) throw validationFailure("actions");
   if (model.content.kind === "files" && model.content.files.length < 2) throw validationFailure("content");
+  if (model.content.kind !== "files") {
+    try {
+      canonicalShareFilename(contentFilename(model.content));
+    } catch {
+      throw validationFailure("filename");
+    }
+  }
   if (inferredResourceKind === "prefix") throw validationFailure("folderUnsupported");
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
