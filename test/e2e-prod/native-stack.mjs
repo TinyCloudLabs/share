@@ -135,6 +135,11 @@ export function isCredentialOtpMail(message, recipient) {
     && recipients.includes(recipient);
 }
 
+export function credentialOtpFromMail(message) {
+  const match = message?.payload?.text?.match(/^Your one-time OpenCredentials code is (\d{6})\. It expires in five minutes\.$/);
+  return match?.[1];
+}
+
 export async function startNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }) {
   const children = [];
   const servers = [];

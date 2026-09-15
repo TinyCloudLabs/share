@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
+import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -58,10 +58,6 @@ function findMail(messages, predicate) {
 
 function invitationFromMail(message) {
   return stringsIn(message?.payload).flatMap((value) => [...value.matchAll(/https:\/\/share\.tinycloud\.xyz\/s\/inline#[^\s"'<>]+/g)].map((match) => match[0].replaceAll("&amp;", "&")))[0];
-}
-
-function otpFromMail(message) {
-  return stringsIn(message?.payload).flatMap((value) => value.match(/\b\d{6}\b/g) ?? [])[0];
 }
 
 async function waitUntil(check, timeout = 180_000) {
@@ -260,7 +256,7 @@ try {
   journeyStage = "recipient-email";
   assert.equal(await submitCredentialValue(recipient, recipientEmail, "email"), true);
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
-  const otp = otpFromMail(otpMail); assert.match(otp ?? "", /^\d{6}$/);
+  const otp = credentialOtpFromMail(otpMail); assert.match(otp ?? "", /^\d{6}$/);
   journeyStage = "recipient-otp";
   assert.equal(await submitCredentialValue(recipient, otp, "otp"), true);
   journeyStage = "recipient-decrypt-render";
