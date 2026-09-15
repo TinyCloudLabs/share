@@ -29,6 +29,7 @@ const fixtureDigest = createHash("sha256").update(fixture).digest("hex");
 const trace = [];
 const consoleCounts = {};
 let phase = "sender";
+let journeyStage = "setup";
 let failureReported = false;
 
 function fail(stage) {
@@ -191,11 +192,17 @@ async function downloadExact(page, temporary) {
 
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
-  assert(at("sender", stack.canonical.registry, "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress.toLowerCase()}`), "PUT"), "sender did not publish signed owner location");
+  const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress.toLowerCase()}`);
+  assert(trace.some((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.path === accountLocationPath && entry.method === "GET" && entry.status === 404), "fresh sender did not prove the missing-location bootstrap case");
+  const publishedLocation = trace.find((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.path.startsWith("/v1/locations/") && entry.method === "PUT" && entry.status >= 200 && entry.status < 300);
+  const ownerDid = publishedLocation?.body?.subject;
+  assert.match(ownerDid ?? "", /^did:key:z/);
+  assert.equal(publishedLocation?.path, `/v1/locations/${encodeURIComponent(ownerDid)}`, "sender published location under the wrong subject");
   assert(at("sender", stack.canonical.node, "/policy/v3/policies", "POST"), "sender did not register embedded Node policy");
   assert(at("sender", stack.canonical.node, "/policy/v3/deliveries/authorize", "POST"), "sender did not authorize delivery at owner Node");
   assert(at("sender", stack.canonical.credentials, "/v1/credential-invitations", "POST"), "sender did not send generic credential invitation");
   assert(at("recipient", stack.canonical.credentials, "/v1/acquisitions", "POST"), "recipient did not acquire email credential");
+  assert(at("recipient", stack.canonical.registry, `/v1/locations/${encodeURIComponent(ownerDid)}`, "GET"), "recipient did not discover the sender's published owner Node");
   const challenge = at("recipient", stack.canonical.node, "/policy/v3/challenges", "POST");
   const delegation = at("recipient", stack.canonical.node, "/policy/v3/delegations", "POST");
   assert(challenge && delegation, "recipient did not present credential to embedded Node policy");
@@ -205,54 +212,89 @@ function traceAudit(stack) {
   assert(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300).length >= 2, "recipient did not read ciphertext and decrypt through ordinary invoke");
   assert(!trace.some((entry) => entry.phase === "recipient" && /openkey/i.test(entry.origin)), "recipient contacted OpenKey before render");
   assert(!trace.some((entry) => entry.path.startsWith("/share/") || /api\.share/.test(entry.origin) || (entry.origin === stack.canonical.registry && !entry.path.startsWith("/v1/locations/"))), "journey used a prohibited Share or registry data plane");
-  return { receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: trace.filter((entry) => entry.phase === "recipient" && entry.path === "/invoke").length };
+  return { ownerDidSha256: createHash("sha256").update(ownerDid).digest("hex"), receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: trace.filter((entry) => entry.phase === "recipient" && entry.path === "/invoke").length };
 }
 
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
 const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixturePath, fixture, { flag: "wx", mode: 0o600 });
 let stack; let candidate; let browser;
 try {
+  journeyStage = "share-build";
   execFileSync("npm", ["run", "build"], { cwd: shareRoot, stdio: "ignore" });
   const cert = join(temporary, "candidate.pem"); const key = join(temporary, "candidate.key");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-subj", "/CN=share.tinycloud.xyz", "-days", "1"], { stdio: "ignore" });
   const spki = execFileSync("sh", ["-c", `openssl x509 -pubkey -noout -in '${cert}' | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64`], { encoding: "utf8" }).trim();
   candidate = await startCandidateServer({ root: resolve(shareRoot, "dist"), key: await readFile(key), cert: await readFile(cert) });
+  journeyStage = "native-stack-readiness";
   stack = await startNativeStack({ root: temporary, nodeRoot, credentialsRoot, registryRoot });
+  journeyStage = "browser-launch";
   browser = await puppeteer.launch({ headless: process.env.HEADED !== "1", args: [`--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1:${candidate.port}`, `--ignore-certificate-errors-spki-list=${spki}`, "--disable-quic", "--no-proxy-server"] });
 
   const sender = await browser.newPage(); await installRouting(sender, stack);
+  journeyStage = "sender-navigation";
   await sender.goto(`${stack.canonical.share}/share#/new`, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  journeyStage = "sender-authentication";
   await sender.waitForSelector("button.auth-button", { timeout: 60_000 }); await sender.click("button.auth-button");
   await clickText(sender, "Create TinyCloud Space", 10_000).catch(() => undefined);
   await sender.waitForSelector("form.composer-form", { timeout: 180_000 });
+  journeyStage = "sender-composition";
   await sender.$eval('input[name="recipient"][value="exactEmail"]', (input) => input.click());
   const recipientEmail = `tc500-native-${Date.now()}@mailinator.com`;
   await sender.type('input[name="recipient-value"]', recipientEmail);
   const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
+  journeyStage = "sender-publication";
   await sender.click("button.create-link-button");
   await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
   await clickText(sender, "Copy link");
   const shareUrl = await sender.evaluate(() => window.__tc500Clipboard.at(-1));
-  assert.match(shareUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/inline#p=/);
+  assert.match(shareUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/);
+  journeyStage = "sender-delivery";
   await clickText(sender, "Notify recipient");
   const invitationMail = await waitUntil(() => findMail(stack.mail, (values) => values.some((value) => value.includes("/s/inline#"))), 60_000);
   const invitation = invitationFromMail(invitationMail); assert.equal(typeof invitation, "string");
 
   phase = "recipient";
+  journeyStage = "recipient-navigation";
   const recipientContext = await browser.createBrowserContext(); const recipient = await recipientContext.newPage(); await installRouting(recipient, stack);
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  journeyStage = "recipient-email";
   assert.equal(await submitCredentialValue(recipient, recipientEmail, "email"), true);
   const otpMail = await waitUntil(() => findMail(stack.mail, (values) => values.some((value) => /\b\d{6}\b/.test(value))), 60_000);
   const otp = otpFromMail(otpMail); assert.match(otp ?? "", /^\d{6}$/);
+  journeyStage = "recipient-otp";
   assert.equal(await submitCredentialValue(recipient, otp, "otp"), true);
+  journeyStage = "recipient-decrypt-render";
   assert.equal(await downloadExact(recipient, temporary), true);
+  journeyStage = "traffic-audit";
   const audit = traceAudit(stack);
 
   const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, consoleCounts, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch {
-  fail("journey");
+  const pageState = await browser?.pages().then(async (pages) => {
+    const page = pages.find((candidatePage) => candidatePage.url().startsWith(stack?.canonical.share ?? "https://share.tinycloud.xyz"));
+    return page?.evaluate(() => {
+      const status = document.querySelector(".composer-status");
+      return status === null ? undefined : { state: (status instanceof HTMLElement ? status.dataset.state : undefined), text: status.textContent?.trim().slice(0, 240) };
+    }).catch(() => undefined);
+  }).catch(() => undefined);
+  await writeFile(outputPath, JSON.stringify({
+    type: "tinycloud.share/native-joined-e2e/v1",
+    result: "failed",
+    stage: journeyStage,
+    requests: trace.map(({ phase: requestPhase, method, origin, path, status, response }) => ({
+      phase: requestPhase,
+      method,
+      origin,
+      path,
+      status,
+      code: typeof response?.error?.code === "string" ? response.error.code : typeof response?.code === "string" ? response.code : undefined,
+    })),
+    pageState,
+    consoleCounts,
+  }, null, 2), { mode: 0o600 }).catch(() => undefined);
+  fail(journeyStage);
 } finally {
   await browser?.close().catch(() => undefined); await stack?.close().catch(() => undefined); await candidate?.close().catch(() => undefined);
   console.log(`[tc500] artifacts retained under ${temporary.replace(/[^/]+$/, "<redacted>")}`);
