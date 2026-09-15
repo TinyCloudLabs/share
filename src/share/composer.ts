@@ -963,7 +963,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         }
         copy.focus();
       } catch (error) {
-        console.debug("tinycloud share: sender request failed", error);
+        console.debug("tinycloud share: sender request failed");
         setStatus(status, "Check the sharing details", senderFailureMessage(error), "error-invalid", true);
       }
       finally { submit.disabled = false; }

@@ -51,7 +51,7 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
         // whole Web SDK bootstrap, which reaches this same catch through
         // `proceed`. The raw text is a developer detail; only the classified
         // message reaches the wall.
-        console.debug("tinycloud share: sign-in failed", error);
+        console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
         status.textContent = authFailureMessage(error);
         submit.disabled = false;

@@ -1,4 +1,4 @@
-/** Sender-facing failure vocabulary. Raw error details only reach console.debug. */
+/** Sender-facing failure vocabulary. Raw error details never reach UI or telemetry. */
 export type SenderFailureKind =
   | "session"
   | "content"

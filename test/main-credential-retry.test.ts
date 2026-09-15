@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   resolve: vi.fn(),
   presented: [] as { result: unknown; options: Record<string, unknown> }[],
   resolved: undefined as unknown,
+  invalid: vi.fn(),
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
@@ -18,7 +19,7 @@ vi.mock("../src/email-share/url.js", () => ({
 }));
 
 vi.mock("../src/email-share/view.js", () => ({
-  renderRecipientInvalid: () => undefined,
+  renderRecipientInvalid: (...args: unknown[]) => state.invalid(...args),
   renderRecipientLoading: () => undefined,
 }));
 
@@ -72,6 +73,7 @@ beforeEach(() => {
   state.get.mockReset();
   state.importInto.mockReset();
   state.resolve.mockReset();
+  state.invalid.mockReset();
   state.presented.length = 0;
   const envelope = {
     version: 3,
@@ -143,5 +145,26 @@ describe("first-class accountless receiver", () => {
     expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
 
     expect(state.createAccountClient).not.toHaveBeenCalled();
+  });
+
+  it("keeps remote receiver response details out of console telemetry", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    state.receiveWithSdk.mockRejectedValueOnce(
+      new Error("delegate rejected: tc500-secret-marker"),
+    );
+
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.invalid).toHaveBeenCalledTimes(1));
+
+    expect(debug).toHaveBeenCalledWith("tinycloud share: recipient request failed");
+    expect(JSON.stringify([
+      ...debug.mock.calls,
+      ...errorLog.mock.calls,
+      ...warn.mock.calls,
+      ...log.mock.calls,
+    ])).not.toContain("tc500-secret-marker");
   });
 });

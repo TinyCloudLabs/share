@@ -597,7 +597,7 @@ describe("share composer navigation", () => {
 describe("share composer sender failures", () => {
   it("never renders raw protocol failure text", async () => {
     const root = document.createElement("div"); document.body.append(root);
-    const error = new Error("Node policy bytes is invalid: delegation envelope CID mismatch in the KV registry (bearer capability)");
+    const error = new Error("Node policy bytes is invalid: delegation envelope CID mismatch in the KV registry (bearer capability) tc500-secret-marker");
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     mountShareComposer(root, { ...baseOptions(), createShare: async () => { throw error; } });
 
@@ -607,7 +607,8 @@ describe("share composer sender failures", () => {
 
     expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("Something went wrong creating this link. Nothing was shared. Try again.");
     expect(root.querySelector(".composer-status")?.textContent).not.toMatch(/capabilit|delegat|\bDID\b|\bspace\b|bearer|policy|envelope|\bCID\b|\bKV\b|registry|matcher|attenuat|nonce|\bclaim\b|credential|epoch|invocation|\bnode\b/i);
-    expect(debug).toHaveBeenCalledWith("tinycloud share: sender request failed", error);
+    expect(debug).toHaveBeenCalledWith("tinycloud share: sender request failed");
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("tc500-secret-marker");
   });
 
   it("maps tagged sender failures without rendering their developer detail", async () => {
