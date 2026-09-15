@@ -214,11 +214,11 @@ async function downloadExact(page, temporary) {
 
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
-  const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress.toLowerCase()}`);
+  const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress}`);
   assert(trace.some((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.path === accountLocationPath && entry.method === "GET" && entry.status === 404), "fresh sender did not prove the missing-location bootstrap case");
   const publishedLocation = trace.find((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.path.startsWith("/v1/locations/") && entry.method === "PUT" && entry.status >= 200 && entry.status < 300);
   const ownerDid = publishedLocation?.body?.subject;
-  assert.match(ownerDid ?? "", /^did:key:z/);
+  assert.match(ownerDid ?? "", /^did:key:z/, "published location owner DID is invalid");
   assert.equal(publishedLocation?.path, `/v1/locations/${encodeURIComponent(ownerDid)}`, "sender published location under the wrong subject");
   assert(at("sender", stack.canonical.node, "/policy/v3/policies", "POST"), "sender did not register embedded Node policy");
   assert(at("sender", stack.canonical.node, "/policy/v3/deliveries/authorize", "POST"), "sender did not authorize delivery at owner Node");
@@ -229,7 +229,7 @@ function traceAudit(stack) {
   const delegation = at("recipient", stack.canonical.node, "/policy/v3/delegations", "POST");
   assert(challenge && delegation, "recipient did not present credential to embedded Node policy");
   assert.equal(delegation.body?.presentation?.holderDid, challenge.body?.recipientDid, "recipient changed ephemeral did:key between acquisition and policy presentation");
-  assert.match(challenge.body?.recipientDid ?? "", /^did:key:z/);
+  assert.match(challenge.body?.recipientDid ?? "", /^did:key:z/, "policy challenge recipient DID is invalid");
   assert(at("recipient", stack.canonical.node, "/delegate", "POST"), "recipient did not import scoped delegation");
   assert(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300).length >= 2, "recipient did not read ciphertext and decrypt through ordinary invoke");
   assert(!trace.some((entry) => entry.phase === "recipient" && /openkey/i.test(entry.origin)), "recipient contacted OpenKey before render");
@@ -292,7 +292,7 @@ try {
   const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, consoleCounts, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
-} catch {
+} catch (error) {
   const submittedProofs = trace.filter((entry) => entry.phase === "recipient" && entry.method === "POST" && /\/v1\/acquisitions\/[^/]+\/proof$/.test(entry.path));
   const submittedOtp = submittedProofs.at(-1)?.body?.proof?.otp;
   const senderCiphertexts = trace.filter((entry) => entry.phase === "sender" && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300 && entry.requestByteLength !== undefined);
@@ -324,6 +324,7 @@ try {
       submittedOtpLength: typeof submittedOtp === "string" ? submittedOtp.length : undefined,
       submittedOtpMatchedSelected: typeof submittedOtp === "string" && submittedOtp === selectedOtp,
     },
+    auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,
