@@ -381,6 +381,9 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
         shareUrl: share.url,
         documentName: filename,
         expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(".000Z", "Z"),
+        // Keep the Node-issued JTI stable when the sender retries this exact
+        // delivery, so OpenCredentials can safely deduplicate it.
+        idempotencyKey: `tinycloud-share:${shareId}`,
         // OpenCredentials verifies and consumes the signed admission at its
         // generic credential-invitation endpoint.
         deliveryAudience: config.credentialsOrigin,
