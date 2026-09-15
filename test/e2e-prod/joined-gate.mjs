@@ -15,6 +15,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
 
@@ -85,21 +86,7 @@ function headerSubset(request) {
 }
 
 async function installRouting(page, stack) {
-  await page.evaluateOnNewDocument(() => {
-    window.__tc500BinaryBodies = [];
-    window.__tc500Clipboard = [];
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
-      const body = init?.body;
-      if (url.pathname === "/invoke" && (body instanceof Blob || body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
-        const bytes = body instanceof Blob ? new Uint8Array(await body.arrayBuffer()) : body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-        window.__tc500BinaryBodies.push(Array.from(bytes));
-      }
-      return originalFetch(input, init);
-    };
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { window.__tc500Clipboard.push(value); } } });
-  });
+  await page.evaluateOnNewDocument(installBrowserInstrumentation);
   page.on("console", (message) => { consoleCounts[message.type()] = (consoleCounts[message.type()] ?? 0) + 1; });
   page.on("pageerror", () => { consoleCounts.pageerror = (consoleCounts.pageerror ?? 0) + 1; });
   await page.setRequestInterception(true);
@@ -124,9 +111,19 @@ async function installRouting(page, stack) {
       if (url.pathname === "/invoke" && request.headers()["content-type"]?.startsWith("application/vnd.tinycloud.sealed")) body = Buffer.from(await page.evaluate(() => window.__tc500BinaryBodies.shift() ?? []));
       else body = request.postData();
     }
+    if (entry !== undefined && Buffer.isBuffer(body)) {
+      entry.requestByteLength = body.byteLength;
+      entry.requestSha256 = createHash("sha256").update(body).digest("hex");
+    }
     const response = await fetch(new URL(`${url.pathname}${url.search}`, targetOrigin), { method: request.method(), headers: headerSubset(request), redirect: "manual", ...(body === undefined ? {} : { body }) });
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (entry !== undefined) { entry.status = response.status; try { entry.response = JSON.parse(bytes.toString("utf8")); } catch {} }
+    if (entry !== undefined) {
+      entry.status = response.status;
+      entry.responseByteLength = bytes.byteLength;
+      entry.responseSha256 = createHash("sha256").update(bytes).digest("hex");
+      entry.responseContentType = response.headers.get("content-type") ?? undefined;
+      try { entry.response = JSON.parse(bytes.toString("utf8")); } catch {}
+    }
     const headers = Object.fromEntries(response.headers.entries());
     for (const key of ["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding"]) delete headers[key];
     if (url.origin !== "https://openkey.so") {
@@ -232,7 +229,7 @@ function traceAudit(stack) {
 
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
 const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixturePath, fixture, { flag: "wx", mode: 0o600 });
-let stack; let candidate; let browser;
+let stack; let candidate; let browser; let recipientEmail; let selectedOtp;
 try {
   journeyStage = "share-build";
   execFileSync("npm", ["run", "build"], { cwd: shareRoot, stdio: "ignore" });
@@ -254,7 +251,7 @@ try {
   await sender.waitForSelector("form.composer-form", { timeout: 180_000 });
   journeyStage = "sender-composition";
   await sender.$eval('input[name="recipient"][value="exactEmail"]', (input) => input.click());
-  const recipientEmail = `tc500-native-${Date.now()}@mailinator.com`;
+  recipientEmail = `tc500-native-${Date.now()}@mailinator.com`;
   await sender.type('input[name="recipient-value"]', recipientEmail);
   const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
   journeyStage = "sender-publication";
@@ -272,12 +269,11 @@ try {
   journeyStage = "recipient-navigation";
   const recipientContext = await browser.createBrowserContext(); const recipient = await recipientContext.newPage(); await installRouting(recipient, stack);
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
-  journeyStage = "recipient-email";
-  assert.equal(await submitCredentialValue(recipient, recipientEmail, "email"), true);
+  journeyStage = "recipient-otp-delivery";
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
-  const otp = credentialOtpFromMail(otpMail); assert.match(otp ?? "", /^\d{6}$/);
+  selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{6}$/);
   journeyStage = "recipient-otp";
-  assert.equal(await submitCredentialValue(recipient, otp, "otp"), true);
+  assert.equal(await submitCredentialValue(recipient, selectedOtp, "otp"), true);
   journeyStage = "recipient-decrypt-render";
   assert.equal(await downloadExact(recipient, temporary), true);
   journeyStage = "traffic-audit";
@@ -287,6 +283,10 @@ try {
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch {
+  const submittedProofs = trace.filter((entry) => entry.phase === "recipient" && entry.method === "POST" && /\/v1\/acquisitions\/[^/]+\/proof$/.test(entry.path));
+  const submittedOtp = submittedProofs.at(-1)?.body?.proof?.otp;
+  const senderCiphertexts = trace.filter((entry) => entry.phase === "sender" && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300 && entry.requestByteLength !== undefined);
+  const recipientInvokes = trace.filter((entry) => entry.phase === "recipient" && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300);
   const pageState = await browser?.pages().then(async (pages) => {
     const page = pages.find((candidatePage) => candidatePage.url().startsWith(stack?.canonical.share ?? "https://share.tinycloud.xyz"));
     return page?.evaluate(() => {
@@ -308,6 +308,18 @@ try {
     })),
     pageState,
     consoleCounts,
+    credentialDiagnostics: {
+      verificationMailCount: stack?.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length,
+      submittedProofCount: submittedProofs.length,
+      submittedOtpLength: typeof submittedOtp === "string" ? submittedOtp.length : undefined,
+      submittedOtpMatchedSelected: typeof submittedOtp === "string" && submittedOtp === selectedOtp,
+    },
+    dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
+      responseByteLength: entry.responseByteLength,
+      responseContentType: entry.responseContentType,
+      matchesSenderCiphertext: senderCiphertexts.some((senderEntry) => senderEntry.requestSha256 === entry.responseSha256),
+      matchingSenderCiphertextByteLength: senderCiphertexts.find((senderEntry) => senderEntry.requestSha256 === entry.responseSha256)?.requestByteLength,
+    })),
   }, null, 2), { mode: 0o600 }).catch(() => undefined);
   fail(journeyStage);
 } finally {
