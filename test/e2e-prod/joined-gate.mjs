@@ -108,18 +108,18 @@ async function installRouting(page, stack) {
     }
     let body;
     if (!new Set(["GET", "HEAD"]).has(request.method())) {
-      if (url.pathname === "/invoke" && request.headers()["content-type"]?.startsWith("application/vnd.tinycloud.sealed")) {
-        const binaryId = request.headers()["x-tc500-binary-id"];
-        assert.match(binaryId ?? "", /^\d+$/, "sealed browser request is missing its captured body id");
+      const binaryId = request.headers()["x-tc500-binary-id"];
+      if (url.pathname === "/invoke" && binaryId !== undefined) {
+        assert.match(binaryId, /^\d+$/, "binary browser request has an invalid captured body id");
         const captured = await page.evaluate((id) => {
           const bytes = window.__tc500BinaryBodies[id];
           delete window.__tc500BinaryBodies[id];
           return bytes;
         }, binaryId);
-        assert(Array.isArray(captured), "sealed browser request body was not captured");
+        assert(Array.isArray(captured), "binary browser request body was not captured");
         body = Buffer.from(captured);
       }
-      else body = request.postData();
+      else body = await request.fetchPostData();
     }
     if (entry !== undefined && Buffer.isBuffer(body)) {
       entry.requestByteLength = body.byteLength;

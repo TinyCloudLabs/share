@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 
-test("captures only the sealed binary invoke body supplied through a Request", async () => {
+test("captures a binary owner-KV invoke body without confusing ordinary JSON invokes", async () => {
   const originalWindow = globalThis.window;
   const originalNavigator = globalThis.navigator;
   const originalLocation = globalThis.location;
@@ -14,7 +14,7 @@ test("captures only the sealed binary invoke body supplied through a Request", a
     installBrowserInstrumentation();
     await window.fetch(new Request("https://tee.node.tinycloud.xyz/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
     const bytes = Uint8Array.from([0, 1, 128, 255]);
-    const request = new Request("https://tee.node.tinycloud.xyz/invoke", { method: "POST", headers: { "content-type": "application/vnd.tinycloud.sealed" }, body: new Blob([bytes]) });
+    const request = new Request("https://tee.node.tinycloud.xyz/invoke", { method: "POST", headers: { "content-type": "application/vnd.tinycloud.encrypted-envelope+json" }, body: new Blob([bytes]) });
 
     await window.fetch(request);
 
