@@ -7,9 +7,10 @@
  * service.  Consequently this is not a proxy for an old Share API (and must
  * never grow a catch-all upstream proxy).
  */
-import { createReadStream, statSync } from "node:fs";
+import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:https";
-import { extname, normalize, resolve } from "node:path";
+import { extname, join, normalize, resolve } from "node:path";
+import { parseProductionHeaders, productionHeadersForPath } from "./production-headers.mjs";
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -37,6 +38,10 @@ function candidatePath(root, pathname) {
 /** Start an isolated HTTPS server; callers select it only with Chrome's CDP resolver rule. */
 export async function startCandidateServer({ root, key, cert, port = 0 }) {
   const staticRoot = resolve(root);
+  // Vite copies public/_headers into dist. Serving the candidate with this
+  // parsed contract keeps CSP, Trusted Types, sandbox, cache, and referrer
+  // behavior identical to the Cloudflare Pages deployment under test.
+  const headerRules = parseProductionHeaders(readFileSync(join(staticRoot, "_headers"), "utf8"));
   const server = createServer({ key, cert }, (request, response) => {
     // A browser resolver rule can accidentally send other local requests here.
     // Refuse them rather than becoming a generic TLS endpoint.
@@ -66,10 +71,8 @@ export async function startCandidateServer({ root, key, cert, port = 0 }) {
       return;
     }
     response.writeHead(200, {
-      "cache-control": pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-store, no-transform",
+      ...productionHeadersForPath(headerRules, pathname),
       "content-type": CONTENT_TYPES[extname(filename)] ?? "application/octet-stream",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
     });
     if (request.method === "HEAD") { response.end(); return; }
     createReadStream(filename).pipe(response);

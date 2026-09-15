@@ -13,7 +13,26 @@ import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { inspectShare } from "@tinycloud/share-sdk";
+import { verifyOwnerNodeBinding } from "@tinycloud/sdk-core";
 import { startCandidateServer } from "./candidate-server.mjs";
+import {
+  auditRecipientTrace,
+  PRODUCTION_CREDENTIALS_ORIGIN,
+  PRODUCTION_LOCATION_REGISTRY_ORIGIN,
+} from "./recipient-trace.mjs";
+
+let failureReported = false;
+function reportRedactedFailure() {
+  if (failureReported) return;
+  failureReported = true;
+  // Never echo an exception: browser/navigation errors can include the full
+  // invitation fragment, while acquisition errors can include mailbox input.
+  console.error("[tc500] production recipient gate failed; sensitive details withheld");
+  process.exitCode = 1;
+}
+process.on("uncaughtException", reportRedactedFailure);
+process.on("unhandledRejection", reportRedactedFailure);
 
 const RUN = process.env.TC500_E2E_RUN;
 const invitation = process.env.TC500_E2E_SHARE_URL;
@@ -34,6 +53,35 @@ const parsedInvitation = new URL(invitation);
 if (parsedInvitation.origin !== "https://share.tinycloud.xyz" || parsedInvitation.pathname !== "/s/inline" || !parsedInvitation.hash.includes("p=")) {
   throw new Error("expected an addressed https://share.tinycloud.xyz/s/inline#… invitation");
 }
+
+const productionConfig = JSON.parse(readFileSync(resolve("dist/.well-known/tinycloud-share/config.json"), "utf8"));
+if (
+  productionConfig.shareOrigin !== "https://share.tinycloud.xyz"
+  || productionConfig.credentialsOrigin !== PRODUCTION_CREDENTIALS_ORIGIN
+  || productionConfig.registryOrigin !== PRODUCTION_LOCATION_REGISTRY_ORIGIN
+) {
+  throw new Error("candidate production origins are not the reviewed production trust tuple");
+}
+
+let addressedEnvelope;
+await inspectShare(invitation, {
+  expectedOrigin: "https://share.tinycloud.xyz",
+  onResolvedAddressedEnvelope: (envelope) => { addressedEnvelope = envelope; },
+});
+if (addressedEnvelope?.version !== 3) throw new Error("invitation is not a verified Policy/v3 envelope");
+const ownerNodeOrigin = new URL(addressedEnvelope.target.origin).origin;
+if (ownerNodeOrigin !== addressedEnvelope.target.origin || ownerNodeOrigin === parsedInvitation.origin) {
+  throw new Error("invitation owner Node origin is not canonical and independent");
+}
+// This performs the SDK's subject-signature verification and proves the
+// envelope owner, Node origin, and Node DID agree with the signed Location
+// Registry record before the browser receives any credential or authority.
+await verifyOwnerNodeBinding({
+  registryUrl: PRODUCTION_LOCATION_REGISTRY_ORIGIN,
+  ownerDid: addressedEnvelope.policy.ownerDid,
+  nodeOrigin: ownerNodeOrigin,
+  nodeDid: addressedEnvelope.target.nodeAudience,
+});
 
 const temporary = mkdtempSync(join(tmpdir(), "tc500-recipient-"));
 const cert = join(temporary, "candidate.pem");
@@ -61,7 +109,13 @@ try {
     const url = new URL(request.url());
     if (url.protocol === "https:" || url.protocol === "http:") trace.push({ method: request.method(), origin: url.origin, path: url.pathname });
   });
-  page.on("console", (message) => console.log(`[browser:${message.type()}] ${message.text().slice(0, 300)}`));
+  // Browser messages are attacker-controlled and may contain the fragment,
+  // email, or OTP. Record only severity counts; never emit message text.
+  const browserConsoleCounts = {};
+  page.on("console", (message) => {
+    const type = message.type();
+    browserConsoleCounts[type] = (browserConsoleCounts[type] ?? 0) + 1;
+  });
   await page.goto(invitation, { waitUntil: "domcontentloaded" });
 
   // The published SDK owns this inline Shadow-DOM control and the OC transport.
@@ -122,17 +176,12 @@ try {
   const actual = readFileSync(downloaded);
   if (!actual.equals(expected)) throw new Error("local downloaded bytes differ from the sender's exact non-UTF-8 file");
 
-  const seen = (suffix) => trace.some((entry) => entry.path === suffix);
-  const nodeInvokes = trace.filter((entry) => entry.path === "/invoke" && entry.origin !== "https://share.tinycloud.xyz");
-  if (trace.some((entry) => /openkey/i.test(entry.origin))) throw new Error("recipient contacted OpenKey before render");
-  if (!seen("/v1/acquisitions")) throw new Error("recipient never started OpenCredentials acquisition");
-  if (!seen("/policy/v3/challenges") || !seen("/policy/v3/delegations")) throw new Error("recipient never completed embedded Policy/v3 admission");
-  if (!seen("/delegate") || nodeInvokes.length < 2) throw new Error("recipient did not import delegation and invoke KV plus decrypt");
-  if (trace.some((entry) => /api\.share|email\.tinycloud/.test(entry.origin) || entry.path.startsWith("/share/"))) throw new Error("recipient contacted a prohibited Share data-plane endpoint");
+  const audit = auditRecipientTrace(trace, ownerNodeOrigin);
   console.log(JSON.stringify({
     result: "passed",
     expectedSha256: createHash("sha256").update(expected).digest("hex"),
-    trace: trace.map(({ method, origin, path }) => ({ method, origin, path })),
+    ...audit,
+    browserConsoleCounts,
   }, null, 2));
 } finally {
   await browser?.close();

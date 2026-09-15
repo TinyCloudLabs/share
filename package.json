@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run --config vitest.viewer.config.ts",
     "test:e2e:artifact": "node test/e2e-html-artifact.mjs",
+    "test:e2e:production-origin-contract": "node --test test/e2e-prod/production-headers.test.mjs test/e2e-prod/recipient-trace.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

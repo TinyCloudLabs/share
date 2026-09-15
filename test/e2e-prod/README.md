@@ -9,8 +9,10 @@ production deployments are green.
 Chrome instance maps only `share.tinycloud.xyz` to that local listener. The URL
 and Origin the browser presents remain `https://share.tinycloud.xyz`; the
 owner node, `witness.credentials.org`, and `registry.tinycloud.xyz` are never
-proxied. It refuses every Host other than `share.tinycloud.xyz` and has no
-upstream fallback.
+proxied. It parses the candidate's copied `public/_headers` and applies the
+same CSP, Trusted Types, sandbox, cache, referrer, and MIME-sniffing contract
+as production. It refuses every Host other than `share.tinycloud.xyz` and has
+no upstream fallback.
 
 That last point is deliberate: the TC-500 Share application has no
 same-origin auth, registry, blob, credential, or data-plane endpoint. Adding a
@@ -23,6 +25,13 @@ The final runner must capture, from one new recipient browser context:
   and generic `/invoke` requests;
 - ciphertext from the owner's KV only, before local decrypt/render; and
 - exact non-UTF-8 input bytes plus the denial/revocation/tamper cases.
+
+The gate cryptographically verifies the owner's signed Location Registry
+record before launching Chrome and then requires the browser's Policy/v3,
+`/delegate`, and `/invoke` traffic to use that same discovered Node origin.
+Credential acquisition is pinned exactly to `https://witness.credentials.org`.
+Browser message text and request bodies are never emitted: the report contains
+only fixed route labels, origin bindings, counts, and the expected byte digest.
 
 Run only with a disposable Mailinator inbox and an explicitly provisioned
 owner account. Never point this at a real recipient or alter system DNS; use
