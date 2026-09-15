@@ -9,12 +9,13 @@
  * Share registry, same-origin proxy, or Node /share/* route in this process.
  */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { signCompactUcanAuthorization, toBase64Url, verifyCompactUcanAuthorization } from "@tinycloud/share-envelope";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
@@ -212,6 +213,116 @@ async function downloadExact(page, temporary) {
   }, 30_000);
 }
 
+function successfulRequest(entry) {
+  return entry.status >= 200 && entry.status < 300;
+}
+
+function assertBearerDidNotAuthorize(stack) {
+  const prohibitedBeforeProof = trace.filter((entry) => entry.phase === "recipient" && (
+    /openkey/i.test(entry.origin)
+    || (entry.origin === stack.canonical.node && (
+      entry.path === "/policy/v3/delegations"
+      || entry.path === "/delegate"
+      || entry.path === "/invoke"
+    ))
+  ));
+  assert.equal(prohibitedBeforeProof.length, 0, "invitation bearer authorized recipient access before mailbox proof");
+}
+
+async function recipientSigningMaterial(page) {
+  const record = await page.evaluate(() => {
+    const raw = sessionStorage.getItem("tinycloud.share.receiver-session.v1");
+    return raw === null ? undefined : JSON.parse(raw);
+  });
+  assert.equal(record?.type, "TinyCloudShareReceiverSession", "recipient session key record is missing");
+  assert.equal(record?.version, 1, "recipient session key record version is invalid");
+  assert.match(record?.holderDid ?? "", /^did:key:z/, "recipient session holder DID is invalid");
+  assert.equal(record?.jwk?.kty, "OKP", "recipient session key is not Ed25519");
+  const privateKey = await crypto.subtle.importKey("jwk", record.jwk, { name: "Ed25519" }, false, ["sign"]);
+  return {
+    holderDid: record.holderDid,
+    sign: async (bytes) => new Uint8Array(await crypto.subtle.sign("Ed25519", privateKey, bytes)),
+  };
+}
+
+async function signedPolicyInvocation({ authorization, holderDid, sign, nodeAudience, policyCid, action, resource }) {
+  const session = verifyCompactUcanAuthorization(authorization);
+  const now = Math.floor(Date.now() / 1000);
+  assert(session.payload.exp > now, "policy session expired before negative enforcement checks");
+  return signCompactUcanAuthorization({
+    issuerDid: holderDid,
+    audienceDid: nodeAudience,
+    attenuation: { [resource]: { [action]: [{ type: "xyz.tinycloud.resource/selector", kind: "exact", value: resource }] } },
+    facts: [{ type: "tinycloud.policy.invocation/v1", policyCid, sessionCid: session.cid }],
+    proofs: [session.cid],
+    notBefore: now,
+    expiresAt: Math.min(now + 60, session.payload.exp),
+    nonce: toBase64Url(randomBytes(16)),
+    sign,
+  });
+}
+
+async function invokeFromBrowser(page, nodeOrigin, authorization, body) {
+  return page.evaluate(async ({ nodeOrigin, authorization, body }) => {
+    const headers = new Headers({ accept: "application/json", Authorization: authorization });
+    let requestBody;
+    if (body !== undefined) {
+      headers.set("content-type", "application/octet-stream");
+      requestBody = Uint8Array.from(body);
+    }
+    const response = await fetch(new URL("/invoke", nodeOrigin), { method: "POST", headers, ...(requestBody === undefined ? {} : { body: requestBody }) });
+    await response.arrayBuffer();
+    return response.status;
+  }, { nodeOrigin, authorization, body });
+}
+
+async function verifyNegativeEnforcement({ sender, recipient, stack }) {
+  const challenge = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/policy/v3/challenges" && successfulRequest(entry));
+  const delegation = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
+  const imported = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/delegate" && successfulRequest(entry));
+  assert(challenge && delegation && imported?.authorization, "policy session evidence is missing for negative enforcement checks");
+  const session = verifyCompactUcanAuthorization(imported.authorization);
+  const kvCapability = challenge.body?.requestedCapabilities?.find((candidate) => candidate?.kind === "kv");
+  const kvResource = kvCapability?.resource;
+  assert.equal(typeof kvResource, "string", "policy session KV resource is missing");
+  const nodeAudience = session.payload.iss.split("#", 1)[0];
+  assert.match(nodeAudience ?? "", /^did:key:z/, "policy session node audience is invalid");
+  const material = await recipientSigningMaterial(recipient);
+  assert.equal(material.holderDid, challenge.body.recipientDid, "negative checks did not use the admitted ephemeral recipient DID");
+  const base = { authorization: imported.authorization, holderDid: material.holderDid, sign: material.sign, nodeAudience, policyCid: challenge.body.policyCid };
+
+  const sibling = `${kvResource}.sibling`;
+  const siblingInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: sibling });
+  phase = "negative-sibling";
+  const siblingReadStatus = await invokeFromBrowser(recipient, stack.canonical.node, siblingInvocation.authorization);
+  assert.equal(siblingReadStatus, 403, "policy session allowed a sibling KV read");
+
+  const writeInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/put", resource: kvResource });
+  phase = "negative-write";
+  const writeEscalationStatus = await invokeFromBrowser(recipient, stack.canonical.node, writeInvocation.authorization, [1, 2, 3]);
+  assert.equal(writeEscalationStatus, 403, "policy session allowed KV write escalation");
+
+  const tamperInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: kvResource });
+  const last = tamperInvocation.authorization.at(-1);
+  const tampered = `${tamperInvocation.authorization.slice(0, -1)}${last === "A" ? "B" : "A"}`;
+  phase = "negative-tamper";
+  const tamperStatus = await invokeFromBrowser(recipient, stack.canonical.node, tampered);
+  assert.equal(tamperStatus, 401, "Node admitted a tampered recipient invocation");
+
+  const revokedInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: kvResource });
+  phase = "sender-revocation";
+  await sender.evaluate(() => { window.location.hash = "#/library"; });
+  await sender.waitForSelector(".sender-revoke:not([disabled])", { timeout: 180_000 });
+  sender.once("dialog", (dialog) => void dialog.accept());
+  await sender.click(".sender-revoke:not([disabled])");
+  await sender.waitForFunction(() => document.body.textContent?.includes("Share revoked."), { timeout: 180_000 });
+  phase = "negative-revoked";
+  const revokedReadStatus = await invokeFromBrowser(recipient, stack.canonical.node, revokedInvocation.authorization);
+  assert.equal(revokedReadStatus, 403, "revoked policy root still authorized a KV read");
+
+  return { bearerWithoutOtp: true, siblingReadStatus, writeEscalationStatus, tamperStatus, revokedReadStatus };
+}
+
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
   const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress}`);
@@ -231,10 +342,11 @@ function traceAudit(stack) {
   assert.equal(delegation.body?.presentation?.holderDid, challenge.body?.recipientDid, "recipient changed ephemeral did:key between acquisition and policy presentation");
   assert.match(challenge.body?.recipientDid ?? "", /^did:key:z/, "policy challenge recipient DID is invalid");
   assert(at("recipient", stack.canonical.node, "/delegate", "POST"), "recipient did not import scoped delegation");
-  assert(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.path === "/invoke" && entry.status >= 200 && entry.status < 300).length >= 2, "recipient did not read ciphertext and decrypt through ordinary invoke");
+  const positiveInvokes = trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.path === "/invoke" && entry.method === "POST" && entry.status >= 200 && entry.status < 300);
+  assert(positiveInvokes.length >= 2, "recipient did not read ciphertext and decrypt through ordinary invoke");
   assert(!trace.some((entry) => entry.phase === "recipient" && /openkey/i.test(entry.origin)), "recipient contacted OpenKey before render");
   assert(!trace.some((entry) => entry.path.startsWith("/share/") || /api\.share/.test(entry.origin) || (entry.origin === stack.canonical.registry && !entry.path.startsWith("/v1/locations/"))), "journey used a prohibited Share or registry data plane");
-  return { ownerDidSha256: createHash("sha256").update(ownerDid).digest("hex"), receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: trace.filter((entry) => entry.phase === "recipient" && entry.path === "/invoke").length };
+  return { ownerDidSha256: createHash("sha256").update(ownerDid).digest("hex"), receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: positiveInvokes.length };
 }
 
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
@@ -279,6 +391,7 @@ try {
   journeyStage = "recipient-navigation";
   const recipientContext = await browser.createBrowserContext(); const recipient = await recipientContext.newPage(); await installRouting(recipient, stack);
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  assertBearerDidNotAuthorize(stack);
   journeyStage = "recipient-otp-delivery";
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
   selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{6}$/);
@@ -288,8 +401,11 @@ try {
   assert.equal(await downloadExact(recipient, temporary), true);
   journeyStage = "traffic-audit";
   const audit = traceAudit(stack);
+  journeyStage = "negative-enforcement";
+  const negativeGates = await verifyNegativeEnforcement({ sender, recipient, stack });
+  traceAudit(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, consoleCounts, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, negativeGates, consoleCounts, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -325,6 +441,7 @@ try {
       submittedOtpMatchedSelected: typeof submittedOtp === "string" && submittedOtp === selectedOtp,
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
+    negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,
