@@ -92,6 +92,44 @@ execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyo
 const spki = execFileSync("sh", ["-c", `openssl x509 -pubkey -noout -in '${cert}' | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64`], { encoding: "utf8" }).trim();
 const server = await startCandidateServer({ root: resolve("dist"), key: readFileSync(key), cert: readFileSync(cert) });
 
+async function waitForOtpInput(page, timeout = 180_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const handle = await page.evaluateHandle(() => {
+      const candidate = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input");
+      if (!(candidate instanceof HTMLInputElement)) return null;
+      if (candidate.type !== "text" && candidate.inputMode !== "numeric" && candidate.name !== "otp") return null;
+      return candidate;
+    }).catch(() => undefined);
+    const input = handle?.asElement();
+    if (input !== null && input !== undefined) return input;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+  }
+  return undefined;
+}
+
+async function submitOtp(page, code) {
+  const input = await waitForOtpInput(page);
+  if (input === undefined) return false;
+  await input.click({ clickCount: 3 });
+  await page.keyboard.press("Backspace");
+  await input.type(code);
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const button = await page.evaluateHandle((expected) => {
+      const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+      const candidateInput = root?.querySelector("input");
+      const candidateButton = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
+      if (!(candidateInput instanceof HTMLInputElement) || !(candidateButton instanceof HTMLButtonElement) || candidateInput.value !== expected) return null;
+      return candidateButton;
+    }, code).catch(() => undefined);
+    const element = button?.asElement();
+    if (element !== null && element !== undefined) { await element.click(); return true; }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+  }
+  return false;
+}
+
 const trace = [];
 let browser;
 try {
@@ -118,42 +156,14 @@ try {
   });
   await page.goto(invitation, { waitUntil: "domcontentloaded" });
 
-  // The published SDK owns this inline Shadow-DOM control and the OC transport.
-  // The host neither receives nor sends acquisition locators/verifiers.
-  const interactionDeadline = Date.now() + 180_000;
-  let emailSubmitted = false;
-  while (Date.now() < interactionDeadline && !emailSubmitted) {
-    emailSubmitted = await page.evaluate((email) => {
-      const host = document.querySelector("tinycloud-credential-acquisition");
-      const root = host?.shadowRoot;
-      const input = root?.querySelector("input");
-      const button = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.hasAttribute("disabled"));
-      if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement)) return false;
-      input.focus(); input.value = email; input.dispatchEvent(new Event("input", { bubbles: true, composed: true })); button.click(); return true;
-    }, recipientEmail).catch(() => false);
-    if (!emailSubmitted) await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  }
-  if (!emailSubmitted) throw new Error("SDK credential acquisition control did not become ready for the recipient email");
-
   // The caller supplies the mailbox OTP only from the Mailinator message
-  // actually received for this invitation; keeping mailbox access outside this
-  // helper avoids committing a mail API token or a simulated credential path.
+  // actually received for this invitation. The invitation already binds the
+  // mailbox, so the fresh recipient types only the OTP and never creates an
+  // OpenKey identity. Keeping mailbox access outside this helper avoids
+  // committing a mail API token or a simulated credential path.
   const otp = process.env.TC500_E2E_MAILBOX_OTP;
   if (otp === undefined || !/^\d{6}$/.test(otp)) throw new Error("TC500_E2E_MAILBOX_OTP must be the six-digit code from the delivered message");
-  const otpDeadline = Date.now() + 180_000;
-  let otpSubmitted = false;
-  while (Date.now() < otpDeadline && !otpSubmitted) {
-    otpSubmitted = await page.evaluate((code) => {
-      const host = document.querySelector("tinycloud-credential-acquisition");
-      const root = host?.shadowRoot;
-      const input = root?.querySelector("input");
-      const button = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.hasAttribute("disabled"));
-      if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement)) return false;
-      input.focus(); input.value = code; input.dispatchEvent(new Event("input", { bubbles: true, composed: true })); button.click(); return true;
-    }, otp).catch(() => false);
-    if (!otpSubmitted) await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
-  }
-  if (!otpSubmitted) throw new Error("SDK credential acquisition control did not accept the mailbox OTP");
+  if (!await submitOtp(page, otp)) throw new Error("SDK credential acquisition control did not accept the mailbox OTP");
 
   await page.waitForSelector(".viewer-download", { timeout: 180_000 });
   // Puppeteer does not expose Playwright's waitForEvent. Configure Chrome's

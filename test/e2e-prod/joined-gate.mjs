@@ -30,6 +30,7 @@ const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "ut
 const fixtureDigest = createHash("sha256").update(fixture).digest("hex");
 const trace = [];
 const consoleCounts = {};
+const consoleDiagnostics = [];
 let phase = "sender";
 let journeyStage = "setup";
 let failureReported = false;
@@ -88,8 +89,14 @@ function headerSubset(request) {
 
 async function installRouting(page, stack) {
   await page.evaluateOnNewDocument(installBrowserInstrumentation);
-  page.on("console", (message) => { consoleCounts[message.type()] = (consoleCounts[message.type()] ?? 0) + 1; });
-  page.on("pageerror", () => { consoleCounts.pageerror = (consoleCounts.pageerror ?? 0) + 1; });
+  page.on("console", (message) => {
+    consoleCounts[message.type()] = (consoleCounts[message.type()] ?? 0) + 1;
+    if (message.type() === "error" || message.type() === "warn") consoleDiagnostics.push({ type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").replaceAll(/[A-Za-z0-9_-]{80,}/g, "<redacted>").slice(0, 240) });
+  });
+  page.on("pageerror", (error) => {
+    consoleCounts.pageerror = (consoleCounts.pageerror ?? 0) + 1;
+    consoleDiagnostics.push({ type: "pageerror", text: String(error?.message ?? "page error").replaceAll(/[A-Za-z0-9_-]{80,}/g, "<redacted>").slice(0, 240) });
+  });
   await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
     const url = new URL(request.url());
@@ -227,6 +234,50 @@ function assertBearerDidNotAuthorize(stack) {
     ))
   ));
   assert.equal(prohibitedBeforeProof.length, 0, "invitation bearer authorized recipient access before mailbox proof");
+}
+
+async function credentialInputReady(page, expectedType) {
+  return waitUntil(() => page.evaluate((expectedType) => {
+    const candidate = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input");
+    if (!(candidate instanceof HTMLInputElement)) return false;
+    return expectedType !== "otp" || candidate.type === "text" || candidate.inputMode === "numeric" || candidate.name === "otp";
+  }, expectedType).catch(() => false), 90_000);
+}
+
+function auditBrowserDiagnostics(stack) {
+  const failedRequests = trace.filter((entry) => typeof entry.status === "number" && entry.status >= 400);
+  const locationBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
+  const ownerStateBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.node && entry.status === 404 && (
+    (entry.method === "GET" && entry.path.startsWith("/encryption/networks/"))
+    || (entry.method === "POST" && entry.path === "/invoke")
+  ));
+  const bootstrapMisses = new Set([...locationBootstrapMisses, ...ownerStateBootstrapMisses]);
+  const expectedEnforcement = new Map([
+    ["negative-sibling", 403],
+    ["negative-write", 403],
+    ["negative-tamper", 401],
+    ["negative-revoked", 403],
+  ]);
+  const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
+  assert.equal(unexpectedRequests.length, 0, "browser observed an unexpected failed network request");
+  const errors = consoleDiagnostics.filter((entry) => entry.type === "error");
+  const warnings = consoleDiagnostics.filter((entry) => entry.type === "warn");
+  const pageErrors = consoleDiagnostics.filter((entry) => entry.type === "pageerror");
+  assert.equal(pageErrors.length, 0, "browser raised an unexpected page error");
+  assert(errors.every((entry) => /^Failed to load resource: the server responded with a status of (401|403|404) \((?:Unauthorized|Forbidden|Not Found)\)$/.test(entry.text)), "browser emitted an unexpected console error");
+  assert.equal(errors.length, failedRequests.length, "browser console/network failure accounting diverged");
+  assert(locationBootstrapMisses.length > 0, "fresh sender did not observe the expected missing-location bootstrap response");
+  assert(ownerStateBootstrapMisses.length > 0, "fresh sender did not observe expected uninitialized owner state");
+  assert.equal(warnings.length, 1, "browser emitted an unexpected number of warnings");
+  assert.match(warnings[0].text, /^TinyCloud account registry sync failed after retries/, "browser emitted an unexpected warning");
+  return {
+    unexpectedConsoleErrors: 0,
+    unexpectedPageErrors: 0,
+    expectedLocationBootstrap404s: locationBootstrapMisses.length,
+    expectedOwnerStateBootstrap404s: ownerStateBootstrapMisses.length,
+    expectedPolicyDenials: Object.fromEntries(expectedEnforcement),
+    expectedBootstrapWarnings: warnings.length,
+  };
 }
 
 async function recipientSigningMaterial(page) {
@@ -391,10 +442,11 @@ try {
   journeyStage = "recipient-navigation";
   const recipientContext = await browser.createBrowserContext(); const recipient = await recipientContext.newPage(); await installRouting(recipient, stack);
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
-  assertBearerDidNotAuthorize(stack);
   journeyStage = "recipient-otp-delivery";
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
   selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{6}$/);
+  assert.equal(await credentialInputReady(recipient, "otp"), true, "recipient OTP input did not become stable");
+  assertBearerDidNotAuthorize(stack);
   journeyStage = "recipient-otp";
   assert.equal(await submitCredentialValue(recipient, selectedOtp, "otp"), true);
   journeyStage = "recipient-decrypt-render";
@@ -404,8 +456,9 @@ try {
   journeyStage = "negative-enforcement";
   const negativeGates = await verifyNegativeEnforcement({ sender, recipient, stack });
   traceAudit(stack);
+  const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, negativeGates, consoleCounts, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, negativeGates, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {

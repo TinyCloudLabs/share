@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 test("recipient gate never prints invitation, mailbox, or OTP when a dependency fails", () => {
@@ -20,4 +21,13 @@ test("recipient gate never prints invitation, mailbox, or OTP when a dependency 
   const output = `${result.stdout}${result.stderr}`;
   assert.match(output, /sensitive details withheld/);
   for (const secret of secrets) assert.doesNotMatch(output, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("recipient gate types only the invitation-bound OTP through browser input", () => {
+  const source = readFileSync(new URL("./recipient-gate.mjs", import.meta.url), "utf8");
+  assert.match(source, /await input\.type\(code\)/);
+  assert.match(source, /candidateInput\.value !== expected/);
+  assert.doesNotMatch(source, /input\.value\s*=/);
+  assert.doesNotMatch(source, /dispatchEvent\(new Event\("input"/);
+  assert.doesNotMatch(source, /\.type\(recipientEmail\)/);
 });
