@@ -13,25 +13,17 @@ import {
 import type { ResolveResult } from "./resolve.js";
 import { renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { renderSafeContent } from "./content.js";
-import { copyWithFallback } from "../share/link-only.js";
+import { copyWithFallback } from "../share/clipboard.js";
+import { canonicalShareFilename } from "../filename-policy.js";
 
 function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>): string {
   const metadata = (result.envelope as unknown as { readonly metadata?: { readonly filename?: unknown } }).metadata;
-  if (typeof metadata?.filename === "string" && metadata.filename.length > 0) return safeFilename(metadata.filename);
+  if (typeof metadata?.filename === "string" && metadata.filename.length > 0) return canonicalShareFilename(metadata.filename);
   const candidate =
     result.envelope.display.filename ??
     (result.envelope.version === 1 ? result.envelope.target.resource.path : result.envelope.resource.path).split("/").at(-1) ??
     "shared-document.txt";
-  return safeFilename(candidate);
-}
-
-function safeFilename(candidate: string): string {
-  const safe = candidate
-    .split(/[\\/]/)
-    .at(-1)
-    ?.replace(/[\u0000-\u001f\u007f]/g, "")
-    .trim();
-  return safe === undefined || safe.length === 0 ? "shared-document.txt" : safe;
+  return canonicalShareFilename(candidate);
 }
 
 function signedMediaType(result: Extract<ResolveResult, { readonly state: "ok" }>): string {

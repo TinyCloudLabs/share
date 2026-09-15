@@ -1,6 +1,10 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
-import type { ContentSource } from "../email-share/protocol.js";
 import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
+import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
+
+export type ContentSource =
+  | { readonly kind: "kv"; readonly space: string; readonly path: string; readonly action: "tinycloud.kv/get" }
+  | { readonly kind: "sql"; readonly space: string; readonly database: string; readonly path: string; readonly statement: string; readonly arguments: Readonly<Record<string, number>>; readonly argumentsDigest: string; readonly action: "tinycloud.sql/read" };
 
 function validationFailure(kind: SenderFailureKind): TypeError {
   return Object.assign(new TypeError(SENDER_FAILURE[kind]), { kind });
@@ -8,7 +12,6 @@ function validationFailure(kind: SenderFailureKind): TypeError {
 
 export type RecipientKind = "exactEmail" | "emailDomain" | "recipientDid" | "bearer";
 export type SharePermission = "read" | "list" | "edit";
-export type ShareLinkFormat = "compact" | "inline";
 /** Persisted history taxonomy. The composer never asks for it: it is derived from the content the sender supplied. */
 export type ComposerContentMode = "upload" | "author" | "kv";
 
@@ -37,7 +40,6 @@ export interface ShareComposerModel {
   /** When the link stops working. Authored by the sender (P1-2), clamped to the signed capability boundary. */
   readonly expiresAt: string;
   readonly resource: ResourceSelector;
-  readonly linkFormat: ShareLinkFormat;
   readonly encryption: boolean;
   readonly encryptionAcknowledged: boolean;
   readonly deliveryEmail?: string;
@@ -162,8 +164,7 @@ export function defaultComposerModel(now: number = Date.now()): ComposerDefaults
     recipient: { kind: "bearer" },
     permissions: ["read"],
     expiresAt: expiryFromChoice(DEFAULT_EXPIRY_CHOICE, now),
-    linkFormat: "compact",
-    encryption: true,
+    encryption: false,
     encryptionAcknowledged: false,
   };
 }
@@ -179,7 +180,7 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   const path = model.resource.path;
   const body = model.resource.kind === "prefix" && path.endsWith("/") ? path.slice(0, -1) : path.replace(/\/$/, "");
   const canonicalPath = model.resource.kind === "prefix" ? `${body}/` : body;
-  if (body.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(body) || /[\u0000-\u001f\u007f\\]/.test(body) || /%2f|%5c|%2e/i.test(body) || body.split("/").some((segment) => segment.length === 0)) {
+  if (body.length === 0 || /(^|\/)(?:\.|\.\.)($|\/)/.test(body) || body.includes("\\") || hasUnsafeFilenameCodePoint(body) || /%2f|%5c|%2e/i.test(body) || body.split("/").some((segment) => segment.length === 0)) {
     throw validationFailure("filename");
   }
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
@@ -199,10 +200,18 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
       : "exact";
   if (model.resource.kind !== inferredResourceKind) throw validationFailure("actions");
   if (model.content.kind === "files" && model.content.files.length < 2) throw validationFailure("content");
+  if (model.content.kind !== "files") {
+    try {
+      canonicalShareFilename(contentFilename(model.content));
+    } catch {
+      throw validationFailure("filename");
+    }
+  }
   if (inferredResourceKind === "prefix") throw validationFailure("folderUnsupported");
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
   }
+  if (recipient.kind === "exactEmail" && !model.encryption) throw validationFailure("plaintext");
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {

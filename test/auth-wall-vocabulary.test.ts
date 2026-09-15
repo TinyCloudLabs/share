@@ -90,11 +90,12 @@ describe("sign-in wall failure copy (TC-335)", () => {
     expect(root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
   });
 
-  it("keeps the raw error for the hermetic harness and console only", async () => {
-    const raw = "policy envelope CID mismatch";
+  it("keeps raw errors out of console telemetry", async () => {
+    const raw = "policy envelope CID mismatch tc500-secret-marker";
     const error = new Error(raw);
     await signInFailingWith(error);
-    expect(console.debug).toHaveBeenCalledWith("tinycloud share: sign-in failed", error);
+    expect(console.debug).toHaveBeenCalledWith("tinycloud share: sign-in failed");
+    expect(JSON.stringify(vi.mocked(console.debug).mock.calls)).not.toContain("tc500-secret-marker");
   });
 
   it("keeps the sign-in progress messages rendered into the wall free of protocol vocabulary", async () => {

@@ -114,18 +114,18 @@ export function createSenderHistoryRecord(result: PublishedShare): SenderShareRe
 /** Explicit import path for a link the sender already possesses. */
 export function importSenderHistoryRecord(url: string, now = new Date()): SenderShareRecord {
   const parsed = new URL(url);
-  const filename = parsed.pathname === "/s/inline" ? undefined : parsed.pathname.split("/").at(-1);
+  const fragment = new URLSearchParams(parsed.hash.slice(1));
+  if (parsed.pathname !== "/viewer" || parsed.search !== "" || fragment.size !== 1 || !fragment.get("tc1")) throw new Error("sender-history-link-invalid");
   return {
     shareId: `import-${crypto.randomUUID().replaceAll("-", "")}`,
     target: { origin: parsed.origin, nodeAudience: "", spaceId: "" },
-    resource: { kind: "exact", path: filename ?? "inline" },
+    resource: { kind: "exact", path: "native-share" },
     actions: ["tinycloud.kv/get"],
     recipientMatcher: { kind: "bearer" },
     targetKind: "bearer",
     registeredAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     link: url,
-    ...(filename === undefined ? {} : { filename }),
   };
 }
 

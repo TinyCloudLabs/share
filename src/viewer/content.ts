@@ -1,4 +1,5 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
+import { canonicalShareFilename } from "../filename-policy.js";
 
 export type SafeContentKind = "markdown" | "text" | "image" | "file" | "download";
 
@@ -39,7 +40,7 @@ export function classifyContent(descriptor: ContentDescriptor): SafeContentKind 
 }
 
 export async function renderSafeContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, options: RenderMarkdownOptions = {}): Promise<SafeContentKind> {
-  const actualDescriptor = { ...descriptor, byteLength: bytes.byteLength };
+  const actualDescriptor = { ...descriptor, filename: canonicalShareFilename(descriptor.filename), byteLength: bytes.byteLength };
   const kind = bytes.byteLength > MAX_SAFE_CONTENT_BYTES ? "download" : classifyContent(actualDescriptor);
   const doc = container.ownerDocument;
   if (kind === "markdown") {
@@ -73,5 +74,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename.replace(/[\\/\u0000-\u001f\u007f]/g, "") || "shared-file"; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

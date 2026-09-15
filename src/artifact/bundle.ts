@@ -1,3 +1,5 @@
+import { hasUnsafeFilenameCodePoint } from "../filename-policy.js";
+
 export const ARTIFACT_ENTRY = "index.html";
 export const MAX_ARTIFACT_FILES = 1_000;
 export const MAX_ARTIFACT_SOURCE_BYTES = 100 * 1024 * 1024;
@@ -77,7 +79,8 @@ export function canonicalArtifactPath(input: string): string {
     || encodedLength > 4_096
     || value.startsWith("/")
     || value.endsWith("/")
-    || /[\\\u0000-\u001f\u007f]/.test(value)
+    || value.includes("\\")
+    || hasUnsafeFilenameCodePoint(value)
     || ENCODED_PATH_ALIAS.test(value)
   ) {
     fail("malformed", "artifact path is not canonical");
@@ -119,7 +122,7 @@ export function resolveArtifactReference(basePath: string, reference: string): R
   const pathname = raw.slice(0, end);
   const fragment = hashAt >= 0 ? raw.slice(hashAt) : "";
   if (pathname.length === 0) return { path: canonicalArtifactPath(basePath), fragment, fragmentOnly: true };
-  if (/[\\\u0000-\u001f\u007f]/.test(pathname) || ENCODED_PATH_ALIAS.test(pathname)) {
+  if (pathname.includes("\\") || hasUnsafeFilenameCodePoint(pathname) || ENCODED_PATH_ALIAS.test(pathname)) {
     fail("malformed", "artifact reference is not canonical");
   }
   const output = basePath.split("/").slice(0, -1);

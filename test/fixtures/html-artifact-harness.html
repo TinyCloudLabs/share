@@ -37,7 +37,7 @@
         document.getElementById("harness-status").remove();
         await mountArtifactChrome(document, {
           shareId: "browser-artifact-example",
-          shareUrl: `${location.origin}/s/example#browser-secret`,
+          shareUrl: `${location.origin}/viewer#tc1=browser-secret`,
         });
         document.documentElement.dataset.ready = "yes";
       } catch (error) {
