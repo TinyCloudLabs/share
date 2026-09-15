@@ -161,14 +161,28 @@ async function clickText(page, value, timeout = 60_000) {
 }
 
 async function submitCredentialValue(page, value, expectedType) {
+  const filled = await waitUntil(() => page.evaluate(({ value, expectedType }) => {
+    const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
+    const input = root?.querySelector("input");
+    if (!(input instanceof HTMLInputElement)) return false;
+    if (expectedType === "otp" && input.type !== "text" && input.inputMode !== "numeric" && input.name !== "otp") return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setter === undefined) return false;
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return true;
+  }, { value, expectedType }).catch(() => false), 90_000);
+  if (!filled) return false;
+  await page.evaluate(() => new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
   return waitUntil(() => page.evaluate(({ value, expectedType }) => {
     const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
     const input = root?.querySelector("input");
     const button = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
-    if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement)) return false;
+    if (!(input instanceof HTMLInputElement) || !(button instanceof HTMLButtonElement) || input.value !== value) return false;
     if (expectedType === "otp" && input.type !== "text" && input.inputMode !== "numeric" && input.name !== "otp") return false;
-    input.value = value; input.dispatchEvent(new Event("input", { bubbles: true, composed: true })); button.click(); return true;
-  }, { value, expectedType }).catch(() => false), 90_000);
+    button.click(); return true;
+  }, { value, expectedType }).catch(() => false), 10_000);
 }
 
 async function downloadExact(page, temporary) {
