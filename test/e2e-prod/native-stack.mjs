@@ -120,6 +120,14 @@ async function loopback(handler, servers) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+export function resendFixtureJsonResponse(value, extraHeaders = {}) {
+  const body = JSON.stringify(value);
+  return {
+    body,
+    headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)), ...extraHeaders },
+  };
+}
+
 export async function startNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }) {
   const children = [];
   const servers = [];
@@ -148,15 +156,19 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
 
   const mail = [];
   const mailOrigin = await loopback((request, response) => {
-    if (request.method === "GET" && request.url === "/messages") { response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ messages: mail })); return; }
+    const sendJson = (status, value, extraHeaders = {}) => {
+      const { body, headers } = resendFixtureJsonResponse(value, extraHeaders);
+      response.writeHead(status, headers).end(body);
+    };
+    if (request.method === "GET" && request.url === "/messages") { sendJson(200, { messages: mail }, { "cache-control": "no-store" }); return; }
     if (request.method !== "POST" || request.url !== "/emails") { response.writeHead(404).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", () => {
       try {
         const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         const prior = mail.find((entry) => entry.idempotencyKey === request.headers["idempotency-key"]);
-        if (prior !== undefined) { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: prior.id, replayed: true })); return; }
+        if (prior !== undefined) { sendJson(200, { id: prior.id, replayed: true }); return; }
         const entry = { id: `fixture-${mail.length + 1}`, idempotencyKey: request.headers["idempotency-key"], payload }; mail.push(entry);
-        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: entry.id }));
+        sendJson(200, { id: entry.id });
       } catch { response.writeHead(400).end(); }
     });
   }, servers);
