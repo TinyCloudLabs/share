@@ -19,9 +19,9 @@ import {
 function shareRouteRewrite(): Plugin {
   const rewrite = (url: string | undefined): string | undefined => {
     const path = (url ?? "").split("?", 1)[0] ?? "";
-    if (path === "/share") return "/share.html";
-    if (path === "/viewer") return "/viewer.html";
-    if (path.startsWith("/s/")) return "/viewer.html";
+    if (path === "/share") return "/share/index.html";
+    if (path === "/viewer") return "/viewer/index.html";
+    if (path.startsWith("/s/")) return "/viewer/index.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
   };
@@ -98,8 +98,8 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
         howItWorks: fileURLToPath(new URL("how-it-works.html", import.meta.url)),
-        share: fileURLToPath(new URL("share.html", import.meta.url)),
-        viewer: fileURLToPath(new URL("viewer.html", import.meta.url)),
+        share: fileURLToPath(new URL("share/index.html", import.meta.url)),
+        viewer: fileURLToPath(new URL("viewer/index.html", import.meta.url)),
       },
     },
   },

@@ -2,7 +2,7 @@ name: Share SDK merge gates
 
 # No `paths:` filter on purpose. This workflow is the repository's merge gate,
 # and every previous attempt to enumerate what it depends on has been wrong:
-# `npm test` already reads index.html, share.html, viewer.html, public/_headers
+# `npm test` already reads index.html, share/index.html, viewer/index.html, public/_headers
 # and public/404.html and imports all of `src/`,
 # none of which the old filter matched — so the gate silently skipped PRs it
 # would have failed on. `npm run typecheck` widens the surface again to `src`,

@@ -12,6 +12,14 @@ const current = {
 } as const;
 
 describe("Share public routing config", () => {
+  it("rewrites public sender and receiver routes to directory indexes", () => {
+    const redirects = readFileSync("public/_redirects", "utf8");
+    expect(redirects).toContain("/share /share/ 200");
+    expect(redirects).toContain("/viewer /viewer/ 200");
+    expect(redirects).toContain("/s/* /viewer/ 200");
+    expect(redirects).not.toMatch(/^\/(?:share|viewer)\s+\/[^\s]*\.html\s+200/m);
+  });
+
   it("contains only a sender bootstrap choice, never a recipient trust anchor or invitation key", () => {
     expect(validateSharePublicConfig(current)).toEqual(current);
     for (const stale of ["nodeOrigin", "nodeAudience", "enforcerDid", "nodeInvitationPublicKey"]) {
@@ -26,7 +34,7 @@ describe("Share public routing config", () => {
 
   it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
     const headers = readFileSync("public/_headers", "utf8");
-    const documents = ["share.html", "viewer.html"].map((path) => readFileSync(path, "utf8"));
+    const documents = ["share/index.html", "viewer/index.html"].map((path) => readFileSync(path, "utf8"));
     for (const policy of [headers, ...documents]) {
       expect(policy).toContain("connect-src 'self' https:;");
       expect(policy).not.toContain("https://tee.node.tinycloud.xyz");
@@ -35,7 +43,7 @@ describe("Share public routing config", () => {
   });
 
   it("advertises only the sealed addressed-link form in browser-visible protocol copy", () => {
-    const viewer = readFileSync("viewer.html", "utf8");
+    const viewer = readFileSync("viewer/index.html", "utf8");
     const product = readFileSync("PRODUCT.md", "utf8");
     for (const copy of [viewer, product]) {
       expect(copy).toContain("/s/inline#v=2");
