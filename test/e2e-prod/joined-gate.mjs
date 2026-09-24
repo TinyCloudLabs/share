@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
@@ -28,6 +28,14 @@ const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry
 const outputPath = resolve(process.env.TC500_E2E_ARTIFACT ?? join(workspaceRoot, ".context/tc-500-native-joined.json"));
 const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "utf8"), Buffer.from([0, 0x80, 0xff, 0x0a])]);
 const fixtureDigest = createHash("sha256").update(fixture).digest("hex");
+const publishedPackages = Object.freeze([
+  "@tinycloud/node-sdk",
+  "@tinycloud/sdk-core",
+  "@tinycloud/sdk-services",
+  "@tinycloud/web-sdk",
+  "@tinycloud/share-sdk",
+  "@tinycloud/share-envelope",
+]);
 const trace = [];
 const consoleCounts = {};
 const consoleDiagnostics = [];
@@ -53,6 +61,34 @@ function stringsIn(value, output = []) {
 function parseBody(body) {
   if (typeof body !== "string" || body.length === 0) return undefined;
   try { return JSON.parse(body); } catch { return undefined; }
+}
+
+async function digestDirectory(root, relative = "") {
+  const digest = createHash("sha256");
+  const directory = join(root, relative);
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name))) {
+    const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
+    if (entry.isDirectory()) digest.update(`directory:${path}\0`).update(await digestDirectory(root, path));
+    else if (entry.isFile()) digest.update(`file:${path}\0`).update(await readFile(join(root, path)));
+  }
+  return digest.digest("hex");
+}
+
+async function shareProvenance() {
+  const git = (args) => execFileSync("git", args, { cwd: shareRoot, encoding: "utf8" }).trim();
+  const lock = JSON.parse(await readFile(join(shareRoot, "package-lock.json"), "utf8"));
+  const packages = Object.fromEntries(publishedPackages.map((name) => {
+    const packageLock = lock.packages?.[`node_modules/${name}`];
+    assert.equal(typeof packageLock?.version, "string", `package lock has no version for ${name}`);
+    assert.match(packageLock.integrity ?? "", /^sha512-/, `package lock has no npm integrity for ${name}`);
+    return [name, { version: packageLock.version, integrity: packageLock.integrity }];
+  }));
+  return {
+    shareCommit: git(["rev-parse", "HEAD"]),
+    shareTree: git(["rev-parse", "HEAD^{tree}"]),
+    bundleSha256: await digestDirectory(join(shareRoot, "dist")),
+    publishedPackages: packages,
+  };
 }
 
 function findMail(messages, predicate) {
@@ -458,7 +494,7 @@ try {
   traceAudit(stack);
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: stack.provenance, ...audit, negativeGates, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {

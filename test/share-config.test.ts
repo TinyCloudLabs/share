@@ -20,6 +20,11 @@ describe("Share public routing config", () => {
     expect(redirects).not.toMatch(/^\/(?:share|viewer)\s+\/[^\s]*\.html\s+200/m);
   });
 
+  it("self-provenances the joined browser artifact against the installed npm betas", () => {
+    const gate = readFileSync("test/e2e-prod/joined-gate.mjs", "utf8");
+    for (const field of ["shareCommit", "shareTree", "bundleSha256", "publishedPackages", "integrity"]) expect(gate).toContain(field);
+  });
+
   it("contains only a sender bootstrap choice, never a recipient trust anchor or invitation key", () => {
     expect(validateSharePublicConfig(current)).toEqual(current);
     for (const stale of ["nodeOrigin", "nodeAudience", "enforcerDid", "nodeInvitationPublicKey"]) {
