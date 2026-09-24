@@ -23,7 +23,7 @@ function record(overrides: Partial<SenderShareRecord> = {}): SenderShareRecord {
     targetKind: "bearer",
     registeredAt: "2026-07-24T12:00:00.000Z",
     expiresAt: "2026-07-31T12:00:00.000Z",
-    link: "https://share.example.invalid/s/test",
+    link: "https://share.example.invalid/viewer#tc1=opaque",
     filename: "notes.md",
     ...overrides,
   };
@@ -67,7 +67,7 @@ describe("canonical sender history adapter", () => {
   });
 
   it("imports a possessed link as a canonical bearer record", () => {
-    const imported = importSenderHistoryRecord("https://share.example.invalid/s/test", new Date("2026-07-27T00:00:00.000Z"));
+    const imported = importSenderHistoryRecord("https://share.example.invalid/viewer#tc1=tc1%3Atest", new Date("2026-07-27T00:00:00.000Z"));
     expect(imported.recipientMatcher).toEqual({ kind: "bearer" });
     expect(imported.targetKind).toBe("bearer");
     expect(imported.registeredAt).toBe("2026-07-27T00:00:00.000Z");

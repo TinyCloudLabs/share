@@ -9,7 +9,7 @@ share, preserving existing behavior.
 The encrypted envelope stores one additional discriminator,
 `metadata.artifact: "html"`. The entry filename is fixed by the protocol, and
 no filenames, authority material, recipient identity, or share-link fragment
-are added to public bindings or analytics.
+are sent to analytics or any Share-host service.
 
 ## Supported bundle behavior
 

@@ -1,7 +1,8 @@
-import { copyWithFallback } from "./link-only.js";
+import { copyWithFallback } from "./clipboard.js";
 import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { revokeShare } from "@tinycloud/share-sdk";
+import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
 
 export interface SenderHomeOptions {
   readonly session: OpenKeyShareSession;
@@ -78,7 +79,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const save = node(doc, "button", "button button-primary", "Save encrypted link") as HTMLButtonElement; save.type = "submit";
     const cancel = node(doc, "button", "button button-secondary", "Cancel") as HTMLButtonElement; cancel.type = "button"; cancel.addEventListener("click", () => dialog.close());
     const message = node(doc, "p", "sender-live"); form.append(heading, help, label, save, cancel, message); dialog.append(form); root.append(dialog); dialog.showModal(); input.focus();
-    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || (!parsed.hash && parsed.pathname !== "/s/inline")) throw new Error("invalid"); const record = importSenderHistoryRecord(value); void options.history.save(record).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete share link, including everything after the #."; } });
+    form.addEventListener("submit", (event) => { event.preventDefault(); const value = input.value.trim(); try { const parsed = new URL(value); const fragment = new URLSearchParams(parsed.hash.slice(1)); if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || parsed.username || parsed.password || parsed.pathname !== "/viewer" || parsed.search !== "" || fragment.size !== 1 || !fragment.get("tc1")) throw new Error("invalid"); const record = importSenderHistoryRecord(value); void options.history.save(record).then(() => { dialog.close(); dialog.remove(); void load(false); }).catch(() => { message.textContent = "That link could not be validated or saved."; }); } catch { message.textContent = "Enter a complete TinyCloud bearer link."; } });
   };
   // A first run is not a table row. The table and its six column headers stay
   // out of the way entirely until there is something to put in them (P1-8).
@@ -106,11 +107,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
     if (item.state !== "revoked") {
       const revoke = node(doc, "button", "button button-secondary sender-revoke", "Revoke") as HTMLButtonElement; revoke.type = "button"; revoke.setAttribute("aria-label", `Revoke ${safeName(item.record)}`);
-      if (item.record.recipientMatcher.kind === "bearer") {
-        // A link-only share carries no revocable authority. Show the control
-        // disabled and say why, instead of silently dropping it (P1-3).
+      if (item.record.enforcementDelegationCid === undefined && item.record.ownerDelegationCid === undefined) {
+        // Imported bearer links may not have a revocation authority.
         revoke.disabled = true;
-        revoke.title = "Link-only shares can't be revoked early.";
+        revoke.title = "This saved link can't be revoked because its revocation authority is missing.";
         revoke.classList.add("sender-revoke-unavailable");
       } else {
         revoke.addEventListener("click", () => {
@@ -123,6 +123,25 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
               revokeDelegation: async ({ delegationCid }) => {
                 const result = await options.tinycloud.revokeDelegation(delegationCid);
                 if (!result.ok) throw new Error("revoke-rejected");
+              },
+              revokePolicyRoot: async (request) => {
+                const activeNode = await options.tinycloud.activeNodeIdentity();
+                // Sender history is encrypted client state, not authority. Bind
+                // its root identifiers to the currently authenticated owner node
+                // before signing a generic Policy/v3 revocation.
+                if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
+                  throw new Error("revoke-unbound-policy-root");
+                }
+                await revokePolicyRootV3({
+                  nodeOrigin: activeNode.origin,
+                  rootCid: request.rootCid,
+                  targetRole: request.targetRole,
+                  ownerDid: options.tinycloud.credentialHolderDid,
+                  issuerDid: options.tinycloud.credentialHolderDid,
+                  nodeAudience: activeNode.nodeDid,
+                  reason: "share revoked",
+                  sign: (digest) => options.tinycloud.signSessionBytes(digest),
+                });
               },
             },
           }).then((result) => {

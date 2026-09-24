@@ -188,12 +188,12 @@ describe("TinyCloud artifact chrome", () => {
   beforeEach(() => {
     document.body.replaceChildren();
     localStorage.clear();
-    window.history.replaceState(null, "", "/s/example");
+    window.history.replaceState(null, "", "/viewer");
   });
   afterEach(() => vi.restoreAllMocks());
 
   it("collapses, reopens, permanently hides, and restores accessibly without rendering the URL", async () => {
-    const url = "https://share.tinycloud.xyz/s/example#private-fragment";
+    const url = "https://share.tinycloud.xyz/viewer#tc1=private-capability";
     const sandbox = createArtifactSandbox(document);
     await mountArtifactChrome(document, { shareId: "share-a", shareUrl: url });
     const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
@@ -226,7 +226,7 @@ describe("TinyCloud artifact chrome", () => {
     const share = vi.fn().mockResolvedValue(undefined);
     await mountArtifactChrome(document, {
       shareId: "share-b",
-      shareUrl: "https://share.tinycloud.xyz/s/example#secret",
+      shareUrl: "https://share.tinycloud.xyz/viewer#tc1=secret",
       navigator: { clipboard: navigator.clipboard, share },
     });
     const root = document.querySelector<HTMLElement>(".artifact-chrome")!;

@@ -23,7 +23,6 @@ describe("owner delivery never bypasses unified v3 authority", () => {
         authorizeShareDelivery,
         kvForSpace: () => ({ put: vi.fn() }),
       } as unknown as ShareTinyCloud,
-      loadCapabilities: async () => [],
       notify,
     });
     const recipient = root.querySelector<HTMLInputElement>("input[value=exactEmail]")!;

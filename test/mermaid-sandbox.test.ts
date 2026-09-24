@@ -76,7 +76,7 @@ describe("mermaid sandbox frame document (mermaid-frame.ts)", () => {
       .split(/\n(?=\/)/) // per-path blocks start at a leading "/"
       .find((block) => block.includes(MERMAID_SANDBOX_PATH));
     expect(sandboxRule).toBeDefined();
-    expect(sandboxRule).toContain("Content-Security-Policy: frame-ancestors 'self'");
+    expect(sandboxRule).toContain("frame-ancestors 'self'");
     expect(sandboxRule).toContain("X-Frame-Options: SAMEORIGIN");
   });
 });

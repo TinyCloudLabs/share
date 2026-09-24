@@ -5,6 +5,9 @@ import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
 
+const { revokePolicyRootV3 } = vi.hoisted(() => ({ revokePolicyRootV3: vi.fn(async () => ({})) }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3 }));
+
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
 
 function fakeVault(): IDataVaultService {
@@ -27,8 +30,8 @@ function record(shareId: string, recipientMatcher: SenderShareRecord["recipientM
     targetKind: recipientMatcher.kind === "exactEmail" ? "email" : recipientMatcher.kind === "emailDomain" ? "emailDomain" : recipientMatcher.kind === "recipientDid" ? "recipientDid" : "bearer",
     registeredAt: "2026-07-24T12:00:00.000Z",
     expiresAt: "2026-07-31T12:00:00.000Z",
-    ...(recipientMatcher.kind === "bearer" ? {} : { enforcementDelegationCid: `delegation-${shareId}` }),
-    link: "https://share.example.invalid/s/test",
+    ...(recipientMatcher.kind === "bearer" ? {} : { enforcementDelegationCid: `delegation-${shareId}`, ownerDid: "did:pkh:eip155:1:0x1234567890abcdef" }),
+    link: "https://share.example.invalid/viewer#tc1=opaque",
     filename: `${shareId}.md`,
   };
 }
@@ -45,15 +48,27 @@ describe("sender home canonical lifecycle adapters", () => {
     const revokeDelegation = vi.fn(async () => ({ ok: true as const, data: {} }));
     vi.spyOn(window, "confirm").mockReturnValue(true);
 
-    mountSenderHome(root, { session, tinycloud: { revokeDelegation } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session, tinycloud: {
+      revokeDelegation,
+      credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
+      activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
+      signSessionBytes: async () => new Uint8Array(64),
+    } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
     await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(2));
     root.querySelector<HTMLButtonElement>('button[aria-label="Revoke revoke-me.md"]')!.click();
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(revokeDelegation).toHaveBeenCalledWith("delegation-revoke-me");
+    expect(revokeDelegation).not.toHaveBeenCalled();
+    expect(revokePolicyRootV3).toHaveBeenCalledWith(expect.objectContaining({
+      nodeOrigin: "https://share.example.invalid",
+      nodeAudience: "did:web:node.example.invalid",
+      rootCid: "delegation-revoke-me",
+      targetRole: "policy-enforcement",
+      ownerDid: "did:pkh:eip155:1:0x1234567890abcdef",
+    }));
     expect(root.querySelector('button[aria-label="Revoke leave-me.md"]')).not.toBeNull();
   });
 
-  it("explains why bearer retention cannot be revoked", async () => {
+  it("explains why an imported bearer link without delegation authority cannot be revoked", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
     await history.save(record("bearer", { kind: "bearer" }));
@@ -83,6 +98,6 @@ describe("sender home canonical lifecycle adapters", () => {
     await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')).not.toBeNull());
     root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')!.click();
     await vi.waitFor(() => expect(window.open).toHaveBeenCalled());
-    expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/s/test", "_self", "noreferrer");
+    expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/viewer#tc1=opaque", "_self", "noreferrer");
   });
 });
