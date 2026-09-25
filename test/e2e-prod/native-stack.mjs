@@ -11,7 +11,7 @@ import { OPENKEY_TEST_SESSION_TOKEN, openKeyCors, openKeyWidgetHtml } from "./op
 
 export const STABLE_INPUTS = Object.freeze({
   node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
-  openCredentials: "d43839e05c54f76b31336eef584198ba6dddfcdc",
+  openCredentials: "b81b14e068b8a6e38a41df95ab1e984f2a1b229b",
   locationRegistry: "74b29179baa0be745a80d28e46124ed53e4c9c15",
 });
 
@@ -136,7 +136,7 @@ export function isCredentialOtpMail(message, recipient) {
 }
 
 export function credentialOtpFromMail(message) {
-  const match = message?.payload?.text?.match(/^Your one-time OpenCredentials code is (\d{6})\. It expires in five minutes\.$/);
+  const match = message?.payload?.text?.match(/^Your 8-digit OpenCredentials code is (\d{8})\.$/m);
   return match?.[1];
 }
 

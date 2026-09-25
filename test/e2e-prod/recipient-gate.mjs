@@ -114,12 +114,19 @@ async function submitOtp(page, code) {
   await input.click({ clickCount: 3 });
   await page.keyboard.press("Backspace");
   await input.type(code);
+  // The SDK view submits itself once all eight digits are entered; an older
+  // view waits for its submit button.
+  const autoSubmitted = await page.evaluate((expected) => {
+    const candidate = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input");
+    return candidate instanceof HTMLInputElement && candidate.readOnly && candidate.value === expected;
+  }, code).catch(() => false);
+  if (autoSubmitted) return true;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const button = await page.evaluateHandle((expected) => {
       const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
       const candidateInput = root?.querySelector("input");
-      const candidateButton = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
+      const candidateButton = [...(root?.querySelectorAll("button[type=submit]") ?? [])].find((candidate) => !candidate.disabled);
       if (!(candidateInput instanceof HTMLInputElement) || !(candidateButton instanceof HTMLButtonElement) || candidateInput.value !== expected) return null;
       return candidateButton;
     }, code).catch(() => undefined);
@@ -162,7 +169,7 @@ try {
   // OpenKey identity. Keeping mailbox access outside this helper avoids
   // committing a mail API token or a simulated credential path.
   const otp = process.env.TC500_E2E_MAILBOX_OTP;
-  if (otp === undefined || !/^\d{6}$/.test(otp)) throw new Error("TC500_E2E_MAILBOX_OTP must be the six-digit code from the delivered message");
+  if (otp === undefined || !/^\d{8}$/.test(otp)) throw new Error("TC500_E2E_MAILBOX_OTP must be the 8-digit code from the delivered message");
   if (!await submitOtp(page, otp)) throw new Error("SDK credential acquisition control did not accept the mailbox OTP");
 
   await page.waitForSelector(".viewer-download", { timeout: 180_000 });

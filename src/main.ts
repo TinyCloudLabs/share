@@ -81,6 +81,11 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
         root,
         shareUrl: shareHref,
         config: shareConfig,
+        invitation: {
+          ...(accountlessEnvelope.display.filename === undefined ? {} : { filename: accountlessEnvelope.display.filename }),
+          expiresAt: accountlessEnvelope.expiry,
+          actions: accountlessEnvelope.actions,
+        },
         onComplete: async (content) => {
           await presentShare(root, {
             state: "ok",
