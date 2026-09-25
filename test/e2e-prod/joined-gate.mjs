@@ -23,7 +23,7 @@ import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/skgbafa/tc-500-node-1.17.1");
-const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-d43839e";
+const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-7aaa9c8";
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
 const outputPath = resolve(process.env.TC500_E2E_ARTIFACT ?? join(workspaceRoot, ".context/tc-500-native-joined.json"));
 const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "utf8"), Buffer.from([0, 0x80, 0xff, 0x0a])]);
@@ -225,11 +225,18 @@ async function submitCredentialValue(page, value, expectedType) {
   await input.click({ clickCount: 3 });
   await page.keyboard.press("Backspace");
   await input.type(value);
+  // The SDK view submits itself once all eight digits are entered; an older
+  // view waits for its submit button.
+  const autoSubmitted = await page.evaluate((expected) => {
+    const candidate = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input");
+    return candidate instanceof HTMLInputElement && candidate.readOnly && candidate.value === expected;
+  }, value).catch(() => false);
+  if (autoSubmitted) return true;
   const button = await waitUntil(async () => {
     const handle = await page.evaluateHandle(({ value, expectedType }) => {
       const root = document.querySelector("tinycloud-credential-acquisition")?.shadowRoot;
       const candidateInput = root?.querySelector("input");
-      const candidateButton = [...(root?.querySelectorAll("button") ?? [])].find((candidate) => !candidate.disabled);
+      const candidateButton = [...(root?.querySelectorAll("button[type=submit]") ?? [])].find((candidate) => !candidate.disabled);
       if (!(candidateInput instanceof HTMLInputElement) || !(candidateButton instanceof HTMLButtonElement) || candidateInput.value !== value) return null;
       if (expectedType === "otp" && candidateInput.type !== "text" && candidateInput.inputMode !== "numeric" && candidateInput.name !== "otp") return null;
       return candidateButton;
@@ -410,6 +417,37 @@ async function verifyNegativeEnforcement({ sender, recipient, stack }) {
   return { bearerWithoutOtp: true, siblingReadStatus, writeEscalationStatus, tamperStatus, revokedReadStatus };
 }
 
+/**
+ * Bearer regression on the same stack: a link-only share opens in a fresh
+ * context through native `tc1` delegation, with no credential acquisition,
+ * no Policy/v3 admission, and no OpenKey before render.
+ */
+async function verifyBearerRegression({ browser, sender, stack }) {
+  phase = "bearer-sender";
+  await sender.evaluate(() => { window.location.hash = "#/new"; });
+  await sender.waitForSelector("form.composer-form", { timeout: 180_000 });
+  await sender.$eval('input[name="recipient"][value="bearer"]', (input) => input.click());
+  const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
+  await sender.click("button.create-link-button");
+  await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
+  const copied = await sender.evaluate(() => window.__tc500Clipboard.length);
+  await clickText(sender, "Copy link");
+  const bearerUrl = await waitUntil(() => sender.evaluate((count) => window.__tc500Clipboard.length > count ? window.__tc500Clipboard.at(-1) : undefined, copied), 10_000);
+  assert.match(bearerUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/viewer#tc1=/, "bearer share did not produce a native tc1 link");
+  phase = "bearer-recipient";
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(bearerUrl, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  const bearerTemporary = await mkdtemp(join(tmpdir(), "tc500-bearer-"));
+  assert.equal(await downloadExact(reader, bearerTemporary), true, "bearer recipient did not render the exact bytes");
+  const bearerTrace = trace.filter((entry) => entry.phase === "bearer-recipient");
+  assert(!bearerTrace.some((entry) => /openkey/i.test(entry.origin)), "bearer recipient contacted OpenKey");
+  assert(!bearerTrace.some((entry) => entry.origin === stack.canonical.credentials || entry.path.startsWith("/policy/v3/")), "bearer recipient ran a credential or policy ceremony");
+  const invokes = bearerTrace.filter((entry) => entry.origin === stack.canonical.node && entry.path === "/invoke" && successfulRequest(entry));
+  assert(invokes.length >= 1, "bearer recipient did not read through ordinary invoke");
+  await context.close();
+  return { bearerRendered: true, bearerInvokeCount: invokes.length, bearerOpenKeyRequests: 0, bearerCredentialRequests: 0 };
+}
+
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
   const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress}`);
@@ -480,7 +518,7 @@ try {
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
   journeyStage = "recipient-otp-delivery";
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
-  selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{6}$/);
+  selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{8}$/);
   assert.equal(await credentialInputReady(recipient, "otp"), true, "recipient OTP input did not become stable");
   assertBearerDidNotAuthorize(stack);
   journeyStage = "recipient-otp";
@@ -492,9 +530,11 @@ try {
   journeyStage = "negative-enforcement";
   const negativeGates = await verifyNegativeEnforcement({ sender, recipient, stack });
   traceAudit(stack);
+  journeyStage = "bearer-regression";
+  const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {

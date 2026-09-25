@@ -11,7 +11,7 @@ import { OPENKEY_TEST_SESSION_TOKEN, openKeyCors, openKeyWidgetHtml } from "./op
 
 export const STABLE_INPUTS = Object.freeze({
   node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
-  openCredentials: "d43839e05c54f76b31336eef584198ba6dddfcdc",
+  openCredentials: "7aaa9c8389430d07016345b9b9d60c39c719ad7c",
   locationRegistry: "74b29179baa0be745a80d28e46124ed53e4c9c15",
 });
 
@@ -136,7 +136,7 @@ export function isCredentialOtpMail(message, recipient) {
 }
 
 export function credentialOtpFromMail(message) {
-  const match = message?.payload?.text?.match(/^Your one-time OpenCredentials code is (\d{6})\. It expires in five minutes\.$/);
+  const match = message?.payload?.text?.match(/^Your 8-digit OpenCredentials code is (\d{8})\.$/m);
   return match?.[1];
 }
 
@@ -198,8 +198,15 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   runOnce("openssl", ["x509", "-req", "-in", csr, "-CA", ca, "-CAkey", caKey, "-CAcreateserial", "-out", cert, "-days", "1", "-extfile", ext], root); await chmod(key, 0o600);
   const postgres = run(join(pgBin, "postgres"), ["-D", pgData, "-h", "127.0.0.1", "-p", String(pgPort), "-c", "unix_socket_directories=", "-c", "ssl=on", "-c", `ssl_cert_file=${cert}`, "-c", `ssl_key_file=${key}`, "-c", `ssl_ca_file=${ca}`], root, { PGUSER: pgUser }, children);
   await waitForTcp(pgPort, postgres);
-  const postgresTlsUrl = `postgres://${pgUser}@db.localhost:${pgPort}/postgres?sslmode=verify-full`;
   const postgresLocalUrl = `postgres://${pgUser}@127.0.0.1:${pgPort}/postgres?sslmode=disable`;
+  // OpenCredentials requires separated database roles: a schema-owning
+  // migrator and a least-privilege runtime role with data access only. It
+  // gets its own database so the registry's tables stay out of its schema.
+  const psql = (database, user, sql) => runOnce(join(pgBin, "psql"), ["-h", "127.0.0.1", "-p", String(pgPort), "-U", user, "-d", database, "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "-q", "-c", sql], root);
+  psql("postgres", pgUser, "CREATE ROLE oc_migrator LOGIN; CREATE ROLE oc_runtime LOGIN;");
+  psql("postgres", pgUser, "CREATE DATABASE opencredentials OWNER " + pgUser + ";");
+  psql("opencredentials", pgUser, "REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT USAGE, CREATE ON SCHEMA public TO oc_migrator; GRANT USAGE ON SCHEMA public TO oc_runtime;");
+  const credentialsDatabaseUrl = (user) => `postgres://${user}@db.localhost:${pgPort}/opencredentials?sslmode=verify-full`;
 
   const nodePort = await freePort();
   runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: NODE_SECRET.toString("base64url") });
@@ -230,10 +237,11 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   const migrations = join(credentialsRoot, "deploy/share-email/migrations");
   const readiness = join(root, "oc-readiness.json");
   const databaseEnv = {
-    DATABASE_URL: postgresTlsUrl, DATABASE_SSL_ROOT_CERT: ca, DATABASE_MIGRATIONS_DIR: migrations, STORAGE_READINESS_FILE: readiness, STORAGE_READINESS_MAX_AGE_SECONDS: "30",
+    DATABASE_URL: credentialsDatabaseUrl("oc_runtime"), DATABASE_SSL_ROOT_CERT: ca, DATABASE_MIGRATIONS_DIR: migrations, STORAGE_READINESS_FILE: readiness, STORAGE_READINESS_MAX_AGE_SECONDS: "30",
     DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000", DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
   };
-  runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, databaseEnv);
+  runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, { ...databaseEnv, DATABASE_URL: credentialsDatabaseUrl("oc_migrator") });
+  psql("opencredentials", "oc_migrator", "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO oc_runtime; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO oc_runtime;");
   runOnce(join(credentialsRoot, "scripts/oi-share-email/readiness-check.sh"), [], credentialsRoot, databaseEnv);
 
   const dstackSocket = join(root, "dstack.sock");

@@ -45,7 +45,7 @@ the required OpenCredentials/Policy-v3/delegate/invoke trace, while refusing
 OpenKey or legacy Share traffic. It does not create an invitation itself.
 
 `joined-gate.mjs` is the hermetic release gate. It boots the stable Node
-1.17.1 tree, the current OpenCredentials production tree, and the current
+1.17.1 tree, the reviewed OpenCredentials candidate tree (8-digit mailbox codes), and the current
 Location Registry tree, while serving only the candidate static Share build
 at the production origin. It creates the sender share through the real browser
 UI, captures mail through a loopback Resend-compatible sink, and opens the
