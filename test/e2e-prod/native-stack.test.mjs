@@ -22,7 +22,7 @@ test("OTP extraction reads only the 8-digit code line and ignores HTML tokens", 
   const message = {
     payload: {
       html: '<style>body { color: #65432187 }</style>',
-      text: "Your 8-digit OpenCredentials code is 12345678.\n\nEnter it on the page that asked you to verify this mailbox. It expires in five minutes and works once.\n\nIf you did not request this code, you can ignore this email.",
+      text: "Your 8-digit OpenCredentials code is 12345678.\n\nEnter it only on the page where you just asked to verify this email address. Never share it with anyone, including someone who says they sent you a file. It expires in five minutes and works once.\n\nIf you did not request this code, ignore this email; nothing is shared without it.",
     },
   };
   assert.equal(credentialOtpFromMail(message), "12345678");

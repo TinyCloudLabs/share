@@ -59,7 +59,7 @@ export interface RecipientClaimView {
   readonly verify: HTMLElement;
 }
 
-const ACTION_LABELS: Readonly<Record<string, string>> = { read: "View", list: "List folder", edit: "Edit" };
+const ACTION_LABELS: ReadonlyMap<string, string> = new Map([["read", "View"], ["list", "List folder"], ["edit", "Edit"]]);
 
 function expiryText(value: string | undefined): { readonly text: string; readonly datetime: string } | undefined {
   if (value === undefined) return undefined;
@@ -96,7 +96,7 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
   };
   fact("For", invitation.recipientEmail);
   if (invitation.filename !== undefined) fact("File", invitation.filename);
-  const actions = (invitation.actions ?? []).map((action) => ACTION_LABELS[action]).filter((label): label is string => label !== undefined);
+  const actions = (invitation.actions ?? []).map((action) => ACTION_LABELS.get(action)).filter((label): label is string => label !== undefined);
   if (actions.length > 0) fact("Access", actions.join(", "));
   const expiry = expiryText(invitation.expiresAt);
   if (expiry !== undefined) {
