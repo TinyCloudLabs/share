@@ -11,7 +11,7 @@ import { OPENKEY_TEST_SESSION_TOKEN, openKeyCors, openKeyWidgetHtml } from "./op
 
 export const STABLE_INPUTS = Object.freeze({
   node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
-  openCredentials: "87c209cac43090daf2b57e833dfc13feab429d47",
+  openCredentials: "7cf3e4555f3634c29d0554d1a006da20679b2b40",
   locationRegistry: "74b29179baa0be745a80d28e46124ed53e4c9c15",
 });
 

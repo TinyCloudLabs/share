@@ -26,7 +26,7 @@ export function claimRecoveryFor(error: unknown): RecipientClaimRecovery | undef
   if (code === "CANCELED") return { title: "Verification canceled", detail: "Nothing was opened. Send a new code when you’re ready.", action: "Send a new code" };
   if (code === "REQUEST_EXPIRED") return { title: "That code expired", detail: "Codes work for a few minutes and only once. Send a new code to try again.", action: "Send a new code" };
   if (code === "VERIFICATION_FAILED" && details?.state === "proof_attempts_exhausted") return { title: "Too many incorrect codes", detail: "For your security, that code no longer works. Send a new code to try again.", action: "Send a new code" };
-  if (code === "ISSUER_UNREADY" && details?.state === "rate_limited") return { title: "Too many codes requested", detail: "For your security, codes for this address are paused for a while. Nothing was opened. Try again later.", action: "Try again" };
+  if (code === "ISSUER_UNREADY" && details?.state === "rate_limited") return { title: "Too many codes requested", detail: "Too many verification codes were requested recently. Nothing was opened. Wait a while, then try again.", action: "Try again" };
   if (code === "OFFLINE" || code === "ISSUER_UNREADY") return { title: "Email verification is unavailable", detail: "Nothing was opened. Check your connection, then try again.", action: "Try again" };
   return undefined;
 }

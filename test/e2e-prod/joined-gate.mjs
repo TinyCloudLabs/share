@@ -23,7 +23,7 @@ import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/skgbafa/tc-500-node-1.17.1");
-const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-87c209c";
+const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-7cf3e45";
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
 const outputPath = resolve(process.env.TC500_E2E_ARTIFACT ?? join(workspaceRoot, ".context/tc-500-native-joined.json"));
 const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "utf8"), Buffer.from([0, 0x80, 0xff, 0x0a])]);
@@ -304,8 +304,8 @@ function auditBrowserDiagnostics(stack) {
     ["domain-negative-write", 403],
     ["domain-negative-tamper", 401],
   ]);
-  const replayRejections = failedRequests.filter((entry) => entry.phase === "domain-replay" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && entry.status >= 400 && entry.status < 500);
-  const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !replayRejections.includes(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
+  const admittedRequestReplayRejections = failedRequests.filter((entry) => entry.phase === "domain-replay" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && entry.status >= 400 && entry.status < 500);
+  const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !admittedRequestReplayRejections.includes(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
   assert.equal(unexpectedRequests.length, 0, "browser observed an unexpected failed network request");
   const errors = consoleDiagnostics.filter((entry) => entry.type === "error");
   const warnings = consoleDiagnostics.filter((entry) => entry.type === "warn");
@@ -323,7 +323,7 @@ function auditBrowserDiagnostics(stack) {
     expectedLocationBootstrap404s: locationBootstrapMisses.length,
     expectedOwnerStateBootstrap404s: ownerStateBootstrapMisses.length,
     expectedPolicyDenials: Object.fromEntries(expectedEnforcement),
-    presentationReplayRejections: replayRejections.map((entry) => entry.status),
+    admittedRequestReplayRejections: admittedRequestReplayRejections.map((entry) => entry.status),
     expectedBootstrapWarnings: warnings.length,
   };
 }
@@ -546,7 +546,7 @@ async function verifyDomainJourney({ browser, sender, stack }) {
     await response.arrayBuffer();
     return response.status;
   }, { nodeOrigin: stack.canonical.node, body: admitted.body });
-  assert(replayStatus >= 400 && replayStatus < 500, "Node accepted a replayed credential presentation");
+  assert(replayStatus >= 400 && replayStatus < 500, "Node accepted a replay of an admitted policy request");
   await context.close();
   return { domainRendered: true, lookalikesRefusedBeforeAcquisition: 3, acquisitionInputKeys: ["email"], domainInvokeCount: invokes.length, ...Object.fromEntries(Object.entries(negatives).map(([key, value]) => [`domain${key[0].toUpperCase()}${key.slice(1)}`, value])), admittedRequestReplayStatus: replayStatus };
 }
