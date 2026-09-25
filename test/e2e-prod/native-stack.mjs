@@ -11,7 +11,7 @@ import { OPENKEY_TEST_SESSION_TOKEN, openKeyCors, openKeyWidgetHtml } from "./op
 
 export const STABLE_INPUTS = Object.freeze({
   node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
-  openCredentials: "7aaa9c8389430d07016345b9b9d60c39c719ad7c",
+  openCredentials: "846c018ff4da4dc97a37762a343ad871ea779c54",
   locationRegistry: "74b29179baa0be745a80d28e46124ed53e4c9c15",
 });
 
@@ -144,7 +144,9 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   const children = [];
   const servers = [];
   const provenance = {
-    node: assertTree(nodeRoot, STABLE_INPUTS.node, "TinyCloud Node"),
+    // TC500_NODE_COMMIT names a reviewed candidate Node commit; the tree must
+    // still be clean and exactly that commit, and its digest is recorded.
+    node: assertTree(nodeRoot, process.env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node, "TinyCloud Node"),
     openCredentials: assertTree(credentialsRoot, STABLE_INPUTS.openCredentials, "OpenCredentials"),
     locationRegistry: assertTree(registryRoot, STABLE_INPUTS.locationRegistry, "Location Registry"),
   };

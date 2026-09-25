@@ -1,4 +1,5 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
+import { canonicalEmailDomain } from "@tinycloud/sdk-core";
 import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
@@ -186,13 +187,37 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
 }
 
+/**
+ * Domains where anyone can open an inbox. A share "for anyone at" one of
+ * these is effectively public, so the composer refuses them.
+ */
+const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  "aol.com", "gmail.com", "googlemail.com", "gmx.com", "gmx.net", "hey.com", "hotmail.com", "icloud.com",
+  "live.com", "mac.com", "mail.com", "mailinator.com", "me.com", "msn.com", "outlook.com", "pm.me",
+  "proton.me", "protonmail.com", "qq.com", "tutanota.com", "yahoo.com", "yandex.com", "ymail.com", "zoho.com",
+]);
+
+/** A canonical recipient domain: lowercase ASCII DNS labels, two or more, no IP literal. */
+export function normalizeRecipientDomain(value: string): string {
+  let domain: string;
+  try {
+    domain = canonicalEmailDomain(value);
+  } catch {
+    throw validationFailure("recipientDomain");
+  }
+  if (PUBLIC_MAIL_DOMAINS.has(domain)) throw validationFailure("publicMailDomain");
+  return domain;
+}
+
 export function validateComposerModel(model: ShareComposerModel): ShareComposerModel {
-  if (model.recipient.kind === "emailDomain" || model.recipient.kind === "recipientDid") {
+  if (model.recipient.kind === "recipientDid") {
     throw validationFailure("recipientUnavailable");
   }
   const recipient = model.recipient.kind === "exactEmail"
     ? { kind: "exactEmail" as const, value: normalizeEmail(model.recipient.value ?? "") }
-    : { kind: "bearer" as const };
+    : model.recipient.kind === "emailDomain"
+      ? { kind: "emailDomain" as const, value: normalizeRecipientDomain(model.recipient.value ?? "") }
+      : { kind: "bearer" as const };
   const inferredResourceKind = model.content.kind === "files"
     ? "prefix"
     : model.content.kind === "library"
@@ -211,7 +236,11 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
   if (recipient.kind === "bearer" && model.permissions.some((permission) => permission !== "read")) {
     throw validationFailure("linkOnlyActions");
   }
-  if (recipient.kind === "exactEmail" && !model.encryption) throw validationFailure("plaintext");
+  if ((recipient.kind === "exactEmail" || recipient.kind === "emailDomain") && !model.encryption) throw validationFailure("plaintext");
+  // A domain share admits every mailbox at the domain, so it stays view-only
+  // and is never emailed on the sender's behalf.
+  if (recipient.kind === "emailDomain" && model.permissions.some((permission) => permission !== "read")) throw validationFailure("domainActions");
+  if (recipient.kind === "emailDomain" && model.deliveryEmail !== undefined) throw validationFailure("domainDelivery");
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
   if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
@@ -226,5 +255,5 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
  * sender no longer pre-commits to being offered it (P1-5).
  */
 export function canNotify(model: ShareComposerModel): boolean {
-  return (model.recipient.kind === "exactEmail" || model.recipient.kind === "emailDomain") && model.deliveryEmail !== undefined;
+  return model.recipient.kind === "exactEmail" && model.deliveryEmail !== undefined;
 }

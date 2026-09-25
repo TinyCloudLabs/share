@@ -71,6 +71,7 @@ describe("exact-email claim screen", () => {
     ["REQUEST_EXPIRED", {}, "That code expired", "Send a new code"],
     ["VERIFICATION_FAILED", { state: "proof_attempts_exhausted" }, "Too many incorrect codes", "Send a new code"],
     ["OFFLINE", {}, "Email verification is unavailable", "Try again"],
+    ["ISSUER_UNREADY", { state: "rate_limited" }, "Too many codes requested", "Try again"],
   ])("recovers from %s with a fresh acquisition", async (code, details, title, action) => {
     state.get.mockRejectedValueOnce(credentialError(code, details)).mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
     const { root, done, onComplete } = await start();
@@ -94,6 +95,23 @@ describe("exact-email claim screen", () => {
     state.get.mockRejectedValueOnce(new Error("share invocation rejected (403)"));
     const second = await start();
     await expect(second.done).rejects.toThrow("share invocation rejected (403)");
+  });
+
+  it("presents a domain invitation's domain first and the credential-bound mailbox once verified", async () => {
+    state.receive.mockImplementationOnce(async (_url: string, options: typeof state.options) => {
+      state.options = options;
+      return { recipient: { kind: "emailDomain", domain: "tinycloud.xyz" }, get: (...args: unknown[]) => state.get(...args) };
+    });
+    let finish!: (value: unknown) => void;
+    state.get.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { root, done } = await start();
+    await vi.waitFor(() => expect(state.get).toHaveBeenCalledTimes(1));
+    expect(root.querySelector(".claim-lede")?.textContent).toBe("This invitation is open to anyone with an email address at @tinycloud.xyz. Confirm an address there to open it — no account needed.");
+    expect(root.querySelector(".claim-fact dd")?.textContent).toBe("Anyone at @tinycloud.xyz");
+    state.options!.onProgress?.({ state: "credential-acquisition", status: "completed", mailbox: "reader@tinycloud.xyz" });
+    expect(root.querySelector(".claim-verified-mailbox")?.textContent).toBe("reader@tinycloud.xyz");
+    finish({ bytes: new Uint8Array([1]) });
+    await done;
   });
 
   it("never renders the claim before the SDK has verified the invitation", async () => {

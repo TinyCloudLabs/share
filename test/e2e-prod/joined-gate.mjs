@@ -23,7 +23,7 @@ import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
 const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/skgbafa/tc-500-node-1.17.1");
-const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-7aaa9c8";
+const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-846c018";
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
 const outputPath = resolve(process.env.TC500_E2E_ARTIFACT ?? join(workspaceRoot, ".context/tc-500-native-joined.json"));
 const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "utf8"), Buffer.from([0, 0x80, 0xff, 0x0a])]);
@@ -300,14 +300,18 @@ function auditBrowserDiagnostics(stack) {
     ["negative-write", 403],
     ["negative-tamper", 401],
     ["negative-revoked", 403],
+    ["domain-negative-sibling", 403],
+    ["domain-negative-write", 403],
+    ["domain-negative-tamper", 401],
   ]);
-  const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
+  const admittedRequestReplayRejections = failedRequests.filter((entry) => entry.phase === "domain-replay" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && entry.status >= 400 && entry.status < 500);
+  const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !admittedRequestReplayRejections.includes(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
   assert.equal(unexpectedRequests.length, 0, "browser observed an unexpected failed network request");
   const errors = consoleDiagnostics.filter((entry) => entry.type === "error");
   const warnings = consoleDiagnostics.filter((entry) => entry.type === "warn");
   const pageErrors = consoleDiagnostics.filter((entry) => entry.type === "pageerror");
   assert.equal(pageErrors.length, 0, "browser raised an unexpected page error");
-  assert(errors.every((entry) => /^Failed to load resource: the server responded with a status of (401|403|404) \((?:Unauthorized|Forbidden|Not Found)\)$/.test(entry.text)), "browser emitted an unexpected console error");
+  assert(errors.every((entry) => /^Failed to load resource: the server responded with a status of (400|401|403|404|409) \((?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict)\)$/.test(entry.text)), "browser emitted an unexpected console error");
   assert.equal(errors.length, failedRequests.length, "browser console/network failure accounting diverged");
   assert(locationBootstrapMisses.length > 0, "fresh sender did not observe the expected missing-location bootstrap response");
   assert(ownerStateBootstrapMisses.length > 0, "fresh sender did not observe expected uninitialized owner state");
@@ -319,6 +323,7 @@ function auditBrowserDiagnostics(stack) {
     expectedLocationBootstrap404s: locationBootstrapMisses.length,
     expectedOwnerStateBootstrap404s: ownerStateBootstrapMisses.length,
     expectedPolicyDenials: Object.fromEntries(expectedEnforcement),
+    admittedRequestReplayRejections: admittedRequestReplayRejections.map((entry) => entry.status),
     expectedBootstrapWarnings: warnings.length,
   };
 }
@@ -370,10 +375,10 @@ async function invokeFromBrowser(page, nodeOrigin, authorization, body) {
   }, { nodeOrigin, authorization, body });
 }
 
-async function verifyNegativeEnforcement({ sender, recipient, stack }) {
-  const challenge = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/policy/v3/challenges" && successfulRequest(entry));
-  const delegation = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
-  const imported = trace.find((entry) => entry.phase === "recipient" && entry.method === "POST" && entry.path === "/delegate" && successfulRequest(entry));
+async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPhase = "recipient", prefix = "", revoke = true }) {
+  const challenge = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/challenges" && successfulRequest(entry));
+  const delegation = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
+  const imported = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/delegate" && successfulRequest(entry));
   assert(challenge && delegation && imported?.authorization, "policy session evidence is missing for negative enforcement checks");
   const session = verifyCompactUcanAuthorization(imported.authorization);
   const kvCapability = challenge.body?.requestedCapabilities?.find((candidate) => candidate?.kind === "kv");
@@ -387,22 +392,23 @@ async function verifyNegativeEnforcement({ sender, recipient, stack }) {
 
   const sibling = `${kvResource}.sibling`;
   const siblingInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: sibling });
-  phase = "negative-sibling";
+  phase = `${prefix}negative-sibling`;
   const siblingReadStatus = await invokeFromBrowser(recipient, stack.canonical.node, siblingInvocation.authorization);
   assert.equal(siblingReadStatus, 403, "policy session allowed a sibling KV read");
 
   const writeInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/put", resource: kvResource });
-  phase = "negative-write";
+  phase = `${prefix}negative-write`;
   const writeEscalationStatus = await invokeFromBrowser(recipient, stack.canonical.node, writeInvocation.authorization, [1, 2, 3]);
   assert.equal(writeEscalationStatus, 403, "policy session allowed KV write escalation");
 
   const tamperInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: kvResource });
   const last = tamperInvocation.authorization.at(-1);
   const tampered = `${tamperInvocation.authorization.slice(0, -1)}${last === "A" ? "B" : "A"}`;
-  phase = "negative-tamper";
+  phase = `${prefix}negative-tamper`;
   const tamperStatus = await invokeFromBrowser(recipient, stack.canonical.node, tampered);
   assert.equal(tamperStatus, 401, "Node admitted a tampered recipient invocation");
 
+  if (!revoke) return { siblingReadStatus, writeEscalationStatus, tamperStatus };
   const revokedInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: kvResource });
   phase = "sender-revocation";
   await sender.evaluate(() => { window.location.hash = "#/library"; });
@@ -446,6 +452,103 @@ async function verifyBearerRegression({ browser, sender, stack }) {
   assert(invokes.length >= 1, "bearer recipient did not read through ordinary invoke");
   await context.close();
   return { bearerRendered: true, bearerInvokeCount: invokes.length, bearerOpenKeyRequests: 0, bearerCredentialRequests: 0 };
+}
+
+async function mailboxEntry(page) {
+  return waitUntil(async () => {
+    const handle = await page.evaluateHandle(() => document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("input#mailbox") ?? null).catch(() => undefined);
+    return handle?.asElement() ?? undefined;
+  }, 90_000);
+}
+
+async function enterMailbox(page, mailbox) {
+  const input = await mailboxEntry(page);
+  assert(input, "domain recipient mailbox entry did not appear");
+  await input.click({ clickCount: 3 }); await page.keyboard.press("Backspace");
+  await input.type(mailbox);
+  await page.evaluate(() => document.querySelector("tinycloud-credential-acquisition").shadowRoot.querySelector("button[type=submit]").click());
+}
+
+/**
+ * Domain-addressed share on the same stack: any mailbox whose issuer-derived
+ * domain is exactly the invited one can claim it; look-alikes never start an
+ * acquisition; the Node enforces the signed domain claim and read-only scope.
+ */
+async function verifyDomainJourney({ browser, sender, stack }) {
+  const domain = "tinycloud.test";
+  phase = "domain-sender";
+  // The bearer leg left the composer on its result screen.
+  await clickText(sender, "Share another");
+  await sender.waitForSelector('form.composer-form input[name="recipient"][value="emailDomain"]', { visible: true, timeout: 180_000 });
+  await sender.$eval('input[name="recipient"][value="emailDomain"]', (input) => input.click());
+  await sender.type('input[name="recipient-value"]', domain);
+  const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
+  await sender.click("button.create-link-button");
+  await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
+  const offersNotify = await sender.evaluate(() => [...document.querySelectorAll(".composer-status button")].some((button) => /Notify recipient/.test(button.textContent ?? "")));
+  assert.equal(offersNotify, false, "a domain share offered to email recipients");
+  const copied = await sender.evaluate(() => window.__tc500Clipboard.length);
+  await clickText(sender, "Copy link");
+  const domainUrl = await waitUntil(() => sender.evaluate((count) => window.__tc500Clipboard.length > count ? window.__tc500Clipboard.at(-1) : undefined, copied), 10_000);
+  assert.match(domainUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/, "domain share did not produce a sealed inline link");
+  const mailBefore = stack.mail.length;
+
+  // Look-alike and subdomain mailboxes are refused before any acquisition.
+  phase = "domain-lookalike";
+  const lookalikeContext = await browser.createBrowserContext(); const lookalike = await lookalikeContext.newPage(); await installRouting(lookalike, stack);
+  await lookalike.goto(domainUrl, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  for (const mailbox of [`reader@sub.${domain}`, `reader@${domain}.evil`, `reader@evil${domain}`]) {
+    await enterMailbox(lookalike, mailbox);
+    const refused = await waitUntil(() => lookalike.evaluate(() => document.querySelector("tinycloud-credential-acquisition")?.shadowRoot?.querySelector("#mailbox-error:not([hidden])")?.textContent ?? undefined), 10_000);
+    assert.match(refused ?? "", /is a different domain/, "look-alike mailbox was not refused");
+  }
+  assert.equal(trace.filter((entry) => entry.phase === "domain-lookalike" && entry.origin === stack.canonical.credentials && entry.method === "POST").length, 0, "a look-alike mailbox reached OpenCredentials");
+  assert.equal(stack.mail.length, mailBefore, "a look-alike mailbox was emailed");
+  await lookalikeContext.close();
+
+  phase = "domain-recipient";
+  const mailbox = `reader-${Date.now()}@${domain}`;
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(domainUrl, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await mailboxEntry(reader);
+  // Holding the sealed link alone authorizes nothing before mailbox proof.
+  assert.equal(trace.filter((entry) => entry.phase === "domain-recipient" && (/openkey/i.test(entry.origin) || (entry.origin === stack.canonical.node && ["/policy/v3/delegations", "/delegate", "/invoke"].includes(entry.path)))).length, 0, "domain link authorized access before mailbox proof");
+  const claimCopy = await reader.evaluate(() => document.querySelector(".claim-lede")?.textContent ?? "");
+  assert.match(claimCopy, /anyone with an email address at @tinycloud\.test/, "claim page did not present the invited domain");
+  await enterMailbox(reader, mailbox);
+  const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, mailbox)), 60_000);
+  const code = credentialOtpFromMail(otpMail); assert.match(code ?? "", /^\d{8}$/);
+  assert.equal(await submitCredentialValue(reader, code, "otp"), true);
+  const domainTemporary = await mkdtemp(join(tmpdir(), "tc500-domain-"));
+  assert.equal(await downloadExact(reader, domainTemporary), true, "domain recipient did not render the exact bytes");
+  const verifiedMailbox = await reader.evaluate(() => document.querySelector(".viewer-download") !== null);
+  assert.equal(verifiedMailbox, true);
+
+  const phaseTrace = trace.filter((entry) => entry.phase === "domain-recipient");
+  const create = phaseTrace.find((entry) => entry.origin === stack.canonical.credentials && entry.method === "POST" && entry.path === "/v1/acquisitions" && successfulRequest(entry));
+  assert.equal(create?.body?.profile, "tinycloud.email-domain-proof/v1", "domain recipient used the wrong credential profile");
+  assert.deepEqual(Object.keys(create?.body?.inputs ?? {}), ["email"], "domain acquisition carried a caller-asserted claim");
+  for (const path of ["/policy/v3/challenges", "/policy/v3/delegations", "/delegate"]) {
+    assert(phaseTrace.some((entry) => entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === path && successfulRequest(entry)), `domain recipient did not complete ${path}`);
+  }
+  const invokes = phaseTrace.filter((entry) => entry.origin === stack.canonical.node && entry.path === "/invoke" && successfulRequest(entry));
+  assert(invokes.length >= 2, "domain recipient did not read and decrypt through ordinary invoke");
+  assert(!phaseTrace.some((entry) => /openkey/i.test(entry.origin)), "domain recipient contacted OpenKey");
+
+  const negatives = await verifyNegativeEnforcement({ sender, recipient: reader, stack, recipientPhase: "domain-recipient", prefix: "domain-", revoke: false });
+
+  // Replaying the admitted request (its consumed challenge and presentation)
+  // must not mint another policy session.
+  const admitted = phaseTrace.find((entry) => entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
+  phase = "domain-replay";
+  const replayStatus = await reader.evaluate(async ({ nodeOrigin, body }) => {
+    const response = await fetch(new URL("/policy/v3/delegations", nodeOrigin), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await response.arrayBuffer();
+    return response.status;
+  }, { nodeOrigin: stack.canonical.node, body: admitted.body });
+  assert(replayStatus >= 400 && replayStatus < 500, "Node accepted a replay of an admitted policy request");
+  await context.close();
+  return { domainRendered: true, lookalikesRefusedBeforeAcquisition: 3, acquisitionInputKeys: ["email"], domainInvokeCount: invokes.length, ...Object.fromEntries(Object.entries(negatives).map(([key, value]) => [`domain${key[0].toUpperCase()}${key.slice(1)}`, value])), admittedRequestReplayStatus: replayStatus };
 }
 
 function traceAudit(stack) {
@@ -532,9 +635,11 @@ try {
   traceAudit(stack);
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
+  journeyStage = "domain-journey";
+  const domainJourney = await verifyDomainJourney({ browser, sender, stack });
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -571,6 +676,7 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
+    journeyDiagnostic: ["bearer-regression", "domain-journey"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,

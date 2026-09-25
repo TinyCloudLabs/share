@@ -26,6 +26,7 @@ export function claimRecoveryFor(error: unknown): RecipientClaimRecovery | undef
   if (code === "CANCELED") return { title: "Verification canceled", detail: "Nothing was opened. Send a new code when you’re ready.", action: "Send a new code" };
   if (code === "REQUEST_EXPIRED") return { title: "That code expired", detail: "Codes work for a few minutes and only once. Send a new code to try again.", action: "Send a new code" };
   if (code === "VERIFICATION_FAILED" && details?.state === "proof_attempts_exhausted") return { title: "Too many incorrect codes", detail: "For your security, that code no longer works. Send a new code to try again.", action: "Send a new code" };
+  if (code === "ISSUER_UNREADY" && details?.state === "rate_limited") return { title: "Too many codes requested", detail: "Too many verification codes were requested recently. Nothing was opened. Wait a while, then try again.", action: "Try again" };
   if (code === "OFFLINE" || code === "ISSUER_UNREADY") return { title: "Email verification is unavailable", detail: "Nothing was opened. Check your connection, then try again.", action: "Try again" };
   return undefined;
 }
@@ -53,13 +54,13 @@ export async function receiveWithSdk(input: {
     interaction: { kind: "inline", mountTarget: mount },
     onProgress: (event) => {
       if (view !== undefined && event.state === "credential-acquisition" && event.status === "completed") {
-        renderRecipientClaimProgress(view, "Opening the file through the owner’s TinyCloud node…");
+        renderRecipientClaimProgress(view, "Opening the file through the owner’s TinyCloud node…", event.mailbox);
       }
     },
   });
   // `receive` returns only after the invitation signature, the owner's Node
   // binding, and the recipient's policy commitment have been verified.
-  view = renderRecipientClaim(input.root, { recipientEmail: received.recipient.email, ...input.invitation });
+  view = renderRecipientClaim(input.root, { recipient: received.recipient, ...input.invitation });
   const claim = view;
   for (;;) {
     mount.replaceChildren();
