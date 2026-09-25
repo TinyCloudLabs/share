@@ -6,7 +6,7 @@ import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js"
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
 import { historyRecordForPublishedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
-import { emailCredentialPolicyProjection, emailCredentialRequirement } from "../credentials/email.js";
+import { emailCredentialPolicyProjection, emailCredentialRequirement, emailDomainCredentialPolicyProjection, emailDomainCredentialRequirement } from "../credentials/email.js";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
@@ -110,7 +110,7 @@ import {
   emailDomainOf,
   expiryFromChoice,
   normalizeEmail,
-  normalizeEmailDomain,
+  normalizeRecipientDomain,
   normalizeRecipientDid,
   projectCapabilities,
   validateComposerModel,
@@ -245,11 +245,11 @@ export function canonicalUploadFiles(selected: readonly File[]): readonly File[]
 
 async function defaultCreate(files: readonly File[], model: ShareComposerModel, options: ShareComposerOptions): Promise<ComposerShareResult> {
   const file = files.length === 1 ? files[0] : undefined;
-  // Domain credentials and recipient-DID admission do not yet have complete
-  // production receiver paths. Keep this guard before session, storage, and
-  // network work so a forced/programmatic submit cannot create partial
-  // authority or orphan encrypted content.
-  if (model.recipient.kind === "emailDomain" || model.recipient.kind === "recipientDid") {
+  // Recipient-DID admission does not yet have a complete production receiver
+  // path. Keep this guard before session, storage, and network work so a
+  // forced/programmatic submit cannot create partial authority or orphan
+  // encrypted content.
+  if (model.recipient.kind === "recipientDid") {
     throw fail("recipientUnavailable", "recipient mode has no complete production receiver path");
   }
   if (model.recipient.kind !== "bearer") {
@@ -351,7 +351,9 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   };
   const credentialRequirement = model.recipient.kind === "exactEmail"
     ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
-    : undefined;
+    : model.recipient.kind === "emailDomain"
+      ? emailDomainCredentialPolicyProjection(emailDomainCredentialRequirement(model.recipient.value!))
+      : undefined;
   let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
     shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
@@ -477,7 +479,7 @@ export async function copySelectedSource(
 
 function recipientModel(kind: RecipientKind, value: string): ShareComposerModel["recipient"] {
   if (kind === "bearer") return { kind };
-  return { kind, value: kind === "emailDomain" ? normalizeEmailDomain(value) : kind === "recipientDid" ? normalizeRecipientDid(value) : normalizeEmail(value) };
+  return { kind, value: kind === "emailDomain" ? normalizeRecipientDomain(value) : kind === "recipientDid" ? normalizeRecipientDid(value) : normalizeEmail(value) };
 }
 
 /** Only one mounted composer owns the document-level paste fallback. */
@@ -589,7 +591,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     parent.append(labelNode);
   };
   addRecipientOption(fieldset, "exactEmail", "Only this person — they'll confirm their email to open it");
-  addRecipientOption(fieldset, "emailDomain", "Anyone with an email from this domain — not available yet", false);
+  addRecipientOption(fieldset, "emailDomain", "Anyone with an email at a domain — they'll confirm an address there to open it");
   addRecipientOption(fieldset, "recipientDid", "Only this OpenKey device — not available yet", false);
   addRecipientOption(fieldset, "bearer", "Anyone with the link — anyone you send it to can open it");
   recipientInput.type = "text"; recipientInput.name = "recipient-value"; recipientInput.placeholder = "name@example.com"; recipientInput.autocomplete = "email"; recipientInput.hidden = true; recipientInput.setAttribute("aria-label", "Recipient email address");
@@ -658,7 +660,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     note.textContent = kind === "bearer"
       ? `Anyone who gets this link can open it until ${shortDate(expiryIso())}. You can revoke it earlier from All shares.`
       : kind === "emailDomain"
-        ? `Anyone with an @${typed.length === 0 ? "example.com" : typed} email can open this after confirming their address.`
+        ? `Anyone with an @${typed.length === 0 ? "example.com" : typed.replace(/^@/, "").toLowerCase()} email address can open this after confirming it, and can only view it. Creating the link doesn't email anyone — copy it and send it yourself.`
         : kind === "recipientDid"
           ? `Only the OpenKey device identified by ${typed.length === 0 ? "that DID" : typed} can open this.`
           : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
@@ -667,20 +669,24 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     const kind = selectedKind(); const addressed = kind !== "bearer";
     const prefixSelected = contentKind === "files"
       || (contentKind === "library" && (source.selectedOptions[0]?.dataset.resourceKind === "prefix" || source.value.endsWith("/")));
-    recipientInput.hidden = !addressed; deliveryLabel.hidden = !addressed;
+    const domainShare = kind === "emailDomain";
+    recipientInput.hidden = !addressed; deliveryLabel.hidden = kind !== "exactEmail";
+    if (kind !== "exactEmail") { delivery.value = ""; deliveryTouched = false; }
     for (const control of accessControls) {
       if (control.value === "read") {
         if (!addressed) control.input.checked = true;
         control.input.disabled = !addressed;
       } else {
-        control.label.hidden = !addressed;
-        if (!addressed) control.input.checked = false;
+        control.label.hidden = !addressed || domainShare;
+        if (!addressed || domainShare) control.input.checked = false;
       }
     }
-    accessHint.hidden = addressed;
-    accessHint.textContent = prefixSelected
-      ? "Choose a specific person or company domain to share multiple files or a folder."
-      : "Link-only shares are view-only. Choose a specific person to allow editing.";
+    accessHint.hidden = addressed && !domainShare;
+    accessHint.textContent = domainShare
+      ? "Domain shares are view-only. Choose a specific person to allow editing."
+      : prefixSelected
+        ? "Choose a specific person or company domain to share multiple files or a folder."
+        : "Link-only shares are view-only. Choose a specific person to allow editing.";
     browseNotice.hidden = !prefixSelected;
     if (!addressed) { delivery.value = ""; deliveryTouched = false; }
     encryptionTitle.textContent = addressed ? "Encrypted for the recipient" : "Stored in your TinyCloud";
@@ -922,7 +928,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           }
         }
         progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
-        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your link is ready"), el(doc, "span", "sender-status-detail", model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
+        status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your link is ready"), el(doc, "span", "sender-status-detail", model.recipient.kind === "emailDomain"
+          ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can view it. Copy the link and send it yourself — TinyCloud doesn't email everyone at a domain.`
+          : model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";

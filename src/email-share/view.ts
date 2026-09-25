@@ -47,8 +47,8 @@ export function renderRecipientInvalid(root: HTMLElement, message: string): void
 
 /** Facts from the owner-signed invitation, shown before any credential is requested. */
 export interface RecipientClaimInvitation {
-  /** Exact recipient mailbox, bound by the SDK to the signed policy commitment. */
-  readonly recipientEmail: string;
+  /** The recipient the SDK bound to the signed policy commitment. */
+  readonly recipient: { readonly kind: "exactEmail"; readonly email: string } | { readonly kind: "emailDomain"; readonly domain: string };
   readonly filename?: string;
   readonly expiresAt?: string;
   readonly actions?: readonly string[];
@@ -76,8 +76,12 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
   const title = element(doc, "h1", "claim-title", "Verify your email to open this file");
   title.id = "claim-title";
   const lede = element(doc, "p", "claim-lede");
-  const mailbox = element(doc, "strong", "claim-mailbox", invitation.recipientEmail);
-  lede.append("This invitation was sent to ", mailbox, ". Only someone who can read that inbox can open it — no account needed.");
+  const recipient = invitation.recipient;
+  if (recipient.kind === "exactEmail") {
+    lede.append("This invitation was sent to ", element(doc, "strong", "claim-mailbox", recipient.email), ". Only someone who can read that inbox can open it — no account needed.");
+  } else {
+    lede.append("This invitation is open to anyone with an email address at ", element(doc, "strong", "claim-mailbox", `@${recipient.domain}`), ". Confirm an address there to open it — no account needed.");
+  }
   const intro = element(doc, "header", "claim-intro");
   intro.append(title, lede);
 
@@ -94,7 +98,7 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
     row.append(element(doc, "dt", "", label), dd);
     facts.append(row);
   };
-  fact("For", invitation.recipientEmail);
+  fact("For", recipient.kind === "exactEmail" ? recipient.email : `Anyone at @${recipient.domain}`);
   if (invitation.filename !== undefined) fact("File", invitation.filename);
   const actions = (invitation.actions ?? []).map((action) => ACTION_LABELS.get(action)).filter((label): label is string => label !== undefined);
   if (actions.length > 0) fact("Access", actions.join(", "));
@@ -116,7 +120,7 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
 }
 
 /** Replaces the verification slot once the mailbox credential is in hand. */
-export function renderRecipientClaimProgress(view: RecipientClaimView, message: string): void {
+export function renderRecipientClaimProgress(view: RecipientClaimView, message: string, mailbox?: string): void {
   const doc = view.verify.ownerDocument;
   const panel = element(doc, "div", "claim-state");
   const status = element(doc, "p", "claim-state-line");
@@ -124,7 +128,10 @@ export function renderRecipientClaimProgress(view: RecipientClaimView, message: 
   status.append(spinner(doc), message);
   const verified = element(doc, "p", "claim-state-title claim-verified");
   verified.append(checkIcon(doc), "Email verified");
-  panel.append(verified, status);
+  panel.append(verified);
+  // The mailbox comes from the verified credential, not from anything typed.
+  if (mailbox !== undefined) panel.append(element(doc, "p", "claim-state-detail claim-verified-mailbox", mailbox));
+  panel.append(status);
   view.verify.replaceChildren(panel);
 }
 

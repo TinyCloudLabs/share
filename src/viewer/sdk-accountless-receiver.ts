@@ -53,13 +53,13 @@ export async function receiveWithSdk(input: {
     interaction: { kind: "inline", mountTarget: mount },
     onProgress: (event) => {
       if (view !== undefined && event.state === "credential-acquisition" && event.status === "completed") {
-        renderRecipientClaimProgress(view, "Opening the file through the owner’s TinyCloud node…");
+        renderRecipientClaimProgress(view, "Opening the file through the owner’s TinyCloud node…", event.mailbox);
       }
     },
   });
   // `receive` returns only after the invitation signature, the owner's Node
   // binding, and the recipient's policy commitment have been verified.
-  view = renderRecipientClaim(input.root, { recipientEmail: received.recipient.email, ...input.invitation });
+  view = renderRecipientClaim(input.root, { recipient: received.recipient, ...input.invitation });
   const claim = view;
   for (;;) {
     mount.replaceChildren();
