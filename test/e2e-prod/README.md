@@ -57,7 +57,9 @@ Share API or Share registry.
 The gate refuses dirty or non-reviewed dependency trees. Defaults are the
 local stable worktrees listed in `native-stack.mjs`; explicit paths may be
 provided with `TC500_NODE_WORKTREE`, `TC500_OPENCREDENTIALS_WORKTREE`, and
-`TC500_REGISTRY_WORKTREE`.
+`TC500_REGISTRY_WORKTREE`. `TC500_NODE_COMMIT` may name a reviewed candidate
+Node commit instead of the stable pin; the worktree must still be clean and at
+exactly that commit, and its tree digest is recorded in the artifact.
 
 ```bash
 npm run test:e2e:native-joined
