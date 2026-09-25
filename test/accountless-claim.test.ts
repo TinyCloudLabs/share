@@ -71,6 +71,7 @@ describe("exact-email claim screen", () => {
     ["REQUEST_EXPIRED", {}, "That code expired", "Send a new code"],
     ["VERIFICATION_FAILED", { state: "proof_attempts_exhausted" }, "Too many incorrect codes", "Send a new code"],
     ["OFFLINE", {}, "Email verification is unavailable", "Try again"],
+    ["ISSUER_UNREADY", { state: "rate_limited" }, "Too many codes requested", "Try again"],
   ])("recovers from %s with a fresh acquisition", async (code, details, title, action) => {
     state.get.mockRejectedValueOnce(credentialError(code, details)).mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
     const { root, done, onComplete } = await start();

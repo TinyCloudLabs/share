@@ -54,6 +54,7 @@ const EXPECTED_SENDER_COPY = {
   deliveryDomain: "The delivery address must belong to the shared domain.",
   domainActions: "Anyone-at-a-domain shares are view-only.",
   domainDelivery: "TinyCloud doesn't email everyone at a domain. Copy the link and send it yourself.",
+  publicMailDomain: "Anyone can create an address at that domain. Choose your organization's domain, or share with one person.",
   plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
@@ -169,13 +170,16 @@ describe("share composer model", () => {
     expect(normalizeEmailDomain("MAILINATOR.COM")).toBe("mailinator.com");
     expect(emailDomainOf("Alice@mailinator.com")).toBe("mailinator.com");
     const domain = (value: string, overrides: Partial<ShareComposerModel> = {}) => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value }, encryption: true, ...overrides }));
-    expect(domain("@MAILINATOR.COM").recipient).toEqual({ kind: "emailDomain", value: "mailinator.com" });
+    expect(domain("@TinyCloud.XYZ").recipient).toEqual({ kind: "emailDomain", value: "tinycloud.xyz" });
+    for (const open of ["gmail.com", "@Outlook.com", "proton.me", "mailinator.com"]) {
+      expect(() => domain(open), open).toThrow("Anyone can create an address at that domain.");
+    }
     for (const invalid of ["mailinator", "mailinator.com.", "bücher.de", "tinyclоud.xyz", "192.168.0.1", "a..b.com", "name@mailinator.com"]) {
       expect(() => domain(invalid), invalid).toThrow("Enter a domain like example.com");
     }
-    expect(() => domain("mailinator.com", { permissions: ["read", "edit"] })).toThrow("Anyone-at-a-domain shares are view-only.");
-    expect(() => domain("mailinator.com", { deliveryEmail: "person@mailinator.com" })).toThrow("TinyCloud doesn't email everyone at a domain.");
-    expect(() => domain("mailinator.com", { encryption: false })).toThrow("Shares must stay encrypted.");
+    expect(() => domain("tinycloud.xyz", { permissions: ["read", "edit"] })).toThrow("Anyone-at-a-domain shares are view-only.");
+    expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("TinyCloud doesn't email everyone at a domain.");
+    expect(() => domain("tinycloud.xyz", { encryption: false })).toThrow("Shares must stay encrypted.");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "recipientDid", value: "did:key:z6Mkexample" } }))).toThrow("That recipient option isn't available yet");
   });
 

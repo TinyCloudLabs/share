@@ -187,13 +187,26 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
 }
 
+/**
+ * Domains where anyone can open an inbox. A share "for anyone at" one of
+ * these is effectively public, so the composer refuses them.
+ */
+const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  "aol.com", "gmail.com", "googlemail.com", "gmx.com", "gmx.net", "hey.com", "hotmail.com", "icloud.com",
+  "live.com", "mac.com", "mail.com", "mailinator.com", "me.com", "msn.com", "outlook.com", "pm.me",
+  "proton.me", "protonmail.com", "qq.com", "tutanota.com", "yahoo.com", "yandex.com", "ymail.com", "zoho.com",
+]);
+
 /** A canonical recipient domain: lowercase ASCII DNS labels, two or more, no IP literal. */
 export function normalizeRecipientDomain(value: string): string {
+  let domain: string;
   try {
-    return canonicalEmailDomain(value);
+    domain = canonicalEmailDomain(value);
   } catch {
     throw validationFailure("recipientDomain");
   }
+  if (PUBLIC_MAIL_DOMAINS.has(domain)) throw validationFailure("publicMailDomain");
+  return domain;
 }
 
 export function validateComposerModel(model: ShareComposerModel): ShareComposerModel {

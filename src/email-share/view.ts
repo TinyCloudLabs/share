@@ -109,7 +109,9 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
     time.textContent = expiry.text;
     fact("Expires", time);
   }
-  const note = element(doc, "p", "claim-note", "The emailed code proves you control this mailbox. The owner’s TinyCloud node checks that proof before it releases the encrypted file, which is decrypted in this browser.");
+  const note = element(doc, "p", "claim-note", recipient.kind === "exactEmail"
+    ? "The emailed code proves you control this mailbox. The owner’s TinyCloud node checks that proof before it releases the encrypted file, which is decrypted in this browser."
+    : "The emailed code proves you control an address at this domain. The owner’s TinyCloud node checks that proof, and sees the address you verify, before it releases the encrypted file, which is decrypted in this browser.");
   details.append(facts, note);
 
   const layout = element(doc, "div", "claim-layout");

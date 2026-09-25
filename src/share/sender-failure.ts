@@ -27,6 +27,7 @@ export type SenderFailureKind =
   | "deliveryDomain"
   | "domainActions"
   | "domainDelivery"
+  | "publicMailDomain"
   | "plaintext"
   | "acknowledgment"
   | "linkOnlyActions"
@@ -63,6 +64,7 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   deliveryDomain: "The delivery address must belong to the shared domain.",
   domainActions: "Anyone-at-a-domain shares are view-only.",
   domainDelivery: "TinyCloud doesn't email everyone at a domain. Copy the link and send it yourself.",
+  publicMailDomain: "Anyone can create an address at that domain. Choose your organization's domain, or share with one person.",
   plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
   linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
