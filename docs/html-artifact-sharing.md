@@ -122,9 +122,9 @@ or not the preview succeeds.
 ## Production headers
 
 Cloudflare Pages appends, rather than replaces, a header set by more than one
-matching `_headers` rule. The sandbox routes (`/artifact-sandbox`,
-`/mermaid-sandbox`, and their `.html` forms, which Cloudflare redirects to the
-extensionless paths) therefore detach the site-wide policy
+matching `_headers` rule. The artifact sandbox routes (`/artifact-sandbox`
+and its `.html` form, which Cloudflare redirects to the extensionless path)
+therefore detach the site-wide policy
 (`! Content-Security-Policy`) before setting their own; otherwise the site's
 `frame-ancestors 'none'` and `script-src 'self'` would also apply and the
 sandbox could neither be framed nor run its bridge.

@@ -64,17 +64,9 @@ export const MERMAID_SANDBOX_CSP =
  * HTTP-header-only directives: a <meta> CSP cannot express frame-ancestors,
  * so a static production host MUST be configured to send them (see
  * public/_headers for the Cloudflare Pages rule the build ships).
- *
- * The header carries the complete frame policy, not only frame-ancestors:
- * Cloudflare Pages appends a header set by several `_headers` rules, so the
- * sandbox routes detach the site-wide CSP (whose frame-ancestors 'none' and
- * script-src 'self' would block framing and the inline bridge) and send
- * exactly MERMAID_SANDBOX_HTTP_CSP instead.
  */
-export const MERMAID_SANDBOX_HTTP_CSP = `${MERMAID_SANDBOX_CSP}; frame-ancestors 'self'`;
-
 export const MERMAID_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
-  ["content-security-policy", MERMAID_SANDBOX_HTTP_CSP],
+  ["content-security-policy", "frame-ancestors 'self'"],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
