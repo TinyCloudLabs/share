@@ -10,7 +10,13 @@
 /.well-known/tinycloud-share/config.json
   Cache-Control: no-store
 
+/mermaid-sandbox
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
+
 /mermaid-sandbox.html
+  ! Content-Security-Policy
   Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
 
