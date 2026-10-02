@@ -4,9 +4,11 @@
  * artifact sandbox document served with its production frame policy. Proves:
  * bearer pages run styled with scripts; addressed HTML never executes; a
  * hostile page cannot reach the viewer origin's storage, cookies, fragment,
- * top window, or network; navigation before or after load is refused by the
- * bridge's frame-src and closes the page; and the verified-bytes download
- * survives every preview failure, including a missing sandbox route.
+ * top window, or the viewer origin over the network; navigation is refused by the bridge's frame-src
+ * (after load the page is closed; before load the frame shows the browser's
+ * blocked page); pages are parsed exactly as sent with no main-thread stall;
+ * and the verified-bytes download survives every preview failure, including
+ * a missing sandbox route.
  */
 import assert from "node:assert/strict";
 import { createSocket } from "node:dgram";
@@ -159,14 +161,36 @@ try {
   console.log(`KNOWN GAP (WebRTC, not governed by CSP): ${stunPackets.length} STUN packet(s) reached the sender-controlled listener; rtc=${results.rtc.value ?? results.rtc.error}`);
   await page.close();
 
-  // Navigation before the first load: the replacement/error document must
-  // not count as the page; the preview closes and the download stays.
+  // Navigation before the first load: frame-src 'none' refuses it, so the
+  // frame shows the browser's blocked-content page. Nothing leaves, and the
+  // verified bytes stay downloadable.
   {
     const { page: early, requests: earlyRequests } = await loadHarness(browser, "fixture=navigate-early");
-    const notice = await assertPreviewClosedWithDownload(early, "navigate-early");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(await early.$eval(".viewer-download", (node) => node.textContent), "Download original", "navigate-early: download stays available");
     assertNoProbeLeft(earlyRequests, "navigate-early");
-    console.log(`navigate-early closed with: ${notice}`);
+    console.log(`navigate-early: frame present=${await early.$("iframe.viewer-html-frame") !== null}`);
     await early.close();
+  }
+
+  // The page is parsed exactly as sent: explicit <head> attributes survive.
+  {
+    const { page: app, inner: appInner } = await openFixture(browser, "fixture=head-attributes");
+    assert.deepEqual(await appInner.evaluate(() => [document.head.id, document.head.dataset.config, document.documentElement.dataset.theme]), ["app-head", "blue", "report"]);
+    assert.equal(await appInner.$eval("#config", (node) => node.textContent), "app-head:blue");
+    await app.close();
+  }
+
+  // 40 leading comments and no doctype: renders with no main-thread stall over 200 ms.
+  {
+    const { page: commented, inner: commentedInner } = await openFixture(browser, "fixture=leading-comments");
+    assert.equal(await commentedInner.$eval("#status", (node) => node.textContent), "Rendered after 40 leading comments.");
+    // srcdoc documents never enter quirks mode, so only the parse result is checked.
+    assert.deepEqual(await commentedInner.evaluate(() => [document.head.id, document.head.dataset.config]), ["comment-head", "green"]);
+    const longTasks = await commented.evaluate(() => document.documentElement.dataset.longTasks ?? "");
+    const stalls = longTasks === "" ? [] : longTasks.split(",").map(Number);
+    assert.ok(stalls.every((duration) => duration <= 200), `no main-thread stall over 200 ms (long tasks: ${longTasks || "none"})`);
+    await commented.close();
   }
 
   // Self-navigation after load is refused by the bridge's frame-src 'none'

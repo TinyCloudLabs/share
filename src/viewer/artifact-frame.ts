@@ -6,8 +6,10 @@ export const ARTIFACT_SANDBOX_PATH = "/artifact-sandbox.html";
  * single-file pages use eval-based libraries; prepared bundle pages add their
  * own stricter meta policy. Navigation is bounded by `frame-src 'none'` (the
  * bridge refuses every child navigation) plus the bridge's load watchdog;
- * the never-shipped `navigate-to` directive is deliberately absent. CSP does
- * not govern WebRTC, so a page can still send STUN/TURN traffic.
+ * the never-shipped `navigate-to` directive is deliberately absent. CSP is
+ * not a network block: it does not govern WebRTC (STUN/TURN traffic), and
+ * resource hints such as `<link rel="preconnect">` can still open a
+ * connection, so a page can reveal the viewer's IP address to its author.
  */
 export const ARTIFACT_SANDBOX_CSP = [
   "default-src 'none'",
@@ -43,11 +45,11 @@ export const ARTIFACT_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, stri
 /**
  * `ready: "artifact"` — a prepared bundle page; success is the injected
  * bootstrap's `artifact-ready` message, and bundle navigation is honored.
- * `ready: "load"` — one arbitrary single-file HTML document prepared with
- * withLoadSignal(); success is that document's own load signal carrying
- * `loadToken`, together with exactly one child load. A first load without
- * the signal is a replacement document or an error page (the page navigated
- * before it finished loading) and fails the render. In both modes any later
+ * `ready: "load"` — one arbitrary single-file HTML document, rendered exactly
+ * as received; success is the child's first load, and every child message is
+ * ignored. A page that navigates itself before that load is refused by
+ * `frame-src 'none'` and leaves the browser's blocked-content page in the
+ * frame (the viewer's download stays available). In both modes any later
  * child load is navigation and destroys the document.
  *
  * The nonce binds messages to one frame pair but is NOT a secret: srcdoc
@@ -61,23 +63,6 @@ export interface ArtifactRenderRequest {
   readonly entry: string;
   readonly pages: Readonly<Record<string, string>>;
   readonly ready: "artifact" | "load";
-  readonly loadToken?: string;
-}
-
-/** How long the bridge waits for a document's load signal after its first child load. */
-const LOAD_SIGNAL_GRACE_MS = 2_000;
-
-/**
- * Insert the load-signal script ahead of the document's own content (after a
- * leading doctype, so standards mode is kept). Running first, it holds the
- * real parent window and the first window `load` listener before any page
- * script runs. The page can read or forge the token; that only lets it claim
- * it loaded, which it can do anyway — it is a liveness signal, not authority.
- */
-export function withLoadSignal(html: string, token: string): string {
-  const signal = `<script>(function(){var p=window.parent;addEventListener("load",function(){p.postMessage({type:"tc-document-loaded",token:"${token}"},"*");});})();</script>`;
-  const at = /^(?:\s|<!--[\s\S]*?-->|<\?[^>]*>)*<!doctype[^>]*>/i.exec(html)?.[0].length ?? 0;
-  return `${html.slice(0, at)}${signal}${html.slice(at)}`;
 }
 
 export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
@@ -88,18 +73,11 @@ export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
   var pages=null;
   var activeId="";
   var activeReady="artifact";
-  var activeToken="";
   var activeFragment="";
   var childReady=false;
   var seenInitialLoad=false;
-  var loadCount=0;
-  var loadSignaled=false;
-  var loadGrace=0;
   function post(message){window.parent.postMessage(Object.assign({nonce:nonce},message),"*");}
-  function clearGrace(){if(loadGrace){clearTimeout(loadGrace);loadGrace=0;}}
-  function destroyChild(){clearGrace();if(child){child.remove();child=null;}}
-  function navigated(){post({type:"result",id:activeId,ok:false,error:"navigation"});destroyChild();}
-  function loaded(){clearGrace();childReady=true;post({type:"result",id:activeId,ok:true});}
+  function destroyChild(){if(child){child.remove();child=null;}}
   function show(path,fragment){
     if(!pages||typeof pages[path]!=="string"){post({type:"result",id:activeId,ok:false,error:"missing"});destroyChild();return;}
     destroyChild();
@@ -111,18 +89,14 @@ export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
     child.className="artifact-document";
     childReady=false;
     seenInitialLoad=false;
-    loadCount=0;
-    loadSignaled=false;
     child.addEventListener("load",function(){
-      if(activeReady==="load"){
-        loadCount++;
-        if(loadCount>1){navigated();return;}
-        if(loadSignaled){loaded();return;}
-        loadGrace=setTimeout(navigated,${LOAD_SIGNAL_GRACE_MS});
+      if(!seenInitialLoad){
+        seenInitialLoad=true;
+        if(activeReady==="load"){childReady=true;post({type:"result",id:activeId,ok:true});}
         return;
       }
-      if(!seenInitialLoad){seenInitialLoad=true;return;}
-      navigated();
+      post({type:"result",id:activeId,ok:false,error:"navigation"});
+      destroyChild();
     });
     child.srcdoc=pages[path];
     document.body.replaceChildren(child);
@@ -130,18 +104,8 @@ export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
   window.addEventListener("message",function(event){
     if(event.source===window.parent){
       var data=event.data;
-      if(!data||data.type!=="render"||data.nonce!==nonce||typeof data.id!=="string"||typeof data.entry!=="string"||!data.pages||typeof data.pages!=="object")return;
-      if(data.ready==="load"){if(typeof data.loadToken!=="string"||!/^[0-9a-f]{32}$/.test(data.loadToken))return;activeToken=data.loadToken;}
-      else if(data.ready!=="artifact")return;
+      if(!data||data.type!=="render"||data.nonce!==nonce||typeof data.id!=="string"||typeof data.entry!=="string"||!data.pages||typeof data.pages!=="object"||(data.ready!=="artifact"&&data.ready!=="load"))return;
       activeId=data.id;activeReady=data.ready;pages=data.pages;show(data.entry,"");return;
-    }
-    if(child&&activeReady==="load"&&event.source===child.contentWindow&&event.origin==="null"){
-      var signal=event.data;
-      if(signal&&signal.type==="tc-document-loaded"&&signal.token===activeToken&&!loadSignaled&&!childReady&&loadCount<=1){
-        loadSignaled=true;
-        if(loadCount===1)loaded();
-      }
-      return;
     }
     if(child&&activeReady==="artifact"&&event.source===child.contentWindow&&event.origin==="null"){
       var childData=event.data;

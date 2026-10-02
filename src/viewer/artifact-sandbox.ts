@@ -1,5 +1,5 @@
 import type { PreparedArtifact } from "../artifact/bundle.js";
-import { ARTIFACT_SANDBOX_PATH, withLoadSignal, type ArtifactRenderRequest } from "./artifact-frame.js";
+import { ARTIFACT_SANDBOX_PATH, type ArtifactRenderRequest } from "./artifact-frame.js";
 
 export const ARTIFACT_SANDBOX_IFRAME_CLASS = "viewer-artifact-frame";
 
@@ -78,7 +78,7 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
   };
   view.addEventListener("message", onMessage);
 
-  const request = (entry: string, pages: Readonly<Record<string, string>>, readyOn: ArtifactRenderRequest["ready"], loadToken?: string): Promise<void> => {
+  const request = (entry: string, pages: Readonly<Record<string, string>>, readyOn: ArtifactRenderRequest["ready"]): Promise<void> => {
     if (destroyed) return Promise.reject(new Error("artifact sandbox is destroyed"));
     const id = `artifact-${counter++}`;
     return new Promise<void>((resolve, reject) => {
@@ -87,7 +87,7 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
         reject(new Error("artifact sandbox render timed out"));
       }, 15_000);
       pending.set(id, { resolve, reject, timeout });
-      const message: ArtifactRenderRequest = { type: "render", id, nonce, entry, pages, ready: readyOn, ...(loadToken === undefined ? {} : { loadToken }) };
+      const message: ArtifactRenderRequest = { type: "render", id, nonce, entry, pages, ready: readyOn };
       if (ready) post(message); else queue.push(message);
     });
   };
@@ -95,10 +95,7 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
   return {
     iframe,
     render: (artifact) => request(artifact.entry, artifact.pages, "artifact"),
-    renderDocument: (html) => {
-      const loadToken = nonce128();
-      return request("index.html", { "index.html": withLoadSignal(html, loadToken) }, "load", loadToken);
-    },
+    renderDocument: (html) => request("index.html", { "index.html": html }, "load"),
     destroy(): void {
       if (destroyed) return;
       destroyed = true;

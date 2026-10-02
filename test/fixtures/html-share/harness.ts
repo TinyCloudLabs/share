@@ -12,12 +12,16 @@ import report from "./report.html?raw";
 import hostile from "./hostile.html?raw";
 import navigateEarly from "./navigate-early.html?raw";
 import navigateLate from "./navigate-late.html?raw";
+import headAttributes from "./head-attributes.html?raw";
+import leadingComments from "./leading-comments.html?raw";
 
 const FIXTURES: Readonly<Record<string, string>> = {
   report,
   hostile,
   "navigate-early": navigateEarly,
   "navigate-late": navigateLate,
+  "head-attributes": headAttributes,
+  "leading-comments": leadingComments,
 };
 const params = new URLSearchParams(location.search);
 const name = params.get("fixture") ?? "report";
@@ -34,6 +38,15 @@ history.replaceState(null, "", `${location.pathname}${location.search}#tc1=fragm
 
 const root = document.getElementById("viewer")!;
 const path = `applications/share/${filename}`;
+// Main-thread stalls during presentation (Long Tasks API, >50 ms entries),
+// published on the root element for the e2e to read.
+const longTasks: number[] = [];
+const presentStarted = performance.now();
+document.documentElement.dataset.longTasks = "";
+new PerformanceObserver((list) => {
+  for (const entry of list.getEntries()) if (entry.startTime >= presentStarted) longTasks.push(Math.round(entry.duration));
+  document.documentElement.dataset.longTasks = longTasks.join(",");
+}).observe({ type: "longtask", buffered: true });
 try {
   await presentShare(root, {
     state: "ok",

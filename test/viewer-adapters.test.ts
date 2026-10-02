@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyContent, HTML_FRAME_CLASS, MAX_SAFE_CONTENT_BYTES, renderSafeContent } from "../src/viewer/content.js";
-import { ARTIFACT_SANDBOX_PATH, withLoadSignal, type ArtifactRenderRequest } from "../src/viewer/artifact-frame.js";
+import { ARTIFACT_SANDBOX_PATH, type ArtifactRenderRequest } from "../src/viewer/artifact-frame.js";
 import { presentShare } from "../src/viewer/present.js";
 import { presentationEnvelope } from "../src/viewer/resolve.js";
 import { directChildren, normalizeFolderPage } from "../src/viewer/folder.js";
@@ -92,8 +92,8 @@ describe("adaptive viewer adapters", () => {
     expect(posted).toHaveLength(1);
     const request = posted[0]!;
     expect(request).toMatchObject({ type: "render", nonce, ready: "load", entry: "index.html" });
-    expect(request.loadToken).toMatch(/^[0-9a-f]{32}$/);
-    expect(request.pages["index.html"]).toBe(withLoadSignal(REPORT, request.loadToken!));
+    // The page reaches the frame byte-for-byte: nothing is injected or rewritten.
+    expect(request.pages).toEqual({ "index.html": REPORT });
     frameMessage(iframe, { type: "result", nonce, id: request.id, ok: true });
     await expect(rendered).resolves.toBe("html");
     // A later navigation inside the page closes it instead of showing a foreign document.
@@ -103,16 +103,19 @@ describe("adaptive viewer adapters", () => {
     root.remove();
   });
 
-  it("inserts the load signal without leaving standards mode or dropping root attributes", () => {
-    const token = "0123456789abcdef0123456789abcdef";
-    const signaled = withLoadSignal("<!-- generated --><!DOCTYPE html><html lang=\"fr\"><head><meta charset=\"utf-8\"><title>T</title></head><body><p>x</p></body></html>", token);
-    expect(signaled.startsWith("<!-- generated --><!DOCTYPE html><script>")).toBe(true);
-    const parsed = new DOMParser().parseFromString(signaled, "text/html");
-    expect(parsed.compatMode).toBe("CSS1Compat");
-    expect(parsed.documentElement.lang).toBe("fr");
-    expect(parsed.title).toBe("T");
-    expect(parsed.scripts[0]?.textContent).toContain(token);
-    expect(withLoadSignal("<p>no doctype</p>", token).startsWith("<script>")).toBe(true);
+  it("hands pathological markup to the sandbox verbatim without scanning it on the main thread", async () => {
+    const page = `${"<!-- generated -->\n".repeat(40)}<head id="app-head" data-config="blue"><title>T</title></head><p>x</p>`;
+    const root = document.createElement("main");
+    document.body.append(root);
+    const started = performance.now();
+    const rendered = renderSafeContent(root, new TextEncoder().encode(page), { mediaType: "application/octet-stream", filename: "app.html", byteLength: 1 }, { linkAccess: "bearer" });
+    const iframe = root.querySelector<HTMLIFrameElement>(`iframe.${HTML_FRAME_CLASS}`)!;
+    const { nonce, posted } = handshake(iframe);
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(posted[0]!.pages).toEqual({ "index.html": page });
+    frameMessage(iframe, { type: "result", nonce, id: posted[0]!.id, ok: true });
+    await expect(rendered).resolves.toBe("html");
+    root.remove();
   });
 
   it("fails closed without leaving a frame when the HTML page does not load", async () => {

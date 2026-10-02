@@ -59,12 +59,14 @@ artifact document.
 This boundary prevents access to the TinyCloud parent DOM, cookies,
 local/session storage, the share link and its fragment, wallet state, opener,
 and top-level navigation, and it rules out credentialed requests as the viewer
-or as your session. It is not a network block: CSP does not govern WebRTC, so
-a page can send STUN/TURN traffic to a server its author chooses and learn the
-viewer's IP address. The bridge's `frame-src 'none'` refuses every child
-navigation and the navigation watchdog closes the document when one is
-attempted. It fails closed rather than claiming that hostile, obfuscated script
-can be made safe through source inspection alone.
+or as your session. It is not a network block, and a page can reveal the
+viewer's IP address to a server its author chooses: CSP does not govern WebRTC
+(STUN/TURN traffic), and resource hints such as `<link rel="preconnect">` have
+been observed opening a TCP connection despite `default-src 'none'`. The
+bridge's `frame-src 'none'` refuses every child navigation and the navigation
+watchdog closes the document when one happens after it has loaded. It fails
+closed rather than claiming that hostile, obfuscated script can be made safe
+through source inspection alone.
 
 ## Single-file HTML pages
 
@@ -83,12 +85,13 @@ and inline event handlers run — but only inside the same two-frame sandbox:
 the decrypted bytes reach the bridge as a postMessage string and become the
 inner frame's `srcdoc`; nothing is fetched. The bundle rewriting and script
 inspection above do not apply to single files, so the CSP and sandbox are the
-whole boundary, with the same guarantees and the same WebRTC gap. External
-stylesheets, scripts, images, and fonts do not load; inline them or use
-`data:` URLs. A small load-signal script is inserted after the doctype so the
-bridge can tell the intended document from a replacement or error page: a page
-that navigates before or after it loads is closed and replaced with a download
-prompt.
+whole boundary, with the same guarantees and the same IP-address gaps. Nothing
+is inserted into or rewritten in the page. External stylesheets, scripts,
+images, and fonts do not load; inline them or use `data:` URLs. A page that
+navigates itself after it has loaded is closed and replaced with a download
+prompt. A page that navigates itself before it finishes loading is refused
+by `frame-src 'none'`, so the frame shows the browser's blocked-content page
+instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
 larger or non-UTF-8 files stay download-only. The viewer keeps its filename
