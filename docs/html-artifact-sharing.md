@@ -46,46 +46,65 @@ segments, and `.` or `..` traversal. Case-folding collisions are rejected.
 Artifact code runs in a sandboxed iframe without `allow-same-origin`, nested
 inside a second sandboxed bridge frame. Both documents have opaque origins.
 The inner document receives only locally rewritten data URLs and inlined
-classic scripts/styles. CSP blocks network connections, frames, objects,
-forms, base URLs, and top navigation; referrers are disabled. Inline HTML
-event handlers are rejected before render. The bridge accepts only
-nonce-bound messages from its direct parent and navigation messages from its
-direct child. Unexpected iframe navigation destroys the artifact document.
+classic scripts/styles. CSP refuses fetch/XHR/WebSocket/EventSource/beacon
+connections, network images and fonts, frames, objects, forms, and base URLs;
+the sandbox refuses popups and top-level navigation; referrers are disabled.
+Inline HTML event handlers are rejected before render. The bridge accepts
+render requests only from its direct parent and navigation messages only from
+its direct child (`event.source` checks). The per-frame nonce in the bridge URL
+binds messages to one frame pair but is not a secret: srcdoc children can read
+it through `document.baseURI`. Unexpected iframe navigation destroys the
+artifact document.
 
 This boundary prevents access to the TinyCloud parent DOM, cookies,
-local/session storage, wallet state, authenticated APIs, opener, and top-level
-navigation. Browser CSP support for `navigate-to` is inconsistent, so the
-navigation watchdog is required in addition to CSP. It fails closed rather
-than claiming that hostile, obfuscated script can be made safe through source
-inspection alone.
+local/session storage, the share link and its fragment, wallet state, opener,
+and top-level navigation, and it rules out credentialed requests as the viewer
+or as your session. It is not a network block: CSP does not govern WebRTC, so
+a page can send STUN/TURN traffic to a server its author chooses and learn the
+viewer's IP address. The bridge's `frame-src 'none'` refuses every child
+navigation and the navigation watchdog closes the document when one is
+attempted. It fails closed rather than claiming that hostile, obfuscated script
+can be made safe through source inspection alone.
 
 ## Single-file HTML pages
 
-A shared file is rendered as a page when its signed media type is `text/html`
-(addressed links) or, for bearer `#tc1` links that carry no signed media type,
-when the key ends in `.html` or `.htm`. The page is shown exactly as sent —
-scripts, inline styles, and inline event handlers run — but only inside the
-same two-frame sandbox: the decrypted bytes reach the bridge as a postMessage
-string and become the inner frame's `srcdoc`; nothing is fetched. The bundle
-rewriting and script inspection above do not apply to single files, so the
-CSP and sandbox are the whole boundary: no network, no forms, no popups, no
-top-level navigation, and no access to the viewer's storage, cookies, or URL
-fragment. External stylesheets, scripts, images, and fonts do not load; inline
-them or use `data:` URLs. A page that navigates its own frame is closed and
-replaced with a download prompt.
+Only bearer `#tc1` links render single-file HTML. They carry no signed media
+type, so the key's `.html` or `.htm` extension selects the page renderer.
+Addressed links (DID, email, policy) stay download-only with a “Preview isn't
+available for this link type yet” note, whatever their signed media type or
+filename: the sender's script would run in the same renderer process that
+holds the recipient's session key and email credential, which side channels
+could target. HTML provenance comes from the link type only, never from a
+media type. Addressed HTML can render once the sandbox moves to a separate
+registrable user-content domain.
+
+The page is shown exactly as sent — scripts (including `eval`), inline styles,
+and inline event handlers run — but only inside the same two-frame sandbox:
+the decrypted bytes reach the bridge as a postMessage string and become the
+inner frame's `srcdoc`; nothing is fetched. The bundle rewriting and script
+inspection above do not apply to single files, so the CSP and sandbox are the
+whole boundary, with the same guarantees and the same WebRTC gap. External
+stylesheets, scripts, images, and fonts do not load; inline them or use
+`data:` URLs. A small load-signal script is inserted after the doctype so the
+bridge can tell the intended document from a replacement or error page: a page
+that navigates before or after it loads is closed and replaced with a download
+prompt.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
 larger or non-UTF-8 files stay download-only. The viewer keeps its filename
-bar, the footer “Download original” action, and a notice that the page comes
-from the sender.
+bar, a notice that the page comes from the sender (including the IP-address
+caveat), and the footer “Download original” action, which is present whether
+or not the preview succeeds.
 
 ## Production headers
 
 Cloudflare Pages appends, rather than replaces, a header set by more than one
-matching `_headers` rule. The sandbox routes therefore detach the site-wide
-policy (`! Content-Security-Policy`) before setting their own; otherwise the
-site's `frame-ancestors 'none'` and `script-src 'self'` would also apply and
-the sandbox could neither be framed nor run its bridge.
+matching `_headers` rule. The artifact sandbox routes (`/artifact-sandbox`
+and its `.html` form, which Cloudflare redirects to the extensionless path)
+therefore detach the site-wide policy
+(`! Content-Security-Policy`) before setting their own; otherwise the site's
+`frame-ancestors 'none'` and `script-src 'self'` would also apply and the
+sandbox could neither be framed nor run its bridge.
 
 ## TinyCloud controls
 

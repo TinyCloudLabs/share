@@ -1,11 +1,15 @@
 /**
  * Browser e2e for single-file HTML shares (TC-542). Renders fixtures through
  * presentShare in real Chromium, with the viewer CSP on the parent and the
- * artifact sandbox document served with its production frame policy, then
- * proves the page runs styled with scripts and cannot reach the viewer
- * origin's storage, cookies, fragment, top window, or network.
+ * artifact sandbox document served with its production frame policy. Proves:
+ * bearer pages run styled with scripts; addressed HTML never executes; a
+ * hostile page cannot reach the viewer origin's storage, cookies, fragment,
+ * top window, or network; navigation before or after load is refused by the
+ * bridge's frame-src and closes the page; and the verified-bytes download
+ * survives every preview failure, including a missing sandbox route.
  */
 import assert from "node:assert/strict";
+import { createSocket } from "node:dgram";
 import { mkdir } from "node:fs/promises";
 
 import puppeteer from "puppeteer";
@@ -31,10 +35,15 @@ const server = await createServer({
   }],
 });
 await server.listen();
+// Stand-in for a sender-controlled STUN server (the recorded WebRTC gap).
+const stunPackets = [];
+const stun = createSocket("udp4");
+stun.on("message", (message, remote) => stunPackets.push({ bytes: message.length, from: remote.address }));
+await new Promise((resolve) => stun.bind(0, "127.0.0.1", resolve));
 const origin = "http://127.0.0.1:43181";
 const harness = `${origin}/test/fixtures/html-share/harness.html`;
 
-async function openFixture(browser, query) {
+async function loadHarness(browser, query, { sandboxStatus } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
   // DevTools reports a request before CSP refuses it, so keep the outcome:
@@ -42,9 +51,21 @@ async function openFixture(browser, query) {
   const requests = [];
   page.on("response", (response) => requests.push({ url: response.url(), outcome: `response ${response.status()}` }));
   page.on("requestfailed", (request) => requests.push({ url: request.url(), outcome: request.failure()?.errorText ?? "failed" }));
-  await page.goto(`${harness}?${query}`, { waitUntil: "load" });
-  await page.waitForFunction(() => document.documentElement.dataset.ready !== undefined, { timeout: 20_000 });
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), "yes", `${query} rendered`);
+  if (sandboxStatus !== undefined) {
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/artifact-sandbox.html") void request.respond({ status: sandboxStatus, contentType: "text/plain", body: "Not found" });
+      else void request.continue();
+    });
+  }
+  await page.goto(`${harness}?${query}&stun=${stun.address().port}`, { waitUntil: "load" });
+  await page.waitForFunction(() => document.documentElement.dataset.ready !== undefined, { timeout: 30_000 });
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), "yes", `${query} presented`);
+  return { page, requests };
+}
+
+async function openFixture(browser, query) {
+  const { page, requests } = await loadHarness(browser, query);
   const outerHandle = await page.waitForSelector("iframe.viewer-html-frame");
   assert.equal(await outerHandle.evaluate((node) => node.getAttribute("sandbox")), "allow-scripts");
   const outer = await outerHandle.contentFrame();
@@ -53,18 +74,29 @@ async function openFixture(browser, query) {
   return { page, inner: await innerHandle.contentFrame(), requests };
 }
 
+function assertNoProbeLeft(requests, label) {
+  const probes = requests.filter((entry) => entry.url.includes("/probe-"));
+  assert.deepEqual(probes.filter((entry) => entry.outcome.startsWith("response")), [], `${label}: no probe request received a response`);
+  assert.deepEqual(probeHits, [], `${label}: server received no probe request`);
+}
+
+async function assertPreviewClosedWithDownload(page, label) {
+  await page.waitForFunction(() => document.querySelector("iframe") === null && document.querySelector(".viewer-render-error") !== null, { timeout: 10_000 });
+  assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original", `${label}: download stays available`);
+  return page.$eval(".viewer-render-error", (node) => node.textContent);
+}
+
 let browser;
 try {
   browser = await puppeteer.launch({ headless: true });
-  const popups = [];
-  browser.on("targetcreated", (target) => { if (target.type() === "page") popups.push(target.url()); });
+  const targets = [];
+  browser.on("targetcreated", (target) => { if (target.type() === "page") targets.push(target.url()); });
 
-  // Acceptance 1: a report with CSS and a script renders styled and runs, for
-  // a bearer link (key extension) and an addressed link (signed text/html).
-  for (const access of ["bearer", "addressed"]) {
-    const { page, inner } = await openFixture(browser, `fixture=report&access=${access}`);
+  // Acceptance 1: a bearer report with CSS and a script renders styled and runs.
+  {
+    const { page, inner } = await openFixture(browser, "fixture=report");
     assert.equal(await page.$eval(".viewer-filename", (node) => node.textContent), "report.html");
-    assert.match(await page.$eval(".viewer-html-notice", (node) => node.textContent), /comes from the sender/);
+    assert.match(await page.$eval(".viewer-html-notice", (node) => node.textContent), /comes from the sender.*WebRTC/);
     assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original");
     assert.equal(await inner.$eval("#status", (node) => node.textContent), "Script ran inside the frame.");
     assert.equal(await inner.$eval("h1", (node) => getComputedStyle(node).color), "rgb(42, 86, 246)");
@@ -72,18 +104,32 @@ try {
     await inner.click("#add");
     assert.equal(await inner.$$eval("#metrics tbody tr", (rows) => rows.length), 4);
     assert.equal(await page.content().then((html) => html.includes("Q3 agent report")), false, "page HTML never enters the viewer DOM");
-    if (access === "bearer") {
-      await mkdir(screenshotDir, { recursive: true });
-      await page.screenshot({ path: `${screenshotDir}/html-share-desktop.png`, fullPage: true });
-      await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
-      await page.screenshot({ path: `${screenshotDir}/html-share-mobile.png`, fullPage: true });
-    }
+    await mkdir(screenshotDir, { recursive: true });
+    await page.screenshot({ path: `${screenshotDir}/html-share-desktop.png`, fullPage: true });
+    await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
+    await page.screenshot({ path: `${screenshotDir}/html-share-mobile.png`, fullPage: true });
+    await page.close();
+  }
+
+  // Addressed links never execute HTML, even with a signed text/html type.
+  {
+    const { page } = await loadHarness(browser, "fixture=report&access=addressed");
+    assert.equal(await page.$("iframe"), null, "addressed HTML creates no frame");
+    assert.match(await page.$eval(".viewer-file-note", (node) => node.textContent), /Preview isn't available for this link type yet/);
+    assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original");
+    await page.close();
+  }
+
+  // A missing sandbox route fails the preview but keeps the verified bytes downloadable.
+  {
+    const { page } = await loadHarness(browser, "fixture=report", { sandboxStatus: 404 });
+    assert.match(await assertPreviewClosedWithDownload(page, "sandbox 404"), /couldn't display this document/);
     await page.close();
   }
 
   // Acceptance 2: the page's own scripts cannot read viewer secrets, navigate
   // the top window, open popups, or make requests as the viewer.
-  const pagesBefore = popups.length;
+  const pagesBefore = targets.length;
   const { page, inner, requests } = await openFixture(browser, "fixture=hostile");
   const topUrl = page.url();
   await inner.waitForSelector("#results[data-done='yes']", { timeout: 10_000 });
@@ -94,25 +140,49 @@ try {
   for (const name of ["sessionStorage", "localStorage", "cookie"]) {
     assert.equal(results[name].ok, false, `${name} is unavailable to the page`);
   }
-  for (const name of ["topHash", "topHref", "topDocument", "parentDocument", "topSessionStorage"]) {
-    assert.equal(results[name].ok, false, `${name} is cross-origin to the page`);
+  for (const name of ["topHash", "topHref", "topDocument", "parentDocument", "topSessionStorage", "topNavigation", "topAssign"]) {
+    assert.equal(results[name].ok, false, `${name} is refused to the page`);
   }
   assert.deepEqual(results.popup, { ok: true, value: "null" }, "popups are blocked");
   for (const name of ["fetch", "xhr"]) assert.equal(results[name].ok, false, `${name} is refused`);
   // sendBeacon returns true once queued even when CSP later refuses it; the
   // probe-request witnesses below are the real check for it, the image, and the form.
+  assert.deepEqual(results.eval, { ok: true, value: "42" }, "eval is available inside the frame");
+  assert.ok(results.rtc !== undefined, "WebRTC probe ran");
   assert.equal(JSON.stringify(results).includes("secret"), false, "no viewer secret is observable");
   assert.equal(page.url(), topUrl, "top window did not navigate");
   assert.match(page.url(), /#tc1=fragment-secret-8c1$/);
   assert.equal(await page.$eval(".viewer-filename", (node) => node.textContent), "hostile.html");
-  assert.equal(popups.length, pagesBefore + 1, "only the harness page was created; no popup window");
-  const probes = requests.filter((entry) => entry.url.includes("/probe-"));
-  assert.deepEqual(probes.filter((entry) => entry.outcome.startsWith("response")), [], "no probe request received a response");
-  console.log(JSON.stringify(probes));
-  assert.deepEqual(probeHits, [], "server received no probe request");
+  assert.equal(targets.length, pagesBefore + 1, "only the harness page was created; no popup window");
+  assertNoProbeLeft(requests, "hostile");
   console.log(JSON.stringify(results));
+  console.log(`KNOWN GAP (WebRTC, not governed by CSP): ${stunPackets.length} STUN packet(s) reached the sender-controlled listener; rtc=${results.rtc.value ?? results.rtc.error}`);
+  await page.close();
+
+  // Navigation before the first load: the replacement/error document must
+  // not count as the page; the preview closes and the download stays.
+  {
+    const { page: early, requests: earlyRequests } = await loadHarness(browser, "fixture=navigate-early");
+    const notice = await assertPreviewClosedWithDownload(early, "navigate-early");
+    assertNoProbeLeft(earlyRequests, "navigate-early");
+    console.log(`navigate-early closed with: ${notice}`);
+    await early.close();
+  }
+
+  // Self-navigation after load is refused by the bridge's frame-src 'none'
+  // (no request leaves) and the watchdog closes the page.
+  {
+    const { page: late, inner: lateInner, requests: lateRequests } = await openFixture(browser, "fixture=navigate-late");
+    assert.equal(await lateInner.$eval("#loaded", (node) => node.textContent), "Loaded, about to navigate itself");
+    assert.match(await assertPreviewClosedWithDownload(late, "navigate-late"), /tried to open another page/);
+    assertNoProbeLeft(lateRequests, "navigate-late");
+    const blocked = lateRequests.filter((entry) => entry.url.endsWith("/probe-self-navigation"));
+    console.log(`navigate-late self-navigation outcome: ${JSON.stringify(blocked)}`);
+    await late.close();
+  }
   console.log("HTML share browser e2e passed");
 } finally {
   await browser?.close();
   await server.close();
+  stun.close();
 }

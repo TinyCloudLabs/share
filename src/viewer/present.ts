@@ -39,6 +39,9 @@ function appendDownloadAction(
   const footer = root.querySelector<HTMLElement>(".viewer-footer");
   const hint = footer?.querySelector<HTMLElement>(".viewer-agent-hint");
   if (footer === null || footer === undefined || hint === null || hint === undefined) return;
+  let filename: string;
+  // An unsafe signed filename gets no download control (filename policy).
+  try { filename = downloadName(result); } catch { return; }
   const button = root.ownerDocument.createElement("button");
   button.type = "button";
   button.className = "viewer-download";
@@ -51,7 +54,7 @@ function appendDownloadAction(
     const href = URL.createObjectURL(blob);
     const link = root.ownerDocument.createElement("a");
     link.href = href;
-    link.download = downloadName(result);
+    link.download = filename;
     link.hidden = true;
     root.ownerDocument.body.append(link);
     link.click();
@@ -163,6 +166,9 @@ export async function presentShare(
   if (container === null || result.state !== "ok" || (result.content === undefined && result.contentBytes === undefined)) {
     return container;
   }
+  // The verified bytes stay downloadable whatever happens to the preview
+  // (oversize, render error, sandbox timeout or unavailable).
+  appendDownloadAction(root, result);
   // display.mode is a NARROWING-ONLY hint (viewer spec §1): "source" may
   // downgrade the presentation; anything else renders as a document.
   const mode = result.envelope.display.mode === "source" ? "source" : "document";
@@ -173,14 +179,13 @@ export async function presentShare(
         mediaType: signedMediaType(result),
         filename: downloadName(result),
         byteLength: result.contentBytes.byteLength,
-      }, options);
+      }, { ...options, ...(result.access === undefined ? {} : { linkAccess: result.access }) });
       if (kind === "markdown") markdownSource = decodeMarkdown(result.contentBytes);
     } else {
       markdownSource = result.content as string;
       await renderMarkdownInto(container, markdownSource, mode, options);
     }
     if (markdownSource !== undefined) appendMarkdownCopyAction(root, container, markdownSource);
-    appendDownloadAction(root, result);
     if (options.saveToTinyCloud !== undefined) {
       appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
     }

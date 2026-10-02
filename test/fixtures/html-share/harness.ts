@@ -10,10 +10,21 @@ import { presentShare } from "../../../src/viewer/present.js";
 import { presentationEnvelope } from "../../../src/viewer/resolve.js";
 import report from "./report.html?raw";
 import hostile from "./hostile.html?raw";
+import navigateEarly from "./navigate-early.html?raw";
+import navigateLate from "./navigate-late.html?raw";
 
+const FIXTURES: Readonly<Record<string, string>> = {
+  report,
+  hostile,
+  "navigate-early": navigateEarly,
+  "navigate-late": navigateLate,
+};
 const params = new URLSearchParams(location.search);
-const fixture = params.get("fixture") === "hostile" ? hostile.replaceAll("__VIEWER_ORIGIN__", location.origin) : report;
-const filename = params.get("fixture") === "hostile" ? "hostile.html" : "report.html";
+const name = params.get("fixture") ?? "report";
+const fixture = (FIXTURES[name] ?? report)
+  .replaceAll("__VIEWER_ORIGIN__", location.origin)
+  .replaceAll("__STUN_PORT__", params.get("stun") ?? "3478");
+const filename = `${name}.html`;
 const addressed = params.get("access") === "addressed";
 
 sessionStorage.setItem("tc-viewer-secret", "session-secret-8c1");

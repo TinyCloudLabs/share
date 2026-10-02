@@ -32,6 +32,7 @@
     probe("form", function () { document.getElementById("form").submit(); return "submitted"; });
     probe("image", function () { var img = new Image(); img.src = viewer + "/probe-image"; document.body.append(img); return "set"; });
     probe("beacon", function () { return navigator.sendBeacon(viewer + "/probe-beacon", "x"); });
+    probe("eval", function () { return eval("6 * 7"); });
     var pending = [
       fetch(viewer + "/probe-fetch", { credentials: "include" }).then(
         function (response) { results.fetch = { ok: true, value: String(response.status) }; },
@@ -44,6 +45,32 @@
         xhr.onerror = function () { results.xhr = { ok: false, error: "NetworkError" }; resolve(); };
         try { xhr.open("GET", viewer + "/probe-xhr"); xhr.send(); }
         catch (error) { results.xhr = { ok: false, error: error.name }; resolve(); }
+      }),
+      // KNOWN GAP, recorded not prevented: CSP does not govern WebRTC, so ICE
+      // gathering sends STUN packets to a sender-chosen server and can reveal
+      // the viewer's IP address. The e2e counts packets at its STUN listener.
+      new Promise(function (resolve) {
+        var candidates = [];
+        var done = false;
+        var peer;
+        function finish(note) {
+          if (done) return;
+          done = true;
+          results.rtc = { ok: true, value: note + "; candidates=" + candidates.join(",") };
+          try { peer.close(); } catch (_) {}
+          resolve();
+        }
+        try {
+          peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:__STUN_PORT__" }] });
+          peer.createDataChannel("probe");
+          peer.onicecandidate = function (event) { if (event.candidate) candidates.push(event.candidate.type); else finish("gathering complete"); };
+          peer.createOffer().then(function (offer) { return peer.setLocalDescription(offer); }).catch(function (error) { finish("offer failed: " + error.name); });
+          setTimeout(function () { finish("gathering timeout"); }, 4000);
+        } catch (error) {
+          done = true;
+          results.rtc = { ok: false, error: error.name };
+          resolve();
+        }
       }),
     ];
     Promise.all(pending).then(function () {
