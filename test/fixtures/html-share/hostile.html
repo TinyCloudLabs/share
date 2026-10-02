@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hostile shared page</title>
+</head>
+<body>
+  <h1>Hostile page</h1>
+  <pre id="results"></pre>
+  <form id="form" action="__VIEWER_ORIGIN__/probe-form" method="post" target="_top"><input name="x" value="1"></form>
+  <script>
+    // Every probe records what this page could observe. A value containing
+    // "secret" or a request to /probe-* reaching the viewer origin is a breach.
+    var viewer = "__VIEWER_ORIGIN__";
+    var results = {};
+    function probe(name, attempt) {
+      try { results[name] = { ok: true, value: String(attempt()) }; }
+      catch (error) { results[name] = { ok: false, error: error && error.name ? error.name : String(error) }; }
+    }
+    probe("origin", function () { return self.origin; });
+    probe("sessionStorage", function () { return window.sessionStorage.getItem("tc-viewer-secret"); });
+    probe("localStorage", function () { return window.localStorage.getItem("tc-viewer-secret"); });
+    probe("cookie", function () { return document.cookie; });
+    probe("topHash", function () { return window.top.location.hash; });
+    probe("topHref", function () { return window.top.location.href; });
+    probe("topDocument", function () { return window.top.document.cookie; });
+    probe("parentDocument", function () { return window.parent.document.body.innerHTML; });
+    probe("topSessionStorage", function () { return window.top.sessionStorage.getItem("tc-viewer-secret"); });
+    probe("popup", function () { return window.open(viewer + "/probe-popup", "_blank"); });
+    probe("topNavigation", function () { window.top.location.href = viewer + "/probe-top-navigation"; return "assigned"; });
+    probe("topAssign", function () { window.top.location.assign(viewer + "/probe-top-assign"); return "assigned"; });
+    probe("form", function () { document.getElementById("form").submit(); return "submitted"; });
+    probe("image", function () { var img = new Image(); img.src = viewer + "/probe-image"; document.body.append(img); return "set"; });
+    probe("beacon", function () { return navigator.sendBeacon(viewer + "/probe-beacon", "x"); });
+    var pending = [
+      fetch(viewer + "/probe-fetch", { credentials: "include" }).then(
+        function (response) { results.fetch = { ok: true, value: String(response.status) }; },
+        function (error) { results.fetch = { ok: false, error: error.name }; }
+      ),
+      new Promise(function (resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.withCredentials = true;
+        xhr.onload = function () { results.xhr = { ok: true, value: String(xhr.status) }; resolve(); };
+        xhr.onerror = function () { results.xhr = { ok: false, error: "NetworkError" }; resolve(); };
+        try { xhr.open("GET", viewer + "/probe-xhr"); xhr.send(); }
+        catch (error) { results.xhr = { ok: false, error: error.name }; resolve(); }
+      }),
+    ];
+    Promise.all(pending).then(function () {
+      var out = document.getElementById("results");
+      out.textContent = JSON.stringify(results);
+      out.dataset.done = "yes";
+    });
+  </script>
+</body>
+</html>

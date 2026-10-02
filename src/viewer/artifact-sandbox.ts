@@ -12,11 +12,22 @@ interface PendingRender {
 export interface ArtifactSandbox {
   readonly iframe: HTMLIFrameElement;
   render(artifact: PreparedArtifact): Promise<void>;
+  /**
+   * Render one untrusted single-file HTML document exactly as received. It
+   * runs with scripts in the opaque-origin child under the bridge's CSP and
+   * has no message protocol with the bridge or the viewer.
+   */
+  renderDocument(html: string): Promise<void>;
   destroy(): void;
 }
 
 export interface ArtifactSandboxOptions {
+  /** Reports a failure after a render settled, e.g. the document navigated. */
   readonly onFailure?: () => void;
+  /** Element the frame is appended to. Defaults to the document body. */
+  readonly mount?: HTMLElement;
+  readonly className?: string;
+  readonly title?: string;
 }
 
 function nonce128(): string {
@@ -33,13 +44,13 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
   if (view === null) throw new Error("artifact sandbox requires a window");
   const nonce = nonce128();
   const iframe = doc.createElement("iframe");
-  iframe.className = ARTIFACT_SANDBOX_IFRAME_CLASS;
+  iframe.className = options.className ?? ARTIFACT_SANDBOX_IFRAME_CLASS;
   iframe.setAttribute("sandbox", "allow-scripts");
   iframe.setAttribute("src", `${ARTIFACT_SANDBOX_PATH}#${nonce}`);
-  iframe.setAttribute("title", "Shared HTML artifact");
+  iframe.setAttribute("title", options.title ?? "Shared HTML artifact");
   iframe.setAttribute("referrerpolicy", "no-referrer");
   iframe.hidden = true;
-  (doc.body ?? doc.documentElement).append(iframe);
+  (options.mount ?? doc.body ?? doc.documentElement).append(iframe);
 
   let ready = false;
   let destroyed = false;
@@ -67,21 +78,24 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
   };
   view.addEventListener("message", onMessage);
 
+  const request = (entry: string, pages: Readonly<Record<string, string>>, readyOn: ArtifactRenderRequest["ready"]): Promise<void> => {
+    if (destroyed) return Promise.reject(new Error("artifact sandbox is destroyed"));
+    const id = `artifact-${counter++}`;
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("artifact sandbox render timed out"));
+      }, 15_000);
+      pending.set(id, { resolve, reject, timeout });
+      const message: ArtifactRenderRequest = { type: "render", id, nonce, entry, pages, ready: readyOn };
+      if (ready) post(message); else queue.push(message);
+    });
+  };
+
   return {
     iframe,
-    render(artifact): Promise<void> {
-      if (destroyed) return Promise.reject(new Error("artifact sandbox is destroyed"));
-      const id = `artifact-${counter++}`;
-      return new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          pending.delete(id);
-          reject(new Error("artifact sandbox render timed out"));
-        }, 15_000);
-        pending.set(id, { resolve, reject, timeout });
-        const request: ArtifactRenderRequest = { type: "render", id, nonce, entry: artifact.entry, pages: artifact.pages };
-        if (ready) post(request); else queue.push(request);
-      });
-    },
+    render: (artifact) => request(artifact.entry, artifact.pages, "artifact"),
+    renderDocument: (html) => request("index.html", { "index.html": html }, "load"),
     destroy(): void {
       if (destroyed) return;
       destroyed = true;

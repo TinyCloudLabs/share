@@ -59,6 +59,34 @@ navigation watchdog is required in addition to CSP. It fails closed rather
 than claiming that hostile, obfuscated script can be made safe through source
 inspection alone.
 
+## Single-file HTML pages
+
+A shared file is rendered as a page when its signed media type is `text/html`
+(addressed links) or, for bearer `#tc1` links that carry no signed media type,
+when the key ends in `.html` or `.htm`. The page is shown exactly as sent —
+scripts, inline styles, and inline event handlers run — but only inside the
+same two-frame sandbox: the decrypted bytes reach the bridge as a postMessage
+string and become the inner frame's `srcdoc`; nothing is fetched. The bundle
+rewriting and script inspection above do not apply to single files, so the
+CSP and sandbox are the whole boundary: no network, no forms, no popups, no
+top-level navigation, and no access to the viewer's storage, cookies, or URL
+fragment. External stylesheets, scripts, images, and fonts do not load; inline
+them or use `data:` URLs. A page that navigates its own frame is closed and
+replaced with a download prompt.
+
+Pages use the 1 MB preview budget shared with Markdown, text, and images;
+larger or non-UTF-8 files stay download-only. The viewer keeps its filename
+bar, the footer “Download original” action, and a notice that the page comes
+from the sender.
+
+## Production headers
+
+Cloudflare Pages appends, rather than replaces, a header set by more than one
+matching `_headers` rule. The sandbox routes therefore detach the site-wide
+policy (`! Content-Security-Policy`) before setting their own; otherwise the
+site's `frame-ancestors 'none'` and `script-src 'self'` would also apply and
+the sandbox could neither be framed nor run its bridge.
+
 ## TinyCloud controls
 
 The small overlay begins expanded. Collapse it to a 44-pixel cloud control or

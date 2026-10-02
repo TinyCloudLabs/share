@@ -14,6 +14,7 @@ import {
 } from "../src/artifact/bundle.js";
 import {
   ARTIFACT_SANDBOX_CSP,
+  ARTIFACT_SANDBOX_HTTP_CSP,
   ARTIFACT_SANDBOX_HTTP_HEADERS,
   ARTIFACT_SANDBOX_PATH,
   buildArtifactSandboxHtml,
@@ -148,10 +149,13 @@ describe("artifact sandbox boundary", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");
     expect(buildArtifactSandboxHtml()).toContain(`content="${ARTIFACT_SANDBOX_CSP}"`);
     expect(buildArtifactSandboxHtml()).toContain("artifact-restore-controls");
-    expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", "frame-ancestors 'self'"]);
+    // Dev/preview (Vite) and production (public/_headers) must serve the same
+    // complete frame policy, with the site-wide policy detached first.
+    expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", ARTIFACT_SANDBOX_HTTP_CSP]);
     const headers = readFileSync("public/_headers", "utf8");
-    expect(headers).toContain(ARTIFACT_SANDBOX_PATH);
-    expect(headers).toContain("X-Frame-Options: SAMEORIGIN");
+    for (const route of ["/artifact-sandbox", ARTIFACT_SANDBOX_PATH]) {
+      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${ARTIFACT_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+    }
   });
 
   it("uses allow-scripts without allow-same-origin and accepts only nonce-bound frame messages", async () => {

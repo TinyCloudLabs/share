@@ -16,10 +16,18 @@ test("production-origin viewer reproduces the deployed CSP and browser isolation
   assert.equal(headers["cache-control"], "no-store, no-transform");
 });
 
-test("production-origin sandbox routes reproduce their narrower frame headers", () => {
-  for (const pathname of ["/artifact-sandbox", "/artifact-sandbox.html"]) {
-    const headers = productionHeadersForPath(rules, pathname);
-    assert.equal(headers["content-security-policy"], "default-src 'none'; frame-ancestors 'self'");
+test("production-origin sandbox routes detach the site policy and send only the frame policy", () => {
+  const sandboxRules = rules.filter((rule) => rule.pattern === "/artifact-sandbox" || rule.pattern === "/artifact-sandbox.html");
+  assert.equal(sandboxRules.length, 2);
+  for (const rule of sandboxRules) {
+    // Cloudflare Pages appends a second CSP unless the site-wide one is detached;
+    // the site policy's frame-ancestors 'none' and script-src 'self' would
+    // otherwise stop the sandbox from being framed or running its bridge.
+    assert.deepEqual(rule.detach, ["content-security-policy"]);
+    const headers = productionHeadersForPath(rules, rule.pattern);
+    assert.match(headers["content-security-policy"], /^default-src 'none'; script-src 'unsafe-inline';/);
+    assert.match(headers["content-security-policy"], /connect-src 'none'/);
+    assert.match(headers["content-security-policy"], /frame-ancestors 'self'$/);
     assert.equal(headers["x-frame-options"], "SAMEORIGIN");
   }
 });

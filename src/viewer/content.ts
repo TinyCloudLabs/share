@@ -1,7 +1,10 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
+import { createArtifactSandbox } from "./artifact-sandbox.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 
-export type SafeContentKind = "markdown" | "text" | "image" | "file" | "download";
+export type SafeContentKind = "markdown" | "text" | "image" | "html" | "file" | "download";
+
+export const HTML_FRAME_CLASS = "viewer-html-frame";
 
 export interface ContentDescriptor {
   readonly mediaType: string;
@@ -32,7 +35,11 @@ function utf8(bytes: Uint8Array): string | undefined {
 
 export function classifyContent(descriptor: ContentDescriptor): SafeContentKind {
   const mediaType = descriptor.mediaType.split(";", 1)[0]?.toLowerCase() ?? "";
-  if (mediaType === "text/html" || mediaType === "image/svg+xml" || mediaType === "application/javascript") return "download";
+  // Signed `text/html` (addressed links) or an unsigned bearer key ending in
+  // `.html`/`.htm` is a page. It never reaches a viewer-origin sink: it runs
+  // only inside the opaque-origin artifact sandbox.
+  if (mediaType === "text/html" || (mediaType === "application/octet-stream" && /\.html?$/i.test(descriptor.filename))) return "html";
+  if (mediaType === "image/svg+xml" || mediaType === "application/javascript") return "download";
   if (mediaType === "text/markdown" || /\.(?:md|markdown)$/i.test(descriptor.filename)) return "markdown";
   if (mediaType.startsWith("text/") || /\.(?:txt|csv|log|json|yaml|yml)$/i.test(descriptor.filename)) return "text";
   if (mediaType.startsWith("image/") && mediaType !== "image/svg+xml") return "image";
@@ -60,7 +67,50 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
     clearPreviousContent(container);
     const pre = doc.createElement("pre"); pre.className = "viewer-source"; pre.textContent = source; container.append(pre); return kind;
   }
+  if (kind === "html") {
+    const source = utf8(bytes);
+    if (source === undefined) {
+      return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
+    }
+    clearPreviousContent(container);
+    await renderHtmlPage(container, source, actualDescriptor.filename);
+    return kind;
+  }
   return renderDownloadContent(container, bytes, actualDescriptor, kind);
+}
+
+/**
+ * The decrypted bytes travel to the sandbox only as a postMessage string that
+ * becomes the child's `srcdoc`; the frame never fetches content. Rejects (and
+ * leaves no frame behind) when the page does not load, so the caller's
+ * fail-closed notice and the footer download remain the fallback.
+ */
+async function renderHtmlPage(container: HTMLElement, source: string, filename: string): Promise<void> {
+  const doc = container.ownerDocument;
+  const notice = doc.createElement("p");
+  notice.className = "viewer-html-notice";
+  notice.textContent = "This page comes from the sender. It runs in an isolated frame that can't see this link, your session, or the rest of this site.";
+  container.append(notice);
+  const sandbox = createArtifactSandbox(doc, {
+    mount: container,
+    className: HTML_FRAME_CLASS,
+    title: `Shared page: ${filename}`,
+    onFailure: () => {
+      clearPreviousContent(container);
+      const closed = doc.createElement("p");
+      closed.className = "viewer-render-error";
+      closed.textContent = "This page tried to open another page, so it was closed. Download it to open it.";
+      container.append(closed);
+    },
+  });
+  sandbox.iframe.hidden = false;
+  activeCleanup.set(container, () => sandbox.destroy());
+  try {
+    await sandbox.renderDocument(source);
+  } catch (error) {
+    clearPreviousContent(container);
+    throw error;
+  }
 }
 
 function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, kind: SafeContentKind = "file"): SafeContentKind {
