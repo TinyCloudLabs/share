@@ -53,6 +53,9 @@ body { min-width: 320px; margin: 0; background: var(--bg); color: var(--ink); fo
 .viewer-copy-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .viewer-copy-text-status { color: var(--ink-soft); font-size: 0.72rem; }
 .viewer-preview-frame { display: block; width: 100%; height: 75vh; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised); }
+.viewer-html-notice { max-width: 65ch; margin: 0 0 12px; color: var(--ink-soft); font-size: 0.78rem; }
+/* The sender's page paints on white like a normal browser tab, in either viewer theme. */
+.viewer-html-frame { display: block; width: 100%; height: 80svh; min-height: 420px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
 .viewer-content pre { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-faint); overflow-x: auto; }
 .viewer-content code { font-family: var(--mono); font-size: 0.86em; }
 .viewer-content table { border-collapse: collapse; }

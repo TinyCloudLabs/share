@@ -11,6 +11,12 @@ export interface ArtifactChromeOptions {
   readonly shareUrl?: string;
   readonly storage?: Storage;
   readonly navigator?: Pick<Navigator, "clipboard"> & { share?: (data: ShareData) => Promise<void> };
+  /**
+   * The artifact sandbox frame whose bridge relays the in-frame Alt+Shift+C
+   * chord. Only messages from this frame's window restore the controls;
+   * without it the chord works from the parent document only.
+   */
+  readonly frame?: HTMLIFrameElement;
 }
 
 async function storageKey(shareId: string): Promise<string> {
@@ -147,7 +153,7 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
     handleChord();
   };
   const onMessage = (event: MessageEvent): void => {
-    if (event.origin !== "null" || !isRecord(event.data) || event.data["type"] !== "artifact-restore-controls") return;
+    if (options.frame === undefined || event.source !== options.frame.contentWindow || event.origin !== "null" || !isRecord(event.data) || event.data["type"] !== "artifact-restore-controls") return;
     handleChord();
   };
   view.addEventListener("keydown", onKeyDown);

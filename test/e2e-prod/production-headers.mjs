@@ -5,12 +5,16 @@ export function parseProductionHeaders(source) {
   for (const rawLine of source.split(/\r?\n/)) {
     if (rawLine.trim().length === 0) continue;
     if (!/^\s/.test(rawLine)) {
-      active = { pattern: rawLine.trim(), headers: {} };
+      active = { pattern: rawLine.trim(), headers: {}, detach: [] };
       rules.push(active);
       continue;
     }
     if (active === undefined) throw new Error("production header appears before a route");
     const line = rawLine.trim();
+    if (line.startsWith("! ")) {
+      active.detach.push(line.slice(2).trim().toLowerCase());
+      continue;
+    }
     const separator = line.indexOf(":");
     if (separator <= 0) throw new Error("production header is malformed");
     active.headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
@@ -28,7 +32,9 @@ function matches(pattern, pathname) {
 export function productionHeadersForPath(rules, pathname) {
   const headers = {};
   for (const rule of rules) {
-    if (matches(rule.pattern, pathname)) Object.assign(headers, rule.headers);
+    if (!matches(rule.pattern, pathname)) continue;
+    for (const name of rule.detach) delete headers[name];
+    Object.assign(headers, rule.headers);
   }
   return headers;
 }

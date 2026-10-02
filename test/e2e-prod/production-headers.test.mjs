@@ -16,11 +16,22 @@ test("production-origin viewer reproduces the deployed CSP and browser isolation
   assert.equal(headers["cache-control"], "no-store, no-transform");
 });
 
-test("production-origin sandbox routes reproduce their narrower frame headers", () => {
-  for (const pathname of ["/artifact-sandbox", "/artifact-sandbox.html"]) {
-    const headers = productionHeadersForPath(rules, pathname);
-    assert.equal(headers["content-security-policy"], "default-src 'none'; frame-ancestors 'self'");
-    assert.equal(headers["x-frame-options"], "SAMEORIGIN");
+const SANDBOX_ROUTES = ["/artifact-sandbox", "/artifact-sandbox.html"];
+
+test("production-origin sandbox routes detach the site policy and send only the frame policy", () => {
+  for (const pathname of SANDBOX_ROUTES) {
+    const rule = rules.find((candidate) => candidate.pattern === pathname);
+    assert.ok(rule !== undefined, `${pathname} has its own _headers rule`);
+    // Cloudflare Pages appends a second CSP unless the site-wide one is detached;
+    // the site policy's frame-ancestors 'none' and script-src 'self' would
+    // otherwise stop the sandbox from being framed or running its bridge.
+    assert.deepEqual(rule.detach, ["content-security-policy"], `${pathname} detaches the site CSP`);
+    const csp = productionHeadersForPath(rules, pathname)["content-security-policy"];
+    assert.match(csp, /^default-src 'none'; /, `${pathname} denies by default`);
+    assert.match(csp, /; script-src 'unsafe-inline'[^;]*;/, `${pathname} lets its inline bridge run`);
+    assert.doesNotMatch(csp, /frame-ancestors 'none'|script-src 'self'/, `${pathname} carries no site-policy directive`);
+    assert.match(csp, /; frame-ancestors 'self'$/, `${pathname} may be framed only by the viewer origin`);
+    assert.equal(productionHeadersForPath(rules, pathname)["x-frame-options"], "SAMEORIGIN");
   }
 });
 

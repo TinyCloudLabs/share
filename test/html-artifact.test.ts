@@ -14,6 +14,7 @@ import {
 } from "../src/artifact/bundle.js";
 import {
   ARTIFACT_SANDBOX_CSP,
+  ARTIFACT_SANDBOX_HTTP_CSP,
   ARTIFACT_SANDBOX_HTTP_HEADERS,
   ARTIFACT_SANDBOX_PATH,
   buildArtifactSandboxHtml,
@@ -141,17 +142,20 @@ describe("HTML artifact resource preparation", () => {
 });
 
 describe("artifact sandbox boundary", () => {
-  it("ships an opaque-origin, network-denying CSP and production frame headers", () => {
+  it("ships an opaque-origin, connection-refusing CSP and production frame headers", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("connect-src 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("form-action 'none'");
-    expect(ARTIFACT_SANDBOX_CSP).toContain("navigate-to 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");
+    expect(ARTIFACT_SANDBOX_CSP).not.toContain("navigate-to");
     expect(buildArtifactSandboxHtml()).toContain(`content="${ARTIFACT_SANDBOX_CSP}"`);
     expect(buildArtifactSandboxHtml()).toContain("artifact-restore-controls");
-    expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", "frame-ancestors 'self'"]);
+    // Dev/preview (Vite) and production (public/_headers) must serve the same
+    // complete frame policy, with the site-wide policy detached first.
+    expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", ARTIFACT_SANDBOX_HTTP_CSP]);
     const headers = readFileSync("public/_headers", "utf8");
-    expect(headers).toContain(ARTIFACT_SANDBOX_PATH);
-    expect(headers).toContain("X-Frame-Options: SAMEORIGIN");
+    for (const route of ["/artifact-sandbox", ARTIFACT_SANDBOX_PATH]) {
+      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${ARTIFACT_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+    }
   });
 
   it("uses allow-scripts without allow-same-origin and accepts only nonce-bound frame messages", async () => {
@@ -195,7 +199,7 @@ describe("TinyCloud artifact chrome", () => {
   it("collapses, reopens, permanently hides, and restores accessibly without rendering the URL", async () => {
     const url = "https://share.tinycloud.xyz/viewer#tc1=private-capability";
     const sandbox = createArtifactSandbox(document);
-    await mountArtifactChrome(document, { shareId: "share-a", shareUrl: url });
+    await mountArtifactChrome(document, { shareId: "share-a", shareUrl: url, frame: sandbox.iframe });
     const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
     const panel = root.querySelector<HTMLElement>(".artifact-chrome-panel")!;
     const cloud = root.querySelector<HTMLButtonElement>(".artifact-chrome-cloud")!;
@@ -210,6 +214,9 @@ describe("TinyCloud artifact chrome", () => {
     expect(panel.hidden).toBe(false);
 
     root.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
+    expect(root.hidden).toBe(true);
+    // Only the artifact frame's bridge may restore the controls.
+    window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data: { type: "artifact-restore-controls" } }));
     expect(root.hidden).toBe(true);
     window.dispatchEvent(new MessageEvent("message", {
       source: sandbox.iframe.contentWindow,

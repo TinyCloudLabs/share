@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Navigates after load</title>
+</head>
+<body>
+  <h1 id="loaded">Loaded, about to navigate itself</h1>
+  <script>
+    addEventListener("load", function () {
+      setTimeout(function () { location.href = "__VIEWER_ORIGIN__/probe-self-navigation"; }, 1500);
+    });
+  </script>
+</body>
+</html>

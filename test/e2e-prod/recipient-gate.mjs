@@ -174,8 +174,8 @@ try {
 
   await page.waitForSelector(".viewer-download", { timeout: 180_000 });
   // Puppeteer does not expose Playwright's waitForEvent. Configure Chrome's
-  // default download directory through CDP, then click the real post-render
-  // control and read its file from disk below.
+  // default download directory through CDP, then click the real verified-bytes
+  // download control and read its file from disk below.
   const cdp = await page.createCDPSession();
   await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: temporary });
   await page.click(".viewer-download");

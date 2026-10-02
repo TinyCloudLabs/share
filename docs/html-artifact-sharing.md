@@ -46,18 +46,88 @@ segments, and `.` or `..` traversal. Case-folding collisions are rejected.
 Artifact code runs in a sandboxed iframe without `allow-same-origin`, nested
 inside a second sandboxed bridge frame. Both documents have opaque origins.
 The inner document receives only locally rewritten data URLs and inlined
-classic scripts/styles. CSP blocks network connections, frames, objects,
-forms, base URLs, and top navigation; referrers are disabled. Inline HTML
-event handlers are rejected before render. The bridge accepts only
-nonce-bound messages from its direct parent and navigation messages from its
-direct child. Unexpected iframe navigation destroys the artifact document.
+classic scripts/styles. CSP refuses fetch/XHR/WebSocket/EventSource/beacon
+connections, network images and fonts, frames, objects, forms, and base URLs;
+the sandbox refuses popups and top-level navigation; referrers are disabled.
+Inline HTML event handlers are rejected before render. The bridge accepts
+render requests only from its direct parent and navigation messages only from
+its direct child (`event.source` checks). The per-frame nonce in the bridge URL
+binds messages to one frame pair but is not a secret: srcdoc children can read
+it through `document.baseURI`. Unexpected iframe navigation destroys the
+artifact document.
 
 This boundary prevents access to the TinyCloud parent DOM, cookies,
-local/session storage, wallet state, authenticated APIs, opener, and top-level
-navigation. Browser CSP support for `navigate-to` is inconsistent, so the
-navigation watchdog is required in addition to CSP. It fails closed rather
-than claiming that hostile, obfuscated script can be made safe through source
-inspection alone.
+local/session storage, the share link and its fragment, wallet state, opener,
+and top-level navigation. The page cannot read responses, cookies, storage, or
+the TinyCloud session, and fetch, XHR, beacon, image, and form requests are
+refused. It is not a network block, though:
+
+- CSP does not govern WebRTC, so ICE gathering sends STUN/TURN traffic to a
+  server the page's author chooses and reveals the viewer's IP address.
+- Resource hints are not limited to opening a connection. Chrome handles
+  `<link rel="prerender">` (static or inserted by script, before or after
+  load) as NoStatePrefetch, which ignores `default-src 'none'` — there is no
+  `prefetch-src` left to block it — and sends a full HTTP GET to any URL the
+  page picks, with arbitrary query data, a `Purpose: prefetch` header, and the
+  target origin's SameSite=Lax cookies, including on the viewer origin. The
+  page cannot read the response. TinyCloud keeps its session in browser
+  storage, not cookies, so the GET carries no TinyCloud credential; it is a
+  tracking beacon and a cookie-bearing GET to whatever origin the page names.
+  `<link rel="preconnect">` likewise opens a TCP connection.
+
+The bridge's `frame-src 'none'` refuses every child navigation and the
+navigation watchdog closes the document when one happens after it has loaded.
+It fails closed rather than claiming that hostile, obfuscated script can be
+made safe through source inspection alone.
+
+The page runs in the viewer's renderer process (the sandbox gives it an
+opaque origin, not its own process), so a busy loop in its script can freeze
+the whole tab, including the viewer's controls. If the loop starts before the
+page's load event, the bridge's 15-second render timeout cannot fire either.
+The planned fix is TC-544: serve the sandbox from a separate registrable
+user-content domain so the page gets its own process.
+
+## Single-file HTML pages
+
+Only bearer `#tc1` links render single-file HTML. They carry no signed media
+type, so the key's `.html` or `.htm` extension selects the page renderer.
+Addressed links (DID, email, policy) stay download-only with a “Preview isn't
+available for this link type yet” note, whatever their signed media type or
+filename: the sender's script would run in the same renderer process that
+holds the recipient's session key and email credential, which side channels
+could target. HTML provenance comes from the link type only, never from a
+media type. Addressed HTML can render once the sandbox moves to a separate
+registrable user-content domain.
+
+The page is shown exactly as sent — scripts (including `eval`), inline styles,
+and inline event handlers run — but only inside the same two-frame sandbox:
+the decrypted bytes reach the bridge as a postMessage string and become the
+inner frame's `srcdoc`; nothing is fetched. The bundle rewriting and script
+inspection above do not apply to single files, so the CSP and sandbox are the
+whole boundary, with the same guarantees and the same IP-address, prerender,
+and busy-loop gaps. Nothing
+is inserted into or rewritten in the page. External stylesheets, scripts,
+images, and fonts do not load; inline them or use `data:` URLs. A page that
+navigates itself after it has loaded is closed and replaced with a download
+prompt. A page that navigates itself before it finishes loading is refused
+by `frame-src 'none'`, so the frame shows the browser's blocked-content page
+instead of the page; the download stays available.
+
+Pages use the 1 MB preview budget shared with Markdown, text, and images;
+larger or non-UTF-8 files stay download-only. The viewer keeps its filename
+bar, a notice that the page comes from the sender (including the IP-address
+caveat), and the footer “Download original” action, which is present whether
+or not the preview succeeds.
+
+## Production headers
+
+Cloudflare Pages appends, rather than replaces, a header set by more than one
+matching `_headers` rule. The artifact sandbox routes (`/artifact-sandbox`
+and its `.html` form, which Cloudflare redirects to the extensionless path)
+therefore detach the site-wide policy
+(`! Content-Security-Policy`) before setting their own; otherwise the site's
+`frame-ancestors 'none'` and `script-src 'self'` would also apply and the
+sandbox could neither be framed nor run its bridge.
 
 ## TinyCloud controls
 

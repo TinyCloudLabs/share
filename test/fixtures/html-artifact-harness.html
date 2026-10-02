@@ -38,6 +38,7 @@
         await mountArtifactChrome(document, {
           shareId: "browser-artifact-example",
           shareUrl: `${location.origin}/viewer#tc1=browser-secret`,
+          frame: sandbox.iframe,
         });
         document.documentElement.dataset.ready = "yes";
       } catch (error) {

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Hostile shared page</title>
+</head>
+<body>
+  <h1>Hostile page</h1>
+  <pre id="results"></pre>
+  <form id="form" action="__VIEWER_ORIGIN__/probe-form" method="post" target="_top"><input name="x" value="1"></form>
+  <script>
+    // Every probe records what this page could observe. A value containing
+    // "secret" or a request to /probe-* reaching the viewer origin is a breach.
+    var viewer = "__VIEWER_ORIGIN__";
+    var results = {};
+    function probe(name, attempt) {
+      try { results[name] = { ok: true, value: String(attempt()) }; }
+      catch (error) { results[name] = { ok: false, error: error && error.name ? error.name : String(error) }; }
+    }
+    probe("origin", function () { return self.origin; });
+    probe("sessionStorage", function () { return window.sessionStorage.getItem("tc-viewer-secret"); });
+    probe("localStorage", function () { return window.localStorage.getItem("tc-viewer-secret"); });
+    probe("cookie", function () { return document.cookie; });
+    probe("topHash", function () { return window.top.location.hash; });
+    probe("topHref", function () { return window.top.location.href; });
+    probe("topDocument", function () { return window.top.document.cookie; });
+    probe("parentDocument", function () { return window.parent.document.body.innerHTML; });
+    probe("topSessionStorage", function () { return window.top.sessionStorage.getItem("tc-viewer-secret"); });
+    probe("popup", function () { return window.open(viewer + "/probe-popup", "_blank"); });
+    probe("topNavigation", function () { window.top.location.href = viewer + "/probe-top-navigation"; return "assigned"; });
+    probe("topAssign", function () { window.top.location.assign(viewer + "/probe-top-assign"); return "assigned"; });
+    probe("form", function () { document.getElementById("form").submit(); return "submitted"; });
+    probe("image", function () { var img = new Image(); img.src = viewer + "/probe-image"; document.body.append(img); return "set"; });
+    probe("beacon", function () { return navigator.sendBeacon(viewer + "/probe-beacon", "x"); });
+    probe("eval", function () { return eval("6 * 7"); });
+    // KNOWN GAP, recorded not prevented: Chrome treats <link rel="prerender">
+    // as NoStatePrefetch, which ignores default-src 'none' (prefetch-src is
+    // gone), so it sends a full GET with page-chosen query data and the
+    // target's SameSite=Lax cookies. The page cannot read the response. The
+    // e2e records the request at /gap-prerender and checks it carries no
+    // TinyCloud credential.
+    probe("prerender", function () {
+      var hint = document.createElement("link");
+      hint.rel = "prerender";
+      hint.href = viewer + "/gap-prerender?data=page-chosen-value";
+      document.head.append(hint);
+      return "inserted";
+    });
+    var pending = [
+      fetch(viewer + "/probe-fetch", { credentials: "include" }).then(
+        function (response) { results.fetch = { ok: true, value: String(response.status) }; },
+        function (error) { results.fetch = { ok: false, error: error.name }; }
+      ),
+      new Promise(function (resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.withCredentials = true;
+        xhr.onload = function () { results.xhr = { ok: true, value: String(xhr.status) }; resolve(); };
+        xhr.onerror = function () { results.xhr = { ok: false, error: "NetworkError" }; resolve(); };
+        try { xhr.open("GET", viewer + "/probe-xhr"); xhr.send(); }
+        catch (error) { results.xhr = { ok: false, error: error.name }; resolve(); }
+      }),
+      // KNOWN GAP, recorded not prevented: CSP does not govern WebRTC, so ICE
+      // gathering sends STUN packets to a sender-chosen server and can reveal
+      // the viewer's IP address. The e2e counts packets at its STUN listener.
+      new Promise(function (resolve) {
+        var candidates = [];
+        var done = false;
+        var peer;
+        function finish(note) {
+          if (done) return;
+          done = true;
+          results.rtc = { ok: true, value: note + "; candidates=" + candidates.join(",") };
+          try { peer.close(); } catch (_) {}
+          resolve();
+        }
+        try {
+          peer = new RTCPeerConnection({ iceServers: [{ urls: "stun:127.0.0.1:__STUN_PORT__" }] });
+          peer.createDataChannel("probe");
+          peer.onicecandidate = function (event) { if (event.candidate) candidates.push(event.candidate.type); else finish("gathering complete"); };
+          peer.createOffer().then(function (offer) { return peer.setLocalDescription(offer); }).catch(function (error) { finish("offer failed: " + error.name); });
+          setTimeout(function () { finish("gathering timeout"); }, 4000);
+        } catch (error) {
+          done = true;
+          results.rtc = { ok: false, error: error.name };
+          resolve();
+        }
+      }),
+    ];
+    Promise.all(pending).then(function () {
+      var out = document.getElementById("results");
+      out.textContent = JSON.stringify(results);
+      out.dataset.done = "yes";
+    });
+  </script>
+</body>
+</html>

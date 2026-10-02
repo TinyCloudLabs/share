@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en" data-theme="report">
+<head id="app-head" data-config="blue">
+  <meta charset="utf-8">
+  <title>Single-file app</title>
+</head>
+<body>
+  <p id="config"></p>
+  <script>
+    var head = document.head;
+    document.getElementById("config").textContent = head.id + ":" + head.dataset.config;
+  </script>
+</body>
+</html>

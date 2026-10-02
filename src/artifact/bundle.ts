@@ -311,7 +311,6 @@ const INNER_CSP = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
-  "navigate-to 'none'",
 ].join("; ");
 
 async function transformHtml(path: string, file: ArtifactFile, context: TransformContext): Promise<string> {
