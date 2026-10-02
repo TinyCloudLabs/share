@@ -2,14 +2,17 @@ export const ARTIFACT_SANDBOX_PATH = "/artifact-sandbox.html";
 
 /**
  * Policy of the bridge document; srcdoc children inherit it. 'unsafe-eval'
- * adds no capability inside the opaque, network-refusing frame and lets
+ * adds no capability inside the opaque frame (whose CSP already refuses fetch/XHR) and lets
  * single-file pages use eval-based libraries; prepared bundle pages add their
  * own stricter meta policy. Navigation is bounded by `frame-src 'none'` (the
  * bridge refuses every child navigation) plus the bridge's load watchdog;
  * the never-shipped `navigate-to` directive is deliberately absent. CSP is
  * not a network block: it does not govern WebRTC (STUN/TURN traffic), and
- * resource hints such as `<link rel="preconnect">` can still open a
- * connection, so a page can reveal the viewer's IP address to its author.
+ * resource hints escape it — `<link rel="prerender">` (NoStatePrefetch; no
+ * `prefetch-src` exists) sends a full GET with page-chosen query data and the
+ * target's SameSite=Lax cookies, and `preconnect` opens a connection. So a
+ * page can reveal the viewer's IP and beacon to its author; it cannot read
+ * the responses. See docs/html-artifact-sharing.md "Isolation".
  */
 export const ARTIFACT_SANDBOX_CSP = [
   "default-src 'none'",

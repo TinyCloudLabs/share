@@ -142,7 +142,7 @@ describe("HTML artifact resource preparation", () => {
 });
 
 describe("artifact sandbox boundary", () => {
-  it("ships an opaque-origin, network-denying CSP and production frame headers", () => {
+  it("ships an opaque-origin, connection-refusing CSP and production frame headers", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("connect-src 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("form-action 'none'");
     expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");

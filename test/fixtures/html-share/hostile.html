@@ -33,6 +33,19 @@
     probe("image", function () { var img = new Image(); img.src = viewer + "/probe-image"; document.body.append(img); return "set"; });
     probe("beacon", function () { return navigator.sendBeacon(viewer + "/probe-beacon", "x"); });
     probe("eval", function () { return eval("6 * 7"); });
+    // KNOWN GAP, recorded not prevented: Chrome treats <link rel="prerender">
+    // as NoStatePrefetch, which ignores default-src 'none' (prefetch-src is
+    // gone), so it sends a full GET with page-chosen query data and the
+    // target's SameSite=Lax cookies. The page cannot read the response. The
+    // e2e records the request at /gap-prerender and checks it carries no
+    // TinyCloud credential.
+    probe("prerender", function () {
+      var hint = document.createElement("link");
+      hint.rel = "prerender";
+      hint.href = viewer + "/gap-prerender?data=page-chosen-value";
+      document.head.append(hint);
+      return "inserted";
+    });
     var pending = [
       fetch(viewer + "/probe-fetch", { credentials: "include" }).then(
         function (response) { results.fetch = { ok: true, value: String(response.status) }; },

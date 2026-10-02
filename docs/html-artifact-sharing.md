@@ -58,15 +58,34 @@ artifact document.
 
 This boundary prevents access to the TinyCloud parent DOM, cookies,
 local/session storage, the share link and its fragment, wallet state, opener,
-and top-level navigation, and it rules out credentialed requests as the viewer
-or as your session. It is not a network block, and a page can reveal the
-viewer's IP address to a server its author chooses: CSP does not govern WebRTC
-(STUN/TURN traffic), and resource hints such as `<link rel="preconnect">` have
-been observed opening a TCP connection despite `default-src 'none'`. The
-bridge's `frame-src 'none'` refuses every child navigation and the navigation
-watchdog closes the document when one happens after it has loaded. It fails
-closed rather than claiming that hostile, obfuscated script can be made safe
-through source inspection alone.
+and top-level navigation. The page cannot read responses, cookies, storage, or
+the TinyCloud session, and fetch, XHR, beacon, image, and form requests are
+refused. It is not a network block, though:
+
+- CSP does not govern WebRTC, so ICE gathering sends STUN/TURN traffic to a
+  server the page's author chooses and reveals the viewer's IP address.
+- Resource hints are not limited to opening a connection. Chrome handles
+  `<link rel="prerender">` (static or inserted by script, before or after
+  load) as NoStatePrefetch, which ignores `default-src 'none'` — there is no
+  `prefetch-src` left to block it — and sends a full HTTP GET to any URL the
+  page picks, with arbitrary query data, a `Purpose: prefetch` header, and the
+  target origin's SameSite=Lax cookies, including on the viewer origin. The
+  page cannot read the response. TinyCloud keeps its session in browser
+  storage, not cookies, so the GET carries no TinyCloud credential; it is a
+  tracking beacon and a cookie-bearing GET to whatever origin the page names.
+  `<link rel="preconnect">` likewise opens a TCP connection.
+
+The bridge's `frame-src 'none'` refuses every child navigation and the
+navigation watchdog closes the document when one happens after it has loaded.
+It fails closed rather than claiming that hostile, obfuscated script can be
+made safe through source inspection alone.
+
+The page runs in the viewer's renderer process (the sandbox gives it an
+opaque origin, not its own process), so a busy loop in its script can freeze
+the whole tab, including the viewer's controls. If the loop starts before the
+page's load event, the bridge's 15-second render timeout cannot fire either.
+The planned fix is TC-544: serve the sandbox from a separate registrable
+user-content domain so the page gets its own process.
 
 ## Single-file HTML pages
 
@@ -85,7 +104,8 @@ and inline event handlers run — but only inside the same two-frame sandbox:
 the decrypted bytes reach the bridge as a postMessage string and become the
 inner frame's `srcdoc`; nothing is fetched. The bundle rewriting and script
 inspection above do not apply to single files, so the CSP and sandbox are the
-whole boundary, with the same guarantees and the same IP-address gaps. Nothing
+whole boundary, with the same guarantees and the same IP-address, prerender,
+and busy-loop gaps. Nothing
 is inserted into or rewritten in the page. External stylesheets, scripts,
 images, and fonts do not load; inline them or use `data:` URLs. A page that
 navigates itself after it has loaded is closed and replaced with a download

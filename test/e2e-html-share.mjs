@@ -3,8 +3,10 @@
  * presentShare in real Chromium, with the viewer CSP on the parent and the
  * artifact sandbox document served with its production frame policy. Proves:
  * bearer pages run styled with scripts; addressed HTML never executes; a
- * hostile page cannot reach the viewer origin's storage, cookies, fragment,
- * top window, or the viewer origin over the network; navigation is refused by the bridge's frame-src
+ * hostile page cannot read the viewer origin's storage, cookies, fragment or
+ * TinyCloud session, navigate the top window, or make fetch/XHR/beacon/image/
+ * form requests; the prerender and WebRTC gaps are recorded, not prevented;
+ * navigation is refused by the bridge's frame-src
  * (after load the page is closed; before load the frame shows the browser's
  * blocked page); pages are parsed exactly as sent with no main-thread stall;
  * and the verified-bytes download survives every preview failure, including
@@ -19,6 +21,8 @@ import { createServer } from "vite";
 
 const screenshotDir = process.env.HTML_SHARE_SCREENSHOT_DIR ?? ".context";
 const probeHits = [];
+// Requests the frame is known to be able to send (recorded gaps, see docs).
+const gapHits = [];
 const server = await createServer({
   configFile: "vite.config.ts",
   logLevel: "error",
@@ -28,8 +32,10 @@ const server = await createServer({
     configureServer(dev) {
       // Server-side witness: any probe that leaves the browser lands here.
       dev.middlewares.use((request, response, next) => {
-        if (!(request.url ?? "").includes("/probe-")) { next(); return; }
-        probeHits.push({ url: request.url, cookie: request.headers.cookie ?? "" });
+        const url = request.url ?? "";
+        if (url.includes("/gap-")) gapHits.push({ url, headers: { ...request.headers } });
+        else if (url.includes("/probe-")) probeHits.push({ url, cookie: request.headers.cookie ?? "" });
+        else { next(); return; }
         response.statusCode = 204;
         response.end();
       });
@@ -159,6 +165,23 @@ try {
   assertNoProbeLeft(requests, "hostile");
   console.log(JSON.stringify(results));
   console.log(`KNOWN GAP (WebRTC, not governed by CSP): ${stunPackets.length} STUN packet(s) reached the sender-controlled listener; rtc=${results.rtc.value ?? results.rtc.error}`);
+
+  // KNOWN GAP: <link rel="prerender"> (NoStatePrefetch) ignores the frame CSP
+  // and sends a GET with page-chosen query data and the target's SameSite=Lax
+  // cookies. Record that it happens; it must carry no TinyCloud credential —
+  // no session key/storage value, tc1 fragment, or delegation.
+  assert.deepEqual(results.prerender, { ok: true, value: "inserted" });
+  const deadline = Date.now() + 10_000;
+  while (gapHits.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(gapHits.length > 0, "prerender GET left the frame (recorded gap; if this stops happening, update docs/html-artifact-sharing.md)");
+  for (const hit of gapHits) {
+    assert.match(hit.url, /^\/gap-prerender\?data=page-chosen-value$/);
+    const exposed = [hit.url, ...Object.values(hit.headers).flat()].join("\n");
+    for (const credential of ["session-secret-8c1", "local-secret-8c1", "fragment-secret-8c1", "tc1", "delegation"]) {
+      assert.equal(exposed.includes(credential), false, `prerender GET carries no ${credential}`);
+    }
+  }
+  console.log(`KNOWN GAP (prerender, not governed by CSP): ${gapHits.length} GET(s) to ${gapHits[0].url}; purpose=${gapHits[0].headers.purpose ?? gapHits[0].headers["sec-purpose"] ?? "none"}; Lax cookie sent=${(gapHits[0].headers.cookie ?? "").includes("tc_viewer_secret")}`);
   await page.close();
 
   // Navigation before the first load: frame-src 'none' refuses it, so the
