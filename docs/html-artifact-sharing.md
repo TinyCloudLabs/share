@@ -119,12 +119,76 @@ bar, a notice that the page comes from the sender (including the IP-address
 caveat), and the footer “Download original” action, which is present whether
 or not the preview succeeds.
 
+## Mermaid diagrams in Markdown
+
+A ` ```mermaid ` block is rendered in the `/mermaid-sandbox` frame: an
+opaque-origin sandbox (`sandbox="allow-scripts"`, no network) that receives
+only the diagram text and runs Mermaid with `securityLevel: "strict"`,
+`htmlLabels: false`, and the light `neutral` theme. `htmlLabels`, `theme` and
+`darkMode` are on Mermaid's secure-key list, so an init directive or
+frontmatter config in the diagram cannot turn HTML labels back on or switch
+to a dark theme. `themeVariables` and `themeCSS` stay available: under
+`neutral`, text colours come from fixed variables rather than from fills or
+`background`, so only a sender who sets text or fill colours directly can
+lower contrast, as with `style` and `classDef`. Before the SVG leaves the
+frame, the bridge copies each element's computed paint and font properties
+onto it as presentation attributes, removes the theme `<style>`, and gives
+the SVG its natural width, so labels are SVG `<text>` and node styling no
+longer depends on a stylesheet; an SVG that still contains `foreignObject`
+is reported as a failed render. The viewer sanitizes the SVG again —
+`script`, `foreignObject` and `<style>` are removed, and `url()` values must
+point inside the SVG — before it joins the scriptless Markdown preview frame.
+There each diagram sits on a white card, sized to the diagram, in both
+colour schemes: the `neutral` theme draws edges and free-standing labels in
+dark grey. A diagram is drawn at its natural size unless the page is
+narrower; then it shrinks to the page width, but not below half size, and
+its card scrolls sideways instead. If the sandbox cannot load, a render
+fails, or it times out, the diagram source stays visible as code.
+
+Printing shows only the preview frame's visible height (`75vh` of the printed
+page): the frame runs no script, so it cannot report its content height for
+the viewer to grow it. In print the document's diagrams therefore share 60% of
+that frame height: with N diagrams each is scaled as a whole to the page width
+and to at most 60%/N of the frame height, with no minimum scale. The viewer
+counts the rendered diagrams and passes N into the preview document as
+`--mermaid-diagram-count`. The other 40% is left for the surrounding text and
+the diagram cards. This keeps a document of a heading, a few paragraphs and up
+to a few diagrams whole on paper.
+
+**Print limit:** a document taller than the printed frame is still cut off at
+the frame's bottom edge, and the rest does not continue on the next page. This
+applies to long text and to many diagrams alike, and predates diagram
+support. **Download original** is the full-fidelity way to print or keep such
+a document.
+
+Dev and preview serve the sandbox on both `/mermaid-sandbox` and
+`/mermaid-sandbox.html` with the frame headers `public/_headers` gives those
+routes in production.
+
+`npm run test:e2e:mermaid` renders the fixtures in
+`test/fixtures/markdown-share/` — flowcharts (plain, and asking for HTML
+labels by init directive and by frontmatter), sequence and gantt, a small
+state diagram, diagrams asking for the dark theme by init directive and by
+frontmatter, and tall flowcharts alone, in twos and in threes — in Chromium
+in light and dark mode. It checks the sandbox route headers, that every
+diagram renders at its
+expected scale (also at phone width), that labels are SVG text with at least
+4.5:1 contrast, that nodes are not filled black, and that an A4
+`page.pdf()` contains every diagram label (read by `test/pdf-text.mjs`). To
+check a deployment, set `MERMAID_E2E_ORIGIN` to its origin (route
+headers), and for each fixture to render, share the fixture file unchanged
+as a bearer link and pass it as `MERMAID_E2E_URL_<FIXTURE>`, for example
+`MERMAID_E2E_URL_FLOWCHART` or `MERMAID_E2E_URL_THEME_INIT`. Fixtures
+without a link are skipped and listed. A deployed run that renders no
+fixture fails, unless `MERMAID_E2E_HEADERS_ONLY=1` asks for a headers-only
+check.
+
 ## Production headers
 
 Cloudflare Pages appends, rather than replaces, a header set by more than one
-matching `_headers` rule. The artifact sandbox routes (`/artifact-sandbox`
-and its `.html` form, which Cloudflare redirects to the extensionless path)
-therefore detach the site-wide policy
+matching `_headers` rule. The sandbox routes (`/artifact-sandbox`,
+`/mermaid-sandbox`, and their `.html` forms, which Cloudflare redirects to the
+extensionless paths) therefore detach the site-wide policy
 (`! Content-Security-Policy`) before setting their own; otherwise the site's
 `frame-ancestors 'none'` and `script-src 'self'` would also apply and the
 sandbox could neither be framed nor run its bridge.

@@ -38,8 +38,10 @@
  *   the effective policy is the intersection): default-src 'none' with NO
  *   script-src directive (so script-src falls back to 'none'), images only
  *   from data:/blob: (remote images were already stripped by the pipeline;
- *   this backstops them), inline styles only (needed for mermaid theme CSS
- *   and the frame's own base stylesheet; CSS cannot execute script).
+ *   this backstops them), inline styles only (needed for the frame's own
+ *   base stylesheet; CSS cannot execute script). Mermaid diagrams need no
+ *   stylesheet here: the sandbox resolves their theme into SVG presentation
+ *   attributes and the SVG sanitizer forbids <style> (render.ts).
  *
  * Residual behaviors, considered and accepted:
  *   - The frame cannot self-report its content height (no script), so the
@@ -103,8 +105,36 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
 table { border-collapse: collapse; }
 th, td { border: 1px solid var(--preview-line); padding: 0.45rem 0.65rem; }
 img { max-width: 100%; }
-.viewer-mermaid { margin: 1rem 0; overflow-x: auto; }
-.viewer-mermaid svg { max-width: 100%; height: auto; }
+/* Diagrams use Mermaid's light "neutral" theme, whose edges and free-standing
+   labels are dark grey: keep them on a light card in both colour schemes.
+   The card wraps the SVG so its padding never eats into the diagram's own
+   width; only a diagram wider than the page is scaled down, and not below
+   the half-size min-width the sandbox sets — past that the card scrolls. */
+.viewer-mermaid {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  margin: 1rem 0;
+  padding: 0.75rem;
+  overflow-x: auto;
+  background: #ffffff;
+  border: 1px solid var(--preview-line);
+}
+.viewer-mermaid svg { display: block; max-width: 100%; height: auto; }
+/* Print shows only this frame's viewport: the frame has no script, so it
+   cannot report its content height for the parent to grow it, and a printed
+   card cannot scroll. In print the diagrams share 60vh of that viewport:
+   each is scaled as a whole to the page width and to its share of the
+   budget, so the drawings together leave room for the surrounding text.
+   --mermaid-diagram-count is set by buildPreviewDocument. A document whose
+   text alone outgrows the viewport is still cut off when printed. */
+@media print {
+  .viewer-mermaid svg {
+    width: auto;
+    min-width: 0 !important;
+    max-height: calc(60vh / var(--mermaid-diagram-count, 1));
+  }
+}
 `;
 
 /**
@@ -112,16 +142,19 @@ img { max-width: 100%; }
  * The content string has been through the FULL pipeline already; it is
  * embedded in body context as-is. Even if it somehow carried markup that
  * breaks document structure, nothing in this frame can execute (sandbox=""),
- * so the failure mode is cosmetic, never privileged.
+ * so the failure mode is cosmetic, never privileged. `diagramCount` (the
+ * rendered Mermaid diagrams in it) splits the print height budget; it is a
+ * number the viewer counted, never document text.
  */
-export function buildPreviewDocument(sanitizedHtml: string): string {
+export function buildPreviewDocument(sanitizedHtml: string, diagramCount: number): string {
+  const count = Math.max(1, Math.trunc(diagramCount));
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${PREVIEW_FRAME_CSP}">
 <meta name="referrer" content="no-referrer">
-<style>${PREVIEW_STYLES}</style>
+<style>${PREVIEW_STYLES}:root { --mermaid-diagram-count: ${count}; }</style>
 </head>
 <body>${sanitizedHtml}</body>
 </html>
@@ -130,13 +163,15 @@ export function buildPreviewDocument(sanitizedHtml: string): string {
 
 /**
  * Create the scriptless preview iframe for a fully-sanitized document.
- * `sanitizedHtml` is the ONLY thing that crosses into the frame — callers
+ * `sanitizedHtml` is the ONLY content that crosses into the frame — callers
  * must never pass anything derived from the fragment key, content key,
- * envelope, delegation, or CIDs.
+ * envelope, delegation, or CIDs. `diagramCount` is how many rendered Mermaid
+ * diagrams the document holds (print sizing).
  */
 export function createPreviewFrame(
   doc: Document,
   sanitizedHtml: string,
+  diagramCount: number,
 ): HTMLIFrameElement {
   const iframe = doc.createElement("iframe");
   // Grant NOTHING: empty sandbox = opaque origin AND parser-level script
@@ -149,6 +184,6 @@ export function createPreviewFrame(
   // srcdoc is a TrustedHTML sink under the viewer's
   // `require-trusted-types-for 'script'` — wrap the (already-sanitized)
   // document with the named policy, same as every innerHTML assignment.
-  iframe.srcdoc = toTrustedHtml(buildPreviewDocument(sanitizedHtml));
+  iframe.srcdoc = toTrustedHtml(buildPreviewDocument(sanitizedHtml, diagramCount));
   return iframe;
 }

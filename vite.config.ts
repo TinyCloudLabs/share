@@ -56,9 +56,13 @@ function mermaidSandboxHtml(): Plugin {
     }
     return html;
   };
+  // Production serves the document on both paths (Cloudflare redirects the
+  // .html form to the extensionless one) under one _headers contract; dev
+  // and preview answer both with the same document and frame headers.
+  const routes = new Set([MERMAID_SANDBOX_PATH, MERMAID_SANDBOX_PATH.replace(/\.html$/, "")]);
   const serve = (server: ViteDevServer | PreviewServer): void => {
     server.middlewares.use((request, response, next) => {
-      if ((request.url ?? "").split("?", 1)[0] !== MERMAID_SANDBOX_PATH) { next(); return; }
+      if (!routes.has((request.url ?? "").split("?", 1)[0] ?? "")) { next(); return; }
       response.setHeader("content-type", "text/html; charset=utf-8");
       for (const [name, value] of MERMAID_SANDBOX_HTTP_HEADERS) response.setHeader(name, value);
       response.end(getHtml());

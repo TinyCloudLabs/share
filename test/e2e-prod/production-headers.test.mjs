@@ -16,7 +16,9 @@ test("production-origin viewer reproduces the deployed CSP and browser isolation
   assert.equal(headers["cache-control"], "no-store, no-transform");
 });
 
-const SANDBOX_ROUTES = ["/artifact-sandbox", "/artifact-sandbox.html"];
+// Cloudflare's pretty-URL redirect sends each .html path to the extensionless
+// one, so both forms of every sandbox document need their own rule.
+const SANDBOX_ROUTES = ["/artifact-sandbox", "/artifact-sandbox.html", "/mermaid-sandbox", "/mermaid-sandbox.html"];
 
 test("production-origin sandbox routes detach the site policy and send only the frame policy", () => {
   for (const pathname of SANDBOX_ROUTES) {

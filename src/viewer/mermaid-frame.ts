@@ -64,9 +64,17 @@ export const MERMAID_SANDBOX_CSP =
  * HTTP-header-only directives: a <meta> CSP cannot express frame-ancestors,
  * so a static production host MUST be configured to send them (see
  * public/_headers for the Cloudflare Pages rule the build ships).
+ *
+ * The header carries the complete frame policy, not only frame-ancestors:
+ * Cloudflare Pages appends a header set by several `_headers` rules, so the
+ * sandbox routes detach the site-wide CSP (whose frame-ancestors 'none' and
+ * script-src 'self' would block framing and the inline bridge) and send
+ * exactly MERMAID_SANDBOX_HTTP_CSP instead.
  */
+export const MERMAID_SANDBOX_HTTP_CSP = `${MERMAID_SANDBOX_CSP}; frame-ancestors 'self'`;
+
 export const MERMAID_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
-  ["content-security-policy", "frame-ancestors 'self'"],
+  ["content-security-policy", MERMAID_SANDBOX_HTTP_CSP],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
@@ -107,6 +115,27 @@ export type MermaidFrameReply =
  * nonce-carrying render requests from the parent, announce readiness.
  * Exported (not just inlined) so tests can EXECUTE it against a mock
  * environment and prove the guards, not merely string-match them.
+ *
+ * SELF-CONTAINED OUTPUT: the SVG leaves this frame for the scriptless
+ * preview frame (render.ts), which strips `<style>` and `foreignObject`.
+ * Mermaid's default output depends on both — a theme stylesheet keyed to the
+ * SVG's id, and HTML labels inside `foreignObject` — and without them nodes
+ * fall back to SVG's default black fill and labels vanish. So the bridge
+ * renders with `htmlLabels: false` (labels are SVG `<text>`), mounts the SVG
+ * in this frame where the theme CSS applies, copies each element's computed
+ * paint and font properties onto it as presentation attributes, and drops
+ * the `<style>` element. Only local `url(#id)` references are kept. An SVG
+ * that still contains `foreignObject` is reported as a failed render, so the
+ * viewer shows the diagram source.
+ *
+ * LOCKED CONFIG: `htmlLabels`, `theme`, and `darkMode` are Mermaid secure
+ * keys here, so a diagram's init directive or frontmatter cannot change
+ * them. The preview draws diagrams on a white card, which the light
+ * "neutral" theme is made for; a dark theme there would put light text on
+ * white. `themeVariables` and `themeCSS` stay open: under "neutral", text
+ * colours come from fixed variables (`text`, `textColor`), not from fills
+ * or `background`, so only a sender who sets text or fill colours directly
+ * can lower contrast — deliberate styling, like `style` and `classDef`.
  */
 export const MERMAID_BRIDGE_SCRIPT = `"use strict";
 (function () {
@@ -121,14 +150,91 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
         { type: "result", id: "", nonce: "", ok: false, error: "mermaid sandbox refused: document is not in an opaque-origin sandbox" },
         "*"
       );
-    } catch (_refusalError) {}
+    } catch {}
     return;
   }
   // Handshake nonce, placed in the frame URL fragment by the embedding
   // parent at creation. No nonce → no bridge.
   var nonce = String(window.location.hash || "").replace(/^#/, "");
   if (nonce.length === 0) return;
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "neutral" });
+  // Mermaid's config sanitizer removes secure keys at every depth of an init
+  // directive or frontmatter config, so this also covers flowchart.htmlLabels
+  // and themeVariables.darkMode. See LOCKED CONFIG above.
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "neutral",
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+    secure: mermaid.mermaidAPI.defaultConfig.secure.concat(["htmlLabels", "theme", "darkMode"])
+  });
+  // Inherited properties are written where they differ from the parent's
+  // computed value (and always on the root, so nothing inherits from the
+  // preview page); opacity and display only where they hide something.
+  var INHERITED = [
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity",
+    "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin",
+    "stroke-miterlimit", "font-family", "font-size", "font-style", "font-weight",
+    "text-anchor", "dominant-baseline", "visibility"
+  ];
+  function inlineStyles(svgMarkup) {
+    var host = window.document.createElement("div");
+    host.innerHTML = svgMarkup;
+    window.document.body.appendChild(host);
+    try {
+      var root = host.querySelector("svg");
+      if (root === null) return svgMarkup;
+      // Backstop for any diagram type that still emits HTML labels: the
+      // preview would strip them and show empty shapes, so fail the render
+      // and let the viewer keep the diagram source visible instead.
+      if (root.querySelector("foreignObject") !== null) {
+        throw new Error("diagram uses HTML labels, which the preview cannot show");
+      }
+      var elements = [root].concat(Array.prototype.slice.call(root.querySelectorAll("*")));
+      var computed = new Map();
+      elements.forEach(function (element) { computed.set(element, window.getComputedStyle(element)); });
+      // Read everything first: computed styles are live, and an attribute
+      // written early must not change a value still to be read.
+      var writes = [];
+      elements.forEach(function (element) {
+        if (element.localName === "style") return;
+        var style = computed.get(element);
+        var parentStyle = element === root ? undefined : computed.get(element.parentElement);
+        INHERITED.forEach(function (name) {
+          var value = style.getPropertyValue(name);
+          if (value !== "" && (parentStyle === undefined || parentStyle.getPropertyValue(name) !== value)) {
+            writes.push([element, name, value]);
+          }
+        });
+        var opacity = style.getPropertyValue("opacity");
+        if (opacity !== "" && opacity !== "1") writes.push([element, "opacity", opacity]);
+        if (style.getPropertyValue("display") === "none") writes.push([element, "display", "none"]);
+      });
+      writes.forEach(function (write) {
+        // Computed url() values may be resolved against this document's URL;
+        // keep only the fragment so the reference stays local to the SVG,
+        // and drop any value that still points elsewhere.
+        var value = write[2].replace(/url\\(\\s*["']?[^"'#)]*#([^"')\\s]+)["']?\\s*\\)/g, "url(#$1)");
+        if (!/url\\(\\s*[^#\\s]/.test(value)) write[0].setAttribute(write[1], value);
+      });
+      Array.prototype.slice.call(root.querySelectorAll("style")).forEach(function (node) { node.remove(); });
+      // Mermaid sizes the SVG as width="100%" capped by an inline max-width.
+      // The preview's card shrinks to fit its content, where a percentage
+      // width has nothing to resolve against; give the SVG its natural width
+      // and let the preview's max-width: 100% scale it down on narrow pages,
+      // but never below half size: past that the card scrolls sideways
+      // instead (the preview drops this floor in print).
+      var viewBox = root.viewBox && root.viewBox.baseVal;
+      if (viewBox && viewBox.width > 0 && root.getAttribute("width") === "100%") {
+        root.setAttribute("width", String(viewBox.width));
+        root.style.removeProperty("max-width");
+        root.style.setProperty("min-width", viewBox.width / 2 + "px");
+      }
+      return root.outerHTML;
+    } finally {
+      host.remove();
+    }
+  }
   var renderCount = 0;
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -140,7 +246,7 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
     mermaid
       .render("mermaid-sandbox-" + renderCount++, data.source)
       .then(function (out) {
-        window.parent.postMessage({ type: "result", id: id, nonce: nonce, ok: true, svg: out.svg }, "*");
+        window.parent.postMessage({ type: "result", id: id, nonce: nonce, ok: true, svg: inlineStyles(out.svg) }, "*");
       })
       .catch(function (err) {
         window.parent.postMessage(
