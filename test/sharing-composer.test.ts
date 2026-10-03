@@ -186,6 +186,15 @@ describe("share composer model", () => {
     // Pasted lists: names, new lines and mixed separators.
     expect(parseDeliveryEmails("Alice Smith <alice@tinycloud.xyz>, bob@tinycloud.xyz\ncarol@tinycloud.xyz dave@tinycloud.xyz;bob@tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz", "carol@tinycloud.xyz", "dave@tinycloud.xyz"]);
     expect(parseDeliveryEmails(" , ;\n ")).toEqual([]);
+    // Nothing that could be an address is dropped.
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> bob@tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz"]);
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> Bob <bob@tinycloud.xyz>")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz"]);
+    expect(parseDeliveryEmails('"Smith, John" <john@tinycloud.xyz>, "jane@tinycloud.xyz" <jane.doe@tinycloud.xyz>')).toEqual(["john@tinycloud.xyz", "jane.doe@tinycloud.xyz"]);
+    expect(parseDeliveryEmails('"carol@tinycloud.xyz"')).toEqual(["carol@tinycloud.xyz"]);
+    // Outlook's unquoted "Last, First <address>" keeps the stray surnames, so
+    // validation names them instead of guessing.
+    expect(parseDeliveryEmails("Smith, John <john@tinycloud.xyz>; Doe, Jane <jane@tinycloud.xyz>")).toEqual(["Smith", "john@tinycloud.xyz", "Doe", "jane@tinycloud.xyz"]);
+    expect(() => domain("tinycloud.xyz", { deliveryEmails: parseDeliveryEmails("Smith, John <john@tinycloud.xyz>") })).toThrow("Every address to email must be at the shared domain exactly.");
     // A single pinned address belongs to exact-email shares only.
     expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("The delivery address must match the person you're sharing with.");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true, deliveryEmails: ["reader@example.com"] }))).toThrow("Every address to email must be at the shared domain exactly.");
@@ -685,6 +694,17 @@ describe("share composer sender failures", () => {
     } catch (error) {
       validationError = error;
     }
+    // The sender's own typed address is named, so they can find it in a list.
+    expect(senderFailureMessage(validationError)).toBe("“person@other.example” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.");
+    try {
+      validateComposerModel(modelWith(textContent, {
+        recipient: { kind: "exactEmail", value: "reader@example.com" },
+        encryption: true,
+        deliveryEmails: ["reader@example.com"],
+      }));
+    } catch (error) {
+      validationError = error;
+    }
     expect(senderFailureMessage(validationError)).toBe(EXPECTED_SENDER_COPY.deliveryDomain);
   });
 
@@ -717,7 +737,7 @@ describe("share composer sender failures", () => {
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(EXPECTED_SENDER_COPY.deliveryDomain);
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("“person@other.example” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.");
   });
 
   it("TC-530: emails a domain link to each address at the domain, once each", async () => {

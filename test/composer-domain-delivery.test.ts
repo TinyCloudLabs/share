@@ -1,13 +1,22 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 
 // The owner-share path runs for real; only the SDK publish call, the public
-// config, and the OpenCredentials request are replaced.
+// config, the Node's delivery authorization and the OpenCredentials request
+// are replaced. The stand-ins keep the two contracts a retry depends on:
+// - the Node answers an identical request under a JTI it has seen with the
+//   same receipt, stamped with when it was first issued, and refuses any
+//   other request under that JTI as a replay;
+// - OpenCredentials refuses a receipt issued more than two minutes ago
+//   before it deduplicates, then sends each nonce once.
+type Receipt = { readonly request: { readonly recipient: string }; readonly admission: { readonly nonce: string; readonly issuedAt: number } };
 const state = vi.hoisted(() => ({
   published: [] as Record<string, unknown>[],
   failOnce: new Set<string>(),
   delivered: [] as string[],
+  jtis: new Map<string, { readonly recipient: string; readonly expiresAt: string; readonly issuedAt: number }>(),
+  nonces: new Set<string>(),
 }));
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tinycloud/share-sdk")>()),
@@ -22,10 +31,12 @@ vi.mock("../src/email-share/config.js", () => ({
   loadSharePublicConfig: async () => ({ shareOrigin: "https://share.tinycloud.xyz", registryOrigin: "https://registry.example", credentialsOrigin: "https://witness.example" }),
 }));
 vi.mock("../src/share/delivery.js", () => ({
-  requestAddressedDelivery: vi.fn(async (input: { readonly deliveryAuthorization: { readonly request: { readonly recipient: string } } }) => {
-    const recipient = input.deliveryAuthorization.request.recipient;
-    if (state.failOnce.delete(recipient)) throw new Error("credential invitation unavailable (503)");
-    state.delivered.push(recipient);
+  requestAddressedDelivery: vi.fn(async ({ deliveryAuthorization: { request, admission } }: { readonly deliveryAuthorization: Receipt }) => {
+    if (Math.abs(Date.now() - admission.issuedAt) > 120_000) throw new Error("credential invitation rejected (400)");
+    if (state.nonces.has(admission.nonce)) return;
+    if (state.failOnce.delete(request.recipient)) throw new Error("credential invitation unavailable (503)");
+    state.nonces.add(admission.nonce);
+    state.delivered.push(request.recipient);
   }),
 }));
 
@@ -34,7 +45,13 @@ const { mountShareComposer } = await import("../src/share/composer.js");
 type DeliveryInput = { readonly recipientEmail: string; readonly idempotencyKey: string; readonly expiresAt: string };
 
 function owner() {
-  const authorizeShareDeliveryV3 = vi.fn(async (input: DeliveryInput) => ({ request: { recipient: input.recipientEmail }, admission: {}, proof: {} }));
+  const authorizeShareDeliveryV3 = vi.fn(async (input: DeliveryInput): Promise<Receipt> => {
+    const seen = state.jtis.get(input.idempotencyKey);
+    if (seen !== undefined && (seen.recipient !== input.recipientEmail || seen.expiresAt !== input.expiresAt)) throw new Error("delivery-authorization-replayed (409)");
+    const issuedAt = seen?.issuedAt ?? Date.now();
+    state.jtis.set(input.idempotencyKey, { recipient: input.recipientEmail, expiresAt: input.expiresAt, issuedAt });
+    return { request: { recipient: input.recipientEmail }, admission: { nonce: input.idempotencyKey, issuedAt } };
+  });
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: "did:key:z6MkOwnerSession",
@@ -50,7 +67,8 @@ function owner() {
   const root = document.createElement("div");
   document.body.append(root);
   mountShareComposer(root, { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
-  return { root, authorizeShareDeliveryV3 };
+  const status = () => root.querySelector(".notification-status")?.textContent;
+  return { root, authorizeShareDeliveryV3, status };
 }
 
 async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", recipient: string, delivery?: string): Promise<HTMLButtonElement> {
@@ -73,17 +91,28 @@ async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", rec
   return root.querySelector<HTMLButtonElement>(".confirm-notification")!;
 }
 
+const later = (milliseconds: number) => vi.setSystemTime(Date.now() + milliseconds);
+
 describe("TC-530 owner delivery", () => {
+  beforeEach(() => {
+    // Only the clock is fake, so a retry can happen minutes later.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-03T12:00:00Z"));
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     state.published.length = 0;
     state.delivered.length = 0;
     state.failOnce.clear();
+    state.jtis.clear();
+    state.nonces.clear();
     document.body.replaceChildren();
   });
 
   it("emails a domain link to each canonical address and retries only what failed, with the same signed request", async () => {
-    const { root, authorizeShareDeliveryV3 } = owner();
+    const { root, authorizeShareDeliveryV3, status } = owner();
     const confirm = await create(root, "emailDomain", "example.com", "Alice@example.com, bob@example.com\ncarol@example.com");
     // The domain envelope is not pinned to one mailbox.
     expect(state.published[0]).toMatchObject({ target: { kind: "emailDomain", domain: "example.com" } });
@@ -92,30 +121,65 @@ describe("TC-530 owner delivery", () => {
 
     state.failOnce.add("bob@example.com");
     confirm.click();
-    const status = () => root.querySelector(".notification-status")?.textContent;
-    await vi.waitFor(() => expect(status()).toBe("Sent 2 of 3. The link above still works; try again to send the rest."));
+    await vi.waitFor(() => expect(status()).toBe("Sent 2 of 3. Not sent to bob@example.com. The link above still works; try again to send the rest."));
     const first = authorizeShareDeliveryV3.mock.calls.map(([input]) => input);
     expect(first.map((input) => input.recipientEmail)).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
     for (const input of first) expect(input.idempotencyKey).toMatch(new RegExp(`^tinycloud-share:[0-9a-f-]{36}:${input.recipientEmail.replace(".", "\\.")}$`));
     expect(state.delivered).toEqual(["alice@example.com", "carol@example.com"]);
 
+    // A minute later, only bob is asked again, with the identical request: the
+    // Node returns the same receipt, which OpenCredentials still accepts. A
+    // fresh expiry under the same JTI would be refused as a replay.
+    later(60_000);
     confirm.click();
     await vi.waitFor(() => expect(status()).toBe("Invitations requested."));
     const retry = authorizeShareDeliveryV3.mock.calls.slice(first.length).map(([input]) => input);
-    // Only bob is asked again, with the identical request, so the Node returns
-    // the same receipt and OpenCredentials deduplicates it.
     expect(retry).toHaveLength(1);
     expect(retry[0]).toMatchObject({ recipientEmail: "bob@example.com", idempotencyKey: first[1]!.idempotencyKey, expiresAt: first[1]!.expiresAt });
     expect(state.delivered).toEqual(["alice@example.com", "carol@example.com", "bob@example.com"]);
   });
 
+  it("asks again under a fresh JTI once the first receipt is too old for OpenCredentials", async () => {
+    const { root, authorizeShareDeliveryV3, status } = owner();
+    const confirm = await create(root, "emailDomain", "example.com", "alice@example.com, bob@example.com");
+    state.failOnce.add("bob@example.com");
+    confirm.click();
+    await vi.waitFor(() => expect(status()).toBe("Sent 1 of 2. Not sent to bob@example.com. The link above still works; try again to send the rest."));
+    const first = authorizeShareDeliveryV3.mock.calls[1]![0];
+
+    // Well inside the request's own expiry, but the Node would replay a
+    // receipt issued 150 seconds ago, which OpenCredentials refuses.
+    later(150_000);
+    confirm.click();
+    await vi.waitFor(() => expect(status()).toBe("Invitations requested."));
+    const retry = authorizeShareDeliveryV3.mock.calls.at(-1)![0];
+    expect(retry.recipientEmail).toBe("bob@example.com");
+    expect(retry.idempotencyKey).toBe(`${first.idempotencyKey}:attempt-1`);
+    expect(retry.expiresAt).not.toBe(first.expiresAt);
+    expect(state.delivered).toEqual(["alice@example.com", "bob@example.com"]);
+  });
+
+  it("names what wasn't sent, can't be dismissed mid-send, and says what was sent when the owner keeps the link", async () => {
+    const { root, status } = owner();
+    const confirm = await create(root, "emailDomain", "example.com", "a@example.com b@example.com c@example.com d@example.com e@example.com");
+    const cancel = root.querySelector<HTMLButtonElement>(".cancel-notification")!;
+    for (const failing of ["b@example.com", "c@example.com", "d@example.com", "e@example.com"]) state.failOnce.add(failing);
+    confirm.click();
+    expect(cancel.disabled).toBe(true);
+    await vi.waitFor(() => expect(status()).toBe("Sent 1 of 5. Not sent to b@example.com, c@example.com, d@example.com and 1 more. The link above still works; try again to send the rest."));
+    expect(cancel.disabled).toBe(false);
+    cancel.click();
+    expect(status()).toBe("Sent 1 of 5. The rest weren't emailed.");
+    expect(confirm.hidden).toBe(true);
+  });
+
   it("keeps the exact-email address as typed and its original retry key", async () => {
-    const { root, authorizeShareDeliveryV3 } = owner();
+    const { root, authorizeShareDeliveryV3, status } = owner();
     const confirm = await create(root, "exactEmail", "John.Smith@Example.com");
     expect(state.published[0]).toMatchObject({ deliveryEmail: "John.Smith@example.com" });
     expect(confirm.textContent).toBe("Notify recipient");
     confirm.click();
-    await vi.waitFor(() => expect(root.querySelector(".notification-status")?.textContent).toBe("Invitation requested."));
+    await vi.waitFor(() => expect(status()).toBe("Invitation requested."));
     const [input] = authorizeShareDeliveryV3.mock.calls[0]!;
     expect(input.recipientEmail).toBe("John.Smith@example.com");
     expect(input.idempotencyKey).toMatch(/^tinycloud-share:[0-9a-f-]{36}$/);

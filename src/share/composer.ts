@@ -92,11 +92,17 @@ export interface ShareDeliveryAuthorizationReceipt {
   readonly proof: unknown;
 }
 
-/** Some, but not all, addresses were emailed; trying again sends only the rest. */
+/** Not every address was emailed; trying again sends only `unsent`. */
 export class ShareDeliveryIncomplete extends Error {
-  constructor(readonly sent: number, readonly total: number) {
+  constructor(readonly sent: number, readonly total: number, readonly unsent: readonly string[] = []) {
     super("share delivery incomplete");
   }
+}
+
+/** Up to three of `addresses`, then how many more. */
+function someAddresses(addresses: readonly string[]): string {
+  const shown = addresses.slice(0, 3).join(", ");
+  return addresses.length > 3 ? `${shown} and ${addresses.length - 3} more` : shown;
 }
 
 /** Which of `names` the TinyCloud session does not provide as callable methods, in `names` order. */
@@ -330,7 +336,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const deliveryEmail = model.recipient.kind === "exactEmail" ? model.deliveryEmail : undefined;
   const deliveryRecipients = notificationRecipients(model);
   // Per-address delivery state for this link, kept across Notify retries.
-  const deliveries = new Map<string, { attempt: number; expiresAt: string; sent: boolean }>();
+  const deliveries = new Map<string, { attempt: number; askedAt: number; expiresAt: string; sent: boolean }>();
   const deliveryExpiry = () => new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(/\.\d{3}Z$/, "Z");
   // The JTI the Node and OpenCredentials deduplicate on. The exact-email key
   // is unchanged from earlier releases.
@@ -412,9 +418,12 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
         if (delivery?.sent === true) continue;
         // A retry repeats the signed request exactly (same JTI and expiry), so
         // the Node returns the same receipt and OpenCredentials deduplicates
-        // it. Once that request has expired, ask again under a fresh JTI.
-        if (delivery === undefined || Date.parse(delivery.expiresAt) - Date.now() < 30_000) {
-          delivery = { attempt: delivery === undefined ? 0 : delivery.attempt + 1, expiresAt: deliveryExpiry(), sent: false };
+        // it. That receipt keeps the time the Node first issued it, and
+        // OpenCredentials only accepts one issued in the last two minutes, so
+        // 90 seconds after first asking (or once the request is about to
+        // expire) ask again under a fresh JTI.
+        if (delivery === undefined || Date.now() - delivery.askedAt > 90_000 || Date.parse(delivery.expiresAt) - Date.now() < 30_000) {
+          delivery = { attempt: delivery === undefined ? 0 : delivery.attempt + 1, askedAt: Date.now(), expiresAt: deliveryExpiry(), sent: false };
           deliveries.set(recipientEmail, delivery);
         }
         try {
@@ -439,7 +448,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
           failed += 1;
         }
       }
-      if (failed > 0) throw new ShareDeliveryIncomplete(deliveryRecipients.filter((email) => deliveries.get(email)?.sent === true).length, deliveryRecipients.length);
+      if (failed > 0) {
+        const unsent = deliveryRecipients.filter((email) => deliveries.get(email)?.sent !== true);
+        throw new ShareDeliveryIncomplete(deliveryRecipients.length - unsent.length, deliveryRecipients.length, unsent);
+      }
     } }),
   };
 }
@@ -1018,7 +1030,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
               failed += 1;
             }
           }
-          if (failed > 0) throw new ShareDeliveryIncomplete(notified.size, recipients.length);
+          if (failed > 0) throw new ShareDeliveryIncomplete(notified.size, recipients.length, recipients.filter((recipient) => !notified.has(recipient)));
         });
         // Sending is always offered here for an addressed share; nothing in
         // the form gates it any more (P1-5).
@@ -1027,8 +1039,11 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           const cancel = el(doc, "button", "button button-secondary cancel-notification", "Keep link-only") as HTMLButtonElement; cancel.type = "button";
           const deliveryStatus = el(doc, "span", "copy-status notification-status");
           const many = recipients.length > 1;
-          confirm.addEventListener("click", () => { confirm.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = many ? "Requesting invitations…" : "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = many ? "Invitations requested." : "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch((error: unknown) => { confirm.disabled = false; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = error instanceof ShareDeliveryIncomplete && error.sent > 0 ? `Sent ${error.sent} of ${error.total}. The link above still works; try again to send the rest.` : "Invitation request failed. The link above still works; try again when ready."; }); });
-          cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; deliveryStatus.textContent = "No email was sent."; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
+          // How many addresses earlier attempts emailed, so "Keep link-only"
+          // never claims that none were.
+          let sent = 0;
+          confirm.addEventListener("click", () => { confirm.disabled = true; cancel.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = many ? "Requesting invitations…" : "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = many ? "Invitations requested." : "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch((error: unknown) => { confirm.disabled = false; cancel.disabled = false; if (error instanceof ShareDeliveryIncomplete) sent = error.sent; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = error instanceof ShareDeliveryIncomplete && error.sent > 0 ? `Sent ${error.sent} of ${error.total}.${error.unsent.length > 0 ? ` Not sent to ${someAddresses(error.unsent)}.` : ""} The link above still works; try again to send the rest.` : "Invitation request failed. The link above still works; try again when ready."; }); });
+          cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; delete deliveryStatus.dataset.state; deliveryStatus.textContent = sent === 0 ? "No email was sent." : `Sent ${sent} of ${recipients.length}. The rest weren't emailed.`; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
         }
         copy.focus();
       } catch (error) {

@@ -83,7 +83,13 @@ export function senderFailureKind(error: unknown): SenderFailureKind {
 }
 
 export function senderFailureMessage(error: unknown): string {
-  return SENDER_FAILURE[senderFailureKind(error)];
+  const kind = senderFailureKind(error);
+  // The one interpolation is the sender's own typed address, so they can find
+  // it in a long pasted list.
+  const subject = kind === "deliveryDomain" ? (error as { readonly subject?: unknown }).subject : undefined;
+  if (typeof subject !== "string") return SENDER_FAILURE[kind];
+  const shown = subject.length > 80 ? `${subject.slice(0, 79)}…` : subject;
+  return `“${shown}” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.`;
 }
 
 /**

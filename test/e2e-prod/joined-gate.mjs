@@ -585,6 +585,10 @@ async function verifyDomainDelivery({ browser, sender, stack }) {
   const authorized = trace.filter((entry) => entry.phase === "domain-delivery-sender" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/deliveries/authorize" && successfulRequest(entry));
   assert.deepEqual(authorized.map((entry) => entry.body?.recipientEmail).sort(), [...recipients].sort(), "the owner's Node did not authorize each address separately");
   assert.equal(new Set(authorized.map((entry) => entry.body?.jti)).size, recipients.length, "domain deliveries shared a JTI");
+  // Edit access is in the policy the owner's Node registered, not only in the form.
+  const registered = trace.find((entry) => entry.phase === "domain-delivery-sender" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/policies" && successfulRequest(entry));
+  const editAccessPublished = registered?.body?.policy?.capabilityCeiling?.some((capability) => capability?.kind === "kv" && capability.actions?.includes("tinycloud.kv/put")) === true;
+  assert.equal(editAccessPublished, true, "the domain share's registered policy does not grant edit access");
 
   phase = "domain-delivery-recipient";
   const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
@@ -599,7 +603,7 @@ async function verifyDomainDelivery({ browser, sender, stack }) {
   const mint = trace.find((entry) => entry.phase === "domain-delivery-recipient" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
   assert.equal(typeof mint?.body?.requestedExpiresAt, "string", "the recipient did not request a durable session");
   await context.close();
-  return { invitationsSent: recipients.length, nodeAuthorizations: authorized.length, sameLinkForEveryAddress: true, editAccessPublished: true, emailedRecipientRendered: true, durableSessionRequested: true };
+  return { invitationsSent: recipients.length, nodeAuthorizations: authorized.length, sameLinkForEveryAddress: true, editAccessPublished, emailedRecipientRendered: true, durableSessionRequested: true };
 }
 
 function traceAudit(stack) {

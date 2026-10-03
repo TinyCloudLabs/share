@@ -201,15 +201,51 @@ export function normalizeRecipientDomain(value: string): string {
 
 /**
  * Mailboxes typed or pasted into the domain delivery field: separated by
- * commas, semicolons, new lines or spaces, or written as `Name <address>`.
- * De-duplicated in order and kept as typed; validation canonicalizes them.
+ * commas, semicolons, new lines or spaces, or written as `Name <address>`
+ * (`"Last, First" <address>` too, and several to a line). Nothing that could
+ * be an address is dropped: beside a `<…>` address, every other word with an
+ * `@` is an address and the rest is display name; anywhere else, every word
+ * is an address, so validation names the ones that aren't. De-duplicated in
+ * order and kept as typed; validation canonicalizes them.
  */
 export function parseDeliveryEmails(value: string): readonly string[] {
-  const entries = value.split(/[,;\n]+/).flatMap((part) => {
-    const named = /<([^<>]*)>/.exec(part);
-    return named !== null ? [named[1]!.trim()] : part.trim().split(/\s+/);
+  const entries = deliverySegments(value).flatMap((segment) => {
+    const named = [...segment.matchAll(/<([^<>]*)>/g)];
+    if (named.length === 0) return segment.split(/\s+/).map((word) => word.replace(/^"(.*)"$/, "$1"));
+    const found: string[] = [];
+    let cursor = 0;
+    for (const match of named) {
+      found.push(...addressWords(segment.slice(cursor, match.index)), match[1]!.trim());
+      cursor = match.index + match[0].length;
+    }
+    return [...found, ...addressWords(segment.slice(cursor))];
   });
   return [...new Set(entries.filter((entry) => entry.length > 0))];
+}
+
+/** Commas and semicolons separate entries outside quotes and `<…>`; a line break always does. */
+function deliverySegments(value: string): string[] {
+  const segments = [""];
+  let quoted = false;
+  let bracketed = false;
+  for (const char of value) {
+    if (char === "\n" || char === "\r" || (!quoted && !bracketed && (char === "," || char === ";"))) {
+      segments.push("");
+      quoted = false;
+      bracketed = false;
+      continue;
+    }
+    if (char === '"' && !bracketed) quoted = !quoted;
+    else if (char === "<" && !quoted) bracketed = true;
+    else if (char === ">" && !quoted) bracketed = false;
+    segments[segments.length - 1] += char;
+  }
+  return segments;
+}
+
+/** The words with an `@` outside quoted display names. */
+function addressWords(text: string): string[] {
+  return text.replace(/"[^"]*"/g, " ").split(/\s+/).filter((word) => word.includes("@"));
 }
 
 /**
@@ -218,7 +254,7 @@ export function parseDeliveryEmails(value: string): readonly string[] {
  */
 function domainDeliveryEmail(value: string, domain: string): string {
   const mailbox = canonicalMailbox(value);
-  if (mailbox === undefined || !mailboxBelongsToDomain(mailbox.email, domain)) throw validationFailure("deliveryDomain");
+  if (mailbox === undefined || !mailboxBelongsToDomain(mailbox.email, domain)) throw Object.assign(validationFailure("deliveryDomain"), { subject: value });
   return mailbox.email;
 }
 
