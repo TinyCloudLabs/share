@@ -121,13 +121,21 @@ export type MermaidFrameReply =
  * Mermaid's default output depends on both — a theme stylesheet keyed to the
  * SVG's id, and HTML labels inside `foreignObject` — and without them nodes
  * fall back to SVG's default black fill and labels vanish. So the bridge
- * renders with `htmlLabels: false` (labels are SVG `<text>`; `htmlLabels` is
- * a Mermaid secure key, so diagram directives and frontmatter cannot turn it
- * back on), mounts the SVG in this frame where the theme CSS applies, copies
- * each element's computed paint and font properties onto it as presentation
- * attributes, and drops the `<style>` element. Only local `url(#id)`
- * references are kept. An SVG that still contains `foreignObject` is
- * reported as a failed render, so the viewer shows the diagram source.
+ * renders with `htmlLabels: false` (labels are SVG `<text>`), mounts the SVG
+ * in this frame where the theme CSS applies, copies each element's computed
+ * paint and font properties onto it as presentation attributes, and drops
+ * the `<style>` element. Only local `url(#id)` references are kept. An SVG
+ * that still contains `foreignObject` is reported as a failed render, so the
+ * viewer shows the diagram source.
+ *
+ * LOCKED CONFIG: `htmlLabels`, `theme`, and `darkMode` are Mermaid secure
+ * keys here, so a diagram's init directive or frontmatter cannot change
+ * them. The preview draws diagrams on a white card, which the light
+ * "neutral" theme is made for; a dark theme there would put light text on
+ * white. `themeVariables` and `themeCSS` stay open: under "neutral", text
+ * colours come from fixed variables (`text`, `textColor`), not from fills
+ * or `background`, so only a sender who sets text or fill colours directly
+ * can lower contrast — deliberate styling, like `style` and `classDef`.
  */
 export const MERMAID_BRIDGE_SCRIPT = `"use strict";
 (function () {
@@ -149,17 +157,16 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
   // parent at creation. No nonce → no bridge.
   var nonce = String(window.location.hash || "").replace(/^#/, "");
   if (nonce.length === 0) return;
-  // Labels must be SVG <text>: the preview strips foreignObject. "htmlLabels"
-  // joins Mermaid's secure keys, which its config sanitizer removes at every
-  // depth of an init directive or frontmatter config, so neither the
-  // top-level key nor flowchart.htmlLabels can switch HTML labels back on.
+  // Mermaid's config sanitizer removes secure keys at every depth of an init
+  // directive or frontmatter config, so this also covers flowchart.htmlLabels
+  // and themeVariables.darkMode. See LOCKED CONFIG above.
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
     theme: "neutral",
     htmlLabels: false,
     flowchart: { htmlLabels: false },
-    secure: mermaid.mermaidAPI.defaultConfig.secure.concat(["htmlLabels"])
+    secure: mermaid.mermaidAPI.defaultConfig.secure.concat(["htmlLabels", "theme", "darkMode"])
   });
   // Inherited properties are written where they differ from the parent's
   // computed value (and always on the root, so nothing inherits from the
@@ -211,6 +218,15 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
         if (!/url\\(\\s*[^#\\s]/.test(value)) write[0].setAttribute(write[1], value);
       });
       Array.prototype.slice.call(root.querySelectorAll("style")).forEach(function (node) { node.remove(); });
+      // Mermaid sizes the SVG as width="100%" capped by an inline max-width.
+      // The preview's card shrinks to fit its content, where a percentage
+      // width has nothing to resolve against; give the SVG its natural width
+      // and let the preview's max-width: 100% scale it down on narrow pages.
+      var viewBox = root.viewBox && root.viewBox.baseVal;
+      if (viewBox && viewBox.width > 0 && root.getAttribute("width") === "100%") {
+        root.setAttribute("width", String(viewBox.width));
+        root.style.removeProperty("max-width");
+      }
       return root.outerHTML;
     } finally {
       host.remove();

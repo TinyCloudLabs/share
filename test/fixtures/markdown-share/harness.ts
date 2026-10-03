@@ -13,12 +13,18 @@ import flowchart from "./flowchart.md?raw";
 import flowchartFrontmatter from "./flowchart-frontmatter.md?raw";
 import flowchartInit from "./flowchart-init.md?raw";
 import sequence from "./sequence.md?raw";
+import state from "./state.md?raw";
+import themeFrontmatter from "./theme-frontmatter.md?raw";
+import themeInit from "./theme-init.md?raw";
 
 const FIXTURES: Readonly<Record<string, string>> = {
   flowchart,
   "flowchart-init": flowchartInit,
   "flowchart-frontmatter": flowchartFrontmatter,
   sequence,
+  state,
+  "theme-init": themeInit,
+  "theme-frontmatter": themeFrontmatter,
 };
 const name = new URLSearchParams(location.search).get("fixture") ?? "flowchart";
 const filename = `${name}.md`;

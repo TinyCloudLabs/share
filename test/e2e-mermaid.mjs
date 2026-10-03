@@ -8,8 +8,10 @@
  *  - diagrams reach the scriptless preview frame with every label as SVG
  *    text, readable (WCAG contrast >= 4.5) wherever it sits — on node fills,
  *    on edges, on the diagram background — and with nodes not filled black;
+ *  - diagrams keep their natural size on the card (rendered scale ~1);
  *  - an init directive or frontmatter config cannot switch HTML labels back
- *    on; no <style>, foreignObject, or script crosses into the preview.
+ *    on or switch to a dark theme; no <style>, foreignObject, or script
+ *    crosses into the preview.
  *
  * Local (default): starts Vite and renders test/fixtures/markdown-share/
  * through its harness.
@@ -17,8 +19,9 @@
  * Deployed: MERMAID_E2E_ORIGIN=https://<origin> checks the sandbox route
  * headers there. Rendering checks run for each fixture whose bearer share
  * link is given as MERMAID_E2E_URL_<FIXTURE> (e.g. MERMAID_E2E_URL_FLOWCHART,
- * MERMAID_E2E_URL_SEQUENCE); share the fixture file unchanged. Fixtures
- * without a link are skipped and reported.
+ * MERMAID_E2E_URL_THEME_INIT); share the fixture file unchanged. Fixtures
+ * without a link are skipped and reported. A deployed run that renders no
+ * fixture fails unless MERMAID_E2E_HEADERS_ONLY=1 asks for headers only.
  */
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
@@ -31,19 +34,24 @@ import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/pro
 const screenshotDir = process.env.MERMAID_SCREENSHOT_DIR ?? ".context";
 const SANDBOX_ROUTES = ["/mermaid-sandbox", "/mermaid-sandbox.html"];
 const MIN_CONTRAST = 4.5;
-const FLOWCHART = { diagrams: 1, nodes: 4, labels: ["Draft notes", "Peer review", "Publish share", "Archive copy", "approved", "changes"] };
+const FLOWCHART_LABELS = ["Draft notes", "Peer review", "Publish share", "Archive copy", "approved", "changes"];
+const SEQUENCE_LABELS = ["Sender", "Viewer", "Open share link", "Render diagram text", "Labels stay readable"];
+const FLOWCHART = { diagrams: 1, nodes: 4, labels: FLOWCHART_LABELS };
+// Both diagrams ask for Mermaid's dark theme (plus darkMode and dark theme
+// variables); every label must still read on the light card.
+const DARK_THEME_REQUEST = { diagrams: 2, nodes: 4, labels: [...SEQUENCE_LABELS, ...FLOWCHART_LABELS] };
 const SCENARIOS = [
   { fixture: "flowchart", ...FLOWCHART },
   { fixture: "flowchart-init", ...FLOWCHART },
   { fixture: "flowchart-frontmatter", ...FLOWCHART },
-  {
-    fixture: "sequence",
-    diagrams: 2,
-    nodes: 0,
-    axis: true,
-    labels: ["Sender", "Viewer", "Open share link", "Render diagram text", "Labels stay readable", "Release plan", "Sandbox fix", "Deploy"],
-  },
+  { fixture: "sequence", diagrams: 2, nodes: 0, axis: true, labels: [...SEQUENCE_LABELS, "Release plan", "Sandbox fix", "Deploy"] },
+  { fixture: "state", diagrams: 1, labels: ["Idle", "Rendering", "Shown", "open", "done"] },
+  { fixture: "theme-init", ...DARK_THEME_REQUEST },
+  { fixture: "theme-frontmatter", ...DARK_THEME_REQUEST },
 ];
+// A diagram narrower than the page must render at its own size, not shrunk
+// by the card around it.
+const MIN_SCALE = 0.98;
 const rules = parseProductionHeaders(await readFile(new URL("../public/_headers", import.meta.url), "utf8"));
 
 const deployedOrigin = process.env.MERMAID_E2E_ORIGIN;
@@ -162,6 +170,28 @@ async function renderScenario(browser, scenario, colorScheme) {
     `${label}: no <style>, foreignObject, or script reaches the preview`,
   );
 
+  // Each diagram is drawn at its natural scale (1 user unit = 1 CSS px)
+  // unless the page is narrower; the card's padding and border must not
+  // shrink it. The screen CTM is the scale the drawing actually gets.
+  const sizes = await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.map((svg) => {
+    const card = getComputedStyle(svg.parentElement);
+    const body = getComputedStyle(document.body);
+    const chrome = (style, side) => Number.parseFloat(style[`padding${side}`]) + Number.parseFloat(style[`border${side}Width`]);
+    return {
+      natural: svg.viewBox.baseVal.width,
+      drawn: svg.getScreenCTM().a,
+      room: document.body.clientWidth - chrome(body, "Left") - chrome(body, "Right") - chrome(card, "Left") - chrome(card, "Right"),
+    };
+  }));
+  for (const [index, size] of sizes.entries()) {
+    const expected = Math.min(1, size.room / size.natural);
+    const ratio = size.drawn / expected;
+    assert.ok(
+      ratio >= MIN_SCALE && ratio <= 1.02,
+      `${label}: diagram ${index} is drawn at scale ${size.drawn.toFixed(3)}, expected ${expected.toFixed(3)} (${size.natural.toFixed(0)}px wide)`,
+    );
+  }
+
   // Tag what to measure, then read each target through the frame boundary.
   const targets = await frame.evaluate(({ labels, axis }) => {
     const texts = [...document.querySelectorAll(".viewer-mermaid svg text")];
@@ -185,8 +215,10 @@ async function renderScenario(browser, scenario, colorScheme) {
       else tag(tick, { kind: "label", text: `axis tick "${tick.textContent}"`, fill: getComputedStyle(tick).fill, visibility: "visible", opacity: "1" });
     }
     for (const node of document.querySelectorAll(".viewer-mermaid .node")) {
-      // The outline is a shape element or (rough-drawn shapes) a group of paths.
+      // The outline is a shape element or (rough-drawn shapes) a group of
+      // paths; start/end markers (state diagrams) have no label container.
       const container = node.querySelector(".label-container");
+      if (container === null) continue;
       const paints = [container, ...container.querySelectorAll("*")]
         .filter((element) => ["rect", "polygon", "path", "circle", "ellipse"].includes(element.localName))
         .map((element) => ({ fill: getComputedStyle(element).fill, stroke: getComputedStyle(element).stroke }));
@@ -195,7 +227,9 @@ async function renderScenario(browser, scenario, colorScheme) {
     return found;
   }, scenario);
 
-  assert.equal(targets.filter((target) => target.kind === "node").length, scenario.nodes, `${label}: node count`);
+  if (scenario.nodes !== undefined) {
+    assert.equal(targets.filter((target) => target.kind === "node").length, scenario.nodes, `${label}: node count`);
+  }
   for (const [index, target] of targets.entries()) {
     assert.ok(!target.missing, `${label}: "${target.text}" is SVG text`);
     const handle = await frame.$(`[data-e2e-target="${index}"]`);
@@ -229,14 +263,23 @@ let browser;
 try {
   await checkSandboxRoutes();
   browser = await puppeteer.launch({ headless: true });
+  let rendered = 0;
   for (const scenario of SCENARIOS) {
     if (scenarioUrl(scenario.fixture) === undefined) {
       console.log(`skipped ${scenario.fixture}: no MERMAID_E2E_URL_${scenario.fixture.toUpperCase().replaceAll("-", "_")}`);
       continue;
     }
     for (const colorScheme of ["light", "dark"]) await renderScenario(browser, scenario, colorScheme);
+    rendered += 1;
   }
-  console.log(`Mermaid browser e2e passed against ${origin}`);
+  // Headers alone say nothing about rendering: a run that drew no diagram
+  // only passes when it explicitly asked for headers only.
+  const headersOnly = process.env.MERMAID_E2E_HEADERS_ONLY === "1";
+  assert.ok(
+    rendered > 0 || headersOnly,
+    "no fixture rendered: pass MERMAID_E2E_URL_<FIXTURE> share links, or set MERMAID_E2E_HEADERS_ONLY=1 for a headers-only check",
+  );
+  console.log(`Mermaid browser e2e passed against ${origin}: ${rendered} fixture(s) rendered${rendered === 0 ? " (headers only)" : ""}`);
 } finally {
   await browser?.close();
   await server?.close();
