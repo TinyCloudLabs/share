@@ -44,6 +44,10 @@ const FLOWCHART = { diagrams: 1, nodes: 4, labels: FLOWCHART_LABELS };
 // Both diagrams ask for Mermaid's dark theme (plus darkMode and dark theme
 // variables); every label must still read on the light card.
 const DARK_THEME_REQUEST = { diagrams: 2, nodes: 4, labels: [...SEQUENCE_LABELS, ...FLOWCHART_LABELS] };
+/** "<Name> step 0" … "<Name> step <count - 1>" for each name. */
+function steps(names, count) {
+  return names.flatMap((name) => Array.from({ length: count }, (_, step) => `${name} step ${step}`));
+}
 const SCENARIOS = [
   { fixture: "flowchart", ...FLOWCHART },
   { fixture: "flowchart-init", ...FLOWCHART },
@@ -52,9 +56,11 @@ const SCENARIOS = [
   { fixture: "state", diagrams: 1, labels: ["Idle", "Rendering", "Shown", "open", "done"] },
   { fixture: "theme-init", ...DARK_THEME_REQUEST },
   { fixture: "theme-frontmatter", ...DARK_THEME_REQUEST },
-  // Taller than the printed preview frame at natural size: print must still
-  // show every step.
-  { fixture: "print", diagrams: 1, nodes: 8, labels: Array.from({ length: 8 }, (_, step) => `Print step ${step}`) },
+  // Taller than the printed preview frame at natural size, alone or together:
+  // print must still show every step of every diagram.
+  { fixture: "print", diagrams: 1, nodes: 8, labels: steps(["Print"], 8) },
+  { fixture: "print-two", diagrams: 2, nodes: 8, labels: steps(["First", "Next"], 4) },
+  { fixture: "print-three", diagrams: 3, nodes: 12, labels: steps(["First", "Next", "Last"], 4) },
 ];
 // A diagram narrower than the page must render at its own size, not shrunk
 // by the card around it (ratio to the expected scale).
@@ -139,9 +145,13 @@ async function pixelStats(browser, png) {
   }
 }
 
-/** Screenshot a page-coordinate region and measure it. */
+/**
+ * Screenshot a region (as boundingBox() reports it) and measure it. Capture
+ * stays within the viewport: capturing beyond it resizes the viewport, which
+ * resizes the 75vh preview frame and moves its scrolled content.
+ */
 async function measure(page, clip) {
-  const png = await page.screenshot({ encoding: "base64", type: "png", clip });
+  const png = await page.screenshot({ encoding: "base64", type: "png", clip, captureBeyondViewport: false });
   return pixelStats(page.browser(), png);
 }
 

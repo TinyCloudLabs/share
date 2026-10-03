@@ -13,6 +13,8 @@ import flowchart from "./flowchart.md?raw";
 import flowchartFrontmatter from "./flowchart-frontmatter.md?raw";
 import flowchartInit from "./flowchart-init.md?raw";
 import print from "./print.md?raw";
+import printThree from "./print-three.md?raw";
+import printTwo from "./print-two.md?raw";
 import sequence from "./sequence.md?raw";
 import state from "./state.md?raw";
 import themeFrontmatter from "./theme-frontmatter.md?raw";
@@ -24,6 +26,8 @@ const FIXTURES: Readonly<Record<string, string>> = {
   "flowchart-frontmatter": flowchartFrontmatter,
   sequence,
   print,
+  "print-two": printTwo,
+  "print-three": printThree,
   state,
   "theme-init": themeInit,
   "theme-frontmatter": themeFrontmatter,

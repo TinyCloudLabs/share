@@ -147,10 +147,19 @@ fails, or it times out, the diagram source stays visible as code.
 
 Printing shows only the preview frame's visible height (`75vh` of the printed
 page): the frame runs no script, so it cannot report its content height for
-the viewer to grow it. In print each diagram is therefore scaled as a whole
-to the page width and to at most 60% of that frame height, with no minimum
-scale, so a diagram is never cut off by its own size. A document longer than
-the frame is still cut off when printed; that limit predates diagrams.
+the viewer to grow it. In print the document's diagrams therefore share 60% of
+that frame height: with N diagrams each is scaled as a whole to the page width
+and to at most 60%/N of the frame height, with no minimum scale. The viewer
+counts the rendered diagrams and passes N into the preview document as
+`--mermaid-diagram-count`. The other 40% is left for the surrounding text and
+the diagram cards. This keeps a document of a heading, a few paragraphs and up
+to a few diagrams whole on paper.
+
+**Print limit:** a document taller than the printed frame is still cut off at
+the frame's bottom edge, and the rest does not continue on the next page. This
+applies to long text and to many diagrams alike, and predates diagram
+support. **Download original** is the full-fidelity way to print or keep such
+a document.
 
 Dev and preview serve the sandbox on both `/mermaid-sandbox` and
 `/mermaid-sandbox.html` with the frame headers `public/_headers` gives those
@@ -160,8 +169,9 @@ routes in production.
 `test/fixtures/markdown-share/` — flowcharts (plain, and asking for HTML
 labels by init directive and by frontmatter), sequence and gantt, a small
 state diagram, diagrams asking for the dark theme by init directive and by
-frontmatter, and a tall eight-step flowchart — in Chromium in light and dark
-mode. It checks the sandbox route headers, that every diagram renders at its
+frontmatter, and tall flowcharts alone, in twos and in threes — in Chromium
+in light and dark mode. It checks the sandbox route headers, that every
+diagram renders at its
 expected scale (also at phone width), that labels are SVG text with at least
 4.5:1 contrast, that nodes are not filled black, and that an A4
 `page.pdf()` contains every diagram label (read by `test/pdf-text.mjs`). To

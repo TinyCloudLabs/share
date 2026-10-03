@@ -370,7 +370,8 @@ export async function renderMarkdownInto(
       `rendered document too large to display: ${nodeCount} nodes > ${budget}`,
     );
   }
-  container.replaceChildren(createPreviewFrame(doc, staging.innerHTML));
+  const diagramCount = staging.querySelectorAll(".viewer-mermaid").length;
+  container.replaceChildren(createPreviewFrame(doc, staging.innerHTML, diagramCount));
 }
 
 /**
