@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import {
   MERMAID_BRIDGE_SCRIPT,
   MERMAID_SANDBOX_CSP,
+  MERMAID_SANDBOX_HTTP_CSP,
   MERMAID_SANDBOX_HTTP_HEADERS,
   MERMAID_SANDBOX_PATH,
   buildMermaidSandboxHtml,
@@ -59,25 +60,25 @@ describe("mermaid sandbox frame document (mermaid-frame.ts)", () => {
     expect(html).toContain('"<\\/script><img src=x>";');
   });
 
-  it("pins the embedding-refusal HTTP headers and ships the production _headers rule", () => {
+  it("serves the same complete frame policy in dev/preview and production", () => {
     // frame-ancestors cannot ride in a <meta> CSP: it must be an HTTP header,
     // set by the vite middleware in dev/preview and by the static host in prod.
+    expect(MERMAID_SANDBOX_HTTP_CSP).toBe(`${MERMAID_SANDBOX_CSP}; frame-ancestors 'self'`);
     expect(MERMAID_SANDBOX_HTTP_HEADERS).toEqual([
-      ["content-security-policy", "frame-ancestors 'self'"],
+      ["content-security-policy", MERMAID_SANDBOX_HTTP_CSP],
       ["x-frame-options", "SAMEORIGIN"],
       ["cache-control", "no-store"],
       ["referrer-policy", "no-referrer"],
       ["x-content-type-options", "nosniff"],
     ]);
     // cwd-relative: vitest runs from the project root (import.meta.url is
-    // not a file: URL under the jsdom environment).
+    // not a file: URL under the jsdom environment). Cloudflare redirects the
+    // .html path to the extensionless one, so both need the rule, with the
+    // appended site-wide CSP detached first.
     const headersFile = readFileSync("public/_headers", "utf8");
-    const sandboxRule = headersFile
-      .split(/\n(?=\/)/) // per-path blocks start at a leading "/"
-      .find((block) => block.includes(MERMAID_SANDBOX_PATH));
-    expect(sandboxRule).toBeDefined();
-    expect(sandboxRule).toContain("frame-ancestors 'self'");
-    expect(sandboxRule).toContain("X-Frame-Options: SAMEORIGIN");
+    for (const route of ["/mermaid-sandbox", MERMAID_SANDBOX_PATH]) {
+      expect(headersFile).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${MERMAID_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+    }
   });
 });
 
@@ -93,6 +94,10 @@ interface BridgeMessageEvent {
  * cannot run iframe documents, but the exported script can be run directly,
  * proving the guards behave (not merely that their source text exists).
  */
+/** What the mocked mermaid renders: a theme stylesheet keyed to the SVG id. */
+const RENDERED_SVG =
+  '<svg id="m-0" xmlns="http://www.w3.org/2000/svg"><style>#m-0 text { fill: rgb(1, 2, 3); }</style><text>rendered</text></svg>';
+
 function runBridge(origin: string, hash: string) {
   const posted: Array<{ message: Record<string, unknown>; targetOrigin: unknown }> = [];
   const listeners: Array<(event: BridgeMessageEvent) => void> = [];
@@ -108,12 +113,16 @@ function runBridge(origin: string, hash: string) {
     },
     render: (_id: string, source: string) => {
       mermaidCalls.rendered.push(source);
-      return Promise.resolve({ svg: "<svg><text>rendered</text></svg>" });
+      return Promise.resolve({ svg: RENDERED_SVG });
     },
   };
+  // The frame's own document (jsdom here): the bridge mounts the SVG in it to
+  // resolve the theme stylesheet into presentation attributes.
   const win = {
     location: { hash },
     parent,
+    document,
+    getComputedStyle: (element: Element) => window.getComputedStyle(element),
     addEventListener: (_type: string, listener: (event: BridgeMessageEvent) => void) => {
       listeners.push(listener);
     },
@@ -180,13 +189,16 @@ describe("mermaid bridge self-defense (executed)", () => {
     await flushMicrotasks();
     expect(bridge.mermaid.rendered).toEqual(["graph TD; D"]);
     expect(bridge.posted).toHaveLength(2);
-    expect(bridge.posted[1]!.message).toEqual({
-      type: "result",
-      id: "d",
-      nonce: "the-nonce",
-      ok: true,
-      svg: "<svg><text>rendered</text></svg>",
-    });
+    const reply = bridge.posted[1]!.message;
+    expect(reply).toMatchObject({ type: "result", id: "d", nonce: "the-nonce", ok: true });
+    // The reply is self-contained: the theme stylesheet the preview frame
+    // would strip is removed (jsdom has no SVG cascade, so the resolved
+    // presentation attributes are proven by test/e2e-mermaid.mjs in Chromium),
+    // and the mount point leaves nothing behind in the frame document.
+    const svg = new DOMParser().parseFromString(String(reply["svg"]), "image/svg+xml").documentElement;
+    expect(svg.querySelector("style")).toBeNull();
+    expect(svg.querySelector("text")?.textContent).toBe("rendered");
+    expect(document.getElementById("m-0")).toBeNull();
   });
 });
 
@@ -432,6 +444,29 @@ describe("render.ts mermaid pipeline (sandboxed)", () => {
     expect(srcdoc).not.toContain("foreignObject");
     expect(srcdoc).not.toContain("evil.example");
     expect((window as { __pwned?: unknown }).__pwned).toBeUndefined();
+  });
+
+  it("keeps the sandbox's local presentation attributes and drops stylesheets and remote url() paint", () => {
+    const clean = new DOMParser().parseFromString(
+      sanitizeSvg(
+        '<svg xmlns="http://www.w3.org/2000/svg">' +
+          "<style>text { fill: red }</style>" +
+          '<path id="local" d="M0 0" fill="url(#grad)" stroke="rgb(102, 102, 102)" marker-end="url(\'#arrow\')"/>' +
+          '<rect id="remote" fill="url(https://evil.example/p.svg#g)" stroke="u\\72l(//evil.example/s)" marker-end="url(#ok) url(https://evil.example/m)"/>' +
+          "</svg>",
+      ),
+      "image/svg+xml",
+    ).documentElement;
+    expect(clean.querySelector("style")).toBeNull();
+    const local = clean.querySelector("#local");
+    expect(local?.getAttribute("fill")).toBe("url(#grad)");
+    expect(local?.getAttribute("stroke")).toBe("rgb(102, 102, 102)");
+    expect(local?.getAttribute("marker-end")).toBe("url('#arrow')");
+    const remote = clean.querySelector("#remote");
+    expect(remote).not.toBeNull();
+    expect(remote?.hasAttribute("fill")).toBe(false);
+    expect(remote?.hasAttribute("stroke")).toBe(false);
+    expect(remote?.hasAttribute("marker-end")).toBe(false);
   });
 
   it("enforces the MAX_SVG_NODES bound: an element bomb never joins the document", async () => {

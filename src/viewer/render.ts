@@ -30,7 +30,7 @@
  * frame never receives the fragment key, session key, envelope, or any other
  * document content — see mermaid-sandbox.ts / mermaid-frame.ts. The SVG that
  * comes back over the narrow postMessage protocol is UNTRUSTED: it is
- * sanitized AGAIN here (DOMPurify svg profile, script/foreignObject
+ * sanitized AGAIN here (DOMPurify svg profile, script/foreignObject/style
  * forbidden, remote refs and url()-styles stripped) and its element count is
  * bounded (MAX_SVG_NODES). Any failure — render error, node-count breach, or
  * a timeout (which DESTROYS the frame: real cancellation, the stage-3
@@ -166,7 +166,7 @@ const RESOURCE_REF_ATTRS = new Set(["src", "srcset", "href", "xlink:href"]);
  * Does CSS text reach for an external (or any url()-loaded) resource?
  * CSS escape sequences are decoded first so `u\72 l(` can't slip past.
  * Fail closed: url()/image-set()/@import of ANY form is rejected — inline
- * mermaid theme CSS needs none of them.
+ * styles in shared content need none of them.
  */
 function cssContainsExternalRef(css: string): boolean {
   const decoded = css
@@ -178,17 +178,44 @@ function cssContainsExternalRef(css: string): boolean {
 }
 
 /**
+ * Presentation attributes whose CSS value may hold a url() reference. The
+ * mermaid sandbox ships its theme as these attributes (mermaid-frame.ts), and
+ * they legitimately point at the SVG's own markers and gradients — so a
+ * same-document `url(#id)` stays, while any other url() drops the attribute.
+ */
+const URL_REFERENCE_ATTRS = new Set([
+  "fill",
+  "stroke",
+  "clip-path",
+  "mask",
+  "filter",
+  "marker-start",
+  "marker-mid",
+  "marker-end",
+  "cursor",
+]);
+
+/**
  * DOMPurify hooks (module-scoped: DOMPurify hooks are global to the
  * instance, and one policy — no remote resource loads from sanitized
  * content — applies to both the html and svg passes):
  *  - strip src/srcset/href/xlink:href on resource-loading elements unless
  *    the value is relative/same-document or a data:image/ URI;
  *  - strip style attributes whose CSS reaches for url()/@import;
- *  - empty <style> elements (svg profile; mermaid themes) that do the same.
+ *  - strip url-capable presentation attributes unless every url() is a
+ *    same-document fragment reference.
+ * <style> elements never reach these hooks: both passes forbid them.
  */
 DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
   const attrName = data.attrName.toLowerCase();
   if (attrName === "style" && cssContainsExternalRef(data.attrValue)) {
+    data.keepAttr = false;
+    return;
+  }
+  if (
+    URL_REFERENCE_ATTRS.has(attrName) &&
+    cssContainsExternalRef(data.attrValue.replace(/url\(\s*(["']?)#[^"'()\s]+\1\s*\)/gi, ""))
+  ) {
     data.keepAttr = false;
     return;
   }
@@ -198,11 +225,6 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     isRemoteResourceRef(data.attrValue)
   ) {
     data.keepAttr = false;
-  }
-});
-DOMPurify.addHook("uponSanitizeElement", (node, data) => {
-  if (data.tagName === "style" && cssContainsExternalRef(node.textContent ?? "")) {
-    node.textContent = "";
   }
 });
 
@@ -254,11 +276,13 @@ export async function markdownToSanitizedHtml(markdown: string): Promise<string>
 
 /**
  * Sanitize an SVG string produced by mermaid before it touches the document
- * (§3.3 "sanitized again against an SVG allowlist"). <style> stays allowed —
- * mermaid themes need it and CSS cannot execute script — but script,
- * foreignObject (an HTML escape hatch), and event handlers are stripped,
- * and the module hooks above strip remote image/feImage/use refs and any
- * url()-bearing style.
+ * (§3.3 "sanitized again against an SVG allowlist"). Script, foreignObject
+ * (an HTML escape hatch), <style>, and event handlers are stripped, and the
+ * module hooks above strip remote image/feImage/use refs, url()-bearing
+ * styles, and non-local url() presentation attributes. <style> is not
+ * needed: the sandbox ships the theme as presentation attributes and labels
+ * as SVG <text> (mermaid-frame.ts), so a stylesheet could only restyle the
+ * preview — never required for a correct diagram.
  */
 export function sanitizeSvg(svg: string): string {
   // Avoid handing an obvious element bomb to the DOM parser. The returned
@@ -267,7 +291,7 @@ export function sanitizeSvg(svg: string): string {
   if (countSvgStartTags(svg) > MAX_SVG_NODES) return "<svg></svg>";
   return DOMPurify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
-    FORBID_TAGS: ["script", "foreignObject", "iframe", "audio", "video"],
+    FORBID_TAGS: ["script", "foreignObject", "style", "iframe", "audio", "video"],
   });
 }
 

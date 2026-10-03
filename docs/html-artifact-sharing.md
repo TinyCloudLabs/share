@@ -119,12 +119,29 @@ bar, a notice that the page comes from the sender (including the IP-address
 caveat), and the footer “Download original” action, which is present whether
 or not the preview succeeds.
 
+## Mermaid diagrams in Markdown
+
+A ` ```mermaid ` block is rendered in the `/mermaid-sandbox` frame: an
+opaque-origin sandbox (`sandbox="allow-scripts"`, no network) that receives
+only the diagram text and runs Mermaid with `securityLevel: "strict"` and
+`htmlLabels: false`. Before the SVG leaves the frame, the bridge copies each
+element's computed paint and font properties onto it as presentation
+attributes and removes the theme `<style>`, so labels are SVG `<text>` and
+node styling no longer depends on a stylesheet. The viewer sanitizes the SVG
+again — `script`, `foreignObject` and `<style>` are removed, and `url()`
+values must point inside the SVG — before it joins the scriptless Markdown
+preview frame. If the sandbox cannot load, a render fails, or it times out,
+the diagram source stays visible as code.
+
+`npm run test:e2e:mermaid` renders a flowchart in Chromium in light and dark
+mode and checks that labels show and nodes are not filled black.
+
 ## Production headers
 
 Cloudflare Pages appends, rather than replaces, a header set by more than one
-matching `_headers` rule. The artifact sandbox routes (`/artifact-sandbox`
-and its `.html` form, which Cloudflare redirects to the extensionless path)
-therefore detach the site-wide policy
+matching `_headers` rule. The sandbox routes (`/artifact-sandbox`,
+`/mermaid-sandbox`, and their `.html` forms, which Cloudflare redirects to the
+extensionless paths) therefore detach the site-wide policy
 (`! Content-Security-Policy`) before setting their own; otherwise the site's
 `frame-ancestors 'none'` and `script-src 'self'` would also apply and the
 sandbox could neither be framed nor run its bridge.

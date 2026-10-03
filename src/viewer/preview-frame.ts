@@ -38,8 +38,10 @@
  *   the effective policy is the intersection): default-src 'none' with NO
  *   script-src directive (so script-src falls back to 'none'), images only
  *   from data:/blob: (remote images were already stripped by the pipeline;
- *   this backstops them), inline styles only (needed for mermaid theme CSS
- *   and the frame's own base stylesheet; CSS cannot execute script).
+ *   this backstops them), inline styles only (needed for the frame's own
+ *   base stylesheet; CSS cannot execute script). Mermaid diagrams need no
+ *   stylesheet here: the sandbox resolves their theme into SVG presentation
+ *   attributes and the SVG sanitizer forbids <style> (render.ts).
  *
  * Residual behaviors, considered and accepted:
  *   - The frame cannot self-report its content height (no script), so the

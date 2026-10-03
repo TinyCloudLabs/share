@@ -64,9 +64,17 @@ export const MERMAID_SANDBOX_CSP =
  * HTTP-header-only directives: a <meta> CSP cannot express frame-ancestors,
  * so a static production host MUST be configured to send them (see
  * public/_headers for the Cloudflare Pages rule the build ships).
+ *
+ * The header carries the complete frame policy, not only frame-ancestors:
+ * Cloudflare Pages appends a header set by several `_headers` rules, so the
+ * sandbox routes detach the site-wide CSP (whose frame-ancestors 'none' and
+ * script-src 'self' would block framing and the inline bridge) and send
+ * exactly MERMAID_SANDBOX_HTTP_CSP instead.
  */
+export const MERMAID_SANDBOX_HTTP_CSP = `${MERMAID_SANDBOX_CSP}; frame-ancestors 'self'`;
+
 export const MERMAID_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
-  ["content-security-policy", "frame-ancestors 'self'"],
+  ["content-security-policy", MERMAID_SANDBOX_HTTP_CSP],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
@@ -107,6 +115,16 @@ export type MermaidFrameReply =
  * nonce-carrying render requests from the parent, announce readiness.
  * Exported (not just inlined) so tests can EXECUTE it against a mock
  * environment and prove the guards, not merely string-match them.
+ *
+ * SELF-CONTAINED OUTPUT: the SVG leaves this frame for the scriptless
+ * preview frame (render.ts), which strips `<style>` and `foreignObject`.
+ * Mermaid's default output depends on both — a theme stylesheet keyed to the
+ * SVG's id, and HTML labels inside `foreignObject` — and without them nodes
+ * fall back to SVG's default black fill and labels vanish. So the bridge
+ * renders with `htmlLabels: false` (labels are SVG `<text>`), mounts the SVG
+ * in this frame where the theme CSS applies, copies each element's computed
+ * paint and font properties onto it as presentation attributes, and drops
+ * the `<style>` element. Only local `url(#id)` references are kept.
  */
 export const MERMAID_BRIDGE_SCRIPT = `"use strict";
 (function () {
@@ -121,14 +139,69 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
         { type: "result", id: "", nonce: "", ok: false, error: "mermaid sandbox refused: document is not in an opaque-origin sandbox" },
         "*"
       );
-    } catch (_refusalError) {}
+    } catch {}
     return;
   }
   // Handshake nonce, placed in the frame URL fragment by the embedding
   // parent at creation. No nonce → no bridge.
   var nonce = String(window.location.hash || "").replace(/^#/, "");
   if (nonce.length === 0) return;
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "neutral" });
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme: "neutral",
+    htmlLabels: false,
+    flowchart: { htmlLabels: false }
+  });
+  // Inherited properties are written where they differ from the parent's
+  // computed value (and always on the root, so nothing inherits from the
+  // preview page); opacity and display only where they hide something.
+  var INHERITED = [
+    "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity",
+    "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin",
+    "stroke-miterlimit", "font-family", "font-size", "font-style", "font-weight",
+    "text-anchor", "dominant-baseline", "visibility"
+  ];
+  function inlineStyles(svgMarkup) {
+    var host = window.document.createElement("div");
+    host.innerHTML = svgMarkup;
+    window.document.body.appendChild(host);
+    try {
+      var root = host.querySelector("svg");
+      if (root === null) return svgMarkup;
+      var elements = [root].concat(Array.prototype.slice.call(root.querySelectorAll("*")));
+      var computed = new Map();
+      elements.forEach(function (element) { computed.set(element, window.getComputedStyle(element)); });
+      // Read everything first: computed styles are live, and an attribute
+      // written early must not change a value still to be read.
+      var writes = [];
+      elements.forEach(function (element) {
+        if (element.localName === "style") return;
+        var style = computed.get(element);
+        var parentStyle = element === root ? undefined : computed.get(element.parentElement);
+        INHERITED.forEach(function (name) {
+          var value = style.getPropertyValue(name);
+          if (value !== "" && (parentStyle === undefined || parentStyle.getPropertyValue(name) !== value)) {
+            writes.push([element, name, value]);
+          }
+        });
+        var opacity = style.getPropertyValue("opacity");
+        if (opacity !== "" && opacity !== "1") writes.push([element, "opacity", opacity]);
+        if (style.getPropertyValue("display") === "none") writes.push([element, "display", "none"]);
+      });
+      writes.forEach(function (write) {
+        // Computed url() values may be resolved against this document's URL;
+        // keep only the fragment so the reference stays local to the SVG,
+        // and drop any value that still points elsewhere.
+        var value = write[2].replace(/url\\(\\s*["']?[^"'#)]*#([^"')\\s]+)["']?\\s*\\)/g, "url(#$1)");
+        if (!/url\\(\\s*[^#\\s]/.test(value)) write[0].setAttribute(write[1], value);
+      });
+      Array.prototype.slice.call(root.querySelectorAll("style")).forEach(function (node) { node.remove(); });
+      return root.outerHTML;
+    } finally {
+      host.remove();
+    }
+  }
   var renderCount = 0;
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -140,7 +213,7 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
     mermaid
       .render("mermaid-sandbox-" + renderCount++, data.source)
       .then(function (out) {
-        window.parent.postMessage({ type: "result", id: id, nonce: nonce, ok: true, svg: out.svg }, "*");
+        window.parent.postMessage({ type: "result", id: id, nonce: nonce, ok: true, svg: inlineStyles(out.svg) }, "*");
       })
       .catch(function (err) {
         window.parent.postMessage(
