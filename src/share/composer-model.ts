@@ -200,12 +200,16 @@ export function normalizeRecipientDomain(value: string): string {
 }
 
 /**
- * Mailboxes typed into the domain delivery field, separated by commas,
- * semicolons or whitespace, de-duplicated in order. Kept as typed;
- * validation canonicalizes them.
+ * Mailboxes typed or pasted into the domain delivery field: separated by
+ * commas, semicolons, new lines or spaces, or written as `Name <address>`.
+ * De-duplicated in order and kept as typed; validation canonicalizes them.
  */
 export function parseDeliveryEmails(value: string): readonly string[] {
-  return [...new Set(value.split(/[\s,;]+/).filter((entry) => entry.length > 0))];
+  const entries = value.split(/[,;\n]+/).flatMap((part) => {
+    const named = /<([^<>]*)>/.exec(part);
+    return named !== null ? [named[1]!.trim()] : part.trim().split(/\s+/);
+  });
+  return [...new Set(entries.filter((entry) => entry.length > 0))];
 }
 
 /**

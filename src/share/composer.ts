@@ -92,6 +92,13 @@ export interface ShareDeliveryAuthorizationReceipt {
   readonly proof: unknown;
 }
 
+/** Some, but not all, addresses were emailed; trying again sends only the rest. */
+export class ShareDeliveryIncomplete extends Error {
+  constructor(readonly sent: number, readonly total: number) {
+    super("share delivery incomplete");
+  }
+}
+
 /** Which of `names` the TinyCloud session does not provide as callable methods, in `names` order. */
 export function missingTinyCloudMethods(tinycloud: unknown, names: readonly string[]): readonly string[] {
   const record = (tinycloud ?? {}) as Record<string, unknown>;
@@ -322,6 +329,15 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   // domain link can be emailed to any number of mailboxes at the domain.
   const deliveryEmail = model.recipient.kind === "exactEmail" ? model.deliveryEmail : undefined;
   const deliveryRecipients = notificationRecipients(model);
+  // Per-address delivery state for this link, kept across Notify retries.
+  const deliveries = new Map<string, { attempt: number; expiresAt: string; sent: boolean }>();
+  const deliveryExpiry = () => new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(/\.\d{3}Z$/, "Z");
+  // The JTI the Node and OpenCredentials deduplicate on. The exact-email key
+  // is unchanged from earlier releases.
+  const deliveryKey = (recipientEmail: string, attempt: number): string => {
+    const key = model.recipient.kind === "exactEmail" ? `tinycloud-share:${shareId}` : `tinycloud-share:${shareId}:${recipientEmail}`;
+    return attempt === 0 ? key : `${key}:attempt-${attempt}`;
+  };
   let plaintext: Uint8Array;
   let plaintextType: string;
   if (selectedSource !== undefined && sourcePath !== undefined) {
@@ -388,27 +404,42 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       const material = deliveryMaterial;
       // The owner's Node authorizes each mailbox separately and names it in
       // its signed admission; OpenCredentials sends one invitation per address.
+      // One address failing doesn't stop the others, and a retry sends only
+      // what is left.
+      let failed = 0;
       for (const recipientEmail of deliveryRecipients) {
-        const authorization = await tinycloud.authorizeShareDeliveryV3({
-          envelope: material.envelope as ShareEnvelopeV3,
-          sealedEnvelope: material.sealedEnvelope,
-          envelopeKey: material.envelopeKey,
-          shareCid: material.shareCid,
-          resourcePath,
-          recipientEmail,
-          shareUrl: share.url,
-          documentName: filename,
-          expiresAt: new Date(Math.min(Date.parse(model.expiresAt), Date.now() + 5 * 60 * 1000)).toISOString().replace(".000Z", "Z"),
-          // Keep each Node-issued JTI stable when the sender retries, so
-          // OpenCredentials can safely deduplicate it. The exact-email key is
-          // unchanged from earlier releases.
-          idempotencyKey: model.recipient.kind === "exactEmail" ? `tinycloud-share:${shareId}` : `tinycloud-share:${shareId}:${recipientEmail}`,
-          // OpenCredentials verifies and consumes the signed admission at its
-          // generic credential-invitation endpoint.
-          deliveryAudience: config.credentialsOrigin,
-        });
-        await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+        let delivery = deliveries.get(recipientEmail);
+        if (delivery?.sent === true) continue;
+        // A retry repeats the signed request exactly (same JTI and expiry), so
+        // the Node returns the same receipt and OpenCredentials deduplicates
+        // it. Once that request has expired, ask again under a fresh JTI.
+        if (delivery === undefined || Date.parse(delivery.expiresAt) - Date.now() < 30_000) {
+          delivery = { attempt: delivery === undefined ? 0 : delivery.attempt + 1, expiresAt: deliveryExpiry(), sent: false };
+          deliveries.set(recipientEmail, delivery);
+        }
+        try {
+          const authorization = await tinycloud.authorizeShareDeliveryV3({
+            envelope: material.envelope as ShareEnvelopeV3,
+            sealedEnvelope: material.sealedEnvelope,
+            envelopeKey: material.envelopeKey,
+            shareCid: material.shareCid,
+            resourcePath,
+            recipientEmail,
+            shareUrl: share.url,
+            documentName: filename,
+            expiresAt: delivery.expiresAt,
+            idempotencyKey: deliveryKey(recipientEmail, delivery.attempt),
+            // OpenCredentials verifies and consumes the signed admission at its
+            // generic credential-invitation endpoint.
+            deliveryAudience: config.credentialsOrigin,
+          });
+          await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+          delivery.sent = true;
+        } catch {
+          failed += 1;
+        }
       }
+      if (failed > 0) throw new ShareDeliveryIncomplete(deliveryRecipients.filter((email) => deliveries.get(email)?.sent === true).length, deliveryRecipients.length);
     } }),
   };
 }
@@ -640,7 +671,11 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const encryptionTitle = el(doc, "strong", "encryption-title", "Stored in your TinyCloud");
   const encryptionNote = el(doc, "p", "scope-note encryption-note", "Link-only content stays on your TinyCloud node. The complete link is the read capability.");
   encryptionGroup.append(encryptionTitle, encryptionNote);
-  const deliveryLabel = el(doc, "label", "field-label delivery-field"); const deliveryText = el(doc, "span", "delivery-label-text", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(deliveryText, delivery); deliveryLabel.hidden = true;
+  const deliveryLabel = el(doc, "label", "field-label delivery-field", "Send the email somewhere else (optional)"); const delivery = el(doc, "input", "field-input delivery-value") as HTMLInputElement; delivery.type = "email"; delivery.name = "delivery-email"; deliveryLabel.append(delivery); deliveryLabel.hidden = true;
+  // A domain share can be emailed to many people, so its addresses get their
+  // own multi-line field beside the recipient (an input would drop the line
+  // breaks of a pasted list).
+  const domainDeliveryLabel = el(doc, "label", "field-label domain-delivery-field", "Email the link to people at this domain (optional)"); const domainDelivery = el(doc, "textarea", "field-input domain-delivery-value") as HTMLTextAreaElement; domainDelivery.name = "delivery-emails"; domainDelivery.rows = 2; domainDelivery.autocapitalize = "none"; domainDelivery.spellcheck = false; domainDelivery.setAttribute("autocomplete", "off"); domainDeliveryLabel.append(domainDelivery); domainDeliveryLabel.hidden = true; recipientInput.after(domainDeliveryLabel);
   const saveAsLabel = el(doc, "label", "field-label save-as-field", "Save it as"); const saveAs = el(doc, "input", "field-input") as HTMLInputElement; saveAs.type = "text"; saveAs.name = "save-as"; saveAs.autocomplete = "off"; saveAsLabel.append(saveAs);
   advanced.append(deliveryLabel, saveAsLabel);
 
@@ -658,8 +693,6 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   let contentKind: "empty" | "file" | "files" | "text" | "library" = "empty";
   let chosenFiles: readonly File[] = [];
   let deliveryTouched = false;
-  // Which recipient kind the delivery field was last filled for.
-  let deliveryKind: RecipientKind | undefined;
 
   const selectedKind = (): RecipientKind => (form.querySelector<HTMLInputElement>("input[name=recipient]:checked")?.value ?? "bearer") as RecipientKind;
 
@@ -673,7 +706,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     note.textContent = kind === "bearer"
       ? `Anyone who gets this link can open it until ${shortDate(expiryIso())}. You can revoke it earlier from All shares.`
       : kind === "emailDomain"
-        ? `Anyone with an @${typed.length === 0 ? "example.com" : typed.replace(/^@/, "").toLowerCase()} email address can open this after confirming it. Creating the link doesn't email anyone — you can email it to addresses at that domain next.`
+        ? `Anyone with an @${typed.length === 0 ? "example.com" : typed.replace(/^@/, "").toLowerCase()} email address can open this after confirming it. Creating the link doesn't email anyone; list addresses at the domain if you want us to email it.`
         : kind === "recipientDid"
           ? `Only the OpenKey device identified by ${typed.length === 0 ? "that DID" : typed} can open this.`
           : `Only ${typed.length === 0 ? "that person" : typed} can open this. Creating the link doesn't email them — you'll get that option next.`;
@@ -682,13 +715,12 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     const kind = selectedKind(); const addressed = kind !== "bearer";
     const prefixSelected = contentKind === "files"
       || (contentKind === "library" && (source.selectedOptions[0]?.dataset.resourceKind === "prefix" || source.value.endsWith("/")));
-    const emailed = kind === "exactEmail" || kind === "emailDomain";
-    recipientInput.hidden = !addressed; deliveryLabel.hidden = !emailed;
-    // An exact address and a list of domain mailboxes mean different things.
-    if (kind !== deliveryKind) { delivery.value = ""; deliveryTouched = false; deliveryKind = emailed ? kind : undefined; }
-    deliveryText.textContent = kind === "emailDomain" ? "Email the link to people at this domain (optional)" : "Send the email somewhere else (optional)";
-    delivery.type = kind === "emailDomain" ? "text" : "email";
-    delivery.placeholder = kind === "emailDomain" ? "alice@example.com, bob@example.com" : "";
+    recipientInput.hidden = !addressed; deliveryLabel.hidden = kind !== "exactEmail";
+    if (kind !== "exactEmail") { delivery.value = ""; deliveryTouched = false; }
+    domainDeliveryLabel.hidden = kind !== "emailDomain";
+    if (kind !== "emailDomain") domainDelivery.value = "";
+    const typedDomain = recipientInput.value.trim().replace(/^@/, "").toLowerCase() || "example.com";
+    domainDelivery.placeholder = `alice@${typedDomain}, bob@${typedDomain}`;
     for (const control of accessControls) {
       if (control.value === "read") {
         if (!addressed) control.input.checked = true;
@@ -921,7 +953,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
               : { kind: "exact", path: uploadPath },
           encryption: kind !== "bearer",
           encryptionAcknowledged: false,
-          ...(delivery.value.length === 0 ? {} : kind === "emailDomain" ? { deliveryEmails: parseDeliveryEmails(delivery.value) } : { deliveryEmail: delivery.value }),
+          ...(kind === "exactEmail" && delivery.value.length > 0 ? { deliveryEmail: delivery.value } : {}),
+          ...(kind === "emailDomain" && domainDelivery.value.trim().length > 0 ? { deliveryEmails: parseDeliveryEmails(domainDelivery.value) } : {}),
         };
         const model = validateComposerModel(modelInput);
         projectCapabilities(model);
@@ -944,7 +977,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         }
         progress.children[0]?.setAttribute("data-state", "complete"); progress.children[1]?.setAttribute("data-state", "complete"); progress.children[2]?.setAttribute("data-state", "current"); contentSection.hidden = true; fieldset.hidden = true; expiryFieldset.hidden = true; accessFieldset.hidden = true; advanced.hidden = true; note.hidden = true; submit.hidden = true;
         status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your link is ready"), el(doc, "span", "sender-status-detail", model.recipient.kind === "emailDomain"
-          ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can open it. Copy the link, or email it to addresses at the domain below.`
+          ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can open it. ${canNotify(model) ? "Copy the link, or have us email it to the addresses you listed." : "Copy the link and send it to people at that domain."}`
           : model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
@@ -973,8 +1006,19 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         done.addEventListener("click", () => options.onBack());
         actions.append(copy, another, done); status.append(actions, copyStatus);
         const recipients = notificationRecipients(model);
+        const notified = new Set<string>();
         const notifyAction = created?.notify ?? (options.notify === undefined ? undefined : async () => {
-          for (const recipient of recipients) await options.notify?.({ share: created as ComposerShareResult, recipient, matcher: model.recipient.kind });
+          let failed = 0;
+          for (const recipient of recipients) {
+            if (notified.has(recipient)) continue;
+            try {
+              await options.notify?.({ share: created as ComposerShareResult, recipient, matcher: model.recipient.kind });
+              notified.add(recipient);
+            } catch {
+              failed += 1;
+            }
+          }
+          if (failed > 0) throw new ShareDeliveryIncomplete(notified.size, recipients.length);
         });
         // Sending is always offered here for an addressed share; nothing in
         // the form gates it any more (P1-5).
@@ -982,7 +1026,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           const confirm = el(doc, "button", "button button-secondary confirm-notification", recipients.length > 1 ? `Notify ${recipients.length} recipients` : "Notify recipient") as HTMLButtonElement; confirm.type = "button";
           const cancel = el(doc, "button", "button button-secondary cancel-notification", "Keep link-only") as HTMLButtonElement; cancel.type = "button";
           const deliveryStatus = el(doc, "span", "copy-status notification-status");
-          confirm.addEventListener("click", () => { confirm.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch(() => { confirm.disabled = false; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = "Invitation request failed. The link above still works; try again when ready."; }); });
+          const many = recipients.length > 1;
+          confirm.addEventListener("click", () => { confirm.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = many ? "Requesting invitations…" : "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = many ? "Invitations requested." : "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch((error: unknown) => { confirm.disabled = false; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = error instanceof ShareDeliveryIncomplete && error.sent > 0 ? `Sent ${error.sent} of ${error.total}. The link above still works; try again to send the rest.` : "Invitation request failed. The link above still works; try again when ready."; }); });
           cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; deliveryStatus.textContent = "No email was sent."; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
         }
         copy.focus();

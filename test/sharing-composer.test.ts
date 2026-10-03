@@ -9,6 +9,7 @@ import {
   emailDomainOf,
   expiryFromChoice,
   normalizeEmailDomain,
+  parseDeliveryEmails,
   validateComposerModel,
   type ComposerContent,
   type ShareComposerModel,
@@ -54,7 +55,7 @@ const EXPECTED_SENDER_COPY = {
   deliveryDomain: "Every address to email must be at the shared domain exactly.",
   plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
-  linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  linkOnlyActions: "Link-only shares are view-only. Share with a specific person or domain to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
@@ -182,6 +183,9 @@ describe("share composer model", () => {
     for (const outside of ["person@sub.tinycloud.xyz", "person@tinycloud.xyz.evil", "person@evil-tinycloud.xyz", "not-an-address"]) {
       expect(() => domain("tinycloud.xyz", { deliveryEmails: ["person@tinycloud.xyz", outside] }), outside).toThrow("Every address to email must be at the shared domain exactly.");
     }
+    // Pasted lists: names, new lines and mixed separators.
+    expect(parseDeliveryEmails("Alice Smith <alice@tinycloud.xyz>, bob@tinycloud.xyz\ncarol@tinycloud.xyz dave@tinycloud.xyz;bob@tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz", "carol@tinycloud.xyz", "dave@tinycloud.xyz"]);
+    expect(parseDeliveryEmails(" , ;\n ")).toEqual([]);
     // A single pinned address belongs to exact-email shares only.
     expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("The delivery address must match the person you're sharing with.");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true, deliveryEmails: ["reader@example.com"] }))).toThrow("Every address to email must be at the shared domain exactly.");
@@ -202,7 +206,7 @@ describe("share composer model", () => {
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
-    expect(() => validateComposerModel(modelWith(textContent, { permissions: ["read", "edit"] }))).toThrow("Link-only shares are view-only. Share with a specific person to allow editing.");
+    expect(() => validateComposerModel(modelWith(textContent, { permissions: ["read", "edit"] }))).toThrow("Link-only shares are view-only. Share with a specific person or domain to allow editing.");
     expect(validateComposerModel(modelWith(textContent, { permissions: ["read"] }))).toMatchObject({ recipient: { kind: "bearer" }, permissions: ["read"] });
   });
 });
@@ -487,12 +491,17 @@ describe("share composer access controls", () => {
     // TC-530: editing and email delivery are offered, as for one person.
     const edit = root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!;
     expect(edit.closest("label")!.hidden).toBe(false);
-    const delivery = root.querySelector<HTMLElement>(".delivery-field")!;
+    const delivery = root.querySelector<HTMLElement>(".domain-delivery-field")!;
     expect(delivery.hidden).toBe(false);
     expect(delivery.textContent).toContain("Email the link to people at this domain (optional)");
-    expect(root.querySelector<HTMLInputElement>("input[name=delivery-email]")!.type).toBe("text");
+    // The exact-email delivery field stays hidden for a domain share.
+    expect(root.querySelector<HTMLElement>(".delivery-field")!.hidden).toBe(true);
     expect(root.querySelector<HTMLElement>(".composer-access-hint")!.hidden).toBe(true);
-    expect(root.querySelector(".composer-note")?.textContent).toBe("Anyone with an @tinycloud.xyz email address can open this after confirming it. Creating the link doesn't email anyone — you can email it to addresses at that domain next.");
+    expect(root.querySelector(".composer-note")?.textContent).toBe("Anyone with an @tinycloud.xyz email address can open this after confirming it. Creating the link doesn't email anyone; list addresses at the domain if you want us to email it.");
+    // The addresses sit with the recipient rather than in Advanced settings.
+    expect(delivery.closest("details")).toBeNull();
+    expect(delivery.closest("fieldset")?.classList.contains("recipient-section")).toBe(true);
+    expect(root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!.placeholder).toBe("alice@tinycloud.xyz, bob@tinycloud.xyz");
   });
 
   it("removes manual folder browsing and restores edit controls for a person", () => {
@@ -701,7 +710,7 @@ describe("share composer sender failures", () => {
     const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
     recipient.value = "example.com";
     recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
+    const delivery = root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!;
     delivery.value = "person@other.example";
     delivery.dispatchEvent(new Event("input", { bubbles: true }));
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
@@ -722,7 +731,7 @@ describe("share composer sender failures", () => {
     const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
     recipient.value = "example.com";
     recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
+    const delivery = root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!;
     delivery.value = "Alice@example.com, bob@example.com; alice@example.com";
     delivery.dispatchEvent(new Event("input", { bubbles: true }));
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
@@ -734,7 +743,7 @@ describe("share composer sender failures", () => {
     const confirm = root.querySelector<HTMLButtonElement>(".confirm-notification")!;
     expect(confirm.textContent).toBe("Notify 2 recipients");
     confirm.click();
-    await vi.waitFor(() => expect(root.querySelector(".notification-status")?.textContent).toBe("Invitation requested."));
+    await vi.waitFor(() => expect(root.querySelector(".notification-status")?.textContent).toBe("Invitations requested."));
     expect(notify.mock.calls.map(([input]) => [input.recipient, input.matcher])).toEqual([["alice@example.com", "emailDomain"], ["bob@example.com", "emailDomain"]]);
   });
 });
