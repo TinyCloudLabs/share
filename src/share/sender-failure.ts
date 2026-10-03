@@ -25,9 +25,6 @@ export type SenderFailureKind =
   | "expiry"
   | "deliveryRecipient"
   | "deliveryDomain"
-  | "domainActions"
-  | "domainDelivery"
-  | "publicMailDomain"
   | "plaintext"
   | "acknowledgment"
   | "linkOnlyActions"
@@ -61,13 +58,10 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   recipientUnavailable: "That recipient option isn't available yet. Choose one person or anyone with the link.",
   expiry: "Choose when the link should expire.",
   deliveryRecipient: "The delivery address must match the person you're sharing with.",
-  deliveryDomain: "The delivery address must belong to the shared domain.",
-  domainActions: "Anyone-at-a-domain shares are view-only.",
-  domainDelivery: "TinyCloud doesn't email everyone at a domain. Copy the link and send it yourself.",
-  publicMailDomain: "Anyone can create an address at that domain. Choose your organization's domain, or share with one person.",
+  deliveryDomain: "Every address to email must be at the shared domain exactly.",
   plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
-  linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  linkOnlyActions: "Link-only shares are view-only. Share with a specific person or domain to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",

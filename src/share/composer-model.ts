@@ -1,5 +1,5 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
-import { canonicalEmailDomain } from "@tinycloud/sdk-core";
+import { canonicalEmailDomain, canonicalMailbox, mailboxBelongsToDomain } from "@tinycloud/sdk-core";
 import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
@@ -43,7 +43,10 @@ export interface ShareComposerModel {
   readonly resource: ResourceSelector;
   readonly encryption: boolean;
   readonly encryptionAcknowledged: boolean;
+  /** Exact-email shares: the one mailbox to email the link to. */
   readonly deliveryEmail?: string;
+  /** Email-domain shares: mailboxes at exactly that domain to email the link to. */
+  readonly deliveryEmails?: readonly string[];
 }
 
 /** Everything the composer can default before the sender has supplied content. */
@@ -187,26 +190,36 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
 }
 
-/**
- * Domains where anyone can open an inbox. A share "for anyone at" one of
- * these is effectively public, so the composer refuses them.
- */
-const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
-  "aol.com", "gmail.com", "googlemail.com", "gmx.com", "gmx.net", "hey.com", "hotmail.com", "icloud.com",
-  "live.com", "mac.com", "mail.com", "mailinator.com", "me.com", "msn.com", "outlook.com", "pm.me",
-  "proton.me", "protonmail.com", "qq.com", "tutanota.com", "yahoo.com", "yandex.com", "ymail.com", "zoho.com",
-]);
-
 /** A canonical recipient domain: lowercase ASCII DNS labels, two or more, no IP literal. */
 export function normalizeRecipientDomain(value: string): string {
-  let domain: string;
   try {
-    domain = canonicalEmailDomain(value);
+    return canonicalEmailDomain(value);
   } catch {
     throw validationFailure("recipientDomain");
   }
-  if (PUBLIC_MAIL_DOMAINS.has(domain)) throw validationFailure("publicMailDomain");
-  return domain;
+}
+
+/**
+ * Mailboxes typed or pasted into the domain delivery field: separated by
+ * commas, semicolons, new lines or spaces, or written as `Name <address>`.
+ * De-duplicated in order and kept as typed; validation canonicalizes them.
+ */
+export function parseDeliveryEmails(value: string): readonly string[] {
+  const entries = value.split(/[,;\n]+/).flatMap((part) => {
+    const named = /<([^<>]*)>/.exec(part);
+    return named !== null ? [named[1]!.trim()] : part.trim().split(/\s+/);
+  });
+  return [...new Set(entries.filter((entry) => entry.length > 0))];
+}
+
+/**
+ * The issuer's canonical mailbox (lowercase), which is also the address the
+ * owner's Node names in its delivery admission, when it is at `domain`.
+ */
+function domainDeliveryEmail(value: string, domain: string): string {
+  const mailbox = canonicalMailbox(value);
+  if (mailbox === undefined || !mailboxBelongsToDomain(mailbox.email, domain)) throw validationFailure("deliveryDomain");
+  return mailbox.email;
 }
 
 export function validateComposerModel(model: ShareComposerModel): ShareComposerModel {
@@ -237,17 +250,27 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
     throw validationFailure("linkOnlyActions");
   }
   if ((recipient.kind === "exactEmail" || recipient.kind === "emailDomain") && !model.encryption) throw validationFailure("plaintext");
-  // A domain share admits every mailbox at the domain, so it stays view-only
-  // and is never emailed on the sender's behalf.
-  if (recipient.kind === "emailDomain" && model.permissions.some((permission) => permission !== "read")) throw validationFailure("domainActions");
-  if (recipient.kind === "emailDomain" && model.deliveryEmail !== undefined) throw validationFailure("domainDelivery");
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
-  if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
+  if (deliveryEmail !== undefined && (recipient.kind !== "exactEmail" || deliveryEmail !== recipient.value)) {
     throw validationFailure("deliveryRecipient");
   }
+  // One domain link can be emailed to any number of mailboxes at exactly that
+  // domain; the owner's Node names each one in its signed admission.
+  if (model.deliveryEmails !== undefined && model.deliveryEmails.length > 0 && recipient.kind !== "emailDomain") throw validationFailure("deliveryDomain");
+  const deliveryEmails = recipient.kind !== "emailDomain" || model.deliveryEmails === undefined || model.deliveryEmails.length === 0
+    ? undefined
+    : [...new Set(model.deliveryEmails.map((email) => domainDeliveryEmail(email, recipient.value)))];
   const projected = projectCapabilities(model);
-  return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
+  const { deliveryEmail: _deliveryEmail, deliveryEmails: _deliveryEmails, ...rest } = model;
+  return {
+    ...rest,
+    recipient,
+    resource: projected.resource,
+    permissions: projected.actions,
+    ...(deliveryEmail === undefined ? {} : { deliveryEmail }),
+    ...(deliveryEmails === undefined ? {} : { deliveryEmails }),
+  };
 }
 
 /**
@@ -255,5 +278,13 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
  * sender no longer pre-commits to being offered it (P1-5).
  */
 export function canNotify(model: ShareComposerModel): boolean {
-  return model.recipient.kind === "exactEmail" && model.deliveryEmail !== undefined;
+  return model.recipient.kind === "exactEmail"
+    ? model.deliveryEmail !== undefined
+    : model.recipient.kind === "emailDomain" && (model.deliveryEmails?.length ?? 0) > 0;
+}
+
+/** The mailboxes a Notify action emails. */
+export function notificationRecipients(model: ShareComposerModel): readonly string[] {
+  if (!canNotify(model)) return [];
+  return model.recipient.kind === "exactEmail" ? [model.deliveryEmail!] : model.deliveryEmails!;
 }
