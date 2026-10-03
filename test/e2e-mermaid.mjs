@@ -8,7 +8,10 @@
  *  - diagrams reach the scriptless preview frame with every label as SVG
  *    text, readable (WCAG contrast >= 4.5) wherever it sits — on node fills,
  *    on edges, on the diagram background — and with nodes not filled black;
- *  - diagrams keep their natural size on the card (rendered scale ~1);
+ *  - diagrams keep their natural size on the card (drawn scale ~1); at phone
+ *    width a wide one stops at half size and its card scrolls sideways;
+ *  - an A4 print (page.pdf) contains every diagram label, including all
+ *    steps of a diagram taller than the printed preview frame;
  *  - an init directive or frontmatter config cannot switch HTML labels back
  *    on or switch to a dark theme; no <style>, foreignObject, or script
  *    crosses into the preview.
@@ -24,12 +27,13 @@
  * fixture fails unless MERMAID_E2E_HEADERS_ONLY=1 asks for headers only.
  */
 import assert from "node:assert/strict";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 import puppeteer from "puppeteer";
 import { createServer } from "vite";
 
 import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/production-headers.mjs";
+import { pdfPageTexts } from "./pdf-text.mjs";
 
 const screenshotDir = process.env.MERMAID_SCREENSHOT_DIR ?? ".context";
 const SANDBOX_ROUTES = ["/mermaid-sandbox", "/mermaid-sandbox.html"];
@@ -48,10 +52,17 @@ const SCENARIOS = [
   { fixture: "state", diagrams: 1, labels: ["Idle", "Rendering", "Shown", "open", "done"] },
   { fixture: "theme-init", ...DARK_THEME_REQUEST },
   { fixture: "theme-frontmatter", ...DARK_THEME_REQUEST },
+  // Taller than the printed preview frame at natural size: print must still
+  // show every step.
+  { fixture: "print", diagrams: 1, nodes: 8, labels: Array.from({ length: 8 }, (_, step) => `Print step ${step}`) },
 ];
 // A diagram narrower than the page must render at its own size, not shrunk
-// by the card around it.
+// by the card around it (ratio to the expected scale).
 const MIN_SCALE = 0.98;
+// On screen a wide diagram shrinks to the page but not below half size; past
+// that its card scrolls sideways.
+const MIN_DRAWN_SCALE = 0.5;
+const PHONE = { width: 390, height: 844, deviceScaleFactor: 1 };
 const rules = parseProductionHeaders(await readFile(new URL("../public/_headers", import.meta.url), "utf8"));
 
 const deployedOrigin = process.env.MERMAID_E2E_ORIGIN;
@@ -134,11 +145,11 @@ async function measure(page, clip) {
   return pixelStats(page.browser(), png);
 }
 
-async function renderScenario(browser, scenario, colorScheme) {
-  const label = `${scenario.fixture}/${colorScheme}`;
+/** Open a fixture's share and wait for its diagrams in the preview frame. */
+async function openFixture(browser, scenario, { colorScheme, viewport, label }) {
   const page = await browser.newPage();
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: colorScheme }]);
-  await page.setViewport({ width: 1280, height: 1400, deviceScaleFactor: 1 });
+  await page.setViewport(viewport);
   const sandboxResponses = [];
   page.on("response", (response) => {
     const { pathname } = new URL(response.url());
@@ -149,13 +160,55 @@ async function renderScenario(browser, scenario, colorScheme) {
   if (deployedOrigin === undefined) {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), "yes", `${label}: presented`);
   }
-  assert.equal(await frameHandle.evaluate((node) => node.getAttribute("sandbox")), "", `${label}: preview frame grants nothing`);
   const frame = await frameHandle.contentFrame();
   await frame.waitForFunction(
     (count) => document.querySelectorAll(".viewer-mermaid svg").length === count,
     { timeout: 15_000 },
     scenario.diagrams,
   ).catch(() => undefined);
+  return { page, frameHandle, frame, sandboxResponses };
+}
+
+/**
+ * Each diagram is drawn at its natural scale (1 user unit = 1 CSS px) unless
+ * the page is narrower, then at the page width but never below half size;
+ * the card's padding and border must not shrink it. The screen CTM is the
+ * scale the drawing actually gets. Returns each card's horizontal overflow.
+ */
+async function assertDrawnScales(frame, label) {
+  const sizes = await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.map((svg) => {
+    const card = svg.parentElement;
+    const cardStyle = getComputedStyle(card);
+    const body = getComputedStyle(document.body);
+    const chrome = (style, side) => Number.parseFloat(style[`padding${side}`]) + Number.parseFloat(style[`border${side}Width`]);
+    return {
+      natural: svg.viewBox.baseVal.width,
+      drawn: svg.getScreenCTM().a,
+      room: document.body.clientWidth - chrome(body, "Left") - chrome(body, "Right") - chrome(cardStyle, "Left") - chrome(cardStyle, "Right"),
+      scrolls: card.scrollWidth > card.clientWidth,
+      pageScrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  }));
+  for (const [index, size] of sizes.entries()) {
+    const expected = Math.max(MIN_DRAWN_SCALE, Math.min(1, size.room / size.natural));
+    const ratio = size.drawn / expected;
+    assert.ok(
+      ratio >= MIN_SCALE && ratio <= 1.02,
+      `${label}: diagram ${index} is drawn at scale ${size.drawn.toFixed(3)}, expected ${expected.toFixed(3)} (${size.natural.toFixed(0)}px wide)`,
+    );
+    assert.equal(size.pageScrolls, false, `${label}: the preview page itself never scrolls sideways`);
+  }
+  return sizes;
+}
+
+async function renderScenario(browser, scenario, colorScheme) {
+  const label = `${scenario.fixture}/${colorScheme}`;
+  const { page, frameHandle, frame, sandboxResponses } = await openFixture(browser, scenario, {
+    colorScheme,
+    viewport: { width: 1280, height: 1400, deviceScaleFactor: 1 },
+    label,
+  });
+  assert.equal(await frameHandle.evaluate((node) => node.getAttribute("sandbox")), "", `${label}: preview frame grants nothing`);
 
   // The sandbox document ran under the production frame policy.
   assert.equal(sandboxResponses.length, 1, `${label}: one sandbox document load`);
@@ -169,28 +222,7 @@ async function renderScenario(browser, scenario, colorScheme) {
     0,
     `${label}: no <style>, foreignObject, or script reaches the preview`,
   );
-
-  // Each diagram is drawn at its natural scale (1 user unit = 1 CSS px)
-  // unless the page is narrower; the card's padding and border must not
-  // shrink it. The screen CTM is the scale the drawing actually gets.
-  const sizes = await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.map((svg) => {
-    const card = getComputedStyle(svg.parentElement);
-    const body = getComputedStyle(document.body);
-    const chrome = (style, side) => Number.parseFloat(style[`padding${side}`]) + Number.parseFloat(style[`border${side}Width`]);
-    return {
-      natural: svg.viewBox.baseVal.width,
-      drawn: svg.getScreenCTM().a,
-      room: document.body.clientWidth - chrome(body, "Left") - chrome(body, "Right") - chrome(card, "Left") - chrome(card, "Right"),
-    };
-  }));
-  for (const [index, size] of sizes.entries()) {
-    const expected = Math.min(1, size.room / size.natural);
-    const ratio = size.drawn / expected;
-    assert.ok(
-      ratio >= MIN_SCALE && ratio <= 1.02,
-      `${label}: diagram ${index} is drawn at scale ${size.drawn.toFixed(3)}, expected ${expected.toFixed(3)} (${size.natural.toFixed(0)}px wide)`,
-    );
-  }
+  await assertDrawnScales(frame, label);
 
   // Tag what to measure, then read each target through the frame boundary.
   const targets = await frame.evaluate(({ labels, axis }) => {
@@ -256,6 +288,27 @@ async function renderScenario(browser, scenario, colorScheme) {
   await (await frame.$(".viewer-mermaid")).scrollIntoView();
   await mkdir(screenshotDir, { recursive: true });
   await page.screenshot({ path: `${screenshotDir}/mermaid-${scenario.fixture}-${colorScheme}.png` });
+
+  // Print (A4): every diagram label is in the PDF's text. Print shows only
+  // the preview frame's viewport, so a diagram cut off there loses labels.
+  const pdf = await page.pdf({ format: "A4" });
+  if (colorScheme === "light") await writeFile(`${screenshotDir}/mermaid-${scenario.fixture}.pdf`, pdf);
+  const printed = pdfPageTexts(pdf).join("\n").replace(/\s+/g, " ");
+  for (const text of scenario.labels) assert.ok(printed.includes(text), `${label}: "${text}" prints`);
+  await page.close();
+}
+
+/**
+ * Phone width: a wide diagram stops shrinking at half size and its card
+ * scrolls sideways; a narrow one keeps its natural size. The page itself
+ * never scrolls sideways.
+ */
+async function renderOnPhone(browser, scenario, cardScrolls) {
+  const label = `${scenario.fixture}/phone`;
+  const { page, frame } = await openFixture(browser, scenario, { colorScheme: "light", viewport: PHONE, label });
+  const sizes = await assertDrawnScales(frame, label);
+  assert.equal(sizes[0].scrolls, cardScrolls, `${label}: card ${cardScrolls ? "scrolls" : "fits"}`);
+  await page.screenshot({ path: `${screenshotDir}/mermaid-${scenario.fixture}-phone.png` });
   await page.close();
 }
 
@@ -270,8 +323,11 @@ try {
       continue;
     }
     for (const colorScheme of ["light", "dark"]) await renderScenario(browser, scenario, colorScheme);
+    if (scenario.fixture === "flowchart") await renderOnPhone(browser, scenario, true);
+    if (scenario.fixture === "print") await renderOnPhone(browser, scenario, false);
     rendered += 1;
   }
+
   // Headers alone say nothing about rendering: a run that drew no diagram
   // only passes when it explicitly asked for headers only.
   const headersOnly = process.env.MERMAID_E2E_HEADERS_ONLY === "1";

@@ -141,8 +141,16 @@ point inside the SVG — before it joins the scriptless Markdown preview frame.
 There each diagram sits on a white card, sized to the diagram, in both
 colour schemes: the `neutral` theme draws edges and free-standing labels in
 dark grey. A diagram is drawn at its natural size unless the page is
-narrower. If the sandbox cannot load, a render fails, or it times out, the
-diagram source stays visible as code.
+narrower; then it shrinks to the page width, but not below half size, and
+its card scrolls sideways instead. If the sandbox cannot load, a render
+fails, or it times out, the diagram source stays visible as code.
+
+Printing shows only the preview frame's visible height (`75vh` of the printed
+page): the frame runs no script, so it cannot report its content height for
+the viewer to grow it. In print each diagram is therefore scaled as a whole
+to the page width and to at most 60% of that frame height, with no minimum
+scale, so a diagram is never cut off by its own size. A document longer than
+the frame is still cut off when printed; that limit predates diagrams.
 
 Dev and preview serve the sandbox on both `/mermaid-sandbox` and
 `/mermaid-sandbox.html` with the frame headers `public/_headers` gives those
@@ -151,11 +159,13 @@ routes in production.
 `npm run test:e2e:mermaid` renders the fixtures in
 `test/fixtures/markdown-share/` — flowcharts (plain, and asking for HTML
 labels by init directive and by frontmatter), sequence and gantt, a small
-state diagram, and diagrams asking for the dark theme by init directive and
-by frontmatter — in Chromium in light and dark mode. It checks the sandbox
-route headers, that every diagram renders at its natural scale, that labels
-are SVG text with at least 4.5:1 contrast, and that nodes are not filled
-black. To check a deployment, set `MERMAID_E2E_ORIGIN` to its origin (route
+state diagram, diagrams asking for the dark theme by init directive and by
+frontmatter, and a tall eight-step flowchart — in Chromium in light and dark
+mode. It checks the sandbox route headers, that every diagram renders at its
+expected scale (also at phone width), that labels are SVG text with at least
+4.5:1 contrast, that nodes are not filled black, and that an A4
+`page.pdf()` contains every diagram label (read by `test/pdf-text.mjs`). To
+check a deployment, set `MERMAID_E2E_ORIGIN` to its origin (route
 headers), and for each fixture to render, share the fixture file unchanged
 as a bearer link and pass it as `MERMAID_E2E_URL_<FIXTURE>`, for example
 `MERMAID_E2E_URL_FLOWCHART` or `MERMAID_E2E_URL_THEME_INIT`. Fixtures

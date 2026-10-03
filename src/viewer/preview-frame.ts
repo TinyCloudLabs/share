@@ -108,7 +108,8 @@ img { max-width: 100%; }
 /* Diagrams use Mermaid's light "neutral" theme, whose edges and free-standing
    labels are dark grey: keep them on a light card in both colour schemes.
    The card wraps the SVG so its padding never eats into the diagram's own
-   max-width; only a diagram wider than the page is scaled down. */
+   width; only a diagram wider than the page is scaled down, and not below
+   the half-size min-width the sandbox sets — past that the card scrolls. */
 .viewer-mermaid {
   box-sizing: border-box;
   width: fit-content;
@@ -120,6 +121,14 @@ img { max-width: 100%; }
   border: 1px solid var(--preview-line);
 }
 .viewer-mermaid svg { display: block; max-width: 100%; height: auto; }
+/* Print shows only this frame's viewport: the frame has no script, so it
+   cannot report its content height for the parent to grow it, and a printed
+   card cannot scroll. In print a diagram is scaled as a whole to the page
+   width and to well below that viewport's height, so its own size never
+   cuts it off. (A long document is still cut at the viewport.) */
+@media print {
+  .viewer-mermaid svg { width: auto; min-width: 0 !important; max-height: 60vh; }
+}
 `;
 
 /**

@@ -12,6 +12,7 @@ import { presentationEnvelope } from "../../../src/viewer/resolve.js";
 import flowchart from "./flowchart.md?raw";
 import flowchartFrontmatter from "./flowchart-frontmatter.md?raw";
 import flowchartInit from "./flowchart-init.md?raw";
+import print from "./print.md?raw";
 import sequence from "./sequence.md?raw";
 import state from "./state.md?raw";
 import themeFrontmatter from "./theme-frontmatter.md?raw";
@@ -22,6 +23,7 @@ const FIXTURES: Readonly<Record<string, string>> = {
   "flowchart-init": flowchartInit,
   "flowchart-frontmatter": flowchartFrontmatter,
   sequence,
+  print,
   state,
   "theme-init": themeInit,
   "theme-frontmatter": themeFrontmatter,

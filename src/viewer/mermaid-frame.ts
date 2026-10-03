@@ -221,11 +221,14 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
       // Mermaid sizes the SVG as width="100%" capped by an inline max-width.
       // The preview's card shrinks to fit its content, where a percentage
       // width has nothing to resolve against; give the SVG its natural width
-      // and let the preview's max-width: 100% scale it down on narrow pages.
+      // and let the preview's max-width: 100% scale it down on narrow pages,
+      // but never below half size: past that the card scrolls sideways
+      // instead (the preview drops this floor in print).
       var viewBox = root.viewBox && root.viewBox.baseVal;
       if (viewBox && viewBox.width > 0 && root.getAttribute("width") === "100%") {
         root.setAttribute("width", String(viewBox.width));
         root.style.removeProperty("max-width");
+        root.style.setProperty("min-width", viewBox.width / 2 + "px");
       }
       return root.outerHTML;
     } finally {
