@@ -106,7 +106,17 @@ table { border-collapse: collapse; }
 th, td { border: 1px solid var(--preview-line); padding: 0.45rem 0.65rem; }
 img { max-width: 100%; }
 .viewer-mermaid { margin: 1rem 0; overflow-x: auto; }
-.viewer-mermaid svg { max-width: 100%; height: auto; }
+/* Diagrams use Mermaid's light "neutral" theme, whose edges and free-standing
+   labels are dark grey: keep them on a light card in both colour schemes. */
+.viewer-mermaid svg {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: auto;
+  padding: 0.75rem;
+  background: #ffffff;
+  border: 1px solid var(--preview-line);
+}
 `;
 
 /**

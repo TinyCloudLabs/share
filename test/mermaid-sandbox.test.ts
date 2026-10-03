@@ -12,7 +12,6 @@ import { readFileSync } from "node:fs";
 import {
   MERMAID_BRIDGE_SCRIPT,
   MERMAID_SANDBOX_CSP,
-  MERMAID_SANDBOX_HTTP_CSP,
   MERMAID_SANDBOX_HTTP_HEADERS,
   MERMAID_SANDBOX_PATH,
   buildMermaidSandboxHtml,
@@ -27,6 +26,7 @@ import {
   sanitizeSvg,
 } from "../src/viewer/render.js";
 import { previewBodyOf, previewFrameOf } from "./preview-helpers.js";
+import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/production-headers.mjs";
 
 // ------------------------------------------------------- frame document
 
@@ -60,24 +60,18 @@ describe("mermaid sandbox frame document (mermaid-frame.ts)", () => {
     expect(html).toContain('"<\\/script><img src=x>";');
   });
 
-  it("serves the same complete frame policy in dev/preview and production", () => {
+  it("dev/preview sends the effective production frame policy on both sandbox routes", () => {
     // frame-ancestors cannot ride in a <meta> CSP: it must be an HTTP header,
-    // set by the vite middleware in dev/preview and by the static host in prod.
-    expect(MERMAID_SANDBOX_HTTP_CSP).toBe(`${MERMAID_SANDBOX_CSP}; frame-ancestors 'self'`);
-    expect(MERMAID_SANDBOX_HTTP_HEADERS).toEqual([
-      ["content-security-policy", MERMAID_SANDBOX_HTTP_CSP],
-      ["x-frame-options", "SAMEORIGIN"],
-      ["cache-control", "no-store"],
-      ["referrer-policy", "no-referrer"],
-      ["x-content-type-options", "nosniff"],
-    ]);
-    // cwd-relative: vitest runs from the project root (import.meta.url is
-    // not a file: URL under the jsdom environment). Cloudflare redirects the
-    // .html path to the extensionless one, so both need the rule, with the
-    // appended site-wide CSP detached first.
-    const headersFile = readFileSync("public/_headers", "utf8");
+    // set by the vite middleware in dev/preview and by public/_headers in
+    // production, where Cloudflare redirects the .html path to the
+    // extensionless one. Compare what each route resolves to, not file text.
+    // cwd-relative: vitest runs from the project root.
+    const rules = parseProductionHeaders(readFileSync("public/_headers", "utf8"));
+    const dev = Object.fromEntries(MERMAID_SANDBOX_HTTP_HEADERS);
     for (const route of ["/mermaid-sandbox", MERMAID_SANDBOX_PATH]) {
-      expect(headersFile).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${MERMAID_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+      const production = productionHeadersForPath(rules, route);
+      expect(production["content-security-policy"], route).toBe(dev["content-security-policy"]);
+      expect(production["x-frame-options"], route).toBe(dev["x-frame-options"]);
     }
   });
 });
@@ -89,16 +83,16 @@ interface BridgeMessageEvent {
   data: unknown;
 }
 
+/** What the mocked mermaid renders: a theme stylesheet keyed to the SVG id. */
+const RENDERED_SVG =
+  '<svg id="m-0" xmlns="http://www.w3.org/2000/svg"><style>#m-0 text { fill: rgb(1, 2, 3); }</style><text>rendered</text></svg>';
+
 /**
  * Execute the REAL bridge script against a mock self/window/mermaid — jsdom
  * cannot run iframe documents, but the exported script can be run directly,
  * proving the guards behave (not merely that their source text exists).
  */
-/** What the mocked mermaid renders: a theme stylesheet keyed to the SVG id. */
-const RENDERED_SVG =
-  '<svg id="m-0" xmlns="http://www.w3.org/2000/svg"><style>#m-0 text { fill: rgb(1, 2, 3); }</style><text>rendered</text></svg>';
-
-function runBridge(origin: string, hash: string) {
+function runBridge(origin: string, hash: string, rendered = RENDERED_SVG) {
   const posted: Array<{ message: Record<string, unknown>; targetOrigin: unknown }> = [];
   const listeners: Array<(event: BridgeMessageEvent) => void> = [];
   const parent = {
@@ -108,12 +102,13 @@ function runBridge(origin: string, hash: string) {
   };
   const mermaidCalls = { initialized: 0, rendered: [] as string[] };
   const mermaid = {
+    mermaidAPI: { defaultConfig: { secure: ["secure", "securityLevel"] } },
     initialize: () => {
       mermaidCalls.initialized += 1;
     },
     render: (_id: string, source: string) => {
       mermaidCalls.rendered.push(source);
-      return Promise.resolve({ svg: RENDERED_SVG });
+      return Promise.resolve({ svg: rendered });
     },
   };
   // The frame's own document (jsdom here): the bridge mounts the SVG in it to
@@ -199,6 +194,21 @@ describe("mermaid bridge self-defense (executed)", () => {
     expect(svg.querySelector("style")).toBeNull();
     expect(svg.querySelector("text")?.textContent).toBe("rendered");
     expect(document.getElementById("m-0")).toBeNull();
+  });
+
+  it("fails a render that still carries HTML labels, so the viewer keeps the source", async () => {
+    const bridge = runBridge(
+      "null",
+      "#the-nonce",
+      '<svg xmlns="http://www.w3.org/2000/svg"><g class="node"><rect/><foreignObject><div>Label</div></foreignObject></g></svg>',
+    );
+    bridge.dispatch({
+      source: bridge.parent,
+      data: { type: "render", id: "html", nonce: "the-nonce", source: "flowchart LR; A-->B" },
+    });
+    await flushMicrotasks();
+    expect(bridge.posted[1]!.message).toMatchObject({ type: "result", id: "html", nonce: "the-nonce", ok: false });
+    expect(bridge.posted[1]!.message).not.toHaveProperty("svg");
   });
 });
 

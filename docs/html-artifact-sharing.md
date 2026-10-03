@@ -124,17 +124,34 @@ or not the preview succeeds.
 A ` ```mermaid ` block is rendered in the `/mermaid-sandbox` frame: an
 opaque-origin sandbox (`sandbox="allow-scripts"`, no network) that receives
 only the diagram text and runs Mermaid with `securityLevel: "strict"` and
-`htmlLabels: false`. Before the SVG leaves the frame, the bridge copies each
-element's computed paint and font properties onto it as presentation
-attributes and removes the theme `<style>`, so labels are SVG `<text>` and
-node styling no longer depends on a stylesheet. The viewer sanitizes the SVG
-again — `script`, `foreignObject` and `<style>` are removed, and `url()`
-values must point inside the SVG — before it joins the scriptless Markdown
-preview frame. If the sandbox cannot load, a render fails, or it times out,
-the diagram source stays visible as code.
+`htmlLabels: false`. `htmlLabels` is on Mermaid's secure-key list, so an init
+directive or frontmatter config in the diagram cannot turn HTML labels back
+on. Before the SVG leaves the frame, the bridge copies each element's
+computed paint and font properties onto it as presentation attributes and
+removes the theme `<style>`, so labels are SVG `<text>` and node styling no
+longer depends on a stylesheet; an SVG that still contains `foreignObject`
+is reported as a failed render. The viewer sanitizes the SVG again —
+`script`, `foreignObject` and `<style>` are removed, and `url()` values must
+point inside the SVG — before it joins the scriptless Markdown preview frame,
+where it sits on a white card in both colour schemes (the light `neutral`
+theme draws edges and free-standing labels in dark grey). If the sandbox
+cannot load, a render fails, or it times out, the diagram source stays
+visible as code.
 
-`npm run test:e2e:mermaid` renders a flowchart in Chromium in light and dark
-mode and checks that labels show and nodes are not filled black.
+Dev and preview serve the sandbox on both `/mermaid-sandbox` and
+`/mermaid-sandbox.html` with the frame headers `public/_headers` gives those
+routes in production.
+
+`npm run test:e2e:mermaid` renders flowchart (plain, init directive,
+frontmatter), sequence and gantt fixtures from
+`test/fixtures/markdown-share/` in Chromium in light and dark mode. It checks
+the sandbox route headers, that every diagram renders, that labels are SVG
+text with at least 4.5:1 contrast, and that nodes are not filled black. To
+check a deployment, set `MERMAID_E2E_ORIGIN` to its origin (route headers),
+and for each fixture to render, share the fixture file unchanged as a bearer
+link and pass it as `MERMAID_E2E_URL_<FIXTURE>`, for example
+`MERMAID_E2E_URL_FLOWCHART` or `MERMAID_E2E_URL_FLOWCHART_INIT`. Fixtures
+without a link are skipped and listed.
 
 ## Production headers
 

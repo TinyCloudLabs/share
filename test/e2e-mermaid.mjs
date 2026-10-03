@@ -1,10 +1,24 @@
 /**
- * Browser e2e for Mermaid diagrams in Markdown shares (TC-546). Renders a
- * flowchart through presentShare in real Chromium, with the viewer CSP on the
- * parent and the Mermaid sandbox document served with its production frame
- * policy (checked against public/_headers). Proves the diagram reaches the
- * scriptless preview frame with visible labels and styled — not solid black —
- * nodes, and that no stylesheet, HTML label, or script crosses into it.
+ * Browser e2e for Mermaid diagrams in Markdown shares (TC-546). Renders
+ * Markdown fixtures through presentShare in real Chromium, in light and dark
+ * colour schemes, with the viewer CSP on the parent and the Mermaid sandbox
+ * served with its production frame policy. Proves:
+ *  - both sandbox routes answer with the frame headers public/_headers
+ *    resolves for them (dev parity locally; the deployed contract remotely);
+ *  - diagrams reach the scriptless preview frame with every label as SVG
+ *    text, readable (WCAG contrast >= 4.5) wherever it sits — on node fills,
+ *    on edges, on the diagram background — and with nodes not filled black;
+ *  - an init directive or frontmatter config cannot switch HTML labels back
+ *    on; no <style>, foreignObject, or script crosses into the preview.
+ *
+ * Local (default): starts Vite and renders test/fixtures/markdown-share/
+ * through its harness.
+ *
+ * Deployed: MERMAID_E2E_ORIGIN=https://<origin> checks the sandbox route
+ * headers there. Rendering checks run for each fixture whose bearer share
+ * link is given as MERMAID_E2E_URL_<FIXTURE> (e.g. MERMAID_E2E_URL_FLOWCHART,
+ * MERMAID_E2E_URL_SEQUENCE); share the fixture file unchanged. Fixtures
+ * without a link are skipped and reported.
  */
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
@@ -15,26 +29,67 @@ import { createServer } from "vite";
 import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/production-headers.mjs";
 
 const screenshotDir = process.env.MERMAID_SCREENSHOT_DIR ?? ".context";
-const LABELS = ["Draft notes", "Peer review", "Publish share", "Archive copy", "approved", "changes"];
+const SANDBOX_ROUTES = ["/mermaid-sandbox", "/mermaid-sandbox.html"];
+const MIN_CONTRAST = 4.5;
+const FLOWCHART = { diagrams: 1, nodes: 4, labels: ["Draft notes", "Peer review", "Publish share", "Archive copy", "approved", "changes"] };
+const SCENARIOS = [
+  { fixture: "flowchart", ...FLOWCHART },
+  { fixture: "flowchart-init", ...FLOWCHART },
+  { fixture: "flowchart-frontmatter", ...FLOWCHART },
+  {
+    fixture: "sequence",
+    diagrams: 2,
+    nodes: 0,
+    axis: true,
+    labels: ["Sender", "Viewer", "Open share link", "Render diagram text", "Labels stay readable", "Release plan", "Sandbox fix", "Deploy"],
+  },
+];
 const rules = parseProductionHeaders(await readFile(new URL("../public/_headers", import.meta.url), "utf8"));
-const server = await createServer({
-  configFile: "vite.config.ts",
-  logLevel: "error",
-  server: { host: "127.0.0.1", port: 43183, strictPort: true, hmr: false },
-});
-await server.listen();
-const harness = "http://127.0.0.1:43183/test/fixtures/markdown-share/harness.html";
+
+const deployedOrigin = process.env.MERMAID_E2E_ORIGIN;
+const server = deployedOrigin === undefined
+  ? await createServer({
+    configFile: "vite.config.ts",
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 43183, strictPort: true, hmr: false },
+  })
+  : undefined;
+await server?.listen();
+const origin = deployedOrigin ?? "http://127.0.0.1:43183";
+
+function scenarioUrl(fixture) {
+  if (deployedOrigin === undefined) return `${origin}/test/fixtures/markdown-share/harness.html?fixture=${fixture}`;
+  return process.env[`MERMAID_E2E_URL_${fixture.toUpperCase().replaceAll("-", "_")}`];
+}
+
+/** Assert a sandbox response carries the headers public/_headers resolves for its path. */
+function assertFrameHeaders(pathname, headers, label) {
+  const expected = productionHeadersForPath(rules, pathname);
+  assert.equal(headers["content-security-policy"], expected["content-security-policy"], `${label}: frame CSP`);
+  assert.equal(headers["x-frame-options"], expected["x-frame-options"], `${label}: X-Frame-Options`);
+}
+
+async function checkSandboxRoutes() {
+  for (const route of SANDBOX_ROUTES) {
+    // Production redirects the .html form to the extensionless path; judge
+    // the document actually served.
+    const response = await fetch(new URL(route, origin), { redirect: "follow" });
+    assert.equal(response.status, 200, `${route}: served`);
+    assert.match(await response.text(), /self\.origin !== "null"/, `${route}: serves the sandbox document`);
+    assertFrameHeaders(new URL(response.url).pathname, Object.fromEntries(response.headers), route);
+  }
+}
 
 /**
- * Pixel statistics for page-coordinate rectangles of a PNG screenshot, read
- * back through a canvas in a blank page (no image decoder dependency).
- * `dark` counts near-black pixels; `ink` counts pixels clearly darker than
- * the rectangle's lightest pixel (text strokes against a label background).
+ * Pixel statistics for a PNG, read back through a canvas in a blank page (no
+ * image decoder dependency). `dark` is the share of near-black pixels;
+ * `contrast` is the WCAG ratio between the median pixel (the background) and
+ * the pixel furthest from it (the text strokes).
  */
-async function pixelStats(browser, png, rects) {
+async function pixelStats(browser, png) {
   const page = await browser.newPage();
   try {
-    return await page.evaluate(async (dataUrl, regions) => {
+    return await page.evaluate(async (dataUrl) => {
       const image = new Image();
       image.src = dataUrl;
       await image.decode();
@@ -43,124 +98,146 @@ async function pixelStats(browser, png, rects) {
       canvas.height = image.height;
       const context = canvas.getContext("2d");
       context.drawImage(image, 0, 0);
-      return regions.map(({ x, y, width, height }) => {
-        const { data } = context.getImageData(Math.round(x), Math.round(y), Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
-        const luma = [];
-        for (let index = 0; index < data.length; index += 4) luma.push(0.2126 * data[index] + 0.7152 * data[index + 1] + 0.0722 * data[index + 2]);
-        const lightest = Math.max(...luma);
-        return {
-          dark: luma.filter((value) => value < 40).length / luma.length,
-          ink: luma.filter((value) => value < lightest - 90).length,
-          lightest,
-        };
-      });
-    }, `data:image/png;base64,${png}`, rects);
+      const { data } = context.getImageData(0, 0, image.width, image.height);
+      const channel = (value) => {
+        const unit = value / 255;
+        return unit <= 0.04045 ? unit / 12.92 : ((unit + 0.055) / 1.055) ** 2.4;
+      };
+      const luminance = [];
+      for (let index = 0; index < data.length; index += 4) {
+        luminance.push(0.2126 * channel(data[index]) + 0.7152 * channel(data[index + 1]) + 0.0722 * channel(data[index + 2]));
+      }
+      const sorted = [...luminance].sort((a, b) => a - b);
+      const background = sorted[Math.floor(sorted.length / 2)];
+      const furthest = Math.abs(sorted[0] - background) > Math.abs(sorted[sorted.length - 1] - background) ? sorted[0] : sorted[sorted.length - 1];
+      return {
+        dark: luminance.filter((value) => value < 0.021).length / luminance.length,
+        contrast: (Math.max(background, furthest) + 0.05) / (Math.min(background, furthest) + 0.05),
+      };
+    }, `data:image/png;base64,${png}`);
   } finally {
     await page.close();
   }
 }
 
-async function renderFlowchart(browser, colorScheme) {
+/** Screenshot a page-coordinate region and measure it. */
+async function measure(page, clip) {
+  const png = await page.screenshot({ encoding: "base64", type: "png", clip });
+  return pixelStats(page.browser(), png);
+}
+
+async function renderScenario(browser, scenario, colorScheme) {
+  const label = `${scenario.fixture}/${colorScheme}`;
   const page = await browser.newPage();
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: colorScheme }]);
-  await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 1280, height: 1400, deviceScaleFactor: 1 });
   const sandboxResponses = [];
   page.on("response", (response) => {
-    if (new URL(response.url()).pathname === "/mermaid-sandbox.html") sandboxResponses.push(response.headers());
+    const { pathname } = new URL(response.url());
+    if (SANDBOX_ROUTES.includes(pathname) && response.status() === 200) sandboxResponses.push({ pathname, headers: response.headers() });
   });
-  await page.goto(harness, { waitUntil: "load" });
-  await page.waitForFunction(() => document.documentElement.dataset.ready !== undefined, { timeout: 30_000 });
-  assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), "yes", `${colorScheme}: presented`);
-
-  // The sandbox ran under exactly the production frame policy.
-  assert.equal(sandboxResponses.length, 1, `${colorScheme}: one sandbox document load`);
-  const production = productionHeadersForPath(rules, "/mermaid-sandbox.html");
-  assert.equal(sandboxResponses[0]["content-security-policy"], production["content-security-policy"]);
-  assert.equal(sandboxResponses[0]["x-frame-options"], production["x-frame-options"]);
-
-  const frameHandle = await page.waitForSelector("iframe.viewer-preview-frame");
-  assert.equal(await frameHandle.evaluate((node) => node.getAttribute("sandbox")), "", "preview frame grants nothing");
+  await page.goto(scenarioUrl(scenario.fixture), { waitUntil: "load" });
+  const frameHandle = await page.waitForSelector("iframe.viewer-preview-frame", { timeout: 60_000 });
+  if (deployedOrigin === undefined) {
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.ready), "yes", `${label}: presented`);
+  }
+  assert.equal(await frameHandle.evaluate((node) => node.getAttribute("sandbox")), "", `${label}: preview frame grants nothing`);
   const frame = await frameHandle.contentFrame();
-  await frame.waitForSelector(".viewer-mermaid svg", { timeout: 10_000 });
-  assert.equal(await frame.$("pre > code.language-mermaid"), null, `${colorScheme}: no source fallback`);
+  await frame.waitForFunction(
+    (count) => document.querySelectorAll(".viewer-mermaid svg").length === count,
+    { timeout: 15_000 },
+    scenario.diagrams,
+  ).catch(() => undefined);
 
-  const diagram = await frame.evaluate((labels) => {
-    const svg = document.querySelector(".viewer-mermaid svg");
-    const box = (node) => {
-      const { x, y, width, height } = node.getBoundingClientRect();
-      return { x, y, width, height };
+  // The sandbox document ran under the production frame policy.
+  assert.equal(sandboxResponses.length, 1, `${label}: one sandbox document load`);
+  assertFrameHeaders(sandboxResponses[0].pathname, sandboxResponses[0].headers, `${label} sandbox load`);
+
+  // Every diagram rendered: none fell back to its source.
+  assert.equal(await frame.$$eval("pre > code.language-mermaid", (nodes) => nodes.length), 0, `${label}: no source fallback`);
+  assert.equal(await frame.$$eval(".viewer-mermaid svg", (nodes) => nodes.length), scenario.diagrams, `${label}: every diagram rendered`);
+  assert.equal(
+    await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.reduce((count, svg) => count + svg.querySelectorAll("style, foreignObject, script").length, 0)),
+    0,
+    `${label}: no <style>, foreignObject, or script reaches the preview`,
+  );
+
+  // Tag what to measure, then read each target through the frame boundary.
+  const targets = await frame.evaluate(({ labels, axis }) => {
+    const texts = [...document.querySelectorAll(".viewer-mermaid svg text")];
+    const found = [];
+    const tag = (element, entry) => {
+      element.setAttribute("data-e2e-target", String(found.length));
+      found.push(entry);
     };
-    const texts = [...svg.querySelectorAll("text")];
-    return {
-      forbidden: svg.querySelectorAll("style, foreignObject, script").length,
-      labels: labels.map((label) => {
-        const text = texts.find((node) => node.textContent.replace(/\s+/g, " ").trim() === label);
-        if (text === undefined) return { label, found: false };
-        const style = getComputedStyle(text);
-        return { label, found: true, fill: style.fill, visibility: style.visibility, opacity: style.opacity, box: box(text) };
-      }),
-      // The node outline: a shape element, or (rough-drawn shapes) a group
-      // of paths. Every geometry element in it is checked.
-      shapes: [...svg.querySelectorAll(".node")].map((node) => {
-        const container = node.querySelector(".label-container");
-        const geometry = [container, ...container.querySelectorAll("*")]
-          .filter((element) => ["rect", "polygon", "path", "circle", "ellipse"].includes(element.localName));
-        const paints = geometry.map((element) => {
-          const style = getComputedStyle(element);
-          return { fill: style.fill, stroke: style.stroke };
-        });
-        return { id: node.id, paints, box: box(container) };
-      }),
-    };
-  }, LABELS);
+    for (const text of labels) {
+      const node = texts.find((candidate) => candidate.textContent.replace(/\s+/g, " ").trim() === text);
+      if (node === undefined) {
+        found.push({ kind: "label", text, missing: true });
+        continue;
+      }
+      const style = getComputedStyle(node);
+      tag(node, { kind: "label", text, fill: style.fill, visibility: style.visibility, opacity: style.opacity });
+    }
+    if (axis) {
+      const tick = document.querySelector(".viewer-mermaid .tick text");
+      if (tick === null) found.push({ kind: "label", text: "axis tick", missing: true });
+      else tag(tick, { kind: "label", text: `axis tick "${tick.textContent}"`, fill: getComputedStyle(tick).fill, visibility: "visible", opacity: "1" });
+    }
+    for (const node of document.querySelectorAll(".viewer-mermaid .node")) {
+      // The outline is a shape element or (rough-drawn shapes) a group of paths.
+      const container = node.querySelector(".label-container");
+      const paints = [container, ...container.querySelectorAll("*")]
+        .filter((element) => ["rect", "polygon", "path", "circle", "ellipse"].includes(element.localName))
+        .map((element) => ({ fill: getComputedStyle(element).fill, stroke: getComputedStyle(element).stroke }));
+      tag(container, { kind: "node", text: node.id, paints });
+    }
+    return found;
+  }, scenario);
 
-  assert.equal(diagram.forbidden, 0, `${colorScheme}: no <style>, foreignObject, or script reaches the preview`);
-  for (const label of diagram.labels) {
-    assert.ok(label.found, `${colorScheme}: label "${label.label}" is SVG text`);
-    assert.equal(label.visibility, "visible", `${colorScheme}: "${label.label}" visible`);
-    assert.equal(label.opacity, "1", `${colorScheme}: "${label.label}" opaque`);
-    assert.notEqual(label.fill, "none", `${colorScheme}: "${label.label}" painted`);
-    assert.ok(label.box.width > 10 && label.box.height > 8, `${colorScheme}: "${label.label}" has layout`);
+  assert.equal(targets.filter((target) => target.kind === "node").length, scenario.nodes, `${label}: node count`);
+  for (const [index, target] of targets.entries()) {
+    assert.ok(!target.missing, `${label}: "${target.text}" is SVG text`);
+    const handle = await frame.$(`[data-e2e-target="${index}"]`);
+    await handle.scrollIntoView();
+    const box = await handle.boundingBox();
+    if (target.kind === "label") {
+      assert.equal(target.visibility, "visible", `${label}: "${target.text}" visible`);
+      assert.equal(target.opacity, "1", `${label}: "${target.text}" opaque`);
+      assert.notEqual(target.fill, "none", `${label}: "${target.text}" painted`);
+      assert.ok(box.width > 10 && box.height > 8, `${label}: "${target.text}" has layout`);
+      const { contrast } = await measure(page, box);
+      assert.ok(contrast >= MIN_CONTRAST, `${label}: "${target.text}" readable (contrast ${contrast.toFixed(2)}:1)`);
+    } else {
+      assert.ok(target.paints.length > 0, `${label}: ${target.text} has geometry`);
+      for (const paint of target.paints) assert.notEqual(paint.fill, "rgb(0, 0, 0)", `${label}: ${target.text} is not filled black`);
+      assert.ok(target.paints.some((paint) => paint.fill !== "none"), `${label}: ${target.text} is filled`);
+      assert.ok(target.paints.some((paint) => paint.stroke !== "none"), `${label}: ${target.text} is outlined`);
+      // A patch inside the shape, above its centred label: the shape's own fill.
+      const { dark } = await measure(page, { x: box.x + box.width / 2 - 4, y: box.y + box.height * 0.2, width: 8, height: 4 });
+      assert.ok(dark < 0.2, `${label}: ${target.text} is not a black box (${(dark * 100).toFixed(1)}% near-black)`);
+    }
   }
-  assert.equal(diagram.shapes.length, 4, `${colorScheme}: four nodes`);
-  for (const shape of diagram.shapes) {
-    assert.ok(shape.paints.length > 0, `${colorScheme}: ${shape.id} has geometry`);
-    for (const paint of shape.paints) assert.notEqual(paint.fill, "rgb(0, 0, 0)", `${colorScheme}: ${shape.id} is not filled black`);
-    assert.ok(shape.paints.some((paint) => paint.fill !== "none"), `${colorScheme}: ${shape.id} is filled`);
-    assert.ok(shape.paints.some((paint) => paint.stroke !== "none"), `${colorScheme}: ${shape.id} is outlined`);
-  }
 
-  // What the reader sees: node fills are not solid black, and every label
-  // has ink against its background.
-  const offset = await frameHandle.evaluate((node) => {
-    const { x, y } = node.getBoundingClientRect();
-    return { x: x + node.clientLeft, y: y + node.clientTop };
-  });
-  const toPage = ({ x, y, width, height }) => ({ x: x + offset.x, y: y + offset.y, width, height });
-  const png = await page.screenshot({ encoding: "base64", type: "png" });
-  // A patch inside each shape, above its centred label: the shape's own fill.
-  const fillPatches = diagram.shapes.map(({ box }) => toPage({ x: box.x + box.width / 2 - 4, y: box.y + box.height * 0.2, width: 8, height: 4 }));
-  const shapeStats = await pixelStats(page.browser(), png, fillPatches);
-  diagram.shapes.forEach((shape, index) => {
-    assert.ok(shapeStats[index].dark < 0.2, `${colorScheme}: ${shape.id} is not a black box (${(shapeStats[index].dark * 100).toFixed(1)}% near-black)`);
-  });
-  const labelStats = await pixelStats(page.browser(), png, diagram.labels.map((label) => toPage(label.box)));
-  diagram.labels.forEach((label, index) => {
-    assert.ok(labelStats[index].ink >= 20, `${colorScheme}: "${label.label}" shows ink (${labelStats[index].ink} px)`);
-  });
-
+  await (await frame.$(".viewer-mermaid")).scrollIntoView();
   await mkdir(screenshotDir, { recursive: true });
-  await page.screenshot({ path: `${screenshotDir}/mermaid-flowchart-${colorScheme}.png` });
+  await page.screenshot({ path: `${screenshotDir}/mermaid-${scenario.fixture}-${colorScheme}.png` });
   await page.close();
 }
 
 let browser;
 try {
+  await checkSandboxRoutes();
   browser = await puppeteer.launch({ headless: true });
-  await renderFlowchart(browser, "light");
-  await renderFlowchart(browser, "dark");
-  console.log("Mermaid browser e2e passed");
+  for (const scenario of SCENARIOS) {
+    if (scenarioUrl(scenario.fixture) === undefined) {
+      console.log(`skipped ${scenario.fixture}: no MERMAID_E2E_URL_${scenario.fixture.toUpperCase().replaceAll("-", "_")}`);
+      continue;
+    }
+    for (const colorScheme of ["light", "dark"]) await renderScenario(browser, scenario, colorScheme);
+  }
+  console.log(`Mermaid browser e2e passed against ${origin}`);
 } finally {
   await browser?.close();
-  await server.close();
+  await server?.close();
 }

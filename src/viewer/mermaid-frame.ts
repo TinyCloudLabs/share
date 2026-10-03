@@ -121,10 +121,13 @@ export type MermaidFrameReply =
  * Mermaid's default output depends on both — a theme stylesheet keyed to the
  * SVG's id, and HTML labels inside `foreignObject` — and without them nodes
  * fall back to SVG's default black fill and labels vanish. So the bridge
- * renders with `htmlLabels: false` (labels are SVG `<text>`), mounts the SVG
- * in this frame where the theme CSS applies, copies each element's computed
- * paint and font properties onto it as presentation attributes, and drops
- * the `<style>` element. Only local `url(#id)` references are kept.
+ * renders with `htmlLabels: false` (labels are SVG `<text>`; `htmlLabels` is
+ * a Mermaid secure key, so diagram directives and frontmatter cannot turn it
+ * back on), mounts the SVG in this frame where the theme CSS applies, copies
+ * each element's computed paint and font properties onto it as presentation
+ * attributes, and drops the `<style>` element. Only local `url(#id)`
+ * references are kept. An SVG that still contains `foreignObject` is
+ * reported as a failed render, so the viewer shows the diagram source.
  */
 export const MERMAID_BRIDGE_SCRIPT = `"use strict";
 (function () {
@@ -146,12 +149,17 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
   // parent at creation. No nonce → no bridge.
   var nonce = String(window.location.hash || "").replace(/^#/, "");
   if (nonce.length === 0) return;
+  // Labels must be SVG <text>: the preview strips foreignObject. "htmlLabels"
+  // joins Mermaid's secure keys, which its config sanitizer removes at every
+  // depth of an init directive or frontmatter config, so neither the
+  // top-level key nor flowchart.htmlLabels can switch HTML labels back on.
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
     theme: "neutral",
     htmlLabels: false,
-    flowchart: { htmlLabels: false }
+    flowchart: { htmlLabels: false },
+    secure: mermaid.mermaidAPI.defaultConfig.secure.concat(["htmlLabels"])
   });
   // Inherited properties are written where they differ from the parent's
   // computed value (and always on the root, so nothing inherits from the
@@ -169,6 +177,12 @@ export const MERMAID_BRIDGE_SCRIPT = `"use strict";
     try {
       var root = host.querySelector("svg");
       if (root === null) return svgMarkup;
+      // Backstop for any diagram type that still emits HTML labels: the
+      // preview would strip them and show empty shapes, so fail the render
+      // and let the viewer keep the diagram source visible instead.
+      if (root.querySelector("foreignObject") !== null) {
+        throw new Error("diagram uses HTML labels, which the preview cannot show");
+      }
       var elements = [root].concat(Array.prototype.slice.call(root.querySelectorAll("*")));
       var computed = new Map();
       elements.forEach(function (element) { computed.set(element, window.getComputedStyle(element)); });
