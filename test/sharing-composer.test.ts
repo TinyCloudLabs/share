@@ -195,6 +195,10 @@ describe("share composer model", () => {
     // validation names them instead of guessing.
     expect(parseDeliveryEmails("Smith, John <john@tinycloud.xyz>; Doe, Jane <jane@tinycloud.xyz>")).toEqual(["Smith", "john@tinycloud.xyz", "Doe", "jane@tinycloud.xyz"]);
     expect(() => domain("tinycloud.xyz", { deliveryEmails: parseDeliveryEmails("Smith, John <john@tinycloud.xyz>") })).toThrow("Every address to email must be at the shared domain exactly.");
+    // A quoted display name may hold anything, even `<…>`; a full-width at
+    // sign beside a name still reaches validation, which names it.
+    expect(parseDeliveryEmails('"Bob <old@tinycloud.xyz>" <new@tinycloud.xyz>')).toEqual(["new@tinycloud.xyz"]);
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> bob\uFF20tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob\uFF20tinycloud.xyz"]);
     // A single pinned address belongs to exact-email shares only.
     expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("The delivery address must match the person you're sharing with.");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true, deliveryEmails: ["reader@example.com"] }))).toThrow("Every address to email must be at the shared domain exactly.");
@@ -207,6 +211,14 @@ describe("share composer model", () => {
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs/readme.md", action: "tinycloud.kv/get" }, resource: { kind: "exact", path: "docs/readme.md" } };
     expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: false }))).toThrow("Shares must stay encrypted");
     expect(validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true }))).toMatchObject({ encryption: true, recipient: { kind: "exactEmail", value: "reader@example.com" } });
+  });
+
+  it("refuses, before anything is uploaded, an exact address the SDK would refuse, and keeps the typed case otherwise", () => {
+    const exact = (value: string) => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value }, encryption: true }));
+    for (const invalid of ["bob!ops@example.com", "user%relay@example.com", "a..b@example.com", `${"x".repeat(65)}@example.com`]) {
+      expect(() => exact(invalid), invalid).toThrow(EXPECTED_SENDER_COPY.recipientEmail);
+    }
+    expect(exact("John.Smith@Example.com").recipient).toEqual({ kind: "exactEmail", value: "John.Smith@example.com" });
   });
 
   it("rejects prefix content until the encrypted shared-key contract exists", () => {

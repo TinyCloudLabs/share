@@ -142,6 +142,9 @@ export function normalizeEmail(value: string): string {
   }
   const match = EMAIL.exec(value);
   if (match === null || match[1] === undefined) throw validationFailure("recipientEmail");
+  // The SDK refuses a mailbox the issuer can't canonicalize, but only after
+  // the encrypted upload; refuse it here first.
+  if (canonicalMailbox(value) === undefined) throw validationFailure("recipientEmail");
   return `${value.slice(0, value.length - match[1].length).slice(0, -1)}@${normalizeEmailDomain(match[1])}`;
 }
 
@@ -210,15 +213,17 @@ export function normalizeRecipientDomain(value: string): string {
  */
 export function parseDeliveryEmails(value: string): readonly string[] {
   const entries = deliverySegments(value).flatMap((segment) => {
-    const named = [...segment.matchAll(/<([^<>]*)>/g)];
+    // A quoted display name may hold anything, even `<…>`.
+    const unquoted = segment.replace(/"[^"]*"/g, (quoted) => " ".repeat(quoted.length));
+    const named = [...unquoted.matchAll(/<([^<>]*)>/g)];
     if (named.length === 0) return segment.split(/\s+/).map((word) => word.replace(/^"(.*)"$/, "$1"));
     const found: string[] = [];
     let cursor = 0;
     for (const match of named) {
-      found.push(...addressWords(segment.slice(cursor, match.index)), match[1]!.trim());
+      found.push(...addressWords(unquoted.slice(cursor, match.index)), match[1]!.trim());
       cursor = match.index + match[0].length;
     }
-    return [...found, ...addressWords(segment.slice(cursor))];
+    return [...found, ...addressWords(unquoted.slice(cursor))];
   });
   return [...new Set(entries.filter((entry) => entry.length > 0))];
 }
@@ -243,9 +248,9 @@ function deliverySegments(value: string): string[] {
   return segments;
 }
 
-/** The words with an `@` outside quoted display names. */
+/** The words with an at sign, full-width ones too, so validation names those. */
 function addressWords(text: string): string[] {
-  return text.replace(/"[^"]*"/g, " ").split(/\s+/).filter((word) => word.includes("@"));
+  return text.split(/\s+/).filter((word) => /[@\uFF20\uFE6B]/.test(word));
 }
 
 /**

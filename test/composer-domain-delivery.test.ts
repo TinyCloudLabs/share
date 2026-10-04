@@ -159,6 +159,21 @@ describe("TC-530 owner delivery", () => {
     expect(state.delivered).toEqual(["alice@example.com", "bob@example.com"]);
   });
 
+  it("keeps a 30 second margin inside OpenCredentials' window: after 90 seconds it no longer reuses the request", async () => {
+    const { root, authorizeShareDeliveryV3, status } = owner();
+    const confirm = await create(root, "emailDomain", "example.com", "alice@example.com, bob@example.com");
+    state.failOnce.add("bob@example.com");
+    confirm.click();
+    await vi.waitFor(() => expect(status()).toMatch(/^Sent 1 of 2\./));
+    const first = authorizeShareDeliveryV3.mock.calls[1]![0];
+    // OpenCredentials would still take a 100-second-old receipt, but not after
+    // network latency or clock skew eat the rest of its two minutes.
+    later(100_000);
+    confirm.click();
+    await vi.waitFor(() => expect(status()).toBe("Invitations requested."));
+    expect(authorizeShareDeliveryV3.mock.calls.at(-1)![0].idempotencyKey).toBe(`${first.idempotencyKey}:attempt-1`);
+  });
+
   it("names what wasn't sent, can't be dismissed mid-send, and says what was sent when the owner keeps the link", async () => {
     const { root, status } = owner();
     const confirm = await create(root, "emailDomain", "example.com", "a@example.com b@example.com c@example.com d@example.com e@example.com");
