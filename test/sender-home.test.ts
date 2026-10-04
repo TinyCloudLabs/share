@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
-import { mountSenderHome } from "../src/share/sender-home.js";
+import { mountSenderHome, nodeReproducibleRevocationTime } from "../src/share/sender-home.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
@@ -8,7 +8,7 @@ import type { SenderShareRecord } from "@tinycloud/share-sdk";
 const { revokePolicyRootV3 } = vi.hoisted(() => ({ revokePolicyRootV3: vi.fn(async () => ({})) }));
 vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3 }));
 
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 function fakeVault(): IDataVaultService {
   const store = new Map<string, unknown>();
@@ -38,6 +38,23 @@ function record(shareId: string, recipientMatcher: SenderShareRecord["recipientM
 
 const session = { address: "0x1234567890abcdef" } as unknown as OpenKeyShareSession;
 
+/** The Node's RFC 3339 formatter (the `time` crate): trailing zeros of the fraction are dropped. */
+const nodeFormat = (text: string) => text.replace(/\.(\d*?)0*Z$/, (_match, digits: string) => digits.length > 0 ? `.${digits}Z` : "Z");
+
+describe("TC-601 revocation time", () => {
+  it("stamps every millisecond in a form the Node reproduces exactly, at most 1 ms late", () => {
+    const refused: number[] = [];
+    for (let millisecond = 0; millisecond < 1000; millisecond += 1) {
+      const now = new Date(Date.UTC(2026, 9, 4, 6, 0, 0, millisecond));
+      const stamp = nodeReproducibleRevocationTime(now);
+      if (nodeFormat(stamp.toISOString()) !== stamp.toISOString()) refused.push(millisecond);
+      expect(stamp.getTime() - now.getTime()).toBeGreaterThanOrEqual(0);
+      expect(stamp.getTime() - now.getTime()).toBeLessThanOrEqual(1);
+    }
+    expect(refused).toEqual([]);
+  });
+});
+
 describe("sender home canonical lifecycle adapters", () => {
   it("uses target-aware revokeShare and persists only the affected record", async () => {
     const root = document.createElement("div"); document.body.append(root);
@@ -55,6 +72,10 @@ describe("sender home canonical lifecycle adapters", () => {
       signSessionBytes: async () => new Uint8Array(64),
     } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
     await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(2));
+    // Revoke at a millisecond ending in 0, which the Node would refuse as is.
+    // waitFor's 50 ms ticks keep the last digit 0, so the nudge always runs.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-27T06:00:00.120Z"));
     root.querySelector<HTMLButtonElement>('button[aria-label="Revoke revoke-me.md"]')!.click();
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(revokeDelegation).not.toHaveBeenCalled();
@@ -64,7 +85,12 @@ describe("sender home canonical lifecycle adapters", () => {
       rootCid: "delegation-revoke-me",
       targetRole: "policy-enforcement",
       ownerDid: "did:pkh:eip155:1:0x1234567890abcdef",
+      now: expect.any(Date),
     }));
+    // TC-601: the stamp Share hands the SDK survives the Node's formatter.
+    const { now } = (revokePolicyRootV3.mock.calls.at(-1) as unknown as [{ readonly now: Date }])[0];
+    expect(now.getUTCMilliseconds() % 10).toBe(1);
+    expect(nodeFormat(now.toISOString())).toBe(now.toISOString());
     expect(root.querySelector('button[aria-label="Revoke leave-me.md"]')).not.toBeNull();
   });
 
