@@ -8,7 +8,7 @@ import type { SenderShareRecord } from "@tinycloud/share-sdk";
 const { revokePolicyRootV3 } = vi.hoisted(() => ({ revokePolicyRootV3: vi.fn(async () => ({})) }));
 vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3 }));
 
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); });
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 function fakeVault(): IDataVaultService {
   const store = new Map<string, unknown>();
@@ -72,6 +72,10 @@ describe("sender home canonical lifecycle adapters", () => {
       signSessionBytes: async () => new Uint8Array(64),
     } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
     await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(2));
+    // Revoke at a millisecond ending in 0, which the Node would refuse as is.
+    // waitFor's 50 ms ticks keep the last digit 0, so the nudge always runs.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-27T06:00:00.120Z"));
     root.querySelector<HTMLButtonElement>('button[aria-label="Revoke revoke-me.md"]')!.click();
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(revokeDelegation).not.toHaveBeenCalled();
@@ -85,6 +89,7 @@ describe("sender home canonical lifecycle adapters", () => {
     }));
     // TC-601: the stamp Share hands the SDK survives the Node's formatter.
     const { now } = (revokePolicyRootV3.mock.calls.at(-1) as unknown as [{ readonly now: Date }])[0];
+    expect(now.getUTCMilliseconds() % 10).toBe(1);
     expect(nodeFormat(now.toISOString())).toBe(now.toISOString());
     expect(root.querySelector('button[aria-label="Revoke leave-me.md"]')).not.toBeNull();
   });
