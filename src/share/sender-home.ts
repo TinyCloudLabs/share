@@ -12,6 +12,19 @@ export interface SenderHomeOptions {
   readonly onNavigate: (route: string) => void;
 }
 
+/**
+ * TC-601. sdk-core 3.0.0-beta.19 stamps a policy root revocation with
+ * `toISOString()`, and the Node refuses a time it can't reproduce exactly:
+ * its RFC 3339 formatter drops trailing zeros, so `.120Z` came back as
+ * `.12Z` and about one Revoke in ten failed with 403. A millisecond that
+ * doesn't end in 0 round-trips, so nudge those forward by one. Harmless and
+ * removable once Share uses sdk-core 3.1.0-beta.3 or later, which stamps
+ * whole seconds.
+ */
+export function nodeReproducibleRevocationTime(now: Date = new Date()): Date {
+  return now.getUTCMilliseconds() % 10 === 0 ? new Date(now.getTime() + 1) : now;
+}
+
 function node<K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {
   const item = doc.createElement(tag);
   item.className = className;
@@ -140,6 +153,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
                   issuerDid: options.tinycloud.credentialHolderDid,
                   nodeAudience: activeNode.nodeDid,
                   reason: "share revoked",
+                  now: nodeReproducibleRevocationTime(),
                   sign: (digest) => options.tinycloud.signSessionBytes(digest),
                 });
               },
