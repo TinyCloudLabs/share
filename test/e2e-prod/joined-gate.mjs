@@ -551,6 +551,61 @@ async function verifyDomainJourney({ browser, sender, stack }) {
   return { domainRendered: true, lookalikesRefusedBeforeAcquisition: 3, acquisitionInputKeys: ["email"], domainInvokeCount: invokes.length, ...Object.fromEntries(Object.entries(negatives).map(([key, value]) => [`domain${key[0].toUpperCase()}${key.slice(1)}`, value])), admittedRequestReplayStatus: replayStatus };
 }
 
+/**
+ * TC-530: one domain link, with edit access, emailed to two mailboxes at the
+ * domain. The owner's Node authorizes each address in its own signed
+ * admission, OpenCredentials emails each one, and a recipient opens the link
+ * from their email after proving that mailbox.
+ */
+async function verifyDomainDelivery({ browser, sender, stack }) {
+  const domain = "tinycloud.test";
+  phase = "domain-delivery-sender";
+  await clickText(sender, "Share another");
+  await sender.waitForSelector('form.composer-form input[name="recipient"][value="emailDomain"]', { visible: true, timeout: 180_000 });
+  await sender.$eval('input[name="recipient"][value="emailDomain"]', (input) => input.click());
+  await sender.type('input[name="recipient-value"]', domain);
+  const stamp = Date.now();
+  const recipients = [`alice-${stamp}@${domain}`, `bob-${stamp}@${domain}`];
+  await sender.type('textarea[name="delivery-emails"]', recipients.join(", "));
+  await sender.$eval('input[name="permission"][value="edit"]', (input) => { if (!input.checked) input.click(); });
+  const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
+  await sender.click("button.create-link-button");
+  await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
+  const mailBefore = stack.mail.length;
+  await clickText(sender, "Notify 2 recipients");
+  const invitedTo = (recipient) => stack.mail.slice(mailBefore).find((message) => {
+    const to = Array.isArray(message?.payload?.to) ? message.payload.to : [message?.payload?.to];
+    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("/s/inline#"));
+  });
+  const invitations = await waitUntil(() => recipients.every((recipient) => invitedTo(recipient) !== undefined) ? recipients.map(invitedTo) : undefined, 90_000);
+  assert(invitations, "each domain address was not emailed an invitation");
+  const links = invitations.map(invitationFromMail);
+  assert.equal(new Set(links).size, 1, "domain invitations did not carry the same link");
+  assert.equal(await waitUntil(() => sender.evaluate(() => document.querySelector(".notification-status")?.textContent === "Invitations requested." || undefined), 30_000), true, "sender did not confirm both invitations");
+  const authorized = trace.filter((entry) => entry.phase === "domain-delivery-sender" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/deliveries/authorize" && successfulRequest(entry));
+  assert.deepEqual(authorized.map((entry) => entry.body?.recipientEmail).sort(), [...recipients].sort(), "the owner's Node did not authorize each address separately");
+  assert.equal(new Set(authorized.map((entry) => entry.body?.jti)).size, recipients.length, "domain deliveries shared a JTI");
+  // Edit access is in the policy the owner's Node registered, not only in the form.
+  const registered = trace.find((entry) => entry.phase === "domain-delivery-sender" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/policies" && successfulRequest(entry));
+  const editAccessPublished = registered?.body?.policy?.capabilityCeiling?.some((capability) => capability?.kind === "kv" && capability.actions?.includes("tinycloud.kv/put")) === true;
+  assert.equal(editAccessPublished, true, "the domain share's registered policy does not grant edit access");
+
+  phase = "domain-delivery-recipient";
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(links[0], { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await enterMailbox(reader, recipients[1]);
+  const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipients[1])), 60_000);
+  const code = credentialOtpFromMail(otpMail); assert.match(code ?? "", /^\d{8}$/);
+  assert.equal(await submitCredentialValue(reader, code, "otp"), true);
+  const temporary = await mkdtemp(join(tmpdir(), "tc530-domain-delivery-"));
+  assert.equal(await downloadExact(reader, temporary), true, "an emailed domain recipient did not render the exact bytes");
+  // TC-531: the recipient asked its owner's Node for a session as long as the share.
+  const mint = trace.find((entry) => entry.phase === "domain-delivery-recipient" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
+  assert.equal(typeof mint?.body?.requestedExpiresAt, "string", "the recipient did not request a durable session");
+  await context.close();
+  return { invitationsSent: recipients.length, nodeAuthorizations: authorized.length, sameLinkForEveryAddress: true, editAccessPublished, emailedRecipientRendered: true, durableSessionRequested: true };
+}
+
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
   const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress}`);
@@ -637,9 +692,11 @@ try {
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";
   const domainJourney = await verifyDomainJourney({ browser, sender, stack });
+  journeyStage = "domain-delivery";
+  const domainDelivery = await verifyDomainDelivery({ browser, sender, stack });
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {

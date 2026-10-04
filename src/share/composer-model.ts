@@ -1,5 +1,5 @@
 import type { ResourceSelector } from "@tinycloud/share-envelope";
-import { canonicalEmailDomain } from "@tinycloud/sdk-core";
+import { canonicalEmailDomain, canonicalMailbox, mailboxBelongsToDomain } from "@tinycloud/sdk-core";
 import { SENDER_FAILURE, type SenderFailureKind } from "./sender-failure.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
@@ -43,7 +43,10 @@ export interface ShareComposerModel {
   readonly resource: ResourceSelector;
   readonly encryption: boolean;
   readonly encryptionAcknowledged: boolean;
+  /** Exact-email shares: the one mailbox to email the link to. */
   readonly deliveryEmail?: string;
+  /** Email-domain shares: mailboxes at exactly that domain to email the link to. */
+  readonly deliveryEmails?: readonly string[];
 }
 
 /** Everything the composer can default before the sender has supplied content. */
@@ -139,6 +142,9 @@ export function normalizeEmail(value: string): string {
   }
   const match = EMAIL.exec(value);
   if (match === null || match[1] === undefined) throw validationFailure("recipientEmail");
+  // The SDK refuses a mailbox the issuer can't canonicalize, but only after
+  // the encrypted upload; refuse it here first.
+  if (canonicalMailbox(value) === undefined) throw validationFailure("recipientEmail");
   return `${value.slice(0, value.length - match[1].length).slice(0, -1)}@${normalizeEmailDomain(match[1])}`;
 }
 
@@ -187,26 +193,74 @@ export function projectCapabilities(model: Pick<ShareComposerModel, "resource" |
   return { resource: { ...model.resource, path: canonicalPath }, actions: permissions };
 }
 
-/**
- * Domains where anyone can open an inbox. A share "for anyone at" one of
- * these is effectively public, so the composer refuses them.
- */
-const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
-  "aol.com", "gmail.com", "googlemail.com", "gmx.com", "gmx.net", "hey.com", "hotmail.com", "icloud.com",
-  "live.com", "mac.com", "mail.com", "mailinator.com", "me.com", "msn.com", "outlook.com", "pm.me",
-  "proton.me", "protonmail.com", "qq.com", "tutanota.com", "yahoo.com", "yandex.com", "ymail.com", "zoho.com",
-]);
-
 /** A canonical recipient domain: lowercase ASCII DNS labels, two or more, no IP literal. */
 export function normalizeRecipientDomain(value: string): string {
-  let domain: string;
   try {
-    domain = canonicalEmailDomain(value);
+    return canonicalEmailDomain(value);
   } catch {
     throw validationFailure("recipientDomain");
   }
-  if (PUBLIC_MAIL_DOMAINS.has(domain)) throw validationFailure("publicMailDomain");
-  return domain;
+}
+
+/**
+ * Mailboxes typed or pasted into the domain delivery field: separated by
+ * commas, semicolons, new lines or spaces, or written as `Name <address>`
+ * (`"Last, First" <address>` too, and several to a line). Nothing that could
+ * be an address is dropped: beside a `<…>` address, every other word with an
+ * `@` is an address and the rest is display name; anywhere else, every word
+ * is an address, so validation names the ones that aren't. De-duplicated in
+ * order and kept as typed; validation canonicalizes them.
+ */
+export function parseDeliveryEmails(value: string): readonly string[] {
+  const entries = deliverySegments(value).flatMap((segment) => {
+    // A quoted display name may hold anything, even `<…>`.
+    const unquoted = segment.replace(/"[^"]*"/g, (quoted) => " ".repeat(quoted.length));
+    const named = [...unquoted.matchAll(/<([^<>]*)>/g)];
+    if (named.length === 0) return segment.split(/\s+/).map((word) => word.replace(/^"(.*)"$/, "$1"));
+    const found: string[] = [];
+    let cursor = 0;
+    for (const match of named) {
+      found.push(...addressWords(unquoted.slice(cursor, match.index)), match[1]!.trim());
+      cursor = match.index + match[0].length;
+    }
+    return [...found, ...addressWords(unquoted.slice(cursor))];
+  });
+  return [...new Set(entries.filter((entry) => entry.length > 0))];
+}
+
+/** Commas and semicolons separate entries outside quotes and `<…>`; a line break always does. */
+function deliverySegments(value: string): string[] {
+  const segments = [""];
+  let quoted = false;
+  let bracketed = false;
+  for (const char of value) {
+    if (char === "\n" || char === "\r" || (!quoted && !bracketed && (char === "," || char === ";"))) {
+      segments.push("");
+      quoted = false;
+      bracketed = false;
+      continue;
+    }
+    if (char === '"' && !bracketed) quoted = !quoted;
+    else if (char === "<" && !quoted) bracketed = true;
+    else if (char === ">" && !quoted) bracketed = false;
+    segments[segments.length - 1] += char;
+  }
+  return segments;
+}
+
+/** The words with an at sign, full-width ones too, so validation names those. */
+function addressWords(text: string): string[] {
+  return text.split(/\s+/).filter((word) => /[@\uFF20\uFE6B]/.test(word));
+}
+
+/**
+ * The issuer's canonical mailbox (lowercase), which is also the address the
+ * owner's Node names in its delivery admission, when it is at `domain`.
+ */
+function domainDeliveryEmail(value: string, domain: string): string {
+  const mailbox = canonicalMailbox(value);
+  if (mailbox === undefined || !mailboxBelongsToDomain(mailbox.email, domain)) throw Object.assign(validationFailure("deliveryDomain"), { subject: value });
+  return mailbox.email;
 }
 
 export function validateComposerModel(model: ShareComposerModel): ShareComposerModel {
@@ -237,17 +291,27 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
     throw validationFailure("linkOnlyActions");
   }
   if ((recipient.kind === "exactEmail" || recipient.kind === "emailDomain") && !model.encryption) throw validationFailure("plaintext");
-  // A domain share admits every mailbox at the domain, so it stays view-only
-  // and is never emailed on the sender's behalf.
-  if (recipient.kind === "emailDomain" && model.permissions.some((permission) => permission !== "read")) throw validationFailure("domainActions");
-  if (recipient.kind === "emailDomain" && model.deliveryEmail !== undefined) throw validationFailure("domainDelivery");
   const deliveryEmail = model.deliveryEmail === undefined ? undefined : normalizeEmail(model.deliveryEmail);
   if (!Number.isFinite(Date.parse(model.expiresAt))) throw validationFailure("expiry");
-  if (recipient.kind === "exactEmail" && deliveryEmail !== undefined && deliveryEmail !== recipient.value) {
+  if (deliveryEmail !== undefined && (recipient.kind !== "exactEmail" || deliveryEmail !== recipient.value)) {
     throw validationFailure("deliveryRecipient");
   }
+  // One domain link can be emailed to any number of mailboxes at exactly that
+  // domain; the owner's Node names each one in its signed admission.
+  if (model.deliveryEmails !== undefined && model.deliveryEmails.length > 0 && recipient.kind !== "emailDomain") throw validationFailure("deliveryDomain");
+  const deliveryEmails = recipient.kind !== "emailDomain" || model.deliveryEmails === undefined || model.deliveryEmails.length === 0
+    ? undefined
+    : [...new Set(model.deliveryEmails.map((email) => domainDeliveryEmail(email, recipient.value)))];
   const projected = projectCapabilities(model);
-  return deliveryEmail === undefined ? { ...model, recipient, resource: projected.resource, permissions: projected.actions } : { ...model, recipient, resource: projected.resource, permissions: projected.actions, deliveryEmail };
+  const { deliveryEmail: _deliveryEmail, deliveryEmails: _deliveryEmails, ...rest } = model;
+  return {
+    ...rest,
+    recipient,
+    resource: projected.resource,
+    permissions: projected.actions,
+    ...(deliveryEmail === undefined ? {} : { deliveryEmail }),
+    ...(deliveryEmails === undefined ? {} : { deliveryEmails }),
+  };
 }
 
 /**
@@ -255,5 +319,13 @@ export function validateComposerModel(model: ShareComposerModel): ShareComposerM
  * sender no longer pre-commits to being offered it (P1-5).
  */
 export function canNotify(model: ShareComposerModel): boolean {
-  return model.recipient.kind === "exactEmail" && model.deliveryEmail !== undefined;
+  return model.recipient.kind === "exactEmail"
+    ? model.deliveryEmail !== undefined
+    : model.recipient.kind === "emailDomain" && (model.deliveryEmails?.length ?? 0) > 0;
+}
+
+/** The mailboxes a Notify action emails. */
+export function notificationRecipients(model: ShareComposerModel): readonly string[] {
+  if (!canNotify(model)) return [];
+  return model.recipient.kind === "exactEmail" ? [model.deliveryEmail!] : model.deliveryEmails!;
 }

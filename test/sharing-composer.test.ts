@@ -9,6 +9,7 @@ import {
   emailDomainOf,
   expiryFromChoice,
   normalizeEmailDomain,
+  parseDeliveryEmails,
   validateComposerModel,
   type ComposerContent,
   type ShareComposerModel,
@@ -51,13 +52,10 @@ const EXPECTED_SENDER_COPY = {
   recipientUnavailable: "That recipient option isn't available yet. Choose one person or anyone with the link.",
   expiry: "Choose when the link should expire.",
   deliveryRecipient: "The delivery address must match the person you're sharing with.",
-  deliveryDomain: "The delivery address must belong to the shared domain.",
-  domainActions: "Anyone-at-a-domain shares are view-only.",
-  domainDelivery: "TinyCloud doesn't email everyone at a domain. Copy the link and send it yourself.",
-  publicMailDomain: "Anyone can create an address at that domain. Choose your organization's domain, or share with one person.",
+  deliveryDomain: "Every address to email must be at the shared domain exactly.",
   plaintext: "Shares must stay encrypted.",
   acknowledgment: "Tick the box to confirm you understand.",
-  linkOnlyActions: "Link-only shares are view-only. Share with a specific person to allow editing.",
+  linkOnlyActions: "Link-only shares are view-only. Share with a specific person or domain to allow editing.",
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
@@ -166,19 +164,44 @@ describe("share composer model", () => {
     expect(clampExpiry("2026-08-01T00:00:00.000Z")).toBe("2026-08-01T00:00:00.000Z");
   });
 
-  it("accepts canonical encrypted view-only domain shares and still refuses device recipients", () => {
+  it("accepts canonical encrypted domain shares on the owner's terms and still refuses device recipients", () => {
     expect(normalizeEmailDomain("MAILINATOR.COM")).toBe("mailinator.com");
     expect(emailDomainOf("Alice@mailinator.com")).toBe("mailinator.com");
     const domain = (value: string, overrides: Partial<ShareComposerModel> = {}) => validateComposerModel(modelWith(textContent, { recipient: { kind: "emailDomain", value }, encryption: true, ...overrides }));
     expect(domain("@TinyCloud.XYZ").recipient).toEqual({ kind: "emailDomain", value: "tinycloud.xyz" });
+    // TC-530: public mail domains are the owner's call.
     for (const open of ["gmail.com", "@Outlook.com", "proton.me", "mailinator.com"]) {
-      expect(() => domain(open), open).toThrow("Anyone can create an address at that domain.");
+      expect(domain(open).recipient, open).toEqual({ kind: "emailDomain", value: open.replace(/^@/, "").toLowerCase() });
     }
     for (const invalid of ["mailinator", "mailinator.com.", "bücher.de", "tinyclоud.xyz", "192.168.0.1", "a..b.com", "name@mailinator.com"]) {
       expect(() => domain(invalid), invalid).toThrow("Enter a domain like example.com");
     }
-    expect(() => domain("tinycloud.xyz", { permissions: ["read", "edit"] })).toThrow("Anyone-at-a-domain shares are view-only.");
-    expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("TinyCloud doesn't email everyone at a domain.");
+    // Editing and email delivery are allowed, as for one person.
+    expect(domain("tinycloud.xyz", { permissions: ["read", "edit"] }).permissions).toEqual(["read", "edit"]);
+    expect(domain("tinycloud.xyz", { deliveryEmails: ["Person@TinyCloud.xyz", "other@tinycloud.xyz", "person@tinycloud.xyz"] }).deliveryEmails).toEqual(["person@tinycloud.xyz", "other@tinycloud.xyz"]);
+    // Every address must be at exactly that domain.
+    for (const outside of ["person@sub.tinycloud.xyz", "person@tinycloud.xyz.evil", "person@evil-tinycloud.xyz", "not-an-address"]) {
+      expect(() => domain("tinycloud.xyz", { deliveryEmails: ["person@tinycloud.xyz", outside] }), outside).toThrow("Every address to email must be at the shared domain exactly.");
+    }
+    // Pasted lists: names, new lines and mixed separators.
+    expect(parseDeliveryEmails("Alice Smith <alice@tinycloud.xyz>, bob@tinycloud.xyz\ncarol@tinycloud.xyz dave@tinycloud.xyz;bob@tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz", "carol@tinycloud.xyz", "dave@tinycloud.xyz"]);
+    expect(parseDeliveryEmails(" , ;\n ")).toEqual([]);
+    // Nothing that could be an address is dropped.
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> bob@tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz"]);
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> Bob <bob@tinycloud.xyz>")).toEqual(["alice@tinycloud.xyz", "bob@tinycloud.xyz"]);
+    expect(parseDeliveryEmails('"Smith, John" <john@tinycloud.xyz>, "jane@tinycloud.xyz" <jane.doe@tinycloud.xyz>')).toEqual(["john@tinycloud.xyz", "jane.doe@tinycloud.xyz"]);
+    expect(parseDeliveryEmails('"carol@tinycloud.xyz"')).toEqual(["carol@tinycloud.xyz"]);
+    // Outlook's unquoted "Last, First <address>" keeps the stray surnames, so
+    // validation names them instead of guessing.
+    expect(parseDeliveryEmails("Smith, John <john@tinycloud.xyz>; Doe, Jane <jane@tinycloud.xyz>")).toEqual(["Smith", "john@tinycloud.xyz", "Doe", "jane@tinycloud.xyz"]);
+    expect(() => domain("tinycloud.xyz", { deliveryEmails: parseDeliveryEmails("Smith, John <john@tinycloud.xyz>") })).toThrow("Every address to email must be at the shared domain exactly.");
+    // A quoted display name may hold anything, even `<…>`; a full-width at
+    // sign beside a name still reaches validation, which names it.
+    expect(parseDeliveryEmails('"Bob <old@tinycloud.xyz>" <new@tinycloud.xyz>')).toEqual(["new@tinycloud.xyz"]);
+    expect(parseDeliveryEmails("Alice <alice@tinycloud.xyz> bob\uFF20tinycloud.xyz")).toEqual(["alice@tinycloud.xyz", "bob\uFF20tinycloud.xyz"]);
+    // A single pinned address belongs to exact-email shares only.
+    expect(() => domain("tinycloud.xyz", { deliveryEmail: "person@tinycloud.xyz" })).toThrow("The delivery address must match the person you're sharing with.");
+    expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true, deliveryEmails: ["reader@example.com"] }))).toThrow("Every address to email must be at the shared domain exactly.");
     expect(() => domain("tinycloud.xyz", { encryption: false })).toThrow("Shares must stay encrypted.");
     expect(() => validateComposerModel(modelWith(textContent, { recipient: { kind: "recipientDid", value: "did:key:z6Mkexample" } }))).toThrow("That recipient option isn't available yet");
   });
@@ -190,13 +213,21 @@ describe("share composer model", () => {
     expect(validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" }, encryption: true }))).toMatchObject({ encryption: true, recipient: { kind: "exactEmail", value: "reader@example.com" } });
   });
 
+  it("refuses, before anything is uploaded, an exact address the SDK would refuse, and keeps the typed case otherwise", () => {
+    const exact = (value: string) => validateComposerModel(modelWith(textContent, { recipient: { kind: "exactEmail", value }, encryption: true }));
+    for (const invalid of ["bob!ops@example.com", "user%relay@example.com", "a..b@example.com", `${"x".repeat(65)}@example.com`]) {
+      expect(() => exact(invalid), invalid).toThrow(EXPECTED_SENDER_COPY.recipientEmail);
+    }
+    expect(exact("John.Smith@Example.com").recipient).toEqual({ kind: "exactEmail", value: "John.Smith@example.com" });
+  });
+
   it("rejects prefix content until the encrypted shared-key contract exists", () => {
     const library: ComposerContent = { kind: "library", source: { kind: "kv", space: "space-1", path: "docs", action: "tinycloud.kv/get" }, resource: { kind: "prefix", path: "docs" } };
     expect(() => validateComposerModel(modelWith(library, { resource: library.resource, recipient: { kind: "exactEmail", value: "reader@example.com" } }))).toThrow(SENDER_FAILURE.folderUnsupported);
   });
 
   it("rejects ungranted link-only actions while allowing read", () => {
-    expect(() => validateComposerModel(modelWith(textContent, { permissions: ["read", "edit"] }))).toThrow("Link-only shares are view-only. Share with a specific person to allow editing.");
+    expect(() => validateComposerModel(modelWith(textContent, { permissions: ["read", "edit"] }))).toThrow("Link-only shares are view-only. Share with a specific person or domain to allow editing.");
     expect(validateComposerModel(modelWith(textContent, { permissions: ["read"] }))).toMatchObject({ recipient: { kind: "bearer" }, permissions: ["read"] });
   });
 });
@@ -463,7 +494,7 @@ describe("share composer access controls", () => {
     expect(submitted[0]).toMatchObject({ encryption: false, recipient: { kind: "bearer" } });
   });
 
-  it("selects a view-only, link-only domain recipient and never the unavailable device recipient", () => {
+  it("selects a domain recipient with editing and email delivery, and never the unavailable device recipient", () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
 
@@ -478,13 +509,20 @@ describe("share composer access controls", () => {
     expect(recipient.getAttribute("aria-label")).toBe("Email domain");
     recipient.value = "TinyCloud.xyz";
     recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    // Editing and email delivery are not offered for a domain share.
+    // TC-530: editing and email delivery are offered, as for one person.
     const edit = root.querySelector<HTMLInputElement>("input[name=permission][value=edit]")!;
-    expect(edit.closest("label")!.hidden).toBe(true);
-    expect(edit.checked).toBe(false);
+    expect(edit.closest("label")!.hidden).toBe(false);
+    const delivery = root.querySelector<HTMLElement>(".domain-delivery-field")!;
+    expect(delivery.hidden).toBe(false);
+    expect(delivery.textContent).toContain("Email the link to people at this domain (optional)");
+    // The exact-email delivery field stays hidden for a domain share.
     expect(root.querySelector<HTMLElement>(".delivery-field")!.hidden).toBe(true);
-    expect(root.querySelector(".composer-access-hint")?.textContent).toBe("Domain shares are view-only. Choose a specific person to allow editing.");
-    expect(root.querySelector(".composer-note")?.textContent).toBe("Anyone with an @tinycloud.xyz email address can open this after confirming it, and can only view it. Creating the link doesn't email anyone — copy it and send it yourself.");
+    expect(root.querySelector<HTMLElement>(".composer-access-hint")!.hidden).toBe(true);
+    expect(root.querySelector(".composer-note")?.textContent).toBe("Anyone with an @tinycloud.xyz email address can open this after confirming it. Creating the link doesn't email anyone; list addresses at the domain if you want us to email it.");
+    // The addresses sit with the recipient rather than in Advanced settings.
+    expect(delivery.closest("details")).toBeNull();
+    expect(delivery.closest("fieldset")?.classList.contains("recipient-section")).toBe(true);
+    expect(root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!.placeholder).toBe("alice@tinycloud.xyz, bob@tinycloud.xyz");
   });
 
   it("removes manual folder browsing and restores edit controls for a person", () => {
@@ -663,12 +701,23 @@ describe("share composer sender failures", () => {
       validateComposerModel(modelWith(textContent, {
         recipient: { kind: "emailDomain", value: "example.com" },
         encryption: true,
-        deliveryEmail: "person@other.example",
+        deliveryEmails: ["person@other.example"],
       }));
     } catch (error) {
       validationError = error;
     }
-    expect(senderFailureMessage(validationError)).toBe(EXPECTED_SENDER_COPY.domainDelivery);
+    // The sender's own typed address is named, so they can find it in a list.
+    expect(senderFailureMessage(validationError)).toBe("“person@other.example” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.");
+    try {
+      validateComposerModel(modelWith(textContent, {
+        recipient: { kind: "exactEmail", value: "reader@example.com" },
+        encryption: true,
+        deliveryEmails: ["reader@example.com"],
+      }));
+    } catch (error) {
+      validationError = error;
+    }
+    expect(senderFailureMessage(validationError)).toBe(EXPECTED_SENDER_COPY.deliveryDomain);
   });
 
   /**
@@ -684,7 +733,7 @@ describe("share composer sender failures", () => {
     }
   });
 
-  it("refuses a forced delivery address on a domain share in the composer status", async () => {
+  it("refuses a delivery address outside the shared domain in the composer status", async () => {
     const root = document.createElement("div"); document.body.append(root);
     mountShareComposer(root, baseOptions());
     const domain = root.querySelector<HTMLInputElement>("input[name=recipient][value=emailDomain]")!;
@@ -693,14 +742,41 @@ describe("share composer sender failures", () => {
     const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
     recipient.value = "example.com";
     recipient.dispatchEvent(new Event("input", { bubbles: true }));
-    const delivery = root.querySelector<HTMLInputElement>("input[name=delivery-email]")!;
+    const delivery = root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!;
     delivery.value = "person@other.example";
     delivery.dispatchEvent(new Event("input", { bubbles: true }));
     paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
     root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe(EXPECTED_SENDER_COPY.domainDelivery);
+    expect(root.querySelector(".composer-status .sender-status-detail")?.textContent).toBe("“person@other.example” isn't an address at the shared domain. List only addresses at that domain, separated by commas or new lines.");
+  });
+
+  it("TC-530: emails a domain link to each address at the domain, once each", async () => {
+    const root = document.createElement("div"); document.body.append(root);
+    const notify = vi.fn(async (_input: { readonly recipient: string; readonly matcher: string }) => undefined);
+    let created: ShareComposerModel | undefined;
+    mountShareComposer(root, { ...baseOptions(), notify, createShare: async ({ model }) => { created = model; return { url: "https://share.tinycloud.xyz/s/inline#v=2&p=opaque", cid: "cid" }; } });
+    const domain = root.querySelector<HTMLInputElement>("input[name=recipient][value=emailDomain]")!;
+    domain.checked = true;
+    domain.dispatchEvent(new Event("change", { bubbles: true }));
+    const recipient = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    recipient.value = "example.com";
+    recipient.dispatchEvent(new Event("input", { bubbles: true }));
+    const delivery = root.querySelector<HTMLTextAreaElement>("textarea[name=delivery-emails]")!;
+    delivery.value = "Alice@example.com, bob@example.com; alice@example.com";
+    delivery.dispatchEvent(new Event("input", { bubbles: true }));
+    paste(root.querySelector<HTMLElement>(".content-dropzone")!, { text: "hello" });
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(root.querySelector(".confirm-notification")).not.toBeNull());
+
+    expect(created?.deliveryEmails).toEqual(["alice@example.com", "bob@example.com"]);
+    expect(created?.deliveryEmail).toBeUndefined();
+    const confirm = root.querySelector<HTMLButtonElement>(".confirm-notification")!;
+    expect(confirm.textContent).toBe("Notify 2 recipients");
+    confirm.click();
+    await vi.waitFor(() => expect(root.querySelector(".notification-status")?.textContent).toBe("Invitations requested."));
+    expect(notify.mock.calls.map(([input]) => [input.recipient, input.matcher])).toEqual([["alice@example.com", "emailDomain"], ["bob@example.com", "emailDomain"]]);
   });
 });
 
