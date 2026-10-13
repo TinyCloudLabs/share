@@ -1,26 +1,34 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { privateKeyToAccount } from "viem/accounts";
 import type { CallbackStrategy } from "@tinycloud/sdk-core";
 import { authenticateWithOpenKey, createTinyCloudClient } from "../src/share/openkey-session.js";
-
-const SENDER = "0x1234567890abcdef1234567890abcdef12345678";
 
 const state = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
   signed: [] as Array<{ message: string; keyId?: string }>,
-  signer: "",
+  // Who actually signs, and whether the widget answers with a signature at all.
+  signer: undefined as { signMessage(input: { message: string }): Promise<string> } | undefined,
+  omitSignature: false,
+  sender: "",
 }));
 
+const SENDER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
+const OTHER = privateKeyToAccount("0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a");
+state.sender = SENDER.address;
+
 // Production OpenKey since TC-688: connect() answers without a session token
-// and getSessionToken() is always null for embedding pages.
+// and getSessionToken() is always null for embedding pages. The widget always
+// reports the connected address, whoever signed.
 vi.mock("@openkey/sdk", () => ({
   OpenKey: class {
-    async connect() { return { address: SENDER, keyId: "key-1", keyType: "MANAGED" }; }
+    async connect() { return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
     getSessionToken() { return null; }
     tinycloudSigningOptions() { return { endpoint: "https://api.openkey.so/api/delegate/sign", token: null }; }
     async signMessage(request: { message: string; keyId?: string }) {
       state.signed.push(request);
-      return { address: state.signer, signature: "0xsigned" };
+      const signature = state.omitSignature ? undefined : await state.signer!.signMessage({ message: request.message });
+      return { address: state.sender, signature };
     }
   },
   OpenKeyProvider: class { constructor(..._args: unknown[]) {} },
@@ -51,28 +59,37 @@ describe("Share signing through the OpenKey widget (TC-994)", () => {
     state.config = undefined;
     state.signed = [];
     state.signer = SENDER;
+    state.omitSignature = false;
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Share must not call OpenKey's signer directly"))));
   });
 
   it("signs in when OpenKey gives the page no session token", async () => {
-    await expect(authenticateWithOpenKey(() => undefined)).resolves.toMatchObject({ address: SENDER });
+    await expect(authenticateWithOpenKey(() => undefined)).resolves.toMatchObject({ address: SENDER.address });
   });
 
   it("asks the sender's OpenKey widget for sign-in, bootstrap and hosting signatures", async () => {
     const strategy = await signedInStrategy();
     const purposes = ["sign-in", "bootstrap-session", "bootstrap-host"] as const;
     for (const purpose of purposes) {
-      await expect(strategy.handler({ address: SENDER, chainId: 1, message: `siwe:${purpose}`, type: "siwe", purpose }))
-        .resolves.toEqual({ approved: true, signature: "0xsigned" });
+      const message = `siwe:${purpose}`;
+      await expect(strategy.handler({ address: SENDER.address, chainId: 1, message, type: "siwe", purpose }))
+        .resolves.toEqual({ approved: true, signature: await SENDER.signMessage({ message }) });
     }
     expect(state.signed).toEqual(purposes.map((purpose) => ({ message: `siwe:${purpose}`, keyId: "key-1" })));
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("refuses a signature OpenKey made with a different account", async () => {
+  it("refuses a signature from another account even when OpenKey reports the sender's address", async () => {
     const strategy = await signedInStrategy();
-    state.signer = "0x0000000000000000000000000000000000000001";
-    await expect(strategy.handler({ address: SENDER, chainId: 1, message: "siwe:host", type: "siwe", purpose: "bootstrap-host" }))
+    state.signer = OTHER;
+    await expect(strategy.handler({ address: SENDER.address, chainId: 1, message: "siwe:host", type: "siwe", purpose: "bootstrap-host" }))
+      .resolves.toMatchObject({ approved: false });
+  });
+
+  it("refuses an approval that carries no signature", async () => {
+    const strategy = await signedInStrategy();
+    state.omitSignature = true;
+    await expect(strategy.handler({ address: SENDER.address, chainId: 1, message: "credential", type: "message", purpose: "message" }))
       .resolves.toMatchObject({ approved: false });
   });
 });

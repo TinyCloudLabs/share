@@ -1,5 +1,5 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import type { SignRequest, SignResponse } from "@tinycloud/sdk-core";
+import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 
@@ -28,15 +28,18 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
 
 /*
  * Every signature — the manifest-bearing sign-in, account bootstrap and
- * owned-space hosting — goes through OpenKey's own sign widget, where the
- * sender reviews and approves it. Share holds no OpenKey credential.
+ * owned-space hosting — needs the sender's approval: OpenKey's own sign
+ * widget for managed keys, the injected wallet for external ones. Share holds
+ * no OpenKey credential, and accepts only a signature that recovers to the
+ * signed-in account, whatever address the signer reports.
  * A later origin-bound OpenKey signing grant (TC-994 option a) can route the
  * non-sign-in purposes back to OpenKey's server-side Auto-Sign here.
  */
-function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
-  return session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId }).then((signed) => signed.address.toLowerCase() === session.address.toLowerCase()
-    ? { approved: true, signature: signed.signature }
-    : { approved: false, reason: "OpenKey signed with a different account" });
+async function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
+  const { signature } = await session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId });
+  return typeof signature === "string" && await verifyEip191MessageSignature(request.message, signature, session.address)
+    ? { approved: true, signature }
+    : { approved: false, reason: "OpenKey did not return a signature from the signed-in account" };
 }
 
 /*
