@@ -69,3 +69,26 @@ Its stdout and JSON artifact contain only fixed stage labels, route counts,
 tree digests, and SHA-256 values. Browser console strings, invitation
 fragments, mailbox addresses, OTPs, authorizations, and request bodies remain
 in process memory and are never serialized.
+
+## Real sender sign-in smoke
+
+`sender-signin-smoke.mjs` is the release check that does not fake OpenKey
+(TC-994). Each run makes a new throwaway OpenKey account with a random public
+`@mailinator.com` inbox and email OTP, signs it in to Share, approves each
+OpenKey review, creates a link-only share and opens it in a fresh browser
+context. OpenKey, the owner Node and the registry are all production.
+
+```bash
+npm run test:e2e:sender-signin                                  # live share.tinycloud.xyz
+npm run build && SHARE_SMOKE_CANDIDATE=dist npm run test:e2e:sender-signin  # this checkout
+```
+
+It prints one JSON line (also written to `SHARE_SMOKE_ARTIFACT`): approval
+prompts for sign-in and for the share, timings, and on failure the stage, the
+copy Share showed, and each failed or pending request with its status or
+network error and timing. The inbox, code, address and link stay in memory.
+`SHARE_SMOKE_MAX_SIGNIN_PROMPTS` (default 2) and
+`SHARE_SMOKE_MAX_SHARE_PROMPTS` (default 1) fail a run that asks the sender
+for more approvals. `.github/workflows/sender-signin-smoke.yml` runs it on
+pull requests (candidate), after each production deploy, and daily. OpenKey's
+release checks run the same script against production Share.
