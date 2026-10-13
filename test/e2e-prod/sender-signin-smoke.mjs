@@ -235,15 +235,16 @@ try {
   setStage("done");
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
-  report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.console !== undefined || entry.pageerror !== undefined).slice(-25);
   report.pendingRequests = pending();
   report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
-  report.classification = classify(report);
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     const pages = await browser.pages().catch(() => []);
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
   }
 } finally {
+  // Kept on passing runs too: a pass that needed an extra prompt is explained here.
+  report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.pageerror !== undefined).slice(-25);
+  if (report.result !== "passed") report.classification = classify(report);
   report.timingsMs.total = since();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
@@ -252,12 +253,14 @@ try {
 
 /** Name the failure class so a single run's report says whose problem it is. */
 function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert }) {
-  const network = failedRequests.find((entry) => entry.error !== undefined);
-  if (network?.error === "net::ERR_NETWORK_CHANGED") return `runner-network-changed: ${network.method} ${network.origin}${network.path}`;
+  const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
+  if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached Mailinator";
   if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
-  const node = [...failedRequests, ...pendingRequests].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "") && entry.path !== undefined && !entry.path.startsWith("/v1/locations/"));
-  if (node?.status >= 500 || node?.pendingMs > 30_000 || node?.error !== undefined) return `tinycloud: ${node.method} ${node.origin}${node.path} ${node.status ?? node.error ?? `pending ${node.pendingMs} ms`}`;
+  const tinycloud = [...pendingRequests, ...failedRequests.toReversed()].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "")
+    && (entry.status >= 500 || entry.pendingMs > 30_000 || entry.error !== undefined));
+  if (tinycloud !== undefined) return `tinycloud: ${tinycloud.method} ${tinycloud.origin}${tinycloud.path} ${tinycloud.status ?? tinycloud.error ?? `pending ${tinycloud.pendingMs} ms`} after ${tinycloud.durationMs ?? tinycloud.pendingMs} ms`;
+  const network = failedRequests.findLast((entry) => entry.error !== undefined);
   if (network !== undefined) return `network: ${network.method} ${network.origin}${network.path} ${network.error}`;
   return `share: failed at ${failedStage}`;
 }
