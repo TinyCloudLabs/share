@@ -55,17 +55,19 @@ const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 
-// Only API traffic: static assets add noise, never a sign-in failure.
-const isApi = (url) => url.protocol.startsWith("http") && !/\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
+// Static assets are kept out of the trail unless they fail: a missing chunk
+// can stop sign-in before any API call.
+const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
 
 function track(page, phase) {
   const open = new Map();
-  page.on("request", (request) => { if (isApi(new URL(request.url()))) open.set(request, Date.now()); });
+  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, Date.now()); });
   const record = (request, outcome) => {
     const started = open.get(request);
     if (started === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
+    if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
     const entry = { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome };
     requests.push(entry);
     return entry;
@@ -83,7 +85,7 @@ function track(page, phase) {
   page.on("requestfailed", (request) => record(request, { error: request.failure()?.errorText ?? "failed" }));
   page.on("console", (message) => { if (message.type() === "error") requests.push({ phase, stage, console: scrub(message.text()).slice(0, 240), atMs: since() }); });
   page.on("pageerror", (error) => requests.push({ phase, stage, pageerror: scrub(error.message).slice(0, 240), atMs: since() }));
-  return () => [...open].map(([request, start]) => {
+  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, start]) => {
     const url = new URL(request.url());
     return { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: start - t0, pendingMs: Date.now() - start };
   });
@@ -239,6 +241,9 @@ try {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 300);
   report.pendingRequests = pending();
   report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
+  report.consoleErrors = requests.filter((entry) => entry.console !== undefined).slice(-10).map(({ stage: at, console: text }) => ({ stage: at, text }));
+  const sender = (await browser?.pages().catch(() => []))?.find((page) => page.url().startsWith(SHARE));
+  report.pageStatus = scrub(await sender?.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`.replace(/\s+/g, " ").trim()).catch(() => "") ?? "").slice(0, 200);
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     const pages = await browser.pages().catch(() => []);
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
