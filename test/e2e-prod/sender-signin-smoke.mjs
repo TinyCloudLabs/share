@@ -254,14 +254,18 @@ try {
 }
 
 /** Name the failure class so a single run's report says whose problem it is. */
-function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert }) {
+function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert, shareCopy }) {
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached Mailinator";
   if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
+  // The SDK aborts its own account-registry sync after 4 s (net::ERR_ABORTED)
+  // and carries on; only server errors, real transport errors or long hangs
+  // are TinyCloud's.
   const tinycloud = [...pendingRequests, ...failedRequests.toReversed()].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "")
-    && (entry.status >= 500 || entry.pendingMs > 30_000 || entry.error !== undefined));
+    && (entry.status >= 500 || entry.pendingMs > 30_000 || (entry.error !== undefined && entry.error !== "net::ERR_ABORTED")));
   if (tinycloud !== undefined) return `tinycloud: ${tinycloud.method} ${tinycloud.origin}${tinycloud.path} ${tinycloud.status ?? tinycloud.error ?? `pending ${tinycloud.pendingMs} ms`} after ${tinycloud.durationMs ?? tinycloud.pendingMs} ms`;
+  if (shareCopy !== undefined) return `share: failed at ${failedStage} with "${shareCopy}"`;
   const network = failedRequests.findLast((entry) => entry.error !== undefined);
   if (network !== undefined) return `network: ${network.method} ${network.origin}${network.path} ${network.error}`;
   return `share: failed at ${failedStage}`;
