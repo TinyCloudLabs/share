@@ -1,0 +1,71 @@
+name: Sender sign-in smoke (real OpenKey)
+
+# TC-994. A brand-new throwaway OpenKey account (email OTP through a public
+# Mailinator inbox, generated per run) signs in to Share, creates a link-only
+# share and opens it as a recipient, against production OpenKey and Node.
+# The joined gate fakes OpenKey; this check does not.
+#
+# - pull_request: the candidate build, served at https://share.tinycloud.xyz
+#   inside the runner's Chrome only.
+# - push to main: production, once Cloudflare Pages has deployed this commit.
+# - schedule / workflow_dispatch: production, so an OpenKey release that
+#   breaks Share senders shows up here too.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sender-signin-smoke-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Build the candidate
+        if: github.event_name == 'pull_request'
+        run: npm run build:deploy
+      - name: Wait for Cloudflare Pages to deploy this commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 60); do
+            state=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.name == "Cloudflare Pages")][0] | "\(.status) \(.conclusion)"')
+            echo "Cloudflare Pages: ${state}"
+            case "$state" in
+              "completed success") exit 0 ;;
+              completed*) echo "Cloudflare Pages did not deploy ${GITHUB_SHA}"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "Cloudflare Pages did not finish within 20 minutes"; exit 1
+      - name: Sender sign-in smoke
+        env:
+          SHARE_SMOKE_CANDIDATE: ${{ github.event_name == 'pull_request' && 'dist' || '' }}
+          SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/sender-signin-smoke.json
+        run: npm run test:e2e:sender-signin
+      - name: Keep the scrubbed report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sender-signin-smoke
+          path: ${{ runner.temp }}/sender-signin-smoke.json
+          if-no-files-found: ignore
+          retention-days: 14
