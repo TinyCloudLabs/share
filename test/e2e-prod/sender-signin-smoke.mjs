@@ -142,8 +142,11 @@ async function approveUntil(page, done, counter, timeout) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const sign = frameAt(page, "/widget/embed/sign");
+    // What the sender was asked to grant, as OpenKey's review words it.
+    const review = await sign?.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "") ?? "";
     if (sign !== undefined && await clickButton(sign, "Approve").catch(() => false)) {
       report.prompts[counter] += 1;
+      (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
       await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
     }
     if (await page.evaluate(done).catch(() => false)) return;
