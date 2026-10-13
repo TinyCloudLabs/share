@@ -63,12 +63,23 @@ function track(page, phase) {
   page.on("request", (request) => { if (isApi(new URL(request.url()))) open.set(request, Date.now()); });
   const record = (request, outcome) => {
     const started = open.get(request);
-    if (started === undefined) return;
+    if (started === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
-    requests.push({ phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome });
+    const entry = { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome };
+    requests.push(entry);
+    return entry;
   };
-  page.on("requestfinished", (request) => record(request, { status: request.response()?.status() ?? 0 }));
+  page.on("requestfinished", async (request) => {
+    const response = request.response();
+    const entry = record(request, { status: response?.status() ?? 0 });
+    // An error body's machine code (e.g. INVALID_OTP) classifies a failure; nothing else is kept.
+    if (entry !== undefined && entry.status >= 400) {
+      const body = await response.json().catch(() => undefined);
+      const code = body?.code ?? body?.error?.code ?? (typeof body?.error === "string" ? body.error : undefined);
+      if (code !== undefined) entry.errorCode = scrub(code).slice(0, 80);
+    }
+  });
   page.on("requestfailed", (request) => record(request, { error: request.failure()?.errorText ?? "failed" }));
   page.on("console", (message) => { if (message.type() === "error") requests.push({ phase, stage, console: scrub(message.text()).slice(0, 240), atMs: since() }); });
   page.on("pageerror", (error) => requests.push({ phase, stage, pageerror: scrub(error.message).slice(0, 240), atMs: since() }));
@@ -91,10 +102,13 @@ async function openKeyOtp(timeout = 150_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const { msgs = [] } = await mailinator("");
-    for (const message of msgs.filter((entry) => /openkey/i.test(entry.subject ?? "")).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0))) {
+    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "")).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
+    for (const message of codeMail) {
       const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
-      const code = /(?<![\d#])(\d{6})(?!\d)/.exec(body)?.[1];
-      if (code !== undefined) return code;
+      // The mail repeats the code; a second six-digit run elsewhere is not it.
+      const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
+      report.otp = { messages: codeMail.length, codesInMessage: codes.size, mailAgeSeconds: message.seconds_ago, afterMs: since() };
+      if (codes.size === 1) return [...codes][0];
     }
     await sleep(4_000);
   }
@@ -135,6 +149,10 @@ async function approveUntil(page, done, counter, timeout) {
     if (await page.evaluate(done).catch(() => false)) return;
     const copy = await page.evaluate(() => `${document.querySelector(".auth-status")?.textContent ?? ""} ${document.querySelector(".composer-status")?.textContent ?? ""}`).catch(() => "");
     if (FAILURE_COPY.test(copy)) { report.shareCopy = copy.replace(/\s+/g, " ").trim().slice(0, 200); throw new Error("Share showed its failure copy"); }
+    for (const frame of page.frames().filter((candidate) => candidate.url().startsWith(OPENKEY))) {
+      const alert = await frame.evaluate(() => [...document.querySelectorAll("[role=alert]")].map((node) => node.textContent ?? "").join(" ").trim()).catch(() => "");
+      if (alert) { report.openKeyAlert = scrub(alert).replace(/\s+/g, " ").slice(0, 200); throw new Error("OpenKey showed an error"); }
+    }
     await sleep(250);
   }
   throw new Error("timed out");
@@ -217,6 +235,7 @@ try {
   report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.console !== undefined || entry.pageerror !== undefined).slice(-25);
   report.pendingRequests = pending();
   report.lastRequests = requests.filter((entry) => entry.method !== undefined && entry.method !== "OPTIONS").slice(-15);
+  report.classification = classify(report);
   if (process.env.SHARE_SMOKE_SCREENSHOT && browser) {
     const pages = await browser.pages().catch(() => []);
     await pages.at(-1)?.screenshot({ path: process.env.SHARE_SMOKE_SCREENSHOT }).catch(() => undefined);
@@ -226,6 +245,18 @@ try {
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });
+}
+
+/** Name the failure class so a single run's report says whose problem it is. */
+function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert }) {
+  const network = failedRequests.find((entry) => entry.error !== undefined);
+  if (network?.error === "net::ERR_NETWORK_CHANGED") return `runner-network-changed: ${network.method} ${network.origin}${network.path}`;
+  if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached Mailinator";
+  if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
+  const node = [...failedRequests, ...pendingRequests].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "") && entry.path !== undefined && !entry.path.startsWith("/v1/locations/"));
+  if (node?.status >= 500 || node?.pendingMs > 30_000 || node?.error !== undefined) return `tinycloud: ${node.method} ${node.origin}${node.path} ${node.status ?? node.error ?? `pending ${node.pendingMs} ms`}`;
+  if (network !== undefined) return `network: ${network.method} ${network.origin}${network.path} ${network.error}`;
+  return `share: failed at ${failedStage}`;
 }
 
 const line = JSON.stringify(report);
