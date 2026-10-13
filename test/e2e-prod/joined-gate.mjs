@@ -733,7 +733,9 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    // Assertion messages are fixed strings and Puppeteer's timeouts name only
+    // a duration; any other error may carry an invitation URL, so it stays withheld.
+    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery"].includes(journeyStage) && (error?.code === "ERR_ASSERTION" || /^(Waiting failed: \d+ms exceeded|Navigation timeout of \d+ ms exceeded)$/.test(String(error?.message))) ? String(error.message).slice(0, 240) : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,
