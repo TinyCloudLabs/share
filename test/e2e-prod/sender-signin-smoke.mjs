@@ -162,9 +162,11 @@ async function approveUntil(page, done, counter, timeout) {
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "share-sender-smoke-"));
-let browser; let server; let pending = [];
+let browser; let server; let pending = () => [];
 try {
-  const args = ["--disable-quic", "--no-proxy-server"];
+  // GitHub's Ubuntu runners block the unprivileged user namespaces Chrome's
+  // sandbox needs; the runner is disposable and visits only production sites.
+  const args = ["--disable-quic", "--no-proxy-server", ...(process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [])];
   if (process.env.SHARE_SMOKE_CANDIDATE) {
     setStage("candidate-server");
     const cert = join(temporary, "candidate.pem"); const key = join(temporary, "candidate-key.pem");
