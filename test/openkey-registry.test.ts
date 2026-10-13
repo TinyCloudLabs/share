@@ -8,10 +8,6 @@ vi.mock("@openkey/sdk", () => ({
   OpenKeyProvider: class { constructor(..._args: unknown[]) {} },
 }));
 
-vi.mock("@tinycloud/sdk-core", () => ({
-  createOpenKeyCallbackSigningStrategy: () => ({ handler: async () => ({ approved: true, signature: "0xsigned" }) }),
-}));
-
 vi.mock("@tinycloud/web-sdk", () => ({
   TinyCloudWeb: class {
     constructor(config: Record<string, unknown>) { state.config = config; }
@@ -29,7 +25,6 @@ describe("Share owner node discovery", () => {
       address: "0x1234567890abcdef1234567890abcdef12345678",
       auth: { keyId: "key-1" },
       openkey: {
-        tinycloudSigningOptions: () => ({ endpoint: "https://openkey.example/sign", token: "token" }),
         signMessage: async () => ({ address: "0x1234567890abcdef1234567890abcdef12345678", signature: "0xsigned" }),
       },
     } as never, {

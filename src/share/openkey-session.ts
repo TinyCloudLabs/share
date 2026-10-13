@@ -1,8 +1,7 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { createOpenKeyCallbackSigningStrategy, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
-import { fail } from "./sender-failure.js";
 
 export interface OpenKeyShareSession {
   readonly address: string;
@@ -23,40 +22,24 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
   const openkey = new OpenKey({ host: OPENKEY_ORIGIN, appName: "TinyCloud Share", mode: "iframe" });
   onStatus("Opening OpenKey…");
   const auth = await openkey.connect();
-  if (openkey.getSessionToken() === null) throw fail("signInService", "OpenKey did not provide a delegated signing session");
   onStatus("OpenKey connected.");
   return { address: auth.address, openkey, auth };
 }
 
-function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
-  return session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId }).then((signed) => signed.address.toLowerCase() === session.address.toLowerCase()
-    ? { approved: true, signature: signed.signature }
-    : { approved: false, reason: "OpenKey signed with a different account" });
-}
-
-function openKeySigningStrategy(session: OpenKeyShareSession) {
-  const signing = session.openkey.tinycloudSigningOptions();
-  if (signing.token === null) throw fail("signInService", "OpenKey delegated signing session expired");
-  // Embedded OpenKey sessions may arrive in Better Auth's signed-cookie form
-  // (`token.signature`). Its delegated signer accepts the underlying bearer
-  // token only; the suffix authenticates cookie transport and is not part of
-  // the session token stored by Better Auth.
-  const [token = ""] = signing.token.replace(/^Bearer\s+/i, "").split(".");
-  if (!/^[A-Za-z0-9_-]+$/.test(token)) throw fail("signInService", "OpenKey delegated signing session is malformed");
-  const automatic = createOpenKeyCallbackSigningStrategy({
-    endpoint: signing.endpoint,
-    token,
-    keyId: session.auth.keyId,
-    credentials: "omit",
-  });
-  return {
-    ...automatic,
-    // The manifest-bearing session is the one user decision. Bootstrap and
-    // owned-space hosting use OpenKey's narrow server-side delegate policy.
-    handler: (request: SignRequest): Promise<SignResponse> => request.purpose === "sign-in"
-      ? explicitOpenKeyApproval(session, request)
-      : automatic.handler(request),
-  };
+/*
+ * Every signature — the manifest-bearing sign-in, account bootstrap and
+ * owned-space hosting — needs the sender's approval: OpenKey's own sign
+ * widget for managed keys, the injected wallet for external ones. Share holds
+ * no OpenKey credential, and accepts only a signature that recovers to the
+ * signed-in account, whatever address the signer reports.
+ * A later origin-bound OpenKey signing grant (TC-994 option a) can route the
+ * non-sign-in purposes back to OpenKey's server-side Auto-Sign here.
+ */
+async function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
+  const { signature } = await session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId });
+  return typeof signature === "string" && await verifyEip191MessageSignature(request.message, signature, session.address)
+    ? { approved: true, signature }
+    : { approved: false, reason: "OpenKey did not return a signature from the signed-in account" };
 }
 
 /*
@@ -117,7 +100,7 @@ export async function createTinyCloudClient(
   const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
   const tinycloud = new TinyCloudWeb({
     provider: new OpenKeyProvider(session.openkey, session.auth),
-    signStrategy: openKeySigningStrategy(session),
+    signStrategy: { type: "callback", handler: (request: SignRequest) => explicitOpenKeyApproval(session, request) },
     ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
     // A new sender cannot resolve a signed location record before its first
     // session exists. Use the explicitly configured owner-node choice only
