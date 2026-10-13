@@ -7,7 +7,7 @@ import { createServer as httpServer } from "node:http";
 import { createServer as netServer, Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { privateKeyToAccount } from "viem/accounts";
-import { OPENKEY_TEST_SESSION_TOKEN, openKeyCors, openKeyWidgetHtml } from "./openkey-fixture.mjs";
+import { openKeyWidgetHtml } from "./openkey-fixture.mjs";
 
 export const STABLE_INPUTS = Object.freeze({
   node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
@@ -152,19 +152,16 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   };
 
   const openKeyOrigin = await loopback((request, response) => {
-    const cors = openKeyCors(request.headers.origin);
-    if (request.method === "OPTIONS") { response.writeHead(204, cors).end(); return; }
     if (request.method === "GET" && request.url?.startsWith("/widget/")) {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(openKeyWidgetHtml(WALLET.address)); return;
     }
-    if (request.method !== "POST" || (request.url !== "/sign" && request.url !== "/api/delegate/sign")) { response.writeHead(404).end(); return; }
-    if (request.url === "/api/delegate/sign" && request.headers.authorization !== `Bearer ${OPENKEY_TEST_SESSION_TOKEN}`) { response.writeHead(401, cors).end(); return; }
+    if (request.method !== "POST" || request.url !== "/sign") { response.writeHead(404).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => {
       try {
         const { message } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
         const signature = await WALLET.signMessage({ message });
-        response.writeHead(200, { ...cors, "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ address: WALLET.address, signature }));
-      } catch { response.writeHead(400, cors).end(); }
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ address: WALLET.address, signature }));
+      } catch { response.writeHead(400).end(); }
     });
   }, servers);
 
