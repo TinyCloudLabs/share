@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tinycloud/share-sdk")>()),
+  prepareAddressedShare: vi.fn((await importOriginal<typeof import("@tinycloud/share-sdk")>()).prepareAddressedShare),
   publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly onDeliveryMaterial: (material: unknown) => void }) => {
     state.published.push(options);
     options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope: "sealed", envelopeKey: "key", shareCid: "bafy-share" });
@@ -40,6 +41,7 @@ vi.mock("../src/share/delivery.js", () => ({
   }),
 }));
 
+const { prepareAddressedShare } = await import("@tinycloud/share-sdk");
 const { mountShareComposer } = await import("../src/share/composer.js");
 
 type DeliveryInput = { readonly recipientEmail: string; readonly idempotencyKey: string; readonly expiresAt: string };
@@ -52,13 +54,15 @@ function owner() {
     state.jtis.set(input.idempotencyKey, { recipient: input.recipientEmail, expiresAt: input.expiresAt, issuedAt });
     return { request: { recipient: input.recipientEmail }, admission: { nonce: input.idempotencyKey, issuedAt } };
   });
+  const put = vi.fn(async () => ({ ok: true }));
+  const encryptToNetwork = vi.fn(async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }));
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: "did:key:z6MkOwnerSession",
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
-    encryption: { encryptToNetwork: async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }) },
-    kvForSpace: () => ({ put: async () => ({ ok: true }) }),
+    encryption: { encryptToNetwork },
+    kvForSpace: () => ({ put }),
     signSessionBytes: async () => new Uint8Array(64),
     createUnifiedOwnerRoot: vi.fn(),
     registerPolicy: vi.fn(),
@@ -68,10 +72,10 @@ function owner() {
   document.body.append(root);
   mountShareComposer(root, { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
   const status = () => root.querySelector(".notification-status")?.textContent;
-  return { root, authorizeShareDeliveryV3, status };
+  return { root, authorizeShareDeliveryV3, status, encryptToNetwork, put };
 }
 
-async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", recipient: string, delivery?: string): Promise<HTMLButtonElement> {
+async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", recipient: string, delivery?: string, rejected = false): Promise<HTMLButtonElement> {
   const choice = root.querySelector<HTMLInputElement>(`input[name=recipient][value=${kind}]`)!;
   choice.checked = true;
   choice.dispatchEvent(new Event("change", { bubbles: true }));
@@ -87,7 +91,11 @@ async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", rec
   Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
   file.dispatchEvent(new Event("change", { bubbles: true }));
   root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-  await vi.waitFor(() => expect(root.querySelector(".confirm-notification")).not.toBeNull());
+  if (rejected) {
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
+  } else {
+    await vi.waitFor(() => expect(root.querySelector(".confirm-notification")).not.toBeNull());
+  }
   return root.querySelector<HTMLButtonElement>(".confirm-notification")!;
 }
 
@@ -109,6 +117,35 @@ describe("TC-530 owner delivery", () => {
     state.jtis.clear();
     state.nonces.clear();
     document.body.replaceChildren();
+  });
+
+  it.each(["ops#1@example.com", "sales&ops@example.com", "a=b@example.com", "user@example.xn--p1ai", "K@example.com"])("rejects %s with the real SDK before encrypting or uploading", async (address) => {
+    const { root, encryptToNetwork, put } = owner();
+    await create(root, "exactEmail", address, undefined, true);
+    expect(prepareAddressedShare).toHaveBeenCalled();
+    expect(encryptToNetwork).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(state.published).toHaveLength(0);
+  });
+
+  it("uses the existing composer error path when SDK preflight throws", async () => {
+    vi.mocked(prepareAddressedShare).mockImplementationOnce(() => { throw new Error("preflight refused"); });
+    const { root, encryptToNetwork, put } = owner();
+    await create(root, "exactEmail", "reader@example.com", undefined, true);
+    expect(encryptToNetwork).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(state.published).toHaveLength(0);
+  });
+
+  it.each(["exactEmail", "emailDomain"] as const)("prepares %s before encryption and passes the same request and SDK commitment to publish", async (kind) => {
+    const { root, encryptToNetwork, put } = owner();
+    await create(root, kind, kind === "exactEmail" ? "reader@example.com" : "example.com", "reader@example.com");
+    const preflight = vi.mocked(prepareAddressedShare);
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect(preflight.mock.invocationCallOrder[0]).toBeLessThan(encryptToNetwork.mock.invocationCallOrder[0]!);
+    expect(encryptToNetwork.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]!);
+    expect(state.published[0]).toMatchObject(preflight.mock.calls[0]![0]);
+    expect(state.published[0]!.credentialRequirement).toBe(preflight.mock.results[0]!.value.credentialRequirement);
   });
 
   it("emails a domain link to each canonical address and retries only what failed, with the same signed request", async () => {

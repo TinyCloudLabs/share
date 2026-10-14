@@ -5,8 +5,7 @@ import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX 
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
-import { historyRecordForPublishedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
-import { emailCredentialPolicyProjection, emailCredentialRequirement, emailDomainCredentialPolicyProjection, emailDomainCredentialRequirement } from "../credentials/email.js";
+import { historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
@@ -334,6 +333,12 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   // Only an exact-email share pins its delivery address in the envelope. A
   // domain link can be emailed to any number of mailboxes at the domain.
   const deliveryEmail = model.recipient.kind === "exactEmail" ? model.deliveryEmail : undefined;
+  const addressedRequest = {
+    target, actions: model.permissions, policyActions, filename,
+    ...(deliveryEmail === undefined ? {} : { deliveryEmail }),
+  };
+  // Use the publisher's own checks before encryption or encrypted storage.
+  const { credentialRequirement } = prepareAddressedShare(addressedRequest);
   const deliveryRecipients = notificationRecipients(model);
   // Per-address delivery state for this link, kept across Notify retries.
   const deliveries = new Map<string, { attempt: number; askedAt: number; expiresAt: string; sent: boolean }>();
@@ -376,18 +381,12 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     mode: "immutable" as const,
     initialCiphertextDigestHex: [...sha256(storedBytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
   };
-  const credentialRequirement = model.recipient.kind === "exactEmail"
-    ? emailCredentialPolicyProjection(emailCredentialRequirement(model.recipient.value!))
-    : model.recipient.kind === "emailDomain"
-      ? emailDomainCredentialPolicyProjection(emailDomainCredentialRequirement(model.recipient.value!))
-      : undefined;
   let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
     shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
-    target, resource: { kind: resourceKind, path: resourcePath }, actions: model.permissions, policyActions, contentSource: unifiedSource,
+    ...addressedRequest, resource: { kind: resourceKind, path: resourcePath }, contentSource: unifiedSource,
     ...(credentialRequirement === undefined ? {} : { credentialRequirement }),
-    filename, mediaType: plaintextType, byteLength,
-    ...(deliveryEmail === undefined ? {} : { deliveryEmail }), expiresAt: new Date(model.expiresAt),
+    mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
     // The SDK seals the signed policy envelope into the fragment-only
     // invitation. The only content bytes are encrypted and stored on the
     // owner's TinyCloud node.
