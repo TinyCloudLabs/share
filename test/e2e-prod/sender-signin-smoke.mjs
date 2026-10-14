@@ -204,6 +204,14 @@ try {
   await codeField.type(otp);
   const signInStart = Date.now();
   await until(() => clickButton(connect, "Verify"), 10_000, "OpenKey's Verify button");
+  // OpenKey asks before creating an account for an email it doesn't know
+  // (TC-1114). The inbox is new on every run, so the smoke creates it. Older
+  // OpenKey created the account silently; then sign-in simply moves on.
+  await until(
+    async () => connect.isDetached() || frameAt(sender, "/widget/embed/sign") !== undefined || await clickButton(connect, "Create a new account"),
+    30_000,
+    "OpenKey's new-account choice or the next step",
+  ).catch(() => undefined);
 
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
