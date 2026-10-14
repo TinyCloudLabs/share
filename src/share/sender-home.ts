@@ -2,7 +2,7 @@ import { copyWithFallback } from "./clipboard.js";
 import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { revokeShare } from "@tinycloud/share-sdk";
-import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
+import { getPolicyRootStatusV3, revokePolicyRootV3 } from "@tinycloud/sdk-core";
 
 export interface SenderHomeOptions {
   readonly session: OpenKeyShareSession;
@@ -145,17 +145,28 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
                 if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
                   throw new Error("revoke-unbound-policy-root");
                 }
-                await revokePolicyRootV3({
-                  nodeOrigin: activeNode.origin,
-                  rootCid: request.rootCid,
-                  targetRole: request.targetRole,
-                  ownerDid: options.tinycloud.credentialHolderDid,
-                  issuerDid: options.tinycloud.credentialHolderDid,
-                  nodeAudience: activeNode.nodeDid,
-                  reason: "share revoked",
-                  now: nodeReproducibleRevocationTime(),
-                  sign: (digest) => options.tinycloud.signSessionBytes(digest),
-                });
+                try {
+                  await revokePolicyRootV3({
+                    nodeOrigin: activeNode.origin,
+                    rootCid: request.rootCid,
+                    targetRole: request.targetRole,
+                    ownerDid: options.tinycloud.credentialHolderDid,
+                    issuerDid: options.tinycloud.credentialHolderDid,
+                    nodeAudience: activeNode.nodeDid,
+                    reason: "share revoked",
+                    now: nodeReproducibleRevocationTime(),
+                    sign: (digest) => options.tinycloud.signSessionBytes(digest),
+                  });
+                } catch (caught) {
+                  // TC-657. A retry after a lost response signs a new
+                  // `revokedAt`, and the Node, already holding the first
+                  // revocation, answers 409 root-revocation-irreversible.
+                  // Ask the Node whether the root is revoked before calling
+                  // the revoke a failure.
+                  if ((caught as { readonly status?: unknown } | null)?.status !== 409) throw caught;
+                  const status = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
+                  if (status?.state !== "revoked") throw caught;
+                }
               },
             },
           }).then((result) => {

@@ -5,8 +5,11 @@ import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
 
-const { revokePolicyRootV3 } = vi.hoisted(() => ({ revokePolicyRootV3: vi.fn(async () => ({})) }));
-vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3 }));
+const { getPolicyRootStatusV3, revokePolicyRootV3 } = vi.hoisted(() => ({
+  getPolicyRootStatusV3: vi.fn(async (): Promise<{ readonly state: "active" | "revoked" }> => ({ state: "active" })),
+  revokePolicyRootV3: vi.fn(async () => ({})),
+}));
+vi.mock("@tinycloud/sdk-core", () => ({ getPolicyRootStatusV3, revokePolicyRootV3 }));
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -125,5 +128,60 @@ describe("sender home canonical lifecycle adapters", () => {
     root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')!.click();
     await vi.waitFor(() => expect(window.open).toHaveBeenCalled());
     expect(window.open).toHaveBeenCalledWith("https://share.example.invalid/viewer#tc1=opaque", "_self", "noreferrer");
+  });
+});
+
+describe("TC-657 revoke retry after a lost response", () => {
+  const irreversible = () => Object.assign(new Error("policy root revocation rejected: HTTP 409 - root-revocation-irreversible"), { status: 409 });
+  const stillActive = "Revoke didn't go through — the share is still active. Try again.";
+
+  async function clickRevoke() {
+    getPolicyRootStatusV3.mockClear(); revokePolicyRootV3.mockClear();
+    const root = document.createElement("div"); document.body.append(root);
+    const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+    await history.save(record("retry-me"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mountSenderHome(root, { session, tinycloud: {
+      revokeDelegation: vi.fn(),
+      credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
+      activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
+      signSessionBytes: async () => new Uint8Array(64),
+    } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    await vi.waitFor(() => expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).not.toBeNull());
+    // The list reload replaces the live message, so record every message shown.
+    const live = root.querySelector<HTMLElement>(".sender-live")!; const messages: string[] = [];
+    new MutationObserver(() => messages.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
+    root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')!.click();
+    return { root, history, live, messages };
+  }
+
+  it("treats a 409 for a root the Node reports revoked as a successful revoke", async () => {
+    revokePolicyRootV3.mockRejectedValueOnce(irreversible());
+    getPolicyRootStatusV3.mockResolvedValueOnce({ state: "revoked" });
+    const { root, history, messages } = await clickRevoke();
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(messages).toContain("Share revoked.");
+    expect(messages).not.toContain(stillActive);
+    expect(getPolicyRootStatusV3).toHaveBeenCalledWith({
+      nodeOrigin: "https://share.example.invalid",
+      rootCid: "delegation-retry-me",
+      expectedNodeAudience: "did:web:node.example.invalid",
+    });
+    expect((await history.records.get("retry-me"))?.revokedAt).toEqual(expect.any(String));
+    expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).toBeNull();
+  });
+
+  it.each([
+    ["a 409 for a root that is still active", () => { revokePolicyRootV3.mockRejectedValueOnce(irreversible()); getPolicyRootStatusV3.mockResolvedValueOnce({ state: "active" }); }, true],
+    ["a 409 whose status read fails", () => { revokePolicyRootV3.mockRejectedValueOnce(irreversible()); getPolicyRootStatusV3.mockRejectedValueOnce(new Error("policy root status rejected: HTTP 503")); }, true],
+    ["a non-409 failure", () => { revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 })); }, false],
+  ])("keeps the share active after %s", async (_name, arrange, readsStatus) => {
+    arrange();
+    const { root, history, live } = await clickRevoke();
+    await vi.waitFor(() => expect(live.textContent).toBe(stillActive));
+    expect(getPolicyRootStatusV3).toHaveBeenCalledTimes(readsStatus ? 1 : 0);
+    expect(root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')?.disabled).toBe(false);
+    expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
+    expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
   });
 });
