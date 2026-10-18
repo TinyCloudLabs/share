@@ -83,12 +83,15 @@ function instrumentedVault(options: { readonly serverPageLimit?: number; readonl
     put: async (key: string, value: unknown) => { store.set(key, value); return { ok: true, data: undefined }; },
     get: async (key: string) => {
       stats.gets.push(key);
+      // The response reflects the store when the request is made, so a write that lands during the delay does not show up in it.
+      const present = store.has(key);
+      const snapshot = store.get(key);
       stats.inFlight += 1; stats.maxInFlight = Math.max(stats.maxInFlight, stats.inFlight);
       try {
         await new Promise((resolve) => setTimeout(resolve, options.getDelay?.(key) ?? 1));
         const failure = options.failGet?.(key);
         if (failure === "throw") throw new Error("vault-unreachable");
-        return store.has(key) && failure === undefined ? { ok: true, data: store.get(key) } : { ok: false, error: { code: "NOT_FOUND", message: "missing" } };
+        return present && failure === undefined ? { ok: true, data: snapshot } : { ok: false, error: { code: "NOT_FOUND", message: "missing" } };
       } finally { stats.inFlight -= 1; }
     },
     delete: async (key: string) => { store.delete(key); return { ok: true, data: undefined }; },
@@ -161,7 +164,7 @@ describe("sender history load path", () => {
     expect(page.nextCursor).toBe("5");
   });
 
-  it("reads each record once per page load and serves Load more without requests", async () => {
+  it("reads each record once on open, and Load more reads only the rows it shows", async () => {
     const { vault, seed, stats } = instrumentedVault({ getDelay: () => 0 });
     seed(manyRecords(40));
     const repository = new SenderHistoryRepository(vault, NOW);
@@ -172,33 +175,71 @@ describe("sender history load path", () => {
     const second = await repository.page(first.nextCursor);
     expect(second.items).toHaveLength(15);
     expect(second.truncated).toBe(false);
-    expect(stats.gets).toHaveLength(40);
+    expect(stats.gets).toHaveLength(55);
     expect(stats.listCalls).toBe(1);
-    // a fresh first page (revoke, import, retry) re-lists keys but fetches nothing it already holds
+    // a fresh first page (revoke, import, retry) re-lists the keys and re-reads only the 25 rows it shows
     await repository.page();
-    expect(stats.gets).toHaveLength(40);
+    expect(stats.gets).toHaveLength(80);
     expect(stats.listCalls).toBe(2);
   });
 
-  it("shows a revoke immediately, never as active, without rereading records", async () => {
-    const { vault, seed, stats } = instrumentedVault({ getDelay: () => 0 });
+  it("never holds a bearer link or delivery material outside the vault, until a click reads it", async () => {
+    const { vault, seed } = instrumentedVault({ getDelay: () => 0 });
+    seed(manyRecords(30).map((entry) => ({ ...entry, link: `https://share.example.invalid/viewer#tc1=LINK-${entry.shareId}`, deliveryMaterial: { marker: `MATERIAL-${entry.shareId}` }, deliveredRecipients: [`mailbox-${entry.shareId}`] }) as unknown as SenderShareRecord));
+    const repository = new SenderHistoryRepository(vault, NOW);
+    // Everything the repository retains between calls, excluding the vault handle itself.
+    const retained = (): string => {
+      const seen = new Set<unknown>();
+      const walk = (value: unknown): unknown => {
+        if (typeof value !== "object" || value === null || seen.has(value)) return typeof value === "object" ? null : value;
+        seen.add(value);
+        if (value instanceof Map) return [...value].map(([key, entry]) => [walk(key), walk(entry)]);
+        if (value instanceof Set) return [...value].map(walk);
+        if (Array.isArray(value)) return value.map(walk);
+        return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "vault").map(([key, entry]) => [key, walk(entry)]));
+      };
+      return JSON.stringify(walk(repository));
+    };
+    const first = await repository.page();
+    const second = await repository.page(first.nextCursor);
+    for (const item of [...first.items, ...second.items]) expect(JSON.stringify(item)).not.toMatch(/LINK-|MATERIAL-|mailbox-/);
+    expect(first.items[0]).toMatchObject({ record: { shareId: "share-00029", filename: "notes.md", recipientMatcher: { kind: "bearer" } } });
+    expect(retained()).not.toMatch(/LINK-|MATERIAL-|mailbox-/);
+    expect(retained()).toContain("share-00029"); // the index of ids is kept
+    // Open/Copy and Revoke read the one record they need
+    const shown = await repository.show("share-00029", true);
+    expect(shown.link).toContain("LINK-share-00029");
+    expect((await repository.records.get("share-00029"))?.deliveryMaterial).toEqual({ marker: "MATERIAL-share-00029" });
+    expect(retained()).not.toMatch(/LINK-|MATERIAL-|mailbox-/);
+  });
+
+  it("shows a revoke immediately, never as active, on the first page and on Load more", async () => {
+    const { vault, seed } = instrumentedVault({ getDelay: () => 0 });
     seed(manyRecords(30));
     const repository = new SenderHistoryRepository(vault, NOW);
     const first = await repository.page();
     const target = first.items[2];
     if (target === undefined || !("record" in target)) throw new Error("expected a record row");
     expect(target.state).toBe("ready");
-    const getsBefore = stats.gets.length;
     await repository.markRevoked(target.record);
     await repository.markRevoked(manyRecords(30)[0] as SenderShareRecord); // oldest: on the "Load more" page
     expect((await repository.page()).items[2]).toMatchObject({ state: "revoked", view: { revoked: true } });
     expect((await repository.page("25")).items.at(-1)).toMatchObject({ state: "revoked", view: { revoked: true } });
-    expect(stats.gets).toHaveLength(getsBefore);
     // a new session sees the stored revocation too
     expect((await new SenderHistoryRepository(vault, NOW).page()).items[2]).toMatchObject({ state: "revoked" });
   });
 
-  it("shows a saved record and drops a removed one on the next load without refetching the rest", async () => {
+  it("shows a revoke made by another writer on the next first page", async () => {
+    const { vault, seed, store } = instrumentedVault({ getDelay: () => 0 });
+    seed(manyRecords(3));
+    const repository = new SenderHistoryRepository(vault, NOW);
+    expect((await repository.page()).items[0]).toMatchObject({ state: "ready" });
+    const key = `${SENDER_HISTORY_PREFIX}share-00002`;
+    store.set(key, { ...(store.get(key) as SenderShareRecord), revokedAt: "2026-07-26T00:00:00.000Z" });
+    expect((await repository.page()).items[0]).toMatchObject({ state: "revoked", view: { revoked: true } });
+  });
+
+  it("shows a saved record and drops a removed one on the next load", async () => {
     const { vault, seed, stats } = instrumentedVault({ getDelay: () => 0 });
     seed(manyRecords(10));
     const repository = new SenderHistoryRepository(vault, NOW);
@@ -209,10 +250,10 @@ describe("sender history load path", () => {
     expect(ids(page.items)[0]).toBe("imported-1");
     expect(ids(page.items)).not.toContain("share-00009");
     expect(page.items).toHaveLength(10);
-    expect(stats.gets).toHaveLength(10);
+    expect(stats.gets).toHaveLength(20); // 10 on open, then the 10 rows shown; the index needed no fetch for the save or remove
   });
 
-  it("picks up shares added or removed by another writer on a fresh load, fetching only the new one", async () => {
+  it("picks up shares added or removed by another writer on a fresh load, fetching only the new one for the index", async () => {
     const { vault, seed, stats, store } = instrumentedVault({ getDelay: () => 0 });
     seed(manyRecords(5));
     const repository = new SenderHistoryRepository(vault, NOW);
@@ -222,19 +263,32 @@ describe("sender history load path", () => {
     const page = await repository.page();
     expect(ids(page.items)).toContain("from-elsewhere");
     expect(ids(page.items)).not.toContain("share-00000");
-    expect(stats.gets).toHaveLength(6);
+    expect(stats.gets).toHaveLength(10); // 5 on open, 1 new record, 4 other rows re-read
   });
 
-  it("does not let a read that raced a revoke overwrite it with the active record", async () => {
+  it("does not show a record as active when a read that began before a revoke returns after it", async () => {
     const { vault, seed } = instrumentedVault({ getDelay: (key) => key.endsWith("share-00001") ? 25 : 0 });
     seed(manyRecords(3));
     const repository = new SenderHistoryRepository(vault, NOW);
-    const loading = repository.records.list();
+    const loading = repository.page();
     await new Promise((resolve) => setTimeout(resolve, 5));
     await repository.markRevoked(manyRecords(3)[1] as SenderShareRecord);
-    await loading;
-    expect((await repository.records.list()).find((entry) => entry.shareId === "share-00001")?.revokedAt).toBeDefined();
+    const page = await loading;
+    expect(page.items.find((item) => item.key.endsWith("share-00001"))).toMatchObject({ state: "revoked" });
     expect((await repository.page()).items.find((item) => item.key.endsWith("share-00001"))).toMatchObject({ state: "revoked" });
+  });
+
+  it("fails instead of looping when the listing cursors cycle", async () => {
+    const { vault } = instrumentedVault();
+    const pages: Record<string, { keys: string[]; nextCursor: string }> = { start: { keys: ["a"], nextCursor: "A" }, A: { keys: ["b"], nextCursor: "B" }, B: { keys: ["c"], nextCursor: "A" } };
+    let calls = 0;
+    (vault as unknown as { listPage: unknown }).listPage = async ({ cursor }: { cursor?: string }) => {
+      calls += 1;
+      if (calls > 20) throw new Error("runaway listing");
+      return { ok: true, data: { truncated: true, ...pages[cursor ?? "start"] } };
+    };
+    await expect(new SenderHistoryRepository(vault, NOW).page()).rejects.toThrow("sender-history-list-failed");
+    expect(calls).toBe(3);
   });
 
   it("skips unreadable records as before and retries them on the next load", async () => {
