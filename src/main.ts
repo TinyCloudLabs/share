@@ -1,5 +1,4 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
-import { purgeLegacyReceiverStorage } from "./email-share/receiver-storage.js";
 import type { ResolveResult } from "./viewer/resolve.js";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
@@ -21,9 +20,6 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
-  // Receiver keys and credentials now live in page memory; drop any records an
-  // earlier build left in session storage before anything else can read them.
-  purgeLegacyReceiverStorage(window.sessionStorage);
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
     captured.shareHref = `https://share.tinycloud.xyz${capturedUrl.pathname}${capturedUrl.search}${capturedUrl.hash}`;
@@ -105,9 +101,11 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed");
-    const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-      ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
-      : "This invitation could not be verified. Ask the sender for a fresh invitation.";
+    const detail = error instanceof Error && error.name === "ShareReceiverKeyUnavailableError"
+      ? "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari."
+      : error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
+        ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
+        : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
 }

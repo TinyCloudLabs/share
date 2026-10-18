@@ -101,7 +101,7 @@ beforeEach(() => {
     void options.onComplete({ bytes: new TextEncoder().encode("opened") });
   });
   state.receive.mockResolvedValue({
-    identity: { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: "session", origin: "https://share.tinycloud.xyz" },
+    identity: { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: "persistent", origin: "https://share.tinycloud.xyz" },
     shareId: "share-500",
     metadata: {
       protocol: "tinycloud-share",
@@ -148,17 +148,13 @@ describe("first-class accountless receiver", () => {
     expect(state.createAccountClient).not.toHaveBeenCalled();
   });
 
-  it("drops receiver records an earlier build stored before the receiver starts", async () => {
-    window.sessionStorage.setItem("tinycloud.share.receiver-session.v1", JSON.stringify({ jwk: { d: "legacy" } }));
-    window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{}");
-    const seen: (string | null)[] = [];
-    state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
-      seen.push(window.sessionStorage.getItem("tinycloud.share.receiver-session.v1"), window.sessionStorage.getItem("tinycloud.share.receiver-credentials.v1"));
-      void options.onComplete({ bytes: new Uint8Array([1]) });
-    });
+  it("stops with a browser message when no signing key can be created", async () => {
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    state.receiveWithSdk.mockRejectedValueOnce(Object.assign(new Error("This browser cannot create a signing key for this page"), { name: "ShareReceiverKeyUnavailableError" }));
     await import("../src/main.js");
-    await vi.waitFor(() => expect(state.receiveWithSdk).toHaveBeenCalledTimes(1));
-    expect(seen).toEqual([null, null]);
+    await vi.waitFor(() => expect(state.invalid).toHaveBeenCalledTimes(1));
+    expect(state.invalid.mock.calls[0]![1]).toBe("This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari.");
+    expect(state.presented).toHaveLength(0);
   });
 
   it("keeps remote receiver response details out of console telemetry", async () => {

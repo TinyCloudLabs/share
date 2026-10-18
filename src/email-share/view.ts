@@ -52,6 +52,8 @@ export interface RecipientClaimInvitation {
   readonly filename?: string;
   readonly expiresAt?: string;
   readonly actions?: readonly string[];
+  /** This browser can keep the recipient's key only while the page is open. */
+  readonly memoryOnly?: boolean;
 }
 
 export interface RecipientClaimView {
@@ -112,9 +114,10 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
   const note = element(doc, "p", "claim-note", recipient.kind === "exactEmail"
     ? "The emailed code proves you control this mailbox. The owner’s TinyCloud node checks that proof before it releases the encrypted file, which is decrypted in this browser."
     : "The emailed code proves you control an address at this domain. The owner’s TinyCloud node checks that proof, and sees the address you verify, before it releases the encrypted file, which is decrypted in this browser.");
-  // This browser keeps the verification in page memory only.
-  const reload = element(doc, "p", "claim-note claim-reload-note", "Your verification lasts only while this page is open. If you reload or close it, open the link from your email and verify again.");
-  details.append(facts, note, reload);
+  details.append(facts, note);
+  if (invitation.memoryOnly === true) {
+    details.append(element(doc, "p", "claim-note claim-reload-note", "This browser can keep your verification only while this page is open. If you reload or close it, open the link from your email and verify again."));
+  }
 
   const layout = element(doc, "div", "claim-layout");
   layout.append(verify, details);
