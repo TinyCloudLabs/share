@@ -1,4 +1,5 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
+import { purgeLegacyReceiverStorage } from "./email-share/receiver-storage.js";
 import type { ResolveResult } from "./viewer/resolve.js";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
@@ -20,6 +21,9 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
+  // Receiver keys and credentials now live in page memory; drop any records an
+  // earlier build left in session storage before anything else can read them.
+  purgeLegacyReceiverStorage(window.sessionStorage);
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
     captured.shareHref = `https://share.tinycloud.xyz${capturedUrl.pathname}${capturedUrl.search}${capturedUrl.hash}`;

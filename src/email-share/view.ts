@@ -112,7 +112,9 @@ export function renderRecipientClaim(root: HTMLElement, invitation: RecipientCla
   const note = element(doc, "p", "claim-note", recipient.kind === "exactEmail"
     ? "The emailed code proves you control this mailbox. The owner’s TinyCloud node checks that proof before it releases the encrypted file, which is decrypted in this browser."
     : "The emailed code proves you control an address at this domain. The owner’s TinyCloud node checks that proof, and sees the address you verify, before it releases the encrypted file, which is decrypted in this browser.");
-  details.append(facts, note);
+  // This browser keeps the verification in page memory only.
+  const reload = element(doc, "p", "claim-note claim-reload-note", "Your verification lasts only while this page is open. If you reload or close it, open the link from your email and verify again.");
+  details.append(facts, note, reload);
 
   const layout = element(doc, "div", "claim-layout");
   layout.append(verify, details);
