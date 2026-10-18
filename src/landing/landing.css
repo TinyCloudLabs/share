@@ -242,10 +242,7 @@ h3 {
   padding: clamp(5rem, 10vw, 8rem) 0;
   animation: page-enter 650ms var(--ease) both;
   grid-template-columns: minmax(0, 1.1fr) minmax(20rem, 0.9fr);
-  grid-template-areas:
-    "eyebrow eyebrow"
-    "title intro"
-    "title actions";
+  grid-template-areas: "title intro";
   gap: 1.5rem 3rem;
 }
 
@@ -521,6 +518,193 @@ h1 {
   color: var(--accent);
 }
 
+/* Agent CTA, copy sections, sign-in */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.agent-cta h2,
+.copy-section > h2 {
+  margin: 0 0 clamp(1.75rem, 4vw, 2.75rem);
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  line-height: 1.05;
+}
+
+.agent-cta h2 {
+  max-width: 24ch;
+}
+
+.agent-box {
+  display: flex;
+  align-items: center;
+  max-width: 62rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+  gap: 1rem;
+}
+
+.agent-prompt {
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.copy-button {
+  flex: 0 0 auto;
+  min-width: 5.5rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.copy-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.copy-button[data-state="copied"] {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.agent-note {
+  max-width: 44rem;
+  margin: 1.25rem 0 0;
+  color: var(--ink-soft);
+  font-size: 1rem;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.agent-box + .visually-hidden + .agent-note {
+  margin-top: 1.5rem;
+}
+
+.agent-note strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.kind-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.kind-card {
+  padding: clamp(1.25rem, 3vw, 2rem);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-raised);
+}
+
+.kind-card h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1.5rem;
+  line-height: 1.1;
+}
+
+.kind-card p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.kind-card p + p {
+  margin-top: 0.75rem;
+}
+
+.copy-section .how-flow {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px dotted var(--line);
+  border-bottom: 0;
+}
+
+.audience-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px dotted var(--line);
+}
+
+.audience-list li {
+  display: grid;
+  align-items: baseline;
+  padding: 1.75rem 0;
+  border-bottom: 1px dotted var(--line);
+  grid-template-columns: minmax(10rem, 0.65fr) minmax(18rem, 1.35fr);
+  gap: 0.75rem clamp(1.25rem, 4vw, 4rem);
+}
+
+.audience-list h3 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2.5vw, 2rem);
+  line-height: 1.1;
+}
+
+.audience-list p {
+  max-width: 38rem;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.audience-list code {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+.signin-line {
+  max-width: 40rem;
+  margin: 0 auto;
+  color: var(--ink-soft);
+  font-size: 1.15rem;
+  line-height: 1.6;
+}
+
+.signin-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 650;
+  text-decoration: none;
+  transition:
+    background-color 180ms ease-out,
+    color 180ms ease-out;
+}
+
+.signin-link:hover,
+.signin-link:focus-visible {
+  background: var(--accent);
+  color: var(--button-ink);
+}
+
 /* How it works */
 
 .how-main {
@@ -585,7 +769,8 @@ h1 {
   font-weight: 650;
 }
 
-.how-step h2 {
+.how-step h2,
+.how-step h3 {
   margin: 0;
   font-size: clamp(2rem, 3.5vw, 3.25rem);
   line-height: 1;
@@ -664,10 +849,8 @@ h1 {
     padding: 4.75rem 0;
     grid-template-columns: 1fr;
     grid-template-areas:
-      "eyebrow"
       "title"
-      "intro"
-      "actions";
+      "intro";
     gap: 1.5rem;
   }
 
@@ -738,6 +921,20 @@ h1 {
 
   .how-step p {
     grid-column: 2;
+  }
+
+  .agent-box {
+    align-items: stretch;
+    padding: 1rem;
+    flex-direction: column;
+  }
+
+  .kind-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audience-list li {
+    grid-template-columns: 1fr;
   }
 
   .how-principle {

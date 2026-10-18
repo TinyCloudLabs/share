@@ -14,6 +14,7 @@ import {
   ARTIFACT_SANDBOX_PATH,
   buildArtifactSandboxHtml,
 } from "./src/viewer/artifact-frame.ts";
+import { renderLandingTemplate } from "./src/landing/brand.ts";
 
 /** Share is a static UX. Every live authority/data operation goes to TinyCloud. */
 function shareRouteRewrite(): Plugin {
@@ -94,9 +95,17 @@ function artifactSandboxHtml(): Plugin {
   };
 }
 
+/** Fills the {{PRODUCT}}/{{DOMAIN}}/{{AGENT_PROMPT}} tokens in the landing HTML from src/landing/brand.ts. */
+function landingTemplate(): Plugin {
+  return {
+    name: "landing-template",
+    transformIndexHtml: { order: "pre", handler: renderLandingTemplate },
+  };
+}
+
 export default defineConfig({
   base: "/",
-  plugins: [shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(), artifactSandboxHtml()],
+  plugins: [landingTemplate(), shareRouteRewrite(), staticSecurityHeaders(), mermaidSandboxHtml(), artifactSandboxHtml()],
   build: {
     rollupOptions: {
       input: {

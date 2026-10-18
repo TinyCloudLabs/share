@@ -5,14 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Share anything with anybody—and no one else. TinyCloud verifies the recipient before access."
+      content="Paste one prompt into your agent. It publishes a document or page from your own TinyCloud and gives you a link. You choose who can open it, and for how long."
     />
     <meta name="color-scheme" content="light dark" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'" />
     <meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%232a56f6'%3E%3Ccircle cx='4' cy='4' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='20' cy='20' r='2'/%3E%3C/g%3E%3Cg fill='none' stroke='%23647187'%3E%3Ccircle cx='12' cy='4' r='1.5'/%3E%3Ccircle cx='20' cy='4' r='1.5'/%3E%3Ccircle cx='4' cy='12' r='1.5'/%3E%3Ccircle cx='20' cy='12' r='1.5'/%3E%3Ccircle cx='4' cy='20' r='1.5'/%3E%3Ccircle cx='12' cy='20' r='1.5'/%3E%3C/g%3E%3C/svg%3E" />
-    <title>TinyCloud Sharing — Share anything with anybody. And no one else.</title>
+    <title>{{PRODUCT}} — Share what your agent makes.</title>
     <script type="module" src="/src/landing/main.ts"></script>
   </head>
   <body>
@@ -20,7 +20,7 @@
 
     <div class="site-shell">
       <header class="site-header">
-        <a class="wordmark" href="/" aria-label="TinyCloud Sharing home">
+        <a class="wordmark" href="/" aria-label="{{PRODUCT}} home">
           <span class="brand-mark" aria-hidden="true">
             <span></span><span></span><span></span>
             <span></span><span></span><span></span>
@@ -38,57 +38,133 @@
       <main id="main">
         <section class="hero" aria-labelledby="hero-title">
           <div class="hero-copy">
-            <p class="eyebrow micro">encrypted · exact · private</p>
-            <h1 id="hero-title">Share anything with anybody. And no one else.</h1>
+            <h1 id="hero-title">Share what your agent makes.</h1>
 
             <p class="hero-intro">
-              Start with a read-only Markdown resource and an exact email address. TinyCloud
-              encrypts the resource and verifies the person you chose before anything opens.
+              Paste one prompt into your agent. It publishes a document or page from your own
+              TinyCloud and gives you a link. You choose who can open it, and for how long.
             </p>
-
-            <div class="hero-actions">
-              <a class="pill pill-solid" href="/share">create a share</a>
-              <a class="arrow-link" href="/how-it-works">see how it works <span aria-hidden="true">→</span></a>
-            </div>
           </div>
         </section>
 
-        <section class="trust-section structural-section" aria-labelledby="trust-title">
-          <header class="section-heading">
-            <p class="micro">before you send</p>
-            <h2 id="trust-title">Exact by design.</h2>
-            <p>
-              The invitation is bound to the resource, recipient, access mode, and expiry you
-              choose. The recipient sees those same facts before they open anything.
-            </p>
-          </header>
+        <section class="agent-cta structural-section" aria-labelledby="agent-cta-title">
+          <h2 id="agent-cta-title">Give this to your agent to start sharing</h2>
 
-          <article class="share-specimen" aria-labelledby="specimen-title">
-            <header>
-              <div>
-                <p class="micro">share preview</p>
-                <h3 id="specimen-title">README.md</h3>
-              </div>
-              <span class="specimen-status"><span aria-hidden="true"></span>ready to encrypt</span>
-            </header>
+          <div class="agent-box">
+            <code class="agent-prompt" id="agent-prompt">{{AGENT_PROMPT}}</code>
+            <button
+              class="pill pill-solid copy-button"
+              id="copy-prompt"
+              type="button"
+              aria-describedby="agent-prompt"
+              data-copy-target="agent-prompt"
+            >Copy</button>
+          </div>
+          <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
 
-            <dl>
-              <div><dt>Recipient</dt><dd>sam@example.com</dd></div>
-              <div><dt>Access</dt><dd>Read only</dd></div>
-              <div><dt>Expires</dt><dd>Friday · 5:00 PM</dd></div>
-            </dl>
-
-            <p class="specimen-note">
-              The link is not enough on its own. The named recipient must prove the matching email,
-              and an expired invitation stays closed.
-            </p>
-          </article>
+          <p class="agent-note">
+            Works in Claude Code, Codex and OpenCode. Your agent installs the TinyCloud CLI, asks
+            you to approve one sign-in, then publishes.
+          </p>
+          <p class="agent-note">
+            <strong>Chat agents (ChatGPT and others):</strong> Publishing needs an agent that can
+            run shell commands, with Node.js 22.20 or later and npm. ChatGPT in a plain chat can't
+            do that, so it can write the document and you share it yourself: save it as Markdown
+            and create the share on {{DOMAIN}}.
+          </p>
         </section>
 
-        <section class="final-cta" aria-labelledby="cta-title">
-          <p class="micro">read only · exact recipient · bounded expiry</p>
-          <h2 id="cta-title">Ready to share?</h2>
-          <a class="pill pill-solid large-pill" href="/share">create a share</a>
+        <section class="copy-section structural-section" aria-labelledby="kinds-title">
+          <h2 id="kinds-title">What you can share</h2>
+
+          <div class="kind-grid">
+            <article class="kind-card">
+              <h3>Markdown document</h3>
+              <p>Reports, notes, plans. It opens formatted, with tables and Mermaid diagrams.</p>
+              <p>Give someone edit access and they change it in place.</p>
+            </article>
+            <article class="kind-card">
+              <h3>HTML page</h3>
+              <p>A full page your agent generated, shown as a page.</p>
+            </article>
+            <article class="kind-card">
+              <h3>JSX app</h3>
+              <p>A small interactive app your agent wrote, running in the page.</p>
+            </article>
+            <article class="kind-card">
+              <h3>Files</h3>
+              <p>Text, JSON and images, shown in the browser.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="copy-section structural-section" aria-labelledby="how-title">
+          <h2 id="how-title">How it works</h2>
+
+          <ol class="how-flow" role="list">
+            <li class="how-step">
+              <span class="how-number" aria-hidden="true">1</span>
+              <h3>Paste the prompt.</h3>
+              <p>Your agent installs the TinyCloud CLI and asks you to approve one sign-in.</p>
+            </li>
+            <li class="how-step">
+              <span class="how-number" aria-hidden="true">2</span>
+              <h3>Your agent publishes.</h3>
+              <p>The file stays in your own TinyCloud, and you get a link.</p>
+            </li>
+            <li class="how-step">
+              <span class="how-number" aria-hidden="true">3</span>
+              <h3>You choose who opens it.</h3>
+              <p>Anyone with the link, one person, or everyone at a domain. Set an expiry.</p>
+            </li>
+          </ol>
+        </section>
+
+        <section class="copy-section structural-section" aria-labelledby="audience-title">
+          <h2 id="audience-title">Who sees it</h2>
+
+          <ul class="audience-list" role="list">
+            <li>
+              <h3>Anyone with the link.</h3>
+              <p>Anyone who has the whole link can open it, until it expires.</p>
+            </li>
+            <li>
+              <h3>One person.</h3>
+              <p>
+                Name an email address. They prove it's theirs with a code sent to that address,
+                then open the file. They don't need a TinyCloud account first.
+              </p>
+            </li>
+            <li>
+              <h3>Everyone at a domain.</h3>
+              <p>
+                <code>domain:tinycloud.xyz</code> lets anyone who proves an address at that domain
+                open it.
+              </p>
+            </li>
+            <li>
+              <h3>Expiry.</h3>
+              <p>
+                Every share expires. The default is seven days; you can set anything from a minute
+                up to your session limit.
+              </p>
+            </li>
+            <li>
+              <h3>Revoke.</h3>
+              <p>
+                Revoke any share your agent made, and the link stops opening. Revoking also cuts off
+                everyone you passed it to.
+              </p>
+            </li>
+          </ul>
+        </section>
+
+        <section class="final-cta" aria-label="Sign in">
+          <p class="signin-line">
+            Already have a TinyCloud account?
+            <a class="signin-link" href="/share">Sign in</a>
+            to create a share yourself.
+          </p>
         </section>
       </main>
 
