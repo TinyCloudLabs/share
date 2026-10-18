@@ -6,6 +6,7 @@
 // production. The route log carries method/origin/path/status labels only.
 import dns from "node:dns";
 import { appendFileSync, readFileSync } from "node:fs";
+import net from "node:net";
 
 const routes = new Map(Object.entries(JSON.parse(process.env.TC500_CLI_ROUTES ?? "{}")));
 const shareConfig = process.env.TC500_CLI_SHARE_CONFIG;
@@ -24,6 +25,24 @@ dns.lookup = function hermeticLookup(hostname, ...rest) {
   const callback = rest.at(-1);
   if (typeof callback === "function") { process.nextTick(callback, error); return {}; }
   throw error;
+};
+
+// DNS refusal alone would not stop an IP-literal destination or a client that
+// bypasses fetch (http/https/tls/undici all connect through net.Socket), so
+// sockets to any non-loopback host are refused too. Unix sockets stay allowed.
+const connect = net.Socket.prototype.connect;
+const loopbackHost = (host) => host === undefined || host === "localhost" || host === "::1" || /^127\./.test(String(host));
+net.Socket.prototype.connect = function hermeticConnect(...args) {
+  const first = Array.isArray(args[0]) ? args[0][0] : args[0];
+  const options = typeof first === "object" && first !== null ? first : undefined;
+  const path = options?.path ?? (typeof first === "string" && !/^\d+$/.test(first) ? first : undefined);
+  const host = options !== undefined ? options.host : (typeof args[1] === "string" ? args[1] : undefined);
+  if (path === undefined && !loopbackHost(host)) {
+    record({ refused: "socket" });
+    process.nextTick(() => this.destroy(Object.assign(new Error("hermetic CLI transport refused a non-loopback socket"), { code: "ECONNREFUSED" })));
+    return this;
+  }
+  return connect.apply(this, args);
 };
 
 const fetchImpl = globalThis.fetch;

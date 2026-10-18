@@ -58,13 +58,20 @@ After the browser journeys, the gate runs the agent-style sender: the `tc` CLI
 publishes an exact-email share with `tc share publish <file> --to email:<addr>
 --notify`, and a fresh browser context claims the mailed link and must download
 the exact bytes. The CLI is preloaded with `cli-transport.mjs`, which keeps the
-canonical origins and remaps only transport to the stack; any other host is
-refused, and the leg fails if the CLI tried one. `TC500_CLI_PACKAGE` names an
-installed `@tinycloud/cli` package root (default
-`/tmp/tc500-cli/node_modules/@tinycloud/cli`), for example
-`npm install --prefix /tmp/tc500-cli @tinycloud/cli@<version>` or a built
-js-sdk `packages/cli`. CLI releases up to 1.3.0-beta.7 fail this leg: they
-reject the Node's delivery receipt and never email the recipient (TC-1424).
+canonical origins and remaps only transport to the stack. It refuses every
+other destination at three layers (fetch origins, DNS, and raw `net.Socket`
+connects to non-loopback hosts, which covers IP literals and http/https/tls
+clients), and the leg fails if the CLI tried one. `TC500_CLI_PACKAGE` names an
+installed `@tinycloud/cli` package root. Its default,
+`/tmp/tc500-cli/node_modules/@tinycloud/cli`, is not provisioned by anything:
+install a CLI there first (`npm install --prefix /tmp/tc500-cli
+@tinycloud/cli@<version>`) or point the variable at a built js-sdk
+`packages/cli`. The gate is red for every published CLI up to and including
+1.3.0-beta.7: those releases reject the Node's delivery receipt and never email
+the recipient (TC-1424, fixed by TinyCloudLabs/js-sdk#581). It turns green once
+a CLI containing that fix is used.
+
+No CI workflow runs this gate; it is a manual release check.
 
 The gate refuses dirty or non-reviewed dependency trees. Defaults are the
 local stable worktrees listed in `native-stack.mjs`; explicit paths may be
@@ -78,10 +85,12 @@ its tree digest is recorded in the artifact.
 npm run test:e2e:native-joined
 ```
 
-A run cannot hang the host. Every fixture process runs in its own process
-group and is killed when the gate exits, including after a failed start or
-SIGINT/SIGTERM. One-shot setup steps time out (cargo and pnpm builds after
-`TC500_BUILD_TIMEOUT_MS`, default 30 minutes; other steps after 5 minutes).
+A run cannot hang the host. Every fixture process and every one-shot setup step
+runs in its own process group, and the whole group is killed when a step times
+out or finishes, when the gate exits, after a failed start, and on
+SIGINT/SIGTERM, so build or script grandchildren cannot be orphaned. One-shot
+steps time out (cargo and pnpm builds after `TC500_BUILD_TIMEOUT_MS`, default 30
+minutes; the Share build after 10 minutes; other steps after 5 minutes).
 Once the stack is up, the journey must finish within `TC500_JOURNEY_TIMEOUT_MS`
 (default 15 minutes). A failed start names its step in `nativeStackStage`.
 

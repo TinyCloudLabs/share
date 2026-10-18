@@ -18,7 +18,7 @@ import puppeteer from "puppeteer";
 import { signCompactUcanAuthorization, toBase64Url, verifyCompactUcanAuthorization } from "@tinycloud/share-envelope";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
-import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./native-stack.mjs";
+import { credentialOtpFromMail, isCredentialOtpMail, runBoundedStep, startNativeStack } from "./native-stack.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -326,6 +326,8 @@ function auditBrowserDiagnostics(stack) {
   assert.equal(errors.length, failedRequests.length, "browser console/network failure accounting diverged");
   assert(locationBootstrapMisses.length > 0, "fresh sender did not observe the expected missing-location bootstrap response");
   assert(ownerStateBootstrapMisses.length > 0, "fresh sender did not observe expected uninitialized owner state");
+  // At most one migrations probe per account-registry sync attempt (the SDK makes three).
+  assert(ownerStateBootstrapMisses.filter((entry) => entry.status === 400).length <= 3, "fresh sender repeated the migrations-table probe");
   // A fresh sender's background account-registry sync logs one bootstrap
   // warning: older Nodes exhaust the registry retries; Node 1.21 reports the
   // account index (SQL) as not yet created (404 SQL_DATABASE_NOT_FOUND) and continues.
@@ -743,7 +745,7 @@ const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixtu
 let stack; let candidate; let browser; let recipientEmail; let selectedOtp; let watchdog;
 try {
   journeyStage = "share-build";
-  execFileSync("npm", ["run", "build"], { cwd: shareRoot, stdio: "ignore" });
+  await runBoundedStep("npm", ["run", "build"], shareRoot, {}, 10 * 60_000);
   const cert = join(temporary, "candidate.pem"); const key = join(temporary, "candidate.key");
   execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-subj", "/CN=share.tinycloud.xyz", "-days", "1"], { stdio: "ignore" });
   const spki = execFileSync("sh", ["-c", `openssl x509 -pubkey -noout -in '${cert}' | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64`], { encoding: "utf8" }).trim();
