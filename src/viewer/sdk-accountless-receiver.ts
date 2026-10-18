@@ -1,12 +1,17 @@
 import type { SharePublicConfig } from "../email-share/config.js";
 import {
+  recipientCodeRequested,
   renderRecipientClaim,
   renderRecipientClaimProgress,
   renderRecipientClaimRecovery,
+  renderRecipientCodeRequest,
   type RecipientClaimRecovery,
   type RecipientClaimView,
 } from "../email-share/view.js";
 import { createShareReceiverClient } from "../share/receiver.js";
+
+/** Minimum time between two code emails the recipient can trigger. */
+const RESEND_COOLDOWN_MS = 30_000;
 
 /** Signed invitation facts the host may show next to the mailbox check. */
 export interface AccountlessInvitationSummary {
@@ -62,9 +67,15 @@ export async function receiveWithSdk(input: {
   // binding, and the recipient's policy commitment have been verified.
   view = renderRecipientClaim(input.root, { recipient: received.recipient, ...input.invitation });
   const claim = view;
+  const recipient = received.recipient;
+  // An exact-email acquisition mails its code as soon as it starts, and link
+  // scanners run page scripts, so it starts only from the recipient's click.
+  // A domain invitation already waits for the recipient to type an address.
+  if (recipient.kind === "exactEmail") await new Promise<void>((resolve) => renderRecipientCodeRequest(claim, recipient.email, resolve));
   for (;;) {
     mount.replaceChildren();
-    claim.verify.replaceChildren(mount);
+    claim.verify.replaceChildren(...(recipient.kind === "exactEmail" ? [recipientCodeRequested(mount.ownerDocument, recipient.email)] : []), mount);
+    const requestedAt = Date.now();
     try {
       await input.onComplete(await received.get());
       return;
@@ -72,7 +83,7 @@ export async function receiveWithSdk(input: {
       const recovery = claimRecoveryFor(error);
       if (recovery === undefined) throw error;
       // Retrying starts a new acquisition, so OpenCredentials emails a new code.
-      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve));
+      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, requestedAt + RESEND_COOLDOWN_MS));
     }
   }
 }

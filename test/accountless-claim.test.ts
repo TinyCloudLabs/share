@@ -36,14 +36,35 @@ beforeEach(() => {
   });
 });
 
-async function start(onComplete = vi.fn(async () => undefined)) {
+async function start(onComplete = vi.fn(async () => undefined), { requestCode = true } = {}) {
   const { receiveWithSdk } = await import("../src/viewer/sdk-accountless-receiver.js");
   const root = document.getElementById("viewer")!;
   const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test", config, invitation: { filename: "Q3 report.pdf", expiresAt: "2030-01-02T03:04:00Z", actions: ["read"] }, onComplete });
+  if (requestCode) {
+    await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
+    root.querySelector<HTMLButtonElement>(".claim-request-code")!.click();
+  }
   return { root, done, onComplete };
 }
 
 describe("exact-email claim screen", () => {
+  it("requests no code on load and exactly one per click", async () => {
+    state.get.mockImplementation(() => new Promise(() => undefined));
+    const { root } = await start(undefined, { requestCode: false });
+    // The button exists once the claim is waiting for the click; nothing has been requested yet.
+    await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
+    expect(state.get).not.toHaveBeenCalled();
+    const request = root.querySelector<HTMLButtonElement>(".claim-request-code")!;
+    expect(request.textContent).toBe("Email me a code");
+    expect(request.type).toBe("button");
+    expect(document.getElementById(request.getAttribute("aria-describedby")!)?.textContent).toContain("r***@e***.com");
+    request.click();
+    request.click();
+    await vi.waitFor(() => expect(state.get).toHaveBeenCalledTimes(1));
+    expect(state.get).toHaveBeenCalledTimes(1);
+    expect(root.querySelector(".claim-requested[role=status]")?.textContent).toBe("Code requested for r***@e***.com. It can take a minute to arrive.");
+  });
+
   it("names the SDK-verified mailbox and signed invitation facts, and mounts the SDK view in the verification slot", async () => {
     let finish!: (value: unknown) => void;
     state.get.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -60,7 +81,7 @@ describe("exact-email claim screen", () => {
     expect(window.location.href).not.toContain("reader");
 
     state.options!.onProgress?.({ state: "credential-acquisition", status: "completed" });
-    expect(root.querySelector(".claim-verify [role=status]")?.textContent).toBe("Opening the file through the owner’s TinyCloud node…");
+    expect(root.querySelector(".claim-verify .claim-state-line[role=status]")?.textContent).toBe("Opening the file through the owner’s TinyCloud node…");
     finish({ bytes: new Uint8Array([1]) });
     await done;
     expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([1]) });
@@ -72,20 +93,32 @@ describe("exact-email claim screen", () => {
     ["VERIFICATION_FAILED", { state: "proof_attempts_exhausted" }, "Too many incorrect codes", "Send a new code"],
     ["OFFLINE", {}, "Email verification is unavailable", "Try again"],
     ["ISSUER_UNREADY", { state: "rate_limited" }, "Too many codes requested", "Try again"],
-  ])("recovers from %s with a fresh acquisition", async (code, details, title, action) => {
-    state.get.mockRejectedValueOnce(credentialError(code, details)).mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
-    const { root, done, onComplete } = await start();
-    await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
-    const heading = root.querySelector<HTMLElement>(".claim-state-title")!;
-    expect(heading.textContent).toBe(title);
-    expect(document.activeElement).toBe(heading);
-    const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
-    expect(retry.textContent).toBe(action);
-    retry.click();
-    await done;
-    expect(state.get).toHaveBeenCalledTimes(2);
-    expect(root.querySelector(".claim-verify")?.contains(state.options!.interaction.mountTarget)).toBe(true);
-    expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+  ])("recovers from %s with a fresh acquisition after the resend cooldown", async (code, details, title, action) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      state.get.mockRejectedValueOnce(credentialError(code, details)).mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const heading = root.querySelector<HTMLElement>(".claim-state-title")!;
+      expect(heading.textContent).toBe(title);
+      expect(document.activeElement).toBe(heading);
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(retry.textContent).toBe(action);
+      expect(retry.disabled).toBe(true);
+      expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 30 seconds.");
+      retry.click();
+      expect(state.get).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(30_000);
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      retry.click();
+      await done;
+      expect(state.get).toHaveBeenCalledTimes(2);
+      expect(root.querySelector(".claim-verify")?.contains(state.options!.interaction.mountTarget)).toBe(true);
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not offer a retry for an invitation or policy failure", async () => {
@@ -104,8 +137,10 @@ describe("exact-email claim screen", () => {
     });
     let finish!: (value: unknown) => void;
     state.get.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    const { root, done } = await start();
+    // A domain invitation waits for a typed address instead, so it shows no code button.
+    const { root, done } = await start(undefined, { requestCode: false });
     await vi.waitFor(() => expect(state.get).toHaveBeenCalledTimes(1));
+    expect(root.querySelector(".claim-request-code")).toBeNull();
     expect(root.querySelector(".claim-lede")?.textContent).toBe("This invitation is open to anyone with an email address at @tinycloud.xyz. Confirm an address there to open it — no account needed.");
     expect(root.querySelector(".claim-fact dd")?.textContent).toBe("Anyone at @tinycloud.xyz");
     state.options!.onProgress?.({ state: "credential-acquisition", status: "completed", mailbox: "reader@tinycloud.xyz" });
@@ -116,7 +151,7 @@ describe("exact-email claim screen", () => {
 
   it("never renders the claim before the SDK has verified the invitation", async () => {
     state.receive.mockRejectedValueOnce(new Error("share credential requirement does not match its policy commitment"));
-    const { root, done } = await start();
+    const { root, done } = await start(undefined, { requestCode: false });
     await expect(done).rejects.toThrow("policy commitment");
     expect(root.querySelector(".claim")).toBeNull();
   });

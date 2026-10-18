@@ -137,14 +137,50 @@ export function renderRecipientClaimProgress(view: RecipientClaimView, message: 
   view.verify.replaceChildren(panel);
 }
 
+/** `reader@example.com` -> `r***@e***.com`, for status lines that confirm where a code went. */
+export function maskedMailbox(email: string): string {
+  const at = email.lastIndexOf("@");
+  const domain = email.slice(at + 1);
+  const tld = domain.lastIndexOf(".");
+  return `${email.slice(0, 1)}***@${domain.slice(0, 1)}***${tld > 0 ? domain.slice(tld) : ""}`;
+}
+
+/**
+ * Waits for the recipient to ask for a code. Mail scanners open links and run
+ * their scripts, so a code is only ever requested by this click, never on load.
+ */
+export function renderRecipientCodeRequest(view: RecipientClaimView, email: string, onRequest: () => void): void {
+  const doc = view.verify.ownerDocument;
+  const panel = element(doc, "div", "claim-state claim-request");
+  const detail = element(doc, "p", "claim-state-detail", `We’ll email a one-time code to ${maskedMailbox(email)}. Enter it here to open the file.`);
+  detail.id = "claim-request-detail";
+  const request = element(doc, "button", "recipient-primary-action claim-request-code", "Email me a code");
+  request.type = "button";
+  request.setAttribute("aria-describedby", detail.id);
+  request.addEventListener("click", () => { request.disabled = true; onRequest(); }, { once: true });
+  panel.append(element(doc, "h2", "claim-state-title", "Get a code by email"), detail, request);
+  view.verify.replaceChildren(panel);
+}
+
+/** Confirms, above the code entry, where the requested code was sent. */
+export function recipientCodeRequested(doc: Document, email: string): HTMLElement {
+  const line = element(doc, "p", "claim-state-detail claim-requested", `Code requested for ${maskedMailbox(email)}. It can take a minute to arrive.`);
+  line.setAttribute("role", "status");
+  return line;
+}
+
 export interface RecipientClaimRecovery {
   readonly title: string;
   readonly detail: string;
   readonly action: string;
 }
 
-/** A recoverable stop: nothing was opened and a fresh code can be requested. */
-export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery: RecipientClaimRecovery, onRetry: () => void): void {
+/**
+ * A recoverable stop: nothing was opened and a fresh code can be requested.
+ * Until `availableAt` (epoch ms) the button stays disabled, so a recipient
+ * cannot burn the issuer's code budget by retrying in a burst.
+ */
+export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery: RecipientClaimRecovery, onRetry: () => void, availableAt = 0): void {
   const doc = view.verify.ownerDocument;
   const panel = element(doc, "div", "claim-state");
   panel.dataset.tone = "alert";
@@ -153,8 +189,16 @@ export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery:
   title.tabIndex = -1;
   const retry = element(doc, "button", "recipient-primary-action", recovery.action);
   retry.type = "button";
-  retry.addEventListener("click", onRetry, { once: true });
+  retry.addEventListener("click", () => { retry.disabled = true; onRetry(); }, { once: true });
   panel.append(title, element(doc, "p", "claim-state-detail", recovery.detail), retry);
+  const wait = availableAt - Date.now();
+  if (wait > 0) {
+    retry.disabled = true;
+    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", `You can ask for a new code in ${Math.ceil(wait / 1000)} seconds.`);
+    cooldown.setAttribute("aria-live", "polite");
+    panel.append(cooldown);
+    setTimeout(() => { retry.disabled = false; cooldown.textContent = "You can ask for a new code now."; }, wait);
+  }
   view.verify.replaceChildren(panel);
   title.focus();
 }

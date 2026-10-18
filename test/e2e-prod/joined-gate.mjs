@@ -674,6 +674,14 @@ try {
   journeyStage = "recipient-navigation";
   const recipientContext = await browser.createBrowserContext(); const recipient = await recipientContext.newPage(); await installRouting(recipient, stack);
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  journeyStage = "recipient-code-request";
+  const requestCode = await waitUntil(async () => (await recipient.$(".claim-request-code")) ?? undefined, 90_000);
+  assert(requestCode, "recipient code request button did not appear");
+  // Opening the link (as a mail scanner would) must not reach OpenCredentials or send a code.
+  assert.equal(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.credentials && entry.method === "POST").length, 0, "the invitation page contacted OpenCredentials before a click");
+  assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, 0, "a code was emailed before a click");
+  // A double click sends one code.
+  await recipient.$eval(".claim-request-code", (button) => { button.click(); button.click(); });
   journeyStage = "recipient-otp-delivery";
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipientEmail)), 60_000);
   selectedOtp = credentialOtpFromMail(otpMail); assert.match(selectedOtp ?? "", /^\d{8}$/);
@@ -683,6 +691,7 @@ try {
   assert.equal(await submitCredentialValue(recipient, selectedOtp, "otp"), true);
   journeyStage = "recipient-decrypt-render";
   assert.equal(await downloadExact(recipient, temporary), true);
+  assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, 1, "one click did not send exactly one code");
   journeyStage = "traffic-audit";
   const audit = traceAudit(stack);
   journeyStage = "negative-enforcement";

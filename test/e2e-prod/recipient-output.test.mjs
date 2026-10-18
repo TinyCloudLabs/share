@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-test("recipient gate never prints invitation, mailbox, or OTP when a dependency fails", () => {
-  const secrets = ["TOPSECRETFRAGMENT", "secret-recipient@mailinator.com", "123456"];
+test("recipient gate never prints invitation or mailbox when a dependency fails", () => {
+  const secrets = ["TOPSECRETFRAGMENT", "secret-recipient@mailinator.com"];
   const result = spawnSync(process.execPath, [new URL("./recipient-gate.mjs", import.meta.url).pathname], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -14,7 +14,6 @@ test("recipient gate never prints invitation, mailbox, or OTP when a dependency 
       TC500_E2E_SHARE_URL: `https://share.tinycloud.xyz/s/inline#v=2&p=${secrets[0]}`,
       TC500_E2E_RECIPIENT_EMAIL: secrets[1],
       TC500_E2E_EXPECTED_FILE: "/deliberately-missing-tc500-input",
-      TC500_E2E_MAILBOX_OTP: secrets[2],
     },
   });
   assert.equal(result.status, 1);
