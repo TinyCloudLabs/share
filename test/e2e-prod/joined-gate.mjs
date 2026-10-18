@@ -10,10 +10,10 @@
  */
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { signCompactUcanAuthorization, toBase64Url, verifyCompactUcanAuthorization } from "@tinycloud/share-envelope";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
@@ -22,12 +22,17 @@ import { credentialOtpFromMail, isCredentialOtpMail, startNativeStack } from "./
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/skgbafa/tc-500-node-1.17.1");
+const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/v1.21.0");
 const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-846c018";
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
+// The `tc` CLI used as the agent-style sender: an installed @tinycloud/cli package root.
+const cliPackage = resolve(process.env.TC500_CLI_PACKAGE ?? "/tmp/tc500-cli/node_modules/@tinycloud/cli");
 const outputPath = resolve(process.env.TC500_E2E_ARTIFACT ?? join(workspaceRoot, ".context/tc-500-native-joined.json"));
+// Once the stack is up, the whole browser + CLI journey must finish within this budget.
+const journeyTimeoutMs = Number(process.env.TC500_JOURNEY_TIMEOUT_MS ?? 15 * 60_000);
 const fixture = Buffer.concat([Buffer.from("TC-500 native joined fixture\n", "utf8"), Buffer.from([0, 0x80, 0xff, 0x0a])]);
 const fixtureDigest = createHash("sha256").update(fixture).digest("hex");
+const cliFixture = Buffer.from(`# TC-500 CLI email share\n\n${randomBytes(8).toString("hex")}\n`, "utf8");
 const publishedPackages = Object.freeze([
   "@tinycloud/node-sdk",
   "@tinycloud/sdk-core",
@@ -127,7 +132,7 @@ async function installRouting(page, stack) {
   await page.evaluateOnNewDocument(installBrowserInstrumentation);
   page.on("console", (message) => {
     consoleCounts[message.type()] = (consoleCounts[message.type()] ?? 0) + 1;
-    if (message.type() === "error" || message.type() === "warn") consoleDiagnostics.push({ type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").replaceAll(/[A-Za-z0-9_-]{80,}/g, "<redacted>").slice(0, 240) });
+    if (message.type() === "error" || message.type() === "warn") consoleDiagnostics.push({ phase, type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").replaceAll(/[A-Za-z0-9_-]{80,}/g, "<redacted>").slice(0, 240) });
   });
   page.on("pageerror", (error) => {
     consoleCounts.pageerror = (consoleCounts.pageerror ?? 0) + 1;
@@ -177,6 +182,10 @@ async function installRouting(page, stack) {
       entry.responseSha256 = createHash("sha256").update(bytes).digest("hex");
       entry.responseContentType = response.headers.get("content-type") ?? undefined;
       try { entry.response = JSON.parse(bytes.toString("utf8")); } catch {}
+      // A fresh account's SQL migration probe reads the migrations table before
+      // it exists; the SDK treats this exact Node answer as "table missing" and
+      // creates it (sdk-services SQL `applyMigrationsOnDbUnlocked`).
+      entry.migrationsTableProbe = response.status === 400 && bytes.byteLength < 200 && bytes.toString("utf8").trim() === "SQLite error: no such table: __tinycloud_sql_migrations";
     }
     const headers = Object.fromEntries(response.headers.entries());
     for (const key of ["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding"]) delete headers[key];
@@ -248,7 +257,7 @@ async function submitCredentialValue(page, value, expectedType) {
   return true;
 }
 
-async function downloadExact(page, temporary) {
+async function downloadExact(page, temporary, expected = fixture) {
   await page.waitForSelector(".viewer-download", { timeout: 180_000 });
   const cdp = await page.createCDPSession(); await cdp.send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: temporary });
   await page.click(".viewer-download");
@@ -257,7 +266,7 @@ async function downloadExact(page, temporary) {
     for (const name of await readdir(temporary)) {
       if (name.endsWith(".pem") || name.endsWith(".key") || name.endsWith(".json")) continue;
       const bytes = await readFile(join(temporary, name)).catch(() => undefined);
-      if (bytes?.equals(fixture)) return true;
+      if (bytes?.equals(expected)) return true;
     }
     return false;
   }, 30_000);
@@ -290,9 +299,11 @@ async function credentialInputReady(page, expectedType) {
 function auditBrowserDiagnostics(stack) {
   const failedRequests = trace.filter((entry) => typeof entry.status === "number" && entry.status >= 400);
   const locationBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
-  const ownerStateBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.node && entry.status === 404 && (
-    (entry.method === "GET" && entry.path.startsWith("/encryption/networks/"))
-    || (entry.method === "POST" && entry.path === "/invoke")
+  const ownerStateBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.node && (
+    (entry.status === 404 && entry.method === "GET" && entry.path.startsWith("/encryption/networks/"))
+    || (entry.status === 404 && entry.method === "POST" && entry.path === "/invoke")
+    // Fresh-account SQL migration probe; only this exact Node answer is accepted.
+    || (entry.status === 400 && entry.method === "POST" && entry.path === "/invoke" && entry.migrationsTableProbe === true)
   ));
   const bootstrapMisses = new Set([...locationBootstrapMisses, ...ownerStateBootstrapMisses]);
   const expectedEnforcement = new Map([
@@ -315,13 +326,20 @@ function auditBrowserDiagnostics(stack) {
   assert.equal(errors.length, failedRequests.length, "browser console/network failure accounting diverged");
   assert(locationBootstrapMisses.length > 0, "fresh sender did not observe the expected missing-location bootstrap response");
   assert(ownerStateBootstrapMisses.length > 0, "fresh sender did not observe expected uninitialized owner state");
-  assert.equal(warnings.length, 1, "browser emitted an unexpected number of warnings");
-  assert.match(warnings[0].text, /^TinyCloud account registry sync failed after retries/, "browser emitted an unexpected warning");
+  // A fresh sender's background account-registry sync logs one bootstrap
+  // warning: older Nodes exhaust the registry retries; Node 1.21 reports the
+  // account index (SQL) as not yet created (404 SQL_DATABASE_NOT_FOUND) and continues.
+  const bootstrapWarnings = [/^TinyCloud account registry sync failed after retries/, /^TinyCloud account index initialization failed; continuing registry sync/];
+  assert(warnings.length >= 1 && warnings.length <= bootstrapWarnings.length, "browser emitted an unexpected number of warnings");
+  assert(warnings.every((entry) => entry.phase === "sender"), "browser emitted a warning outside sender bootstrap");
+  assert(bootstrapWarnings.every((pattern) => warnings.filter((entry) => pattern.test(entry.text)).length <= 1), "browser repeated a bootstrap warning");
+  assert(warnings.every((entry) => bootstrapWarnings.some((pattern) => pattern.test(entry.text))), "browser emitted an unexpected warning");
   return {
     unexpectedConsoleErrors: 0,
     unexpectedPageErrors: 0,
     expectedLocationBootstrap404s: locationBootstrapMisses.length,
-    expectedOwnerStateBootstrap404s: ownerStateBootstrapMisses.length,
+    expectedOwnerStateBootstrap404s: ownerStateBootstrapMisses.filter((entry) => entry.status === 404).length,
+    expectedMigrationsTableProbe400s: ownerStateBootstrapMisses.filter((entry) => entry.status === 400).length,
     expectedPolicyDenials: Object.fromEntries(expectedEnforcement),
     admittedRequestReplayRejections: admittedRequestReplayRejections.map((entry) => entry.status),
     expectedBootstrapWarnings: warnings.length,
@@ -606,6 +624,94 @@ async function verifyDomainDelivery({ browser, sender, stack }) {
   return { invitationsSent: recipients.length, nodeAuthorizations: authorized.length, sameLinkForEveryAddress: true, editAccessPublished, emailedRecipientRendered: true, durableSessionRequested: true };
 }
 
+/**
+ * Agent-style sender on the same stack: the `tc` CLI publishes an exact-email
+ * share and asks the owner's Node and OpenCredentials to email it
+ * (`tc share publish <file> --to email:<addr> --notify`). The CLI keeps every
+ * canonical origin it signs and validates; `cli-transport.mjs` only remaps
+ * transport to this stack and refuses any other host. A fresh browser context
+ * then claims the mailed link exactly as in the composer journey.
+ */
+let cliDiagnostic;
+// The CLI bundle keeps @tinycloud/node-sdk external, so record the copy Node's
+// resolver would load for it as well; the CLI dist alone does not pin behavior.
+async function resolvedCliDependency(name) {
+  for (let directory = cliPackage; ; directory = dirname(directory)) {
+    const root = join(directory, "node_modules", name);
+    const manifest = await readFile(join(root, "package.json"), "utf8").catch(() => undefined);
+    if (manifest !== undefined) return { version: JSON.parse(manifest).version, distSha256: await digestDirectory(join(await realpath(root), "dist")) };
+    if (dirname(directory) === directory) return undefined;
+  }
+}
+async function verifyCliSenderJourney({ browser, stack, temporary }) {
+  phase = "cli-sender";
+  const cliManifest = JSON.parse(await readFile(join(cliPackage, "package.json"), "utf8"));
+  assert.equal(cliManifest.name, "@tinycloud/cli", "TC500_CLI_PACKAGE is not an @tinycloud/cli package root");
+  const nodeSdk = await resolvedCliDependency("@tinycloud/node-sdk");
+  assert(nodeSdk, "the CLI's @tinycloud/node-sdk dependency is not installed");
+  const cliProvenance = { version: cliManifest.version, distSha256: await digestDirectory(join(cliPackage, "dist")), nodeSdk };
+  const tcHome = join(temporary, "cli-home");
+  const profileDir = join(tcHome, ".tinycloud/profiles/owner");
+  await mkdir(profileDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(tcHome, ".tinycloud/config.json"), JSON.stringify({ defaultProfile: "owner", version: 1 }), { mode: 0o600 });
+  // A local owner key profile: the CLI signs in to the stack's Node itself.
+  await writeFile(join(profileDir, "profile.json"), JSON.stringify({ name: "owner", host: stack.canonical.node, chainId: 1, spaceName: "default", authMethod: "local", posture: "local-owner-key", privateKey: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() }), { mode: 0o600 });
+  const inputPath = join(temporary, "cli-fixture.md"); await writeFile(inputPath, cliFixture, { flag: "wx", mode: 0o600 });
+  const routeLog = join(temporary, "cli-routes.jsonl");
+  const recipient = `tc500-cli-${Date.now()}@mailinator.com`;
+  const mailBefore = stack.mail.length;
+  const cli = await new Promise((resolveCli) => {
+    // Asynchronous on purpose: the mail sink runs in this process.
+    const child = spawn(process.execPath, ["--import", resolve(import.meta.dirname, "cli-transport.mjs"), join(cliPackage, "bin/tc"), "--profile", "owner", "share", "publish", inputPath, "--to", `email:${recipient}`, "--notify", "--json"], {
+      env: {
+        ...process.env, TC_HOME: tcHome, TC_HOST: stack.canonical.node, NO_COLOR: "1",
+        TC500_CLI_ROUTES: JSON.stringify({ [stack.canonical.node]: stack.services.nodeOrigin, [stack.canonical.credentials]: stack.services.credentialsOrigin, [stack.canonical.registry]: stack.services.registryOrigin }),
+        TC500_CLI_SHARE_CONFIG: join(shareRoot, "dist/.well-known/tinycloud-share/config.json"), TC500_CLI_ROUTE_LOG: routeLog,
+      },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 5 * 60_000);
+    child.on("close", (status) => { clearTimeout(timer); resolveCli({ status, stdout }); });
+  });
+  let published; try { published = JSON.parse(cli.stdout); } catch {}
+  const routes = (await readFile(routeLog, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const witnessStages = stack.credentialsLog().split("\n").filter((line) => /^credential invitation stage=/.test(line)).slice(-6);
+  // Fixed labels and counts only; no link, mailbox, receipt, or body.
+  cliDiagnostic = { cli: cliProvenance, exitCode: cli.status, notificationState: published?.notification?.state, notificationAttempts: published?.notification?.attempts, deliveryAuthorizations: routes.filter((entry) => entry.path === "/policy/v3/deliveries/authorize").map((entry) => entry.status), credentialInvitations: routes.filter((entry) => entry.path === "/v1/credential-invitations").map((entry) => entry.status), refusedHosts: routes.filter((entry) => entry.refused !== undefined).length, witnessStages };
+  assert.equal(cliDiagnostic.refusedHosts, 0, "the CLI tried to reach a host outside the stack");
+  assert.equal(cli.status, 0, "tc share publish --notify did not exit cleanly");
+  assert.equal(published?.notification?.state, "delivered", "tc share publish --notify did not deliver the invitation");
+  assert.deepEqual(cliDiagnostic.credentialInvitations, [202], "OpenCredentials did not accept exactly one CLI invitation");
+  const invitationMail = await waitUntil(() => stack.mail.slice(mailBefore).find((message) => {
+    const to = Array.isArray(message?.payload?.to) ? message.payload.to : [message?.payload?.to];
+    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("/s/inline#"));
+  }), 60_000);
+  const link = invitationFromMail(invitationMail);
+  assert.equal(typeof link, "string", "the CLI invitation was not mailed to the recipient");
+
+  phase = "cli-recipient";
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(link, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipient)), 60_000);
+  const code = credentialOtpFromMail(otpMail); assert.match(code ?? "", /^\d{8}$/);
+  assert.equal(await credentialInputReady(reader, "otp"), true, "CLI recipient OTP input did not become stable");
+  assert.equal(await submitCredentialValue(reader, code, "otp"), true);
+  const cliTemporary = await mkdtemp(join(tmpdir(), "tc500-cli-recipient-"));
+  assert.equal(await downloadExact(reader, cliTemporary, cliFixture), true, "CLI recipient did not render the exact bytes");
+  const phaseTrace = trace.filter((entry) => entry.phase === "cli-recipient");
+  assert(phaseTrace.some((entry) => entry.origin === stack.canonical.credentials && entry.method === "POST" && entry.path === "/v1/acquisitions" && successfulRequest(entry)), "CLI recipient did not acquire an email credential");
+  for (const path of ["/policy/v3/challenges", "/policy/v3/delegations", "/delegate"]) {
+    assert(phaseTrace.some((entry) => entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === path && successfulRequest(entry)), `CLI recipient did not complete ${path}`);
+  }
+  const invokes = phaseTrace.filter((entry) => entry.origin === stack.canonical.node && entry.path === "/invoke" && successfulRequest(entry));
+  assert(invokes.length >= 2, "CLI recipient did not read and decrypt through ordinary invoke");
+  assert(!phaseTrace.some((entry) => /openkey/i.test(entry.origin)), "CLI recipient contacted OpenKey");
+  await context.close();
+  return { cli: cliProvenance, notificationState: "delivered", deliveryAuthorizations: cliDiagnostic.deliveryAuthorizations.length, credentialInvitations: 1, recipientRendered: true, recipientInvokeCount: invokes.length, fixtureSha256: createHash("sha256").update(cliFixture).digest("hex") };
+}
+
 function traceAudit(stack) {
   const at = (p, origin, path, method) => trace.find((entry) => entry.phase === p && entry.origin === origin && entry.path === path && (method === undefined || entry.method === method) && entry.status >= 200 && entry.status < 300);
   const accountLocationPath = "/v1/locations/" + encodeURIComponent(`did:pkh:eip155:1:${stack.walletAddress}`);
@@ -634,7 +740,7 @@ function traceAudit(stack) {
 
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
 const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixturePath, fixture, { flag: "wx", mode: 0o600 });
-let stack; let candidate; let browser; let recipientEmail; let selectedOtp;
+let stack; let candidate; let browser; let recipientEmail; let selectedOtp; let watchdog;
 try {
   journeyStage = "share-build";
   execFileSync("npm", ["run", "build"], { cwd: shareRoot, stdio: "ignore" });
@@ -644,6 +750,10 @@ try {
   candidate = await startCandidateServer({ root: resolve(shareRoot, "dist"), key: await readFile(key), cert: await readFile(cert) });
   journeyStage = "native-stack-readiness";
   stack = await startNativeStack({ root: temporary, nodeRoot, credentialsRoot, registryRoot });
+  // A hung journey fails and exits (fixture processes are killed on exit)
+  // instead of holding the host until someone notices.
+  watchdog = setTimeout(() => { fail(`${journeyStage} (journey timeout)`); process.exit(1); }, journeyTimeoutMs);
+  watchdog.unref();
   journeyStage = "browser-launch";
   browser = await puppeteer.launch({ headless: process.env.HEADED !== "1", args: [`--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1:${candidate.port}`, `--ignore-certificate-errors-spki-list=${spki}`, "--disable-quic", "--no-proxy-server"] });
 
@@ -694,9 +804,12 @@ try {
   const domainJourney = await verifyDomainJourney({ browser, sender, stack });
   journeyStage = "domain-delivery";
   const domainDelivery = await verifyDomainDelivery({ browser, sender, stack });
+  journeyStage = "cli-sender";
+  const cliSender = await verifyCliSenderJourney({ browser, stack, temporary });
+  journeyStage = "browser-diagnostics";
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: "passed", fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, cliSender, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -715,6 +828,7 @@ try {
     type: "tinycloud.share/native-joined-e2e/v1",
     result: "failed",
     stage: journeyStage,
+    nativeStackStage: typeof error?.nativeStage === "string" ? error.nativeStage : undefined,
     requests: trace.map(({ phase: requestPhase, method, origin, path, status, response }) => ({
       phase: requestPhase,
       method,
@@ -733,7 +847,8 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    cliDiagnostic: journeyStage === "cli-sender" ? cliDiagnostic : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,
@@ -743,8 +858,9 @@ try {
   }, null, 2), { mode: 0o600 }).catch(() => undefined);
   fail(journeyStage);
 } finally {
-  // TC-1424 proof aid: route-level trace only (no bodies, headers, or URLs with fragments).
-  if (process.env.TC1424_ROUTE_TRACE) await writeFile(resolve(process.env.TC1424_ROUTE_TRACE), JSON.stringify(trace.map(({ sequence, phase: requestPhase, method, origin, path, status }) => ({ sequence, phase: requestPhase, method, origin, path, status })), null, 2), { mode: 0o600 }).catch(() => undefined);
+  clearTimeout(watchdog);
   await browser?.close().catch(() => undefined); await stack?.close().catch(() => undefined); await candidate?.close().catch(() => undefined);
   console.log(`[tc500] artifacts retained under ${temporary.replace(/[^/]+$/, "<redacted>")}`);
+  // Exit explicitly: a lingering handle must never keep a finished run alive.
+  process.exit();
 }
