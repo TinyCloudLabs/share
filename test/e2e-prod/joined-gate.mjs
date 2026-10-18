@@ -707,19 +707,30 @@ try {
   const negativeGates = await verifyNegativeEnforcement({ sender, recipient, stack });
   traceAudit(stack);
   journeyStage = "recipient-storage";
-  // After a full claim, no receiver key or credential record sits in browser storage.
-  const storedEntries = await recipient.evaluate(() => [...Object.entries(sessionStorage), ...Object.entries(localStorage)]);
-  for (const [key, value] of storedEntries) {
+  // After a full claim, no receiver key or credential record sits in session
+  // storage, local storage, IndexedDB or cookies.
+  const stored = await recipient.evaluate(async () => ({
+    entries: [...Object.entries(sessionStorage), ...Object.entries(localStorage), ...document.cookie.split(";").map((cookie) => cookie.trim().split("="))],
+    databases: (await indexedDB.databases()).map((database) => database.name ?? ""),
+  }));
+  for (const [key = "", value = ""] of stored.entries) {
     assert(!/receiver-session|receiver-credentials/.test(key), "a receiver record was left in browser storage");
     assert(!/"d"\s*:|"jwk"|privateKey|pkcs8/i.test(value), "private key material was left in browser storage");
   }
-  // Opening the link again in the same tab does not reuse the earlier verification.
+  assert.equal(stored.databases.filter((name) => /receiver|share/i.test(name)).length, 0, "a receiver record was left in IndexedDB");
+  // Opening the link again in the same tab starts a new mailbox proof: a new
+  // acquisition, and no policy admission from an earlier credential.
   phase = "recipient-reopen";
   await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
   // The loading screen shares the title class; wait for the claim screen or an opened file.
   const reopened = await waitUntil(() => recipient.evaluate(() => (document.querySelector("main.claim:not(.claim-loading) .claim-title") ?? document.querySelector(".viewer-download"))?.textContent ?? undefined).catch(() => undefined), 90_000);
   assert.equal(reopened, "Verify your email to open this file", "a reopened link did not ask the recipient to verify again");
   assert.equal(await recipient.evaluate(() => document.querySelector(".claim-reload-note") !== null), true, "the claim screen does not say verification ends with the page");
+  // Where the code waits for a click, ask for it.
+  await recipient.$eval(".claim-request-code", (button) => button.click()).catch(() => undefined);
+  const reacquired = await waitUntil(() => trace.some((entry) => entry.phase === "recipient-reopen" && entry.origin === stack.canonical.credentials && entry.method === "POST" && entry.path === "/v1/acquisitions"), 60_000);
+  assert.equal(reacquired, true, "a reopened link did not start a new mailbox proof");
+  assert.equal(trace.filter((entry) => entry.phase === "recipient-reopen" && entry.path.startsWith("/policy/v3/")).length, 0, "a reopened link reached policy admission without a new mailbox proof");
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";

@@ -44,8 +44,9 @@ describe("receiver key and credential storage", () => {
     window.sessionStorage.setItem("tinycloud.share.receiver-session.v1", "{}");
     window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{}");
     window.sessionStorage.setItem("unrelated", "kept");
-    purgeLegacyReceiverStorage(window.sessionStorage);
+    purgeLegacyReceiverStorage();
     expect(Object.keys({ ...window.sessionStorage })).toEqual(["unrelated"]);
-    expect(() => purgeLegacyReceiverStorage({ removeItem: () => { throw new DOMException("denied", "SecurityError"); } })).not.toThrow();
+    expect(() => purgeLegacyReceiverStorage(() => ({ removeItem: () => { throw new DOMException("denied", "SecurityError"); } }))).not.toThrow();
+    expect(() => purgeLegacyReceiverStorage(() => { throw new DOMException("The operation is insecure.", "SecurityError"); })).not.toThrow();
   });
 });

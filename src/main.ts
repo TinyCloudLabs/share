@@ -20,10 +20,10 @@ if (viewerRoot !== null) {
   // This is intentionally the first recipient-side operation. The complete
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
-  const captured = captureAndScrubLaunch(window.location, window.history, window.sessionStorage);
+  const captured = captureAndScrubLaunch(window.location, window.history);
   // Receiver keys and credentials now live in page memory; drop any records an
   // earlier build left in session storage before anything else can read them.
-  purgeLegacyReceiverStorage(window.sessionStorage);
+  purgeLegacyReceiverStorage();
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
     captured.shareHref = `https://share.tinycloud.xyz${capturedUrl.pathname}${capturedUrl.search}${capturedUrl.hash}`;

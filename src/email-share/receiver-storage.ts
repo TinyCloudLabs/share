@@ -4,11 +4,16 @@ export const LEGACY_RECEIVER_STORAGE_KEYS = Object.freeze([
   "tinycloud.share.receiver-credentials.v1",
 ]);
 
-/** Removes receiver records left in session storage by earlier builds. */
-export function purgeLegacyReceiverStorage(storage: Pick<Storage, "removeItem">): void {
+/**
+ * Removes receiver records left in session storage by earlier builds. The
+ * storage getter itself throws where site storage is blocked, so it is read
+ * inside the guard; the page then simply has nothing to purge.
+ */
+export function purgeLegacyReceiverStorage(storage: () => Pick<Storage, "removeItem"> = () => window.sessionStorage): void {
   try {
-    for (const key of LEGACY_RECEIVER_STORAGE_KEYS) storage.removeItem(key);
-  } catch { /* storage is disabled, so it holds no receiver records */ }
+    const target = storage();
+    for (const key of LEGACY_RECEIVER_STORAGE_KEYS) target.removeItem(key);
+  } catch { /* storage is blocked, so it holds no receiver records */ }
 }
 
 export interface PageMemoryStorage {
