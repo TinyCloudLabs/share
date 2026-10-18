@@ -147,8 +147,8 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
     // TC500_NODE_COMMIT names a reviewed candidate Node commit; the tree must
     // still be clean and exactly that commit, and its digest is recorded.
     node: assertTree(nodeRoot, process.env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node, "TinyCloud Node"),
-    openCredentials: assertTree(credentialsRoot, STABLE_INPUTS.openCredentials, "OpenCredentials"),
-    locationRegistry: assertTree(registryRoot, STABLE_INPUTS.locationRegistry, "Location Registry"),
+    openCredentials: assertTree(credentialsRoot, process.env.TC500_OPENCREDENTIALS_COMMIT ?? STABLE_INPUTS.openCredentials, "OpenCredentials"),
+    locationRegistry: assertTree(registryRoot, process.env.TC500_REGISTRY_COMMIT ?? STABLE_INPUTS.locationRegistry, "Location Registry"),
   };
 
   const openKeyOrigin = await loopback((request, response) => {
@@ -270,6 +270,8 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
     canonical: CANONICAL, walletAddress: WALLET.address, provenance,
     services: { openKeyOrigin, nodeOrigin, credentialsOrigin, registryOrigin, mailOrigin },
     mail,
+    // TC-1424 proof aid: tail of the witness process output (stage labels only by design).
+    credentialsLog: () => children.find(({ child }) => child === credentials)?.output() ?? "",
     async close() {
       for (const { child } of children.reverse()) if (child.exitCode === null) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
       for (const server of servers.reverse()) await new Promise((resolveClose) => server.close(() => resolveClose()));

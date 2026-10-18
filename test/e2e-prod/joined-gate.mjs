@@ -733,7 +733,7 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
       responseContentType: entry.responseContentType,
@@ -743,6 +743,8 @@ try {
   }, null, 2), { mode: 0o600 }).catch(() => undefined);
   fail(journeyStage);
 } finally {
+  // TC-1424 proof aid: route-level trace only (no bodies, headers, or URLs with fragments).
+  if (process.env.TC1424_ROUTE_TRACE) await writeFile(resolve(process.env.TC1424_ROUTE_TRACE), JSON.stringify(trace.map(({ sequence, phase: requestPhase, method, origin, path, status }) => ({ sequence, phase: requestPhase, method, origin, path, status })), null, 2), { mode: 0o600 }).catch(() => undefined);
   await browser?.close().catch(() => undefined); await stack?.close().catch(() => undefined); await candidate?.close().catch(() => undefined);
   console.log(`[tc500] artifacts retained under ${temporary.replace(/[^/]+$/, "<redacted>")}`);
 }
