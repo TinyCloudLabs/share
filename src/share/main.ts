@@ -2,6 +2,10 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
+import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+
+// Every page on this origin drops receiver records an earlier build left in the tab.
+purgeLegacyReceiverStorage();
 
 const LIBRARY_ROUTE = "#/library";
 const COMPOSER_ROUTE = "#/new";

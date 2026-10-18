@@ -157,6 +157,19 @@ describe("first-class accountless receiver", () => {
     expect(state.presented).toHaveLength(0);
   });
 
+  it("still opens the share when site storage is blocked and reading sessionStorage throws", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage")!;
+    Object.defineProperty(window, "sessionStorage", { configurable: true, get: () => { throw new DOMException("The operation is insecure.", "SecurityError"); } });
+    try {
+      await import("../src/main.js");
+      await vi.waitFor(() => expect(state.presented).toHaveLength(1));
+      expect(state.receiveWithSdk).toHaveBeenCalledTimes(1);
+      expect(state.invalid).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "sessionStorage", descriptor);
+    }
+  });
+
   it("keeps remote receiver response details out of console telemetry", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);

@@ -730,15 +730,19 @@ try {
   traceAudit(stack);
   journeyStage = "recipient-storage";
   // After a full claim the key is a non-extractable IndexedDB handle, and no
-  // private key material sits in session or local storage.
+  // private key material sits in session storage, local storage or cookies.
   const keyHandle = await recipientKeyHandle(recipient);
   assert.equal(keyHandle?.extractable, false, "recipient key handle is missing or extractable");
   assert.equal(keyHandle.exportRejected, true, "recipient private key could be exported");
-  const storedEntries = await recipient.evaluate(() => [...Object.entries(sessionStorage), ...Object.entries(localStorage)]);
-  for (const [key, value] of storedEntries) {
+  const stored = await recipient.evaluate(async () => ({
+    entries: [...Object.entries(sessionStorage), ...Object.entries(localStorage), ...document.cookie.split(";").map((cookie) => cookie.trim().split("="))],
+    databases: (await indexedDB.databases()).map((database) => database.name ?? ""),
+  }));
+  for (const [key = "", value = ""] of stored.entries) {
     assert(!/receiver-session/.test(key), "a legacy receiver session record was left in browser storage");
     assert(!/"d"\s*:|"jwk"|privateKey|pkcs8/i.test(value), "private key material was left in browser storage");
   }
+  assert.deepEqual(stored.databases.filter((name) => /receiver|share/i.test(name)), ["tinycloud.share.receiver-keys"], "an unexpected receiver database is in IndexedDB");
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";
