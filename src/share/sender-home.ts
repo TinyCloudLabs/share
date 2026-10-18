@@ -184,7 +184,9 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   };
   const load = async (append: boolean): Promise<void> => {
     if (loading) return;
-    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; renderSkeleton(); }
+    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; more.hidden = true; renderSkeleton(); }
+    // True while an automatic retry is scheduled: the load is still pending, so the busy state must not drop in between.
+    let retryScheduled = false;
     try {
       const page = await options.history.page(cursor);
       if (!append) body.replaceChildren();
@@ -193,13 +195,16 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     } catch (caught) {
       if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudSenderHistoryError?: string }).__tinycloudSenderHistoryError = caught instanceof Error ? caught.message : String(caught);
       if (!append && initialLoadRetries < 3) {
-        initialLoadRetries += 1;
+        initialLoadRetries += 1; retryScheduled = true;
         live.textContent = "Loading your shares…";
         window.setTimeout(() => { void load(false); }, 250);
         return;
       }
-      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); error.append(retry);
-    } finally { table.removeAttribute("aria-busy"); loading = false; }
+      // A failed first load leaves nothing to show: drop the loading placeholders and the table so the error stands alone.
+      if (!append) { body.replaceChildren(); table.hidden = true; more.hidden = true; }
+      live.textContent = "";
+      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { live.textContent = "Loading your shares…"; void load(false); }); error.append(retry);
+    } finally { if (!retryScheduled) table.removeAttribute("aria-busy"); loading = false; }
   };
   newShare.addEventListener("click", () => options.onNavigate("#/new"));
   more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
