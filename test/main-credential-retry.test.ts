@@ -157,6 +157,14 @@ describe("first-class accountless receiver", () => {
     expect(state.presented).toHaveLength(0);
   });
 
+  it("asks the recipient to open the link again when the page's key session has ended", async () => {
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    state.receiveWithSdk.mockRejectedValueOnce(Object.assign(new Error("This receiver session has ended"), { name: "ShareReceiverSessionEndedError" }));
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.invalid).toHaveBeenCalledTimes(1));
+    expect(state.invalid.mock.calls[0]![1]).toBe("Your verification on this page has ended. Open the link from your email again and verify again.");
+  });
+
   it("still opens the share when site storage is blocked and reading sessionStorage throws", async () => {
     const descriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage")!;
     Object.defineProperty(window, "sessionStorage", { configurable: true, get: () => { throw new DOMException("The operation is insecure.", "SecurityError"); } });

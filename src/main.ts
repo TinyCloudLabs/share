@@ -106,9 +106,11 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     console.debug("tinycloud share: recipient request failed");
     const detail = error instanceof Error && error.name === "ShareReceiverKeyUnavailableError"
       ? "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari."
-      : error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-        ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
-        : "This invitation could not be verified. Ask the sender for a fresh invitation.";
+      : error instanceof Error && error.name === "ShareReceiverSessionEndedError"
+        ? "Your verification on this page has ended. Open the link from your email again and verify again."
+        : error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
+          ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
+          : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
 }
