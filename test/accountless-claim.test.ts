@@ -58,11 +58,24 @@ describe("exact-email claim screen", () => {
     expect(request.textContent).toBe("Email me a code");
     expect(request.type).toBe("button");
     expect(document.getElementById(request.getAttribute("aria-describedby")!)?.textContent).toContain("r***@e***.com");
+    // Record the status line's text at the moment it is inserted.
+    const insertedText: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLElement && node.matches(".claim-requested")) insertedText.push(node.textContent ?? "");
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    request.focus();
     request.click();
     request.click();
     await vi.waitFor(() => expect(state.get).toHaveBeenCalledTimes(1));
     expect(state.get).toHaveBeenCalledTimes(1);
-    expect(root.querySelector(".claim-requested[role=status]")?.textContent).toBe("Code requested for r***@e***.com. It can take a minute to arrive.");
+    const status = root.querySelector<HTMLElement>(".claim-requested[role=status]")!;
+    // The clicked button is gone; focus lands on the status line, not the page body.
+    expect(document.activeElement).toBe(status);
+    await vi.waitFor(() => expect(status.textContent).toBe("Code requested for r***@e***.com. It can take a minute to arrive."));
+    observer.disconnect();
+    // Screen readers announce a live region's changes, so it is inserted empty.
+    expect(insertedText).toEqual([""]);
   });
 
   it("names the SDK-verified mailbox and signed invitation facts, and mounts the SDK view in the verification slot", async () => {

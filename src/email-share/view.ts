@@ -162,11 +162,18 @@ export function renderRecipientCodeRequest(view: RecipientClaimView, email: stri
   view.verify.replaceChildren(panel);
 }
 
-/** Confirms, above the code entry, where the requested code was sent. */
-export function recipientCodeRequested(doc: Document, email: string): HTMLElement {
-  const line = element(doc, "p", "claim-state-detail claim-requested", `Code requested for ${maskedMailbox(email)}. It can take a minute to arrive.`);
+/**
+ * Shows, above the code entry, where the requested code was sent. The clicked
+ * button is gone, so focus moves to this line instead of falling to the page
+ * body; its text is set after insertion so screen readers announce it.
+ */
+export function renderRecipientCodeRequested(view: RecipientClaimView, email: string, codeEntry: HTMLElement): void {
+  const line = element(view.verify.ownerDocument, "p", "claim-state-detail claim-requested");
   line.setAttribute("role", "status");
-  return line;
+  line.tabIndex = -1;
+  view.verify.replaceChildren(line, codeEntry);
+  line.focus();
+  setTimeout(() => { line.textContent = `Code requested for ${maskedMailbox(email)}. It can take a minute to arrive.`; }, 0);
 }
 
 export interface RecipientClaimRecovery {

@@ -1,10 +1,10 @@
 import type { SharePublicConfig } from "../email-share/config.js";
 import {
-  recipientCodeRequested,
   renderRecipientClaim,
   renderRecipientClaimProgress,
   renderRecipientClaimRecovery,
   renderRecipientCodeRequest,
+  renderRecipientCodeRequested,
   type RecipientClaimRecovery,
   type RecipientClaimView,
 } from "../email-share/view.js";
@@ -74,7 +74,8 @@ export async function receiveWithSdk(input: {
   if (recipient.kind === "exactEmail") await new Promise<void>((resolve) => renderRecipientCodeRequest(claim, recipient.email, resolve));
   for (;;) {
     mount.replaceChildren();
-    claim.verify.replaceChildren(...(recipient.kind === "exactEmail" ? [recipientCodeRequested(mount.ownerDocument, recipient.email)] : []), mount);
+    if (recipient.kind === "exactEmail") renderRecipientCodeRequested(claim, recipient.email, mount);
+    else claim.verify.replaceChildren(mount);
     const requestedAt = Date.now();
     try {
       await input.onComplete(await received.get());
