@@ -95,11 +95,19 @@ function artifactSandboxHtml(): Plugin {
   };
 }
 
-/** Fills the {{PRODUCT}}/{{DOMAIN}}/{{AGENT_PROMPT}} tokens in the landing HTML from src/landing/brand.ts. */
+/**
+ * Fills the {{TOKEN}} placeholders in the landing HTML from src/landing/brand.ts.
+ * Scoped to the root index.html: other pages are never templated, so a stray
+ * `{{UPPER}}` in them cannot fail the build.
+ */
 function landingTemplate(): Plugin {
+  const landing = fileURLToPath(new URL("index.html", import.meta.url));
   return {
     name: "landing-template",
-    transformIndexHtml: { order: "pre", handler: renderLandingTemplate },
+    transformIndexHtml: {
+      order: "pre",
+      handler: (html, ctx) => (ctx.filename === landing ? renderLandingTemplate(html) : html),
+    },
   };
 }
 

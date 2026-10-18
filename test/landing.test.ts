@@ -16,6 +16,7 @@ describe("landing template", () => {
     expect(rendered).not.toMatch(/\[(Backed|Track)\b/);
     expect(rendered).toContain(`<title>${PRODUCT} — Share what your agent makes.</title>`);
     expect(rendered).toContain(`create the share on ${DOMAIN}.`);
+    expect(rendered).toContain("<span>TinyCloud <b>Sharing</b></span>");
   });
 
   it("rejects an unknown token instead of rendering it", () => {
