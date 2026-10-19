@@ -1,5 +1,6 @@
 import { TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { pageMemoryStorage } from "../email-share/receiver-storage.js";
 
 /**
  * Construct the SDK receiver without an OpenKey provider. `identity: auto`
@@ -26,6 +27,8 @@ export async function createShareReceiverClient(
       expectedShareOrigin: config.shareOrigin,
       registryOrigin: config.registryOrigin,
       credentialDiscoveryUrl: `${config.credentialsOrigin}/.well-known/opencredentials`,
+      // The receiver's key and credentials stay in this page's memory.
+      sessionStorage: pageMemoryStorage(),
     },
   });
 }

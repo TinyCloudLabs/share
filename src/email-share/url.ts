@@ -17,7 +17,7 @@ const MAX_POLICY_FRAGMENT = 700_000;
  * No plaintext `?tc2`, unresolved compact `/s/<cid>`, claim-secret, or
  * reload-cache form is accepted.
  */
-export function captureAndScrubLaunch(loc: Location, history: History, _storage?: Storage): CapturedLaunch | undefined {
+export function captureAndScrubLaunch(loc: Location, history: History): CapturedLaunch | undefined {
   const href = loc.href;
   const pathname = loc.pathname;
   const search = loc.search;

@@ -148,6 +148,32 @@ describe("first-class accountless receiver", () => {
     expect(state.createAccountClient).not.toHaveBeenCalled();
   });
 
+  it("drops receiver records an earlier build stored before the receiver starts", async () => {
+    window.sessionStorage.setItem("tinycloud.share.receiver-session.v1", JSON.stringify({ jwk: { d: "legacy" } }));
+    window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{}");
+    const seen: (string | null)[] = [];
+    state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
+      seen.push(window.sessionStorage.getItem("tinycloud.share.receiver-session.v1"), window.sessionStorage.getItem("tinycloud.share.receiver-credentials.v1"));
+      void options.onComplete({ bytes: new Uint8Array([1]) });
+    });
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receiveWithSdk).toHaveBeenCalledTimes(1));
+    expect(seen).toEqual([null, null]);
+  });
+
+  it("still opens the share when site storage is blocked and reading sessionStorage throws", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "sessionStorage")!;
+    Object.defineProperty(window, "sessionStorage", { configurable: true, get: () => { throw new DOMException("The operation is insecure.", "SecurityError"); } });
+    try {
+      await import("../src/main.js");
+      await vi.waitFor(() => expect(state.presented).toHaveLength(1));
+      expect(state.receiveWithSdk).toHaveBeenCalledTimes(1);
+      expect(state.invalid).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "sessionStorage", descriptor);
+    }
+  });
+
   it("keeps remote receiver response details out of console telemetry", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
