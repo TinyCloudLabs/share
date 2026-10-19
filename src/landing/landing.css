@@ -597,22 +597,29 @@ h1 {
 
 .agent-signin {
   max-width: 44rem;
-  margin: 0.25rem 0 0;
+  margin: 0.875rem 0 0;
   color: var(--ink-soft);
   font-size: 0.94rem;
   line-height: 1.6;
 }
 
-/* Secondary text link: vertical padding extends the hit area to 44px without growing the line. */
+/* Secondary text link. The focus ring hugs the words only; the 44px hit area is an invisible
+   pseudo-element, so it neither grows the line nor draws over neighbouring text. */
 .agent-signin-link {
-  margin-inline: -0.25rem;
-  padding: 0.85rem 0.25rem;
+  position: relative;
+  margin-inline: 0.2em;
   color: var(--accent);
   font-weight: 500;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
   white-space: nowrap;
+}
+
+.agent-signin-link::after {
+  position: absolute;
+  inset: -14px -0.2em;
+  content: "";
 }
 
 .agent-signin-link:hover {
