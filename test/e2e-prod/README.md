@@ -78,8 +78,10 @@ local stable worktrees listed in `native-stack.mjs`; explicit paths may be
 provided with `TC500_NODE_WORKTREE`, `TC500_OPENCREDENTIALS_WORKTREE`, and
 `TC500_REGISTRY_WORKTREE`. `TC500_NODE_COMMIT`, `TC500_OPENCREDENTIALS_COMMIT`,
 and `TC500_REGISTRY_COMMIT` may name a reviewed candidate commit instead of the
-stable pin; the worktree must still be clean and at exactly that commit, and
-its tree digest is recorded in the artifact.
+stable pin; the worktree must still be clean and at exactly that commit. The
+artifact records the tree digests, the resolved commits, and an `overridden`
+flag. An overridden run ends with `result: "candidate-passed"`; only a run on
+the pinned commits (Node v1.21.0) can report `result: "passed"`.
 
 ```bash
 npm run test:e2e:native-joined

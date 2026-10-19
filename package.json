@@ -15,7 +15,7 @@
     "test:e2e:html-share": "node test/e2e-html-share.mjs",
     "test:e2e:mermaid": "node test/e2e-mermaid.mjs",
     "test:e2e:native-joined": "node test/e2e-prod/joined-gate.mjs",
-    "test:e2e:production-origin-contract": "node --test test/e2e-prod/production-headers.test.mjs test/e2e-prod/recipient-output.test.mjs test/e2e-prod/recipient-trace.test.mjs",
+    "test:e2e:production-origin-contract": "node --test test/e2e-prod/production-headers.test.mjs test/e2e-prod/recipient-output.test.mjs test/e2e-prod/recipient-trace.test.mjs test/e2e-prod/cli-transport.test.mjs test/e2e-prod/native-stack.test.mjs",
     "test:e2e:sender-signin": "node test/e2e-prod/sender-signin-smoke.mjs",
     "typecheck": "tsc --noEmit"
   },

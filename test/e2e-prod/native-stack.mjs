@@ -140,6 +140,26 @@ function assertTree(root, commit, label) {
   return createHash("sha256").update(actual).digest("hex");
 }
 
+/**
+ * Resolves the commit each dependency must be at. TC500_*_COMMIT overrides name
+ * a reviewed candidate instead of the release pin; any override marks the run
+ * as not the release gate (`overridden`), so it can never report `passed`.
+ */
+export function resolveStableInputs(env = process.env) {
+  const commits = {
+    node: env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node,
+    openCredentials: env.TC500_OPENCREDENTIALS_COMMIT ?? STABLE_INPUTS.openCredentials,
+    locationRegistry: env.TC500_REGISTRY_COMMIT ?? STABLE_INPUTS.locationRegistry,
+  };
+  const overridden = Object.keys(commits).some((key) => commits[key] !== STABLE_INPUTS[key]);
+  return { commits, overridden };
+}
+
+/** `passed` is reserved for a run on exactly the pinned dependencies. */
+export function gateResult(provenance) {
+  return provenance.overridden ? "candidate-passed" : "passed";
+}
+
 function trustBundle(nodePublicKey) {
   return JSON.stringify({
     version: "tinycloud.share-email-trust-bundle/v1",
@@ -229,12 +249,15 @@ export async function startNativeStack(input) {
 }
 
 async function bootNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }, children, servers, progress) {
+  const { commits, overridden } = resolveStableInputs();
   const provenance = {
-    // TC500_NODE_COMMIT names a reviewed candidate Node commit; the tree must
-    // still be clean and exactly that commit, and its digest is recorded.
-    node: assertTree(nodeRoot, process.env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node, "TinyCloud Node"),
-    openCredentials: assertTree(credentialsRoot, process.env.TC500_OPENCREDENTIALS_COMMIT ?? STABLE_INPUTS.openCredentials, "OpenCredentials"),
-    locationRegistry: assertTree(registryRoot, process.env.TC500_REGISTRY_COMMIT ?? STABLE_INPUTS.locationRegistry, "Location Registry"),
+    // The tree must be clean and exactly the resolved commit; its digest, the
+    // resolved commits, and whether any pin was overridden are all recorded.
+    node: assertTree(nodeRoot, commits.node, "TinyCloud Node"),
+    openCredentials: assertTree(credentialsRoot, commits.openCredentials, "OpenCredentials"),
+    locationRegistry: assertTree(registryRoot, commits.locationRegistry, "Location Registry"),
+    commits,
+    overridden,
   };
 
   const openKeyOrigin = await loopback((request, response) => {
@@ -271,7 +294,7 @@ async function bootNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }
   }, servers);
 
   progress.stage = "postgres";
-  const pgBin = process.env.SHARING_E2E_POSTGRES_BIN ?? execFileSync("pg_config", ["--bindir"], { encoding: "utf8" }).trim();
+  const pgBin = process.env.SHARING_E2E_POSTGRES_BIN ?? execFileSync("pg_config", ["--bindir"], { encoding: "utf8", timeout: 30_000 }).trim();
   const pgUser = process.env.USER ?? "tinycloud";
   const pgData = join(root, "postgres");
   const pgPort = await freePort();

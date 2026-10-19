@@ -3,7 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { credentialOtpFromMail, isCredentialOtpMail, resendFixtureJsonResponse, runBoundedStep } from "./native-stack.mjs";
+import { credentialOtpFromMail, gateResult, isCredentialOtpMail, resendFixtureJsonResponse, resolveStableInputs, runBoundedStep, STABLE_INPUTS } from "./native-stack.mjs";
 
 test("Resend fixture responses declare their exact bounded UTF-8 length", () => {
   const response = resendFixtureJsonResponse({ id: "mail_é" }, { "cache-control": "no-store" });
@@ -71,4 +71,19 @@ test("a finished setup step leaves no background descendant behind", async () =>
 
 test("a failing setup step rejects with its exit status", async () => {
   await assert.rejects(runBoundedStep("sh", ["-c", "exit 3"], tmpdir(), {}, 10_000), /exited with 3/);
+});
+
+test("only the pinned dependency commits can yield a passed gate", () => {
+  const pinned = resolveStableInputs({});
+  assert.deepEqual(pinned.commits, { ...STABLE_INPUTS });
+  assert.equal(pinned.overridden, false);
+  assert.equal(gateResult(pinned), "passed");
+
+  for (const name of ["TC500_NODE_COMMIT", "TC500_OPENCREDENTIALS_COMMIT", "TC500_REGISTRY_COMMIT"]) {
+    const overridden = resolveStableInputs({ [name]: "0".repeat(40) });
+    assert.equal(overridden.overridden, true, name);
+    assert.notEqual(gateResult(overridden), "passed", name);
+  }
+  // Restating the pin is not an override.
+  assert.equal(resolveStableInputs({ TC500_NODE_COMMIT: STABLE_INPUTS.node }).overridden, false);
 });
