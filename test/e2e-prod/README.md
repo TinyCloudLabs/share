@@ -44,8 +44,8 @@ sender's original non-UTF-8 file. It verifies the downloaded local bytes and
 the required OpenCredentials/Policy-v3/delegate/invoke trace, while refusing
 OpenKey or legacy Share traffic. It does not create an invitation itself.
 
-`joined-gate.mjs` is the hermetic release gate. It boots the stable Node
-1.17.1 tree, the reviewed OpenCredentials candidate tree (8-digit mailbox codes), and the current
+`joined-gate.mjs` is the hermetic release gate. It boots the released Node
+v1.21.0 tree, the reviewed OpenCredentials candidate tree (8-digit mailbox codes), and the current
 Location Registry tree, while serving only the candidate static Share build
 at the production origin. It creates the sender share through the real browser
 UI, captures mail through a loopback Resend-compatible sink, and opens the
@@ -54,16 +54,47 @@ transport: browser URLs, Origin headers, CSP, Trusted Types, policy audiences,
 and signed discovery records retain their production values. The stack has no
 Share API or Share registry.
 
+After the browser journeys, the gate runs the agent-style sender: the `tc` CLI
+publishes an exact-email share with `tc share publish <file> --to email:<addr>
+--notify`, and a fresh browser context claims the mailed link and must download
+the exact bytes. The CLI is preloaded with `cli-transport.mjs`, which keeps the
+canonical origins and remaps only transport to the stack. It refuses every
+other destination at three layers (fetch origins, DNS, and raw `net.Socket`
+connects to non-loopback hosts, which covers IP literals and http/https/tls
+clients), and the leg fails if the CLI tried one. `TC500_CLI_PACKAGE` names an
+installed `@tinycloud/cli` package root. Its default,
+`/tmp/tc500-cli/node_modules/@tinycloud/cli`, is not provisioned by anything:
+install a CLI there first (`npm install --prefix /tmp/tc500-cli
+@tinycloud/cli@<version>`) or point the variable at a built js-sdk
+`packages/cli`. The gate is red for every published CLI up to and including
+1.3.0-beta.7: those releases reject the Node's delivery receipt and never email
+the recipient (TC-1424, fixed by TinyCloudLabs/js-sdk#581). It turns green once
+a CLI containing that fix is used.
+
+No CI workflow runs this gate; it is a manual release check.
+
 The gate refuses dirty or non-reviewed dependency trees. Defaults are the
 local stable worktrees listed in `native-stack.mjs`; explicit paths may be
 provided with `TC500_NODE_WORKTREE`, `TC500_OPENCREDENTIALS_WORKTREE`, and
-`TC500_REGISTRY_WORKTREE`. `TC500_NODE_COMMIT` may name a reviewed candidate
-Node commit instead of the stable pin; the worktree must still be clean and at
-exactly that commit, and its tree digest is recorded in the artifact.
+`TC500_REGISTRY_WORKTREE`. `TC500_NODE_COMMIT`, `TC500_OPENCREDENTIALS_COMMIT`,
+and `TC500_REGISTRY_COMMIT` may name a reviewed candidate commit instead of the
+stable pin; the worktree must still be clean and at exactly that commit. The
+artifact records the tree digests, the resolved commits, and an `overridden`
+flag. An overridden run ends with `result: "candidate-passed"`; only a run on
+the pinned commits (Node v1.21.0) can report `result: "passed"`.
 
 ```bash
 npm run test:e2e:native-joined
 ```
+
+A run cannot hang the host. Every fixture process and every one-shot setup step
+runs in its own process group, and the whole group is killed when a step times
+out or finishes, when the gate exits, after a failed start, and on
+SIGINT/SIGTERM, so build or script grandchildren cannot be orphaned. One-shot
+steps time out (cargo and pnpm builds after `TC500_BUILD_TIMEOUT_MS`, default 30
+minutes; the Share build after 10 minutes; other steps after 5 minutes).
+Once the stack is up, the journey must finish within `TC500_JOURNEY_TIMEOUT_MS`
+(default 15 minutes). A failed start names its step in `nativeStackStage`.
 
 Its stdout and JSON artifact contain only fixed stage labels, route counts,
 tree digests, and SHA-256 values. Browser console strings, invitation
