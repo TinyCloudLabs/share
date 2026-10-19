@@ -25,6 +25,13 @@ describe("landing template", () => {
   it("keeps the agent prompt exactly as specified", () => {
     expect(AGENT_PROMPT).toBe(EXPECTED_PROMPT);
   });
+
+  it("states the supported surfaces under the copy box", () => {
+    const note = /<p class="agent-note">([\s\S]*?)<\/p>/.exec(rendered)![1]!.replace(/\s+/g, " ").trim();
+    expect(note).toBe(
+      "Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through the TinyCloud MCP are next.",
+    );
+  });
 });
 
 describe("agent prompt copy button", () => {

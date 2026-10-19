@@ -231,7 +231,7 @@ h3 {
 .hero {
   display: flex;
   align-items: center;
-  min-height: min(720px, calc(100svh - 5.4rem));
+  min-height: min(440px, calc(100svh - 5.4rem));
   border-bottom: 1px dotted var(--line);
 }
 
@@ -239,7 +239,7 @@ h3 {
   display: grid;
   align-items: end;
   width: 100%;
-  padding: clamp(5rem, 10vw, 8rem) 0;
+  padding: clamp(3rem, 6vw, 4.5rem) 0;
   animation: page-enter 650ms var(--ease) both;
   grid-template-columns: minmax(0, 1.1fr) minmax(20rem, 0.9fr);
   grid-template-areas: "title intro";
@@ -349,7 +349,7 @@ h1 {
 }
 
 .structural-section {
-  padding: clamp(5rem, 9vw, 7.5rem) 0;
+  padding: clamp(3.35rem, 6vw, 5rem) 0;
   border-bottom: 1px dotted var(--line);
 }
 
@@ -471,7 +471,7 @@ h1 {
 }
 
 .final-cta {
-  padding: clamp(6rem, 11vw, 9rem) 1rem;
+  padding: clamp(4rem, 7.3vw, 6rem) 1rem;
   text-align: center;
 }
 
