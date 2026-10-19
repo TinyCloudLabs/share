@@ -727,6 +727,7 @@ async function verifyCliSenderJourney({ browser, stack, temporary }) {
   phase = "cli-recipient";
   const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
   await reader.goto(link, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await (await waitUntil(async () => (await reader.$(".claim-request-code")) ?? undefined, 90_000)).click();
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipient)), 60_000);
   const code = credentialOtpFromMail(otpMail); assert.match(code ?? "", /^\d{8}$/);
   assert.equal(await credentialInputReady(reader, "otp"), true, "CLI recipient OTP input did not become stable");
