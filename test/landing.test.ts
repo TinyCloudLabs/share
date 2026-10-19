@@ -32,6 +32,17 @@ describe("landing template", () => {
       "Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through the TinyCloud MCP are next.",
     );
   });
+
+  it("offers a secondary sign-in under the note that targets the same place as the bottom CTA", () => {
+    const hero = /<p class="agent-signin">([\s\S]*?)<\/p>/.exec(rendered)![1]!;
+    expect(hero.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()).toBe(
+      "Already have a TinyCloud account? Sign in to create a share yourself.",
+    );
+    const heroLink = /<a class="agent-signin-link" href="([^"]+)">Sign in<\/a>/.exec(hero)![1];
+    const bottomLink = /<a class="signin-link" href="([^"]+)">Sign in<\/a>/.exec(rendered)![1];
+    expect(heroLink).toBeTruthy();
+    expect(heroLink).toBe(bottomLink);
+  });
 });
 
 describe("agent prompt copy button", () => {
