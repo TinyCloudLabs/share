@@ -13,13 +13,23 @@ vi.mock("@tinycloud/sdk-core", () => ({ getPolicyRootStatusV3, revokePolicyRootV
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
-function fakeVault(): IDataVaultService {
+type ListPage = { ok: boolean; data?: { keys: string[]; truncated: boolean; nextCursor?: string } };
+
+/** `serverPageLimit` pages the key listing like the node does; `listing` replaces it so a test can fail or cycle it. */
+function fakeVault(options: { readonly serverPageLimit?: number; readonly listing?: (cursor: string | undefined) => ListPage | Promise<ListPage> } = {}): IDataVaultService {
   const store = new Map<string, unknown>();
   return {
     put: async (key: string, value: unknown) => { store.set(key, value); return { ok: true, data: undefined }; },
     get: async (key: string) => store.has(key) ? { ok: true, data: store.get(key) } : { ok: false, error: { code: "NOT_FOUND", message: "missing" } },
     delete: async (key: string) => { store.delete(key); return { ok: true, data: undefined }; },
-    listPage: async ({ prefix, limit }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => ({ ok: true, data: { keys: [...store.keys()].filter((key) => key.startsWith(prefix)).slice(0, limit), truncated: false } }),
+    listPage: async ({ prefix, removePrefix, limit, cursor }: { prefix: string; removePrefix: boolean; limit: number; cursor?: string }) => {
+      if (options.listing !== undefined) return options.listing(cursor);
+      const keys = [...store.keys()].filter((key) => key.startsWith(prefix)).sort();
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const size = Math.min(limit, options.serverPageLimit ?? limit);
+      const truncated = start + size < keys.length;
+      return { ok: true, data: { keys: keys.slice(start, start + size).map((key) => removePrefix ? key.slice(prefix.length) : key), truncated, ...(truncated ? { nextCursor: String(start + size) } : {}) } };
+    },
   } as unknown as IDataVaultService;
 }
 
@@ -183,5 +193,122 @@ describe("TC-657 revoke retry after a lost response", () => {
     expect(root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')?.disabled).toBe(false);
     expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
     expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
+  });
+});
+
+describe("sender home load states", () => {
+  const NOW = () => Date.parse("2026-07-27T00:00:00.000Z");
+  const mount = (history: SenderHistoryRepository) => {
+    const root = document.createElement("div"); document.body.append(root);
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    return root;
+  };
+  const failingListing = () => ({ ok: false as const });
+  const rowIds = (root: HTMLElement) => [...root.querySelectorAll(".sender-item-cell strong")].map((cell) => cell.textContent);
+
+  it("shows only the error, with no skeleton or busy state, when the load fails, and a retry shows loading again then clears the error", async () => {
+    const history = new SenderHistoryRepository(fakeVault({ listing: failingListing }), NOW);
+    const root = mount(history);
+    // The skeleton is on screen while the load is pending.
+    expect(root.querySelector(".sender-skeleton-row")).not.toBeNull();
+    expect(root.querySelector("table")?.getAttribute("aria-busy")).toBe("true");
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>('[role="alert"]')?.hidden).toBe(false), { timeout: 4000 });
+    const alert = root.querySelector<HTMLElement>('[role="alert"]')!;
+    expect(alert.textContent).toContain("Could not load shares");
+    expect(root.querySelector(".sender-skeleton-row, .sender-skeleton-cell")).toBeNull();
+    expect(root.querySelector("table")?.hidden).toBe(true);
+    expect(root.querySelector("[aria-busy]")).toBeNull();
+    expect(root.querySelector<HTMLElement>(".sender-load-more")?.hidden).toBe(true);
+    const retry = alert.querySelector<HTMLButtonElement>("button")!;
+    expect(retry.textContent).toBe("Retry");
+
+    // Retry: the loading state returns and the error leaves while the load is pending.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const retryHistory = vi.spyOn(history, "page").mockImplementation(async () => { await gate; return { items: [], truncated: false }; });
+    retry.click();
+    expect(alert.hidden).toBe(true);
+    expect(root.querySelector(".sender-skeleton-row")).not.toBeNull();
+    expect(root.querySelector("table")?.hidden).toBe(false);
+    expect(root.querySelector("table")?.getAttribute("aria-busy")).toBe("true");
+    release();
+    await vi.waitFor(() => expect(root.querySelector("[aria-busy]")).toBeNull());
+    expect(retryHistory).toHaveBeenCalledTimes(1);
+    expect(alert.hidden).toBe(true);
+    expect(root.querySelector(".sender-skeleton-row")).toBeNull();
+  });
+
+  it("recovers to a list when a retry succeeds after the error", async () => {
+    let failing = true;
+    const vault = fakeVault();
+    const inner = vault as unknown as { listPage: (o: unknown) => Promise<ListPage> };
+    const real = inner.listPage;
+    inner.listPage = async (request) => failing ? failingListing() : real(request);
+    const history = new SenderHistoryRepository(vault, NOW);
+    await history.save(record("kept"));
+    const root = mount(history);
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>('[role="alert"]')?.hidden).toBe(false), { timeout: 4000 });
+    failing = false;
+    root.querySelector<HTMLButtonElement>('[role="alert"] button')!.click();
+    await vi.waitFor(() => expect(rowIds(root)).toEqual(["kept.md"]));
+    expect(root.querySelector<HTMLElement>('[role="alert"]')?.hidden).toBe(true);
+    expect(root.querySelector("table")?.hidden).toBe(false);
+    expect(root.querySelector(".sender-skeleton-row")).toBeNull();
+    expect(root.querySelector("[aria-busy]")).toBeNull();
+  });
+
+  it("renders a revoked share as revoked, without a Revoke action", async () => {
+    const history = new SenderHistoryRepository(fakeVault(), NOW);
+    await history.save({ ...record("gone"), revokedAt: "2026-07-26T00:00:00.000Z" });
+    await history.save(record("live"));
+    const root = mount(history);
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(2));
+    const gone = [...root.querySelectorAll(".sender-history-row")].find((row) => row.textContent?.includes("gone.md"))!;
+    expect(gone.querySelector(".sender-status-text.revoked .status-label")?.textContent).toBe("Revoked");
+    expect(gone.querySelector("button.sender-revoke")).toBeNull();
+    expect(root.querySelector('button[aria-label="Revoke live.md"]')).not.toBeNull();
+    expect(root.querySelector('button[aria-label="Revoke gone.md"]')).toBeNull();
+  });
+
+  it("pages through more than one page with the real cursor and the node's listing cursor", async () => {
+    const cursors: Array<string | undefined> = [];
+    const vault = fakeVault({ serverPageLimit: 10 });
+    const inner = vault as unknown as { listPage: (o: { cursor?: string }) => Promise<ListPage> };
+    const real = inner.listPage;
+    inner.listPage = async (request) => { cursors.push(request.cursor); return real(request); };
+    const history = new SenderHistoryRepository(vault, NOW);
+    const base = Date.parse("2026-07-01T00:00:00.000Z");
+    for (let index = 0; index < 30; index += 1) await history.save({ ...record(`s${String(index).padStart(2, "0")}`), registeredAt: new Date(base + index * 60_000).toISOString() });
+    const pageSpy = vi.spyOn(history, "page");
+    const root = mount(history);
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(25));
+    // The listing followed the node's own cursor across its three pages.
+    expect(cursors).toEqual([undefined, "10", "20"]);
+    const more = root.querySelector<HTMLButtonElement>(".sender-load-more")!;
+    expect(more.hidden).toBe(false);
+    expect(rowIds(root)[0]).toBe("s29.md");
+
+    more.click();
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(30));
+    expect(pageSpy.mock.calls.map(([cursor]) => cursor)).toEqual([undefined, "25"]);
+    expect(new Set(rowIds(root)).size).toBe(30);
+    expect(rowIds(root).at(-1)).toBe("s00.md");
+    expect(more.hidden).toBe(true);
+    // Load more reuses the index rather than listing again.
+    expect(cursors).toEqual([undefined, "10", "20"]);
+    expect(root.querySelector("[aria-busy]")).toBeNull();
+  });
+
+  it("shows the error, not a partial list, when the listing repeats a cursor", async () => {
+    const pages: Record<string, { keys: string[]; nextCursor: string }> = { start: { keys: ["a"], nextCursor: "A" }, A: { keys: ["b"], nextCursor: "B" }, B: { keys: ["c"], nextCursor: "A" } };
+    const history = new SenderHistoryRepository(fakeVault({ listing: (cursor) => ({ ok: true, data: { truncated: true, ...pages[cursor ?? "start"]! } }) }), NOW);
+    const root = mount(history);
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>('[role="alert"]')?.hidden).toBe(false), { timeout: 4000 });
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain("Could not load shares");
+    expect(root.querySelectorAll(".sender-history-row")).toHaveLength(0);
+    expect(root.querySelector(".sender-skeleton-row")).toBeNull();
+    expect(root.querySelector("table")?.hidden).toBe(true);
+    expect(root.querySelector("[aria-busy]")).toBeNull();
   });
 });
