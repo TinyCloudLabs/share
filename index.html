@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Paste one prompt into your agent. It publishes a document or page from your own TinyCloud and gives you a link. You choose who can open it, and for how long."
+      content="Paste one prompt into your agent. It publishes from your own TinyCloud and gives you a link to share."
     />
     <meta name="color-scheme" content="light dark" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'" />
@@ -41,8 +41,8 @@
             <h1 id="hero-title">Share what your agent makes.</h1>
 
             <p class="hero-intro">
-              Paste one prompt into your agent. It publishes a document or page from your own
-              TinyCloud and gives you a link. You choose who can open it, and for how long.
+              Paste one prompt into your agent. It publishes a document, page or small app from
+              your own TinyCloud and gives you a link. You choose who can open it.
             </p>
           </div>
         </section>
@@ -63,39 +63,9 @@
           <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
 
           <p class="agent-note">
-            Works in Claude Code, Codex and OpenCode. Your agent installs the TinyCloud CLI, asks
-            you to approve one sign-in, then publishes.
+            Works with coding agents like Claude Code, Codex and OpenCode, and with chat apps
+            through the TinyCloud MCP.
           </p>
-          <p class="agent-note">
-            <strong>Chat agents (ChatGPT and others):</strong> Publishing needs an agent that can
-            run shell commands, with Node.js 22.20 or later and npm. ChatGPT in a plain chat can't
-            do that, so it can write the document and you share it yourself: save it as Markdown
-            and create the share on {{DOMAIN}}.
-          </p>
-        </section>
-
-        <section class="copy-section structural-section" aria-labelledby="kinds-title">
-          <h2 id="kinds-title">What you can share</h2>
-
-          <div class="kind-grid">
-            <article class="kind-card">
-              <h3>Markdown document</h3>
-              <p>Reports, notes, plans. It opens formatted, with tables and Mermaid diagrams.</p>
-              <p>Give someone edit access and they change it in place.</p>
-            </article>
-            <article class="kind-card">
-              <h3>HTML page</h3>
-              <p>A web page your agent generated, opened in the browser.</p>
-            </article>
-            <article class="kind-card">
-              <h3>JSX app</h3>
-              <p>A small interactive app your agent wrote, running in the page.</p>
-            </article>
-            <article class="kind-card">
-              <h3>Files</h3>
-              <p>Text, JSON and images, shown in the browser.</p>
-            </article>
-          </div>
         </section>
 
         <section class="copy-section structural-section" aria-labelledby="how-title">
@@ -105,58 +75,19 @@
             <li class="how-step">
               <span class="how-number" aria-hidden="true">1</span>
               <h3>Paste the prompt.</h3>
-              <p>Your agent installs the TinyCloud CLI and asks you to approve one sign-in.</p>
+              <p>Your agent sets up TinyCloud and asks you to approve one sign-in.</p>
             </li>
             <li class="how-step">
               <span class="how-number" aria-hidden="true">2</span>
               <h3>Your agent publishes.</h3>
-              <p>The file stays in your own TinyCloud, and you get a link.</p>
+              <p>It stays in your own TinyCloud, and you get a link.</p>
             </li>
             <li class="how-step">
               <span class="how-number" aria-hidden="true">3</span>
               <h3>You choose who opens it.</h3>
-              <p>Anyone with the link, one person, or everyone at a domain. Set an expiry.</p>
+              <p>Anyone with the link, one person, or everyone at your domain. Revoke it any time.</p>
             </li>
           </ol>
-        </section>
-
-        <section class="copy-section structural-section" aria-labelledby="audience-title">
-          <h2 id="audience-title">Who sees it</h2>
-
-          <ul class="audience-list" role="list">
-            <li>
-              <h3>Anyone with the link.</h3>
-              <p>Anyone who has the whole link can open it, until it expires.</p>
-            </li>
-            <li>
-              <h3>One person.</h3>
-              <p>
-                Name an email address. They prove it's theirs with a code sent to that address,
-                then open the file. They don't need a TinyCloud account first.
-              </p>
-            </li>
-            <li>
-              <h3>Everyone at a domain.</h3>
-              <p>
-                <code>domain:tinycloud.xyz</code> lets anyone who proves an address at that domain
-                open it.
-              </p>
-            </li>
-            <li>
-              <h3>Expiry.</h3>
-              <p>
-                Every share expires. The default is seven days; you can set anything from a minute
-                up to your session limit.
-              </p>
-            </li>
-            <li>
-              <h3>Revoke.</h3>
-              <p>
-                Revoke any share your agent made, and the link stops opening. Revoking also cuts off
-                everyone you passed it to.
-              </p>
-            </li>
-          </ul>
         </section>
 
         <section class="final-cta" aria-label="Sign in">

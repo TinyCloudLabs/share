@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_PROMPT, DOMAIN, PRODUCT, renderLandingTemplate } from "../src/landing/brand.ts";
+import { AGENT_PROMPT, PRODUCT, renderLandingTemplate } from "../src/landing/brand.ts";
 
 const EXPECTED_PROMPT =
   "Share this with TinyCloud, and ask me who should be able to open it: https://agents.tinycloud.xyz/share";
@@ -15,7 +15,6 @@ describe("landing template", () => {
     expect(rendered).not.toMatch(/\{\{|\}\}|\{PRODUCT\}|\{DOMAIN\}/);
     expect(rendered).not.toMatch(/\[(Backed|Track)\b/);
     expect(rendered).toContain(`<title>${PRODUCT} — Share what your agent makes.</title>`);
-    expect(rendered).toContain(`create the share on ${DOMAIN}.`);
     expect(rendered).toContain("<span>TinyCloud <b>Sharing</b></span>");
   });
 
