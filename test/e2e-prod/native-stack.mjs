@@ -10,7 +10,8 @@ import { privateKeyToAccount } from "viem/accounts";
 import { openKeyWidgetHtml } from "./openkey-fixture.mjs";
 
 export const STABLE_INPUTS = Object.freeze({
-  node: "7a58693f8bcd0d4e9d4df40dd464abd8c9c763ed",
+  // tinycloud-node v1.21.0 (989078c, "chore(release): 1.21.0 (#351)").
+  node: "989078c59e3f77bec6ea7559e8441ebd719574f3",
   openCredentials: "846c018ff4da4dc97a37762a343ad871ea779c54",
   locationRegistry: "74b29179baa0be745a80d28e46124ed53e4c9c15",
 });
@@ -31,8 +32,22 @@ function issuerPublicKey() {
   return createPublicKey(key).export({ format: "der", type: "spki" }).subarray(-32).toString("base64url");
 }
 
+// Every fixture process runs in its own process group. Groups still alive when
+// this process exits (normally, on a thrown startup error, or on SIGINT/SIGTERM)
+// are killed, so a failed run never leaves Postgres or a Node behind.
+const liveChildren = new Set();
+function killLiveChildren(signal = "SIGKILL") {
+  for (const child of liveChildren) {
+    if (child.exitCode === null && child.signalCode === null) { try { process.kill(-child.pid, signal); } catch {} }
+  }
+}
+process.once("exit", () => killLiveChildren());
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { killLiveChildren(); process.exit(1); });
+
 function run(command, args, cwd, env, children) {
   const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
   let output = "";
   const collect = (chunk) => { output = `${output}${String(chunk)}`.slice(-24_000); };
   child.stdout.on("data", collect); child.stderr.on("data", collect);
@@ -40,9 +55,44 @@ function run(command, args, cwd, env, children) {
   return child;
 }
 
-function runOnce(command, args, cwd, env = {}) {
-  execFileSync(command, args, { cwd, env: { ...process.env, ...env }, stdio: "ignore" });
+// One-shot steps are bounded too: a stuck build or migration fails the run
+// instead of hanging it. Cold cargo builds get the long budget.
+const STEP_TIMEOUT_MS = 5 * 60_000;
+const BUILD_TIMEOUT_MS = Number(process.env.TC500_BUILD_TIMEOUT_MS ?? 30 * 60_000);
+
+function groupAlive(pid) {
+  try { process.kill(-pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
 }
+
+/**
+ * Run one setup step in its own process group. On timeout the whole group is
+ * killed (cargo's rustc jobs, pnpm's script children), and on any exit the
+ * group is swept, so no descendant outlives the step. Resolves only after the
+ * group is gone; rejects on a non-zero exit, a signal, or the timeout.
+ */
+export async function runBoundedStep(command, args, cwd, env = {}, timeout = STEP_TIMEOUT_MS) {
+  const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: "ignore", detached: true });
+  liveChildren.add(child);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; try { process.kill(-child.pid, "SIGKILL"); } catch {} }, timeout);
+  try {
+    const { code, signal } = await new Promise((resolveExit, reject) => {
+      child.once("error", reject);
+      child.once("exit", (exitCode, exitSignal) => resolveExit({ code: exitCode, signal: exitSignal }));
+    });
+    if (timedOut) throw new Error(`${command} timed out after ${timeout} ms`);
+    if (code !== 0) throw new Error(`${command} exited with ${signal ?? code}`);
+  } finally {
+    clearTimeout(timer);
+    if (child.pid !== undefined) {
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      const deadline = Date.now() + 5_000;
+      while (groupAlive(child.pid) && Date.now() < deadline) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+    liveChildren.delete(child);
+  }
+}
+const runOnce = runBoundedStep;
 
 async function freePort() {
   const server = httpServer();
@@ -88,6 +138,26 @@ function assertTree(root, commit, label) {
   assert.equal(actual, expected, `${label} worktree is not the reviewed stable tree`);
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: root, encoding: "utf8" }), "", `${label} worktree is dirty`);
   return createHash("sha256").update(actual).digest("hex");
+}
+
+/**
+ * Resolves the commit each dependency must be at. TC500_*_COMMIT overrides name
+ * a reviewed candidate instead of the release pin; any override marks the run
+ * as not the release gate (`overridden`), so it can never report `passed`.
+ */
+export function resolveStableInputs(env = process.env) {
+  const commits = {
+    node: env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node,
+    openCredentials: env.TC500_OPENCREDENTIALS_COMMIT ?? STABLE_INPUTS.openCredentials,
+    locationRegistry: env.TC500_REGISTRY_COMMIT ?? STABLE_INPUTS.locationRegistry,
+  };
+  const overridden = Object.keys(commits).some((key) => commits[key] !== STABLE_INPUTS[key]);
+  return { commits, overridden };
+}
+
+/** `passed` is reserved for a run on exactly the pinned dependencies. */
+export function gateResult(provenance) {
+  return provenance.overridden ? "candidate-passed" : "passed";
 }
 
 function trustBundle(nodePublicKey) {
@@ -140,15 +210,54 @@ export function credentialOtpFromMail(message) {
   return match?.[1];
 }
 
-export async function startNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }) {
+// Stop services and wait for them: SIGTERM each group (Postgres last, after its
+// clients), escalate to SIGKILL after 10 s, and return only once every service
+// process has exited. Postgres backends run in their own sessions and exit when
+// the postmaster does, so waiting on the postmaster covers them.
+async function closeStack(children, servers) {
+  const alive = (child) => child.exitCode === null && child.signalCode === null;
+  const exited = (child, ms) => alive(child)
+    ? Promise.race([once(child, "exit"), new Promise((resolveWait) => setTimeout(resolveWait, ms).unref())])
+    : Promise.resolve();
+  const signalAll = (signal) => { for (const { child } of [...children].reverse()) if (alive(child)) { try { process.kill(-child.pid, signal); } catch {} } };
+  signalAll("SIGTERM");
+  await Promise.all(children.map(({ child }) => exited(child, 10_000)));
+  signalAll("SIGKILL");
+  await Promise.all(children.map(({ child }) => exited(child, 5_000)));
+  for (const server of [...servers].reverse()) {
+    server.closeAllConnections?.();
+    await new Promise((resolveClose) => server.close(() => resolveClose()));
+  }
+}
+
+/**
+ * Boot the hermetic stack. A failed start tears down everything it already
+ * started and rethrows with `nativeStage` naming the step that failed, so the
+ * caller can exit instead of waiting on a leaked Postgres or Node.
+ */
+export async function startNativeStack(input) {
   const children = [];
   const servers = [];
+  const progress = { stage: "provenance" };
+  try {
+    return await bootNativeStack(input, children, servers, progress);
+  } catch (error) {
+    await closeStack(children, servers).catch(() => undefined);
+    killLiveChildren();
+    throw Object.assign(new Error(`native stack failed at ${progress.stage}`, { cause: error }), { nativeStage: progress.stage });
+  }
+}
+
+async function bootNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }, children, servers, progress) {
+  const { commits, overridden } = resolveStableInputs();
   const provenance = {
-    // TC500_NODE_COMMIT names a reviewed candidate Node commit; the tree must
-    // still be clean and exactly that commit, and its digest is recorded.
-    node: assertTree(nodeRoot, process.env.TC500_NODE_COMMIT ?? STABLE_INPUTS.node, "TinyCloud Node"),
-    openCredentials: assertTree(credentialsRoot, STABLE_INPUTS.openCredentials, "OpenCredentials"),
-    locationRegistry: assertTree(registryRoot, STABLE_INPUTS.locationRegistry, "Location Registry"),
+    // The tree must be clean and exactly the resolved commit; its digest, the
+    // resolved commits, and whether any pin was overridden are all recorded.
+    node: assertTree(nodeRoot, commits.node, "TinyCloud Node"),
+    openCredentials: assertTree(credentialsRoot, commits.openCredentials, "OpenCredentials"),
+    locationRegistry: assertTree(registryRoot, commits.locationRegistry, "Location Registry"),
+    commits,
+    overridden,
   };
 
   const openKeyOrigin = await loopback((request, response) => {
@@ -184,17 +293,18 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
     });
   }, servers);
 
-  const pgBin = process.env.SHARING_E2E_POSTGRES_BIN ?? execFileSync("pg_config", ["--bindir"], { encoding: "utf8" }).trim();
+  progress.stage = "postgres";
+  const pgBin = process.env.SHARING_E2E_POSTGRES_BIN ?? execFileSync("pg_config", ["--bindir"], { encoding: "utf8", timeout: 30_000 }).trim();
   const pgUser = process.env.USER ?? "tinycloud";
   const pgData = join(root, "postgres");
   const pgPort = await freePort();
-  runOnce(join(pgBin, "initdb"), ["-D", pgData, "-A", "trust", "-U", pgUser], root, { LC_ALL: "C" });
+  await runOnce(join(pgBin, "initdb"), ["-D", pgData, "-A", "trust", "-U", pgUser], root, { LC_ALL: "C" });
   const tls = join(root, "postgres-tls"); await mkdir(tls);
   const caKey = join(tls, "ca.key"); const ca = join(tls, "ca.pem"); const key = join(tls, "server.key"); const csr = join(tls, "server.csr"); const cert = join(tls, "server.crt"); const ext = join(tls, "server.ext");
-  runOnce("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", ca, "-days", "1", "-subj", "/CN=tc500-e2e-ca", "-addext", "basicConstraints=critical,CA:true"], root);
-  runOnce("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", "/CN=db.localhost"], root);
+  await runOnce("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", ca, "-days", "1", "-subj", "/CN=tc500-e2e-ca", "-addext", "basicConstraints=critical,CA:true"], root);
+  await runOnce("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", csr, "-subj", "/CN=db.localhost"], root);
   await writeFile(ext, "subjectAltName=DNS:db.localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n", { flag: "wx" });
-  runOnce("openssl", ["x509", "-req", "-in", csr, "-CA", ca, "-CAkey", caKey, "-CAcreateserial", "-out", cert, "-days", "1", "-extfile", ext], root); await chmod(key, 0o600);
+  await runOnce("openssl", ["x509", "-req", "-in", csr, "-CA", ca, "-CAkey", caKey, "-CAcreateserial", "-out", cert, "-days", "1", "-extfile", ext], root); await chmod(key, 0o600);
   const postgres = run(join(pgBin, "postgres"), ["-D", pgData, "-h", "127.0.0.1", "-p", String(pgPort), "-c", "unix_socket_directories=", "-c", "ssl=on", "-c", `ssl_cert_file=${cert}`, "-c", `ssl_key_file=${key}`, "-c", `ssl_ca_file=${ca}`], root, { PGUSER: pgUser }, children);
   await waitForTcp(pgPort, postgres);
   const postgresLocalUrl = `postgres://${pgUser}@127.0.0.1:${pgPort}/postgres?sslmode=disable`;
@@ -202,15 +312,16 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   // migrator and a least-privilege runtime role with data access only. It
   // gets its own database so the registry's tables stay out of its schema.
   const psql = (database, user, sql) => runOnce(join(pgBin, "psql"), ["-h", "127.0.0.1", "-p", String(pgPort), "-U", user, "-d", database, "-v", "ON_ERROR_STOP=1", "--no-psqlrc", "-q", "-c", sql], root);
-  psql("postgres", pgUser, "CREATE ROLE oc_migrator LOGIN; CREATE ROLE oc_runtime LOGIN;");
-  psql("postgres", pgUser, "CREATE DATABASE opencredentials OWNER " + pgUser + ";");
-  psql("opencredentials", pgUser, "REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT USAGE, CREATE ON SCHEMA public TO oc_migrator; GRANT USAGE ON SCHEMA public TO oc_runtime;");
+  await psql("postgres", pgUser, "CREATE ROLE oc_migrator LOGIN; CREATE ROLE oc_runtime LOGIN;");
+  await psql("postgres", pgUser, "CREATE DATABASE opencredentials OWNER " + pgUser + ";");
+  await psql("opencredentials", pgUser, "REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT USAGE, CREATE ON SCHEMA public TO oc_migrator; GRANT USAGE ON SCHEMA public TO oc_runtime;");
   const credentialsDatabaseUrl = (user) => `postgres://${user}@db.localhost:${pgPort}/opencredentials?sslmode=verify-full`;
 
+  progress.stage = "node-build";
   const nodePort = await freePort();
-  runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: NODE_SECRET.toString("base64url") });
+  await runOnce("cargo", ["build", "--quiet", "-p", "tinycloud-node", "--features", "local-tee,mounted-fixture"], nodeRoot, { TINYCLOUD_KEYS_SECRET: NODE_SECRET.toString("base64url") }, BUILD_TIMEOUT_MS);
   const nodeBinary = join(nodeRoot, "target/debug/tinycloud");
-  const descriptor = JSON.parse(execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: NODE_SECRET.toString("base64url") }, encoding: "utf8" }));
+  const descriptor = JSON.parse(execFileSync(join(nodeRoot, "target/debug/export-share-invitation-descriptor"), [], { cwd: nodeRoot, env: { ...process.env, TINYCLOUD_KEYS_SECRET: NODE_SECRET.toString("base64url") }, encoding: "utf8", timeout: STEP_TIMEOUT_MS, killSignal: "SIGKILL" }));
   const provisionalBundle = trustBundle(descriptor.nodeInvitationPublicKey);
   const trustPath = join(root, "trust.json"); await writeFile(trustPath, provisionalBundle, { flag: "wx", mode: 0o600 });
   const node = run(nodeBinary, [], nodeRoot, {
@@ -218,30 +329,35 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
     TINYCLOUD_STORAGE__DATADIR: join(root, "node-data"), TINYCLOUD_SHARE_EMAIL__ENABLED: "true", TINYCLOUD_SHARE_EMAIL__TRUST_BUNDLE_PATH: trustPath,
   }, children);
   const nodeOrigin = `http://127.0.0.1:${nodePort}`;
+  progress.stage = "node-readiness";
   await waitFor(`${nodeOrigin}/info`, node, 240_000);
   const nodeInfo = await (await fetch(`${nodeOrigin}/info`)).json();
   assert.match(nodeInfo.nodeId, /^did:key:/);
   const bundle = trustBundle(descriptor.nodeInvitationPublicKey);
   await writeFile(join(root, "credentials-trust.json"), bundle, { flag: "wx", mode: 0o600 });
 
-  runOnce("corepack", ["pnpm", "install", "--frozen-lockfile"], registryRoot);
-  runOnce("corepack", ["pnpm", "--filter", "@tinycloud-registry/location-registry", "build"], registryRoot);
+  progress.stage = "registry-build";
+  await runOnce("corepack", ["pnpm", "install", "--frozen-lockfile"], registryRoot, {}, BUILD_TIMEOUT_MS);
+  await runOnce("corepack", ["pnpm", "--filter", "@tinycloud-registry/location-registry", "build"], registryRoot, {}, BUILD_TIMEOUT_MS);
+  progress.stage = "registry-readiness";
   const registryPort = await freePort();
   const registry = run("node", ["packages/location-registry/dist/index.js"], registryRoot, { PORT: String(registryPort), DATABASE_URL: postgresLocalUrl }, children);
   const registryOrigin = `http://127.0.0.1:${registryPort}`;
   assert.equal((await waitFor(`${registryOrigin}/health`, registry)).status, 200);
 
+  progress.stage = "credentials-build";
   const manifest = join(credentialsRoot, "rust/opencredentials_witness/Cargo.toml");
-  runOnce("cargo", ["build", "--quiet", "--manifest-path", manifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot);
+  await runOnce("cargo", ["build", "--quiet", "--manifest-path", manifest, "--bin", "opencredentials-witness", "--features", "dstack"], credentialsRoot, {}, BUILD_TIMEOUT_MS);
+  progress.stage = "credentials-migrations";
   const migrations = join(credentialsRoot, "deploy/share-email/migrations");
   const readiness = join(root, "oc-readiness.json");
   const databaseEnv = {
     DATABASE_URL: credentialsDatabaseUrl("oc_runtime"), DATABASE_SSL_ROOT_CERT: ca, DATABASE_MIGRATIONS_DIR: migrations, STORAGE_READINESS_FILE: readiness, STORAGE_READINESS_MAX_AGE_SECONDS: "30",
     DATABASE_POOL_MIN: "2", DATABASE_POOL_MAX: "8", DATABASE_CONNECT_TIMEOUT_MS: "5000", DATABASE_RECYCLE_TIMEOUT_MS: "5000", DATABASE_ACQUIRE_TIMEOUT_MS: "500", DATABASE_STATEMENT_TIMEOUT_MS: "2000", DATABASE_IDLE_TRANSACTION_TIMEOUT_MS: "1000",
   };
-  runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, { ...databaseEnv, DATABASE_URL: credentialsDatabaseUrl("oc_migrator") });
-  psql("opencredentials", "oc_migrator", "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO oc_runtime; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO oc_runtime;");
-  runOnce(join(credentialsRoot, "scripts/oi-share-email/readiness-check.sh"), [], credentialsRoot, databaseEnv);
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/migrate.sh"), [], credentialsRoot, { ...databaseEnv, DATABASE_URL: credentialsDatabaseUrl("oc_migrator") });
+  await psql("opencredentials", "oc_migrator", "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO oc_runtime; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO oc_runtime;");
+  await runOnce(join(credentialsRoot, "scripts/oi-share-email/readiness-check.sh"), [], credentialsRoot, databaseEnv);
 
   const dstackSocket = join(root, "dstack.sock");
   const dstack = netServer((socket) => { let input = Buffer.alloc(0); socket.on("data", (chunk) => {
@@ -255,6 +371,7 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
   }); });
   dstack.listen(dstackSocket); await once(dstack, "listening"); servers.push(dstack);
 
+  progress.stage = "credentials-readiness";
   const credentialsPort = await freePort();
   const credentials = run(join(credentialsRoot, "rust/opencredentials_witness/target/debug/opencredentials-witness"), [], credentialsRoot, {
     ...databaseEnv, TMPDIR: root, KEYS_TYPE: "dstack", DSTACK_SIMULATOR_ENDPOINT: dstackSocket, DID_WEB: "did:web:issuer.credentials.org", BIND_ADDR: `127.0.0.1:${credentialsPort}`,
@@ -270,9 +387,8 @@ export async function startNativeStack({ root, nodeRoot, credentialsRoot, regist
     canonical: CANONICAL, walletAddress: WALLET.address, provenance,
     services: { openKeyOrigin, nodeOrigin, credentialsOrigin, registryOrigin, mailOrigin },
     mail,
-    async close() {
-      for (const { child } of children.reverse()) if (child.exitCode === null) { try { process.kill(-child.pid, "SIGTERM"); } catch {} }
-      for (const server of servers.reverse()) await new Promise((resolveClose) => server.close(() => resolveClose()));
-    },
+    // Tail of the witness output; it logs fixed stage labels, never request data.
+    credentialsLog: () => children.find(({ child }) => child === credentials)?.output() ?? "",
+    close: () => closeStack(children, servers),
   };
 }

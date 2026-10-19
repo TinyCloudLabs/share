@@ -129,46 +129,50 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         revoke.addEventListener("click", () => {
           if (!window.confirm("Revoke this share? Everyone who has the link loses access immediately, including anyone they passed it to. This can't be undone.")) return;
           revoke.disabled = true; live.textContent = "Revoking…";
-          void revokeShare({
-            record: item.record,
-            records: options.history.records,
-            adapter: {
-              revokeDelegation: async ({ delegationCid }) => {
-                const result = await options.tinycloud.revokeDelegation(delegationCid);
-                if (!result.ok) throw new Error("revoke-rejected");
+          // The row holds display fields only; read the full record (with delivery material) when the owner confirms.
+          void options.history.records.get(item.record.shareId).then((current) => {
+            if (current === undefined) throw new Error("share-not-found");
+            return revokeShare({
+              record: current,
+              records: options.history.records,
+              adapter: {
+                revokeDelegation: async ({ delegationCid }) => {
+                  const result = await options.tinycloud.revokeDelegation(delegationCid);
+                  if (!result.ok) throw new Error("revoke-rejected");
+                },
+                revokePolicyRoot: async (request) => {
+                  const activeNode = await options.tinycloud.activeNodeIdentity();
+                  // Sender history is encrypted client state, not authority. Bind
+                  // its root identifiers to the currently authenticated owner node
+                  // before signing a generic Policy/v3 revocation.
+                  if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
+                    throw new Error("revoke-unbound-policy-root");
+                  }
+                  try {
+                    await revokePolicyRootV3({
+                      nodeOrigin: activeNode.origin,
+                      rootCid: request.rootCid,
+                      targetRole: request.targetRole,
+                      ownerDid: options.tinycloud.credentialHolderDid,
+                      issuerDid: options.tinycloud.credentialHolderDid,
+                      nodeAudience: activeNode.nodeDid,
+                      reason: "share revoked",
+                      now: nodeReproducibleRevocationTime(),
+                      sign: (digest) => options.tinycloud.signSessionBytes(digest),
+                    });
+                  } catch (caught) {
+                    // TC-657. A retry after a lost response signs a new
+                    // `revokedAt`, and the Node, already holding the first
+                    // revocation, answers 409 root-revocation-irreversible.
+                    // Ask the Node whether the root is revoked before calling
+                    // the revoke a failure.
+                    if ((caught as { readonly status?: unknown } | null)?.status !== 409) throw caught;
+                    const status = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
+                    if (status?.state !== "revoked") throw caught;
+                  }
+                },
               },
-              revokePolicyRoot: async (request) => {
-                const activeNode = await options.tinycloud.activeNodeIdentity();
-                // Sender history is encrypted client state, not authority. Bind
-                // its root identifiers to the currently authenticated owner node
-                // before signing a generic Policy/v3 revocation.
-                if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
-                  throw new Error("revoke-unbound-policy-root");
-                }
-                try {
-                  await revokePolicyRootV3({
-                    nodeOrigin: activeNode.origin,
-                    rootCid: request.rootCid,
-                    targetRole: request.targetRole,
-                    ownerDid: options.tinycloud.credentialHolderDid,
-                    issuerDid: options.tinycloud.credentialHolderDid,
-                    nodeAudience: activeNode.nodeDid,
-                    reason: "share revoked",
-                    now: nodeReproducibleRevocationTime(),
-                    sign: (digest) => options.tinycloud.signSessionBytes(digest),
-                  });
-                } catch (caught) {
-                  // TC-657. A retry after a lost response signs a new
-                  // `revokedAt`, and the Node, already holding the first
-                  // revocation, answers 409 root-revocation-irreversible.
-                  // Ask the Node whether the root is revoked before calling
-                  // the revoke a failure.
-                  if ((caught as { readonly status?: unknown } | null)?.status !== 409) throw caught;
-                  const status = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
-                  if (status?.state !== "revoked") throw caught;
-                }
-              },
-            },
+            });
           }).then((result) => {
             if (result.state !== "revoked") throw new Error("revoke-unsupported");
           }).then(() => { live.textContent = "Share revoked."; return load(false); }).catch(() => { revoke.disabled = false; live.textContent = "Revoke didn't go through — the share is still active. Try again."; });
@@ -180,7 +184,9 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   };
   const load = async (append: boolean): Promise<void> => {
     if (loading) return;
-    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; renderSkeleton(); }
+    loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; more.hidden = true; renderSkeleton(); }
+    // True while an automatic retry is scheduled: the load is still pending, so the busy state must not drop in between.
+    let retryScheduled = false;
     try {
       const page = await options.history.page(cursor);
       if (!append) body.replaceChildren();
@@ -189,13 +195,16 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     } catch (caught) {
       if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudSenderHistoryError?: string }).__tinycloudSenderHistoryError = caught instanceof Error ? caught.message : String(caught);
       if (!append && initialLoadRetries < 3) {
-        initialLoadRetries += 1;
+        initialLoadRetries += 1; retryScheduled = true;
         live.textContent = "Loading your shares…";
         window.setTimeout(() => { void load(false); }, 250);
         return;
       }
-      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { void load(false); }); error.append(retry);
-    } finally { table.removeAttribute("aria-busy"); loading = false; }
+      // A failed first load leaves nothing to show: drop the loading placeholders and the table so the error stands alone.
+      if (!append) { body.replaceChildren(); table.hidden = true; more.hidden = true; }
+      live.textContent = "";
+      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { live.textContent = "Loading your shares…"; void load(false); }); error.append(retry);
+    } finally { if (!retryScheduled) table.removeAttribute("aria-busy"); loading = false; }
   };
   newShare.addEventListener("click", () => options.onNavigate("#/new"));
   more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
