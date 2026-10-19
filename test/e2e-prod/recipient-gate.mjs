@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createInterface } from "node:readline";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { inspectShare } from "@tinycloud/share-sdk";
@@ -163,13 +164,19 @@ try {
   });
   await page.goto(invitation, { waitUntil: "domcontentloaded" });
 
-  // The caller supplies the mailbox OTP only from the Mailinator message
-  // actually received for this invitation. The invitation already binds the
-  // mailbox, so the fresh recipient types only the OTP and never creates an
-  // OpenKey identity. Keeping mailbox access outside this helper avoids
-  // committing a mail API token or a simulated credential path.
-  const otp = process.env.TC500_E2E_MAILBOX_OTP;
-  if (otp === undefined || !/^\d{8}$/.test(otp)) throw new Error("TC500_E2E_MAILBOX_OTP must be the 8-digit code from the delivered message");
+  // The page requests a code only when the recipient clicks, so the operator
+  // reads the code from the Mailinator message that this click produced. The
+  // invitation already binds the mailbox, so the fresh recipient types only
+  // the code and never creates an OpenKey identity. Keeping mailbox access
+  // outside this helper avoids committing a mail API token or a simulated
+  // credential path.
+  await page.waitForSelector(".claim-request-code", { timeout: 180_000 });
+  await page.click(".claim-request-code");
+  process.stderr.write("[tc500] code requested; enter the 8-digit code from the delivered message: ");
+  const prompt = createInterface({ input: process.stdin });
+  const otp = (await prompt[Symbol.asyncIterator]().next()).value?.trim();
+  prompt.close();
+  if (otp === undefined || !/^\d{8}$/.test(otp)) throw new Error("the entered code must be the 8-digit code from the delivered message");
   if (!await submitOtp(page, otp)) throw new Error("SDK credential acquisition control did not accept the mailbox OTP");
 
   await page.waitForSelector(".viewer-download", { timeout: 180_000 });
