@@ -17,7 +17,8 @@ describe("Share public routing config", () => {
     expect(redirects).toContain("/share /share/ 200");
     expect(redirects).toContain("/viewer /viewer/ 200");
     expect(redirects).toContain("/s/* /viewer/ 200");
-    expect(redirects).not.toMatch(/^\/(?:share|viewer)\s+\/[^\s]*\.html\s+200/m);
+    // Pages serves foo.html at /foo and 308s /foo.html to /foo, so a rewrite to a .html file loops.
+    expect(redirects).not.toMatch(/^\S+\s+\/\S*\.html\s+200/m);
   });
 
   it("self-provenances the joined browser artifact against the installed npm betas", () => {
