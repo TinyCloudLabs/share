@@ -135,6 +135,18 @@ describe("Needs you", () => {
     await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("Already decided: denied"));
   });
 
+  it("won't stamp a decision earlier than the request when this device's clock is behind it", async () => {
+    const fake = fakeStore(baseFiles(request({ createdAt: "2026-10-20T12:30:00Z", expiresAt: "2026-10-21T12:30:00Z" })));
+    await open(fake);
+    tab("Needs you").click();
+    const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
+    await vi.waitFor(() => expect(approve.disabled).toBe(false));
+    approve.click();
+    await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("clock is earlier"));
+    expect(fake.approvals).toHaveLength(0);
+    await vi.waitFor(() => expect(approve.disabled).toBe(false)); // the person can fix the clock and try again
+  });
+
   it("refuses to record a decision for a request that changed after it was shown", async () => {
     const fake = fakeStore(baseFiles());
     await open(fake);

@@ -175,6 +175,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
     const load = async (): Promise<void> => {
       if (loading || closed) return;
       loading = true;
+      panel.setAttribute("aria-busy", "true");
       try {
         overview = await loadOverview(signedIn.store, now());
         loadError = undefined;

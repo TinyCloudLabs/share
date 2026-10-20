@@ -16,6 +16,9 @@ const TASK = T(22);
 const REQ = T(30);
 
 describe("canonical JSON and the request hash (shared vector with packages/courier)", () => {
+  it("keeps a parsed __proto__ key as an ordinary property, as the CLI's canonicalJson does", () => {
+    expect(canonicalJson(JSON.parse('{"__proto__":{"x":1},"a":1}'))).toBe('{"__proto__":{"x":1},"a":1}');
+  });
   it("sorts keys recursively and drops whitespace", () => {
     expect(canonicalJson({ b: 1, a: [{ d: 2, c: "x" }] })).toBe('{"a":[{"c":"x","d":2}],"b":1}');
   });

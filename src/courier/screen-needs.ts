@@ -126,9 +126,11 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
   const lock = (locked: boolean): void => {
     for (const button of ctx.doc.querySelectorAll<HTMLButtonElement>(".cr-approve, .cr-deny")) button.disabled = locked || button.parentElement?.hidden === true;
   };
-  const settle = (text: string): void => {
+  const settle = (text: string, kind: "success" | "info" | "warning" = "success"): void => {
     note.disabled = true; actions.hidden = true;
-    result.replaceChildren(status(doc, "success", text));
+    result.replaceChildren(status(doc, kind, text));
+    // The buttons just disappeared: keep keyboard focus on the page rather than on <body>.
+    result.tabIndex = -1; result.focus();
     ctx.announcer.say(text);
   };
 
@@ -141,13 +143,16 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
       // Re-read the request: what is approved is what is on file now, not what was on screen.
       const fresh = parseRequest(request.id, await ctx.store.readJson(keys.request(request.id)));
       if (fresh === undefined || await requestHash(fresh.raw) !== card.hash) {
-        result.replaceChildren(status(doc, "warning", "This request changed after it was shown. Nothing was recorded. Refresh to see it again."));
-        actions.hidden = true;
+        settle("This request changed after it was shown. Nothing was recorded. Refresh to see it again.", "warning");
         return;
       }
       if (requestStanding(fresh, undefined, ctx.now()) === "expired") {
-        result.replaceChildren(status(doc, "warning", "This request has expired, so it can't be approved. Your agent has to ask again."));
-        actions.hidden = true;
+        settle("This request has expired, so it can't be approved. Your agent has to ask again.", "warning");
+        return;
+      }
+      // The agent only accepts a decision stamped inside the request's own window, so a clock that is behind it can't decide.
+      if (ctx.now() < fresh.createdAt) {
+        result.replaceChildren(status(doc, "warning", "This device's clock is earlier than the time this request was made. Nothing was recorded. Check the date and time on this device, then try again."));
         return;
       }
       const written = await ctx.store.createApproval(approvalFile(fresh, card.hash, decision, note.value, ctx.now()));
@@ -157,7 +162,7 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
       }
       // Another tab or an earlier click got there first: show what was decided, and never overwrite it.
       const earlier = parseApproval(request.id, await ctx.store.readJson(keys.approval(request.id)));
-      settle(earlier === undefined ? "This request was already decided." : `Already decided: ${earlier.decision}. Nothing was changed.`);
+      settle(earlier === undefined ? "This request was already decided. Nothing was changed." : `Already decided: ${earlier.decision}. Nothing was changed.`, "info");
     } catch (error) {
       result.replaceChildren(status(doc, "danger", decisionFailure(error)));
       ctx.announcer.say("We couldn't record your decision.");

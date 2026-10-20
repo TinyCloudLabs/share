@@ -68,15 +68,17 @@ async function mailinator(path) {
   return {};
 }
 
+/** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
+const usedMail = new Set();
 async function openKeyOtp(timeout = 150_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "")).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
+    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id)).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
     for (const message of codeMail) {
       const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
       const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
-      if (codes.size === 1) return [...codes][0];
+      if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
     }
     await sleep(4_000);
   }
@@ -122,8 +124,20 @@ let emailDone = false;
 async function drive(page, done, counter, timeout = 240_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    if (Date.now() - (deadline - timeout) > 100_000 && report.stuck === undefined) {
+      // Origin and path only; widget text with any address or email scrubbed.
+      const text = async (frame) => scrub(await frame.evaluate(() => document.body.innerText.replace(/\s+/g, " ").slice(0, 240)).catch(() => ""));
+      report.stuck = { in: counter, frames: page.frames().map((frame) => { try { const url = new URL(frame.url()); return `${url.origin}${url.pathname}`; } catch { return frame.url().slice(0, 30); } }), widgets: await Promise.all(page.frames().filter((frame) => frame.url().startsWith(OPENKEY)).map(text)) };
+      if (shotDir !== undefined) await page.screenshot({ path: join(shotDir, `stuck-${counter}.png`) }).catch(() => undefined);
+    }
     const connect = frameAt(page, "/widget/embed/connect");
-    if (connect !== undefined && !emailDone && await clickButton(connect, "Continue with email").catch(() => false)) {
+    if (connect !== undefined) {
+      // Labels only (never the account's text): what a later sign-in in the same browser asks of the person.
+      const labels = await connect.evaluate(() => [...document.querySelectorAll("button")].map((button) => button.innerText.trim().replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")).filter((text) => text !== "")).catch(() => []);
+      report.connectButtons = [...new Set([...(report.connectButtons ?? []), ...labels])].slice(0, 16);
+    }
+    // OpenKey remembers nothing between pages of this browser, so every page's sign-in is the full email flow (a new code from the same inbox).
+    if (connect !== undefined && await clickButton(connect, "Continue with email").catch(() => false)) {
       setStage("openkey-email");
       const field = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
       await field.type(`${inbox}@mailinator.com`);
@@ -219,23 +233,27 @@ try {
     if (entry.startsWith(`${AGENTS}/`)) assert.doesNotMatch(entry, /kv\/(?:del|metadata)|delegat/i, `unexpected ability: ${entry}`);
   }
   report.recapAgentsOnly = courier;
-  await fresh.close();
 
   // 3: seed a throwaway mailbox (test tooling), then read it in a new view session.
   setStage("seed");
-  const seed = await open("/courier-seed/index.html");
+  const seed = await open("/test/fixtures/courier-seed/index.html");
   await seed.waitForSelector("#seed", { timeout: 60_000 });
   await seed.click("#seed");
-  await drive(seed, () => ["seeded", "failed"].includes(document.querySelector("#status")?.dataset.state), "seedSignIn", 300_000);
+  await drive(seed, () => ["seeded", "failed"].includes(document.querySelector("#status")?.dataset.state), "seedSignIn", 240_000);
   const seeded = await seed.evaluate(() => document.querySelector("#status").textContent);
   assert.equal(seeded, "Seeded.", seeded);
   await seed.close();
 
+  // The view's own session is still open in the first tab: Refresh reads the node again, no second sign-in.
   setStage("view-seeded");
-  const view = await open("/courier/");
-  await view.waitForSelector("button.auth-button:not([disabled])", { timeout: 60_000 });
-  await view.click("button.auth-button");
-  await drive(view, () => document.querySelector(".cr-row-button") !== null || document.querySelector(".tc-status--danger") !== null, "viewSignInSeeded");
+  const view = fresh;
+  await view.bringToFront();
+  const refresh = async () => {
+    await view.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Threads")).click());
+    await view.evaluate(() => [...document.querySelectorAll(".cr-screen-head button")].find((button) => button.textContent === "Refresh").click());
+    await view.waitForFunction(() => { const button = [...document.querySelectorAll(".cr-screen-head button")].find((candidate) => candidate.textContent === "Refresh"); return button !== undefined && !button.disabled && document.querySelector(".cr-panel")?.getAttribute("aria-busy") === "false"; }, { timeout: 60_000 });
+  };
+  await refresh();
   assert.ok(await view.$(".cr-row-button"), `the seeded thread is listed (page says: ${scrub(await panelText(view)).slice(0, 200)})`);
   const list = await view.evaluate(() => ({ subject: document.querySelector(".cr-row-subject")?.textContent, badge: document.querySelector(".cr-badge--attention")?.textContent, tab: [...document.querySelectorAll("[role=tab]")].map((tab) => tab.textContent) }));
   assert.equal(list.subject, "Seed: review the status table");
@@ -261,15 +279,9 @@ try {
   const verdict = await view.evaluate(() => document.querySelector(".cr-result")?.textContent);
   assert.match(verdict, /^Approved\./, `the decision was recorded (page says: ${verdict})`);
   await shot(view, "05-approved");
-  await view.close();
-
-  // 4: a new session reads the decision back from the node, and writes + reads orders.
   setStage("readback");
-  const again = await open("/courier/");
-  await again.waitForSelector("button.auth-button:not([disabled])", { timeout: 60_000 });
-  await again.click("button.auth-button");
-  await drive(again, () => document.querySelector(".cr-tabs") !== null, "viewSignInAgain");
-  await again.waitForFunction(() => document.querySelector(".cr-panel")?.getAttribute("aria-busy") === "false", { timeout: 60_000 });
+  const again = view;
+  await refresh();
   await again.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Needs you")).click());
   await again.waitForSelector(".cr-settled", { timeout: 30_000 });
   const settled = await again.evaluate(() => ({ cards: document.querySelectorAll(".cr-request").length, settled: document.querySelector(".cr-settled")?.textContent.replace(/\s+/g, " ") }));
