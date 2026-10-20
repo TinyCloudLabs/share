@@ -1,0 +1,108 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { CatalogEntry } from "../src/apps/catalog.ts";
+import { mountApps } from "../src/apps/view.ts";
+
+const HOSTILE = "<img src=x onerror=\"window.__pwned=1\"><script>window.__pwned=1</script>";
+const digest = "a".repeat(64);
+
+async function sha256(text: string): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** A fetch result whose bytes come from node's realm: jsdom's ArrayBuffer is rejected by webcrypto on Node 20. */
+const reply = (text: string) => ({ ok: true, arrayBuffer: async () => Buffer.from(text) });
+
+async function entryFor(manifestText: string, overrides: Partial<CatalogEntry> = {}): Promise<CatalogEntry> {
+  return {
+    app_id: `t.app.${Math.random().toString(36).slice(2)}`,
+    name: HOSTILE,
+    description: HOSTILE,
+    publisher: { name: HOSTILE },
+    source: { repo: "javascript:alert(1)", tag: HOSTILE, commit: "c".repeat(40) },
+    manifest: { path: "manifest.json", sha256: await sha256(manifestText) },
+    bundle: { root: `/apps/b/${digest}/`, files: [{ path: "manifest.json", sha256: "d".repeat(64), size: 1 }], digest },
+    knowledge: null,
+    ...overrides,
+  };
+}
+
+const settle = async (): Promise<void> => { await vi.waitFor(() => expect(document.querySelector("#sheet [aria-busy]")).toBeNull()); };
+
+let list: HTMLElement;
+let sheet: HTMLDialogElement;
+beforeEach(() => {
+  document.body.innerHTML = "<ul id=list></ul><dialog id=sheet></dialog>";
+  list = document.querySelector<HTMLElement>("#list") as HTMLElement;
+  sheet = document.querySelector<HTMLDialogElement>("#sheet") as HTMLDialogElement;
+  // jsdom has no modal dialog support.
+  sheet.showModal = () => { sheet.setAttribute("open", ""); };
+  sheet.close = () => { sheet.removeAttribute("open"); sheet.dispatchEvent(new Event("close")); };
+  Reflect.deleteProperty(window, "__pwned");
+});
+afterEach(() => { vi.unstubAllGlobals(); });
+
+describe("apps page rendering", () => {
+  it("renders catalog and manifest text as text, never as markup or a script URL", async () => {
+    const manifest = JSON.stringify({
+      app_id: "t.app", name: "T", defaults: false,
+      permissions: [{ service: "tinycloud.kv", path: "x/", actions: ["get", "put"], description: HOSTILE }],
+      secrets: { [HOSTILE]: { description: HOSTILE } },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
+    mountApps(list, sheet, [await entryFor(manifest)]);
+    list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
+    await settle();
+
+    expect(sheet.querySelector("[role=alert]")).toBeNull(); // the manifest loaded, so the lists below are really its text
+    expect(sheet.querySelectorAll(".apps-access__text").length).toBeGreaterThan(2);
+    expect([...sheet.querySelectorAll(".apps-access code")].some((node) => node.textContent === HOSTILE)).toBe(true);
+    expect(sheet.hasAttribute("open")).toBe(true);
+    for (const root of [list, sheet]) {
+      expect(root.querySelectorAll("img, script, iframe, svg")).toHaveLength(0);
+    }
+    expect(sheet.textContent).toContain(HOSTILE);
+    expect(list.querySelector("h2")?.textContent).toBe(HOSTILE);
+    // The hostile source URL is shown as text, not made a link.
+    expect(sheet.querySelector("a")).toBeNull();
+    expect((window as unknown as Record<string, unknown>).__pwned).toBeUndefined();
+  });
+
+  it("shows nothing of a manifest whose bytes differ from the catalog's sha256", async () => {
+    const pinned = JSON.stringify({ app_id: "t.app", name: "T", permissions: [] });
+    const served = JSON.stringify({ app_id: "t.app", name: "T", permissions: [{ service: "tinycloud.kv", path: "x", actions: ["put"], description: "Tampered grant." }] });
+    vi.stubGlobal("fetch", vi.fn(async () => reply(served)));
+    mountApps(list, sheet, [await entryFor(pinned, { name: "Plain", description: "Plain app." })]);
+    list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
+    await settle();
+
+    expect(sheet.querySelector("[role=alert]")?.textContent).toContain("doesn't match the catalog");
+    expect(sheet.textContent).not.toContain("Tampered grant.");
+    expect(sheet.querySelector(".apps-access")).toBeNull();
+  });
+
+  it("refuses to fetch from a bundle root outside /apps/b/<digest>/", async () => {
+    const manifest = JSON.stringify({ app_id: "t.app", name: "T" });
+    const fetchSpy = vi.fn(async () => reply(manifest));
+    vi.stubGlobal("fetch", fetchSpy);
+    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app.", bundle: { root: "https://evil.example/", files: [], digest } });
+    mountApps(list, sheet, [entry]);
+    list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
+    await settle();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(sheet.querySelector("[role=alert]")?.textContent).toContain("Couldn't load");
+  });
+
+  it("keeps Install disabled on the card and in the sheet", async () => {
+    const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
+    mountApps(list, sheet, [await entryFor(manifest, { name: "Plain", description: "Plain app." })]);
+    const install = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
+    expect(install(list).map((button) => button.disabled)).toEqual([true]);
+    list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
+    await settle();
+    expect(install(sheet).map((button) => button.disabled)).toEqual([true]);
+  });
+});

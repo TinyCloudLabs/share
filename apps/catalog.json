@@ -1,0 +1,67 @@
+{
+  "schema": "tinycloud.share.apps-catalog/v1",
+  "apps": [
+    {
+      "app_id": "com.example.notes",
+      "name": "Notes",
+      "description": "Notes with KV documents and SQLite search metadata.",
+      "publisher": {
+        "name": "TinyCloud"
+      },
+      "source": {
+        "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
+        "tag": null,
+        "commit": "5059c5bcddd78a1ee6981ceca8e665f2b69cdfeb"
+      },
+      "manifest": {
+        "path": "manifest.json",
+        "sha256": "9b55806daf6039c58844a1e5f80c291c303608a2525bfe99708884c71788d493"
+      },
+      "bundle": {
+        "root": "/apps/b/abd07cdf472d6f46fa5dfef552057a13179b4b69d92e39a517163fb8eccd5932/",
+        "files": [
+          {
+            "path": "knowledge/index.md",
+            "sha256": "f861e2060342ffa0a2f187036186199d69133dfae685bfe16a2a5d4679c912e7",
+            "size": 529
+          },
+          {
+            "path": "knowledge/kv.md",
+            "sha256": "368994753d68a9ca8f03771d5bdc4179f79896464b69a085fc6dbaaa48625ee8",
+            "size": 396
+          },
+          {
+            "path": "knowledge/operations.md",
+            "sha256": "e402a1e4172e291acbcbd723947b438b615e9e04be31714227da7351d770c745",
+            "size": 612
+          },
+          {
+            "path": "knowledge/secrets.md",
+            "sha256": "efdcd8da0832d2d0b6aa8312a455a1f4fcfddfaebd93f617603fb424508b3804",
+            "size": 522
+          },
+          {
+            "path": "knowledge/sql.md",
+            "sha256": "e15c08157b0ffe1bae235a358993aee393779b8065824d8bb06586284bb66fb9",
+            "size": 1073
+          },
+          {
+            "path": "manifest.json",
+            "sha256": "9b55806daf6039c58844a1e5f80c291c303608a2525bfe99708884c71788d493",
+            "size": 1483
+          },
+          {
+            "path": "schema.sql",
+            "sha256": "ab48ec6bad0c9cf527f29b72fd488865852f6d5ff9d67353426a683d2f658d14",
+            "size": 215
+          }
+        ],
+        "digest": "abd07cdf472d6f46fa5dfef552057a13179b4b69d92e39a517163fb8eccd5932"
+      },
+      "knowledge": {
+        "root": "/apps/b/abd07cdf472d6f46fa5dfef552057a13179b4b69d92e39a517163fb8eccd5932/knowledge/",
+        "digest": "dbd509afea391f37d7c43881cce8af0b7ed406b2a2a1517c4a91b1b83da58478"
+      }
+    }
+  ]
+}
