@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
-import { mountSenderHome } from "../src/share/sender-home.js";
+import { endSenderLibrary, mountSenderHome } from "../src/share/sender-home.js";
 import { resetRevokeFlights } from "../src/share/revoke-flight.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import { ObservedOpenKeyProvider, ownerEncryptionNetwork, registerWalletApprovalObserver, type OpenKeyShareSession, type ShareTinyCloud } from "../src/share/openkey-session.js";
@@ -753,5 +753,105 @@ describe("each wallet request carries the CID of the row that was clicked, whate
     pressRevoke(root, nameOf(other));
     await vi.waitFor(() => expect(rowOf(root, nameOf(other)).querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(cidsAsked(tinycloud)).toEqual([cidOf(holder), cidOf(other)]);
+  });
+});
+
+/**
+ * TC-1583. The spoken-only status region (`.sender-announce`) is a statement about
+ * the present: it says to approve while the OpenKey window is open and must
+ * never say so afterwards, whatever way the revoke ends.
+ */
+describe("the spoken status region at every step of a revoke", () => {
+  const APPROVE = "Approve in the OpenKey window to revoke.";
+  const spoken = (root: HTMLElement): string => root.querySelector(".sender-announce")?.textContent ?? "";
+  /** Every distinct non-empty text the region held, in order. */
+  function recordSpoken(root: HTMLElement): { readonly texts: string[]; readonly stop: () => void } {
+    const region = root.querySelector(".sender-announce")!;
+    const texts: string[] = [];
+    const observer = new MutationObserver(() => { const text = region.textContent ?? ""; if (text !== "" && texts.at(-1) !== text) texts.push(text); });
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    return { texts, stop: () => observer.disconnect() };
+  }
+  const waitSpoken = (root: HTMLElement, text: string) => vi.waitFor(() => expect(spoken(root)).toBe(text));
+
+  it("success: says to approve while the window is open, then 'Share revoked.', and the approval text never comes back", async () => {
+    const gate = deferred<unknown>();
+    const { root, tinycloud } = await mountAs({ revokeDelegation: () => gate.promise });
+    const heard = recordSpoken(root);
+    expect(spoken(root)).toBe("");
+    await revoke(root);
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    await waitSpoken(root, APPROVE);
+    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    await waitSpoken(root, "Share revoked.");
+    // The row is Revoked and the region agrees; nothing later puts the approval text back.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(spoken(root)).toBe("Share revoked.");
+    expect(heard.texts).toEqual([APPROVE, "Share revoked."]);
+    heard.stop();
+  });
+
+  it("a revoke that fails: the approval text is replaced by the reason", async () => {
+    const gate = deferred<unknown>();
+    const { root } = await mountAs({ revokeDelegation: () => gate.promise });
+    const heard = recordSpoken(root);
+    await revoke(root);
+    await waitSpoken(root, APPROVE);
+    gate.resolve({ ok: false, error: { code: "REVOCATION_FAILED", message: "Failed to revoke delegation: 500 - hidden-body" } });
+    await settled(root);
+    await waitSpoken(root, errorText(root)!);
+    expect(spoken(root)).toContain("TinyCloud is having trouble right now (HTTP 500). The share is still active.");
+    expect(heard.texts).toEqual([APPROVE, spoken(root)]);
+    heard.stop();
+  });
+
+  it("cancelling in the OpenKey window: the approval text is replaced by the cancel note", async () => {
+    const { root } = await mountWithWallet({ reject: { code: "USER_CANCELLED", message: "User cancelled the request" } });
+    const heard = recordSpoken(root);
+    await revoke(root); await settled(root);
+    await waitSpoken(root, "Revoke cancelled. The share is still active.");
+    // The window may answer before the approval text was ever spoken; either way it is not spoken after the note.
+    expect(heard.texts.at(-1)).toBe("Revoke cancelled. The share is still active.");
+    expect(heard.texts.slice(1)).not.toContain(APPROVE);
+    heard.stop();
+  });
+
+  it("an approval nobody answers: after 60 seconds the approval text is replaced by the give-up note", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { root } = await mountAs({ revokeDelegation: () => new Promise(() => undefined) });
+    await revoke(root);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(spoken(root)).toBe(APPROVE);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(root.querySelector(".sender-row-note")?.textContent).toBe("The approval wasn't completed. The share is still active. Try again.");
+    expect(spoken(root)).toBe("The approval wasn't completed. The share is still active. Try again.");
+  });
+
+  it("signing out while the approval is open empties the region, and a late answer does not fill it again", async () => {
+    const gate = deferred<unknown>();
+    const { root } = await mountAs({ revokeDelegation: () => gate.promise });
+    await revoke(root);
+    await waitSpoken(root, APPROVE);
+    // What the sign-out does: the library ends, then the flights are forgotten.
+    endSenderLibrary(); resetRevokeFlights();
+    expect(spoken(root)).toBe("");
+    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(spoken(root)).toBe("");
+  });
+
+  it("a library mounted again after the revoke ended does not carry the old text, and one mounted during the approval says it again", async () => {
+    const gate = deferred<unknown>();
+    const { root, remount } = await mountAs({ revokeDelegation: () => gate.promise });
+    await revoke(root);
+    await waitSpoken(root, APPROVE);
+    await remount();
+    await waitSpoken(root, APPROVE);
+    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    await waitSpoken(root, "Share revoked.");
+    await remount();
+    expect(spoken(root)).toBe("");
+    expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
   });
 });

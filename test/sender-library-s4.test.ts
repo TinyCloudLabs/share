@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
-import { CHECK_AGAIN_LABEL, CHECK_STATUS_LABEL, endSenderLibrary, freshnessConfirmed, FRESHNESS_CHECKING, FRESHNESS_TIMEOUT, FRESHNESS_UNCONFIRMED, mountSenderHome, REVOKE_CONFIRM_CAVEAT, REVOKE_CONFIRM_STORED, STATUS_CHECK_TIMEOUT_MS } from "../src/share/sender-home.js";
-import { createNodeStatusReader, type NodeShareState, type NodeStatusReader } from "../src/share/node-status.js";
+import { CHECK_AGAIN_LABEL, CHECK_STATUS_LABEL, endSenderLibrary, freshnessConfirmed, FRESHNESS_CHECKING, FRESHNESS_PARTIAL, FRESHNESS_TIMEOUT, FRESHNESS_UNCONFIRMED, mountSenderHome, REVOKE_CONFIRM_CAVEAT, REVOKE_CONFIRM_STORED, STATUS_CHECK_BUDGET_MS } from "../src/share/sender-home.js";
+import { createNodeStatusReader, STATUS_REQUEST_TIMEOUT_MS, type NodeShareState, type NodeStatusReader } from "../src/share/node-status.js";
 import { activeFlight, flightKey, resetRevokeFlights, RevokeFlight, withWalletApproval } from "../src/share/revoke-flight.js";
 import { resetWalletApproval, trackWalletApproval, walletApprovalOpen } from "../src/share/wallet-approval.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
@@ -303,7 +303,7 @@ describe("TC-1584 the status read is bounded and one at a time", () => {
     return { ...mounted, reader, recheck };
   }
 
-  it("gives up on a node that does not answer in 4 seconds, says statuses may be out of date, and 'Check again' asks once more", async () => {
+  it("gives up on a node that does not answer in 20 seconds, says statuses may be out of date, and 'Check again' asks once more", async () => {
     let seen: AbortSignal | undefined;
     let hang = true;
     const { root, reader, recheck } = await mountThenHang((records, signal) => {
@@ -314,10 +314,10 @@ describe("TC-1584 the status read is bounded and one at a time", () => {
     recheck.click();
     expect(freshnessOf(root)).toBe(FRESHNESS_CHECKING);
     expect(recheck.disabled).toBe(true);
-    await vi.advanceTimersByTimeAsync(STATUS_CHECK_TIMEOUT_MS - 1);
+    await vi.advanceTimersByTimeAsync(STATUS_CHECK_BUDGET_MS - 1);
     expect(freshnessOf(root)).toBe(FRESHNESS_CHECKING);
     expect(seen?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(2);
     expect(freshnessOf(root)).toBe(FRESHNESS_TIMEOUT);
     expect(freshnessOf(root)).toContain("may be out of date");
     expect(seen?.aborted).toBe(true);
@@ -341,7 +341,7 @@ describe("TC-1584 the status read is bounded and one at a time", () => {
     const late = deferred<ReadonlyMap<string, { readonly state: NodeShareState }>>();
     const { root, recheck } = await mountThenHang(() => late.promise);
     recheck.click();
-    await vi.advanceTimersByTimeAsync(STATUS_CHECK_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(STATUS_CHECK_BUDGET_MS + 1);
     expect(freshnessOf(root)).toBe(FRESHNESS_TIMEOUT);
     late.resolve(new Map([["a", { state: "revoked" }]]));
     await vi.advanceTimersByTimeAsync(0);
@@ -615,5 +615,159 @@ describe("TC-1583 the Revoke button's accessible name contains its visible text"
     gate.resolve({ ok: false, error: { code: "REVOCATION_FAILED", message: "HTTP 500" } });
     await vi.waitFor(() => expect(button.textContent).toBe("Revoke"));
     expect(button.getAttribute("aria-label")).toBe("Revoke a.md");
+  });
+});
+
+/**
+ * TC-1494. The node takes 1.5 to 3 seconds per call, and one status read is
+ * several calls. Each call has its own limit; the whole read has a budget.
+ */
+describe("the status read is bounded per request and in all", () => {
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A node that answers the identity call and each page after `delayMs`; a page in `silent` never answers. */
+  function slowNode(delayMs: number, pages: readonly (readonly Row[])[], silent: readonly number[] = []) {
+    const query = vi.fn(async (request: { cursor?: string }) => {
+      const index = request.cursor === undefined ? 0 : Number(request.cursor);
+      if (silent.includes(index)) return new Promise<never>(() => undefined);
+      await sleep(delayMs);
+      return { ok: true, data: { schemaVersion: 2, items: pages[index] ?? [], ...(index + 1 < pages.length ? { nextCursor: String(index + 1) } : {}) } };
+    });
+    const tinycloud = { ...fakeTinyCloud([]).tinycloud, activeNodeIdentity: async () => { await sleep(delayMs); return NODE; }, delegations: { query } } as unknown as ShareTinyCloud;
+    return { query, tinycloud };
+  }
+  const pageOf = (id: string, status: string): Row[] => [grant(`cid-${id}`, `xyz.tinycloud.share/shares/${id}/${id}.md`, status)];
+  const freshnessOf = (root: HTMLElement): string => root.querySelector(".sender-freshness")?.textContent ?? "";
+  async function mountThenSwitch(records: readonly SenderShareRecord[], next: NodeStatusReader) {
+    let behave: NodeStatusReader = statesOf({});
+    const mounted = await mount(records, (rows, signal) => behave(rows, signal));
+    const recheck = mounted.root.querySelector<HTMLButtonElement>(".sender-recheck")!;
+    await vi.waitFor(() => expect(recheck.disabled).toBe(false));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    behave = next;
+    return { ...mounted, recheck };
+  }
+
+  it("the reader: 3 seconds per call over 4 calls (12 s, past the old 4 s limit) completes with every status", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { query, tinycloud } = slowNode(3_000, [pageOf("a", "active"), pageOf("b", "active"), pageOf("c", "revoked")]);
+    let result: ReadonlyMap<string, { readonly state: NodeShareState }> | undefined;
+    void createNodeStatusReader(tinycloud, ADDRESS)(["a", "b", "c"].map((id) => bearer(id))).then((states) => { result = states; });
+    await vi.advanceTimersByTimeAsync(11_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(query).toHaveBeenCalledTimes(3);
+    expect([...result!].map(([id, status]) => [id, status.state])).toEqual([["a", "active"], ["b", "active"], ["c", "revoked"]]);
+  });
+
+  it("the reader: a call that does not answer in 8 seconds ends the read with what the earlier pages showed", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { tinycloud } = slowNode(3_000, [pageOf("a", "revoked"), pageOf("b", "active")], [1]);
+    let result: ReadonlyMap<string, { readonly state: NodeShareState }> | undefined;
+    void createNodeStatusReader(tinycloud, ADDRESS)(["a", "b"].map((id) => bearer(id))).then((states) => { result = states; });
+    await vi.advanceTimersByTimeAsync(6_000 + STATUS_REQUEST_TIMEOUT_MS - 1);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    // The revoked share was on the page that arrived; the other is not called active from an unfinished listing.
+    expect([...result!].map(([id, status]) => [id, status.state])).toEqual([["a", "revoked"], ["b", "unknown"]]);
+  });
+
+  it("the reader: an aborted read stops waiting at once and keeps what it had", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { query, tinycloud } = slowNode(3_000, [pageOf("a", "revoked"), pageOf("b", "active")], [1]);
+    const stop = new AbortController();
+    let result: ReadonlyMap<string, { readonly state: NodeShareState }> | undefined;
+    void createNodeStatusReader(tinycloud, ADDRESS)(["a", "b"].map((id) => bearer(id)), stop.signal).then((states) => { result = states; });
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(result).toBeUndefined();
+    stop.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result?.get("a")?.state).toBe("revoked");
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it("the library: a node at 3 seconds per call (12 s in all) ends 'confirmed', with no 'out of date' banner at any point", async () => {
+    const { tinycloud } = slowNode(3_000, [pageOf("a", "active"), pageOf("b", "active"), pageOf("c", "revoked")]);
+    const { root, recheck } = await mountThenSwitch([bearer("a", "a.md"), bearer("c", "c.md")], createNodeStatusReader(tinycloud, ADDRESS));
+    recheck.click();
+    expect(freshnessOf(root)).toBe(FRESHNESS_CHECKING);
+    for (let second = 0; second < 12; second += 1) { await vi.advanceTimersByTimeAsync(1_000); expect(freshnessOf(root)).not.toContain("out of date"); }
+    expect(freshnessOf(root)).toMatch(/^Statuses confirmed with TinyCloud at /);
+    expect(rowOf(root, "c.md").querySelector(".status-label")?.textContent).toBe("Revoked");
+    expect(recheck.textContent).toBe(CHECK_STATUS_LABEL);
+  });
+
+  it("the library: a node that gives nothing in 20 seconds says statuses may be out of date, and 'Check again' asks once more", async () => {
+    let hang = true;
+    const reader = (records: Parameters<NodeStatusReader>[0], signal?: AbortSignal) => hang ? new Promise<never>(() => undefined) : statesOf({ a: "active" })(records, signal);
+    const { root, recheck } = await mountThenSwitch([bearer("a", "a.md")], reader);
+    recheck.click();
+    await vi.advanceTimersByTimeAsync(STATUS_CHECK_BUDGET_MS - 1);
+    expect(freshnessOf(root)).toBe(FRESHNESS_CHECKING);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(freshnessOf(root)).toBe(FRESHNESS_TIMEOUT);
+    expect(recheck.textContent).toBe(CHECK_AGAIN_LABEL);
+    hang = false;
+    recheck.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(freshnessOf(root)).toMatch(/^Statuses confirmed with TinyCloud at /);
+  });
+
+  it("the library: a partial answer shows the rows that were read and a small note, not the 'did not answer' banner", async () => {
+    // Identity 3 s, page 1 3 s (a is revoked), page 2 silent: its own 8 s limit ends the read at 14 s, inside the 20 s budget.
+    const { tinycloud } = slowNode(3_000, [pageOf("a", "revoked"), pageOf("b", "active")], [1]);
+    const { root, recheck } = await mountThenSwitch([bearer("a", "a.md"), bearer("b", "b.md")], createNodeStatusReader(tinycloud, ADDRESS));
+    recheck.click();
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(rowOf(root, "a.md").querySelector(".status-label")?.textContent).toBe("Revoked");
+    expect(rowOf(root, "b.md").querySelector(".status-label")?.textContent).toBe("Ready");
+    expect(freshnessOf(root)).toBe(FRESHNESS_PARTIAL);
+    expect(freshnessOf(root)).not.toBe(FRESHNESS_TIMEOUT);
+    expect(recheck.textContent).toBe(CHECK_AGAIN_LABEL);
+    expect(recheck.disabled).toBe(false);
+  });
+
+  it("the library: the budget ending mid-read keeps what had arrived", async () => {
+    // A reader that honours the signal: at the budget it hands back the one answer it has.
+    const reader: NodeStatusReader = (records, signal) => new Promise((resolve) => {
+      signal?.addEventListener("abort", () => resolve(new Map(records.map((record) => [record.shareId, { state: record.shareId === "a" ? "revoked" : "unknown" } as const]))), { once: true });
+    });
+    const { root, recheck } = await mountThenSwitch([bearer("a", "a.md"), bearer("b", "b.md")], reader);
+    recheck.click();
+    await vi.advanceTimersByTimeAsync(STATUS_CHECK_BUDGET_MS);
+    expect(rowOf(root, "a.md").querySelector(".status-label")?.textContent).toBe("Revoked");
+    expect(freshnessOf(root)).toBe(FRESHNESS_PARTIAL);
+  });
+
+  it("the library: a share the node already ended stays ended, and a later check that cannot reach the node leaves only a small note", async () => {
+    let behave: NodeStatusReader = statesOf({ a: "expired" });
+    const reader: NodeStatusReader = (records, signal) => behave(records, signal);
+    const { root } = await mount([bearer("a", "a.md"), bearer("b", "b.md")], reader);
+    const recheck = root.querySelector<HTMLButtonElement>(".sender-recheck")!;
+    await vi.waitFor(() => expect(rowOf(root, "a.md").querySelector(".status-label")?.textContent).toBe("Expired"));
+    await vi.waitFor(() => expect(recheck.disabled).toBe(false));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    behave = () => new Promise(() => undefined);
+    recheck.click();
+    await vi.advanceTimersByTimeAsync(STATUS_CHECK_BUDGET_MS + 1);
+    expect(rowOf(root, "a.md").querySelector(".status-label")?.textContent).toBe("Expired");
+    expect(freshnessOf(root)).toBe(FRESHNESS_PARTIAL);
+  });
+});
+
+describe("TC-1583 the spoken region between the approval closing and the revoke ending", () => {
+  it("is empty while the revoke is still being confirmed with the node, then says 'Share revoked.'", async () => {
+    const check = deferred<unknown>();
+    const fake = fakeTinyCloud([grant("cid-a", "xyz.tinycloud.share/shares/a/a.md")], { revokeDelegation: async () => ({ ok: false, error: { code: "REVOCATION_FAILED", message: "HTTP 500" } }), status: () => check.promise });
+    const { root } = await mount([bearer("a", "a.md")], undefined, { tinycloud: fake.tinycloud, session: { address: ADDRESS, openkey: { disconnect: vi.fn() } } as unknown as OpenKeyShareSession });
+    const spoken = (): string => root.querySelector(".sender-announce")?.textContent ?? "";
+    root.querySelector<HTMLButtonElement>(".sender-revoke")!.click();
+    root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
+    await vi.waitFor(() => expect(rowOf(root, "a.md").querySelector(".status-label")?.textContent).toBe("Revoking…"));
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-hint")).toBeNull());
+    // Long enough for a statement queued when the approval opened to have been spoken.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(spoken()).toBe("");
+    check.resolve({ ok: true, data: { cid: "cid-a", status: "revoked" } });
+    await vi.waitFor(() => expect(spoken()).toBe("Share revoked."));
   });
 });
