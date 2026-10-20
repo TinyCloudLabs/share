@@ -45,6 +45,8 @@ const trace = [];
 const consoleCounts = {};
 const consoleDiagnostics = [];
 let phase = "sender";
+// The link-only share the bearer stage made: later stages check it survives another share's revoke, then revoke it from a new sign-in.
+let bearerLink;
 let journeyStage = "setup";
 let failureReported = false;
 
@@ -298,7 +300,7 @@ async function credentialInputReady(page, expectedType) {
 
 function auditBrowserDiagnostics(stack) {
   const failedRequests = trace.filter((entry) => typeof entry.status === "number" && entry.status >= 400);
-  const locationBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
+  const locationBootstrapMisses = failedRequests.filter((entry) => ["sender", "sender-relogin", "domain-delivery-sender"].includes(entry.phase) && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
   const ownerStateBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.node && (
     (entry.status === 404 && entry.method === "GET" && entry.path.startsWith("/encryption/networks/"))
     || (entry.status === 404 && entry.method === "POST" && entry.path === "/invoke")
@@ -314,6 +316,8 @@ function auditBrowserDiagnostics(stack) {
     ["domain-negative-sibling", 403],
     ["domain-negative-write", 403],
     ["domain-negative-tamper", 401],
+    ["domain-negative-revoked", 403],
+    ["revoked-bearer-recipient", 401],
   ]);
   const admittedRequestReplayRejections = failedRequests.filter((entry) => entry.phase === "domain-replay" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && entry.status >= 400 && entry.status < 500);
   const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !admittedRequestReplayRejections.includes(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
@@ -422,7 +426,7 @@ async function invokeFromBrowser(page, nodeOrigin, authorization, body) {
   }, { nodeOrigin, authorization, body });
 }
 
-async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPhase = "recipient", prefix = "", revoke = true }) {
+async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPhase = "recipient", prefix = "", revoke = true, relogin = false }) {
   const challenge = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/challenges" && successfulRequest(entry));
   const delegation = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
   const imported = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/delegate" && successfulRequest(entry));
@@ -457,22 +461,64 @@ async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPh
 
   if (!revoke) return { siblingReadStatus, writeEscalationStatus, tamperStatus };
   const revokedInvocation = await signedPolicyInvocation({ ...base, action: "tinycloud.kv/get", resource: kvResource });
-  await revokeFromLibrary(sender);
-  phase = "negative-revoked";
+  const revocation = await revokeFromLibrary(sender, { relogin });
+  phase = `${prefix}negative-revoked`;
   const revokedReadStatus = await invokeFromBrowser(recipient, stack.canonical.node, revokedInvocation.authorization);
   assert.equal(revokedReadStatus, 403, "revoked policy root still authorized a KV read");
 
-  return { bearerWithoutOtp: true, siblingReadStatus, writeEscalationStatus, tamperStatus, revokedReadStatus };
+  return { bearerWithoutOtp: true, siblingReadStatus, writeEscalationStatus, tamperStatus, revokedReadStatus, ...(relogin ? { revokedAfterRelogin: revocation } : {}) };
 }
 
-async function revokeFromLibrary(sender) {
+/**
+ * A new sign-in of the same account. The share app keeps no session across a
+ * load (`persistSession: false`), so a reload and a fresh OpenKey approval
+ * make a new session key: the key that signed every earlier share is gone.
+ */
+async function signInAgain(sender) {
+  phase = "sender-relogin";
+  await sender.evaluate(() => { window.location.hash = "#/library"; });
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 180_000 });
+  await sender.waitForSelector("button.auth-button", { timeout: 60_000 }); await sender.click("button.auth-button");
+  await sender.waitForSelector(".sender-history-row", { timeout: 180_000 });
+}
+
+/**
+ * Revoke one share from the library. With `relogin`, the page is signed in
+ * again first, so the share was made by a session key this page no longer
+ * holds: the revoke must go to the node as the owner wallet's own revocation
+ * of that one delegation (a generic `/revoke` with an authorization header and
+ * no JSON body), never as a session-signed root revocation.
+ */
+async function revokeFromLibrary(sender, { relogin = false, recipientText } = {}) {
+  if (relogin) await signInAgain(sender);
   phase = "sender-revocation";
   await sender.evaluate(() => { window.location.hash = "#/library"; });
   await sender.waitForSelector(".sender-revoke:not([disabled])", { timeout: 180_000 });
-  await sender.click(".sender-revoke:not([disabled])");
+  const before = trace.length;
+  if (recipientText === undefined) await sender.click(".sender-revoke:not([disabled])");
+  else {
+    const clicked = await sender.evaluate((text) => {
+      for (const row of document.querySelectorAll(".sender-history-row")) {
+        const button = row.querySelector(".sender-revoke:not([disabled])");
+        if (button !== null && (row.textContent ?? "").includes(text)) { button.click(); return true; }
+      }
+      return false;
+    }, recipientText);
+    assert.equal(clicked, true, `no revocable share row for ${recipientText}`);
+  }
   await sender.waitForSelector(".sender-confirm-revoke", { timeout: 10_000 });
   await sender.click(".sender-confirm-revoke");
   await sender.waitForFunction(() => document.body.textContent?.includes("Share revoked."), { timeout: 180_000 });
+  const revokes = trace.slice(before).filter((entry) => entry.phase === "sender-revocation" && entry.origin === stack.canonical.node && entry.method === "POST" && entry.path === "/revoke");
+  assert.equal(revokes.length, 1, "revoking one share sent a number of /revoke requests other than one");
+  const [revoke] = revokes;
+  assert.equal(revoke.status, 200, "the Node refused the revocation");
+  if (!relogin) return { wallet: false };
+  assert.equal(revoke.body, undefined, "a re-login revocation used the session-signed JSON route");
+  assert.match(revoke.authorization ?? "", /\S/, "a re-login revocation carried no owner authorization");
+  assert.equal(typeof revoke.response?.cid, "string", "the Node's revocation receipt names no delegation");
+  // The share is gone from the library for good: a reload still shows it revoked.
+  return { wallet: true, revokeRequests: revokes.length, receiptNamesDelegation: true };
 }
 
 /**
@@ -492,6 +538,7 @@ async function verifyBearerRegression({ browser, sender, stack }) {
   await clickText(sender, "Copy link");
   const bearerUrl = await waitUntil(() => sender.evaluate((count) => window.__tc500Clipboard.length > count ? window.__tc500Clipboard.at(-1) : undefined, copied), 10_000);
   assert.match(bearerUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/viewer#tc1=/, "bearer share did not produce a native tc1 link");
+  bearerLink = bearerUrl;
   phase = "bearer-recipient";
   const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
   await reader.goto(bearerUrl, { waitUntil: "domcontentloaded", timeout: 180_000 });
@@ -587,7 +634,7 @@ async function verifyDomainJourney({ browser, sender, stack }) {
   assert(invokes.length >= 2, "domain recipient did not read and decrypt through ordinary invoke");
   assert(!phaseTrace.some((entry) => /openkey/i.test(entry.origin)), "domain recipient contacted OpenKey");
 
-  const negatives = await verifyNegativeEnforcement({ sender, recipient: reader, stack, recipientPhase: "domain-recipient", prefix: "domain-", revoke: false });
+  const negatives = await verifyNegativeEnforcement({ sender, recipient: reader, stack, recipientPhase: "domain-recipient", prefix: "domain-", relogin: true });
 
   // Replaying the admitted request (its consumed challenge and presentation)
   // must not mint another policy session.
@@ -612,7 +659,9 @@ async function verifyDomainJourney({ browser, sender, stack }) {
 async function verifyDomainDelivery({ browser, sender, stack }) {
   const domain = "tinycloud.test";
   phase = "domain-delivery-sender";
-  await clickText(sender, "Share another");
+  // The previous stage ended on the library after a re-login, not on the composer result screen.
+  const onResult = await sender.evaluate(() => [...document.querySelectorAll("button")].some((button) => /Share another/.test(button.textContent ?? "")));
+  if (onResult) await clickText(sender, "Share another"); else await sender.evaluate(() => { window.location.hash = "#/new"; });
   await sender.waitForSelector('form.composer-form input[name="recipient"][value="emailDomain"]', { visible: true, timeout: 180_000 });
   await sender.$eval('input[name="recipient"][value="emailDomain"]', (input) => input.click());
   await sender.type('input[name="recipient-value"]', domain);
@@ -656,6 +705,41 @@ async function verifyDomainDelivery({ browser, sender, stack }) {
   assert.equal(typeof mint?.body?.requestedExpiresAt, "string", "the recipient did not request a durable session");
   await context.close();
   return { invitationsSent: recipients.length, nodeAuthorizations: authorized.length, sameLinkForEveryAddress: true, editAccessPublished, emailedRecipientRendered: true, durableSessionRequested: true };
+}
+
+/**
+ * Another share of the same owner must not notice a revoke: after the domain
+ * share was revoked from a new sign-in, the link-only share made earlier still
+ * opens for a fresh reader. (A cascade that reached the owner's own session,
+ * space or other delegations would break it.)
+ */
+async function verifyOtherShareSurvives({ browser, stack }) {
+  phase = "survivor-recipient";
+  assert.equal(typeof bearerLink, "string", "the bearer stage did not keep its link");
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(bearerLink, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  const survivorTemporary = await mkdtemp(join(tmpdir(), "tc500-survivor-"));
+  assert.equal(await downloadExact(reader, survivorTemporary), true, "another share of the owner stopped working after a revoke");
+  await context.close();
+  return { otherShareStillOpens: true };
+}
+
+/**
+ * Link-only share, revoked from a new sign-in: one owner-wallet revocation of
+ * that share's own delegation, and the link then fails closed for a new reader.
+ */
+async function verifyBearerRevokeAfterRelogin({ browser, sender, stack }) {
+  const revocation = await revokeFromLibrary(sender, { relogin: true, recipientText: "Anyone with link" });
+  phase = "revoked-bearer-recipient";
+  const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
+  await reader.goto(bearerLink, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await reader.waitForSelector(".viewer-state", { timeout: 180_000 });
+  assert.equal(await reader.$(".viewer-download"), null, "a revoked link-only share still rendered");
+  await context.close();
+  // The owner's own access is untouched: the library still lists and offers the other shares.
+  const stillListed = await sender.evaluate(() => document.querySelectorAll(".sender-history-row").length);
+  assert(stillListed >= 2, "the owner's library lost shares after a revoke");
+  return { ...revocation, revokedLinkFailsClosed: true, libraryRowsAfter: stillListed };
 }
 
 /**
@@ -863,12 +947,18 @@ try {
   const domainJourney = await verifyDomainJourney({ browser, sender, stack });
   journeyStage = "domain-delivery";
   const domainDelivery = await verifyDomainDelivery({ browser, sender, stack });
+  journeyStage = "other-share-survives";
+  const otherShare = await verifyOtherShareSurvives({ browser, stack });
+  journeyStage = "bearer-revoke-after-relogin";
+  const bearerRevoke = await verifyBearerRevokeAfterRelogin({ browser, sender, stack });
   journeyStage = "cli-sender";
-  const cliSender = await verifyCliSenderJourney({ browser, stack, temporary });
+  // TC500_SKIP_CLI_SENDER=1 runs every browser stage without the `tc` CLI leg (no CLI is installed); such a run is never the release gate.
+  const cliSkipped = process.env.TC500_SKIP_CLI_SENDER === "1";
+  const cliSender = cliSkipped ? { skipped: true } : await verifyCliSenderJourney({ browser, stack, temporary });
   journeyStage = "browser-diagnostics";
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
-  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: gateResult(stack.provenance), fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, cliSender, browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: cliSkipped ? "partial-passed" : gateResult(stack.provenance), fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, otherShare, bearerRevoke, cliSender, revokeRequests: trace.filter((entry) => entry.path === "/revoke").map((entry) => ({ sequence: entry.sequence, phase: entry.phase, origin: entry.origin === stack.canonical.node ? "node" : "other", status: entry.status, jsonBody: entry.body !== undefined, authorizationHeader: typeof entry.authorization === "string" && entry.authorization.length > 0, receiptCidReturned: typeof entry.response?.cid === "string" })), browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -906,7 +996,7 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery", "other-share-survives", "bearer-revoke-after-relogin", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
     cliDiagnostic: journeyStage === "cli-sender" ? cliDiagnostic : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,

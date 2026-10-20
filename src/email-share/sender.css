@@ -421,3 +421,5 @@ div.sender-empty-state {
 }
 @media (max-width: 380px) { .sender-shell { width: min(100% - 1.5rem, 1400px); } .sender-title { font-size: 2.2rem; } .sender-form { padding: 16px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+.sender-row-hint { flex-basis: 100%; margin: 6px 0 0; color: var(--share-muted); font-size: .82rem; line-height: 1.45; }
+.sender-row-note { flex-basis: 100%; margin: 6px 0 0; padding: 10px 12px; border: 1px solid var(--share-line); border-radius: 8px; background: transparent; color: var(--share-muted); font-size: .82rem; line-height: 1.45; }
