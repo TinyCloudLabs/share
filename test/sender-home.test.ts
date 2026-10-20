@@ -68,6 +68,13 @@ describe("TC-601 revocation time", () => {
   });
 });
 
+/** Presses "Revoke share" in the in-page confirmation. */
+function confirmInPage(root: HTMLElement): void {
+  const button = root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke");
+  if (button === null) throw new Error("no in-page revoke confirmation is open");
+  button.click();
+}
+
 describe("sender home canonical lifecycle adapters", () => {
   it("uses target-aware revokeShare and persists only the affected record", async () => {
     const root = document.createElement("div"); document.body.append(root);
@@ -76,7 +83,8 @@ describe("sender home canonical lifecycle adapters", () => {
     await history.save(record("revoke-me"));
     await history.save(record("leave-me", { kind: "recipientDid", value: "did:key:holder" }));
     const revokeDelegation = vi.fn(async () => ({ ok: true as const, data: {} }));
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    // A native dialog that is dismissed (automation, embedded webview) must not matter.
+    const nativeConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     mountSenderHome(root, { session, tinycloud: {
       revokeDelegation,
@@ -90,6 +98,7 @@ describe("sender home canonical lifecycle adapters", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-27T06:00:00.120Z"));
     root.querySelector<HTMLButtonElement>('button[aria-label="Revoke revoke-me.md"]')!.click();
+    confirmInPage(root);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(revokeDelegation).not.toHaveBeenCalled();
     expect(revokePolicyRootV3).toHaveBeenCalledWith(expect.objectContaining({
@@ -105,6 +114,7 @@ describe("sender home canonical lifecycle adapters", () => {
     expect(now.getUTCMilliseconds() % 10).toBe(1);
     expect(nodeFormat(now.toISOString())).toBe(now.toISOString());
     expect(root.querySelector('button[aria-label="Revoke leave-me.md"]')).not.toBeNull();
+    expect(nativeConfirm).not.toHaveBeenCalled();
   });
 
   it("explains why an imported bearer link without delegation authority cannot be revoked", async () => {
@@ -141,29 +151,34 @@ describe("sender home canonical lifecycle adapters", () => {
   });
 });
 
+/** Mounts the library with one revocable email share. Native `confirm` is dismissed, as automation and embedded webviews do. */
+async function mountRevoke() {
+  getPolicyRootStatusV3.mockClear(); revokePolicyRootV3.mockClear();
+  const root = document.createElement("div"); document.body.append(root);
+  const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
+  await history.save(record("retry-me"));
+  const nativeConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  mountSenderHome(root, { session, tinycloud: {
+    revokeDelegation: vi.fn(),
+    credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
+    activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
+    signSessionBytes: async () => new Uint8Array(64),
+  } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+  await vi.waitFor(() => expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).not.toBeNull());
+  const live = root.querySelector<HTMLElement>(".sender-live")!; const messages: string[] = [];
+  new MutationObserver(() => messages.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
+  return { root, history, live, messages, nativeConfirm };
+}
+
+async function clickRevoke() {
+  const mounted = await mountRevoke();
+  mounted.root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')!.click();
+  confirmInPage(mounted.root);
+  return mounted;
+}
+
 describe("TC-657 revoke retry after a lost response", () => {
   const irreversible = () => Object.assign(new Error("policy root revocation rejected: HTTP 409 - root-revocation-irreversible"), { status: 409 });
-  const stillActive = "Revoke didn't go through — the share is still active. Try again.";
-
-  async function clickRevoke() {
-    getPolicyRootStatusV3.mockClear(); revokePolicyRootV3.mockClear();
-    const root = document.createElement("div"); document.body.append(root);
-    const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
-    await history.save(record("retry-me"));
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    mountSenderHome(root, { session, tinycloud: {
-      revokeDelegation: vi.fn(),
-      credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
-      activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
-      signSessionBytes: async () => new Uint8Array(64),
-    } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
-    await vi.waitFor(() => expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).not.toBeNull());
-    // The list reload replaces the live message, so record every message shown.
-    const live = root.querySelector<HTMLElement>(".sender-live")!; const messages: string[] = [];
-    new MutationObserver(() => messages.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
-    root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')!.click();
-    return { root, history, live, messages };
-  }
 
   it("treats a 409 for a root the Node reports revoked as a successful revoke", async () => {
     revokePolicyRootV3.mockRejectedValueOnce(irreversible());
@@ -171,7 +186,7 @@ describe("TC-657 revoke retry after a lost response", () => {
     const { root, history, messages } = await clickRevoke();
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(messages).toContain("Share revoked.");
-    expect(messages).not.toContain(stillActive);
+    expect(root.querySelector(".sender-row-error")).toBeNull();
     expect(getPolicyRootStatusV3).toHaveBeenCalledWith({
       nodeOrigin: "https://share.example.invalid",
       rootCid: "delegation-retry-me",
@@ -187,12 +202,92 @@ describe("TC-657 revoke retry after a lost response", () => {
     ["a non-409 failure", () => { revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 })); }, false],
   ])("keeps the share active after %s", async (_name, arrange, readsStatus) => {
     arrange();
-    const { root, history, live } = await clickRevoke();
-    await vi.waitFor(() => expect(live.textContent).toBe(stillActive));
+    const { root, history } = await clickRevoke();
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
     expect(getPolicyRootStatusV3).toHaveBeenCalledTimes(readsStatus ? 1 : 0);
     expect(root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')?.disabled).toBe(false);
     expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
     expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
+  });
+});
+
+describe("TC-721 revoke is confirmed, shown and never silent", () => {
+  const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]');
+  const dialog = (root: HTMLElement) => root.querySelector<HTMLElement>(".sender-confirm-dialog");
+
+  it("opens an in-page confirmation even when native dialogs are suppressed, and revokes nothing until it is confirmed", async () => {
+    const { root, nativeConfirm } = await mountRevoke();
+    revokeButton(root)!.click();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(dialog(root)?.textContent).toContain("Revoke this share?");
+    expect(dialog(root)?.textContent).toContain("including anyone they passed it to");
+    expect(dialog(root)?.textContent).toContain("Anyone holding a share link can also revoke it.");
+    expect(revokePolicyRootV3).not.toHaveBeenCalled();
+    confirmInPage(root);
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(revokePolicyRootV3).toHaveBeenCalledTimes(1);
+    expect(dialog(root)).toBeNull();
+  });
+
+  it("Cancel and Escape close the confirmation and leave the share untouched", async () => {
+    const { root } = await mountRevoke();
+    revokeButton(root)!.click();
+    root.querySelector<HTMLButtonElement>(".sender-confirm-dialog button.button-secondary")!.click();
+    expect(dialog(root)).toBeNull();
+    revokeButton(root)!.click();
+    dialog(root)!.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(dialog(root)).toBeNull();
+    await Promise.resolve();
+    expect(revokePolicyRootV3).not.toHaveBeenCalled();
+    expect(revokeButton(root)?.disabled).toBe(false);
+    expect(root.querySelector(".sender-row-error")).toBeNull();
+  });
+
+  it("shows a pending state on the row until the node answers, then Revoked", async () => {
+    let finish: () => void = () => undefined;
+    revokePolicyRootV3.mockImplementationOnce(() => new Promise<Record<string, never>>((resolve) => { finish = () => resolve({}); }));
+    const { root, live } = await mountRevoke();
+    revokeButton(root)!.click(); confirmInPage(root);
+    await vi.waitFor(() => expect(revokeButton(root)?.textContent).toBe("Revoking…"));
+    expect(revokeButton(root)?.disabled).toBe(true);
+    expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
+    expect(live.textContent).toBe("Revoking…");
+    finish();
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked .status-label")?.textContent).toBe("Revoked"));
+    expect(revokeButton(root)).toBeNull();
+    expect(live.textContent).toBe("Share revoked.");
+  });
+
+  it.each([
+    ["a 403", Object.assign(new Error("policy root revocation rejected: HTTP 403 - hidden-body"), { status: 403 }), "TinyCloud refused the request (HTTP 403)"],
+    ["a 500", Object.assign(new Error("policy root revocation rejected: HTTP 500 - hidden-body"), { status: 500 }), "TinyCloud is having trouble right now (HTTP 500)"],
+    ["a 404", Object.assign(new Error("policy root revocation rejected: HTTP 404 - hidden-body"), { status: 404 }), "could not find this share (HTTP 404)"],
+    ["a dropped connection", new TypeError("Failed to fetch hidden-body"), "Couldn't reach TinyCloud"],
+    ["an unknown failure", new Error("hidden-body"), "Something unexpected went wrong"],
+  ])("shows why a revoke failed after %s, without the response text", async (_name, failure, reason) => {
+    revokePolicyRootV3.mockRejectedValueOnce(failure);
+    const { root } = await mountRevoke();
+    revokeButton(root)!.click(); confirmInPage(root);
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
+    const error = root.querySelector<HTMLElement>(".sender-row-error")!;
+    expect(error.getAttribute("role")).toBe("alert");
+    expect(error.textContent).toContain("Could not revoke:");
+    expect(error.textContent).toContain(reason);
+    expect(root.textContent).not.toContain("hidden-body");
+    expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Ready");
+    expect(revokeButton(root)?.textContent).toBe("Revoke");
+    expect(revokeButton(root)?.disabled).toBe(false);
+  });
+
+  it("clears the error and revokes on a retry", async () => {
+    revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("rejected"), { status: 503 }));
+    const { root } = await mountRevoke();
+    revokeButton(root)!.click(); confirmInPage(root);
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
+    revokeButton(root)!.click();
+    expect(root.querySelector(".sender-row-error")).toBeNull();
+    confirmInPage(root);
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
   });
 });
 
