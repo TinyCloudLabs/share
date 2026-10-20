@@ -25,7 +25,7 @@ export type VerifiedRootState = "active" | "revoked";
 export type ShareRootKind = "policy-root" | "bearer";
 
 /** Reasons the sender page maps to its own copy. */
-export type OwnerRevokeRefusal = "revoke-unbound-policy-root" | "revoke-earlier-sign-in";
+export type OwnerRevokeRefusal = "revoke-unbound-policy-root" | "revoke-earlier-sign-in" | "revoke-listing-incomplete";
 
 function refuse(reason: OwnerRevokeRefusal): Error {
   return new Error(reason);
@@ -63,8 +63,9 @@ function grantsOnlyThisShare(row: AccountDelegationRecord, record: SenderShareRe
  * Finds `cid` in the signed-in account's own delegations on the active node
  * and checks it against the record. Returns the node's lifecycle state;
  * throws `revoke-unbound-policy-root` when the record belongs to another
- * account or node, and `revoke-earlier-sign-in` when it cannot be shown to be
- * this account's share.
+ * account or node, `revoke-earlier-sign-in` when it cannot be shown to be this
+ * account's share, and `revoke-listing-incomplete` when the listing was longer
+ * than the pages read.
  */
 export async function verifyShareRootOnNode(input: {
   readonly tinycloud: ShareTinyCloud;
@@ -96,7 +97,8 @@ export async function verifyShareRootOnNode(input: {
       return row.status === "revoked" || row.status === "ancestor_revoked" ? "revoked" : "active";
     }
     cursor = listing.data.nextCursor;
-    if (cursor === undefined) break;
+    if (cursor === undefined) throw refuse("revoke-earlier-sign-in");
   }
-  throw refuse("revoke-earlier-sign-in");
+  // The page cap ran out with more of the list unread: not finding the root says nothing about the share.
+  throw refuse("revoke-listing-incomplete");
 }

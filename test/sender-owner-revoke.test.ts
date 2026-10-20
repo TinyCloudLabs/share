@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
 import { mountSenderHome } from "../src/share/sender-home.js";
+import { resetRevokeFlights } from "../src/share/revoke-flight.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import { ObservedOpenKeyProvider, ownerEncryptionNetwork, registerWalletApprovalObserver, type OpenKeyShareSession, type ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
@@ -11,7 +12,7 @@ const { getPolicyRootStatusV3, revokePolicyRootV3 } = vi.hoisted(() => ({
 }));
 vi.mock("@tinycloud/sdk-core", () => ({ getPolicyRootStatusV3, revokePolicyRootV3, verifyEip191MessageSignature: async () => true }));
 
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); revokePolicyRootV3.mockClear(); getPolicyRootStatusV3.mockClear(); });
+afterEach(() => { resetRevokeFlights(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); revokePolicyRootV3.mockClear(); getPolicyRootStatusV3.mockClear(); });
 
 /**
  * The share app makes a new session key on every sign-in. A share is signed by
@@ -104,6 +105,8 @@ const sessionDelegationRow = (over: Row = {}): Row => ({
 
 interface Harness {
   readonly root: HTMLElement;
+  /** Mounts the library again on the same page, as leaving it and coming back does. */
+  readonly remount: () => Promise<void>;
   readonly history: SenderHistoryRepository;
   readonly tinycloud: { revokeDelegation: Mock; delegations: { query: Mock; status: Mock } };
 }
@@ -112,6 +115,8 @@ interface HarnessOptions {
   readonly record?: SenderShareRecord;
   readonly rows?: readonly Row[];
   readonly queryOk?: boolean;
+  /** More saved shares of the same account. */
+  readonly extra?: readonly SenderShareRecord[];
   readonly address?: string;
   readonly node?: { origin: string; nodeDid: string };
   readonly revokeDelegation?: (cid: string) => Promise<unknown> | unknown;
@@ -126,6 +131,7 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
   const store = vault();
   const history = new SenderHistoryRepository(store, () => Date.parse("2026-10-20T04:00:00.000Z"));
   await history.save(record);
+  for (const more of options.extra ?? []) await history.save(more);
   const rows = options.rows ?? [policyRootRow()];
   const pageSize = options.pageSize ?? 100;
   const tinycloud = {
@@ -143,16 +149,20 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
       status: vi.fn(async (cid: string) => options.status === undefined ? { ok: true, data: { cid, status: "active", exists: true, active: true, revoked: false, expired: false } } : options.status(cid)),
     },
   };
-  mountSenderHome(root, { session: { address: options.address ?? ADDRESS } as unknown as OpenKeyShareSession, tinycloud: tinycloud as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
-  await vi.waitFor(() => expect(root.querySelector(".sender-revoke")).not.toBeNull());
-  return { root, history, tinycloud };
+  const mount = async (): Promise<void> => {
+    mountSenderHome(root, { session: { address: options.address ?? ADDRESS } as unknown as OpenKeyShareSession, tinycloud: tinycloud as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    await vi.waitFor(() => expect(root.querySelector(".sender-history-row")).not.toBeNull());
+  };
+  await mount();
+  return { root, history, tinycloud, remount: mount };
 }
 
 const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>(".sender-revoke");
 const errorText = (root: HTMLElement) => root.querySelector(".sender-row-error")?.textContent ?? null;
+const noteText = (root: HTMLElement) => root.querySelector(".sender-row-note")?.textContent ?? null;
 const confirm = (root: HTMLElement) => root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
 async function revoke(root: HTMLElement): Promise<void> { revokeButton(root)!.click(); confirm(root); }
-const settled = (root: HTMLElement) => vi.waitFor(() => expect(root.querySelector(".sender-row-error, .sender-status-text.revoked")).not.toBeNull());
+const settled = (root: HTMLElement) => vi.waitFor(() => expect(root.querySelector(".sender-row-error, .sender-row-note, .sender-status-text.revoked")).not.toBeNull());
 const OLD_COPY = "different account or TinyCloud node";
 const EARLIER = "This share was created in an earlier sign-in, and Share can't revoke it from this one yet. The share is still active.";
 
@@ -207,6 +217,8 @@ describe("revoking a share made in an earlier sign-in (same account, new session
     await revoke(root);
     await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
     expect(root.querySelector(".sender-row-hint")?.textContent).toBe("Approve in the OpenKey window to revoke");
+    // The inserted node is not announced reliably; the persistent live region says it too.
+    expect(root.querySelector(".sender-live")?.textContent).toContain("Approve in the OpenKey window to revoke");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
     gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
     await settled(root);
@@ -255,6 +267,38 @@ describe("a forged or stale saved record never reaches the wallet", () => {
   it("a node that cannot answer the listing", () => refuses({ queryOk: false }));
   it("a listing that never contains the CID", () => refuses({ rows: [sessionDelegationRow()] }));
 });
+
+describe("the node check cannot be satisfied by a different space name, or by the encryption network alone", () => {
+  it("a share in a space with another name than applications is refused", async () => {
+    const other = `tinycloud:pkh:eip155:1:${ADDRESS}:documents`;
+    const { root, tinycloud } = await mountAs({
+      record: addressedRecord({ target: { origin: NODE.origin, nodeAudience: NODE.nodeDid, spaceId: other } }),
+      rows: [policyRootRow({ resources: [{ resource: `${other}/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })],
+    });
+    await revoke(root); await settled(root);
+    expect(errorText(root)).toContain(EARLIER);
+    expect(tinycloud.delegations.query).not.toHaveBeenCalled();
+    expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
+  });
+
+  it("a delegation that grants only the account's encryption network, and none of the share's object, is refused", async () => {
+    const { root, tinycloud } = await mountAs({ rows: [policyRootRow({ resources: [{ resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })] });
+    await revoke(root); await settled(root);
+    expect(errorText(root)).toContain(EARLIER);
+    expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
+  });
+
+  it("a long listing that never shows the root says the list was not fully read, not that the share is from an earlier sign-in", async () => {
+    // 25 pages of one row each: more than the pages the page will read.
+    const rows = [...Array.from({ length: 24 }, (_, index) => sessionDelegationRow({ cid: `filler-${index}` })), policyRootRow()];
+    const { root, tinycloud } = await mountAs({ rows, pageSize: 1 });
+    await revoke(root); await settled(root);
+    expect(errorText(root)).toBe("Could not revoke: Share couldn't find this share's permission in your list. Try again, or contact support. The share is still active.");
+    expect(root.textContent).not.toContain("earlier sign-in");
+    expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
+  });
+});
+
 
 describe("what happens around the wallet approval", () => {
   it("an already revoked root (node status) is a success and asks for no approval", async () => {
@@ -330,7 +374,11 @@ describe("approval outcomes in the OpenKey window", () => {
   it("cancelling shows 'Revoke cancelled', leaves the share active, and a retry works", async () => {
     const { root, tinycloud, openkey } = await mountWithWallet({ reject: { code: "USER_CANCELLED", message: "User cancelled the request" } });
     await revoke(root); await settled(root);
-    expect(errorText(root)).toBe("Revoke cancelled. The share is still active.");
+    // A choice, not a failure: a quiet note, never a red alert.
+    expect(noteText(root)).toBe("Revoke cancelled. The share is still active.");
+    expect(errorText(root)).toBeNull();
+    expect(root.querySelector('.sender-row-actions [role="alert"]')).toBeNull();
+    expect(root.querySelector(".sender-live")?.textContent).toBe("Revoke cancelled. The share is still active.");
     expect(root.textContent).not.toContain("object Object");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Ready");
     expect(root.querySelector(".sender-row-hint")).toBeNull();
@@ -340,6 +388,7 @@ describe("approval outcomes in the OpenKey window", () => {
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(2);
     expect(errorText(root)).toBeNull();
+    expect(noteText(root)).toBeNull();
   });
 
   it("the OpenKey window timing out says so in plain words", async () => {
@@ -404,6 +453,74 @@ describe("one revoke in flight per share", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await revoke(root); await settled(root);
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the in-flight guard outlives the library view", () => {
+  it("leaving the library and coming back during the approval shows the pending row, and a click sends no second wallet request", async () => {
+    const gate = deferred<unknown>();
+    const { root, remount, tinycloud } = await mountAs({ revokeDelegation: () => gate.promise });
+    await revoke(root);
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    await remount();
+    const button = revokeButton(root)!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Revoking…");
+    expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
+    expect(root.querySelector(".sender-row-hint")?.textContent).toBe("Approve in the OpenKey window to revoke");
+    button.click();
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(root.querySelector(".sender-confirm-dialog")).toBeNull();
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    // The row of the new view follows the same revoke to its end.
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked .status-label")?.textContent).toBe("Revoked"));
+    expect(revokeButton(root)).toBeNull();
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a cancel the remounted row offers Revoke again, and once settled a revoke can start again", async () => {
+    const gate = deferred<unknown>();
+    const { root, remount, tinycloud } = await mountAs({ revokeDelegation: () => gate.promise });
+    await revoke(root);
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    gate.resolve({ ok: false, error: { code: "REVOCATION_FAILED", message: "Failed to revoke delegation: 500 - x" } });
+    await settled(root);
+    await remount();
+    expect(revokeButton(root)?.disabled).toBe(false);
+  });
+});
+
+describe("one wallet approval at a time, and a cancel belongs to the share that asked", () => {
+  const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
+  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
+
+  it("a second share's Revoke during an open approval asks for no second approval, and the cancel lands on the first share only", async () => {
+    const gate = deferred<void>();
+    const openkey = { signMessage: vi.fn(async () => { await gate.promise; throw { code: "USER_CANCELLED", message: "cancelled" }; }) };
+    const provider = new ObservedOpenKeyProvider(openkey as never, { address: ADDRESS, keyId: "key-1", keyType: "MANAGED" } as never, ADDRESS, async () => true);
+    const harness = await mountAs({
+      extra: [second()], rows: [policyRootRow(), secondRow()],
+      revokeDelegation: async () => {
+        try { await provider.request({ method: "personal_sign", params: ["0x70726f6f66", ADDRESS] }); return { ok: true, data: {} }; } catch (caught) { return { ok: false, error: { code: "NETWORK_ERROR", message: `Network error during delegation revocation: ${String(caught)}` } }; }
+      },
+    });
+    const { root, tinycloud } = harness;
+    registerWalletApprovalObserver(tinycloud as unknown as ShareTinyCloud, provider);
+    rowOf(root, "qa.txt").querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root);
+    await vi.waitFor(() => expect(openkey.signMessage).toHaveBeenCalledTimes(1));
+    rowOf(root, "second.txt").querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root);
+    await vi.waitFor(() => expect(rowOf(root, "second.txt").querySelector(".sender-row-note")).not.toBeNull());
+    expect(rowOf(root, "second.txt").querySelector(".sender-row-note")?.textContent).toContain("Another approval is waiting");
+    expect(openkey.signMessage).toHaveBeenCalledTimes(1);
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+    gate.resolve();
+    await vi.waitFor(() => expect(rowOf(root, "qa.txt").querySelector(".sender-row-note")?.textContent).toBe("Revoke cancelled. The share is still active."));
+    expect(rowOf(root, "second.txt").textContent).not.toContain("Revoke cancelled");
+    // Both shares are untouched and can be revoked again.
+    expect(root.querySelectorAll(".sender-status-text.revoked")).toHaveLength(0);
+    expect(rowOf(root, "second.txt").querySelector<HTMLButtonElement>(".sender-revoke")?.disabled).toBe(false);
   });
 });
 

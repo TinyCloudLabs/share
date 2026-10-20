@@ -29,3 +29,7 @@ The addressed envelope is authorization metadata sealed by the sender SDK. Its s
 The sender submits the addressed URL to the owner node with the exact recipient, resource path, document label, and a delivery expiry no more than five minutes away. The node returns a receipt bound to the registered Policy/v3 envelope and active roots for audience `https://witness.credentials.org`. Share forwards that receipt unchanged to OpenCredentials' deployed generic `/v1/credential-invitations` endpoint, which sends the exact URL once.
 
 The exact signed delivery receipt necessarily carries the complete invitation to OpenCredentials so it can send that link. The browser captures and scrubs the fragment synchronously before imports or network work; Share, Registry, and the owner's node expose no invitation-blob retrieval service.
+
+## Revoking a share
+
+Revoke is in the library ("Shared by me"). While the page that created an email, domain or DID share is still signed in, revoking needs no approval. In a later sign-in (a reload, a new day, another device) Share asks the owner's node whether the share is one of this account's own, then asks for one approval in the OpenKey window and revokes only that share's delegation. The approval is good for 60 seconds. Anyone the recipient passed the link to loses access with it; the sender's other shares and own access are unaffected. If the approval is cancelled, the share stays active and Revoke can be tried again. Link-only shares ask for the same one approval.

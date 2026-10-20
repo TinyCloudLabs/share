@@ -122,6 +122,11 @@ export function httpStatusOf(error: unknown): number | undefined {
   return undefined;
 }
 
+/** A cancelled approval, or another approval still open: the share is untouched and nothing went wrong. */
+export function revokeOutcomeIsNeutral(error: unknown): boolean {
+  return error instanceof Error && (error.message === "revoke-approval-cancelled" || error.message === "revoke-another-approval");
+}
+
 /**
  * TC-721. Why a Revoke failed, in plain words. Only a status code is ever
  * quoted: raw error text can carry a response body, which never reaches the page.
@@ -130,9 +135,11 @@ export function revokeFailureMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : "";
   // A cancelled approval is the sender's own choice, not a failure.
   if (text === "revoke-approval-cancelled") return "Revoke cancelled. The share is still active.";
+  if (text === "revoke-another-approval") return "Another approval is waiting. Finish or cancel it in the OpenKey window, then try again. The share is still active.";
   const reason = ((): string => {
     const status = httpStatusOf(error);
     if (text === "revoke-unbound-policy-root") return "This share was made with a different account or TinyCloud node than this session. Sign in with the account that created it.";
+    if (text === "revoke-listing-incomplete") return "Share couldn't find this share's permission in your list. Try again, or contact support. The share is still active.";
     if (text === "revoke-earlier-sign-in") return "This share was created in an earlier sign-in, and Share can't revoke it from this one yet. The share is still active.";
     if (text === "revoke-approval-timeout") return "The approval wasn't completed in time. The share is still active. Try again and approve in the OpenKey window.";
     if (text === "revoke-approval-expired") return "The approval took longer than 60 seconds. The share is still active. Try again and approve within a minute.";
