@@ -43,10 +43,13 @@ export const APP_NAME_FALLBACK = "Tiny app";
  * The name OpenKey shows for the install. DISPLAY ONLY: it never identifies the app (the app id and the grants come
  * from the catalog entry). The catalog's name goes in only if the shared sign-in would accept it as a name
  * (`isSignInLabel`: no link-like text such as "Node.js Notes", no invisible characters); otherwise the fixed
- * name "Tiny app" stands in, and the install proceeds. The whole line is cut to 64 characters, which the helper allows.
+ * name "Tiny app" stands in, and the install proceeds. A name over 64 characters is cut to 64 first, if the cut name is accepted;
+ * and the whole line is cut to 64 characters, which the helper allows.
  */
 export function installAppName(appName: string): string {
-  const named = isSignInLabel(appName) ? appName : APP_NAME_FALLBACK;
+  // A name over the helper's 64 characters is cut (display only) if the cut still passes; anything else the helper refuses falls back.
+  const cutName = [...appName].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
+  const named = isSignInLabel(appName) ? appName : isSignInLabel(cutName) ? cutName : APP_NAME_FALLBACK;
   const cut = [...`${APP_NAME_PREFIX}${named}`].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
   return isSignInLabel(cut) ? cut : `${APP_NAME_PREFIX}${APP_NAME_FALLBACK}`;
 }

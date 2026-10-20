@@ -152,14 +152,23 @@ function place(summary: AccessSummary, item: Omit<AccessItem, "actions">, action
  * Why a manifest cannot be described by this module (and so cannot be installed), or null. These are the shapes the
  * SDK resolves in a way the lists and sentences here do not mirror, and that matter: a `did` hands everything the
  * app is granted to another key; a `prefix` or `space` that is not text is used by the SDK as it is, where this
- * module would read it as "not given". A catalog app has none of them, so they are refused rather than described.
+ * module would read it as "not given"; a blank space (the same, in the manifest or in a permission); an explicit
+ * `tinycloud.capabilities` grant (the SDK adds that read per space itself, so a hand-written one is a second row for the
+ * same thing). A catalog app has none of them, so they are refused rather than described.
  * scripts/apps-catalog.mjs applies the same three checks to the committed catalog.
  */
 export function unsupportedManifest(manifest: unknown): string | null {
   if (!isObject(manifest)) return null;
   if (manifest.did !== undefined) return "it hands its access to another identity (did)";
   if (manifest.prefix !== undefined && typeof manifest.prefix !== "string") return "its prefix is not text";
-  if (manifest.space !== undefined && typeof manifest.space !== "string") return "its space is not text";
+  if (manifest.space !== undefined && (typeof manifest.space !== "string" || manifest.space.trim() === "")) return "its space is not text";
+  for (const entry of list(manifest.permissions)) {
+    if (!isObject(entry)) continue;
+    // A blank space would be read here as "not given" (the app's own data) where the SDK uses it as written.
+    if (entry.space !== undefined && (typeof entry.space !== "string" || entry.space.trim() === "")) return "one of its permissions names a space that is not text";
+    // The SDK adds the read of each space's permission list itself; asking for it by hand adds nothing the page could describe.
+    if (entry.service === "tinycloud.capabilities" || entry.service === "capabilities") return "it asks for the permission-list read itself (the SDK adds that automatically)";
+  }
   return null;
 }
 
