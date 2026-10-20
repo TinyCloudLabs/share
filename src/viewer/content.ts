@@ -155,7 +155,10 @@ async function renderHtmlPage(container: HTMLElement, source: string, filename: 
 function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, kind: SafeContentKind = "file", detailText = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."): SafeContentKind {
   clearPreviousContent(container);
   const doc = container.ownerDocument;
-  const blob = new Blob([new Uint8Array(bytes).buffer], { type: kind === "image" ? descriptor.mediaType : downloadMediaType(kind) });
+  // The saved copy is named and typed from what the bytes ARE (the same classification the bar's
+  // Download uses), not from why they are being offered for download instead of previewed.
+  const savedKind = classifyContent(descriptor);
+  const blob = new Blob([new Uint8Array(bytes).buffer], { type: kind === "image" ? descriptor.mediaType : downloadMediaType(savedKind) });
   const href = URL.createObjectURL(blob);
   let revoked = false;
   const revoke = (): void => { if (!revoked) { revoked = true; URL.revokeObjectURL(href); activeCleanup.delete(container); } };
@@ -163,5 +166,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = safeDownloadName(descriptor.filename, kind, descriptor.mediaType); link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = safeDownloadName(descriptor.filename, savedKind, descriptor.mediaType); link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

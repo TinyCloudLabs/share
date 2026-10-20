@@ -84,6 +84,10 @@ describe("Download names", () => {
     root.querySelector<HTMLButtonElement>("button.viewer-download")!.click();
     await vi.waitFor(() => expect(downloads).toEqual(["report.md.html"]));
     expect(blobs.at(-1)!.type).toBe("application/octet-stream");
+    // The in-page "Download file" link is the same function and the same result.
+    root.querySelector<HTMLAnchorElement>(".viewer-file-note a")!.click();
+    await vi.waitFor(() => expect(downloads.at(-1)).toBe("report.md.html"));
+    expect(blobs.at(-1)!.type).toBe("application/octet-stream");
 
     document.body.innerHTML = '<div id="viewer"></div>';
     await presentShare(document.getElementById("viewer")!, share("report.md", "report.md", "text/markdown"));

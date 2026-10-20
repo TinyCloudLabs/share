@@ -65,9 +65,10 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
  * default-src 'none'. Script inertness itself comes from sandbox="", not
  * from this policy. VIEWER PRIVACY: a Markdown document makes no request and
  * no connection to any host, so its author cannot tell who opened it or when:
- * images, fonts and media are data:/blob: only, there is no `connect-src`,
- * `frame-src` or `script-src`, and styles are inline (tokens and fonts come
- * from the strings inlined below; fonts are the system stack, never fetched).
+ * images are data:/blob: only; fonts, media, connections, frames and scripts
+ * have no source at all (`default-src 'none'`); styles are inline (the tokens
+ * and prose CSS come from the strings inlined below, and the fonts are the
+ * system stack, never fetched).
  */
 export const PREVIEW_FRAME_CSP =
   "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'";

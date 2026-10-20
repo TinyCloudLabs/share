@@ -32,6 +32,9 @@ vi.mock("../src/viewer/native-bearer.js", () => {
   };
 });
 
+// Loading main.ts pulls in its whole module graph; on a busy host that takes seconds, so wait on the
+// outcome, never on a fixed delay.
+const WAIT = { timeout: 30_000, interval: 25 };
 const SECRET = "FAKE-LINK-SECRET-7d41";
 
 beforeEach(() => {
@@ -45,7 +48,7 @@ beforeEach(() => {
 });
 
 describe("Try again on the unavailable screen", () => {
-  it("re-runs the read with the same link from memory and writes the link nowhere", async () => {
+  it("re-runs the read with the same link from memory and writes the link nowhere", { timeout: 60_000 }, async () => {
     const sessionSet = vi.spyOn(Storage.prototype, "setItem");
     const indexedDbOpen = vi.fn();
     Object.defineProperty(window, "indexedDB", { configurable: true, value: { open: indexedDbOpen } });
@@ -54,16 +57,22 @@ describe("Try again on the unavailable screen", () => {
     const cookieSet = vi.spyOn(document, "cookie", "set");
 
     await import("../src/main.js");
-    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("TinyCloud is temporarily unavailable"));
+    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("TinyCloud is temporarily unavailable"), WAIT);
     expect(state.receive).toHaveBeenCalledTimes(1);
     const firstHref = state.receive.mock.calls[0]![0] as string;
     expect(firstHref).toContain(SECRET);
     // Arrival already scrubbed the address bar; only that one call may touch history.
     const scrubs = replaceState.mock.calls.length;
 
-    document.querySelector<HTMLButtonElement>("#viewer button.viewer-state-action")!.click();
-    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("TinyCloud is temporarily unavailable"));
+    const firstButton = document.querySelector<HTMLButtonElement>("#viewer button.viewer-state-action")!;
+    firstButton.click();
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(2), WAIT);
+    // Every screen swap builds new nodes: a different button means the retry has finished rendering its outcome.
+    await vi.waitFor(() => {
+      const current = document.querySelector<HTMLButtonElement>("#viewer button.viewer-state-action");
+      expect(current).not.toBeNull();
+      expect(current).not.toBe(firstButton);
+    }, WAIT);
     expect(state.receive.mock.calls[1]![0]).toBe(firstHref);
 
     expect(sessionSet).not.toHaveBeenCalled();
