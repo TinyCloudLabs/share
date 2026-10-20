@@ -150,20 +150,23 @@ describe("reading the saved app (sign-in 1)", () => {
 describe("readSavedFiles: bounded, never silently cut", () => {
   const prefix = "a/app/";
   /** A node holding `values`; `streams` makes a value arrive as many chunks (never held whole), and every fetch and cancel is recorded. */
-  function node(keys: string[], values: Record<string, Uint8Array | { chunks: number; chunkBytes: number }>, options: { truncated?: boolean; declared?: Record<string, string> } = {}): { kv: Parameters<typeof readSavedFiles>[0]; fetcher: ReaderFetch; fetched: string[]; pulled: Record<string, number>; cancelled: string[] } {
+  function node(keys: string[], values: Record<string, Uint8Array | { chunks: number; chunkBytes: number }>, options: { truncated?: boolean; declared?: Record<string, string> } = {}): { kv: Parameters<typeof readSavedFiles>[0]; fetcher: ReaderFetch; fetched: string[]; inits: Array<{ credentials: string; redirect: string }>; pulled: Record<string, number>; cancelled: string[] } {
     const fetched: string[] = [];
     const cancelled: string[] = [];
     const pulled: Record<string, number> = {};
+    const inits: Array<{ credentials: string; redirect: string }> = [];
     return {
       fetched,
+      inits,
       cancelled,
       pulled,
       kv: {
         list: async () => ({ ok: true, data: { keys, truncated: options.truncated === true } }),
         createSignedReadUrl: async (key) => (key in values ? { ok: true, data: { url: key } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
       },
-      fetcher: async (url) => {
+      fetcher: async (url, init) => {
         fetched.push(url);
+        inits.push({ credentials: init.credentials, redirect: init.redirect });
         const value = values[url];
         if (value === undefined) return new Response("no", { status: 404 });
         if (value instanceof Uint8Array) return new Response(value.slice().buffer);
@@ -183,6 +186,8 @@ describe("readSavedFiles: bounded, never silently cut", () => {
     expect([...result.entries.entries()].map(([path, bytes]) => [path, [...bytes]])).toEqual([["x.jsx", [1]], ["sub/y.sql", [2, 3]]]);
     expect(result.incomplete).toBe(false);
     expect(fake.fetched).toEqual([`${prefix}x.jsx`, `${prefix}sub/y.sql`]);
+    // A signed URL is a bearer link: no cookies go with it and no redirect is followed to somewhere else.
+    expect(fake.inits).toEqual([{ credentials: "omit", redirect: "error" }, { credentials: "omit", redirect: "error" }]);
   });
 
   it("is incomplete when the listing is truncated, has too many files, or a listed file vanished", async () => {
