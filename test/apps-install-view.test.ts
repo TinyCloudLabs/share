@@ -39,11 +39,15 @@ const entry = (appId: string): CatalogEntry => {
 function controlledPorts(options: { existing?: Set<string>; failAt?: number } = {}) {
   const sessions: number[] = [];
   const puts: string[] = [];
+  const modalAtSignIn: boolean[] = [];
+  const disposed: number[] = [];
   const gate: { approval?: (open: boolean) => void; release?: () => void } = {};
   const ports: InstallPorts = {
     fetch: async (url) => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(readFileSync(join("public", url))) }),
     openSession: async (_manifest, hooks) => {
       sessions.push(1);
+      // The sheet must not be a modal dialog while OpenKey's window opens: it would sit above the window.
+      modalAtSignIn.push(sheet.hasAttribute("open"));
       gate.approval = hooks.approval;
       hooks.approval(true);
       await new Promise<void>((resolve) => { gate.release = resolve; });
@@ -55,12 +59,12 @@ function controlledPorts(options: { existing?: Set<string>; failAt?: number } = 
           return options.existing?.has(key) === true ? "exists" : "created";
         },
         confirmListed: async () => true,
-        dispose: () => undefined,
+        dispose: () => { disposed.push(1); },
       };
       return session;
     },
   };
-  return { ports, sessions, puts, gate };
+  return { ports, sessions, puts, gate, modalAtSignIn, disposed };
 }
 
 let list: HTMLElement;
@@ -84,7 +88,10 @@ const cardInstall = (appId: string): HTMLButtonElement => {
   return found;
 };
 const loaded = async (): Promise<void> => { await vi.waitFor(() => expect(sheet.querySelector("[aria-busy]")).toBeNull()); await vi.waitFor(() => expect(buttons(sheet, "Continue")[0]?.disabled).toBe(false)); };
-const status = (): string => sheet.querySelector(".apps-install-status")?.textContent ?? "";
+/** The inline panel under the card: where an install reports, because the sheet is closed (not modal) while OpenKey's window is up. */
+const status = (): string => list.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? "";
+const panel = (): HTMLElement | null => list.querySelector<HTMLElement>(".apps-install-panel");
+const panelButtons = (label: string): HTMLButtonElement[] => [...list.querySelectorAll(".apps-install-panel button")].filter((node) => node.textContent === label) as HTMLButtonElement[];
 
 describe("the install sheet before anything is signed", () => {
   it("states the sample notice, the SQL notice and what the sign-in grants, from the verified manifest only", async () => {
@@ -162,29 +169,105 @@ describe("the install sheet before anything is signed", () => {
 });
 
 describe("the states of an install", () => {
-  it("goes pending approval, installing, installed; a double click is one sign-in; Open links to the runner", async () => {
+  it("Continue closes the sheet FIRST; progress, approval and the result are inline; a double click is one sign-in; Open links to the runner", async () => {
     stubBundleFetch();
     const node = controlledPorts();
     const portsFactory = vi.fn(() => node.ports);
     mountApps(list, sheet, catalog.apps, { ports: portsFactory });
     cardInstall(HEALTH).click();
     await loaded();
+    expect(sheet.hasAttribute("open")).toBe(true);
     const continueButton = buttons(sheet, "Continue")[0] as HTMLButtonElement;
     continueButton.click();
+    // Nothing modal is left on the page: the dialog is closed before the sign-in is even asked for.
+    expect(sheet.hasAttribute("open")).toBe(false);
     continueButton.click();
-    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window to install Health Log (sample)"));
+    await vi.waitFor(() => expect(status()).toBe("Approve in the OpenKey window to install Health Log (sample). A new account may ask a few times."));
     expect(node.sessions).toHaveLength(1);
+    expect(node.modalAtSignIn).toEqual([false]);
     expect(portsFactory).toHaveBeenCalledTimes(1); // the second click joined the running flight
-    expect(sheet.querySelector(".apps-install-status")?.getAttribute("aria-live")).toBe("polite");
-    expect(buttons(sheet, "Installing…")[0]?.disabled).toBe(true);
+    // A live region under the card, holding focus, with a visible Cancel.
+    expect(panel()?.closest(".apps-card")).not.toBeNull();
+    expect(panel()?.querySelector(".apps-install-status")?.getAttribute("role")).toBe("status");
+    expect(panel()?.querySelector(".apps-install-status")?.getAttribute("aria-live")).toBe("polite");
+    expect(document.activeElement).toBe(panel());
+    expect(panelButtons("Cancel")).toHaveLength(1);
 
     node.gate.release?.();
     await vi.waitFor(() => expect(status()).toContain("Installed."));
     expect(node.puts.at(-1)).toBe(`${HEALTH}/app/install.json`);
     expect(node.sessions).toHaveLength(1);
+    expect(node.disposed).toHaveLength(1);
     // Open is a link to the runner, with the app id in the fragment.
-    expect(sheet.textContent).not.toContain("coming next");
-    expect(sheet.querySelector(`a[href='/apps/run#${HEALTH}']`)?.textContent).toBe("Open Health Log (sample)");
+    expect(panel()?.textContent).not.toContain("coming next");
+    expect(panel()?.querySelector(`a[href='/apps/run#${HEALTH}']`)?.textContent).toBe("Open Health Log (sample)");
+    panelButtons("Done")[0]?.click();
+    expect(panel()).toBeNull();
+  });
+
+  it("Cancel while the OpenKey window is open says so at once; a late approval writes nothing and closes the session", async () => {
+    stubBundleFetch();
+    const node = controlledPorts();
+    mountApps(list, sheet, catalog.apps, { ports: () => node.ports });
+    cardInstall(HEALTH).click();
+    await loaded();
+    buttons(sheet, "Continue")[0]?.click();
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    panelButtons("Cancel")[0]?.click();
+    expect(status()).toBe("Install cancelled. Nothing was installed. If an OpenKey window is still open, close it.");
+    expect(panel()?.querySelector("[role=alert]")).toBeNull();
+    expect(panelButtons("Try again")).toHaveLength(1);
+    // The person approves in the window anyway: the session is closed and nothing is written.
+    node.gate.release?.();
+    await vi.waitFor(() => expect(node.disposed).toHaveLength(1));
+    expect(node.puts).toEqual([]);
+    expect(status()).toContain("Install cancelled");
+  });
+
+  it("Cancel before OpenKey was asked for opens no window at all", async () => {
+    stubBundleFetch();
+    const node = controlledPorts();
+    mountApps(list, sheet, catalog.apps, { ports: () => node.ports });
+    cardInstall(HEALTH).click();
+    await loaded();
+    buttons(sheet, "Continue")[0]?.click();
+    // The files are still being checked: cancel now.
+    panelButtons("Cancel")[0]?.click();
+    await new Promise((done) => setTimeout(done, 50));
+    expect(node.sessions).toHaveLength(0);
+    expect(status()).toBe("Install cancelled. Nothing was installed.");
+  });
+
+  it("Escape in the panel cancels while it runs", async () => {
+    stubBundleFetch();
+    const node = controlledPorts();
+    mountApps(list, sheet, catalog.apps, { ports: () => node.ports });
+    cardInstall(HEALTH).click();
+    await loaded();
+    buttons(sheet, "Continue")[0]?.click();
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    panel()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(status()).toContain("Install cancelled");
+    // Once it has ended Escape does nothing more.
+    panel()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(panel()).not.toBeNull();
+  });
+
+  it("pressing Install again while it runs shows the running install and opens no second sheet", async () => {
+    stubBundleFetch();
+    const node = controlledPorts();
+    const portsFactory = vi.fn(() => node.ports);
+    mountApps(list, sheet, catalog.apps, { ports: portsFactory });
+    cardInstall(HEALTH).click();
+    await loaded();
+    buttons(sheet, "Continue")[0]?.click();
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    cardInstall(HEALTH).click();
+    expect(sheet.hasAttribute("open")).toBe(false);
+    expect(document.activeElement).toBe(panel());
+    expect(node.sessions).toHaveLength(1);
+    node.gate.release?.();
+    await vi.waitFor(() => expect(status()).toContain("Installed."));
   });
 
   it("says Already installed: your copy is kept when everything is there", async () => {
@@ -201,7 +284,7 @@ describe("the states of an install", () => {
     await vi.waitFor(() => expect(status()).toContain("Already installed: your copy is kept."));
   });
 
-  it("reports what was saved when a write fails, offers Try again, and reopening shows the same flight", async () => {
+  it("reports what was saved when a write fails and offers Try again, inline", async () => {
     stubBundleFetch();
     const node = controlledPorts({ failAt: 4 });
     mountApps(list, sheet, catalog.apps, { ports: () => node.ports });
@@ -211,16 +294,16 @@ describe("the states of an install", () => {
     await vi.waitFor(() => expect(node.gate.release).toBeDefined());
     node.gate.release?.();
     await vi.waitFor(() => expect(status()).toContain("Not installed yet: 3 of 15 files were saved."));
-    expect(sheet.querySelector(".apps-install-status [role=alert]")).not.toBeNull();
-    expect(sheet.querySelector(".apps-install-status details")?.textContent).toContain(`${HEALTH}/`);
-    expect(buttons(sheet, "Try again")).toHaveLength(1);
-    expect(sheet.textContent).not.toContain("Installed.");
-
-    // Close and reopen: the sheet shows how that install ended, not a fresh Continue.
-    sheet.close();
+    expect(panel()?.querySelector(".apps-install-status [role=alert]")).not.toBeNull();
+    expect(panel()?.querySelector(".apps-install-status details")?.textContent).toContain(`${HEALTH}/`);
+    expect(panelButtons("Try again")).toHaveLength(1);
+    expect(panel()?.textContent).not.toContain("Installed.");
+    // Dismiss, reopen: a fresh consent, not the old result.
+    panelButtons("Dismiss")[0]?.click();
+    expect(panel()).toBeNull();
     cardInstall(HEALTH).click();
-    await vi.waitFor(() => expect(status()).toContain("Not installed yet"));
-    expect(buttons(sheet, "Continue")).toHaveLength(0);
+    await loaded();
+    expect(buttons(sheet, "Continue")).toHaveLength(1);
   });
 
   it("a tampered bundle says so and nothing was written", async () => {
@@ -236,7 +319,7 @@ describe("the states of an install", () => {
     expect(node.puts).toEqual([]);
   });
 
-  it("a cancelled sign-in is a quiet note, not an alert", async () => {
+  it("a cancelled sign-in (in OpenKey's own window) is a quiet note, not an alert", async () => {
     stubBundleFetch();
     const node = controlledPorts();
     const ports: InstallPorts = { ...node.ports, openSession: async () => { throw new InstallError("cancelled"); } };
@@ -245,7 +328,7 @@ describe("the states of an install", () => {
     await loaded();
     buttons(sheet, "Continue")[0]?.click();
     await vi.waitFor(() => expect(status()).toContain("Sign-in cancelled. Nothing was installed."));
-    expect(sheet.querySelector(".apps-install-status [role=alert]")).toBeNull();
+    expect(panel()?.querySelector(".apps-install-status [role=alert]")).toBeNull();
   });
 });
 

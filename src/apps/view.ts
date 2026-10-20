@@ -7,6 +7,7 @@
 import { type AccessItem, type AccessSummary, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
+import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts";
 import type { InstallError, InstallPorts } from "./install.ts";
 import { createInstallPorts } from "./install-session.ts";
@@ -222,12 +223,22 @@ function failureText(entry: CatalogEntry, error: InstallError): StatusText {
   }
 }
 
+/** What the panel says after the person pressed Cancel: whether anything may already be saved, and what to do about an OpenKey window left open. */
+function cancelledText(entry: CatalogEntry, flight: InstallFlight): string {
+  const saving = flight.cancelledIn === "installing" || flight.cancelledIn === "registering";
+  if (saving) return `Install cancelled. Files already saved are kept; installing ${entry.name} again finishes the rest.`;
+  const windowOpen = flight.cancelledIn === "signing-in" || flight.cancelledIn === "approval";
+  return `Install cancelled. Nothing was installed.${windowOpen ? " If an OpenKey window is still open, close it." : ""}`;
+}
+
 function statusFor(entry: CatalogEntry, flight: InstallFlight): StatusText {
   const state = flight.state;
+  if (flight.cancelled) return { message: cancelledText(entry, flight), tone: "neutral" };
   switch (state.phase) {
     case "checking": return { message: `Checking ${entry.name}'s files against the catalog…`, tone: "progress" };
     case "signing-in": return { message: "Opening OpenKey…", tone: "progress" };
-    case "approval": return { message: `Approve in the OpenKey window to install ${entry.name}`, tone: "progress" };
+    // No number: the SDK's approval steps are not a contract (connect, signing in, hosting spaces), so a count can be wrong. This line is always true.
+    case "approval": return { message: `Approve in the OpenKey window to install ${entry.name}. A new account may ask a few times.`, tone: "progress" };
     case "installing": return { message: `Installing ${entry.name}… ${state.done} of ${state.total} files`, tone: "progress" };
     case "registering": return { message: `Adding ${entry.name} to your apps…`, tone: "progress" };
     case "failed": return failureText(entry, state.error);
@@ -241,77 +252,35 @@ function statusFor(entry: CatalogEntry, flight: InstallFlight): StatusText {
   }
 }
 
-function openControl(entry: CatalogEntry): HTMLElement {
-  return el("a", "tc-button tc-button--primary apps-button", [`Open ${entry.name}`], { href: runnerHref(entry.app_id) });
-}
-
-/** The install sheet: the pre-consent text, then the live state of this app's install. */
-function installContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], ports: () => InstallPorts, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement; detach: () => void } {
+/**
+ * The install sheet: the pre-consent text, then Continue. Continue closes the sheet (see inline-panel.ts) and the
+ * install is reported inline under the card, so nothing modal is on the page while OpenKey's window is up.
+ */
+function installContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], onContinue: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
   const header = sheetHeader("Install", `Install ${entry.name} to your TinyCloud`, entry, close);
   const availability = availabilityOf(entry);
   if (!availability.available) {
     // The kill switch: no manifest fetch, no Continue, no ports, no OpenKey.
     const closeButton = el("button", "tc-button tc-button--primary apps-button", ["Close"], { type: "button" });
     closeButton.addEventListener("click", close);
-    return { header, body: el("div", "apps-sheet__body", [unavailableNotice(availability.reason), el("p", "apps-muted", [`${entry.name} can't be installed right now.`])]), footer: el("footer", "apps-sheet__footer", [closeButton]), detach: () => undefined };
+    return { header, body: el("div", "apps-sheet__body", [unavailableNotice(availability.reason), el("p", "apps-muted", [`${entry.name} can't be installed right now.`])]), footer: el("footer", "apps-sheet__footer", [closeButton]) };
   }
   const consentBody = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const body = el("div", "apps-sheet__body", [consentBody]);
-  const status = el("div", "apps-install-status", [], { "aria-live": "polite" });
   const actions = el("div", "apps-install-actions", []);
-  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [status, actions]);
-  let consentLoaded = false;
-
+  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [actions]);
   const button = (label: string, className: string, onClick: () => void, disabled = false): HTMLButtonElement => {
     const node = el("button", `${className} apps-button`, [label], { type: "button" });
     node.disabled = disabled;
     node.addEventListener("click", onClick);
     return node;
   };
-
-  const begin = (): void => {
-    // A second click while an install is running joins it: one flight per app, one sign-in.
-    const flight = startInstall(entry, ports);
-    attach(flight);
+  const paint = (consentLoaded: boolean): void => {
+    actions.replaceChildren(button("Continue", "tc-button tc-button--primary", onContinue, !consentLoaded), button("Not now", "tc-button", close));
   };
-
-  let current: InstallFlight | undefined;
-  const repaint = (): void => {
-    const flight = current;
-    if (flight === undefined) {
-      status.replaceChildren();
-      actions.replaceChildren(button("Continue", "tc-button tc-button--primary", begin, !consentLoaded), button("Not now", "tc-button", close));
-      return;
-    }
-    const text = statusFor(entry, flight);
-    const line = el("p", `tc-status tc-status--${text.tone === "progress" || text.tone === "neutral" ? "info" : text.tone} apps-install-line`, [text.message], text.tone === "danger" ? { role: "alert" } : {});
-    const parts: HTMLElement[] = [line];
-    const state = flight.state;
-    if (state.phase === "failed" && state.error.written.length > 0) {
-      parts.push(el("details", "apps-files", [el("summary", null, [`Saved so far (${state.error.written.length})`]), el("ul", "apps-notes", state.error.written.map((key) => el("li", null, [el("code", null, [key])])))]));
-    }
-    status.replaceChildren(...parts);
-    if (flight.active) actions.replaceChildren(button("Installing…", "tc-button tc-button--primary", () => undefined, true), button("Close", "tc-button", close));
-    else if (state.phase === "installed") actions.replaceChildren(openControl(entry), button("Done", "tc-button tc-button--primary", close));
-    else actions.replaceChildren(button("Try again", "tc-button tc-button--primary", begin), button("Close", "tc-button", close));
-  };
-
-  const attach = (flight: InstallFlight): void => {
-    current?.subscribers.delete(repaint);
-    current = flight;
-    flight.subscribers.add(repaint);
-    repaint();
-  };
-
-  // Reopening the sheet while an install runs (or after it ended) shows that install, not a fresh Continue.
-  const existing = flightFor(entry.app_id);
-  if (existing !== undefined) attach(existing);
-  else repaint();
-  void renderConsent(entry, catalog, consentBody).then((loaded) => {
-    consentLoaded = loaded;
-    if (current === undefined) repaint();
-  });
-  return { header, body, footer, detach: () => { current?.subscribers.delete(repaint); } };
+  paint(false);
+  void renderConsent(entry, catalog, consentBody).then(paint);
+  return { header, body, footer };
 }
 
 // ---------------------------------------------------------------------------
@@ -357,8 +326,8 @@ function repairProgressText(entry: CatalogEntry, progress: RepairProgress): stri
   }
 }
 
-/** The repair sheet: what Repair replaces, what it leaves alone, then Continue. One approval. */
-function repairContent(entry: CatalogEntry, ports: () => RepairPorts, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
+/** The repair sheet: what Repair replaces, what it leaves alone, then Continue (which closes the sheet; see inline-panel.ts). One approval. */
+function repairContent(entry: CatalogEntry, onContinue: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
   const header = sheetHeader("Repair", `Repair ${entry.name}`, entry, close);
   const availability = availabilityOf(entry);
   const writes = repairWrites(entry);
@@ -375,36 +344,15 @@ function repairContent(entry: CatalogEntry, ports: () => RepairPorts, close: () 
       el("details", "apps-files", [el("summary", null, [`Files it writes (${writes.length})`]), el("ul", "apps-notes", writes.map((write) => el("li", null, [el("code", null, [write.key])])))]),
     ]),
   ]);
-  const status = el("div", "apps-install-status", [], { "aria-live": "polite" });
   const actions = el("div", "apps-install-actions", []);
-  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [status, actions]);
-  let running = false;
+  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [actions]);
   const button = (label: string, className: string, onClick: () => void, disabled = false): HTMLButtonElement => {
     const node = el("button", `${className} apps-button`, [label], { type: "button" });
     node.disabled = disabled;
     node.addEventListener("click", onClick);
     return node;
   };
-  const say = (message: string, tone: "info" | "success" | "danger"): void => { status.replaceChildren(el("p", `tc-status tc-status--${tone} apps-install-line`, [message], tone === "danger" ? { role: "alert" } : {})); };
-  const idle = (): void => { actions.replaceChildren(button("Continue", "tc-button tc-button--primary", begin, !availability.available), button("Not now", "tc-button", close)); };
-  function begin(): void {
-    if (running) return;
-    running = true;
-    actions.replaceChildren(button("Repairing…", "tc-button tc-button--primary", () => undefined, true), button("Close", "tc-button", close));
-    void runRepair(entry, ports(), (progress) => say(repairProgressText(entry, progress), "info")).then(
-      (outcome: RepairOutcome) => {
-        running = false;
-        say(`Repaired. ${outcome.written.length} ${outcome.written.length === 1 ? "file was" : "files were"} replaced${outcome.removed.length === 0 ? "" : ` and ${outcome.removed.length} other ${outcome.removed.length === 1 ? "file was" : "files were"} removed`}. Your data was not touched.`, "success");
-        actions.replaceChildren(openControl(entry), button("Done", "tc-button tc-button--primary", close));
-      },
-      (error: unknown) => {
-        running = false;
-        say(repairFailureText(entry, error instanceof RepairError ? error : new RepairError("failed", { cause: error })), "danger");
-        actions.replaceChildren(button("Try again", "tc-button tc-button--primary", begin), button("Close", "tc-button", close));
-      },
-    );
-  }
-  idle();
+  actions.replaceChildren(button("Continue", "tc-button tc-button--primary", onContinue, !availability.available), button("Not now", "tc-button", close));
   return { header, body, footer };
 }
 
@@ -420,18 +368,42 @@ export interface MountedApps {
   openRepair(appId: string): boolean;
 }
 
+/**
+ * `RepairPorts` for one repair run: once the person cancels, nothing new starts (no OpenKey window), a session that
+ * arrives late is closed, and no file is written, listed or removed. The sign-in and the writes are the real ones.
+ */
+function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): RepairPorts {
+  return {
+    ...ports,
+    openSession: async (manifest, hooks) => {
+      if (cancelled()) throw new RepairError("cancelled");
+      const session = await ports.openSession(manifest, hooks);
+      if (cancelled()) {
+        await Promise.resolve(session.dispose()).catch(() => undefined);
+        throw new RepairError("cancelled");
+      }
+      const refuse = (): void => { if (cancelled()) throw new RepairError("cancelled"); };
+      return {
+        put: async (key, bytes, contentType) => { refuse(); return session.put(key, bytes, contentType); },
+        list: async (prefix) => { refuse(); return session.list(prefix); },
+        del: async (key) => { refuse(); return session.del(key); },
+        dispose: () => session.dispose(),
+      };
+    },
+  };
+}
+
 export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): MountedApps {
   const ports = options.ports ?? createInstallPorts;
   const repairPorts = options.repairPorts ?? createRepairPorts;
   let opener: HTMLElement | null = null;
-  let detach: (() => void) | undefined;
+  const cards = new Map<string, HTMLElement>();
+  /** The inline panel under each card, with what stops it listening to its run. */
+  const panels = new Map<string, { panel: InlinePanel; release: () => void }>();
   const close = (): void => { sheet.close(); };
   sheet.addEventListener("close", () => {
     // `close` is dispatched after the dialog closed: a sheet reopened in the meantime (a quick click on another Install) is not the one that closed.
     if (sheet.open) return;
-    // An install in progress keeps running; only this sheet's view of it goes away.
-    detach?.();
-    detach = undefined;
     sheet.replaceChildren();
     opener?.focus();
     opener = null;
@@ -439,15 +411,113 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   // A click on the backdrop lands on the dialog element itself, outside its content.
   sheet.addEventListener("click", (event) => { if (event.target === sheet) close(); });
 
+  /**
+   * Closes the modal sheet for good, without giving focus back to the button that opened it (the inline panel takes
+   * focus). A run starts only after this, so nothing modal is on the page when OpenKey's window opens.
+   */
+  const leaveSheet = (): void => {
+    opener = null;
+    if (sheet.open) sheet.close();
+  };
+
+  /** A fresh panel under the card for `appId`, replacing any earlier one. */
+  const freshPanel = (appId: string, label: string): InlinePanel => {
+    const earlier = panels.get(appId);
+    earlier?.release();
+    earlier?.panel.remove();
+    const panel = new InlinePanel(label);
+    cards.get(appId)?.append(panel.root);
+    panels.set(appId, { panel, release: () => undefined });
+    return panel;
+  };
+  const dismiss = (appId: string): void => {
+    const current = panels.get(appId);
+    current?.release();
+    current?.panel.remove();
+    panels.delete(appId);
+    cards.get(appId)?.querySelector<HTMLElement>(".apps-card__actions button")?.focus();
+  };
+
+  const runInstallInline = (entry: CatalogEntry): void => {
+    leaveSheet();
+    const flight = startInstall(entry, ports);
+    const panel = freshPanel(entry.app_id, `Install ${entry.name}`);
+    const repaint = (): void => {
+      const text = statusFor(entry, flight);
+      const state = flight.state;
+      const extra = !flight.cancelled && state.phase === "failed" && state.error.written.length > 0
+        ? [el("details", "apps-files", [el("summary", null, [`Saved so far (${state.error.written.length})`]), el("ul", "apps-notes", state.error.written.map((key) => el("li", null, [el("code", null, [key])])))])]
+        : [];
+      let actions: PanelAction[];
+      if (flight.active) actions = [{ label: "Cancel", onClick: () => flight.cancel() }];
+      else if (state.phase === "installed") actions = [{ label: `Open ${entry.name}`, href: runnerHref(entry.app_id) }, { label: "Done", primary: true, onClick: () => dismiss(entry.app_id) }];
+      else actions = [{ label: "Try again", primary: true, onClick: () => runInstallInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }];
+      panel.onEscape = flight.active ? () => flight.cancel() : undefined;
+      panel.say(text.message, text.tone === "progress" ? "info" : text.tone, { extra, actions });
+    };
+    flight.subscribers.add(repaint);
+    panels.set(entry.app_id, { panel, release: () => flight.subscribers.delete(repaint) });
+    repaint();
+    panel.focus();
+  };
+
+  /** One repair at a time per app, as for an install: a second Continue joins the running one. */
+  const repairing = new Set<string>();
+  const runRepairInline = (entry: CatalogEntry): void => {
+    leaveSheet();
+    if (repairing.has(entry.app_id)) {
+      panels.get(entry.app_id)?.panel.focus();
+      return;
+    }
+    repairing.add(entry.app_id);
+    const panel = freshPanel(entry.app_id, `Repair ${entry.name}`);
+    let cancelled = false;
+    let running = true;
+    const cancel = (): void => {
+      if (!running) return;
+      cancelled = true;
+      running = false;
+      repairing.delete(entry.app_id);
+      panel.onEscape = undefined;
+      panel.say("Repair cancelled. Files already replaced are kept; repairing again finishes the rest. If an OpenKey window is still open, close it.", "neutral", { actions: [{ label: "Try again", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+    };
+    const working = (message: string): void => {
+      if (cancelled) return;
+      panel.onEscape = cancel;
+      panel.say(message, "info", { actions: [{ label: "Cancel", onClick: cancel }] });
+    };
+    working(repairProgressText(entry, { phase: "checking" }));
+    panel.focus();
+    void runRepair(entry, guardedRepairPorts(repairPorts(), () => cancelled), (progress) => working(repairProgressText(entry, progress))).then(
+      (outcome: RepairOutcome) => {
+        if (cancelled) return;
+        running = false;
+        repairing.delete(entry.app_id);
+        panel.onEscape = undefined;
+        panel.say(`Repaired. ${outcome.written.length} ${outcome.written.length === 1 ? "file was" : "files were"} replaced${outcome.removed.length === 0 ? "" : ` and ${outcome.removed.length} other ${outcome.removed.length === 1 ? "file was" : "files were"} removed`}. Your data was not touched.`, "success", { actions: [{ label: `Open ${entry.name}`, href: runnerHref(entry.app_id) }, { label: "Done", primary: true, onClick: () => dismiss(entry.app_id) }] });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        running = false;
+        repairing.delete(entry.app_id);
+        panel.onEscape = undefined;
+        panel.say(repairFailureText(entry, error instanceof RepairError ? error : new RepairError("failed", { cause: error })), "danger", { actions: [{ label: "Try again", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+      },
+    );
+  };
+
   const show = (entry: CatalogEntry, mode: "details" | "install" | "repair"): void => {
-    detach?.();
-    detach = undefined;
+    if (mode === "install" && flightFor(entry.app_id)?.active === true) {
+      // An install for this app is already running: show where it is instead of opening a second consent.
+      leaveSheet();
+      panels.get(entry.app_id)?.panel.focus();
+      return;
+    }
     if (mode === "repair") {
-      const content = repairContent(entry, repairPorts, close);
+      const content = repairContent(entry, () => runRepairInline(entry), close);
       sheet.replaceChildren(content.header, content.body, content.footer);
     } else if (mode === "install") {
-      const content = installContent(entry, entries, ports, close);
-      detach = content.detach;
+      const content = installContent(entry, entries, () => runInstallInline(entry), close);
       sheet.replaceChildren(content.header, content.body, content.footer);
     } else {
       const { header, body, footer } = detailsContent(entry, entries, close, () => show(entry, "install"));
@@ -476,13 +546,15 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     // A disabled entry refuses here and again in runInstall; the click does nothing and no OpenKey window can open.
     install.disabled = !availability.available;
     install.addEventListener("click", () => { opener = install; show(entry, "install"); });
-    list.append(el("li", "apps-card tc-panel", [
+    const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`, ...(entry.sample === true ? [" ", el("span", "tc-badge apps-badge", ["Sample"])] : [])]),
       el("p", "apps-card__description", [entry.description]),
       ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
       el("div", "apps-card__actions", [details, install, el("a", "tc-button apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })]),
-    ]));
+    ]);
+    cards.set(entry.app_id, card);
+    list.append(card);
   }
   return mounted;
 }
