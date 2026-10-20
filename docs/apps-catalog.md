@@ -173,14 +173,15 @@ native stack in a real browser (see that file's header).
 
 "Uninstall" is on an app's details sheet. It removes the app's code, manifest, install record and agent knowledge notes, and keeps the app's data.
 
-- **Confirm sheet.** It names the app and says what goes (the files under `<app_id>/app/` and `<app_id>/knowledge/`, including notes the person edited there) and what stays (SQL databases and prefs under `<app_id>/`, and files outside those folders). It asks the person to close the app's open tabs first. "Keep app" closes the sheet; nothing is signed or changed.
+- **Confirm sheet.** It names the app and says what goes (the files under `<app_id>/app/` and `<app_id>/knowledge/`, including notes the person edited there) and what stays (SQL databases and prefs under `<app_id>/`, and files outside those folders). It lists the read of each hosted space's permissions that the SDK adds (applications and account), worded as on the install sheet. It asks the person to close the app's open tabs first. "Keep app" closes the sheet; nothing is signed or changed.
 - **One sign-in** with the uninstaller identity (`tinycloud-share-uninstall`, `src/apps/uninstall-plan.ts`). Its ReCap is checked against the confirm sheet before OpenKey opens: the request grants `kv` list and delete on `<app_id>/app/` and `<app_id>/knowledge/`, and delete on the single key `applications/<app_id>` in the account space. Registry sync is not awaited.
 - **Order.** `<app_id>/knowledge/index.md`, then `<app_id>/app/install.json`, then the rest of `app/` and `knowledge/` in sorted order, then the registry record last. A missing key counts as success, so a retry after an interruption finishes the job. An interrupted run leaves a partial install, which Uninstall can finish again.
 - **Listing limit.** A listing that is still truncated after 200 pages of 500 keys stops the run before anything is deleted.
+- **Keys outside the folders are ignored.** A listed key outside `<app_id>/app/` and `<app_id>/knowledge/` is skipped, not deleted, so a listing cannot widen the delete set. A key that would escape the folders at delete time is refused before its `del` runs.
 - **Registry failure is not fatal.** The files are already gone, so the sheet says "The app was removed; its entry in your account list couldn't be updated; try again." A retry removes only the registry entry.
 - **Re-install** after an uninstall works, and the kept SQL and prefs are still there.
 
-`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match, the registry-failure retry and the sheet copy. `test/e2e-prod/install-gate.mjs` and `runner-gate.mjs` run uninstall against the hermetic stack (see those files' headers).
+`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and its read rows, the registry-failure retry and the sheet copy. `test/e2e-prod/install-gate.mjs` and `runner-gate.mjs` run uninstall against the hermetic stack (see those files' headers); they were syntax-checked only and have not run.
 
 Details: TC-1422
 

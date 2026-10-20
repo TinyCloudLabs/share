@@ -190,7 +190,12 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
   // (A public-space companion exists only when a KV grant is handed to another DID, not at sign-in.)
   const all = [...summary.read, ...summary.change];
   for (const space of new Set(all.map((item) => item.space ?? DEFAULT_SPACE))) {
-    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, path: "", actions: ["read"] });
+    summary.read.push(selfGrantRead(space));
   }
   return summary;
+}
+
+/** The capabilities/read row the SDK adds for one space. Shared with the uninstall confirm so both sheets name it the same way. */
+export function selfGrantRead(space: string): AccessItem {
+  return { description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, path: "", actions: ["read"] };
 }

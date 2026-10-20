@@ -103,8 +103,12 @@ describe("deleteOrder", () => {
     expect(deleteOrder("todo", ["todo/app/a", "todo/app/a"])).toEqual(["todo/app/a"]);
   });
 
-  it("refuses the whole batch when one listed key is outside the folders", () => {
-    expect(() => deleteOrder("todo", ["todo/app/a", "todo/prefs/theme.json"])).toThrow(UninstallError);
+  it("ignores listed keys outside the folders instead of deleting or refusing them", () => {
+    expect(deleteOrder("todo", ["todo/app/a", "todo/prefs/theme.json", "todo2/app/x"])).toEqual(["todo/app/a"]);
+  });
+
+  it.each(["todo2/app/x", "todo/app/../../evil", "todo/app/%2e%2e/x", "todo/appx", "todo", "todo/", "todo/prefs/units.json", "todo/knowledge/"])("ignores the listed key %j", (key) => {
+    expect(deleteOrder("todo", ["todo/app/a", key])).toEqual(["todo/app/a"]);
   });
 });
 
@@ -264,10 +268,19 @@ describe("runUninstall", () => {
     expect(w.log.some((entry) => entry.startsWith("del:"))).toBe(false);
   });
 
-  it("refuses the whole run when a listed key escapes the folders, before any delete", async () => {
-    const w = world([...KEYS, "todo/app/../prefs/x", "todo/app/%2e%2e/x"]);
-    await expect(runUninstall(app, w.ports, () => undefined)).rejects.toMatchObject({ reason: "refused" });
-    expect(w.log.some((entry) => entry.startsWith("del:"))).toBe(false);
+  it("never deletes a listed key that escapes the folders, and still removes every owned key in order", async () => {
+    const w = world([...KEYS, "todo/app/../prefs/x", "todo/app/%2e%2e/x", "todo2/app/x"]);
+    await runUninstall(app, w.ports, () => undefined);
+    const dels = w.log.filter((entry) => entry.startsWith("del:")).map((entry) => entry.slice("del:".length));
+    expect(dels.every((key) => isOwnedKey("todo", key))).toBe(true);
+    expect(dels.slice(0, 2)).toEqual(["todo/knowledge/index.md", RECORD]);
+    expect(dels).toEqual(expect.arrayContaining(KEYS.filter((key) => isOwnedKey("todo", key))));
+  });
+
+  it.each(["", "..", "%2e%2e", "a/b", "a\\b", "todo/", "../todo"])("refuses the app id %j before any sign-in or delete", async (appId) => {
+    const w = world(KEYS);
+    await expect(runUninstall({ app_id: appId, name: "x" }, w.ports, () => undefined)).rejects.toMatchObject({ reason: "refused" });
+    expect(w.log).toEqual([]);
   });
 
   it("stops at a failed delete, reports the keys already deleted, and a retry finishes the rest", async () => {

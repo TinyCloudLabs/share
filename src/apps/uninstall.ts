@@ -8,7 +8,7 @@
  * already removed and a retry removes the entry. A missing key is success
  * everywhere, so a retry after any interruption finishes the job.
  */
-import { LIST_PAGE_LIMIT, MAX_LIST_PAGES, UninstallError, assertPlainAppId, deleteOrder, folderPrefixes } from "./uninstall-plan.ts";
+import { LIST_PAGE_LIMIT, MAX_LIST_PAGES, UninstallError, assertOwnedKey, assertPlainAppId, deleteOrder, folderPrefixes } from "./uninstall-plan.ts";
 
 export interface ListPage {
   keys: string[];
@@ -80,6 +80,7 @@ export async function runUninstall(
 
     const deleted: string[] = [];
     for (const key of order) {
+      assertOwnedKey(app.app_id, key);
       report({ phase: "removing", done: deleted.length, total: order.length });
       try {
         await session.del(key);

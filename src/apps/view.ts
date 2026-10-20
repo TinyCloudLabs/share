@@ -4,19 +4,19 @@
  * so Trusted Types can stay required for scripts. The install sheet's words are
  * fixed text plus those same textContent values; it adds no markup path.
  */
-import { type AccessItem, type AccessSummary, unsupportedManifest } from "./access.ts";
+import { type AccessItem, type AccessSummary, selfGrantRead, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts";
 import type { InstallError, InstallPorts } from "./install.ts";
 import { createInstallPorts } from "./install-session.ts";
-import { INSTALL_SESSION_LABEL, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
+import { INSTALL_SESSION_LABEL, INSTALL_SPACE, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
 import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
 import { loadManifest } from "./manifest.ts";
 import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
 import { createRepairPorts } from "./repair-session.ts";
-import { type UninstallFailure, UninstallError } from "./uninstall-plan.ts";
+import { ACCOUNT_SPACE, type UninstallFailure, UninstallError } from "./uninstall-plan.ts";
 import { type UninstallPorts, type UninstallProgress, type UninstallResult, runUninstall } from "./uninstall.ts";
 import { createUninstallPorts } from "./uninstall-session.ts";
 
@@ -366,6 +366,7 @@ function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () 
   const header = sheetHeader("Uninstall", `Remove ${entry.name}`, entry, close);
   const body = el("div", "apps-sheet__body", [
     el("p", "apps-sheet__lede", [`Remove ${entry.name}'s app files and agent notes? Your app data, settings and files outside those folders stay. Notes you've edited in the app's knowledge folder will be removed. Close any open app tabs first.`]),
+    accessList([selfGrantRead(INSTALL_SPACE), selfGrantRead(ACCOUNT_SPACE)]),
   ]);
   const remove = el("button", "tc-button tc-button--primary apps-button", ["Remove app"], { type: "button" });
   remove.addEventListener("click", onConfirm);

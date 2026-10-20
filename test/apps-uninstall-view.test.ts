@@ -79,6 +79,15 @@ describe("the uninstall confirm sheet", () => {
     expect(node.opened).toBe(0);
   });
 
+  it("names the capabilities/read grant for the applications and account spaces, worded as the install sheet words it", () => {
+    const node = fakeUninstall();
+    openConfirm(node);
+    const sentence = "See which permissions it has been given in this space (added automatically).";
+    expect((sheet.textContent ?? "").split(sentence).length - 1).toBe(2);
+    expect(sheet.textContent).toContain("space: account");
+    expect(node.opened).toBe(0);
+  });
+
   it("Keep app closes the sheet and touches no session", () => {
     const node = fakeUninstall();
     openConfirm(node);

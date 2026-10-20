@@ -85,11 +85,11 @@ export function assertOwnedKey(appId: string, key: string): void {
  * `knowledge/index.md`, then `install.json`, then everything else sorted. The
  * install record goes early so an interrupted run leaves a partial install
  * (which Open heals) rather than an installed record with missing files.
- * Throws `refused` if any listed key is outside the two folders.
+ * Keys outside the two folders are ignored, not deleted, so a listing can never widen the delete set.
  */
 export function deleteOrder(appId: string, listed: readonly string[]): string[] {
-  for (const key of listed) assertOwnedKey(appId, key);
-  const unique = [...new Set(listed)].sort();
+  const owned = listed.filter((key) => isOwnedKey(appId, key));
+  const unique = [...new Set(owned)].sort();
   const index = `${appId}/knowledge/index.md`;
   const record = installRecordKey(appId);
   const first = [index, record].filter((key) => unique.includes(key));
