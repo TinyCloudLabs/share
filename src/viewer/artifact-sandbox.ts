@@ -1,5 +1,6 @@
 import type { PreparedArtifact } from "../artifact/bundle.js";
 import { ARTIFACT_SANDBOX_PATH, type ArtifactRenderRequest } from "./artifact-frame.js";
+import { userContentUrl } from "./user-content-origin.js";
 
 export const ARTIFACT_SANDBOX_IFRAME_CLASS = "viewer-artifact-frame";
 
@@ -46,7 +47,8 @@ export function createArtifactSandbox(doc: Document, options: ArtifactSandboxOpt
   const iframe = doc.createElement("iframe");
   iframe.className = options.className ?? ARTIFACT_SANDBOX_IFRAME_CLASS;
   iframe.setAttribute("sandbox", "allow-scripts");
-  iframe.setAttribute("src", `${ARTIFACT_SANDBOX_PATH}#${nonce}`);
+  iframe.setAttribute("allow", "");
+  iframe.setAttribute("src", userContentUrl(`${ARTIFACT_SANDBOX_PATH}#${nonce}`));
   iframe.setAttribute("title", options.title ?? "Shared HTML artifact");
   iframe.setAttribute("referrerpolicy", "no-referrer");
   iframe.hidden = true;

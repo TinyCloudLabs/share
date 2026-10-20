@@ -1,0 +1,43 @@
+/* The notice sits above the artifact frame in stacking order and the frame is isolated and clipped. */
+.viewer-artifact-notice {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2) var(--tc-space-3);
+  margin: 0 0 var(--tc-space-3);
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+  background: var(--tc-color-surface-subtle);
+  color: var(--tc-color-text);
+  font: var(--tc-text-sm) / var(--tc-leading-ui) var(--tc-font-sans);
+}
+/* A basis small enough that the button stays on the first line at phone widths. */
+.viewer-artifact-notice-text { margin: 0; flex: 1 1 10rem; max-width: none; }
+.viewer-artifact-notice[data-state="collapsed"] { background: transparent; border-color: transparent; padding-inline: 0; }
+.viewer-artifact-notice button {
+  flex: none;
+  min-height: 44px;
+  padding: 0 var(--tc-space-4);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-pill);
+  background: var(--tc-color-surface);
+  color: var(--tc-color-link);
+  font: inherit;
+  font-weight: var(--tc-weight-medium);
+  cursor: pointer;
+}
+.viewer-artifact-notice button:hover { border-color: var(--tc-color-accent); }
+.viewer-artifact-notice button:focus-visible { outline: 2px solid var(--tc-color-focus); outline-offset: 3px; }
+.viewer-artifact-notice [hidden] { display: none; }
+
+/* The artifact's own box: whatever it draws or positions stays inside it and below the chrome. */
+.viewer-html-frame {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  overflow: hidden;
+  contain: layout paint;
+}

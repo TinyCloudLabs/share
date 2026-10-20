@@ -11,7 +11,7 @@ TinyCloud Sharing is the browser UX for TinyCloud's native delegation and invoca
 - `registry.tinycloud.xyz` discovers a user's TinyCloud node. It is not a share blob store.
 - `witness.credentials.org/v1/credential-invitations` is OpenCredentials' generic delivery endpoint. It receives the owner-node receipt and sends the invitation; Share has no mail, admission, or data-plane service.
 
-See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the protocol boundaries and [docs/html-artifact-sharing.md](docs/html-artifact-sharing.md) for artifact rendering.
+See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the protocol boundaries, [docs/html-artifact-sharing.md](docs/html-artifact-sharing.md) and [docs/jsx-artifact-sharing.md](docs/jsx-artifact-sharing.md) for artifact rendering, and [docs/user-content-origin.md](docs/user-content-origin.md) for serving the sandbox documents from a separate origin.
 
 ## Development
 

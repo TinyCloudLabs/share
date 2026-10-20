@@ -179,7 +179,7 @@ export async function presentShare(
         mediaType: signedMediaType(result),
         filename: downloadName(result),
         byteLength: result.contentBytes.byteLength,
-      }, { ...options, ...(result.access === undefined ? {} : { linkAccess: result.access }) });
+      }, { ...options, ...(result.access === undefined ? {} : { linkAccess: result.access }), shareId: result.envelope.shareId });
       if (kind === "markdown") markdownSource = decodeMarkdown(result.contentBytes);
     } else {
       markdownSource = result.content as string;
