@@ -2,10 +2,12 @@
 import { parseExpiry } from "@tinycloud/sdk-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SESSION_LABEL, installAppName, installerManifest, installerScope } from "../src/apps/install-plan.ts";
+import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SESSION_LABEL, APP_NAME_FALLBACK, installAppName, installerManifest, installerScope } from "../src/apps/install-plan.ts";
 import { createInstallPorts } from "../src/apps/install-session.ts";
 import { InstallError, type InstallSession } from "../src/apps/install.ts";
 import { MANIFEST_CHECK_ADDRESS, assertManifestInScope } from "../src/share/manifest-policy.ts";
+import { isSignInLabel } from "../src/share/sign-in-label.ts";
+import { catalog } from "../src/apps/catalog.ts";
 import { resetRevokeFlights } from "../src/share/revoke-flight.ts";
 
 type KvResult = { ok: true } | { ok: false; error: { code: string } };
@@ -103,17 +105,33 @@ describe("what the install port asks of the shared sign-in", () => {
   });
 
   it("names the window for OpenKey within what the helper accepts, as display text only", () => {
-    const sanitised = installAppName(`<b>${"Very long name ".repeat(20)}</b>`);
-    expect([...sanitised].length).toBeLessThanOrEqual(64);
-    expect(sanitised.startsWith("TinyCloud Share: install ")).toBe(true);
-    // A name the helper would refuse (a link, hidden characters, nothing) falls back to a fixed, accepted one.
-    for (const hostile of ["see https://evil.example", "mail me@evil.example", "www.evil.example", "", "   ", "a\u202eb"]) {
-      const name = installAppName(hostile);
-      expect(name, hostile).not.toMatch(/https?:|@|www\.|\u202e/);
-      expect([...name].length).toBeLessThanOrEqual(64);
-    }
     expect(installAppName("Health Log (sample)")).toBe("TinyCloud Share: install Health Log (sample)");
+    // A long catalog name is cut to the helper's 64 characters and still accepted.
+    const long = installAppName("Very long name ".repeat(20).trim());
+    expect([...long].length).toBeLessThanOrEqual(64);
+    expect(isSignInLabel(long)).toBe(true);
+    // The catalog's name is used only if the helper would accept it as a name; otherwise a fixed one stands in.
+    for (const bad of ["Node.js Notes", "Zero\u200bWidth", "see https://evil.example", "mail me@evil.example", "www.evil.example", "", "   ", "a\u202eb", "<b>x</b>\u200b"]) {
+      const name = installAppName(bad);
+      expect(name, JSON.stringify(bad)).toBe(`TinyCloud Share: install ${APP_NAME_FALLBACK}`);
+      expect(isSignInLabel(name)).toBe(true);
+    }
+    expect(APP_NAME_FALLBACK).toBe("Tiny app");
+    // Every name in the committed catalog works as it is.
+    for (const app of catalog.apps) expect(isSignInLabel(installAppName(app.name)), app.name).toBe(true);
   });
+
+  it.each([["Node.js Notes"], ["Zero\u200bWidth Notes"]])("a catalog name the helper would refuse (%j) falls back to the fixed name and the install still goes ahead", async (name) => {
+    const client = fakeClient();
+    state.signIn.mockResolvedValue(client.signedIn);
+    await createInstallPorts().openSession(installerManifest({ app_id: APP, name, description: "d" }), hooks);
+    expect(state.signIn).toHaveBeenCalledTimes(1);
+    const options = state.signIn.mock.calls[0]?.[0] as { appName: string; manifest: { name: string } };
+    expect(options.appName).toBe("TinyCloud Share: install Tiny app");
+    expect(isSignInLabel(options.appName)).toBe(true);
+    // The app is still identified by its id and manifest, not by the window's name.
+    expect(options.manifest.name).toBe(name);
+});
 });
 
 describe("create-only writes through the real port", () => {

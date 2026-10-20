@@ -34,7 +34,7 @@ export function versionLabel(entry: CatalogEntry): string {
   return entry.source.tag ?? `commit ${entry.source.commit.slice(0, 7)}`;
 }
 
-/** The longest reason the page shows; the catalog check refuses a longer one. */
+/** The longest reason the page shows (it cuts a longer one); the catalog check refuses a longer one. scripts/apps-catalog.mjs has the same number. */
 export const MAX_DISABLED_REASON_CHARS = 280;
 
 export type Availability = { available: true } | { available: false; reason: string };
@@ -43,7 +43,10 @@ export type Availability = { available: true } | { available: false; reason: str
 export function availabilityOf(entry: CatalogEntry): Availability {
   if (entry.disabled !== true) return { available: true };
   const reason = typeof entry.disabledReason === "string" ? entry.disabledReason.trim() : "";
-  return { available: false, reason: reason === "" ? "This app is temporarily unavailable." : reason };
+  if (reason === "") return { available: false, reason: "This app is temporarily unavailable." };
+  // The CI catalog check refuses a longer reason; the page cuts one anyway (with a mark), so a bad catalog cannot fill the screen.
+  const characters = [...reason];
+  return { available: false, reason: characters.length <= MAX_DISABLED_REASON_CHARS ? reason : `${characters.slice(0, MAX_DISABLED_REASON_CHARS - 1).join("")}…` };
 }
 
 /** Thrown by `assertAvailable` for a disabled entry. */

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { resetInstallFlights } from "../src/apps/install-flight.ts";
+import { INSTALL_EXPIRY_MS, INSTALL_SESSION_LABEL } from "../src/apps/install-plan.ts";
 import { InstallError, type InstallPorts, type InstallSession, type PutResult } from "../src/apps/install.ts";
 import { mountApps } from "../src/apps/view.ts";
 
@@ -105,6 +107,18 @@ describe("the install sheet before anything is signed", () => {
     expect(buttons(sheet, "Not now")).toHaveLength(1);
   });
 
+  it("says how long the session lasts, and that number is the one the session is signed for", async () => {
+    stubBundleFetch();
+    mountApps(list, sheet, catalog.apps, { ports: () => controlledPorts().ports });
+    cardInstall(HEALTH).click();
+    await loaded();
+    // Read the number back from the rendered sentence: a literal in the view or a changed constant alone makes this fail.
+    const said = /For the next (\d+) minutes?, Share can then:/.exec(sheet.textContent ?? "");
+    expect(said, "the sheet states the session length").not.toBeNull();
+    expect(Number(said?.[1]) * 60_000).toBe(INSTALL_EXPIRY_MS);
+    expect(sheet.textContent).toContain(`For the next ${INSTALL_SESSION_LABEL}, Share can then:`);
+  });
+
   it("lists a cross-app read as a whole-database read", async () => {
     stubBundleFetch();
     mountApps(list, sheet, catalog.apps, { ports: () => controlledPorts().ports });
@@ -112,6 +126,18 @@ describe("the install sheet before anything is signed", () => {
     await loaded();
     expect(sheet.textContent).toContain("This app can read Health Log (sample)'s database (whole database).");
     expect(sheet.textContent).toContain("Sample app: use throwaway data only.");
+  });
+
+  it("a manifest the page cannot describe (a delegate DID) cannot be installed, and says why", async () => {
+    const manifest = { ...JSON.parse(readFileSync(join("public", entry(HEALTH).bundle.root, "manifest.json"), "utf8")), did: "did:key:z6MkexampleexampleexampleexampleexampleexampleABC" };
+    const bytes = Buffer.from(JSON.stringify(manifest));
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(bytes) })));
+    mountApps(list, sheet, [{ ...entry(HEALTH), app_id: "t.delegate", manifest: { path: "manifest.json", sha256: sha } }], { ports: () => { throw new Error("never"); } });
+    list.querySelectorAll("button")[1]?.click();
+    await vi.waitFor(() => expect(sheet.querySelector("[role=alert]")?.textContent).toContain("can't describe"));
+    expect(sheet.querySelector("[role=alert]")?.textContent).toContain("did");
+    expect(buttons(sheet, "Continue")[0]?.disabled).toBe(true);
   });
 
   it("a manifest that does not match the catalog cannot be installed", async () => {

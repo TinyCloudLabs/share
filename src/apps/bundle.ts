@@ -12,6 +12,7 @@
  * scripts/apps-catalog.mjs holds the same path rule for the build-time check
  * (the unit test keeps the two in step).
  */
+import { unsupportedManifest } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_RECORD_PATH = "install.json";
@@ -142,5 +143,8 @@ export async function fetchVerifiedBundle(entry: CatalogEntry, fetchFn: BundleFe
   // The entry repeats the manifest's identity; the installer signs in with the entry's copy, so the two must agree.
   if (typeof manifest !== "object" || manifest === null || !("app_id" in manifest) || !("name" in manifest) || !("description" in manifest)
     || manifest.app_id !== entry.app_id || manifest.name !== entry.name || manifest.description !== entry.description) throw new BundleRefusal("catalog", "manifest identity differs from the catalog");
+  // Fail closed: a manifest the sheet cannot describe (a delegate DID, a prefix or space that is not text) is not installed, before OpenKey opens.
+  const unsupported = unsupportedManifest(manifest);
+  if (unsupported !== null) throw new BundleRefusal("catalog", `manifest not supported: ${unsupported}`);
   return { files, manifest };
 }

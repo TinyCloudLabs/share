@@ -4,7 +4,7 @@
  * so Trusted Types can stay required for scripts. The install sheet's words are
  * fixed text plus those same textContent values; it adds no markup path.
  */
-import { type AccessItem, type AccessSummary } from "./access.ts";
+import { type AccessItem, type AccessSummary, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
 import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts";
@@ -74,6 +74,11 @@ async function renderAccess(entry: CatalogEntry, catalog: readonly CatalogEntry[
   target.removeAttribute("aria-busy");
   if (!result.ok) {
     target.replaceChildren(el("p", "tc-status tc-status--danger", [result.reason === "mismatch" ? MANIFEST_MISMATCH : MANIFEST_UNAVAILABLE], { role: "alert" }));
+    return;
+  }
+  const unsupported = unsupportedManifest(result.manifest);
+  if (unsupported !== null) {
+    target.replaceChildren(el("p", "tc-status tc-status--danger", [`This app's manifest asks for something this page can't describe (${unsupported}), so what it can do isn't shown and it can't be installed.`], { role: "alert" }));
     return;
   }
   const consent = consentFor(entry, result.manifest, catalog);
@@ -178,6 +183,12 @@ async function renderConsent(entry: CatalogEntry, catalog: readonly CatalogEntry
   target.removeAttribute("aria-busy");
   if (!result.ok) {
     target.replaceChildren(el("p", "tc-status tc-status--danger", [result.reason === "mismatch" ? "This app's manifest doesn't match the catalog, so it can't be installed." : MANIFEST_UNAVAILABLE], { role: "alert" }));
+    return false;
+  }
+  const unsupported = unsupportedManifest(result.manifest);
+  if (unsupported !== null) {
+    // Fail closed: nothing it asks for is shown or installed (Continue stays off, as for a manifest that does not match).
+    target.replaceChildren(el("p", "tc-status tc-status--danger", [`This app's manifest asks for something this page can't describe (${unsupported}), so it can't be installed.`], { role: "alert" }));
     return false;
   }
   const consent = consentFor(entry, result.manifest, catalog);

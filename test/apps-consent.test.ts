@@ -1,9 +1,11 @@
-import { resolveManifest } from "@tinycloud/sdk-core";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { composeManifestRequest, resolveManifest } from "@tinycloud/sdk-core";
 import { describe, expect, it } from "vitest";
 
-import { summarizeAccess } from "../src/apps/access.ts";
-import type { CatalogEntry } from "../src/apps/catalog.ts";
-import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor, reachOf, statementFor } from "../src/apps/consent.ts";
+import { summarizeAccess, unsupportedManifest } from "../src/apps/access.ts";
+import { type CatalogEntry, catalog as committed } from "../src/apps/catalog.ts";
+import { MAX_NOTICE_TEXT_CHARS, SAMPLE_NOTICE, SQL_CHANGE_NOTICE, clip, consentFor, reachOf, statementFor } from "../src/apps/consent.ts";
 
 const APP = "t.app";
 const OTHER = "other.app";
@@ -44,6 +46,11 @@ const SHAPES: { name: string; manifest: unknown; expected: string[] }[] = [
   { name: "DuckDB write elsewhere", manifest: manifestOf([{ service: "tinycloud.duckdb", path: "warehouse", skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete DuckDB data: warehouse in your applications space."] },
   { name: "a delegation grant", manifest: manifestOf([{ service: "tinycloud.delegation", path: "", skipPrefix: true, actions: ["create"] }]), expected: ["This app can hand access to your data on to other keys."] },
   { name: "a secret write", manifest: { app_id: APP, name: "T", defaults: false, secrets: { API_KEY: ["read", "write"] } }, expected: ["This app can change or delete the secret API_KEY.", "This app can read the secret API_KEY."] },
+  { name: "an encryption decrypt grant (a network id, not a folder)", manifest: manifestOf([{ service: "tinycloud.encryption", path: "urn:tinycloud:encryption:net1", actions: ["decrypt"] }]), expected: ["This app can decrypt data stored for it (urn:tinycloud:encryption:net1)."] },
+  { name: "encryption network create and revoke", manifest: manifestOf([{ service: "tinycloud.encryption", path: "urn:tinycloud:encryption:net1", actions: ["decrypt", "network.create", "tinycloud.encryption/network.revoke"] }]), expected: ["This app can decrypt data stored for it (urn:tinycloud:encryption:net1).", "This app can create or revoke encryption networks (urn:tinycloud:encryption:net1)."] },
+  { name: "the vault shorthand under the app's prefix", manifest: manifestOf([{ service: "tinycloud.vault", path: "notes/", actions: ["put", "get"] }]), expected: [`This app can change or delete files outside its own folder: vault/${APP}/notes/ in your applications space.`, `This app can read files outside its own folder: vault/${APP}/notes/ in your applications space.`] },
+  { name: "the vault shorthand with skipPrefix in another space", manifest: manifestOf([{ service: "tinycloud.vault", space: "default", path: "notes/", skipPrefix: true, actions: ["put"] }]), expected: ["This app can change or delete files under vault/notes/ in your default space."] },
+  { name: "scoped secrets", manifest: { app_id: APP, name: "T", defaults: false, secrets: { SESSION: { name: "SESSION_KEY", scope: "chat", actions: "delete" }, TOKEN: true } }, expected: ["This app can change or delete the secret chat/SESSION_KEY.", "This app can read the secret TOKEN."] },
   { name: "the default grants with the app's own folder", manifest: { app_id: APP, name: "T" }, expected: [SQL_CHANGE_NOTICE] },
   { name: "the default grants with no folder at all (prefix '')", manifest: { app_id: APP, name: "T", prefix: "" }, expected: ["This app can change or delete tables in every SQL database in your applications space, including other apps'.", "This app can change or delete any file in your applications space, including other apps' files.", "This app can read everything in your applications space, including other apps' data.", "This app can read every SQL database in your applications space, including other apps'."] },
   { name: "the all-tier defaults add DuckDB", manifest: { app_id: APP, name: "T", defaults: "all" }, expected: [SQL_CHANGE_NOTICE, `This app can change or delete its own DuckDB data.`] },
@@ -66,14 +73,48 @@ describe("what the sheet says about what an app can do once it is opened", () =>
           if (sentence === null) expect(item.service === "Capabilities" || (item.service === "Key-value" && reach === "own") || (kind === "read" && reach === "own"), `${name}: ${item.service} ${item.target}`).toBe(true);
         }
       }
-      // The mirror: what the lists show is what the real resolver resolves (secrets are vault paths there, so they are compared by name elsewhere).
-      if ((manifest as { secrets?: unknown }).secrets !== undefined) continue;
-      const labels: Record<string, string> = { "Key-value": "tinycloud.kv", "SQL database": "tinycloud.sql", DuckDB: "tinycloud.duckdb", Delegation: "tinycloud.delegation" };
+      // The mirror, with nothing skipped: what the lists show is what the real resolver resolves, secrets (vault paths in key-value) and encryption included.
+      const labels: Record<string, string> = { "Key-value": "tinycloud.kv", "SQL database": "tinycloud.sql", DuckDB: "tinycloud.duckdb", Delegation: "tinycloud.delegation", Secret: "tinycloud.kv", Encryption: "tinycloud.encryption" };
       const normal = (path: string): string => (/^\/*$/.test(path) ? "" : path);
       const shown = new Set([...summary.read, ...summary.change].filter((item) => item.service !== "Capabilities").flatMap((item) => item.actions.map((action) => `${labels[item.service]}|${item.space ?? "applications"}|${normal(item.path)}|${action}`)));
       const resolved = new Set(resolveManifest(manifest as Parameters<typeof resolveManifest>[0]).resources.filter((resource) => resource.service !== "tinycloud.capabilities").flatMap((resource) => resource.actions.map((action) => `${resource.service}|${resource.space}|${normal(resource.path)}|${action.slice(action.lastIndexOf("/") + 1)}`)));
       expect([...shown].sort(), name).toEqual([...resolved].sort());
     }
+  });
+
+  describe("shapes the sheet refuses instead of describing", () => {
+    const refused: { name: string; manifest: unknown; sdk: (manifest: Parameters<typeof resolveManifest>[0]) => void }[] = [
+      { name: "a delegate DID", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { did: "did:key:z6MkexampleexampleexampleexampleexampleexampleABC" }), sdk: (m) => expect(composeManifestRequest([m]).delegationTargets.length, "the SDK hands every resolved resource to that key").toBeGreaterThan(0) },
+      { name: "a prefix that is a number", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { prefix: 5 }), sdk: (m) => expect(resolveManifest(m).resources[0]?.path, "the SDK uses it as it is").toBe("5/a/") },
+      { name: "a null prefix", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { prefix: null }), sdk: (m) => expect(resolveManifest(m).resources[0]?.path).toBe("null/a/") },
+      { name: "a space that is not text", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { space: ["applications"] }), sdk: (m) => expect(() => resolveManifest(m), "the SDK refuses it itself").toThrow() },
+    ];
+
+    it.each(refused.map((shape) => [shape.name, shape]))("%s: refused, and the SDK really does something the lists would not show", (_name, shape) => {
+      expect(unsupportedManifest(shape.manifest)).toBeTypeOf("string");
+      shape.sdk(shape.manifest as Parameters<typeof resolveManifest>[0]);
+    });
+
+    it("no committed catalog manifest is one of them, and an ordinary manifest is not refused", () => {
+      for (const app of committed.apps) expect(unsupportedManifest(JSON.parse(readFileSync(join("public", app.bundle.root, "manifest.json"), "utf8"))), app.app_id).toBeNull();
+      expect(unsupportedManifest(manifestOf([], { prefix: "" }))).toBeNull();
+      expect(unsupportedManifest("not an object")).toBeNull();
+    });
+  });
+
+  it("cuts manifest text repeated in a sentence to the cap, with a mark, and leaves short text alone", () => {
+    const long = `${OTHER}/${"a/".repeat(2000)}`;
+    const notices = noticesOf(manifestOf([{ service: "tinycloud.kv", path: long, skipPrefix: true, actions: ["put"] }, { service: "tinycloud.sql", path: `x${"y".repeat(3000)}`, skipPrefix: true, actions: ["write"] }, { service: "tinycloud.encryption", path: `urn:tinycloud:encryption:${"n".repeat(3000)}`, actions: ["decrypt"] }]));
+    expect(notices.length).toBe(3);
+    for (const notice of notices) {
+      expect(notice.length, notice.slice(0, 60)).toBeLessThan(MAX_NOTICE_TEXT_CHARS + 120);
+      expect(notice).toContain("…");
+    }
+    expect([...clip("x".repeat(MAX_NOTICE_TEXT_CHARS))]).toHaveLength(MAX_NOTICE_TEXT_CHARS);
+    expect(clip("x".repeat(MAX_NOTICE_TEXT_CHARS))).not.toContain("…");
+    const cut = clip("é".repeat(MAX_NOTICE_TEXT_CHARS + 1));
+    expect([...cut]).toHaveLength(MAX_NOTICE_TEXT_CHARS);
+    expect(cut.endsWith("…")).toBe(true);
   });
 
   it("shows an empty path as everything in its space, never as an empty box", () => {

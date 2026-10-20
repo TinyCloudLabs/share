@@ -53,6 +53,11 @@ const SERVICE_LABELS: Record<string, string> = {
 
 const DEFAULT_SPACE = "applications";
 const SECRETS_SPACE = "secrets";
+/** The synthetic space the SDK gives every encryption grant: networks belong to the account, not to a space. */
+const ENCRYPTION_SPACE = "encryption";
+const ENCRYPTION_SERVICE = "tinycloud.encryption";
+/** Where the SDK keeps vault data in key-value: `vault/<key>`; a named secret is `vault/secrets/<NAME>` (or `.../scoped/<scope>/<NAME>`). */
+const VAULT_ROOT = "vault/";
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,7 +135,8 @@ function secretItem(key: string, spec: unknown): { item: Omit<AccessItem, "actio
   const scope = text(fields.scope);
   const rawActions = isObject(spec) ? (spec.actions === undefined ? ["read"] : typeof spec.actions === "string" ? [spec.actions] : spec.actions) : typeof spec === "string" ? [spec] : Array.isArray(spec) ? spec : ["read"];
   return {
-    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}`, path: scope === null ? name : `${scope}/${name}` },
+    // `path` is where the SDK puts the secret (`vault/secrets/<NAME>`); `target` is the name a person knows it by.
+    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}`, path: scope === null ? `${VAULT_ROOT}secrets/${name.trim()}` : `${VAULT_ROOT}secrets/scoped/${scope}/${name.trim()}` },
     actions: vaultActions(rawActions),
   };
 }
@@ -140,6 +146,21 @@ function place(summary: AccessSummary, item: Omit<AccessItem, "actions">, action
   const changes = actions.filter((action) => !Object.hasOwn(READ_ACTIONS, action));
   if (reads.length > 0) summary.read.push({ ...item, actions: reads });
   if (changes.length > 0) summary.change.push({ ...item, actions: changes });
+}
+
+/**
+ * Why a manifest cannot be described by this module (and so cannot be installed), or null. These are the shapes the
+ * SDK resolves in a way the lists and sentences here do not mirror, and that matter: a `did` hands everything the
+ * app is granted to another key; a `prefix` or `space` that is not text is used by the SDK as it is, where this
+ * module would read it as "not given". A catalog app has none of them, so they are refused rather than described.
+ * scripts/apps-catalog.mjs applies the same three checks to the committed catalog.
+ */
+export function unsupportedManifest(manifest: unknown): string | null {
+  if (!isObject(manifest)) return null;
+  if (manifest.did !== undefined) return "it hands its access to another identity (did)";
+  if (manifest.prefix !== undefined && typeof manifest.prefix !== "string") return "its prefix is not text";
+  if (manifest.space !== undefined && typeof manifest.space !== "string") return "its space is not text";
+  return null;
 }
 
 /** Reads a manifest of unknown shape. Never throws; fields it cannot read are left out. */
@@ -158,10 +179,17 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
     const service = text(entry.service);
     const path = typeof entry.path === "string" ? entry.path : null;
     if (service === null || path === null) continue;
+    if (service === ENCRYPTION_SERVICE) {
+      // The SDK forces the synthetic `encryption` space and no prefix: the path is a network id, not a folder.
+      place(summary, { description: text(entry.description), service: serviceLabel(service), space: ENCRYPTION_SPACE, target: path, path }, actionsOf(entry.actions));
+      continue;
+    }
     const space = text(entry.space) ?? manifestSpace;
-    const resolved = resolvePath(folder, path, entry.skipPrefix === true);
     const shownSpace = space === DEFAULT_SPACE ? null : space;
-    place(summary, { description: text(entry.description), service: serviceLabel(service), space: shownSpace, target: resolved === "" ? wholeSpace(shownSpace) : resolved, path: resolved }, actionsOf(entry.actions));
+    // `tinycloud.vault` is the SDK's shorthand for key-value under `vault/` (the prefix, if any, comes first): it is key-value to a reader.
+    const vault = service === "tinycloud.vault";
+    const resolved = vault ? `${VAULT_ROOT}${resolvePath(folder, path, entry.skipPrefix === true)}` : resolvePath(folder, path, entry.skipPrefix === true);
+    place(summary, { description: text(entry.description), service: serviceLabel(vault ? "tinycloud.kv" : service), space: shownSpace, target: resolved === "" ? wholeSpace(shownSpace) : resolved, path: resolved }, actionsOf(entry.actions));
   }
 
   if (isObject(manifest.secrets)) {

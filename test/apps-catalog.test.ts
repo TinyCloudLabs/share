@@ -115,6 +115,16 @@ describe("apps catalog digests", () => {
     });
   });
 
+  it("refuses a catalog manifest the sheet cannot describe: a delegate DID, a prefix or a space that is not text", () => {
+    const { publicDir, catalog: copy, folder } = privateCopy();
+    const file = join(folder, "manifest.json");
+    const original = JSON.parse(readFileSync(file, "utf8"));
+    for (const [patch, message] of [[{ did: "did:key:zExample" }, "delegate DID"], [{ prefix: 5 }, "prefix must be text"], [{ prefix: null }, "prefix must be text"], [{ space: ["applications"] }, "space must be text"]] as const) {
+      writeFileSync(file, JSON.stringify({ ...original, ...patch }));
+      expect(verifyCatalog(copy, publicDir).some((error) => error.includes(message)), message).toBe(true);
+    }
+  });
+
   it("refuses a catalog whose file list holds a development folder, a case collision or an unsafe path", () => {
     for (const path of ["dev/shim.mjs", "node_modules/x.js", "tests/a.mjs", "scripts/b.mjs", ".hidden/x", "../up.txt", "a\\b", "/abs"]) {
       const bad = structuredClone(catalog);
@@ -401,13 +411,13 @@ describe("what an app can read and change", () => {
       secrets: {
         OPENAI_KEY: ["read", "write"],
         TOKEN: true,
-        SESSION: { name: "session-key", scope: "chat", actions: "delete", description: "Signs the chat session." },
+        SESSION: { name: "SESSION_KEY", scope: "chat", actions: "delete", description: "Signs the chat session." },
       },
     });
     expect(own(summary.read).map((item) => `${item.target} ${item.actions}`)).toEqual(["OPENAI_KEY get", "TOKEN get"]);
     expect(own(summary.change)).toEqual([
-      { description: null, service: "Secret", space: "secrets", target: "OPENAI_KEY", path: "OPENAI_KEY", actions: ["put"] },
-      { description: "Signs the chat session.", service: "Secret", space: "secrets", target: "chat/session-key", path: "chat/session-key", actions: ["del"] },
+      { description: null, service: "Secret", space: "secrets", target: "OPENAI_KEY", path: "vault/secrets/OPENAI_KEY", actions: ["put"] },
+      { description: "Signs the chat session.", service: "Secret", space: "secrets", target: "chat/SESSION_KEY", path: "vault/secrets/scoped/chat/SESSION_KEY", actions: ["del"] },
     ]);
   });
 

@@ -49,6 +49,7 @@ An entry can be switched off without touching its bundle:
 - `disabled` is `true` or absent; `disabledReason` (1 to 280 characters) is required with it and allowed only with it. `verifyCatalog` checks this.
 - The flag lives in the entry, not in the bundle, so no digest changes when it flips and the integrity checks stay valid. `vendor-app.mjs` keeps it when an app is updated.
 - The page shows the card with "Temporarily unavailable" and the reason (as text), disables Install on the card and in the details sheet, and a forced click opens only a sheet that says so. The installer refuses a disabled entry before it fetches a file or makes the sign-in ports (`InstallError` reason `disabled`).
+- It takes effect when the site is deployed **and the page is reloaded**: the flag is compiled into the page's JavaScript (the headers are `no-store`, so a reload fetches the new build), and a tab that is already open keeps the catalog it loaded. Within one page load the card, the sheet, the flight and `runInstall` all refuse. The page cuts a `disabledReason` over `MAX_DISABLED_REASON_CHARS` (280) with a "…"; the catalog check refuses it.
 - The runner (T5b) uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops install and open.
 
 ## Digest
@@ -165,15 +166,26 @@ says "This app can change or delete its own tables.", and a grant on another app
 as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
 `summarizeAccess` the lists use.)
 
-Those sentences cover every reach a grant can have, from its resolved path (`path` on each list
-item): its own folder, the whole space (an empty path), another app's folder, a root-level key or
-database that no folder holds (`skipPrefix` with a bare name), and any space other than
-`applications`. A change or read outside the app's own folder always gets a sentence ("This app can
+Those sentences cover every reach a grant can have in a manifest the page accepts, from its resolved
+path (`path` on each list item, as the SDK resolves it): its own folder, the whole space (an empty
+path), another app's folder, a root-level key or database that no folder holds (`skipPrefix` with a
+bare name), any space other than `applications`, the vault shorthand (`tinycloud.vault`, key-value
+under `vault/`), named secrets (`vault/secrets/<NAME>` in the `secrets` space), and encryption
+grants (a network id, not a folder: "This app can decrypt data stored for it", "...create or revoke
+encryption networks"). Text from a manifest that a sentence repeats is cut at 120 characters with a
+"…".
+
+Three shapes are **refused**, not described, because the SDK resolves them in a way the lists do not
+mirror: a manifest `did` (it hands everything the app is granted to that key), and a `prefix` or
+`space` that is not text (the SDK uses them as they are). `unsupportedManifest` (`src/apps/access.ts`)
+refuses them before OpenKey opens (`bundle.ts`), the sheet says so and keeps Continue off, and
+`verifyCatalog` refuses a catalog manifest with one. No catalog app has any of them. A change or read outside the app's own folder always gets a sentence ("This app can
 change or delete any file in your applications space, including other apps' files.", "...every file in
 your default space.", "...the database healthlog, which is not inside its own folder."), and an empty
 path is shown as "everything in the <space> space". Own-folder key-value access is the only grant with
 none. `test/apps-consent.test.ts` checks each shape, that the lists equal what the SDK's
-`resolveManifest` resolves, and that every grant outside the own folder has a sentence.
+`resolveManifest` resolves for every shape (nothing skipped), that every grant outside the own folder
+has a sentence, and that each refused shape is one the SDK really resolves differently.
 
 When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the kit's samples do),
 `vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256

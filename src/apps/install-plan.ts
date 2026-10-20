@@ -20,6 +20,7 @@
 import type { Manifest } from "@tinycloud/web-sdk";
 
 import type { ManifestScope } from "../share/manifest-policy.js";
+import { isSignInLabel } from "../share/sign-in-label.js";
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
@@ -34,21 +35,20 @@ export const INSTALL_SESSION_LABEL = `${INSTALL_EXPIRY_MS / 60_000} ${INSTALL_EX
 
 /** The most characters the shared sign-in accepts in the name OpenKey shows. */
 const APP_NAME_MAX_CHARS = 64;
-const APP_NAME_FALLBACK = "TinyCloud Share: install an app";
-// The helper refuses control and direction characters, and text that reads as a link or an address.
-const HIDDEN = /[\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c\ufeff]/gu;
-const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\S@\S/i;
+const APP_NAME_PREFIX = "TinyCloud Share: install ";
+/** Used where the catalog's own name is not a name the shared sign-in accepts. */
+export const APP_NAME_FALLBACK = "Tiny app";
 
 /**
- * The name OpenKey shows for the install. DISPLAY ONLY: it is cut to what the
- * helper accepts (64 characters, one printable line, nothing that reads as a
- * link) and never identifies the app; the app id and the grants come from the
- * catalog entry. A name the helper would refuse falls back to a fixed one.
+ * The name OpenKey shows for the install. DISPLAY ONLY: it never identifies the app (the app id and the grants come
+ * from the catalog entry). The catalog's name goes in only if the shared sign-in would accept it as a name
+ * (`isSignInLabel`: no link-like text such as "Node.js Notes", no invisible characters); otherwise the fixed
+ * name "Tiny app" stands in, and the install proceeds. The whole line is cut to 64 characters, which the helper allows.
  */
 export function installAppName(appName: string): string {
-  const clean = appName.replace(HIDDEN, " ").replace(/\s+/g, " ").trim();
-  const candidate = [...`TinyCloud Share: install ${clean}`].slice(0, APP_NAME_MAX_CHARS).join("").trim();
-  return clean === "" || LINK_LIKE.test(candidate) ? APP_NAME_FALLBACK : candidate;
+  const named = isSignInLabel(appName) ? appName : APP_NAME_FALLBACK;
+  const cut = [...`${APP_NAME_PREFIX}${named}`].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
+  return isSignInLabel(cut) ? cut : `${APP_NAME_PREFIX}${APP_NAME_FALLBACK}`;
 }
 
 /**

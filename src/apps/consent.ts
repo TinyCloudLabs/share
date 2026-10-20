@@ -29,6 +29,15 @@ export interface Consent {
   notices: string[];
 }
 
+/** Most characters of manifest text (a path, a database, a secret name) a sentence repeats; longer text ends in "…". */
+export const MAX_NOTICE_TEXT_CHARS = 120;
+
+/** `text`, cut to the cap with a truncation mark. */
+export function clip(text: string): string {
+  const characters = [...text];
+  return characters.length <= MAX_NOTICE_TEXT_CHARS ? text : `${characters.slice(0, MAX_NOTICE_TEXT_CHARS - 1).join("")}…`;
+}
+
 export type Reach = "own" | "whole" | "other-app" | "root" | "other-space";
 
 /** The first folder of a resolved path (`<owner>/<rest>`), or null when it has none. */
@@ -49,18 +58,24 @@ export function reachOf(item: AccessItem, appId: string): Reach {
 const databases = (path: string): string => (/[/*]$/.test(path) ? "all of its databases" : "whole database");
 
 /** One sentence for a grant, or null for an ordinary own-folder key-value grant. */
-export function statementFor(item: AccessItem, kind: "read" | "change", appId: string, nameOf: (id: string) => string | undefined): string | null {
-  const owner = ownerOf(item.path);
-  const them = owner === null ? undefined : nameOf(owner);
+export function statementFor(source: AccessItem, kind: "read" | "change", appId: string, nameOf: (id: string) => string | undefined): string | null {
+  const owner = ownerOf(source.path);
+  const listed = owner === null ? undefined : nameOf(owner);
+  // Everything a sentence repeats from a manifest or the catalog is cut to the cap, with a mark.
+  const item: AccessItem = { ...source, path: clip(source.path), target: clip(source.target) };
+  const them = listed === undefined ? undefined : clip(listed);
   // A folder that is no listed app's is described by its path, like a root-level key: the sheet never calls it an app's.
-  const found = reachOf(item, appId);
-  const reach: Reach = found === "other-app" && them === undefined ? "root" : found;
+  const found = reachOf(source, appId);
+  const reach: Reach = found === "other-app" && listed === undefined ? "root" : found;
   const change = kind === "change";
   const space = item.space ?? "applications";
 
   switch (item.service) {
     case "Capabilities":
       return null; // the SDK's own read of the space's permission list; the list says so
+    case "Encryption":
+      // A network id, not a folder. `decrypt` reads; creating or revoking a network changes what can be decrypted.
+      return change ? `This app can create or revoke encryption networks (${item.target}).` : `This app can decrypt data stored for it (${item.target}).`;
     case "Delegation":
       return "This app can hand access to your data on to other keys.";
     case "Secret":
