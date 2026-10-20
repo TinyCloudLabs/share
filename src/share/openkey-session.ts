@@ -2,8 +2,11 @@ import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
+
+export { SignInOptionError } from "./sign-in-label.js";
 
 export interface OpenKeyShareSession {
   readonly address: string;
@@ -185,14 +188,6 @@ export interface ApprovalInfo {
   readonly purpose?: string | undefined;
 }
 
-/** A sign-in option outside what the helper allows (an expiry over an hour, a domain that is not a host name). */
-export class SignInOptionError extends Error {
-  constructor(option: string, detail: string) {
-    super(`sign-in-option-${option}: ${detail}`);
-    this.name = "SignInOptionError";
-  }
-}
-
 /** The longest a session may last. Also the default. */
 export const MAX_SESSION_MS = 60 * 60 * 1000;
 const DEFAULT_APP_NAME = "TinyCloud Share";
@@ -251,7 +246,7 @@ export interface ManifestSignIn {
   readonly session: OpenKeyShareSession;
   /** Space name to the id `ensureOwnedSpaceHosted` returned, for `account` and every `hostSpaces` entry. */
   readonly spaces: Readonly<Record<string, string>>;
-  /** Closes any OpenKey window or flow on the session and clears the SDK's in-memory session. Safe to call more than once; never rejects. */
+  /** Clears the SDK's in-memory session and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
   dispose(): Promise<void>;
 }
 
@@ -276,26 +271,12 @@ async function settleAccountRegistrySync(tinycloud: ShareTinyCloud, timeoutMs: n
   }
 }
 
-/** Longest app name, session prefix or domain label the helper accepts. */
-const MAX_LABEL_CHARS = 64;
-/** Control characters, line and paragraph separators, and the bidirectional controls. */
-const HIDDEN_CHARS = /[\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c\ufeff]/u;
-/** Text that reads as a link or an address: `https://…`, `www.…`, a user@host. */
-const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\S@\S/i;
-
-/** A name that goes into the sign-in statement or OpenKey's window: one short printable line, nothing that looks like a link. */
-function checkLabel(option: string, value: string): void {
-  if (value.trim().length === 0 || [...value].length > MAX_LABEL_CHARS) throw new SignInOptionError(option, `1 to ${MAX_LABEL_CHARS} characters`);
-  if (HIDDEN_CHARS.test(value)) throw new SignInOptionError(option, "one printable line, with no control or direction characters");
-  if (LINK_LIKE.test(value)) throw new SignInOptionError(option, "must not look like a link or an address");
-}
-
 function checkOptions(options: SignInWithManifestOptions): void {
   const { expiry, domain, appName, sessionPrefix } = options;
   if (expiry !== undefined && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
     throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds`);
   }
-  if (domain !== undefined && !HOST_NAME.test(domain)) throw new SignInOptionError("domain", "the domain must be a host name");
+  if (domain !== undefined && (domain.length > 253 || !HOST_NAME.test(domain))) throw new SignInOptionError("domain", "the domain must be an ASCII host name");
   if (appName !== undefined) checkLabel("appName", appName);
   if (sessionPrefix !== undefined) {
     checkLabel("sessionPrefix", sessionPrefix);
@@ -355,66 +336,64 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     checkManifest(options, copy, address);
     return copy;
   };
-  let manifest = typeof given === "function" ? undefined : freezeChecked(given, MANIFEST_CHECK_ADDRESS);
+  const checked = typeof given === "function" ? undefined : freezeChecked(given, MANIFEST_CHECK_ADDRESS);
   // A function manifest needs the address: its shape is checked first with a placeholder, then the real one is checked and used.
   if (typeof given === "function") freezeChecked(given(MANIFEST_CHECK_ADDRESS), MANIFEST_CHECK_ADDRESS);
   const appName = options.appName ?? DEFAULT_APP_NAME;
   const opened = options.session === undefined;
   const session = options.session ?? await authenticateWithOpenKey(onStatus, options.guardApproval, appName);
+  // From here on the connection is open. ANY throw (a function manifest, a refusal, a bad origin, an `onClient` that throws,
+  // the SDK's constructor, the sign-in itself) ends it: a connection this call opened is closed, and so is a client that was made.
+  // A connection the caller handed in is not this call's to close.
+  let dispose: (() => Promise<void>) | undefined;
   try {
-    if (typeof given === "function") manifest = freezeChecked(given(session.address), session.address);
-  } catch (error) {
-    // The helper opened this connection and nothing was signed: do not leave it open.
-    if (opened) closeOpenKeyFlows(session.openkey);
-    throw error;
-  }
-  if (manifest === undefined) throw new Error("sign-in-no-manifest");
-  const guardApproval: ApprovalGuard = async (wait, info) => {
-    try {
-      return await (options.guardApproval ?? runUnguarded)(wait, info);
-    } catch (error) {
-      // A cancel, a refusal or the guard giving up: do not leave a window open that nothing is waiting on.
-      closeOpenKeyFlows(session.openkey);
-      throw error;
-    }
-  };
-  const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
-  const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardApproval);
-  const tinycloud = new TinyCloudWeb({
-    provider,
-    signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request), { kind: "sign", purpose: request.purpose }) },
-    ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
-    // A new sender cannot resolve a signed location record before its first
-    // session exists. Use the explicitly configured owner-node choice only
-    // for that bootstrap; addressed recipients never receive this fallback.
-    tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
-    tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
-    autoDiscoverLocalNode: false,
-    autoCreateSpace: true,
-    autoBootstrapAccount: false,
-    // The SDK keeps a new account's own space registry in sync during sign-in and needs these permissions for it
-    // (see the helper's doc comment for what they are); without them it makes unauthorized calls (401) and logs them.
-    includeAccountRegistryPermissions: true,
-    domain: options.domain ?? new URL(config.shareOrigin).hostname,
-    spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
-    sessionStorageKeyPrefix: options.sessionPrefix ?? DEFAULT_SESSION_PREFIX,
-    sessionExpirationMs: options.expiry ?? MAX_SESSION_MS,
-    persistSession: false,
-    siweConfig: { statement: `Sign in to ${appName}.` },
-    manifest,
-    notifications: { popups: false },
-  });
-  registerWalletApprovalObserver(tinycloud, provider);
-  options.onClient?.(tinycloud);
-  let disposing: Promise<void> | undefined;
-  const dispose = (): Promise<void> => {
-    disposing ??= (async () => {
-      closeOpenKeyFlows(session.openkey);
-      try { await tinycloud.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
-    })();
-    return disposing;
-  };
-  try {
+    const manifest = typeof given === "function" ? freezeChecked(given(session.address), session.address) : checked;
+    if (manifest === undefined) throw new Error("sign-in-no-manifest");
+    const guardApproval: ApprovalGuard = async (wait, info) => {
+      try {
+        return await (options.guardApproval ?? runUnguarded)(wait, info);
+      } catch (error) {
+        // A cancel, a refusal or the guard giving up: do not leave a window open that nothing is waiting on.
+        closeOpenKeyFlows(session.openkey);
+        throw error;
+      }
+    };
+    const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
+    const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardApproval);
+    const tinycloud = new TinyCloudWeb({
+      provider,
+      signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request), { kind: "sign", purpose: request.purpose }) },
+      ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
+      // A new sender cannot resolve a signed location record before its first
+      // session exists. Use the explicitly configured owner-node choice only
+      // for that bootstrap; addressed recipients never receive this fallback.
+      tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
+      tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
+      autoDiscoverLocalNode: false,
+      autoCreateSpace: true,
+      autoBootstrapAccount: false,
+      // The SDK keeps a new account's own space registry in sync during sign-in and needs these permissions for it
+      // (see the helper's doc comment for what they are); without them it makes unauthorized calls (401) and logs them.
+      includeAccountRegistryPermissions: true,
+      domain: options.domain ?? new URL(config.shareOrigin).hostname,
+      spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
+      sessionStorageKeyPrefix: options.sessionPrefix ?? DEFAULT_SESSION_PREFIX,
+      sessionExpirationMs: options.expiry ?? MAX_SESSION_MS,
+      persistSession: false,
+      siweConfig: { statement: `Sign in to ${appName}.` },
+      manifest,
+      notifications: { popups: false },
+    });
+    let disposing: Promise<void> | undefined;
+    dispose = (): Promise<void> => {
+      disposing ??= (async () => {
+        if (opened) closeOpenKeyFlows(session.openkey);
+        try { await tinycloud.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
+      })();
+      return disposing;
+    };
+    registerWalletApprovalObserver(tinycloud, provider);
+    options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
     await tinycloud.signIn();
     const spaces: Record<string, string> = {};
@@ -427,7 +406,8 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     }
     return { tinycloud, session, spaces, dispose };
   } catch (error) {
-    await dispose();
+    if (dispose !== undefined) await dispose();
+    else if (opened) closeOpenKeyFlows(session.openkey);
     throw error;
   }
 }

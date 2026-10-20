@@ -43,10 +43,12 @@ export class ManifestRejectedError extends Error {
 
 /**
  * A path a permission may sit under, in any space or only in `space`. `{address}`
- * stands for the signed-in account, lower-cased. A prefix is matched on path
- * SEGMENTS: `v1` and `v1/` both accept `v1`, `v1/` and `v1/x`, never `v10/`. To
- * name exactly one key (an encryption network), give its whole path: it then
- * matches only that path.
+ * stands for the signed-in account, lower-cased. Paths are compared literally, on
+ * exact segments: `v1/` accepts `v1/` and `v1/x` (not `v1`), `v1` accepts `v1` and
+ * `v1/x` (not `v10/`). To name exactly one key (an encryption network), give its
+ * whole path: it then matches only that path. A path with an empty, `.` or `..`
+ * segment, a backslash, a control character or an encoded `%2e`/`%2f`/`%5c`/`%00`
+ * is refused, never normalised.
  */
 export type ScopedPrefix = string | { readonly space: string; readonly prefix: string };
 
@@ -96,16 +98,33 @@ function splitAction(action: string): { readonly namespace: string | undefined; 
   return slash === -1 ? { namespace: undefined, name: action } : { namespace: shortName(action.slice(0, slash)), name: action.slice(slash + 1) };
 }
 
-/** Collapses repeated slashes and drops trailing ones: `v1/`, `v1//` and `v1` are the same segment path. */
-function segments(path: string): string {
-  return path.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+/** The ways a path can mean one thing to this check and another to the node, which compares paths literally. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const ENCODED_SEPARATORS = /%(?:2e|2f|5c|00)/i;
+
+/**
+ * Refuses a path that is not written the one way the node reads it. The node matches paths as literal strings, so
+ * nothing is normalised here: `a//b/x` is not `a/b/x`, and a path that only becomes the permitted one after
+ * normalising is refused instead of being let through as if it were.
+ */
+function assertLiteralPath(path: string, at: string): void {
+  const parts = path.split("/");
+  const empty = parts.slice(0, -1).some((part) => part === "");
+  if (empty) throw new ManifestRejectedError("path-not-allowed", `an empty path segment: ${at}`);
+  if (parts.some((part) => part === "." || part === "..")) throw new ManifestRejectedError("path-not-allowed", `a . or .. path segment: ${at}`);
+  if (path.includes("\\")) throw new ManifestRejectedError("path-not-allowed", `a backslash in a path: ${at}`);
+  if (CONTROL_CHARS.test(path)) throw new ManifestRejectedError("path-not-allowed", `a control character in a path: ${at}`);
+  if (ENCODED_SEPARATORS.test(path)) throw new ManifestRejectedError("path-not-allowed", `an encoded dot, slash, backslash or NUL in a path: ${at}`);
 }
 
-/** True when `path` is `prefix` or lies under it, on segment boundaries. */
-function underPrefix(path: string, prefix: string): boolean {
-  const p = segments(prefix);
-  const candidate = segments(path);
-  return candidate !== "" && p !== "" && (candidate === p || candidate.startsWith(`${p}/`));
+/**
+ * True when `path` is the scope entry or lies under it, on exact path segments. An entry that ends in `/` covers the
+ * paths that start with it (`v1/` covers `v1/` and `v1/x`, not `v1`); an entry without one covers itself and what is
+ * under `entry/` (`v1` covers `v1` and `v1/x`, never `v10/`).
+ */
+function underPrefix(path: string, entry: string): boolean {
+  if (path === "" || entry === "") return false;
+  return entry.endsWith("/") ? path.startsWith(entry) : path === entry || path.startsWith(`${entry}/`);
 }
 
 function prefixesFor(scope: ManifestScope, manifest: Manifest, address: string): readonly { readonly space: string | undefined; readonly prefix: string }[] {
@@ -116,7 +135,7 @@ function prefixesFor(scope: ManifestScope, manifest: Manifest, address: string):
     });
   }
   const own = manifest.prefix ?? manifest.app_id;
-  return segments(own) === "" ? [] : [{ space: undefined, prefix: own }];
+  return own === "" || own === "/" ? [] : [{ space: undefined, prefix: own }];
 }
 
 function describe(resource: ResourceCapability): string {
@@ -164,7 +183,7 @@ export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, 
       // The SDK adds a read of the capability list to every space the manifest names. It is metadata of that space's grants, so it follows the space rule like anything else.
       if (resource.actions.some((action) => splitAction(action).name !== "read")) throw new ManifestRejectedError("action-not-allowed", `capabilities beyond read in ${at}`);
       if (!spaces.includes(resource.space)) throw new ManifestRejectedError("space-not-allowed", `space not allowed: ${at}`);
-      if (segments(resource.path) !== "") throw new ManifestRejectedError("path-not-allowed", `a capabilities read names no path: ${at}`);
+      if (resource.path !== "") throw new ManifestRejectedError("path-not-allowed", `a capabilities read names no path: ${at}`);
       continue;
     }
     const qualifiedOnly = service === "delegation";
@@ -178,7 +197,8 @@ export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, 
     // An encryption network is not in a space: the SDK reports the pseudo-space "encryption" for it.
     if (service !== "encryption" && !spaces.includes(resource.space)) throw new ManifestRejectedError("space-not-allowed", `space not allowed: ${at}`);
     // A delegation list names no path (it lists the space's grants); the space rule above is what scopes it.
-    const unpathed = service === "delegation" && segments(resource.path) === "";
+    const unpathed = service === "delegation" && resource.path === "";
+    if (!unpathed) assertLiteralPath(resource.path, at);
     if (!unpathed && !prefixes.some((entry) => (entry.space === undefined || entry.space === resource.space) && underPrefix(resource.path, entry.prefix))) {
       throw new ManifestRejectedError("path-not-allowed", `path outside the declared prefixes: ${at}`);
     }
