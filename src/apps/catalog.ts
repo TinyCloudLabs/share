@@ -5,9 +5,13 @@ export interface CatalogEntry {
   app_id: string;
   name: string;
   description: string;
+  /** A sample app: its install sheet says to use throwaway data only. */
+  sample?: true;
   publisher: { name: string; did?: string };
   /** `tag` is null when the entry pins a bare commit. */
   source: { repo: string; tag: string | null; commit: string };
+  /** The kit's own release record, when the bundle ships one (informational; the catalog digest is what is verified). */
+  release?: { version: string; digest: string };
   manifest: { path: string; sha256: string };
   bundle: { root: string; files: { path: string; sha256: string; size: number }[]; digest: string };
   knowledge: { root: string; digest: string } | null;

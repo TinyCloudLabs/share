@@ -1,0 +1,83 @@
+{
+  "schema": "tinycloud.app-release/v1",
+  "app_id": "xyz.tinycloud.sample.recipes",
+  "version": "0.1.0",
+  "files": [
+    {
+      "path": "app.jsx",
+      "sha256": "ccffda6f88cc30ac528070b2016aa0e897bcbf4f4afc74da0f96fea5292b70c2",
+      "size": 43954
+    },
+    {
+      "path": "knowledge/app.md",
+      "sha256": "1714aa7b56eaecd60622b026fe2e8038a419b88df9dbcf18350af8c87eab68e6",
+      "size": 5134
+    },
+    {
+      "path": "knowledge/index.md",
+      "sha256": "1631095d2e909ff5a49023aab0a5b4534e61b21b20ba228f89331ab4113fd591",
+      "size": 1077
+    },
+    {
+      "path": "knowledge/kv/app.md",
+      "sha256": "243427ee1edd3d818148b1eee71ca836625640f1e37f2e6eac13cb7d1b5b050d",
+      "size": 588
+    },
+    {
+      "path": "knowledge/kv/knowledge.md",
+      "sha256": "0795665a2c1642e181fe4a45e8e4ea4bbec7f4ae93f46dd9cdb99967d4f496d4",
+      "size": 688
+    },
+    {
+      "path": "knowledge/kv/prefs.md",
+      "sha256": "2b163e547f86e8defb1a64a03c8ad0802c1bc12382a418c468d13ce3606133e2",
+      "size": 886
+    },
+    {
+      "path": "knowledge/log.md",
+      "sha256": "95dd7cc4665d109fc32319ba3ec4bf325f7d200b8978aa669a9c51aa92b025c9",
+      "size": 225
+    },
+    {
+      "path": "knowledge/tables/meal_link.md",
+      "sha256": "e7fc091b61897d6f18d1e198f5cfdb41899261d24956f11d7367d9b50d9ca29e",
+      "size": 1632
+    },
+    {
+      "path": "knowledge/tables/recipe.md",
+      "sha256": "aea9b92ddd3b76dd8267ae8320416aabe0973819891168a3ecd9f5c17b48c8ce",
+      "size": 2662
+    },
+    {
+      "path": "knowledge/tables/recipe_shelf.md",
+      "sha256": "9098943f8e80334198018a2eb6b1bce9797d946641001d05c837e8e050aafe5e",
+      "size": 1207
+    },
+    {
+      "path": "knowledge/tables/shelf.md",
+      "sha256": "7d1049bc90a16ca5f81814bb83112004d00a6fde0fe26c56540b792267dbf9fc",
+      "size": 1025
+    },
+    {
+      "path": "knowledge/views/recipe_card.md",
+      "sha256": "ac80dd7f9c22cfbc496daeb9fb3d286c6b1efdb0ccf4135a869a19ec5c79969f",
+      "size": 1512
+    },
+    {
+      "path": "knowledge/views/shelf_overview.md",
+      "sha256": "ca6e085b9259ba7c344b480d4e21bad093247cccf86628a01ad71be51c3fb468",
+      "size": 1065
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "6bc186bbf88e57c574dc52eeb895b36fc0cb1ba763fa94fc28ec52caa5766cb5",
+      "size": 1943
+    },
+    {
+      "path": "schema.sql",
+      "sha256": "febf7eff8760f62369053e09736b25b03ca2e2ce71d8b465c46563009f3d8724",
+      "size": 5394
+    }
+  ],
+  "digest": "3934e27b9700508af2045846a36784748a605607b6cc4daaa11d1c13910b166a"
+}

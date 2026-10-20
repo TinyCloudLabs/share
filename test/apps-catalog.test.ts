@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { fileListDigest, verifyCatalog } from "../scripts/apps-catalog.mjs";
+import { fileListDigest, releaseDigest, sha256Hex, verifyCatalog } from "../scripts/apps-catalog.mjs";
 import { summarizeAccess } from "../src/apps/access.ts";
 import { catalog } from "../src/apps/catalog.ts";
 
@@ -66,6 +66,27 @@ describe("apps catalog digests", () => {
     const errors = verifyCatalog(wrongManifest, "public");
     expect(errors.some((error) => error.includes("manifest.sha256"))).toBe(true);
     expect(errors.some((error) => error.includes("knowledge.digest"))).toBe(true);
+  });
+
+  it("pins the kit samples to a full commit, marks them as samples, and checks the kit's own release digest as well", () => {
+    const samples = catalog.apps.filter((app) => app.sample === true);
+    expect(samples.map((app) => app.app_id)).toEqual(["xyz.tinycloud.sample.healthlog", "xyz.tinycloud.sample.recipes"]);
+    for (const app of samples) {
+      expect(app.source.tag).toBeNull();
+      expect(app.source.commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(app.release?.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(app.release?.digest).not.toBe(app.bundle.digest);
+      // Only the app's own files: no dev server, tests, scripts or dependencies.
+      expect(app.bundle.files.map((file) => file.path).filter((path) => /^(dev|tests|scripts|node_modules)\//.test(path) || path === "package.json")).toEqual([]);
+    }
+    const wrongRelease = structuredClone(catalog);
+    const sample = wrongRelease.apps.find((app) => app.sample === true);
+    if (sample?.release === undefined) throw new Error("fixture");
+    sample.release.digest = "9".repeat(64);
+    expect(verifyCatalog(wrongRelease, "public").some((error) => error.includes("release.digest differs"))).toBe(true);
+    const notBoolean = structuredClone(catalog) as unknown as { apps: { sample?: unknown }[] };
+    notBoolean.apps[1]!.sample = "yes";
+    expect(verifyCatalog(notBoolean, "public").some((error) => error.includes("sample must be true"))).toBe(true);
   });
 
   it("detects a bundle folder that no entry pins", () => {
@@ -140,6 +161,74 @@ describe("scripts/vendor-app.mjs", () => {
     expect(branch.status).toBe(1);
     expect(branch.stderr).toContain("refs/tags/main");
     expect(JSON.parse(readFileSync(catalogFile, "utf8"))).toEqual(after);
+  }, 60_000);
+
+  /** A kit-style repo: an app folder with a release.json allow-list, plus folders that must never be vendored. */
+  function releaseRepo(options: { tamper?: boolean; badPath?: string } = {}): { repo: string; url: string } {
+    const work = tempDir();
+    const repo = join(work, "app-repo");
+    const app = join(repo, "examples", "sample");
+    mkdirSync(join(app, "knowledge", "tables"), { recursive: true });
+    for (const folder of ["dev", "tests", "scripts", "node_modules/dep"]) mkdirSync(join(app, folder), { recursive: true });
+    const files: Record<string, string> = {
+      "manifest.json": JSON.stringify({ app_id: "test.sample", name: "Sample", description: "A sample.", defaults: false }),
+      "app.jsx": "export default () => null;\n",
+      "schema.sql": "CREATE TABLE t (id INTEGER);\n",
+      "knowledge/index.md": "# index\n",
+      "knowledge/tables/t.md": "# t\n",
+    };
+    for (const [path, text] of Object.entries(files)) writeFileSync(join(app, path), text);
+    writeFileSync(join(app, "dev", "shim.mjs"), "secret dev file");
+    writeFileSync(join(app, "tests", "x.test.mjs"), "test");
+    writeFileSync(join(app, "scripts", "make.mjs"), "script");
+    writeFileSync(join(app, "node_modules", "dep", "index.js"), "dep");
+    writeFileSync(join(app, "package.json"), "{}");
+    const listed = Object.entries(files).map(([path, text]) => ({ path, sha256: sha256Hex(Buffer.from(text)), size: Buffer.byteLength(text) }));
+    if (options.badPath !== undefined) listed.push({ path: options.badPath, sha256: "a".repeat(64), size: 1 });
+    const digest = releaseDigest(listed);
+    writeFileSync(join(app, "release.json"), JSON.stringify({ schema: "tinycloud.app-release/v1", app_id: "test.sample", version: "0.1.0", digest, files: listed }));
+    if (options.tamper === true) writeFileSync(join(app, "app.jsx"), "export default () => 'changed after the release was made';\n");
+    git(repo, "init", "-q", "-b", "main");
+    git(repo, "config", "user.email", "test@example.com");
+    git(repo, "config", "user.name", "Test");
+    git(repo, "add", "-A"); git(repo, "commit", "-q", "-m", "one");
+    localRepo = repo;
+    return { repo, url: "https://example.test/app-repo" };
+  }
+
+  it("with a release.json, copies ONLY the files it lists (never dev/, tests/, scripts/ or node_modules), marks a sample, and records both digests", () => {
+    const { repo, url } = releaseRepo();
+    const work = tempDir();
+    const catalogFile = join(work, "catalog.json");
+    const publicDir = join(work, "public");
+    const commit = git(repo, "rev-parse", "HEAD");
+    const run = vendor(`${url}@${commit}`, catalogFile, publicDir, "--path", "examples/sample", "--sample", "--publisher", "Tests");
+    expect(run.stderr).toBe("");
+    const written = JSON.parse(readFileSync(catalogFile, "utf8"));
+    const entry = written.apps[0];
+    expect(entry.sample).toBe(true);
+    expect(entry.source).toEqual({ repo: url, tag: null, commit });
+    expect(entry.release).toEqual({ version: "0.1.0", digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(entry.bundle.files.map((file: { path: string }) => file.path)).toEqual(["app.jsx", "knowledge/index.md", "knowledge/tables/t.md", "manifest.json", "release.json", "schema.sql"]);
+    expect(entry.release.digest).not.toBe(entry.bundle.digest); // two schemes: the catalog's is the one an installer verifies
+    const folder = join(publicDir, "apps", "b", entry.bundle.digest);
+    expect(readdirSync(folder).sort()).toEqual(["app.jsx", "knowledge", "manifest.json", "release.json", "schema.sql"]);
+    expect(verifyCatalog(written, publicDir)).toEqual([]);
+
+    // The sample flag survives an update that does not repeat it.
+    expect(vendor(`${url}@${commit}`, catalogFile, publicDir, "--path", "examples/sample").status).toBe(0);
+    expect(JSON.parse(readFileSync(catalogFile, "utf8")).apps[0].sample).toBe(true);
+  }, 60_000);
+
+  it("refuses a listed file whose bytes differ from the release, and a release that lists an unsafe path", () => {
+    for (const options of [{ tamper: true }, { badPath: "../dev/shim.mjs" }, { badPath: "install.json" }]) {
+      const { repo, url } = releaseRepo(options);
+      const work = tempDir();
+      const commit = git(repo, "rev-parse", "HEAD");
+      const run = vendor(`${url}@${commit}`, join(work, "catalog.json"), join(work, "public"), "--path", "examples/sample", "--publisher", "Tests");
+      expect(run.status, JSON.stringify(options)).toBe(1);
+      expect(readdirSync(work)).toEqual([]); // nothing written
+    }
   }, 60_000);
 });
 

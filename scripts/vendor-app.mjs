@@ -4,7 +4,7 @@
  * apps/catalog.json. The result is committed; the build and the site fetch
  * nothing.
  *
- *   node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] [--publisher-did <did>]
+ *   node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--sample] [--publisher <name>] [--publisher-did <did>]
  *
  * `<tag>` is a tag name or a full 40-hex commit id. Branch names are refused:
  * they move, and a catalog entry pins one exact commit.
@@ -17,15 +17,25 @@
  * bundle folder it supersedes.
  *
  * Test hooks: `--catalog <file>` and `--public <dir>` redirect the outputs.
+ *
+ * If the folder holds a `release.json` (`tinycloud.app-release/v1`), that file's
+ * `files` list is the ALLOW-LIST: only those files and `release.json` itself
+ * are copied (never `dev/`, `tests/`, `scripts/`, `node_modules` or anything
+ * else beside them), each file's bytes must match the sha256 the release
+ * lists, and the release's own digest must recompute. The catalog digest is
+ * computed separately over what was copied and is the one an installer
+ * verifies; the kit's digest and version are recorded as `release`.
+ * `--sample` marks the entry `sample: true` (kept on update): the install sheet
+ * then tells people to use throwaway data only.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { CATALOG_SCHEMA, describeBundle, fileListDigest, listFiles, verifyCatalog } from "./apps-catalog.mjs";
+import { CATALOG_SCHEMA, RELEASE_PATH, RELEASE_SCHEMA, describeBundle, fileListDigest, installPathProblem, listFiles, releaseDigest, sha256Hex, verifyCatalog } from "./apps-catalog.mjs";
 
 class Fatal extends Error {}
 
@@ -59,11 +69,50 @@ function splitSpec(spec) {
   return { url: spec.slice(0, at), ref };
 }
 
+/**
+ * Copies the app's files into `staged`. With a `release.json`, ONLY the files
+ * it lists (plus the release file) are copied, each checked against the sha256
+ * the release declares; without one, the whole folder is the bundle.
+ * @returns the parsed release record, or undefined when the folder has none
+ */
+function stageBundle(from, staged) {
+  const releaseFile = join(from, RELEASE_PATH);
+  if (!existsSync(releaseFile)) {
+    cpSync(from, staged, { recursive: true, filter: (source) => !/(^|\/)\.git$/.test(source) });
+    return undefined;
+  }
+  if (!lstatSync(releaseFile).isFile()) die(`${RELEASE_PATH} must be a regular file`);
+  const record = JSON.parse(readFileSync(releaseFile, "utf8"));
+  if (record.schema !== RELEASE_SCHEMA) die(`${RELEASE_PATH} schema must be ${RELEASE_SCHEMA}`);
+  if (typeof record.app_id !== "string" || typeof record.version !== "string" || record.version === "" || typeof record.digest !== "string") die(`${RELEASE_PATH} needs app_id, version and digest`);
+  if (!Array.isArray(record.files) || record.files.length === 0) die(`${RELEASE_PATH} lists no files`);
+  const seen = new Set();
+  mkdirSync(staged, { recursive: true });
+  for (const file of record.files) {
+    const problem = installPathProblem(file?.path);
+    if (problem !== null) die(`${RELEASE_PATH}: ${String(file?.path)} ${problem}`);
+    if (file.path === RELEASE_PATH) die(`${RELEASE_PATH} cannot list itself`);
+    if (seen.has(file.path)) die(`${RELEASE_PATH}: ${file.path} is listed twice`);
+    seen.add(file.path);
+    const source = join(from, file.path);
+    if (!existsSync(source) || !lstatSync(source).isFile()) die(`${file.path} is listed by ${RELEASE_PATH} but is not a regular file`);
+    const bytes = readFileSync(source);
+    if (sha256Hex(bytes) !== file.sha256 || (file.size !== undefined && bytes.length !== file.size)) die(`${file.path} does not match the sha256/size in ${RELEASE_PATH}`);
+    mkdirSync(dirname(join(staged, file.path)), { recursive: true });
+    writeFileSync(join(staged, file.path), bytes);
+  }
+  if (!seen.has("manifest.json")) die(`${RELEASE_PATH} does not list manifest.json`);
+  if (releaseDigest(record.files) !== record.digest) die(`${RELEASE_PATH}: digest does not match its file list`);
+  writeFileSync(join(staged, RELEASE_PATH), readFileSync(releaseFile));
+  return record;
+}
+
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     path: { type: "string", default: "tinycloud/app" },
     publisher: { type: "string" },
+    sample: { type: "boolean", default: false },
     "publisher-did": { type: "string" },
     catalog: { type: "string", default: join(root, "apps", "catalog.json") },
     public: { type: "string", default: join(root, "public") },
@@ -89,7 +138,7 @@ try {
   const from = join(checkout, subdir);
   if (!existsSync(from)) die(`${subdir} does not exist at ${ref}`);
   const staged = join(work, "bundle");
-  cpSync(from, staged, { recursive: true, filter: (source) => !/(^|\/)\.git$/.test(source) });
+  const releaseRecord = stageBundle(from, staged);
 
   const described = describeBundle(staged);
   const tooBig = described.bundle.files.find((file) => file.size > MAX_FILE_BYTES);
@@ -98,6 +147,8 @@ try {
   if (total > MAX_BUNDLE_BYTES) die(`bundle is ${total} bytes; the limit is ${MAX_BUNDLE_BYTES}`);
 
   const manifest = JSON.parse(readFileSync(join(staged, "manifest.json"), "utf8"));
+  if (releaseRecord !== undefined && releaseRecord.app_id !== manifest.app_id) die(`${RELEASE_PATH} is for ${releaseRecord.app_id}, not ${manifest.app_id}`);
+  const release = releaseRecord === undefined ? undefined : { version: releaseRecord.version, digest: releaseRecord.digest };
   for (const field of ["app_id", "name", "description"]) {
     if (typeof manifest[field] !== "string" || manifest[field].trim() === "") die(`manifest.json needs a non-empty ${field}`);
   }
@@ -108,12 +159,15 @@ try {
   const publisher = values.publisher === undefined ? previous?.publisher : { name: values.publisher, ...(values["publisher-did"] === undefined ? {} : { did: values["publisher-did"] }) };
   if (publisher === undefined) die("--publisher <name> is required for a new app");
 
+  const sample = values.sample === true || previous?.sample === true;
   const entry = {
     app_id: manifest.app_id,
     name: manifest.name,
     description: manifest.description,
+    ...(sample ? { sample: true } : {}),
     publisher,
     source: { repo: url.replace(/\.git$/, ""), tag: COMMIT_ID.test(ref) ? null : ref, commit },
+    ...(release === undefined ? {} : { release }),
     manifest: described.manifest,
     bundle: described.bundle,
     knowledge: described.knowledge,

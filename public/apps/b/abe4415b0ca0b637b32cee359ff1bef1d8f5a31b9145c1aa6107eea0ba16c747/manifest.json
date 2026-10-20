@@ -1,0 +1,60 @@
+{
+  "manifest_version": 1,
+  "app_id": "xyz.tinycloud.sample.recipes",
+  "name": "Recipes (sample)",
+  "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log sample. Sample tiny app, written from scratch for TinyCloud.",
+  "appVersion": "0.1.0",
+  "space": "applications",
+  "defaults": false,
+  "includePublicSpace": false,
+  "expiry": "1h",
+  "knowledge": "knowledge/index.md",
+  "permissions": [
+    {
+      "service": "tinycloud.sql",
+      "path": "recipes",
+      "actions": [
+        "read",
+        "write",
+        "schema"
+      ],
+      "description": "Read and change your recipes, shelves and meal links (database xyz.tinycloud.sample.recipes/recipes). schema lets the app create its own tables on first open."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "prefs/",
+      "actions": [
+        "get",
+        "put"
+      ],
+      "description": "Read and change the app's one settings file (sort order, last shelf)."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "app/",
+      "actions": [
+        "get"
+      ],
+      "description": "Read the installed copy of the app's schema. The app cannot change its own code."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "knowledge/",
+      "actions": [
+        "get",
+        "put",
+        "list"
+      ],
+      "description": "Read and update the app's knowledge bundle so an agent can pick up where you left off."
+    },
+    {
+      "service": "tinycloud.sql",
+      "path": "xyz.tinycloud.sample.healthlog/healthlog",
+      "actions": [
+        "read"
+      ],
+      "skipPrefix": true,
+      "description": "Read access to the whole Health Log database (xyz.tinycloud.sample.healthlog/healthlog): its meals, its body-weight entries and its daily summaries. This app only reads meals, so you can start a recipe from one. Read only: it cannot change anything in your Health Log."
+    }
+  ]
+}

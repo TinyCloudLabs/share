@@ -41,6 +41,40 @@ export function bundlePathProblem(path) {
   return null;
 }
 
+/** Written by the installer next to the app's files; a bundle can never carry it. */
+export const INSTALL_RECORD_PATH = "install.json";
+export const MAX_INSTALL_PATH_LENGTH = 128;
+export const MAX_INSTALL_PATH_DEPTH = 8;
+const INSTALL_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
+/**
+ * The stricter rule for a file an installer will write into the user's
+ * TinyCloud: bundle path rules plus ASCII segments of `[A-Za-z0-9._-]` (the
+ * node refuses other characters in a key, and a plain alphabet leaves no room
+ * for tricks), no leading dot, a bounded length and depth, and not the
+ * installer's own record. src/apps/bundle.ts holds the same rule for the page.
+ * @returns {string|null} why the path cannot be installed, or null.
+ */
+export function installPathProblem(path) {
+  const problem = bundlePathProblem(path);
+  if (problem !== null) return problem;
+  if (path.length > MAX_INSTALL_PATH_LENGTH) return `is longer than ${MAX_INSTALL_PATH_LENGTH} characters`;
+  const segments = path.split("/");
+  if (segments.length > MAX_INSTALL_PATH_DEPTH) return `is more than ${MAX_INSTALL_PATH_DEPTH} folders deep`;
+  if (!segments.every((segment) => INSTALL_SEGMENT.test(segment))) return "may only use letters, digits, \".\", \"_\" and \"-\" (no leading dot)";
+  if (path === INSTALL_RECORD_PATH) return `${INSTALL_RECORD_PATH} is reserved for the installer`;
+  return null;
+}
+
+/**
+ * The kit's own release digest (`tinycloud.app-release/v1`): sha256 over the
+ * path-sorted `<path> <sha256>` lines joined by "\n". It is recorded next to
+ * the catalog digest, which stays the one an installer verifies.
+ */
+export function releaseDigest(files) {
+  return sha256Hex(Buffer.from([...files].sort(compareByPath).map((file) => `${file.path} ${file.sha256}`).join("\n"), "utf8"));
+}
+
 export function compareByPath(a, b) {
   return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 }
@@ -104,6 +138,15 @@ export function describeBundle(dir) {
   };
 }
 
+export const RELEASE_PATH = "release.json";
+export const RELEASE_SCHEMA = "tinycloud.app-release/v1";
+
+/** An app id becomes the first segment of every key the installer writes. @returns {string|null} */
+export function installAppIdProblem(appId) {
+  if (typeof appId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(appId) || appId.includes("..")) return "may only use letters, digits, \".\", \"_\" and \"-\" (at most 128 characters, no \"..\")";
+  return null;
+}
+
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const isText = (value) => typeof value === "string" && value.trim() !== "";
 
@@ -127,6 +170,8 @@ export function verifyCatalog(catalog, publicDir) {
     if (!isText(entry.app_id)) fail("app_id is required");
     else if (seenIds.has(entry.app_id)) fail("duplicate app_id");
     else seenIds.add(entry.app_id);
+    if (isText(entry.app_id) && installAppIdProblem(entry.app_id) !== null) fail(`app_id ${installAppIdProblem(entry.app_id)}`);
+    if (entry.sample !== undefined && entry.sample !== true) fail("sample must be true when present");
     for (const field of ["name", "description"]) if (!isText(entry[field])) fail(`${field} is required`);
     if (!isObject(entry.publisher) || !isText(entry.publisher.name)) fail("publisher.name is required");
     else if (entry.publisher.did !== undefined && !isText(entry.publisher.did)) fail("publisher.did must be a non-empty string when present");
@@ -148,7 +193,7 @@ export function verifyCatalog(catalog, publicDir) {
     // The declared list: well-formed, strictly sorted, and the digest follows from it.
     let listOk = true;
     for (const [position, file] of bundle.files.entries()) {
-      const problem = isObject(file) ? bundlePathProblem(file.path) : "must be an object";
+      const problem = isObject(file) ? installPathProblem(file.path) : "must be an object";
       if (problem !== null) { fail(`bundle.files[${position}].path ${problem}`); listOk = false; continue; }
       if (typeof file.sha256 !== "string" || !HEX64.test(file.sha256)) { fail(`${file.path}: sha256 must be 64 lowercase hex characters`); listOk = false; }
       if (!Number.isSafeInteger(file.size) || file.size < 0) { fail(`${file.path}: size must be a non-negative integer`); listOk = false; }
@@ -195,6 +240,33 @@ export function verifyCatalog(catalog, publicDir) {
       if (knowledge.length === 0) fail("knowledge block present but the bundle has no knowledge/ files");
       if (entry.knowledge.root !== `${bundleRootFor(bundle.digest)}${KNOWLEDGE_DIR}/`) fail("knowledge.root must be the bundle's knowledge/ folder");
       if (entry.knowledge.digest !== fileListDigest(knowledge)) fail("knowledge.digest does not match the knowledge files");
+    }
+
+    // The kit's own release record, when the bundle ships one: its file list is the allow-list the vendoring used.
+    if (entry.release !== undefined) {
+      const release = entry.release;
+      const releaseFile = declared.get(RELEASE_PATH);
+      if (!isObject(release) || !isText(release.version) || typeof release.digest !== "string" || !HEX64.test(release.digest)) fail("release must be {version, digest}");
+      else if (releaseFile === undefined) fail(`release is declared but ${RELEASE_PATH} is not in bundle.files`);
+      else {
+        try {
+          const record = JSON.parse(readFileSync(join(dir, RELEASE_PATH), "utf8"));
+          if (record.schema !== RELEASE_SCHEMA) fail(`${RELEASE_PATH} schema must be ${RELEASE_SCHEMA}`);
+          if (record.app_id !== entry.app_id) fail(`app_id differs from ${RELEASE_PATH}`);
+          if (record.version !== release.version) fail(`release.version differs from ${RELEASE_PATH}`);
+          if (record.digest !== release.digest) fail(`release.digest differs from ${RELEASE_PATH}`);
+          const listed = Array.isArray(record.files) ? record.files : [];
+          if (listed.length === 0) fail(`${RELEASE_PATH} lists no files`);
+          if (releaseDigest(listed) !== release.digest) fail(`release.digest does not match the files ${RELEASE_PATH} lists`);
+          for (const file of listed) {
+            const own = declared.get(file.path);
+            if (own === undefined) fail(`${file.path}: listed by ${RELEASE_PATH} but not in bundle.files`);
+            else if (own.sha256 !== file.sha256 || (file.size !== undefined && own.size !== file.size)) fail(`${file.path}: differs from ${RELEASE_PATH}`);
+          }
+          const allowed = new Set([...listed.map((file) => file.path), RELEASE_PATH]);
+          for (const path of declared.keys()) if (!allowed.has(path)) fail(`${path}: in the bundle but not listed by ${RELEASE_PATH}`);
+        } catch (error) { fail(`${RELEASE_PATH} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`); }
+      }
     }
   }
 
