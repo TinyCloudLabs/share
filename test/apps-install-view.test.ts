@@ -98,7 +98,7 @@ describe("the install sheet before anything is signed", () => {
     expect(text).toContain(`${HEALTH}/knowledge/`);
     expect(text).toContain("Files you already have there are kept, never replaced.");
     expect(text).toContain("None of this is granted now.");
-    expect(text).toContain("Opening installed apps is coming next.");
+    expect(text).not.toContain("coming next");
     // The installer's grants are the two put-only folders, shown with the account list's own permissions.
     expect(text).toContain("Account list permissions");
     expect(buttons(sheet, "Continue")).toHaveLength(1);
@@ -136,7 +136,7 @@ describe("the install sheet before anything is signed", () => {
 });
 
 describe("the states of an install", () => {
-  it("goes pending approval, installing, installed; a double click is one sign-in; Open is not offered yet", async () => {
+  it("goes pending approval, installing, installed; a double click is one sign-in; Open links to the runner", async () => {
     stubBundleFetch();
     const node = controlledPorts();
     const portsFactory = vi.fn(() => node.ports);
@@ -156,10 +156,9 @@ describe("the states of an install", () => {
     await vi.waitFor(() => expect(status()).toContain("Installed."));
     expect(node.puts.at(-1)).toBe(`${HEALTH}/app/install.json`);
     expect(node.sessions).toHaveLength(1);
-    // The runner is the next slice: say so, and do not link to it.
-    expect(sheet.textContent).toContain("Opening installed apps is coming next.");
-    expect(buttons(sheet, "Open Health Log (sample)")[0]?.disabled).toBe(true);
-    expect(sheet.querySelector("a[href^='/apps/run']")).toBeNull();
+    // Open is a link to the runner, with the app id in the fragment.
+    expect(sheet.textContent).not.toContain("coming next");
+    expect(sheet.querySelector(`a[href='/apps/run#${HEALTH}']`)?.textContent).toBe("Open Health Log (sample)");
   });
 
   it("says Already installed: your copy is kept when everything is there", async () => {

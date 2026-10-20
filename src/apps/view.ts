@@ -15,7 +15,7 @@ import { loadManifest } from "./manifest.ts";
 
 type Child = Node | string;
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string | null, children: Child[] = [], attrs: Record<string, string> = {}): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string | null, children: Child[] = [], attrs: Record<string, string> = {}): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className !== null) node.className = className;
   for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
@@ -24,8 +24,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string | n
 }
 
 const INSTALL_NOTE_ID = "install-note";
-/** The runner (`/apps/run`) is the next slice. Until it exists the Open control says so instead of linking to a missing page. */
-const RUNNER_AVAILABLE = false;
 
 function dataRow(label: string, value: Child): HTMLElement {
   return el("div", "tc-data-row", [el("dt", "tc-data-row__label", [label]), el("dd", "tc-data-row__value apps-value", [value])]);
@@ -49,7 +47,7 @@ function accessList(items: AccessItem[]): HTMLElement {
   ])));
 }
 
-function accessSection(title: string, empty: string, items: AccessItem[]): HTMLElement {
+export function accessSection(title: string, empty: string, items: AccessItem[]): HTMLElement {
   return el("section", "apps-section", [el("h3", null, [title]), items.length === 0 ? el("p", "apps-muted", [empty]) : accessList(items)]);
 }
 
@@ -86,7 +84,7 @@ async function renderAccess(entry: CatalogEntry, catalog: readonly CatalogEntry[
 }
 
 /** The app's plain statements (SQL changes, reads of another app); the sample notice has its own banner. */
-function noticeList(notices: readonly string[]): HTMLElement[] {
+export function noticeList(notices: readonly string[]): HTMLElement[] {
   const own = notices.filter((notice) => notice !== SAMPLE_NOTICE);
   return own.length === 0 ? [] : [el("ul", "apps-notes apps-notes--strong", own.map((notice) => el("li", null, [notice])))];
 }
@@ -126,8 +124,6 @@ function sheetHeader(kicker: string, title: string, entry: CatalogEntry, close: 
 // ---------------------------------------------------------------------------
 // Install
 
-const OPEN_NOT_YET = "Opening installed apps is coming next. Installing saves the app to your TinyCloud now; you can open it from here when that ships.";
-
 /** What the install sheet says about the sign-in, from the same resolved request the sign-in makes. */
 function signInSection(entry: CatalogEntry): HTMLElement {
   const { app, registry } = installerAccess(installerManifest({ app_id: entry.app_id, name: entry.name, description: entry.description }));
@@ -160,7 +156,6 @@ function runtimeSection(entry: CatalogEntry, runtime: AccessSummary, notices: st
     ...noticeList(notices),
     accessSection("It can read", "Nothing.", runtime.read),
     accessSection("It can change", "Nothing. This app can't change your data.", runtime.change),
-    el("p", "apps-muted", [OPEN_NOT_YET]),
   ]);
 }
 
@@ -225,10 +220,7 @@ function statusFor(entry: CatalogEntry, flight: InstallFlight): StatusText {
 }
 
 function openControl(entry: CatalogEntry): HTMLElement {
-  if (RUNNER_AVAILABLE) return el("a", "tc-button tc-button--primary apps-button", [`Open ${entry.name}`], { href: runnerHref(entry.app_id) });
-  const button = el("button", "tc-button apps-button", [`Open ${entry.name}`], { type: "button", disabled: "" });
-  button.disabled = true;
-  return button;
+  return el("a", "tc-button tc-button--primary apps-button", [`Open ${entry.name}`], { href: runnerHref(entry.app_id) });
 }
 
 /** The install sheet: the pre-consent text, then the live state of this app's install. */
@@ -269,7 +261,6 @@ function installContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], p
     if (state.phase === "failed" && state.error.written.length > 0) {
       parts.push(el("details", "apps-files", [el("summary", null, [`Saved so far (${state.error.written.length})`]), el("ul", "apps-notes", state.error.written.map((key) => el("li", null, [el("code", null, [key])])))]));
     }
-    if (state.phase === "installed") parts.push(el("p", "apps-muted", [RUNNER_AVAILABLE ? "" : OPEN_NOT_YET]));
     status.replaceChildren(...parts);
     if (flight.active) actions.replaceChildren(button("Installing…", "tc-button tc-button--primary", () => undefined, true), button("Close", "tc-button", close));
     else if (state.phase === "installed") actions.replaceChildren(openControl(entry), button("Done", "tc-button tc-button--primary", close));
@@ -358,7 +349,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`, ...(entry.sample === true ? [" ", el("span", "tc-badge apps-badge", ["Sample"])] : [])]),
       el("p", "apps-card__description", [entry.description]),
-      el("div", "apps-card__actions", [details, install]),
+      el("div", "apps-card__actions", [details, install, el("a", "tc-button apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })]),
     ]));
   }
 }

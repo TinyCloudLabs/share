@@ -20,6 +20,12 @@ export interface JsxModuleSpec {
   readonly provides: readonly string[];
   /** `true` for the files every render receives; the rest are sent only when imported. */
   readonly always: boolean;
+  /**
+   * `true` for a file only an installed app's runner page may send (the `cap/*`
+   * client). The share viewer never loads it, so a shared page that imports it
+   * gets the unknown-library panel instead of a call that nobody answers.
+   */
+  readonly runnerOnly?: true;
 }
 
 export const JSX_MODULE_SPECS: readonly JsxModuleSpec[] = [
@@ -31,7 +37,11 @@ export const JSX_MODULE_SPECS: readonly JsxModuleSpec[] = [
   { id: "recharts", provides: ["recharts"], always: false },
   { id: "d3", provides: ["d3"], always: false },
   { id: "mermaid", provides: ["mermaid"], always: false },
+  { id: "tinycloud-app", provides: ["@tinycloud/app"], always: false, runnerOnly: true },
 ];
+
+/** File ids only the installed-app runner may send. */
+export const JSX_RUNNER_ONLY_IDS: readonly string[] = JSX_MODULE_SPECS.filter((spec) => spec.runnerOnly === true).map((spec) => spec.id);
 
 /** What the unknown-import panel lists. Internal specifiers (`@tc/*`, tailwind) are not offered. */
 export const JSX_LIBRARY_SET: readonly string[] = [
@@ -60,9 +70,13 @@ export interface JsxManifest {
   readonly files: Readonly<Record<string, JsxManifestFile>>;
 }
 
-/** Maps an import specifier to the file id that answers it. */
-export function fileIdForSpecifier(manifest: JsxManifest, specifier: string): string | undefined {
+/**
+ * Maps an import specifier to the file id that answers it. Runner-only files
+ * answer only when `allowRunnerModules` is set (the installed-app runner).
+ */
+export function fileIdForSpecifier(manifest: JsxManifest, specifier: string, allowRunnerModules = false): string | undefined {
   for (const file of Object.values(manifest.files)) {
+    if (!allowRunnerModules && JSX_RUNNER_ONLY_IDS.includes(file.id)) continue;
     if (file.provides.includes(specifier)) return file.id;
   }
   return undefined;

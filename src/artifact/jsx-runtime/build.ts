@@ -135,6 +135,9 @@ function fileEntry(spec: JsxModuleSpec): BuildOptions {
       return { entryPoints: [entry("recharts.mjs")], external: REACT_DOM_EXTERNAL };
     case "mermaid":
       return { entryPoints: [entry("mermaid.mjs")] };
+    case "tinycloud-app":
+      // No dependencies: a thin postMessage client (app-module.ts).
+      return { entryPoints: [join(ROOT, "src/artifact/jsx-runtime/app-module.ts")] };
     case "d3":
       return {
         stdin: { contents: d3EntrySource(), resolveDir: join(ROOT, "node_modules/d3/src"), sourcefile: "d3-index.js", loader: "js" },

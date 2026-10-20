@@ -42,9 +42,13 @@
  * both hops, a per-frame nonce, the protocol version and a type allowlist; any
  * other message is dropped without a reply. The nonce is NOT a secret (a
  * srcdoc child can read it through `document.baseURI`). The reserved `cap/*`
- * namespace (later viewer capabilities) is rejected by the allowlist.
+ * namespace carries an installed app's data calls (docs/tiny-app-runner.md): the
+ * bridge forwards only the six known operations, bounded in size and in flight,
+ * and only the parent's registered handler (`onCapability`) ever acts on them.
+ * Without a handler (the share viewer) the parent drops every one.
  */
 
+import { CAP_ID_PATTERN, CAP_LIMITS, CAP_RESULT_TYPE, CAP_TYPES, CAP_TYPE_PREFIX } from "../artifact/jsx-runtime/cap-protocol.js";
 import { SANDBOX_PERMISSIONS_POLICY } from "./sandbox-permissions.js";
 
 /** App-origin path of the bridge document (dev + build). */
@@ -182,6 +186,19 @@ export function parseCapabilityMessage(data: unknown, nonce: string): JsxCapabil
   return { type: data.type as JsxCapabilityMessage["type"], body: "body" in data ? data.body : undefined };
 }
 
+/** What the parent sends back for a `cap/*` request: `{v,type:"cap/result",nonce,id,result}`. The key set is part of the contract (tested). */
+export interface JsxCapabilityReply {
+  readonly v: 1;
+  readonly type: typeof CAP_RESULT_TYPE;
+  readonly nonce: string;
+  readonly id: string;
+  readonly result: unknown;
+}
+
+export function buildCapabilityReply(nonce: string, id: string, result: unknown): JsxCapabilityReply {
+  return { v: 1, type: CAP_RESULT_TYPE, nonce, id, result };
+}
+
 /**
  * Tokens for Tailwind's `@theme`, so `bg-tc-surface`, `text-tc-muted`,
  * `border-tc-border`, `rounded-tc-md` and `font-tc-sans` follow the TinyCloud
@@ -271,6 +288,13 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   var MAX_MODULES = ${JSX_MAX_MODULES_CHARS};
   var MAX_ERROR = ${JSX_MAX_ERROR_CHARS};
   var RENDER_KEYS = ["v", "type", "nonce", "kind", "source", "modules", "theme"];
+  var CAP_TYPES = ${JSON.stringify(CAP_TYPES)};
+  var CAP_PREFIX = ${JSON.stringify(CAP_TYPE_PREFIX)};
+  var CAP_RESULT = ${JSON.stringify(CAP_RESULT_TYPE)};
+  var CAP_ID = ${CAP_ID_PATTERN.toString()};
+  var CAP_MAX_BYTES = ${CAP_LIMITS.maxMessageBytes};
+  var CAP_MAX_INFLIGHT = ${CAP_LIMITS.maxInFlight};
+  var CAP_MAX_DEPTH = ${CAP_LIMITS.maxDepth};
   var CHILD_PREAMBLE = __CHILD_PREAMBLE__;
   var CHILD_BOOT = __CHILD_BOOT__;
   var TAILWIND_THEME = __TAILWIND_THEME__;
@@ -281,12 +305,14 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   var seenInitialLoad = false;
   var childReady = false;
   var errorsSent = 0;
+  var capPending = Object.create(null);
+  var capCount = 0;
   var lastRestore = 0;
   var RESTORE_INTERVAL = ${JSX_RESTORE_CONTROLS_INTERVAL_MS};
   function post(message) {
     window.parent.postMessage(Object.assign({ v: VERSION, nonce: nonce }, message), "*");
   }
-  function destroyChild() { if (child !== null) { child.remove(); child = null; } }
+  function destroyChild() { if (child !== null) { child.remove(); child = null; } capPending = Object.create(null); capCount = 0; }
   function isPlain(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
@@ -343,8 +369,78 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
     child.srcdoc = parts.join("");
     document.body.replaceChildren(child);
   }
+  // ---- cap/* (an installed app's data calls). The bridge is a bounded relay: it forwards the known operations
+  // from its own child to its parent, and the parent's answers back; it decides nothing about what a call may touch.
+  // capBytes: size of plain data in bytes (strings counted by length: the parent measures UTF-8 exactly),
+  // -1 when it is not plain data or is nested too deeply, -2 when it is larger than the message cap.
+  function capBytes(value) {
+    var total = 0;
+    var nodes = 0;
+    var tooBig = false;
+    function walk(v, depth) {
+      if (depth > CAP_MAX_DEPTH) return false;
+      nodes += 1;
+      if (nodes > CAP_MAX_BYTES / 8) { tooBig = true; return false; }
+      var kind = typeof v;
+      if (v === null || kind === "undefined" || kind === "boolean") total += 8;
+      else if (kind === "number") { if (!isFinite(v)) return false; total += 8; }
+      else if (kind === "string") total += v.length;
+      else if (kind === "object") {
+        var tag = Object.prototype.toString.call(v);
+        if (tag === "[object Uint8Array]") total += v.byteLength;
+        else if (tag === "[object Array]") {
+          for (var i = 0; i < v.length; i++) { if (!walk(v[i], depth + 1)) return false; if (total > CAP_MAX_BYTES) { tooBig = true; return false; } }
+        } else if (tag === "[object Object]") {
+          var proto = Object.getPrototypeOf(v);
+          if (proto !== Object.prototype && proto !== null) return false;
+          var keys = Object.keys(v);
+          for (var j = 0; j < keys.length; j++) { total += keys[j].length; if (!walk(v[keys[j]], depth + 1)) return false; if (total > CAP_MAX_BYTES) { tooBig = true; return false; } }
+        } else return false;
+      } else return false;
+      if (total > CAP_MAX_BYTES) { tooBig = true; return false; }
+      return true;
+    }
+    if (walk(value, 0)) return total;
+    return tooBig ? -2 : -1;
+  }
+  function capReply(id, result) {
+    if (child !== null && child.contentWindow !== null) child.contentWindow.postMessage({ v: VERSION, type: CAP_RESULT, id: id, result: result }, "*");
+  }
+  function capRefuse(id, code, message) { capReply(id, { ok: false, error: { code: code, message: message } }); }
+  function exactKeys(data, allowed) {
+    var keys = Object.keys(data);
+    if (keys.length !== allowed.length) return false;
+    for (var i = 0; i < keys.length; i++) if (allowed.indexOf(keys[i]) < 0) return false;
+    return true;
+  }
+  function capFromChild(data) {
+    if (!rendered || CAP_TYPES.indexOf(data.type) < 0 || !exactKeys(data, ["v", "type", "id", "args"])) return;
+    // Without a usable id there is nothing to answer, and a repeated id is a call already in flight.
+    if (typeof data.id !== "string" || !CAP_ID.test(data.id) || capPending[data.id] === true) return;
+    if (!isPlain(data.args)) { capRefuse(data.id, "BAD_REQUEST", "The call's arguments must be a plain object."); return; }
+    var size = capBytes(data.args);
+    if (size === -2) { capRefuse(data.id, "TOO_LARGE", "The call is larger than " + CAP_MAX_BYTES + " bytes."); return; }
+    if (size < 0) { capRefuse(data.id, "BAD_REQUEST", "The call's arguments must be plain data."); return; }
+    if (capCount >= CAP_MAX_INFLIGHT) { capRefuse(data.id, "BUSY", "More than " + CAP_MAX_INFLIGHT + " calls in flight."); return; }
+    capPending[data.id] = true;
+    capCount += 1;
+    post({ type: data.type, body: { id: data.id, args: data.args } });
+  }
+  function capFromParent(data) {
+    if (!isPlain(data) || data.v !== VERSION || data.nonce !== nonce || data.type !== CAP_RESULT) return;
+    if (!exactKeys(data, ["v", "type", "nonce", "id", "result"])) return;
+    if (typeof data.id !== "string" || capPending[data.id] !== true) return;
+    if (!isPlain(data.result) || typeof data.result.ok !== "boolean") return;
+    delete capPending[data.id];
+    capCount -= 1;
+    var size = capBytes(data.result);
+    if (size === -2) capRefuse(data.id, "TOO_LARGE", "The answer is larger than " + CAP_MAX_BYTES + " bytes: ask for less (for SQL, use LIMIT).");
+    else if (size < 0) capRefuse(data.id, "INTERNAL", "The runner sent an answer this app could not read.");
+    else capReply(data.id, data.result);
+  }
   function fromChild(data) {
     if (!isPlain(data) || data.v !== VERSION) return;
+    if (typeof data.type === "string" && data.type.indexOf(CAP_PREFIX) === 0) { capFromChild(data); return; }
     if (data.type === "ready" && !childReady) { childReady = true; post({ type: "ready" }); return; }
     // A frame may ask for the chrome once a second, and only after its page has started.
     // It carries no gesture, so the viewer treats it as a request, never as a user action.
@@ -367,7 +463,8 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   window.addEventListener("message", function (event) {
     if (event.source === window.parent) {
       // One render per frame: a second request would replace a running artifact.
-      if (!rendered && validRender(event.data)) show(event.data);
+      if (!rendered) { if (validRender(event.data)) show(event.data); return; }
+      capFromParent(event.data);
       return;
     }
     if (child !== null && event.source === child.contentWindow && event.origin === "null") fromChild(event.data);

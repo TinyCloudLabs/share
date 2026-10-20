@@ -1,0 +1,176 @@
+/* The runner page: chrome around an installed app's sandbox frame. Only --tc-* tokens (apps.css has the page shell). */
+.run-main {
+  width: min(100% - 2rem, 90rem);
+  padding-block: var(--tc-space-5) var(--tc-space-7);
+}
+
+.run-bar {
+  display: grid;
+  gap: var(--tc-space-3);
+  margin-bottom: var(--tc-space-4);
+  padding: var(--tc-space-4);
+}
+
+.run-bar__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+}
+
+.run-title {
+  margin: 0;
+  font-size: var(--tc-text-xl);
+  letter-spacing: var(--tc-tracking-tight);
+}
+
+.run-title:focus {
+  outline: none;
+}
+
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-2);
+}
+
+.run-provenance {
+  margin: 0;
+  max-width: 80ch;
+  color: var(--tc-color-text-muted);
+  font-size: var(--tc-text-sm);
+}
+
+.run-status-region {
+  display: grid;
+  gap: var(--tc-space-2);
+}
+
+.run-status-region:empty {
+  display: none;
+}
+
+.run-status {
+  margin: 0;
+}
+
+.run-details {
+  font-size: var(--tc-text-sm);
+}
+
+.run-details summary {
+  min-height: 2.75rem;
+  padding-block: var(--tc-space-2);
+  cursor: pointer;
+}
+
+.run-details summary:focus-visible {
+  outline: 2px solid var(--tc-color-focus);
+  outline-offset: 3px;
+}
+
+.run-details p {
+  max-width: 80ch;
+}
+
+/* The app's box: whatever it draws or positions stays inside it and below the chrome above. */
+.run-stage {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+
+.run-stage > .viewer-jsx-stage {
+  display: flex;
+  min-height: 0;
+}
+
+.run-frame {
+  display: block;
+  width: 100%;
+  height: max(32rem, calc(100svh - 14rem));
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+  background: var(--tc-color-page);
+  isolation: isolate;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.run-stage > .viewer-jsx-stage[data-state="loading"] {
+  min-height: 32rem;
+}
+
+.run-screen {
+  display: grid;
+  gap: var(--tc-space-3);
+  justify-items: start;
+  max-width: 44rem;
+  padding: var(--tc-space-5);
+}
+
+.run-screen p {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.run-screen__title {
+  margin: 0;
+  font-size: var(--tc-text-lg);
+}
+
+.run-screen__title:focus {
+  outline: none;
+}
+
+.run-screen--danger {
+  border-color: var(--tc-color-status-danger);
+}
+
+.run-screen__detail code {
+  overflow-wrap: anywhere;
+}
+
+.run-screen__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-2);
+}
+
+.run-working {
+  display: grid;
+  gap: var(--tc-space-3);
+  max-width: 44rem;
+  padding: var(--tc-space-5);
+}
+
+.run-working p {
+  margin: 0;
+  color: var(--tc-color-text-muted);
+}
+
+.run-working__bar {
+  height: 0.875rem;
+  width: min(100%, 24rem);
+}
+
+@media (max-width: 40rem) {
+  .run-main {
+    width: min(100% - 1.5rem, 90rem);
+  }
+
+  .run-bar,
+  .run-screen,
+  .run-working {
+    padding: var(--tc-space-3);
+  }
+
+  .run-actions {
+    width: 100%;
+  }
+
+  .run-frame {
+    height: max(28rem, calc(100svh - 12rem));
+  }
+}
