@@ -107,6 +107,17 @@ screenshots (`APPS_SCREENSHOT_DIR`).
 `src/apps/install*.ts`. Nothing is signed or written until the person clicks Continue; the SDK and
 OpenKey load only then.
 
+**The sheet closes when Continue is pressed.** The OpenKey window is an overlay the SDK appends to
+`document.body` (fixed, z-index 999999). A modal `<dialog>` is in the browser's top layer, above any
+z-index, so a sheet left open would cover the window. Continue therefore closes the sheet first, and the
+progress is shown in an inline panel under the app's card (`src/apps/inline-panel.ts`): a `role=status`
+live region that takes focus, "Approval n of up to 4" while OpenKey asks, a visible Cancel (Escape also
+cancels), then the result (Installed, Already installed, a refusal, an error with Try again). The page
+behind is not inert while the window is up. Cancel says so at once, opens no window if none was open yet,
+and if a window is approved afterwards the session is closed and nothing is written. Repair works the same
+way. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window and checks, at
+390, 1100 and 1440 px, that nothing modal is above the window and a click reaches it.
+
 1. **Verify, before OpenKey.** Every file of the bundle is fetched from the entry's own
    `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size. The
    entry's own file list must hash to its digest, and its paths must pass the install rule
@@ -130,7 +141,7 @@ OpenKey load only then.
    copy and is kept, so a hand-edited `knowledge/app.md` survives a re-install.
 4. **`<app_id>/app/install.json`** (`{ source, digest, installed_at }`) is written last, create-only.
    "Installed" is only ever said about a bundle that is entirely in place. If a write fails, what
-   was saved stays, the sheet lists it, and Try again resumes: it keeps those files and writes the
+   was saved stays, the inline panel lists it, and Try again resumes: it keeps those files and writes the
    rest. A re-install of a finished install writes nothing and says "Already installed: your copy
    is kept."
 5. **Apps list.** The SDK records the app in the account's apps list in the background right after

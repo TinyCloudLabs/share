@@ -175,14 +175,14 @@ async function openInstallSheet(page, appId) {
 }
 
 const TERMINAL = /^(Installed\.|Already installed|Not installed yet|Sign-in cancelled|OpenKey didn't|Another OpenKey|That approval|We couldn't|.* files don't match the catalog|This catalog entry|Couldn't load)/;
-const statusText = (page) => page.$eval(".apps-install-line", (node) => node.textContent).catch(() => "");
+const statusText = (page) => page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent).catch(() => "");
 
 /** Records every announcement of the live region, from now on. */
 async function recordStatus(page) {
   await page.evaluate(() => {
     window.__announced = [];
-    const status = document.querySelector(".apps-install-status");
-    new MutationObserver(() => { const text = status.querySelector(".apps-install-line")?.textContent ?? ""; if (text !== "" && window.__announced.at(-1) !== text) window.__announced.push(text); }).observe(status, { childList: true, characterData: true, subtree: true });
+    // The inline panel under the card appears on Continue, so observe the page and read its line each time.
+    new MutationObserver(() => { const text = document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""; if (text !== "" && window.__announced.at(-1) !== text) window.__announced.push(text); }).observe(document.body, { childList: true, characterData: true, subtree: true });
   });
 }
 
@@ -207,6 +207,7 @@ async function captureState(page, name) {
     assert.deepEqual(found, [], `${name} ${width}px ${scheme}: axe AA`);
     assert((await page.evaluate(() => { const sheet = document.querySelector("#apps-sheet"); return sheet.scrollWidth - sheet.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the sheet scrolls sideways`);
     // The status sits in the sheet's footer: show the end of the sheet body too.
+    await page.evaluate(() => document.querySelector(".apps-install-panel")?.scrollIntoView({ block: "center" }));
     if (shotDir !== undefined) { await mkdir(shotDir, { recursive: true }); await page.screenshot({ path: join(shotDir, `install-${name}-${width}-${scheme}.png`) }); }
   }
   await page.setViewport({ width: 1440, height: 900 }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
@@ -287,12 +288,22 @@ try {
     const { page, context } = await openApps(browser, stack, candidate.port, "install-health");
     await openInstallSheet(page, HEALTH);
     await captureState(page, "idle-sample");
+    // The sheet closes on Continue, so read what it says about the session length now.
+    const said = (await page.$$eval("#apps-sheet p", (nodes) => nodes.map((node) => node.textContent))).find((text) => /For the next \d+ minutes?, Share can then:/.test(text ?? ""));
     await recordStatus(page);
     controls.sign = hold();
     const before = trace.length;
     await page.click("#apps-sheet footer button");
     await controls.sign.arrived;
-    assert.match(await statusText(page), /^Approve in the OpenKey window to install Health Log \(sample\)/);
+    assert.match(await statusText(page), /^Approval \d of up to 4: approve in the OpenKey window to install Health Log \(sample\)/);
+    // The OpenKey window is up (its signature request is held): nothing modal may be above it, and a click at its centre must reach it.
+    const layer = await page.evaluate(() => {
+      const dialog = document.querySelector("#apps-sheet");
+      const hit = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+      return { sheetOpen: dialog.open, modal: document.querySelector(":modal")?.id ?? null, hitTag: hit?.tagName ?? null, hitInSheet: hit === dialog || dialog.contains(hit), hitIsBodyChild: hit?.parentElement === document.body };
+    });
+    assert.deepEqual({ sheetOpen: layer.sheetOpen, modal: layer.modal, hitInSheet: layer.hitInSheet, hitIsBodyChild: layer.hitIsBodyChild }, { sheetOpen: false, modal: null, hitInSheet: false, hitIsBodyChild: true }, `the install sheet is above the OpenKey window (${JSON.stringify(layer)})`);
+    report.windowLayer = layer;
     await captureState(page, "pending-approval");
     controls.sign.release(); controls.sign = undefined;
     // Hold the last write (install.json) to show the installing state with the files already in place.
@@ -304,11 +315,11 @@ try {
     const outcome = await finished(page);
     assert.equal(outcome, "Installed.", "a fresh install says Installed.");
     const announced = await page.evaluate(() => window.__announced);
-    for (const expected of ["Checking Health Log (sample)'s files against the catalog…", "Opening OpenKey…", "Approve in the OpenKey window to install Health Log (sample)", "Installing Health Log (sample)… 0 of 15 files", "Adding Health Log (sample) to your apps…", "Installed."]) {
+    for (const expected of ["Checking Health Log (sample)'s files against the catalog…", "Opening OpenKey…", "Approval 1 of up to 4: approve in the OpenKey window to install Health Log (sample)", "Installing Health Log (sample)… 0 of 15 files", "Adding Health Log (sample) to your apps…", "Installed."]) {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
-    assert((await page.$eval(".apps-install-status", (node) => node.getAttribute("aria-live"))) === "polite");
-    assert.equal(await page.$eval("#apps-sheet footer .apps-install-actions a", (node) => node.getAttribute("href")), `/apps/run#${HEALTH}`, "Open links to the runner");
+    assert((await page.$eval(".apps-install-panel .apps-install-status", (node) => node.getAttribute("aria-live"))) === "polite");
+    assert.equal(await page.$eval(".apps-install-panel .apps-install-actions a", (node) => node.getAttribute("href")), `/apps/run#${HEALTH}`, "Open links to the runner");
     await captureState(page, "installed");
 
     const during = trace.slice(before).filter((entry) => entry.phase === "install-health");
@@ -345,7 +356,6 @@ try {
     // The session lasts exactly what the sheet says: "For the next 15 minutes" is derived from the constant the signed expiry comes from.
     const issued = Date.parse(sessionMessage.match(/Issued At: (\S+)/)[1]);
     const expires = Date.parse(sessionMessage.match(/Expiration Time: (\S+)/)[1]);
-    const said = (await page.$$eval("#apps-sheet p", (nodes) => nodes.map((node) => node.textContent))).find((text) => /For the next \d+ minutes?, Share can then:/.test(text ?? ""));
     assert(said, "the sheet does not state how long the session lasts");
     const minutes = Number(said.match(/For the next (\d+) minute/)[1]);
     assert.equal(expires - issued, minutes * 60_000, `the signed session lasts ${(expires - issued) / 60_000} minutes; the sheet says ${minutes}`);
@@ -396,7 +406,7 @@ try {
     await page.click("#apps-sheet footer button");
     const outcome = await finished(page);
     assert.match(outcome, /files don't match the catalog, so nothing was installed\. Nothing was written to your TinyCloud\.$/);
-    assert.equal((await page.$$eval(".apps-install-status [role=alert]", (nodes) => nodes.length)), 1, "a refusal is an alert");
+    assert.equal((await page.$$eval(".apps-install-panel [role=alert]", (nodes) => nodes.length)), 1, "a refusal is an alert");
     assert(trace.slice(start).some((entry) => entry.tampered === true), "the tampered file was never served");
     assert.deepEqual(nodeRequests(stack, start), [], "a tampered bundle reached OpenKey or the owner's node");
     await captureState(page, "refused-tampered");
@@ -420,13 +430,13 @@ try {
     const outcome = await finished(page);
     const total = recipes.bundle.files.length + 1;
     assert.equal(outcome.startsWith(`Not installed yet: ${total - 1} of ${total} files were saved.`), true, `the partial failure message was "${outcome}"`);
-    assert.equal(await page.$$eval(".apps-install-status [role=alert]", (nodes) => nodes.length), 1);
+    assert.equal(await page.$$eval(".apps-install-panel [role=alert]", (nodes) => nodes.length), 1);
     await captureState(page, "error-partial");
     const midway = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
     assert.equal(midway.keys.length, total - 1, "the files before the failure are saved");
     assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was written before the bundle was complete");
     controls.failRecord = false;
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((button) => button.textContent === "Try again").click());
+    await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Try again").click());
     await page.waitForFunction(() => /^(Installed\.|Already|Not installed)/.test(document.querySelector(".apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
     const resumed = await statusText(page);
     assert.equal(resumed.startsWith(`Installed. ${total - 1} files you already had were kept.`), true, `the resume message was "${resumed}"`);
