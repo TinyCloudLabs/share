@@ -129,7 +129,7 @@ function taskCard(ctx: ViewContext, peer: string, task: TaskView): HTMLElement {
   for (const artifact of task.artifacts) {
     const wrapper = el(doc, "section", "cr-artifact");
     const id = uid("cr-artifact");
-    const name = el(doc, "h4", "cr-artifact-name", artifact.name === "" ? "Artifact" : artifact.name); name.id = id;
+    const name = el(doc, "h3", "cr-artifact-name", artifact.name === "" ? "Artifact" : artifact.name); name.id = id;
     wrapper.setAttribute("aria-labelledby", id);
     wrapper.append(name);
     body(ctx, wrapper, artifact.texts, artifact.name === "" ? "Artifact" : `Artifact: ${artifact.name}`);

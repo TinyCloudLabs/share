@@ -118,7 +118,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
     const main = el(doc, "main", "sender-shell cr-shell");
     const tabs = el(doc, "div", "cr-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", "Courier");
     const panel = el(doc, "div", "cr-panel"); panel.setAttribute("role", "tabpanel");
-    main.append(tabs, panel, announcer.element);
+    main.append(el(doc, "h1", "cr-h1", "Courier"), tabs, panel, announcer.element);
     root.append(bar, main);
 
     const ctx: ViewContext = {

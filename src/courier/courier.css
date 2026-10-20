@@ -36,7 +36,7 @@
 .cr-row-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--tc-space-2) var(--tc-space-3); }
 .cr-row-subject { font-weight: 600; overflow-wrap: anywhere; }
 .cr-row-meta { color: var(--tc-color-text-muted); font-size: var(--tc-text-sm); overflow-wrap: anywhere; }
-.cr-badge { white-space: normal; }
+.cr-badge { white-space: normal; color: var(--tc-color-text); }
 .cr-badge--attention { border-color: var(--tc-color-status-warning); color: var(--tc-color-text); font-weight: 600; }
 .cr-state--auth_required { border-color: var(--tc-color-status-warning); color: var(--tc-color-text); font-weight: 600; }
 .cr-state--completed, .cr-state--approved { border-color: var(--tc-color-status-success); color: var(--tc-color-text); }
@@ -62,6 +62,7 @@
 .cr-body .viewer-source { max-width: 100%; margin: 0; padding: var(--tc-space-3); overflow: auto; border: 1px solid var(--tc-color-border); background: var(--tc-color-surface-subtle); color: var(--tc-color-text); white-space: pre-wrap; }
 .cr-artifact { display: grid; gap: var(--tc-space-2); padding-top: var(--tc-space-3); border-top: 1px dotted var(--tc-color-border); }
 .cr-artifact-name { margin: 0; font-size: 1rem; font-weight: 600; }
+.cr-h1 { margin: 0 0 var(--tc-space-4); font-size: 0.8rem; font-weight: 650; font-family: var(--tc-font-mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--tc-color-text-muted); }
 
 /* Peer-influenced text: plain, quoted, never interactive, and visibly not the page's own voice. */
 .cr-peer-text { padding: var(--tc-space-3) var(--tc-space-4); border: 1px dashed var(--tc-color-text-muted); border-radius: var(--tc-radius-sm); background: var(--tc-color-surface-subtle); color: var(--tc-color-text); }
