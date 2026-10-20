@@ -13,6 +13,7 @@ import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
+import { createAnnouncer } from "./announcer.js";
 import { subscribeWalletApproval, walletApprovalOpen } from "./wallet-approval.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL, ARTIFACT_NOTE_ADDRESSED, ARTIFACT_NOTE_LINK } from "./artifact-kind.js";
 
@@ -726,9 +727,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const status = el(doc, "div", "sender-status composer-status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
   // TC-1583. Where the OpenKey approval hint appears while the page waits on the wallet. It sits outside the live status so the one spoken announcement is the hidden region below, not a second, atomic read of the status.
   const approvalSlot = el(doc, "div", "composer-approval");
-  const announce = el(doc, "p", "sr-only sender-announce"); announce.setAttribute("role", "status"); announce.setAttribute("aria-live", "polite");
-  const say = (text: string): void => { announce.textContent = ""; window.setTimeout(() => { announce.textContent = text; }, 100); };
-  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status, approvalSlot, announce); shell.append(back, header, form); root.append(shell);
+  // Spoken only. It says what to approve while the window is open and is emptied the moment the approval closes: the outcome is already in the status above.
+  const announcer = createAnnouncer(doc, "sender-announce");
+  const say = announcer.say;
+  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status, approvalSlot, announcer.element); shell.append(back, header, form); root.append(shell);
 
   let created: ComposerShareResult | undefined;
   // Set once the sender's own space has been listed; the library options that
@@ -973,7 +975,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         if (open && approvalHint === undefined) {
           approvalHint = showApprovalHint(approvalSlot, { text: COMPOSER_APPROVAL_HINT, lineClass: "sender-approval-line", timeoutCopy: COMPOSER_APPROVAL_TIMEOUT_COPY, ...(options.session === undefined ? {} : { onCancel: () => options.session!.openkey.disconnect() }) });
           say(`${COMPOSER_APPROVAL_HINT}.`);
-        } else if (!open && approvalHint !== undefined) { approvalHint.dispose(); approvalHint = undefined; }
+        } else if (!open && approvalHint !== undefined) { approvalHint.dispose(); approvalHint = undefined; announcer.clear(); }
       };
       const startApprovalWatch = (): void => { unsubscribeApproval = subscribeWalletApproval(showApproval); showApproval(walletApprovalOpen()); };
       const stopApprovalWatch = (): void => { unsubscribeApproval?.(); showApproval(false); };

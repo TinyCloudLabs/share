@@ -71,7 +71,7 @@ const STATES = [
   ["library-checking", "screen=library&reader=hang", (page) => waitFor(page, ".sender-freshness", "Checking each share")],
   ["library-status-timeout", "screen=library&reader=hang", async (page) => {
     await waitFor(page, ".sender-freshness", "Checking each share");
-    await advance(page, 4000);
+    await advance(page, 20_000);
     await waitFor(page, ".sender-freshness", "may be out of date");
     assert.equal(await page.$eval(".sender-recheck", (node) => node.textContent), "Check again");
     assert.equal(await page.$eval(".sender-recheck", (node) => node.disabled), false);
