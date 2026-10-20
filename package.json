@@ -22,6 +22,7 @@
     "test:e2e:sender-signin": "node test/e2e-prod/sender-signin-smoke.mjs",
     "test:e2e:sender-layout": "node test/e2e-sender-layout.mjs",
     "test:e2e:apps-page": "node test/e2e-apps-page.mjs",
+    "test:e2e:apps-widget-layer": "node test/e2e-apps-widget-layer.mjs",
     "typecheck": "tsc --noEmit",
     "notice:jsx": "tsx scripts/generate-jsx-notice.mts",
     "test:e2e:jsx": "node test/e2e-jsx.mjs",
