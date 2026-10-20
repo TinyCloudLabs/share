@@ -33,6 +33,13 @@ flowchart LR
   C -->|revoked| E[Revoked screen]
 ```
 
+A wide one, which scrolls sideways inside its card on a phone:
+
+```mermaid
+flowchart LR
+  A[Agent publishes] --> B[Owner space stores bytes] --> C[Delegation is created] --> D[Link is shared] --> E[Reader opens it] --> F[Owner node checks it] --> G[Document renders]
+```
+
 ### Code
 
 ```ts

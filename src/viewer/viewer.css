@@ -89,6 +89,13 @@ body.viewer-fullpage #viewer {
 .artifact-chrome-button { min-height: 2rem; white-space: nowrap; }
 .artifact-chrome-button .artifact-chrome-icon { flex: none; }
 .artifact-chrome-reason { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Visible, announced feedback for Copy / Download. Always in the DOM (a live
+   region must exist before its text changes); collapses to nothing when empty.
+   No animation, so there is nothing to reduce. */
+.artifact-chrome-toast { position: fixed; z-index: var(--tc-z-toast); left: 50%; bottom: max(var(--tc-space-4), env(safe-area-inset-bottom)); max-width: min(calc(100vw - 2rem), 32rem); margin: 0; transform: translateX(-50%); color: var(--tc-color-text); background: var(--tc-color-surface); border-radius: var(--tc-radius-md); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); text-align: center; pointer-events: none; }
+.artifact-chrome-toast:not(:empty) { padding: var(--tc-space-2) var(--tc-space-4); border: 1px solid var(--tc-color-border); }
+.artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-color: var(--tc-color-status-danger); }
+@media (forced-colors: active) { .artifact-chrome-toast:not(:empty) { border-color: CanvasText; } }
 .artifact-chrome-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* The recall pill: always there once the bar is hidden. */

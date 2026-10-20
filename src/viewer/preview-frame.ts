@@ -70,7 +70,7 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
  * from the strings inlined below; fonts are the system stack, never fetched).
  */
 export const PREVIEW_FRAME_CSP =
-  "default-src 'none'; img-src data: blob:; font-src data: blob:; style-src 'unsafe-inline'";
+  "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'";
 
 /**
  * Stylesheet inlined into the frame document (the parent's viewer.css cannot

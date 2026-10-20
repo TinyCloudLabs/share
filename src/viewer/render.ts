@@ -504,6 +504,11 @@ async function upgradeMermaidBlocks(
         // only if the sanitized markup is within budget.
         const host = container.ownerDocument.createElement("div");
         host.className = "viewer-mermaid";
+        // A wide diagram scrolls sideways inside its card, so the card must be
+        // reachable and named for keyboard and screen-reader users (WCAG 2.1.1, 4.1.2).
+        host.setAttribute("tabindex", "0");
+        host.setAttribute("role", "group");
+        host.setAttribute("aria-label", "Diagram");
         setSanitizedInnerHtml(host, clean);
         if (host.querySelectorAll("*").length > MAX_SVG_NODES) continue;
         code.parentElement?.replaceWith(host);

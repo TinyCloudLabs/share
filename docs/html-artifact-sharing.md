@@ -115,10 +115,10 @@ instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
 larger or non-UTF-8 files stay download-only. The page fills the viewport under the
-viewer bar (below). A one-line disclosure under the bar, opened with a click or
-keypress, says that the page comes from the sender (including the IP-address
-caveat). The bar's “Download” action is present whether or not the preview
-succeeds.
+viewer bar (below). The existing notice that the page comes from the sender
+(including the IP-address caveat) is shown under the bar as a disclosure that is
+open by default and can be collapsed; its text is unchanged. The bar's
+“Download” action is present whether or not the preview succeeds.
 
 ## Mermaid diagrams in Markdown
 
@@ -205,30 +205,44 @@ this on yet”). On narrow or touch screens the actions are icon-only with 44px
 targets.
 
 **Hide** collapses the bar to a persistent 44px “TinyCloud” pill in the corner;
-the pill, or **Alt+Shift+C**, brings it back. Whether the bar is hidden is
-remembered per share in local browser storage, keyed by a SHA-256 of the share
-id; no URL or recipient data is stored. Alt+Shift+C works while focus is in the
-page, not inside the sandboxed frames: a scriptless Markdown frame cannot
-forward keys, and single-file HTML pages are rendered exactly as sent, so use
-the pill from there. The bundle bridge's `artifact-restore-controls` message can
-only restore the bar, never hide it, and is accepted only from the artifact
-frame's own window. The private URL stays in a JavaScript closure and is never
-rendered into the document.
+the pill, or **Alt+Shift+C** on the page, brings it back. Whether the bar is
+hidden is remembered per share in local browser storage, keyed by a SHA-256 of
+the share id; no URL or recipient data is stored. The artifact frames have no
+channel to the bar: Alt+Shift+C does not work while focus is inside a sandboxed
+frame (use the pill there), and a page cannot hide or show the bar. The
+private URL stays in a JavaScript closure and is never rendered into the
+document.
+
+Copy and Download results appear in a visible toast at the bottom of the screen
+and are also announced to screen readers (a refusal is an alert and stays
+longer). The toast has no animation. Copy link carries a one-line hint (tooltip
+and accessible description): keep the link, because the page cannot reopen the
+file by itself.
+
+**Contrast.** `@tinycloud/styles` pins muted text on `--tc-color-surface-subtle`,
+which is 4.34:1 in the light theme (below WCAG AA) for `.tc-badge`,
+`.tc-trace__step` and `.tc-status--info`. The viewer handles this locally, in
+`src/viewer/viewer.css`: the bar (`.artifact-chrome`) sits on
+`--tc-color-surface`, and the expiry badge (`.artifact-chrome-expiry`) uses the
+regular text token with a border. Remove both overrides when the styles fix
+lands (TC-1560).
 
 ## Viewer privacy
 
 Markdown artifacts make zero requests and zero connections. HTML artifacts
-cannot make any content or script request (CSP), but connection-level signals
-(a preconnect or navigation-attempt TCP connect, prerender, dns-prefetch,
-WebRTC) can still reveal the viewer's IP and the time of opening to a hostile
-author; the viewer says so in a plain notice and does not claim more.
+cannot fetch or load content (CSP blocks content and script requests), but a
+hostile page can still reach out, as described under Isolation above:
+`<link rel="prerender">` sends an HTTP GET to an author-chosen URL (with
+author-chosen query data and that site's SameSite=Lax cookies), and preconnect,
+navigation attempts, dns-prefetch and WebRTC open connections. The author can
+learn the viewer's IP, the time of opening, and that the page was opened. The
+viewer does not claim more than that.
 
 - **Markdown** renders in a scriptless `sandbox=""` frame whose CSP is
-  `default-src 'none'; img-src data: blob:; font-src data: blob:;
-  style-src 'unsafe-inline'`. Remote and relative images never load: the
-  renderer replaces them with the text “Image not loaded: external images are
-  blocked to protect your privacy” and the URL as plain text (not a link and
-  not an image). Raw HTML, remote CSS, and fonts never reach the document, and
+  `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'`. Remote
+  and relative images never load: the renderer replaces them with the text
+  “Image not loaded: external images are blocked to protect your privacy” and
+  the URL as plain text (not a link and not an image). Raw HTML, remote CSS, and fonts never reach the document, and
   the tokens and prose styles are inlined into the frame; fonts are the system
   stack.
 - **Single-file HTML** keeps the sandbox CSP above (`connect-src 'none'`,
@@ -248,9 +262,10 @@ The private part of a link (`#tc1=…` for bearer links, `#v=2&p=…` for addres
 links) is removed from the address bar the moment the viewer opens, and the
 viewer does not store it. Reloading a share, or opening `/viewer` without the
 fragment, therefore cannot re-read it: the page asks the recipient to open the
-original link again. **Copy link** in the bar gives the complete link while the
-file is open. A temporary outage offers **Try again**, which re-runs the read
-from the copy held in page memory instead of reloading.
+original link again: use the link the sender gave you. While a file is open,
+**Copy link** in the bar gives the complete link (its hint says to keep it). A
+temporary outage offers **Try again**, which re-runs the read from the copy held
+in page memory instead of reloading.
 
 The example bundle in [`examples/html-artifact/`](../examples/html-artifact/)
 contains separate HTML, CSS, classic JavaScript, and nested SVG files.

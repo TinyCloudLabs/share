@@ -84,7 +84,9 @@ describe("opening /viewer without the private part of a link", () => {
     renderLinkNeeded(root);
     expect(root.querySelector("h1")?.textContent).toBe("Open the original link again");
     expect(root.textContent).toContain("never stored");
-    expect(root.textContent).toContain("Copy link in the bar");
+    expect(root.textContent).toContain("use the link the sender gave you");
+    // Nothing is open here, so no sentence may point at a control that is not on the screen.
+    expect(root.textContent).not.toContain("in the bar");
     expect(root.querySelector("iframe, .viewer-content, button")).toBeNull();
   });
 });
@@ -123,7 +125,7 @@ describe("viewer privacy: a shared artifact makes no request", () => {
   });
 
   it("pins both frames to inline-only resources", () => {
-    expect(PREVIEW_FRAME_CSP).toBe("default-src 'none'; img-src data: blob:; font-src data: blob:; style-src 'unsafe-inline'");
+    expect(PREVIEW_FRAME_CSP).toBe("default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'");
     const document = buildPreviewDocument("<p>x</p>", 1);
     expect(document).toContain(`content="${PREVIEW_FRAME_CSP}"`);
     // Tokens, base and prose are inlined: no stylesheet, font, script or import can be fetched.

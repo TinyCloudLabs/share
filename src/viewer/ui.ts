@@ -87,13 +87,12 @@ function renderErrorState(root: HTMLElement, title: string, detail: string, copy
  */
 export function renderLinkNeeded(root: HTMLElement): void {
   root.ownerDocument.body.classList.remove("viewer-fullpage");
-  const box = renderErrorState(
+  renderErrorState(
     root,
     "Open the original link again",
-    "This page can't reopen a shared file by itself. The private part of the link is removed from the address bar as soon as the file opens, and it is never stored. Open the link from the message you received, or paste the complete link into a new tab.",
+    "This page can't reopen a shared file by itself. The private part of the link is removed from the address bar as soon as the file opens, and it is never stored. Open the original link again: use the link the sender gave you.",
     { label: "Link needed", tone: "info" },
   );
-  box.append(el(root.ownerDocument, "p", "viewer-state-detail", "While a file is open, Copy link in the bar gives you the complete link again."));
 }
 
 export type ShareUnavailableReason = "revoked" | "expired" | "unavailable";

@@ -189,7 +189,7 @@ async function assertDrawnScales(frame, label) {
   const sizes = await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.map((svg) => {
     const card = svg.parentElement;
     const cardStyle = getComputedStyle(card);
-    
+
     const chrome = (style, side) => Number.parseFloat(style[`padding${side}`]) + Number.parseFloat(style[`border${side}Width`]);
     return {
       natural: svg.viewBox.baseVal.width,

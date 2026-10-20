@@ -88,14 +88,24 @@ const activeChrome = new WeakMap<HTMLElement, ArtifactChrome>();
 function barActions(result: OkResult, shareUrl: string | undefined, markdown: () => string | undefined): ArtifactChromeAction[] {
   const actions: ArtifactChromeAction[] = [];
   if (shareUrl !== undefined) {
-    actions.push({ label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied.", run: () => copyWithFallback(shareUrl) });
+    actions.push({
+      label: "Copy link",
+      icon: "link",
+      doneLabel: "Copied",
+      doneMessage: "Link copied",
+      failMessage: "Couldn't copy the link. Allow clipboard access and try again.",
+      // The private part of the link is gone from the address bar and is never stored.
+      hint: "Keep this link: this page can't reopen the file by itself",
+      run: () => copyWithFallback(shareUrl),
+    });
   }
   if (markdown() !== undefined) {
     actions.push({
       label: "Copy text",
       icon: "copy",
       doneLabel: "Copied",
-      doneMessage: "Markdown copied.",
+      doneMessage: "Text copied",
+      failMessage: "Couldn't copy the text. Allow clipboard access and try again.",
       run: () => copyWithFallback(markdown() ?? ""),
     });
   }
@@ -109,6 +119,7 @@ function barActions(result: OkResult, shareUrl: string | undefined, markdown: ()
         label: "Download",
         icon: "download",
         className: "viewer-download",
+        failMessage: "Couldn't start the download.",
         run: () => {
           const blobBytes = result.contentBytes ?? new TextEncoder().encode(result.content ?? "");
           const blob = new Blob([new Uint8Array(blobBytes).buffer as ArrayBuffer], { type: signedMediaType(result) });

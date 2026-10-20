@@ -109,9 +109,10 @@ function cliEnv(tcHome, routeLog) {
   };
 }
 
-function runCli(env, args) {
+function runCli(env, args, input) {
   return new Promise((resolveCli) => {
-    const child = spawn(process.execPath, ["--import", resolve(import.meta.dirname, "cli-transport.mjs"), join(cliPackage, "bin/tc"), "--profile", "owner", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--import", resolve(import.meta.dirname, "cli-transport.mjs"), join(cliPackage, "bin/tc"), "--profile", "owner", ...args], { env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -183,6 +184,25 @@ try {
     assert.equal(ids.length, 1, "the new share is listed exactly once");
     known.push(ids[0]);
     published[kind] = { link, id: ids[0], filename };
+
+    // What an agent gets: `tc share publish` prints a native `#tc1=` bearer link, and the
+    // CLI itself reads it back (public/.well-known/tinycloud-share/agent.json receiveArgs).
+    // `share inspect` cannot look inside a native link without opening it.
+    assert.match(link, /^https:\/\/share\.tinycloud\.xyz\/viewer#tc1=/, "publish prints a native viewer link");
+    const received = await runCli(env, ["share", "receive", "--stdin", "--stdout"], link);
+    assert.equal(received.status, 0, `tc share receive --stdin --stdout failed for ${filename}: ${received.stderr.slice(0, 200)}`);
+    assert.equal(received.stdout, content, `${filename}: the CLI reads back exactly what was published`);
+    // The published agent contract, verbatim: receiveArgs reads the link from stdin.
+    const agent = JSON.parse(await readFile(join(shareRoot, "public/.well-known/tinycloud-share/agent.json"), "utf8"));
+    assert.deepEqual(agent.supportedLinks, ["tc1", "inline-v2"]);
+    const outDir = join(temporary, `agent-receive-${kind}`);
+    await mkdir(outDir, { recursive: true });
+    const agentReceived = await runCli(env, agent.receiveArgs.map((arg) => (arg === "." ? outDir : arg)), link);
+    assert.equal(agentReceived.status, 0, `agent.json receiveArgs failed: ${agentReceived.stderr.slice(0, 200)}`);
+    assert.equal(await readFile(join(outDir, filename), "utf8"), content, `${filename}: agent.json receiveArgs writes the published bytes`);
+    const inspected = await runCli(env, ["share", "inspect", "--stdin", "--json"], link);
+    assert.notEqual(inspected.status, 0, "share inspect refuses a native bearer link");
+    assert.match(`${inspected.stdout}${inspected.stderr}`, /UNSUPPORTED_LINK|opaque/i, "...saying that native links are opaque");
   }
 
   // ---- recipient: open, inspect, hide / recall ------------------------------

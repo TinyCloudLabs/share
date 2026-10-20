@@ -16,6 +16,11 @@ import gaps from "./gaps.html?raw";
 const params = new URLSearchParams(location.search);
 const kind = params.get("kind") ?? "md";
 const probe = params.get("probe") ?? "http://127.0.0.1:9";
+// Plant a recognisable fake link secret the way main.ts receives a real one: it
+// arrives in the fragment, is scrubbed at once, and then lives only in the
+// Copy link closure. The e2e asserts it appears nowhere else.
+history.replaceState(null, "", `${location.pathname}${location.search}#tc1=harness-secret`);
+history.replaceState(null, "", `${location.pathname}${location.search}`);
 const root = document.getElementById("viewer")!;
 document.documentElement.classList.remove("viewer-first-paint");
 

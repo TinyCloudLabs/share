@@ -45,8 +45,13 @@ const { PREVIEW_FRAME_CSP } = await server.ssrLoadModule("/src/viewer/preview-fr
 const origin = "http://127.0.0.1:43187";
 const harness = (query) => `${origin}/test/fixtures/viewer-page/harness.html?probe=${encodeURIComponent(probeOrigin)}&${query}`;
 
+const consoleOf = new WeakMap();
 async function open(browser, query, { width = 1440, height = 900, scheme = "light" } = {}) {
   const page = await browser.newPage();
+  const text = [];
+  consoleOf.set(page, text);
+  page.on("console", (message) => text.push(message.text()));
+  page.on("pageerror", (error) => text.push(String(error?.message ?? error)));
   await page.setViewport({ width, height, deviceScaleFactor: 1 });
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
   await page.goto(harness(query), { waitUntil: "load" });
@@ -63,10 +68,10 @@ async function axeViolations(frame) {
 
 // The markdown frame is scriptless (sandbox=""), so axe cannot run inside it.
 // Its whole input is the srcdoc string: audit that exact document standalone.
-async function axeSrcdoc(browser, page, scheme) {
+async function axeSrcdoc(browser, page, scheme, width = 1440) {
   const srcdoc = await page.$eval("iframe.viewer-preview-frame", (node) => node.getAttribute("srcdoc"));
   const standalone = await browser.newPage();
-  await standalone.setViewport({ width: 1440, height: 900 });
+  await standalone.setViewport({ width, height: 900 });
   await standalone.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
   await standalone.setContent(srcdoc, { waitUntil: "load" });
   const violations = await axeViolations(standalone.mainFrame());
@@ -78,6 +83,28 @@ async function shoot(page, name) {
   await mkdir(screenshotDir, { recursive: true });
   await page.screenshot({ path: `${screenshotDir}/${name}.png` });
 }
+
+const secretSurfaces = async (page, consoleText, label) => {
+  // Click Copy link first: the link is read from its closure only on a click.
+  await page.click(".artifact-chrome-button");
+  // The result must be visible, not only announced: a sighted user at any width sees it.
+  await page.waitForFunction(() => /Link copied|Couldn't copy the link/.test(document.querySelector(".artifact-chrome-toast")?.textContent ?? ""), { timeout: 5_000 });
+  const toast = await page.$eval(".artifact-chrome-toast", (node) => { const r = node.getBoundingClientRect(); const s = getComputedStyle(node); return { text: node.textContent, role: node.getAttribute("role"), visible: r.width > 0 && r.height > 0 && s.visibility === "visible" && s.opacity !== "0", inside: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; });
+  assert.ok(toast.visible && toast.inside, `${label}: the Copy result is visible on screen (${JSON.stringify(toast)})`);
+  assert.ok(toast.role === "status" || toast.role === "alert", `${label}: and announced`);
+  const frames = await page.$$eval("iframe", (nodes) => nodes.map((node) => `${node.getAttribute("src") ?? ""}\n${node.getAttribute("srcdoc") ?? ""}`).join("\n"));
+  const surfaces = {
+    "page HTML and attributes": await page.content(),
+    "visible text": await page.evaluate(() => document.body.innerText),
+    "title": await page.title(),
+    "address bar": page.url(),
+    "history state": JSON.stringify(await page.evaluate(() => history.state)),
+    "storage": JSON.stringify(await page.evaluate(() => ({ ...localStorage, ...sessionStorage }))),
+    "frame src and srcdoc": frames,
+    "console": consoleText.join("\n"),
+  };
+  for (const [name, text] of Object.entries(surfaces)) assert.equal(text.includes("harness-secret"), false, `${label}: the link secret appears in the ${name}`);
+};
 
 let browser;
 try {
@@ -91,13 +118,12 @@ try {
     assert.equal(await page.$eval(".artifact-chrome-provenance", (node) => node.textContent), "Sender unverified");
     assert.match(await page.$eval(".artifact-chrome-expiry", (node) => node.textContent), /^Expires /);
     assert.deepEqual(await page.$$eval(".artifact-chrome-button", (nodes) => nodes.map((node) => node.textContent)), ["Copy link", "Copy text", "Download", "Share on", "Hide"]);
-    assert.equal(await page.evaluate(() => location.hash.includes("tc1=harness-secret")), false, "the complete link is never in the address bar");
-    assert.equal(await page.evaluate(() => document.body.innerText.includes("harness-secret")), false, "the link is never rendered");
+    await secretSurfaces(page, consoleOf.get(page), "markdown");
 
     const outer = await page.$eval("iframe.viewer-preview-frame", (node) => ({ sandbox: node.getAttribute("sandbox"), srcdoc: node.getAttribute("srcdoc") }));
     assert.equal(outer.sandbox, "", "markdown frame grants nothing");
     assert.ok(outer.srcdoc.includes(`content="${PREVIEW_FRAME_CSP}"`), "markdown frame pins its CSP");
-    assert.equal(PREVIEW_FRAME_CSP, "default-src 'none'; img-src data: blob:; font-src data: blob:; style-src 'unsafe-inline'");
+    assert.equal(PREVIEW_FRAME_CSP, "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'");
     // The frame fills the area under the bar: no 75vh box.
     const geometry = await page.evaluate(() => {
       const bar = document.querySelector(".artifact-chrome").getBoundingClientRect();
@@ -124,6 +150,7 @@ try {
 
     assert.deepEqual(await axeViolations(page.mainFrame()), [], "light viewer: axe AA");
     assert.deepEqual(await axeSrcdoc(browser, page, "light"), [], "light markdown frame: axe AA");
+    assert.equal(await frame.$$eval(".viewer-mermaid", (nodes) => nodes.every((node) => node.getAttribute("tabindex") === "0" && node.getAttribute("aria-label") === "Diagram")), true, "diagram cards are focusable and named");
 
     // Hide -> pill -> recall; Alt+Shift+C toggles; remembered per share.
     await page.click(".artifact-chrome-hide");
@@ -150,6 +177,16 @@ try {
   assert.deepEqual(probeRequests, [], "markdown: the author's host received no request");
   assert.equal(probeConnections, 0, "markdown: the author's host received no connection");
 
+  // A phone: labels are icon-only, so the toast is the only visible Copy feedback;
+  // a wide diagram scrolls sideways inside its card and must be keyboard reachable.
+  {
+    const page = await open(browser, "kind=md&nonce=phone", { width: 390, height: 844 });
+    await secretSurfaces(page, consoleOf.get(page), "markdown at 390px");
+    assert.deepEqual(await axeViolations(page.mainFrame()), [], "390px viewer: axe AA");
+    assert.deepEqual(await axeSrcdoc(browser, page, "light", 390), [], "390px markdown frame: axe AA (scrollable diagram, table, code)");
+    await page.close();
+  }
+
   // ---- HTML --------------------------------------------------------------
   {
     const page = await open(browser, "kind=html");
@@ -171,6 +208,7 @@ try {
     assert.ok(Math.abs(geometry.frameBottom - geometry.innerHeight) <= 1, "HTML frame fills the viewport");
     assert.equal(ARTIFACT_SANDBOX_HTTP_CSP.includes("connect-src 'none'") && ARTIFACT_SANDBOX_HTTP_CSP.includes("img-src data: blob:") && ARTIFACT_SANDBOX_HTTP_CSP.includes("font-src data: blob:") && ARTIFACT_SANDBOX_HTTP_CSP.includes("default-src 'none'"), true);
     assert.equal(/img-src[^;]*'self'|font-src[^;]*'self'|style-src[^;]*'self'/.test(ARTIFACT_SANDBOX_HTTP_CSP), false, "the HTML sandbox never allows 'self' fetches");
+    await secretSurfaces(page, consoleOf.get(page), "html");
     assert.deepEqual(await axeViolations(page.mainFrame()), [], "viewer around an HTML artifact: axe AA");
     await page.close();
   }

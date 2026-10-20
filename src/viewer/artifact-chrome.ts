@@ -1,5 +1,7 @@
 const STORAGE_PREFIX = "tinycloud:artifact-chrome:v1:";
 const FEEDBACK_MS = 2_000;
+const TOAST_MS = 4_000;
+const TOAST_ALERT_MS = 8_000;
 
 export interface ArtifactChrome {
   destroy(): void;
@@ -14,10 +16,14 @@ export interface ArtifactChromeAction {
   readonly className?: string;
   /** Shown instead of `label` for a moment after the action succeeds. */
   readonly doneLabel?: string;
-  /** Announced when the action succeeds. */
+  /** Shown (and announced) next to the bar when the action succeeds. */
   readonly doneMessage?: string;
-  /** Rejecting announces a failure; resolving announces `doneMessage`. */
+  /** Shown (and announced as an alert) when the action rejects. */
+  readonly failMessage?: string;
+  /** Rejecting shows `failMessage`; resolving shows `doneMessage`. */
   readonly run?: () => Promise<void> | void;
+  /** One line of help, as a tooltip and as the button's accessible description. */
+  readonly hint?: string;
   /** A disabled action explains itself through this text. */
   readonly disabledReason?: string;
 }
@@ -34,12 +40,6 @@ export interface ArtifactChromeOptions {
   /** Element the bar (first child) and the recall pill are added to. Defaults to the body. */
   readonly mount?: HTMLElement;
   readonly storage?: Storage;
-  /**
-   * The artifact sandbox frame whose bridge relays the in-frame Alt+Shift+C
-   * chord. Only messages from this frame's window restore the controls;
-   * without it the chord works from the parent document only.
-   */
-  readonly frame?: HTMLIFrameElement;
 }
 
 async function storageKey(shareId: string): Promise<string> {
@@ -124,12 +124,22 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   }
   const actions = el(doc, "div", "artifact-chrome-actions");
 
+  // Two live regions. The visually hidden one announces hiding and showing the
+  // bar. The toast is VISIBLE and also announced: it is where a sighted user
+  // learns that Copy worked or was refused (labels are icon-only on narrow screens).
   const status = el(doc, "span", "artifact-chrome-status");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
-  const announce = (value: string, alert = false): void => {
-    status.setAttribute("role", alert ? "alert" : "status");
-    status.textContent = value;
+  const toast = el(doc, "p", "artifact-chrome-toast");
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  const say = (value: string, alert = false): void => {
+    if (toastTimer !== undefined) clearTimeout(toastTimer);
+    toast.setAttribute("role", alert ? "alert" : "status");
+    toast.dataset["tone"] = alert ? "danger" : "info";
+    toast.textContent = value;
+    toastTimer = setTimeout(() => { toast.textContent = ""; toastTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
   };
 
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -146,6 +156,13 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
       buttons.push(button);
       continue;
     }
+    if (action.hint !== undefined) {
+      const hint = el(doc, "span", "artifact-chrome-reason", action.hint);
+      hint.id = `artifact-chrome-hint-${buttons.length}`;
+      button.setAttribute("aria-describedby", hint.id);
+      button.title = action.hint;
+      actions.append(hint);
+    }
     let attempt = 0;
     button.addEventListener("click", () => {
       const current = ++attempt;
@@ -158,9 +175,9 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
             const timer = setTimeout(() => { timers.delete(timer); if (current === attempt) text.textContent = action.label; }, FEEDBACK_MS);
             timers.add(timer);
           }
-          announce(action.doneMessage ?? "");
+          if (action.doneMessage !== undefined) say(action.doneMessage);
         } catch {
-          if (current === attempt) announce(`${action.label} failed. Allow clipboard access and try again.`, true);
+          if (current === attempt) say(action.failMessage ?? `${action.label} failed. Try again.`, true);
         }
       })();
     });
@@ -186,13 +203,13 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   };
   render();
   mount.prepend(bar);
-  mount.append(pill, status);
+  mount.append(pill, toast, status);
 
   const setHidden = (value: boolean, focus: boolean): void => {
     hidden = value;
     try { if (hidden) storage?.setItem(key, "hidden"); else storage?.removeItem(key); } catch { storage = undefined; }
     render();
-    announce(hidden ? "TinyCloud controls hidden. Press Alt+Shift+C to show them." : "TinyCloud controls shown.");
+    status.textContent = hidden ? "TinyCloud controls hidden. Press Alt+Shift+C to show them." : "TinyCloud controls shown.";
     if (focus) (hidden ? pill : (buttons[0] ?? hide.button)).focus();
   };
   hide.button.addEventListener("click", () => setHidden(true, true));
@@ -203,23 +220,16 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
     event.preventDefault();
     setHidden(!hidden, true);
   };
-  const onMessage = (event: MessageEvent): void => {
-    if (options.frame === undefined || event.source !== options.frame.contentWindow || event.origin !== "null") return;
-    const data: unknown = event.data;
-    if (typeof data !== "object" || data === null || !("type" in data) || data.type !== "artifact-restore-controls") return;
-    // The frame can only bring the controls back, never hide them.
-    if (hidden) setHidden(false, true);
-  };
   view.addEventListener("keydown", onKeyDown);
-  view.addEventListener("message", onMessage);
 
   return {
     destroy(): void {
       view.removeEventListener("keydown", onKeyDown);
-      view.removeEventListener("message", onMessage);
       for (const timer of timers) clearTimeout(timer);
+      if (toastTimer !== undefined) clearTimeout(toastTimer);
       bar.remove();
       pill.remove();
+      toast.remove();
       status.remove();
       delete mount.dataset["chrome"];
     },

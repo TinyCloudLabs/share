@@ -101,10 +101,11 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
  */
 async function renderHtmlPage(container: HTMLElement, source: string, filename: string): Promise<void> {
   const doc = container.ownerDocument;
-  // A one-line disclosure under the bar keeps the full-page frame as tall as
-  // possible; the complete statement is one click (or keypress) away.
+  // A disclosure under the bar; the reader may collapse it to give the page more room.
   const notice = doc.createElement("details");
   notice.className = "viewer-html-notice";
+  // Open by default: this is the viewer's only disclosure about what a page can reveal.
+  notice.open = true;
   const summary = doc.createElement("summary");
   summary.textContent = "Page from the sender, shown in an isolated frame";
   const detail = doc.createElement("p");

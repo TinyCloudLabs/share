@@ -201,9 +201,8 @@ describe("TinyCloud artifact chrome", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("hides to a recall pill, restores by pill, chord and the frame's bridge only, and remembers per share", async () => {
-    const sandbox = createArtifactSandbox(document);
-    const chrome = await mountArtifactChrome(document, { ...base, shareId: "share-a", actions: [], frame: sandbox.iframe });
+  it("hides to a recall pill, restores by pill and chord, and remembers per share", async () => {
+    const chrome = await mountArtifactChrome(document, { ...base, shareId: "share-a", actions: [] });
     const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
     const pill = document.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!;
     expect(bar.textContent).toContain("report.md");
@@ -215,18 +214,16 @@ describe("TinyCloud artifact chrome", () => {
     expect(bar.hidden).toBe(true);
     expect(pill.hidden).toBe(false);
     expect(document.activeElement).toBe(pill);
-
-    // Only the artifact frame's bridge may restore the controls from a message.
-    window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data: { type: "artifact-restore-controls" } }));
-    expect(bar.hidden).toBe(true);
-    window.dispatchEvent(new MessageEvent("message", { source: sandbox.iframe.contentWindow, origin: "null", data: { type: "artifact-restore-controls" } }));
-    expect(bar.hidden).toBe(false);
-    expect(pill.hidden).toBe(true);
-    // ...and the frame can never hide them.
-    window.dispatchEvent(new MessageEvent("message", { source: sandbox.iframe.contentWindow, origin: "null", data: { type: "artifact-restore-controls" } }));
-    expect(bar.hidden).toBe(false);
+    expect(document.querySelector(".artifact-chrome-status")?.textContent).toContain("Alt+Shift+C");
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "C", altKey: true, shiftKey: true }));
+    expect(bar.hidden).toBe(false);
+    expect(pill.hidden).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", altKey: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", shiftKey: true }));
+    expect(bar.hidden).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", altKey: true, shiftKey: true }));
     expect(bar.hidden).toBe(true);
     chrome.destroy();
     // Hidden state survives a reload of the same share, not of another one.
@@ -236,35 +233,79 @@ describe("TinyCloud artifact chrome", () => {
     document.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!.click();
     expect(document.querySelector<HTMLElement>(".artifact-chrome")!.hidden).toBe(false);
     expect(localStorage.length).toBe(0);
+  });
+
+  it("has no message channel: no window message, from any source, shows or hides the bar", async () => {
+    const sandbox = createArtifactSandbox(document);
+    await mountArtifactChrome(document, { ...base, shareId: "share-e", actions: [] });
+    const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
+    const send = (source: MessageEventSource | null, data: unknown): void => { window.dispatchEvent(new MessageEvent("message", { source, origin: "null", data })); };
+    const messages = [{ type: "artifact-restore-controls" }, { type: "artifact-hide-controls" }, { type: "artifact-toggle-controls" }, { type: "cap/read" }, "artifact-restore-controls", null, 42];
+    for (const data of messages) for (const source of [sandbox.iframe.contentWindow, window, null]) { send(source, data); expect(bar.hidden, JSON.stringify(data)).toBe(false); }
+    bar.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
+    expect(bar.hidden).toBe(true);
+    for (const data of messages) for (const source of [sandbox.iframe.contentWindow, window, null]) { send(source, data); expect(bar.hidden, JSON.stringify(data)).toBe(true); }
     sandbox.destroy();
   });
 
-  it("runs actions, announces success or failure, and explains a disabled action", async () => {
+  it("shows Copy and Download results where a sighted user can see them, and announces them too", async () => {
     const copy = vi.fn().mockResolvedValue(undefined);
     const fail = vi.fn().mockRejectedValue(new Error("denied"));
     await mountArtifactChrome(document, {
       ...base,
       shareId: "share-b",
       actions: [
-        { label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied.", run: copy },
-        { label: "Copy text", icon: "copy", run: fail },
+        { label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied", hint: "Keep this link: this page can't reopen the file by itself", run: copy },
+        { label: "Copy text", icon: "copy", failMessage: "Couldn't copy the text. Allow clipboard access and try again.", run: fail },
+        { label: "Download", icon: "download", run: fail },
         { label: "Share on", icon: "share", disabledReason: "The owner hasn't allowed passing this on yet" },
       ],
     });
     const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
-    const status = document.querySelector<HTMLElement>(".artifact-chrome-status")!;
-    const [copyLink, copyText, shareOn] = Array.from(bar.querySelectorAll<HTMLButtonElement>(".artifact-chrome-button"));
+    const toast = document.querySelector<HTMLElement>(".artifact-chrome-toast")!;
+    const [copyLink, copyText, download, shareOn] = Array.from(bar.querySelectorAll<HTMLButtonElement>(".artifact-chrome-button"));
+    // The toast exists before it speaks (a live region must), and is not the clipped status span.
+    expect(toast.textContent).toBe("");
+    expect(toast.classList.contains("artifact-chrome-status")).toBe(false);
+    expect(bar.contains(toast)).toBe(false);
+
     copyLink!.click();
-    await vi.waitFor(() => expect(status.textContent).toBe("Link copied."));
+    await vi.waitFor(() => expect(toast.textContent).toBe("Link copied"));
+    expect(toast.getAttribute("role")).toBe("status");
     expect(copyLink!.textContent).toContain("Copied");
-    expect(status.getAttribute("role")).toBe("status");
+    expect(document.getElementById(copyLink!.getAttribute("aria-describedby")!)?.textContent).toContain("can't reopen the file by itself");
+    expect(copyLink!.title).toContain("Keep this link");
+
     copyText!.click();
-    await vi.waitFor(() => expect(status.getAttribute("role")).toBe("alert"));
-    expect(status.textContent).toContain("failed");
+    await vi.waitFor(() => expect(toast.getAttribute("role")).toBe("alert"));
+    expect(toast.textContent).toBe("Couldn't copy the text. Allow clipboard access and try again.");
+    download!.click();
+    await vi.waitFor(() => expect(toast.textContent).toContain("Download failed"));
+    expect(toast.textContent).not.toMatch(/clipboard/i);
+
     expect(shareOn!.disabled).toBe(true);
     expect(document.getElementById(shareOn!.getAttribute("aria-describedby")!)?.textContent).toBe("The owner hasn't allowed passing this on yet");
-    // The live region outlives the hidden bar so the hide itself is announced.
-    expect(bar.contains(status)).toBe(false);
+  });
+
+  it("clears the toast on its own, longer for a refusal than for success", async () => {
+    vi.useFakeTimers();
+    try {
+      await mountArtifactChrome(document, { ...base, shareId: "share-t", actions: [{ label: "Copy link", icon: "link", doneMessage: "Link copied", run: () => undefined }, { label: "Copy text", icon: "copy", run: () => { throw new Error("denied"); } }] });
+      const toast = document.querySelector<HTMLElement>(".artifact-chrome-toast")!;
+      const [ok, no] = Array.from(document.querySelectorAll<HTMLButtonElement>(".artifact-chrome-button"));
+      ok!.click();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(toast.textContent).toBe("Link copied");
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(toast.textContent).toBe("");
+      no!.click();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(toast.textContent).toContain("failed");
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(toast.textContent).toContain("failed");
+      await vi.advanceTimersByTimeAsync(4_100);
+      expect(toast.textContent).toBe("");
+    } finally { vi.useRealTimers(); }
   });
 
   it("keeps the controls usable when browser storage is unavailable", async () => {
