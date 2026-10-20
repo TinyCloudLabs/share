@@ -29,8 +29,7 @@ import { type CatalogEntry, EntryDisabledError, assertAvailable, catalog as bund
 import type { ManifestSdk } from "./grants.ts";
 import { INSTALL_RECORD_PATH, type VerifiedBundle } from "./bundle.ts";
 import { type ManifestResult } from "./manifest.ts";
-import { installKey, installOrder, installRecord, installRecordKey } from "./install-plan.ts";
-import { contentTypeOf } from "./install.ts";
+import { contentTypeOf, installKey, installOrder, installRecord, installRecordKey } from "./install-plan.ts";
 import { type RunnableApp, type StoredAppFailure, type StoredFiles, parseInstallRecord, verifyStoredApp } from "./stored-app.ts";
 
 export interface RunHooks {
@@ -183,7 +182,7 @@ async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: S
   return { entries, ...(files.incomplete === undefined ? {} : { incomplete: files.incomplete }) };
 }
 
-export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void): Promise<RunningApp> {
+export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void, signal?: AbortSignal): Promise<RunningApp> {
   const entries = ports.catalog ?? bundledCatalog.apps;
   const entry = catalogEntryFor(appId, entries);
   if (entry === undefined) throw new RunError("unknown-app");
@@ -196,6 +195,8 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   report({ phase: "checking" });
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
   const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
+  // Cancel before any approval window opens: nothing is signed or written.
+  if (signal?.aborted) throw new RunError("cancelled");
 
   // A device that has not verified this digest yet asks for the write grants too (one approval covers the save and the read).
   const install = ports.hints.get(appId) !== entry.bundle.digest;
@@ -205,9 +206,12 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   });
   let app: RunnableApp;
   try {
+    // Cancel while OpenKey was asking: the late session is closed and nothing is written.
+    if (signal?.aborted) throw new RunError("cancelled");
     let files = read.files;
     if (install && read.put !== undefined) files = await saveMissing(entry, prepared.bundle, files, read.put, report);
-    // Nothing saved under app/ at all, and this device had no record of it: nothing to open. The copy is the install that just ran.
+    if (signal?.aborted) throw new RunError("cancelled");
+    // Nothing saved under app/ at all, though this device had a record of it: the saved files were removed. The hint is cleared so the next open saves them again.
     if (files.entries.size === 0) { ports.hints.clear(appId); throw new RunError("not-installed"); }
     report({ phase: "verifying" });
     const verified = await verifyStoredApp(appId, files, { catalog: entries, loadCatalogManifest: async () => prepared.manifest, sdk });
@@ -222,6 +226,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     throw error instanceof RunError ? error : new RunError("failed", { cause: error });
   }
 
+  if (signal?.aborted) { await read.end({ keepOpenKey: false }).catch(() => undefined); throw new RunError("cancelled"); }
   report({ phase: "starting", approval: false });
   try {
     const session = await ports.openRuntime(app, read, { approval: (open) => report({ phase: "starting", approval: open }) });

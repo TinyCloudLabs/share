@@ -22,6 +22,7 @@ import { type RunFailure, type RunPorts, type RunProgress, type RunningApp, RunE
 import { createRunPorts } from "./run-session.ts";
 import { loadManifest } from "./manifest.ts";
 import { accessSection, el, noticeList } from "./view.ts";
+import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
 import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
 import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS } from "../share/approval-hint.js";
@@ -39,7 +40,7 @@ interface Screen {
   readonly detail?: string | undefined;
   readonly retry?: string | undefined;
   readonly toApps?: boolean | undefined;
-  /** Where "Repair" goes (the install sheet in repair mode), for a refusal that replacing the code files fixes. */
+  /** Where "Repair" goes (the apps page's Repair sheet), for a refusal that replacing the code files fixes. */
   readonly repairHref?: string | undefined;
   /** Command lines shown as code, one per line (set with textContent). */
   readonly commands?: readonly string[] | undefined;
@@ -53,7 +54,7 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
   switch (reason) {
     case "unknown-app": return { title: "We don't know this app", lines: ["This address doesn't match an app in the catalog."], toApps: true };
     case "unavailable": return { title: "This app is temporarily unavailable", lines: [detail ?? "It has been switched off for now.", "Nothing was started."], toApps: true };
-    case "not-installed": return { title: "This app needs to be installed first", lines: [`${name} isn't saved in your TinyCloud yet. Install it from the apps page, then open it here.`], toApps: true };
+    case "not-installed": return { title: "This app's saved files are gone", lines: [`${name}'s files aren't in your TinyCloud any more, so nothing was started.`, "Open it again to save them. Nothing else is changed."], toApps: true };
     case "damaged": return { title: "Your saved copy of this app can't be used", lines: ["Its files in your TinyCloud are incomplete, or were edited into something this page can't read. Nothing was started."], toApps: true, detail };
     case "code-mismatch": return {
       title: "This app's code doesn't match the pinned version",
@@ -133,6 +134,10 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   signOut.disabled = true;
   // The live region exists from the start and only its content changes, so each change is announced.
   const status = el("div", "run-status-region", [], { role: "status" });
+  // The status line and the Cancel control are separate children: the line changes with progress, and Cancel stays until the open ends.
+  const statusLine = el("div", "run-status-line", []);
+  const cancelSlot = el("div", "run-status-cancel", []);
+  status.replaceChildren(statusLine, cancelSlot);
   const access = el("details", "apps-files run-details", [el("summary", null, ["What this app can do"])]);
   access.hidden = true;
   const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["The sandbox blocks the requests a page makes itself, but some browser requests can't be blocked, so a page can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
@@ -148,11 +153,12 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   root.replaceChildren(bar, stage, info);
 
   const setStatus = (text: string, tone: Tone = "info"): void => {
-    status.replaceChildren(...(text === "" ? [] : [el("p", `tc-status tc-status--${tone} run-status`, [text])]));
+    statusLine.replaceChildren(...(text === "" ? [] : [el("p", `tc-status tc-status--${tone} run-status`, [text])]));
   };
 
   // ---- state
   let attempt = 0;
+  let openAbort: AbortController | undefined;
   let running: RunningApp | undefined;
   let bridge: CapabilityBridge | undefined;
   let frameCleanup: (() => void) | undefined;
@@ -230,21 +236,46 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     if (approval) slowTimer = view.setTimeout(() => { if (mine === attempt) setStatus(`${base}. ${APPROVAL_SLOW_COPY}`, "info"); }, APPROVAL_SLOW_AFTER_MS);
   };
 
+  /** Cancel while an open runs: the page stops waiting now. A late OpenKey session is closed and nothing is written (openApp checks the signal). */
+  function cancel(): void {
+    if (openAbort === undefined) return;
+    openAbort.abort();
+    openAbort = undefined;
+    attempt++;
+    view.clearTimeout(slowTimer);
+    cancelSlot.replaceChildren();
+    const screen = failureScreen("cancelled", entry?.name ?? "");
+    setStatus(screen.title, "warning");
+    showScreen(screen, begin);
+  }
+  status.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && openAbort !== undefined) { event.preventDefault(); cancel(); }
+  });
+
   function begin(): void {
     if (entry === undefined || appId === null) return;
     stopFrame();
     const mine = ++attempt;
+    const abort = new AbortController();
+    openAbort = abort;
+    const cancelButton = el("button", "tc-button apps-button", ["Cancel"], { type: "button" });
+    cancelButton.addEventListener("click", cancel);
+    cancelSlot.replaceChildren(cancelButton);
     stage.replaceChildren(el("div", "run-working tc-panel", [el("div", "tc-skeleton run-working__bar", [], { "aria-hidden": "true" }), el("p", null, ["Opening…"])], { "aria-busy": "true" }));
     paint(mine, { phase: "checking" });
-    void openApp(appId, ports, (progress) => paint(mine, progress)).then(
+    void openApp(appId, ports, (progress) => paint(mine, progress), abort.signal).then(
       (result) => {
         view.clearTimeout(slowTimer);
         if (mine !== attempt || destroyed) { void result.session.end().catch(() => undefined); return; }
+        cancelSlot.replaceChildren();
+        openAbort = undefined;
         start(result, mine);
       },
       (error: unknown) => {
         view.clearTimeout(slowTimer);
         if (mine !== attempt || destroyed) return;
+        cancelSlot.replaceChildren();
+        openAbort = undefined;
         const failure = error instanceof RunError ? error : new RunError("failed", { cause: error });
         const screen = failureScreen(failure.reason, entry.name, failure.detail, appId);
         setStatus(screen.title, screen.tone === "danger" ? "danger" : "warning");
@@ -326,6 +357,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     stage.replaceChildren(el("section", "run-screen tc-panel", [
       el("h2", "run-screen__title", [`Open ${entry.name}`], { tabindex: "-1" }),
       el("p", null, [entry.description]),
+      el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line]))),
       ...(entry.sample === true ? [el("p", "tc-status tc-status--warning apps-notice", ["Sample app: use throwaway data only."])] : []),
       ...noticeList(consent.notices),
       el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),

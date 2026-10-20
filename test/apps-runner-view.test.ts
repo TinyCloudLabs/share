@@ -40,7 +40,7 @@ interface Fake {
   release(): void;
 }
 
-function fakePorts(overrides: { stored?: StoredOverrides | "empty"; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
+function fakePorts(overrides: { stored?: StoredOverrides | "empty"; hinted?: boolean; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
   const fake: Fake = { reads: 0, runtimes: 0, ended: { read: [], runtime: 0 }, calls: [], release: () => undefined, ports: undefined as unknown as RunPorts };
   const data: AppData = {
     kvGet: async (path) => { fake.calls.push(`kv.get ${path}`); return { ok: true, data: { bytes: new TextEncoder().encode("hi"), contentType: "text/plain" } }; },
@@ -58,7 +58,7 @@ function fakePorts(overrides: { stored?: StoredOverrides | "empty"; readError?: 
       const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
       return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
     },
-    hints: { get: () => undefined, set: () => undefined, clear: () => undefined },
+    hints: { get: () => (overrides.hinted === true ? entry.bundle.digest : undefined), set: () => undefined, clear: () => undefined },
     async readStored(_entry, hooks): Promise<ReadSession> {
       fake.reads += 1;
       hooks.approval(true);
@@ -284,11 +284,11 @@ describe("opening an app that cannot run", () => {
   interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[] }[]; [key: string]: unknown }
   const original = (): TestManifest => JSON.parse(new TextDecoder().decode(bundleFile("manifest.json"))) as TestManifest;
 
-  it("says the app needs to be installed first, with a link to the apps page, when nothing is saved", async () => {
-    const fake = fakePorts({ stored: "empty" });
+  it("says the saved files are gone and to open again to save them, when this device had them saved and the folder is now empty", async () => {
+    const fake = fakePorts({ stored: "empty", hinted: true });
     await open(fake);
     button("Continue")!.click();
-    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app needs to be installed first"));
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app's saved files are gone"));
     expect(root.querySelector(`a[href='${APPS_HREF}']`)).not.toBeNull();
     expect(root.querySelector("iframe")).toBeNull();
     expect(fake.runtimes).toBe(0);
@@ -470,7 +470,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     const fake = fakePorts();
     await open(fake);
     expect(root.textContent).not.toMatch(/no network|can't send your data/i);
-    expect(root.textContent).toContain("Some browser requests can't be blocked. Install apps you trust. Beta: use sample data only.");
+    expect(root.textContent).toContain(CAUTION);
     expect(root.textContent).toContain("Known limits:");
   });
 });

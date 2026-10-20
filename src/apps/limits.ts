@@ -9,7 +9,7 @@
  * page makes the browser look the address up and open one connection (no request is sent), and the address can carry a
  * little data. So the page never says "no network access".
  */
-export const CAUTION = "Some browser requests can't be blocked. Install apps you trust. Beta: use sample data only.";
+export const CAUTION = "Some browser requests can't be blocked. Only open apps you trust. Beta: use sample data only.";
 
 /** The one-line list of what still leaks, measured by test/e2e-prod/runner-gate.mjs (docs/tiny-app-runner.md, "Known limits"). */
 export const KNOWN_LIMITS = "Known limits: an app can still reveal that you opened it (your IP address and the time). Some other browser requests can still carry what the app reads to an address it picks, and trying to open another page makes your browser look up and connect to an address it picks.";
