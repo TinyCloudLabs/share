@@ -69,6 +69,80 @@ export function filesForYouPermissions(): PermissionEntry[] {
   return [{ service: "tinycloud.kv", space: FILES_FOR_YOU_SPACE, path: FILES_FOR_YOU_PREFIX, actions: ["get", "put", "list"], skipPrefix: true }];
 }
 
+/** Why an OpenKey approval did not produce a usable signature. */
+export type WalletApprovalFailure = "cancelled" | "timeout" | "wrong-account";
+
+type SignatureVerifier = (message: string, signature: string, address: string) => Promise<boolean>;
+
+function approvalFailureOf(caught: unknown): WalletApprovalFailure | undefined {
+  const code = typeof caught === "object" && caught !== null && "code" in caught ? caught.code : undefined;
+  if (code === "USER_CANCELLED" || code === 4001) return "cancelled";
+  if (code === "TIMEOUT") return "timeout";
+  return undefined;
+}
+
+function hexToText(hex: string): string | undefined {
+  const digits = hex.startsWith("0x") ? hex.slice(2) : hex;
+  if (digits.length === 0 || digits.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(digits)) return undefined;
+  return new TextDecoder().decode(Uint8Array.from(digits.match(/.{2}/g)!, (pair) => Number.parseInt(pair, 16)));
+}
+
+/**
+ * The OpenKey provider the Web SDK signs owner revocations with, plus the one
+ * thing the SDK hides: how an approval failed. OpenKey rejects with a plain
+ * `{ code: "USER_CANCELLED" | "TIMEOUT" }` object, and the SDK folds that into
+ * "[object Object]". Every signature must also recover to the signed-in
+ * account; one from any other account is refused here, before the SDK can
+ * attach it to a request.
+ */
+export class ObservedOpenKeyProvider extends OpenKeyProvider {
+  private failure: WalletApprovalFailure | undefined;
+
+  constructor(
+    openkey: OpenKey,
+    auth: AuthResult,
+    private readonly signedInAddress: string,
+    private readonly verify: SignatureVerifier = verifyEip191MessageSignature,
+  ) {
+    super(openkey, auth);
+  }
+
+  override async request(args: { method: string; params?: any[] }): Promise<any> {
+    if (args.method !== "personal_sign") return super.request(args);
+    this.failure = undefined;
+    let signature: unknown;
+    try {
+      signature = await super.request(args);
+    } catch (caught) {
+      this.failure = approvalFailureOf(caught);
+      throw caught;
+    }
+    const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
+    if (message !== undefined && (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress)))) {
+      this.failure = "wrong-account";
+      throw new Error("wallet-approval-wrong-account");
+    }
+    return signature;
+  }
+
+  /** The failure of the most recent approval, once; undefined when it did not fail or failed for another reason. */
+  takeFailure(): WalletApprovalFailure | undefined {
+    const failure = this.failure;
+    this.failure = undefined;
+    return failure;
+  }
+}
+
+const approvalObservers = new WeakMap<object, ObservedOpenKeyProvider>();
+
+export function registerWalletApprovalObserver(tinycloud: ShareTinyCloud, provider: ObservedOpenKeyProvider): void {
+  approvalObservers.set(tinycloud, provider);
+}
+
+export function takeWalletApprovalFailure(tinycloud: ShareTinyCloud): WalletApprovalFailure | undefined {
+  return approvalObservers.get(tinycloud)?.takeFailure();
+}
+
 export function ownerEncryptionNetwork(address: string): string {
   // Network IDs use the storage-normalized EIP-155 account spelling at the
   // signed capability boundary; the SDK still canonicalizes the space DID.
@@ -98,8 +172,9 @@ export async function createTinyCloudClient(
     ],
   };
   const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
+  const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address);
   const tinycloud = new TinyCloudWeb({
-    provider: new OpenKeyProvider(session.openkey, session.auth),
+    provider,
     signStrategy: { type: "callback", handler: (request: SignRequest) => explicitOpenKeyApproval(session, request) },
     ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
     // A new sender cannot resolve a signed location record before its first
@@ -120,6 +195,7 @@ export async function createTinyCloudClient(
     manifest,
     notifications: { popups: false },
   });
+  registerWalletApprovalObserver(tinycloud, provider);
   onStatus("Connecting to your encrypted TinyCloud…");
   await tinycloud.signIn();
   // The Web SDK's manifest bootstrap reads the canonical account space even

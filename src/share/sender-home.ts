@@ -1,9 +1,13 @@
 import { copyWithFallback } from "./clipboard.js";
 import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
-import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { revokeShare } from "@tinycloud/share-sdk";
+import { takeWalletApprovalFailure, type OpenKeyShareSession, type ShareTinyCloud } from "./openkey-session.js";
+import { revokeShare, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { getPolicyRootStatusV3, revokePolicyRootV3 } from "@tinycloud/sdk-core";
 import { httpStatusOf, revokeFailureMessage } from "./sender-failure.js";
+import { verifyShareRootOnNode, type ShareRootKind } from "./owner-revoke.js";
+
+/** The owner wallet's revocation request is valid for this long from the moment the approval is asked for. */
+const APPROVAL_WINDOW_MS = 60_000;
 
 export interface SenderHomeOptions {
   readonly session: OpenKeyShareSession;
@@ -38,7 +42,7 @@ export const REVOKE_CONFIRM_BODY = "Everyone who has the link loses access immed
 export const REVOKE_CONFIRM_CAVEAT = "Anyone holding a share link can also revoke it.";
 
 /** In-page confirmation. Resolves true only on the explicit "Revoke share" press; Esc, Cancel and the backdrop resolve false. */
-function confirmRevoke(root: HTMLElement, name: string, opener: HTMLElement): Promise<boolean> {
+function confirmRevoke(root: HTMLElement, name: string, opener: HTMLElement, onConfirm: () => void): Promise<boolean> {
   const doc = root.ownerDocument;
   return new Promise((resolve) => {
     const dialog = node(doc, "dialog", "sender-confirm-dialog") as HTMLDialogElement;
@@ -52,7 +56,7 @@ function confirmRevoke(root: HTMLElement, name: string, opener: HTMLElement): Pr
     const cancel = node(doc, "button", "button button-secondary", "Cancel") as HTMLButtonElement; cancel.type = "button";
     const confirm = node(doc, "button", "button button-danger sender-confirm-revoke", "Revoke share") as HTMLButtonElement; confirm.type = "button";
     actions.append(cancel, confirm); dialog.append(heading, subject, body, caveat, actions);
-    const finish = (result: boolean): void => { dialog.remove(); if (opener.isConnected) opener.focus(); resolve(result); };
+    const finish = (result: boolean): void => { if (result) onConfirm(); dialog.remove(); if (opener.isConnected) opener.focus(); resolve(result); };
     cancel.addEventListener("click", () => finish(false));
     confirm.addEventListener("click", () => finish(true));
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); finish(false); });
@@ -136,6 +140,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     empty.append(share, importLink);
   };
   type LibraryItem = Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }>;
+  /** Shares with a revoke open, from the confirmation to the answer. One per share, whatever rebuilds the rows. */
+  const revoking = new Set<string>();
   /**
    * TC-721. Revoke is confirmed in the page, never with `window.confirm`: a
    * native dialog is dismissed without a trace by automation, embedded
@@ -144,72 +150,116 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
    * after the click is visible on the row: pending, revoked, or the reason.
    */
   const revokeRow = async (item: LibraryItem, revoke: HTMLButtonElement, status: HTMLElement, controls: HTMLElement): Promise<void> => {
-    const name = safeName(item.record);
-    controls.querySelector(".sender-row-error")?.remove();
-    if (!(await confirmRevoke(root, name, revoke))) return;
-    const label = status.querySelector(".status-label");
-    const priorLabel = label?.textContent ?? "";
-    revoke.disabled = true; revoke.textContent = "Revoking…"; revoke.setAttribute("aria-busy", "true");
-    status.classList.add("pending"); if (label) label.textContent = "Revoking…";
-    live.textContent = "Revoking…";
+    const shareId = item.record.shareId;
+    // One revoke per share, and one confirmation at a time: a second click or Enter never starts a second revoke (a second wallet request).
+    if (revoking.has(shareId) || root.querySelector(".sender-confirm-dialog") !== null) return;
+    let hint: HTMLElement | undefined;
+    let owned = false;
     try {
-      // The row holds display fields only; read the full record (with delivery material) when the owner confirms.
-      const current = await options.history.records.get(item.record.shareId);
-      if (current === undefined) throw new Error("share-not-found");
-      const result = await revokeShare({
-        record: current,
-        records: options.history.records,
-        adapter: {
-          revokeDelegation: async ({ delegationCid }) => {
-            const outcome = await options.tinycloud.revokeDelegation(delegationCid);
-            if (!outcome.ok) throw Object.assign(new Error("revoke-rejected"), { status: httpStatusOf(outcome) });
+      const name = safeName(item.record);
+      controls.querySelector(".sender-row-error")?.remove();
+      if (!(await confirmRevoke(root, name, revoke, () => { revoking.add(shareId); owned = true; }))) return;
+      const label = status.querySelector(".status-label");
+      const priorLabel = label?.textContent ?? "";
+      revoke.disabled = true; revoke.textContent = "Revoking…"; revoke.setAttribute("aria-busy", "true");
+      status.classList.add("pending"); if (label) label.textContent = "Revoking…";
+      live.textContent = "Revoking…";
+      /**
+       * The creating session is gone, or this is a link-only share: the
+       * owner's wallet revokes that one delegation, with one approval. The
+       * saved record only names the CID; the node must first show it is a
+       * share root of this account, or nothing is signed.
+       */
+      const revokeWithOwnerWallet = async (current: SenderShareRecord, cid: string | undefined, kind: ShareRootKind, activeNode: { readonly origin: string; readonly nodeDid: string }): Promise<void> => {
+        const state = await verifyShareRootOnNode({ tinycloud: options.tinycloud, address: options.session.address, node: activeNode, record: current, cid, kind });
+        // The node already has it revoked (another tab, an earlier attempt): nothing to sign.
+        if (state === "revoked" || cid === undefined) return;
+        hint = node(doc, "p", "sender-row-hint", "Approve in the OpenKey window to revoke"); hint.setAttribute("role", "status");
+        controls.append(hint);
+        // A failure left by an earlier approval is not this one's.
+        takeWalletApprovalFailure(options.tinycloud);
+        const started = Date.now();
+        const outcome = await options.tinycloud.revokeDelegation(cid);
+        if (outcome.ok) return;
+        // The OpenKey window's own answer: a cancel is the sender's choice, not a node refusal.
+        const approval = takeWalletApprovalFailure(options.tinycloud);
+        if (approval !== undefined) throw new Error(`revoke-approval-${approval}`);
+        // A lost race or a retry after a lost response: ask the node, never the policy-status route, which disagrees with itself after a wallet revocation.
+        const after = await options.tinycloud.delegations.status(cid).catch(() => undefined);
+        if (after?.ok === true && after.data.status === "revoked") return;
+        const code = httpStatusOf(outcome) ?? (outcome.error.code === "NOT_FOUND" ? 404 : undefined);
+        // The wallet signs a request that is good for 60 seconds from the moment the approval was asked for.
+        if ((code === 401 || code === 403) && Date.now() - started >= APPROVAL_WINDOW_MS - 5_000) throw new Error("revoke-approval-expired");
+        throw Object.assign(new Error("revoke-rejected"), { status: code });
+      };
+      let revoked = false;
+      try {
+        // The row holds display fields only; read the full record (with delivery material) when the owner confirms.
+        const current = await options.history.records.get(item.record.shareId);
+        if (current === undefined) throw new Error("share-not-found");
+        const result = await revokeShare({
+          record: current,
+          records: options.history.records,
+          adapter: {
+            revokeDelegation: async ({ delegationCid, record }) => {
+              await revokeWithOwnerWallet(record, delegationCid, "bearer", await options.tinycloud.activeNodeIdentity());
+            },
+            revokePolicyRoot: async (request) => {
+              const activeNode = await options.tinycloud.activeNodeIdentity();
+              // Sender history is encrypted client state, not authority. Bind
+              // its root identifiers to the currently authenticated owner node
+              // before signing a generic Policy/v3 revocation.
+              if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid) throw new Error("revoke-unbound-policy-root");
+              // Signed by an earlier session key of this sign-in's account: only the owner's wallet can revoke it now.
+              if (request.ownerDid !== options.tinycloud.credentialHolderDid) {
+                await revokeWithOwnerWallet(current, current.ownerDelegationCid, "policy-root", activeNode);
+                return;
+              }
+              try {
+                await revokePolicyRootV3({
+                  nodeOrigin: activeNode.origin,
+                  rootCid: request.rootCid,
+                  targetRole: request.targetRole,
+                  ownerDid: options.tinycloud.credentialHolderDid,
+                  issuerDid: options.tinycloud.credentialHolderDid,
+                  nodeAudience: activeNode.nodeDid,
+                  reason: "share revoked",
+                  now: nodeReproducibleRevocationTime(),
+                  sign: (digest) => options.tinycloud.signSessionBytes(digest),
+                });
+              } catch (caught) {
+                // TC-657. A retry after a lost response signs a new
+                // `revokedAt`, and the Node, already holding the first
+                // revocation, answers 409 root-revocation-irreversible.
+                // Ask the Node whether the root is revoked before calling
+                // the revoke a failure.
+                if (httpStatusOf(caught) !== 409) throw caught;
+                const state = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
+                if (state?.state !== "revoked") throw caught;
+              }
+            },
           },
-          revokePolicyRoot: async (request) => {
-            const activeNode = await options.tinycloud.activeNodeIdentity();
-            // Sender history is encrypted client state, not authority. Bind
-            // its root identifiers to the currently authenticated owner node
-            // before signing a generic Policy/v3 revocation.
-            if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid || request.ownerDid !== options.tinycloud.credentialHolderDid) {
-              throw new Error("revoke-unbound-policy-root");
-            }
-            try {
-              await revokePolicyRootV3({
-                nodeOrigin: activeNode.origin,
-                rootCid: request.rootCid,
-                targetRole: request.targetRole,
-                ownerDid: options.tinycloud.credentialHolderDid,
-                issuerDid: options.tinycloud.credentialHolderDid,
-                nodeAudience: activeNode.nodeDid,
-                reason: "share revoked",
-                now: nodeReproducibleRevocationTime(),
-                sign: (digest) => options.tinycloud.signSessionBytes(digest),
-              });
-            } catch (caught) {
-              // TC-657. A retry after a lost response signs a new
-              // `revokedAt`, and the Node, already holding the first
-              // revocation, answers 409 root-revocation-irreversible.
-              // Ask the Node whether the root is revoked before calling
-              // the revoke a failure.
-              if (httpStatusOf(caught) !== 409) throw caught;
-              const state = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
-              if (state?.state !== "revoked") throw caught;
-            }
-          },
-        },
-      });
-      if (result.state !== "revoked") throw new Error("revoke-unsupported");
-      status.classList.remove("pending", "ready", "expired"); status.classList.add("revoked");
-      if (label) label.textContent = "Revoked";
-      revoke.remove();
-      live.textContent = "Share revoked.";
-    } catch (caught) {
-      // Only a status code or a fixed reason is shown; the error text can carry a response body.
-      status.classList.remove("pending"); if (label) label.textContent = priorLabel;
-      revoke.disabled = false; revoke.textContent = "Revoke"; revoke.removeAttribute("aria-busy");
-      const message = revokeFailureMessage(caught);
-      const detail = node(doc, "p", "sender-row-error", message); detail.setAttribute("role", "alert");
-      controls.append(detail);
-      live.textContent = "";
+        });
+        if (result.state !== "revoked") throw new Error("revoke-unsupported");
+        revoked = true;
+      } catch (caught) {
+        // Only a status code or a fixed reason is shown; the error text can carry a response body.
+        status.classList.remove("pending"); if (label) label.textContent = priorLabel;
+        revoke.disabled = false; revoke.textContent = "Revoke"; revoke.removeAttribute("aria-busy");
+        const message = revokeFailureMessage(caught);
+        const detail = node(doc, "p", "sender-row-error", message); detail.setAttribute("role", "alert");
+        controls.append(detail);
+        live.textContent = "";
+      }
+      if (revoked) {
+        status.classList.remove("pending", "ready", "expired"); status.classList.add("revoked");
+        if (label) label.textContent = "Revoked";
+        revoke.remove();
+        live.textContent = "Share revoked.";
+      }
+    } finally {
+      if (owned) revoking.delete(shareId);
+      hint?.remove();
     }
   };
   const renderItem = (item: SenderHistoryItem): void => {

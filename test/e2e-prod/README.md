@@ -71,6 +71,17 @@ install a CLI there first (`npm install --prefix /tmp/tc500-cli
 the recipient (TC-1424, fixed by TinyCloudLabs/js-sdk#581). It turns green once
 a CLI containing that fix is used.
 
+Revoking after a new sign-in is part of the journey. The sender page keeps no
+session across a load, so each stage that reloads it and signs in again makes a
+new session key: the key that signed the earlier shares is gone. The domain
+share is revoked that way (the Node must answer one generic `POST /revoke`
+carrying the owner's authorization header and no JSON body, and the admitted
+recipient's next read must fail closed), then the earlier link-only share must
+still open (a revoke reaches only its own delegation), and finally that
+link-only share is revoked from another new sign-in and must fail closed.
+`TC500_SKIP_CLI_SENDER=1` runs every browser stage without the `tc` CLI leg; the
+artifact then reports `partial-passed`, never `passed`.
+
 No CI workflow runs this gate; it is a manual release check.
 
 The gate refuses dirty or non-reviewed dependency trees. Defaults are the
