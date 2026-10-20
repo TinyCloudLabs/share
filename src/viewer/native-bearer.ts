@@ -24,7 +24,7 @@ export class NativeBearerError extends Error {
 /** The owner node answers a revoked chain with `401 delegation-revoked: <cid>` (or `…-ancestor-revoked`). */
 const REVOKED = /delegation-(?:ancestor-)?revoked|\brevoked\b/i;
 const EXPIRED = /\bAUTH_EXPIRED\b|\bexpired\b/i;
-const UNAVAILABLE = /failed to fetch|networkerror|network request failed|load failed|timed? ?out|unavailable|\b(?:5\d\d|429)\b/i;
+const UNAVAILABLE = /failed to fetch(?! shared data)|networkerror|network request failed|load failed|timed? ?out|unavailable|\b(?:5\d\d|429)\b/i;
 
 export function classifyBearerFailure(error: { readonly message: string; readonly code?: string }): NativeBearerFailureReason {
   const text = `${error.code ?? ""} ${error.message}`;
