@@ -138,7 +138,7 @@ try {
 
       // Install: the pre-consent sheet for a plain app, a sample that writes SQL, and a sample that reads another app. Nothing is signed or loaded from the SDK by opening it.
       const installCases = [
-        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["This app can change or delete its own tables.", "What this sign-in allows", "com.example.notes/app/", "com.example.notes/knowledge/", "None of this is granted now.", "Opening installed apps is coming next."], absent: ["Sample app: use throwaway data only."] },
+        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["This app can change or delete its own tables.", "What this sign-in allows", "com.example.notes/app/", "com.example.notes/knowledge/", "None of this is granted now."], absent: ["Sample app: use throwaway data only."] },
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["Sample app: use throwaway data only.", "This app can change or delete its own tables."], absent: [] },
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["Sample app: use throwaway data only.", "This app can read Health Log (sample)'s database (whole database)."], absent: [] },
       ];

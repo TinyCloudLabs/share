@@ -153,6 +153,17 @@ The static scan in the kit's samples is defence in depth only: the sandbox is th
 The `@tinycloud/app` library file is built, hashed and served with the other JSX library files, and
 `npm run build:usercontent` carries it.
 
+## Tests
+
+- `npm test`: the classifier (`apps-sql-class`), the grant cap and stored-app checks (`apps-runner-grants`), the
+  bridge handler with a fake data port (`apps-runner-bridge`), the frame side and the client module
+  (`apps-runner-frame`, `jsx-sandbox`, `jsx-form-events`), the page (`apps-runner-view`, `apps-runner-page`).
+- `TC500_NODE_WORKTREE=<tinycloud-node v1.21.0 tree> TC500_OPENCREDENTIALS_WORKTREE=<OpenCredentials 846c018 tree>
+  npx tsx test/e2e-prod/runner-gate.mjs`: the native-stack gate described in its header (install both samples,
+  open them, log a meal and read the row, cross-app read, widened and narrowed manifests, a hostile app
+  `test/fixtures/apps/hostile-app.jsx`, the node refusing calls forced past the page, sign-out, expiry, every
+  state at 390/1440 px in light and dark with axe). `RUNNER_SHOT_DIR` saves the screenshots.
+
 ## Known limits
 
 - Opening needs two approvals: the saved copy cannot be read before signing in, and the app's own session

@@ -308,7 +308,7 @@ try {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
     assert((await page.$eval(".apps-install-status", (node) => node.getAttribute("aria-live"))) === "polite");
-    assert.equal(await page.$eval("#apps-sheet footer .apps-install-actions button:first-child", (node) => node.disabled), true, "Open is not offered before the runner exists");
+    assert.equal(await page.$eval("#apps-sheet footer .apps-install-actions a", (node) => node.getAttribute("href")), `/apps/run#${HEALTH}`, "Open links to the runner");
     await captureState(page, "installed");
 
     const during = trace.slice(before).filter((entry) => entry.phase === "install-health");

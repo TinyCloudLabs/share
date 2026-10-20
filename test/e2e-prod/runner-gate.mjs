@@ -247,6 +247,15 @@ async function captureState(page, name) {
   await page.setViewport({ width: 1440, height: 900 }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
 }
 
+/** Installed in every frame before its scripts run: every message the document receives, as text (bytes by length only). */
+const recordMessages = () => {
+  window.__inbound = [];
+  // The runner page also hears OpenKey's own window; only opaque-origin senders (the app's frames) are the subject here.
+  window.addEventListener("message", (event) => { if (window.top === window && event.origin !== "null") return; try { window.__inbound.push(JSON.stringify(event.data, (key, value) => (value instanceof Uint8Array ? `bytes:${value.length}` : value))); } catch { /* not serialisable */ } }, true);
+};
+/** What nothing in any frame may ever be sent: the account, a token, a recap, a key, a DID. */
+const secretShapes = (address) => [new RegExp(address.slice(2), "i"), /tc1[A-Za-z0-9_-]{16,}/, /urn:recap/i, /"kty"/, /eyJ[A-Za-z0-9_-]{20,}/, /did:(?:pkh|key):/i, /-----BEGIN/, /private_?key/i, /siwe/i];
+
 /** The runner page itself reported no CSP or Trusted Types violation (the app's own are checked inside its frame). */
 const noViolations = async (page, where) => assert.deepEqual(await page.evaluate(() => window.__violations), [], `${where}: a CSP or Trusted Types violation fired in the runner page`);
 
@@ -317,7 +326,7 @@ try {
   {
     const label = "run-health";
     const from = trace.length;
-    const { page, context } = await openRunner(browser, stack, label, HEALTH);
+    const { page, context } = await openRunner(browser, stack, label, HEALTH, recordMessages);
     await start(page);
     // Hold the first approval to show the status, then the second.
     controls.sign = hold();
@@ -376,6 +385,14 @@ try {
     assert(trace.slice(from).filter((entry) => entry.phase === label).every((entry) => [stack.canonical.share, stack.canonical.node, stack.canonical.registry, "https://openkey.so", "https://api.openkey.so"].includes(entry.origin) || entry.origin === "null" || entry.protocol === "data:"), "a request left the allowed origins");
     await captureState(page, "running-after-meal");
     await noViolations(page, "running");
+    // Nothing secret crossed any hop: what the runner page, the bridge document and the app's frame received, in full.
+    const { bridge: bridgeFrame } = frames(page);
+    const received = { runnerPage: await page.evaluate(() => window.__inbound), bridge: await bridgeFrame.evaluate(() => window.__inbound), app: await child.evaluate(() => window.__inbound) };
+    for (const [where, messages] of Object.entries(received)) {
+      assert(messages.length > 0, `${where}: no messages were recorded`);
+      for (const shape of secretShapes(stack.walletAddress)) assert(!messages.some((message) => shape.test(message)), `${where}: a message matches ${shape}`);
+    }
+    report.stages.frameMessages = Object.fromEntries(Object.entries(received).map(([where, messages]) => [where, messages.length]));
 
     // Sign out: the frame goes, the session ends, and the app can be opened again.
     await clickByText(page, "Sign out of this app");
