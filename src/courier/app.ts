@@ -9,7 +9,7 @@ import { createAnnouncer } from "../share/announcer.js";
 import { confirmDialog } from "../share/confirm-dialog.js";
 import { showApprovalHint } from "../share/approval-hint.js";
 import { el, status, type ViewContext } from "./dom.js";
-import type { ThreadRef } from "./model.js";
+import { isDecidable, type ThreadRef } from "./model.js";
 import { renderNeeds } from "./screen-needs.js";
 import { renderOrders } from "./screen-orders.js";
 import { renderThread, renderThreads } from "./screen-threads.js";
@@ -62,7 +62,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
     form.setAttribute("aria-label", "Sign in");
     const mark = el(doc, "div", "openkey-mark", "OK"); mark.setAttribute("aria-hidden", "true");
     form.append(mark, el(doc, "h2", undefined, "Sign in to read and decide"));
-    form.append(el(doc, "p", "auth-copy", "Sign in with OpenKey. This page can read your agent mailbox. It writes only two things, and only when you click: your approval decisions and your standing orders. It never reads a peer's space."));
+    form.append(el(doc, "p", "auth-copy", "Sign in with OpenKey. This page can read your agent mailbox. In it, it writes only two things, and only when you click: your approval decisions and your standing orders. It never reads a peer's space. Like every Share sign-in, it also lets Share keep your account's own list of apps and spaces up to date."));
     const button = el(doc, "button", "button button-primary auth-button", "Continue with OpenKey"); button.type = "button";
     const line = el(doc, "p", "auth-status"); line.setAttribute("role", "status"); line.setAttribute("aria-live", "polite");
     if (notice !== undefined) line.textContent = notice;
@@ -131,7 +131,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
 
     const tabButtons = new Map<Screen, HTMLButtonElement>();
     const paintTabs = (): void => {
-      const pending = overview?.requests.filter((card) => card.standing === "pending").length ?? 0;
+      const pending = overview?.requests.filter((card) => card.standing === "pending" && isDecidable(card.request)).length ?? 0;
       for (const tab of TABS) {
         let button = tabButtons.get(tab.id);
         if (button === undefined) {

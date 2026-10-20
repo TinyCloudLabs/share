@@ -7,8 +7,9 @@
  * closes any OpenKey window and clears it. Nothing here is written to storage,
  * logged or put in the address bar.
  *
- * This page never hosts a space: `hostSpaces` is empty. A mailbox that does not
- * exists yet reads as `no-space`, and the page says how to set it up.
+ * This page never asks to host a space (`hostSpaces` is empty), but the helper signs in with `autoCreateSpace`, so the SDK may
+ * create the `agents` space itself on a fresh account. A mailbox that still isn't there reads as `no-space`, and the page says
+ * how to set it up.
  */
 import type { SharePublicConfig } from "../email-share/config.js";
 import { endSenderSession } from "../share/sender-chrome.js";

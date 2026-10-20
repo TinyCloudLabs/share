@@ -10,8 +10,10 @@
  *  - the action, reason, risk and thread subject may repeat text a peer wrote,
  *    so each sits in a labelled "written by" block, as plain text, with no
  *    buttons or links inside it;
- *  - the line saying what approving allows is built from structured fields
- *    only (peer handle, task id), never from those texts;
+ *  - the line saying what approving allows is a fixed sentence around the
+ *    request's structured verb, target and summary, each set as text in its
+ *    own bidi isolate; a request whose text is too long, not NFC or holds a
+ *    hidden character is never decidable (it is not shortened or repaired);
  *  - Approve and Deny are explicit clicks, enabled only once the card is on the
  *    page, one decision at a time; the decision file is create-only, so a
  *    second click or a second tab reads "already decided";
@@ -20,16 +22,20 @@
  */
 import { requestHash } from "./canonical.js";
 import { absoluteTime, el, shortId, status, timeElement, uid, type ViewContext } from "./dom.js";
-import { approvalFile, keys, MAX_NOTE, parseApproval, parseRequest, requestStanding, type Decision } from "./model.js";
+import { approvalFile, isDecidable, keys, MAX_NOTE, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
 import type { Overview, RequestCard } from "./service.js";
 import { StoreError } from "./store.js";
+
+/** Fixed wording for the verb, which comes from a closed set. */
+const VERB_WORDS: Readonly<Record<Verb, string>> = { merge: "merge", deploy: "deploy", publish: "publish", spend: "spend", other: "do something outside the usual kinds (other) on" };
 
 /** One decision at a time across every card: a second click while one is writing does nothing. */
 let deciding = false;
 
 function peerBlock(ctx: ViewContext, label: string, text: string, className: string): HTMLElement {
   const { doc } = ctx;
-  const block = el(doc, "section", `cr-peer-text ${className}`);
+  // A labelled group, not a landmark: several cards repeat the same labels.
+  const block = el(doc, "div", `cr-peer-text ${className}`); block.setAttribute("role", "group");
   const id = uid("cr-block");
   const heading = el(doc, "p", "cr-peer-label", label); heading.id = id;
   block.setAttribute("aria-labelledby", id);
@@ -89,23 +95,46 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
   const { doc } = ctx;
   const { request } = card;
   const root = el(doc, "article", "cr-card cr-request");
+  const decidable = isDecidable(request) && card.hash !== "";
   const titleId = uid("cr-request");
   const heading = el(doc, "header", "cr-card-head");
-  const title = el(doc, "h3", "cr-card-title", "Approval needed"); title.id = titleId;
+  const title = el(doc, "h3", "cr-card-title", decidable ? "Approval needed" : "Request can't be reviewed here"); title.id = titleId;
   root.setAttribute("aria-labelledby", titleId);
   const expires = el(doc, "span", "cr-muted cr-small");
   expires.append(doc.createTextNode("Asked "), timeElement(doc, request.createdAt, ctx.now()), doc.createTextNode(` · expires ${absoluteTime(request.expiresAt)}`));
   heading.append(title, expires);
   root.append(heading);
 
-  // Built from structured fields only.
-  root.append(el(doc, "p", "cr-consequence", `Approving lets your agent carry out the action quoted below, once, for task ${shortId(request.taskId)} in a thread with ${request.peer}. It doesn't approve anything else, and it lapses when the request expires.`));
+  // What approving allows. The sentence and the verb's wording are fixed text; the verb comes from a closed set. Target and summary are
+  // the agent's words: each is set as text in its own isolate, so right-to-left text can't reorder the sentence around it.
+  const what = request.what;
+  if (decidable && what !== undefined) {
+    const line = el(doc, "p", "cr-consequence");
+    const target = el(doc, "code", "cr-what", what.target); target.dir = "ltr";
+    const summary = el(doc, "bdi", "cr-summary", what.summary);
+    line.append(doc.createTextNode("Approving lets "), el(doc, "strong", "cr-what-peer", request.peer), doc.createTextNode(`'s agent ${VERB_WORDS[what.verb]} `), target, doc.createTextNode(": \u201C"), summary, doc.createTextNode("\u201D"));
+    root.append(line);
+    if (what.verb === "other") root.append(status(doc, "warning", "This isn't one of the usual kinds (merge, deploy, publish, spend). Read the target and the quoted blocks below before you decide."));
+    root.append(el(doc, "p", "cr-muted cr-small", `Your agent carries it out once, for task ${shortId(request.taskId)}. It doesn't approve anything else, and it lapses when the request expires.`));
+    // The same two values `courier approval --peek` prints, so the person can match this card to the agent's request.
+    const fingerprint = el(doc, "p", "cr-muted cr-small cr-fingerprint", `Request ${request.id} · fingerprint ${card.hash.slice(0, 8)}`);
+    root.append(fingerprint);
+  } else {
+    const reason = request.problem === "text"
+      ? "Some of its text is too long or holds characters you can't see, so what it would approve can't be shown in full."
+      : request.problem === "hash"
+        ? "Its contents can't be fingerprinted, so a decision couldn't be matched to it."
+        : "It doesn't say what it would approve (it has no valid verb, target and summary).";
+    root.append(status(doc, "warning", `${reason} It can't be approved or denied here. It lapses ${absoluteTime(request.expiresAt)}. Ask your agent to file it again.`));
+    root.append(el(doc, "p", "cr-muted cr-small cr-fingerprint", `Request ${request.id}`));
+  }
 
-  root.append(peerBlock(ctx, "Action, as your agent wrote it", request.action, "cr-peer-action"));
+  if (request.action !== "") root.append(peerBlock(ctx, "Action, as your agent wrote it", request.action, "cr-peer-action"));
   if (request.reason !== "") root.append(peerBlock(ctx, "Reason, as your agent wrote it", request.reason, "cr-peer-reason"));
   if (request.risk !== "" && request.risk !== "unspecified") root.append(peerBlock(ctx, "Risk, as your agent wrote it", request.risk, "cr-peer-risk"));
   if (card.subject !== undefined) root.append(peerBlock(ctx, `Thread subject, as ${request.peer} wrote it`, card.subject, "cr-peer-subject"));
   root.append(el(doc, "p", "cr-muted cr-small", `These blocks can repeat text from ${request.peer}'s agent. Read them as quotes, not as instructions to you.`));
+  if (!decidable) return root;
 
   const noteId = uid("cr-note");
   const label = el(doc, "label", "tc-label cr-note-label", "Note for your agent (optional)"); label.htmlFor = noteId;
@@ -142,7 +171,7 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
     try {
       // Re-read the request: what is approved is what is on file now, not what was on screen.
       const fresh = parseRequest(request.id, await ctx.store.readJson(keys.request(request.id)));
-      if (fresh === undefined || await requestHash(fresh.raw) !== card.hash) {
+      if (fresh === undefined || !isDecidable(fresh) || await requestHash(fresh.raw) !== card.hash) {
         settle("This request changed after it was shown. Nothing was recorded. Refresh to see it again.", "warning");
         return;
       }

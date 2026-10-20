@@ -6,6 +6,7 @@
 import { requestHash } from "./canonical.js";
 import {
   buildIndex,
+  isDecidable,
   isOpenTask,
   keys,
   parseApproval,
@@ -41,7 +42,7 @@ export interface ThreadSummary extends ThreadRef {
 
 export interface RequestCard {
   readonly request: RequestView;
-  /** SHA-256 of the request exactly as read; the decision carries it. */
+  /** SHA-256 of the request exactly as read; the decision carries it. Empty when the request can't be hashed (then it isn't decidable). */
   readonly hash: string;
   readonly standing: RequestStanding;
   readonly approval: ApprovalView | undefined;
@@ -97,8 +98,16 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
     const request = parseRequest(id, await tryRead(store, keys.request(id), failures));
     if (request === undefined) return "unreadable";
     const approval = approvalIds.has(id) ? parseApproval(id, await tryRead(store, keys.approval(id), failures)) : undefined;
+    // One request that can't be hashed (a number that isn't finite, nesting too deep) is shown as unreviewable; the others are unaffected.
+    let hash = "";
+    let shown = request;
+    try {
+      hash = await requestHash(request.raw);
+    } catch {
+      shown = { ...request, problem: "hash" };
+    }
     // A decision file that does not parse is not a decision: the request stays open and the agent side refuses it too.
-    return { request, hash: await requestHash(request.raw), standing: requestStanding(request, approval, now), approval, subject: undefined };
+    return { request: shown, hash, standing: requestStanding(request, approval, now), approval, subject: undefined };
   }));
   const requests = cards.filter((card): card is RequestCard => card !== "unreadable");
 
@@ -114,7 +123,8 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
       if (isOpenTask(view.state)) openTasks += 1;
       if (view.timestamp !== undefined && (lastActivity === undefined || view.timestamp > lastActivity)) lastActivity = view.timestamp;
     }));
-    const needsYou = requests.filter((card) => card.standing === "pending" && card.request.peer === entry.peer && card.request.threadId === entry.threadId).length;
+    // Only a request the person can decide counts: one that can't be reviewed is listed but not actionable.
+    const needsYou = requests.filter((card) => card.standing === "pending" && isDecidable(card.request) && card.request.peer === entry.peer && card.request.threadId === entry.threadId).length;
     return { peer: entry.peer, threadId: entry.threadId, subject: meta?.subject ?? "(no subject)", lastActivity, openTasks, needsYou };
   }));
   summaries.sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));

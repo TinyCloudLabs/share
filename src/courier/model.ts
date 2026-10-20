@@ -5,10 +5,17 @@
  * Every string here may come from another party: a peer's agent wrote the
  * messages and tasks in `me/mirror/`, and an agent working on a peer's request
  * wrote `me/requests/`. Nothing is trusted: ids are validated against fixed
- * shapes, text is length-capped and stripped of control and bidirectional
- * characters, and unknown values fall back to a plain label. The page shows the
- * result as text, never as markup (artifact bodies go through the markdown
- * sanitiser, see `thread-view.ts`).
+ * shapes, and unknown values fall back to a plain label. The page shows text as
+ * text, never as markup (artifact bodies go through the markdown sanitiser).
+ *
+ * Two rules for text, kept apart on purpose:
+ *  - what a person is asked to APPROVE (a request's verb, target, summary,
+ *    action, reason and risk) is checked, never repaired: a value that is too
+ *    long, not NFC, or holds a hidden character makes the request unreviewable,
+ *    because a card that shows less than the hash covers could hide the part
+ *    that matters;
+ *  - every other label (subjects, names, notes) is only made safe to look at:
+ *    capped, with hidden characters shown as visible escapes.
  */
 
 export const EXT = "https://tinycloud.xyz/ext/courier/v0";
@@ -18,35 +25,60 @@ export const HANDLE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export const MAX_SUBJECT = 200;
 export const MAX_LABEL = 120;
-export const MAX_ACTION = 600;
+/** Caps for what an approval depends on. Over a cap the request is unreviewable: it is never shortened. */
+export const MAX_ACTION = 2000;
 export const MAX_REASON = 2000;
-export const MAX_RISK = 600;
+export const MAX_RISK = 2000;
 export const MAX_NOTE = 1000;
 export const MAX_BODY = 256 * 1024;
 export const MAX_ORDERS_BYTES = 64 * 1024;
 
 // ------------------------------------------------------------------ text
 
-/** Control, format, line-separator and bidirectional characters: shown as a visible escape, never acted on. */
-const HIDDEN = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u061C\u115F\u1160\u180E\u200B-\u200F\u2028-\u202F\u205F-\u206F\u3164\uFEFF\uFFA0\uFFF9-\uFFFC]/g;
-const LINE_BREAKS = /[\n\r\t]+/g;
+/**
+ * Characters a person cannot see or that change how neighbouring text is drawn:
+ * control, format (zero-width, bidi, tag characters), private-use, unassigned,
+ * lone surrogates, line and paragraph separators, every default-ignorable
+ * (variation selectors, U+034F, Hangul and Khmer fillers), and any space other
+ * than a plain one (no-break, em, ideographic: look-alikes for it).
+ */
+const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/u;
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/gu;
+/** A long run of combining marks draws over the line above and below. */
+const MARK_RUN = /\p{M}{4,}/u;
+const MARK_RUNS = /\p{M}{4,}/gu;
 
-function escapeHidden(text: string): string {
-  return text.replace(HIDDEN, (char) => `⟦U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}⟧`);
+function escapeHidden(text: string, keep: string = ""): string {
+  return text
+    .replace(UNSAFE_CHARS, (char) => (char === keep ? char : `⟦U+${char.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟧`))
+    .replace(MARK_RUNS, "⟦many combining marks⟧");
 }
 
 /** One line of text for a label or a card field: capped, hidden characters escaped, line breaks flattened. */
 export function oneLine(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
-  const flat = escapeHidden(value.replace(LINE_BREAKS, " ")).trim();
+  const flat = escapeHidden(value.replace(/[\n\r\t]+/g, " ")).trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** Several lines (a note, a reason): capped, hidden characters escaped, line breaks kept. */
+/** Several lines (a note, a quoted reason): capped, hidden characters escaped, line breaks kept. */
 export function multiLine(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
-  const kept = escapeHidden(value.replace(/\r\n?/g, "\n")).trim();
+  const kept = escapeHidden(value.replace(/\r\n?/g, "\n"), "\n").trim();
   return kept.length > max ? `${kept.slice(0, max - 1)}…` : kept;
+}
+
+/**
+ * `value` exactly as written when it is fit to approve, else undefined. Not repaired, not shortened: 1 to `max`
+ * UTF-16 units, NFC, none of `UNSAFE_CHAR` (a `\n` is allowed only when `lines`), no long run of combining marks.
+ * `trimmed` also refuses leading or trailing space.
+ */
+export function strictText(value: unknown, max: number, options: { readonly lines?: boolean; readonly trimmed?: boolean } = {}): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > max) return undefined;
+  if (options.trimmed === true && value !== value.trim()) return undefined;
+  if (UNSAFE_CHAR.test(options.lines === true ? value.replaceAll("\n", "") : value)) return undefined;
+  if (MARK_RUN.test(value) || value !== value.normalize("NFC")) return undefined;
+  return value;
 }
 
 /** Message and artifact text for the markdown renderer: only length-capped (the sanitiser owns the rest). */
@@ -287,15 +319,79 @@ export function parseMeta(side: ThreadSide, raw: unknown): ThreadMetaView | unde
 
 // ------------------------------------------------------------------ requests and approvals
 
+export const VERBS = ["merge", "deploy", "publish", "spend", "other"] as const;
+export type Verb = (typeof VERBS)[number];
+/** Caps on the structured fields `courier request` writes (js-sdk packages/courier). A longer value is not shortened: the request is unreviewable. */
+export const MAX_TARGET = 200;
+export const MAX_SUMMARY = 200;
+
+/**
+ * The shapes a canonical target takes per verb (the CLI's `canonicalTarget` writes these). Printable ASCII only,
+ * which rules out look-alike letters; anything else is unreviewable.
+ */
+const SEG = "[A-Za-z0-9_.@/+-]+";
+const NPM_NAME = "(?:@[a-z0-9~][a-z0-9._~-]*/)?[a-z0-9~][a-z0-9._~-]*";
+const VERSION = "[0-9A-Za-z][0-9A-Za-z.+_-]*";
+const NAME = "[A-Za-z0-9_.-]+";
+const SCRIPT = /^script:[^:\s]+:[^:\s]+$/;
+const FREE = "[\\x21-\\x7E](?:[\\x20-\\x7E]*[\\x21-\\x7E])?";
+const shape = (source: string): RegExp => new RegExp(`^(?:${source})$`);
+const TARGET_SHAPES: Readonly<Record<Verb, readonly RegExp[]>> = {
+  // owner/repo is lower-cased by the CLI, so an upper-case spelling was not written by it.
+  merge: [/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[0-9]+$/, /^[a-z0-9_.-]+\/[a-z0-9_.-]+@(?:[A-Za-z0-9_.@/+-]+|\*)$/],
+  publish: [shape(`npm:${NPM_NAME}@${VERSION}`), shape(`release:[a-z0-9_.-]+/[a-z0-9_.-]+@${SEG}`), shape(`changeset:${NPM_NAME}`), SCRIPT],
+  deploy: [shape(`wrangler:${NAME}(?::${NAME})?`), shape(`(?:pages|phala):${NAME}`), SCRIPT],
+  other: [shape(`[a-z][a-z0-9-]{0,30}:${FREE}`)],
+  spend: [shape(`spend:${FREE}`)],
+};
+
+/** WHAT approving would allow, from structured fields inside the hashed request. Still the agent's words: shown as plain text, never as markup. */
+export interface RequestWhat {
+  readonly verb: Verb;
+  readonly target: string;
+  readonly summary: string;
+}
+
+export function parseWhat(raw: Record<string, unknown>): RequestWhat | undefined {
+  const verb = VERBS.find((candidate) => candidate === raw.verb);
+  const target = strictText(raw.target, MAX_TARGET, { trimmed: true });
+  const summary = strictText(raw.summary, MAX_SUMMARY, { trimmed: true });
+  if (verb === undefined || target === undefined || summary === undefined || !/^[\x20-\x7E]+$/.test(target) || !TARGET_SHAPES[verb].some((candidate) => candidate.test(target))) return undefined;
+  return { verb, target, summary };
+}
+
+/** A free-text field that is optional: "" when absent, the exact text when it is fit to approve, undefined when it is present but not (a present empty string is refused, as the CLI refuses it). */
+function optionalText(value: unknown, max: number): string | undefined {
+  if (value === undefined) return "";
+  return strictText(value, max, { lines: true });
+}
+
+/** Every string and key in `value` is fit to show (a single \n allowed): the CLI's approval sweeps the whole request, so the view does too. Nesting past the hash limit counts as not fit. */
+export function sweepsClean(value: unknown, depth = 0): boolean {
+  if (typeof value === "string") return !UNSAFE_CHAR.test(value.replaceAll("\n", "")) && !MARK_RUN.test(value) && value === value.normalize("NFC");
+  if (value === null || typeof value !== "object") return true;
+  if (depth >= 64) return false;
+  const entries = Array.isArray(value) ? value.map((item): [string, unknown] => ["", item]) : Object.entries(value as Record<string, unknown>);
+  return entries.every(([key, item]) => (key === "" || sweepsClean(key, depth + 1)) && sweepsClean(item, depth + 1));
+}
+
+/** Why a request can be read here but not decided. */
+export type RequestProblem = "fields" | "text" | "hash";
+
 /** A request from one of the owner's own agents, as `courier request` wrote it. Peer-influenced text is kept apart from the structured fields. */
 export interface RequestView {
   readonly id: string;
   readonly peer: string;
   readonly threadId: string;
   readonly taskId: string;
+  /** Undefined when the request lacks a valid verb, target or summary. */
+  readonly what: RequestWhat | undefined;
+  /** The optional free text, exactly as written when `problem` is not "text"; otherwise an escaped, shortened look at it (never approvable). */
   readonly action: string;
   readonly reason: string;
   readonly risk: string;
+  /** Set when the request can be read here but not decided: "fields" (no valid verb, target and summary), "text" (a quoted field is too long or holds hidden characters) or "hash" (it can't be fingerprinted). */
+  readonly problem: RequestProblem | undefined;
   readonly createdAt: number;
   readonly expiresAt: number;
   /** The parsed object exactly as stored: the approval's hash covers all of it. */
@@ -311,9 +407,22 @@ export function parseRequest(id: string, raw: unknown): RequestView | undefined 
   const createdAt = parseTime(raw.createdAt);
   const expiresAt = parseTime(raw.expiresAt);
   if (createdAt === undefined || expiresAt === undefined) return undefined;
-  const action = multiLine(raw.action, MAX_ACTION);
-  if (action === "") return undefined;
-  return { id, peer, threadId, taskId, action, reason: multiLine(raw.reason, MAX_REASON), risk: multiLine(raw.risk, MAX_RISK), createdAt, expiresAt, raw };
+  const what = parseWhat(raw);
+  const action = optionalText(raw.action, MAX_ACTION);
+  const reason = optionalText(raw.reason, MAX_REASON);
+  const risk = optionalText(raw.risk, MAX_RISK);
+  const problem: RequestProblem | undefined = what === undefined ? "fields" : action === undefined || reason === undefined || risk === undefined || !sweepsClean(raw) ? "text" : undefined;
+  // Exact when fit to approve; otherwise only a safe look at what is there.
+  const look = (value: unknown, exact: string | undefined, max: number): string => exact ?? multiLine(typeof value === "string" ? value : "(not text)", max);
+  return {
+    id, peer, threadId, taskId, what, problem, createdAt, expiresAt, raw,
+    action: look(raw.action, action, 600), reason: look(raw.reason, reason, 600), risk: look(raw.risk, risk, 600),
+  };
+}
+
+/** True when the card may offer Approve and Deny. */
+export function isDecidable(request: RequestView): boolean {
+  return request.what !== undefined && request.problem === undefined;
 }
 
 export type Decision = "approved" | "denied";

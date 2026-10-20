@@ -6,21 +6,29 @@
  * same string: recursively sorted object keys (UTF-16 code-unit order), no
  * whitespace, arrays in order. `requestHash` is the lowercase hex SHA-256 of
  * the UTF-8 bytes of that string.
+ *
+ * Two inputs have no honest canonical form and throw, on both sides, so a file
+ * can never hash the same as a different one: a number that is not finite
+ * (`1e999` parses to Infinity, which JSON.stringify would write as `null`), and
+ * nesting deeper than `MAX_DEPTH`. The caller treats a throw as "this request
+ * can't be reviewed", never as a reason to stop showing the others.
  */
 
-export function canonicalJson(value: unknown): string {
+/** The outermost array or object is level 1. */
+export const MAX_DEPTH = 64;
+
+export function canonicalJson(value: unknown, depth = 0): string {
   if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new TypeError("canonical-json-number");
     return JSON.stringify(value);
   }
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item === undefined ? null : item)).join(",")}]`;
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
-  }
-  throw new TypeError("canonical-json-type");
+  if (typeof value !== "object") throw new TypeError("canonical-json-type");
+  if (depth + 1 > MAX_DEPTH) throw new TypeError("canonical-json-depth");
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item === undefined ? null : item, depth + 1)).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key], depth + 1)}`).join(",")}}`;
 }
 
 export async function requestHash(request: unknown): Promise<string> {

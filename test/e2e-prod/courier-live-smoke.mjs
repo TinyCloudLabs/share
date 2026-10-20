@@ -272,6 +272,10 @@ try {
   await view.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Needs you")).click());
   await view.waitForSelector(".cr-request", { timeout: 30_000 });
   await view.waitForFunction(() => document.querySelector(".cr-approve")?.disabled === false, { timeout: 10_000 });
+  const cards = await view.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-consequence")?.textContent ?? null, buttons: card.querySelectorAll("button").length })));
+  assert.equal(cards.length, 2, "both seeded requests are listed");
+  assert.ok(cards.some((card) => card.line === null && card.buttons === 0), "the request without verb/target/summary has no buttons");
+  assert.equal(cards.find((card) => card.line !== null).line, "Approving lets hunter's agent merge throwaway/repo#20: Squash-merge a throwaway PR; nothing is merged");
   await view.type(".cr-note-input", "Throwaway approval from the live smoke.");
   await shot(view, "04-needs-you");
   await view.click(".cr-approve");
@@ -284,8 +288,8 @@ try {
   await refresh();
   await again.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Needs you")).click());
   await again.waitForSelector(".cr-settled", { timeout: 30_000 });
-  const settled = await again.evaluate(() => ({ cards: document.querySelectorAll(".cr-request").length, settled: document.querySelector(".cr-settled")?.textContent.replace(/\s+/g, " ") }));
-  assert.equal(settled.cards, 0, "a decided request is no longer waiting");
+  const settled = await again.evaluate(() => ({ decidable: document.querySelectorAll(".cr-approve").length, unreviewable: document.querySelectorAll(".cr-request").length, settled: document.querySelector(".cr-settled")?.textContent.replace(/\s+/g, " ") }));
+  assert.deepEqual({ decidable: settled.decidable, unreviewable: settled.unreviewable }, { decidable: 0, unreviewable: 1 }, "the decided request is no longer waiting; the request without a verb still can't be decided");
   assert.match(settled.settled, /Approved/);
   assert.match(settled.settled, /Throwaway approval from the live smoke\./);
   await shot(again, "06-decided");

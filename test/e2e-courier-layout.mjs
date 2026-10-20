@@ -110,6 +110,21 @@ try {
       await tab(page, "Needs you");
       await waitFor(page, ".cr-request");
       await page.waitForFunction(() => document.querySelector(".cr-approve")?.disabled === false, { timeout: 5_000 });
+      const cards = await page.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-consequence")?.textContent ?? null, buttons: card.querySelectorAll("button").length, warning: card.querySelector(".tc-status--warning")?.textContent ?? null })));
+      assert.equal(cards.length, 4, "two reviewable and two unreviewable requests are pending");
+      const unreviewableCards = cards.filter((card) => card.line === null);
+      assert.equal(unreviewableCards.length, 2);
+      assert.ok(unreviewableCards.every((card) => card.buttons === 0), "a request that can't be reviewed has no buttons");
+      assert.ok(unreviewableCards.some((card) => /doesn't say what it would approve/.test(card.warning)) && unreviewableCards.some((card) => /too long or holds characters you can't see/.test(card.warning)), "each says why");
+      const hiddenShown = await page.evaluate(() => document.body.textContent.includes("\u27E6U+E0061\u27E7"));
+      assert.ok(hiddenShown, "text that can't be seen is made visible");
+      // Nothing a card holds may draw outside it or over its buttons.
+      const containment = await page.evaluate(() => { const style = getComputedStyle(document.querySelector(".cr-request")); const quote = getComputedStyle(document.querySelector(".cr-peer-text")); return [style.overflow, style.contain, quote.overflow, quote.contain]; });
+      assert.deepEqual([containment[0], containment[2]], ["hidden", "hidden"]);
+      assert.ok(containment[1].includes("paint") && containment[3].includes("paint"));
+      const rtl = await page.evaluate(() => { const bdi = [...document.querySelectorAll(".cr-consequence bdi")].find((node) => /[\u0590-\u05FF]/.test(node.textContent)); return bdi ? { parent: bdi.parentElement.className, isolate: getComputedStyle(bdi).unicodeBidi, target: getComputedStyle(bdi.parentElement.querySelector("code")).direction } : null; });
+      assert.deepEqual(rtl, { parent: "cr-consequence", isolate: "isolate", target: "ltr" }, "right-to-left text sits in its own isolate");
+      assert.match(cards.find((card) => card.line?.includes("merge tinycloudlabs/eliza#20")).line, /^Approving lets hunter's agent merge tinycloudlabs\/eliza#20: /, "the card says what is approved, from the structured fields");
       await page.type(".cr-note-input", "Docs only. Go ahead.");
       await check(page, "needs-you", scheme, width);
 

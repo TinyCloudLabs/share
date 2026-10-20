@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { canonicalJson, requestHash } from "../src/courier/canonical.ts";
 import {
-  approvalFile, EXT, keys, multiLine, oneLine, parseApproval, parseKey, parseMessage, parseRequest, parseTask,
+  approvalFile, EXT, strictText, keys, multiLine, oneLine, parseApproval, parseKey, parseMessage, parseRequest, parseTask,
   requestStanding, ulidTime,
 } from "../src/courier/model.ts";
 import { loadOverview, loadThread } from "../src/courier/service.ts";
@@ -16,6 +16,16 @@ const TASK = T(22);
 const REQ = T(30);
 
 describe("canonical JSON and the request hash (shared vector with packages/courier)", () => {
+  it("refuses what has no honest canonical form, so two different files can't hash the same", () => {
+    // JSON.parse('1e999') is Infinity and JSON.stringify writes it as null: {"n":1e999} must not equal {"n":null}
+    expect(() => canonicalJson(JSON.parse('{"n":1e999}'))).toThrow();
+    expect(() => canonicalJson({ n: Number.NaN })).toThrow();
+    expect(canonicalJson({ n: null })).toBe('{"n":null}');
+    const nest = (levels: number): unknown => { let value: unknown = 1; for (let level = 0; level < levels; level += 1) value = [value]; return value; };
+    expect(() => canonicalJson(nest(64))).not.toThrow();
+    expect(() => canonicalJson(nest(65))).toThrow();
+    expect(() => canonicalJson(nest(20_000))).toThrow();
+  });
   it("keeps a parsed __proto__ key as an ordinary property, as the CLI's canonicalJson does", () => {
     expect(canonicalJson(JSON.parse('{"__proto__":{"x":1},"a":1}'))).toBe('{"__proto__":{"x":1},"a":1}');
   });
@@ -30,6 +40,34 @@ describe("canonical JSON and the request hash (shared vector with packages/couri
     expect(await requestHash({ id: REQ, action: "merge #21", n: [1, 2] })).not.toBe(one);
     // The vector the CLI worker mirrors: sha256 of {"a":[{"c":"x","d":2}],"b":1}
     expect(await requestHash({ b: 1, a: [{ d: 2, c: "x" }] })).toBe("ea8702e7f75afcfa88e6b612e382f127e636623fb4d70353ae0bcc0dea758935");
+  });
+});
+
+describe("text an approval depends on is checked, never repaired", () => {
+  it("accepts plain text exactly as written and nothing else", () => {
+    expect(strictText("Docs-only README change", 200, { trimmed: true })).toBe("Docs-only README change");
+    expect(strictText("\u05D1\u05D3\u05D9\u05E7\u05D4", 200)).toBe("\u05D1\u05D3\u05D9\u05E7\u05D4"); // Hebrew letters are visible text
+    expect(strictText("line one\nline two", 200, { lines: true })).toBe("line one\nline two");
+    expect(strictText("line one\nline two", 200)).toBeUndefined(); // a one-line field has no line breaks
+    expect(strictText("x".repeat(200), 200)).toBeDefined();
+    expect(strictText("x".repeat(201), 200)).toBeUndefined(); // never shortened
+    expect(strictText("", 200)).toBeUndefined();
+    expect(strictText(["a"], 200)).toBeUndefined();
+  });
+  it("refuses every kind of invisible or overdrawing character", () => {
+    const refused: [string, string][] = [
+      ["tag characters", `a${String.fromCodePoint(0xe0061)}`], ["a variation selector", "a\uFE0F"], ["a supplementary variation selector", `a${String.fromCodePoint(0xe0100)}`],
+      ["a combining grapheme joiner", "a\u034F"], ["a Khmer filler", "a\u17B4"], ["a Hangul filler", "a\u3164"], ["a zero-width joiner", "a\u200D"],
+      ["a bidi isolate", "a\u2066b"], ["a right-to-left mark", "a\u200F"], ["a byte order mark", "a\uFEFF"], ["a soft hyphen", "a\u00AD"],
+      ["a line separator", "a\u2028b"], ["a private-use character", "a\uE000"], ["an unassigned code point", "a\u0378"], ["a lone surrogate", "a\uD800"],
+      ["a NUL", "a\u0000"], ["a tab", "a\tb"], ["decomposed text (not NFC)", "e\u0301"], ["four stacked combining marks", "a\u0301\u0302\u0303\u0304"],
+    ];
+    for (const [name, value] of refused) expect(strictText(value, 200, { lines: true }), name).toBeUndefined();
+    expect(strictText("a\u0301\u0302\u0303", 200)).toBeUndefined(); // a + 3 marks is not NFC; the mark-run rule is for already-composed text
+  });
+  it("makes the same characters visible, not gone, when it only shows them", () => {
+    expect(oneLine(`x${String.fromCodePoint(0xe0061)}y\u200D\uFE0Fz`, 50)).toBe("x⟦U+E0061⟧y⟦U+200D⟧⟦U+FE0F⟧z");
+    expect(oneLine(`a${"\u0301".repeat(6)}`, 50)).toContain("⟦many combining marks⟧");
   });
 });
 
@@ -84,7 +122,7 @@ describe("a thread is both sides' files merged by ULID", () => {
     expect(first.kind === "message" && first.message.side).toBe("peer");
   });
   it("lists the thread with its open tasks, last activity and a needs-you count", async () => {
-    const request = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, action: "gh pr merge 20", reason: "ordered", risk: "redeploys", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z", status: "pending" };
+    const request = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "ordered", risk: "redeploys", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z", status: "pending" };
     const overview = await loadOverview(fakeStore({ ...files, [keys.request(REQ)]: request }), Date.parse("2026-10-20T12:00:00Z"));
     expect(overview.threads).toHaveLength(1);
     expect(overview.threads[0]).toMatchObject({ peer: "hunter", subject: "Handoff", openTasks: 1, needsYou: 1 });
@@ -101,14 +139,31 @@ describe("a thread is both sides' files merged by ULID", () => {
 });
 
 describe("requests and decisions", () => {
-  const good = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, action: "gh pr merge 20", reason: "r", risk: "k", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
+  const good = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "r", risk: "k", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
+  it("reads what a request approves only from a valid verb, target and summary, exactly as written", () => {
+    expect(parseRequest(REQ, good)?.what).toEqual({ verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only" });
+    const targets: Record<string, string> = { merge: "o/r#1", deploy: "wrangler:worker:prod", publish: "npm:@scope/pkg@1.2.3", spend: "spend:$20 of credits", other: "workflow:o/r:ci.yml" };
+    for (const [verb, target] of Object.entries(targets)) expect(parseRequest(REQ, { ...good, verb, target })?.what?.verb, verb).toBe(verb);
+    const exactly200 = "x".repeat(200);
+    const target200 = `o/r#${"1".repeat(196)}`;
+    expect(target200).toHaveLength(200);
+    expect(parseRequest(REQ, { ...good, target: target200, summary: exactly200 })?.what).toEqual({ verb: "merge", target: target200, summary: exactly200 });
+    expect(parseRequest(REQ, { ...good, target: `${target200}1` })?.what).toBeUndefined();
+    expect(parseRequest(REQ, { ...good, summary: `${exactly200}x` })?.what).toBeUndefined();
+    expect(parseRequest(REQ, { ...good, target: `${exactly200}x` })?.what).toBeUndefined();
+    expect(parseRequest(REQ, { ...good, summary: "a\u200Bb" })?.what).toBeUndefined();
+    // the request is still readable, and still hashed whole: an unreviewable request keeps every stored field
+    expect(parseRequest(REQ, { ...good, verb: "nuke" })?.raw).toEqual({ ...good, verb: "nuke" });
+  });
   it("refuses a request whose id, handle or ids are not what a real one has", () => {
     expect(parseRequest(REQ, good)).toBeDefined();
     expect(parseRequest(REQ, { ...good, id: T(31) })).toBeUndefined();
     expect(parseRequest(REQ, { ...good, peer: "../x" })).toBeUndefined();
     expect(parseRequest(REQ, { ...good, threadId: "nope" })).toBeUndefined();
     expect(parseRequest(REQ, { ...good, expiresAt: "soon" })).toBeUndefined();
-    expect(parseRequest(REQ, { ...good, action: "" })).toBeUndefined();
+    // the CLI's `action` is optional free text: a request without it is still a request
+    const { action: _action, ...withoutAction } = good;
+    expect(parseRequest(REQ, withoutAction)?.problem).toBeUndefined();
   });
   it("is pending until decided or 24 hours pass; a decision wins over expiry", () => {
     const request = parseRequest(REQ, good)!;

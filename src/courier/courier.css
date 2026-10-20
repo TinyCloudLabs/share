@@ -71,6 +71,11 @@
 .cr-consequence { margin: 0; padding: var(--tc-space-3) var(--tc-space-4); border-left: 4px solid var(--tc-color-status-warning); background: var(--tc-color-surface-subtle); color: var(--tc-color-text); font-weight: 600; }
 .cr-request-item { margin: 0; }
 .cr-request { border-color: var(--tc-color-status-warning); }
+/* Nothing in a card, whatever text it holds, may draw outside it or over the buttons. */
+.cr-request, .cr-peer-text { overflow: hidden; contain: paint; isolation: isolate; }
+.cr-what { unicode-bidi: isolate; direction: ltr; padding: 0 0.25em; border-radius: var(--tc-radius-sm); background: var(--tc-color-surface-subtle); color: var(--tc-color-text); font-family: var(--tc-font-mono); overflow-wrap: anywhere; }
+.cr-summary { unicode-bidi: isolate; }
+.cr-fingerprint { font-family: var(--tc-font-mono); overflow-wrap: anywhere; }
 .cr-note-input, .cr-orders-input, .cr-select { width: 100%; max-width: 100%; }
 .cr-orders-input { min-height: 14rem; font-family: var(--tc-font-mono); font-size: var(--tc-text-sm); resize: vertical; }
 .cr-actions { display: flex; flex-wrap: wrap; gap: var(--tc-space-3); }
