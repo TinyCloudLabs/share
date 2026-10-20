@@ -40,10 +40,11 @@ export const MAX_ORDERS_BYTES = 64 * 1024;
  * control, format (zero-width, bidi, tag characters), private-use, unassigned,
  * lone surrogates, line and paragraph separators, every default-ignorable
  * (variation selectors, U+034F, Hangul and Khmer fillers), and any space other
- * than a plain one (no-break, em, ideographic: look-alikes for it).
+ * than a plain one (no-break, em, ideographic: look-alikes for it), plus three
+ * symbols that draw as a blank or nothing: U+2800, U+FFFC and U+1D159.
  */
-const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/u;
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]|(?! )\p{Zs}/gu;
+const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}]|(?! )\p{Zs}/u;
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}]|(?! )\p{Zs}/gu;
 /** A long run of combining marks draws over the line above and below. */
 const MARK_RUN = /\p{M}{4,}/u;
 const MARK_RUNS = /\p{M}{4,}/gu;

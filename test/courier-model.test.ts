@@ -60,7 +60,7 @@ describe("text an approval depends on is checked, never repaired", () => {
       ["a combining grapheme joiner", "a\u034F"], ["a Khmer filler", "a\u17B4"], ["a Hangul filler", "a\u3164"], ["a zero-width joiner", "a\u200D"],
       ["a bidi isolate", "a\u2066b"], ["a right-to-left mark", "a\u200F"], ["a byte order mark", "a\uFEFF"], ["a soft hyphen", "a\u00AD"],
       ["a line separator", "a\u2028b"], ["a private-use character", "a\uE000"], ["an unassigned code point", "a\u0378"], ["a lone surrogate", "a\uD800"],
-      ["a NUL", "a\u0000"], ["a tab", "a\tb"], ["decomposed text (not NFC)", "e\u0301"], ["four stacked combining marks", "a\u0301\u0302\u0303\u0304"],
+      ["a Braille blank", "a\u2800"], ["an object replacement character", "a\uFFFC"], ["a musical null notehead", `a${String.fromCodePoint(0x1d159)}`], ["a no-break space", "a\u00A0b"], ["a NUL", "a\u0000"], ["a tab", "a\tb"], ["decomposed text (not NFC)", "e\u0301"], ["four stacked combining marks", "a\u0301\u0302\u0303\u0304"],
     ];
     for (const [name, value] of refused) expect(strictText(value, 200, { lines: true }), name).toBeUndefined();
     expect(strictText("a\u0301\u0302\u0303", 200)).toBeUndefined(); // a + 3 marks is not NFC; the mark-run rule is for already-composed text

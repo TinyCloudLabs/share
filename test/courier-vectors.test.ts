@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { canonicalJson } from "../src/courier/canonical.ts";
+import { MAX_DEPTH, canonicalJson, requestHash } from "../src/courier/canonical.ts";
 import { parseRequest, strictText, MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY, MAX_TARGET } from "../src/courier/model.ts";
 
 /**
@@ -9,17 +9,17 @@ import { parseRequest, strictText, MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY
  * and this view must accept and refuse exactly the same stored values, and hash exactly the same JSON.
  */
 interface FieldRow { readonly name: string; readonly field: "summary" | "target"; readonly verb?: string; readonly value: unknown; readonly valid: boolean }
-interface CanonicalRow { readonly name: string; readonly json: string; readonly canonical: string | null }
-const vectors = JSON.parse(readFileSync("test/vectors/courier-request-fields.json", "utf8")) as {
-  readonly limits: Record<string, number>; readonly fields: FieldRow[]; readonly canonical: CanonicalRow[];
-};
+interface CanonicalRow { readonly name: string; readonly json: string; readonly canonical: string | null; readonly sha256?: string }
+const vectors = JSON.parse(readFileSync("test/vectors/courier-request-fields.json", "utf8")) as { readonly limits: Record<string, number>; readonly fields: FieldRow[] };
+const canonicalVectors = JSON.parse(readFileSync("test/vectors/courier-canonical.json", "utf8")) as { readonly limits: Record<string, number>; readonly vectors: CanonicalRow[] };
 
 const THREAD = "01J9ZC4K7T3QZ5W6M8R2N1B010";
 const base = { id: "01J9ZC4K7T3QZ5W6M8R2N1B030", peer: "hunter", threadId: THREAD, taskId: "01J9ZC4K7T3QZ5W6M8R2N1B022", verb: "merge", target: "o/r#1", summary: "ok", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
 
 describe("the shared request-field vectors", () => {
   it("use the limits this view uses", () => {
-    expect(vectors.limits).toMatchObject({ summary: MAX_SUMMARY, target: MAX_TARGET, action: MAX_ACTION, reason: MAX_REASON, risk: MAX_RISK, combiningRun: 3, canonicalDepth: 64 });
+    expect(vectors.limits).toMatchObject({ summary: MAX_SUMMARY, target: MAX_TARGET, action: MAX_ACTION, reason: MAX_REASON, risk: MAX_RISK, combiningRun: 3 });
+    expect(canonicalVectors.limits).toMatchObject({ depth: MAX_DEPTH });
   });
   for (const row of vectors.fields) {
     it(`${row.field}: ${row.name} is ${row.valid ? "accepted" : "refused"} as stored`, () => {
@@ -38,10 +38,15 @@ describe("the shared request-field vectors", () => {
       expect(strictText(value, MAX_ACTION, { lines: true }) !== undefined, row.name).toBe(expected);
     }
   });
-  for (const row of vectors.canonical) {
-    it(`canonical JSON: ${row.name}`, () => {
-      if (row.canonical === null) expect(() => canonicalJson(JSON.parse(row.json))).toThrow();
-      else expect(canonicalJson(JSON.parse(row.json))).toBe(row.canonical);
+  for (const row of canonicalVectors.vectors) {
+    it(`canonical JSON: ${row.name}`, async () => {
+      if (row.canonical === null) {
+        expect(() => canonicalJson(JSON.parse(row.json))).toThrow();
+        return;
+      }
+      expect(canonicalJson(JSON.parse(row.json))).toBe(row.canonical);
+      // the digest an approval carries is the SHA-256 of exactly that string
+      if (row.sha256 !== undefined) expect(await requestHash(JSON.parse(row.json))).toBe(row.sha256);
     });
   }
 });
