@@ -1,7 +1,7 @@
 import { armManualCopy, copyWithFallback, type ManualCopyHandle } from "./clipboard.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
+import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
@@ -11,6 +11,13 @@ import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.
 import { failIfSpaceNotReady } from "./space-not-ready.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
+import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
+import { subscribeWalletApproval, walletApprovalOpen } from "./wallet-approval.js";
+import { artifactKindOf, ARTIFACT_KIND_LABEL, ARTIFACT_NOTE_ADDRESSED, ARTIFACT_NOTE_LINK } from "./artifact-kind.js";
+
+export const COMPOSER_APPROVAL_HINT = "Approve in the OpenKey window to create your link";
+export const COMPOSER_APPROVAL_TIMEOUT_COPY = "OpenKey is still waiting for you. No link has been created yet. Cancel and try again.";
+export const RESHARE_HELP = "Recipients can't pass this on as their own share yet. Anyone you give a link to can still send that same link on.";
 /**
  * Taken from the SDK rather than restated here. The hand-written copy of this
  * shape typed `actions` as `readonly string[]`, which is wider than the SDK's
@@ -599,7 +606,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const dropHint = el(doc, "span", "dropzone-hint", "Or choose another way");
   const dropLimit = el(doc, "span", "dropzone-limit", "Up to 100 MB total");
   const fileInput = el(doc, "input", "upload-input") as HTMLInputElement;
-  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*";
+  fileInput.type = "file"; fileInput.name = "document"; fileInput.accept = "*/*"; fileInput.setAttribute("aria-label", "Choose a file to share");
   const dropActions = el(doc, "div", "dropzone-actions");
   const chooseFileButton = el(doc, "button", "dropzone-action", "Choose file") as HTMLButtonElement;
   chooseFileButton.type = "button";
@@ -616,7 +623,9 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const chosenName = el(doc, "strong", "content-chosen-name");
   const chosenMeta = el(doc, "span", "content-chosen-meta");
   const change = el(doc, "button", "button button-secondary content-change", "Change") as HTMLButtonElement; change.type = "button";
-  chosen.append(chosenName, chosenMeta, change);
+  const chosenKind = el(doc, "span", "tc-badge content-chosen-kind"); chosenKind.hidden = true;
+  const chosenNote = el(doc, "p", "scope-note content-chosen-note"); chosenNote.hidden = true;
+  chosen.append(chosenName, chosenKind, chosenMeta, change, chosenNote);
 
   const textPanel = el(doc, "div", "content-text"); textPanel.hidden = true;
   const nameChip = el(doc, "input", "field-input content-filename") as HTMLInputElement;
@@ -666,7 +675,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     label.append(input, el(doc, "span", "expiry-option-copy", copy));
     expiryOptions.append(label);
   }
-  expiryFieldset.append(expiryOptions);
+  const expiryHelp = el(doc, "p", "tc-help expiry-help");
+  expiryFieldset.append(expiryOptions, expiryHelp);
 
   const accessFieldset = el(doc, "fieldset", "composer-section access-section");
   accessFieldset.append(el(doc, "legend", "field-legend", "What can they do?"));
@@ -678,7 +688,12 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   accessHint.hidden = true;
   const browseNotice = el(doc, "p", "scope-note composer-browse-notice", "Folder browsing is included automatically.");
   browseNotice.hidden = true;
-  accessFieldset.append(accessHint, browseNotice);
+  // Re-sharing needs delegations that cannot be passed on again; until those exist the choice is shown, not offered.
+  const reshare = el(doc, "label", "permission-option reshare-option"); reshare.setAttribute("aria-disabled", "true");
+  const reshareInput = el(doc, "input", "") as HTMLInputElement; reshareInput.type = "checkbox"; reshareInput.name = "reshare"; reshareInput.checked = false; reshareInput.disabled = true; reshareInput.setAttribute("aria-describedby", "reshare-help");
+  reshare.append(reshareInput, el(doc, "span", "permission-copy", "Allow re-sharing"), el(doc, "span", "tc-badge reshare-badge", "Coming later"));
+  const reshareHelp = el(doc, "p", "scope-note reshare-help", RESHARE_HELP); reshareHelp.id = "reshare-help";
+  accessFieldset.append(accessHint, browseNotice, reshare, reshareHelp);
 
   // Advanced. Everything that is a default, not a question.
   const advanced = el(doc, "details", "composer-advanced");
@@ -698,7 +713,11 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const note = el(doc, "p", "scope-note composer-note");
   const submit = el(doc, "button", "button button-primary create-link-button", "Create link"); submit.type = "submit";
   const status = el(doc, "div", "sender-status composer-status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
-  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status); shell.append(back, header, form); root.append(shell);
+  // TC-1583. Where the OpenKey approval hint appears while the page waits on the wallet. It sits outside the live status so the one spoken announcement is the hidden region below, not a second, atomic read of the status.
+  const approvalSlot = el(doc, "div", "composer-approval");
+  const announce = el(doc, "p", "sr-only sender-announce"); announce.setAttribute("role", "status"); announce.setAttribute("aria-live", "polite");
+  const say = (text: string): void => { announce.textContent = ""; window.setTimeout(() => { announce.textContent = text; }, 100); };
+  form.append(progress, contentSection, fieldset, expiryFieldset, accessFieldset, encryptionGroup, advanced, note, submit, status, approvalSlot, announce); shell.append(back, header, form); root.append(shell);
 
   let created: ComposerShareResult | undefined;
   // Set once the sender's own space has been listed; the library options that
@@ -719,6 +738,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const refreshNote = (): void => {
     const kind = selectedKind();
     const typed = recipientInput.value.trim();
+    expiryHelp.textContent = `After ${shortDate(expiryIso())} the link stops working. Revoking it ends access sooner. Anyone who already saved or copied the file keeps their copy.`;
     note.textContent = kind === "bearer"
       ? `Anyone who gets this link can open it until ${shortDate(expiryIso())}. You can revoke it earlier from All shares.`
       : kind === "emailDomain"
@@ -762,6 +782,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     recipientInput.setAttribute("aria-label", kind === "emailDomain" ? "Email domain" : kind === "recipientDid" ? "Recipient DID" : "Recipient email address");
     // The authorized mailbox is the natural delivery address.
     if (kind === "exactEmail" && !deliveryTouched) delivery.value = recipientInput.value.trim();
+    // An HTML page or a JSX/TSX component is an artifact: say so, and say who can open it as a page.
+    const artifact = contentKind === "file" ? artifactKindOf(chosenFiles[0]?.name ?? "") : undefined;
+    chosenKind.hidden = artifact === undefined; chosenKind.textContent = artifact === undefined ? "" : ARTIFACT_KIND_LABEL[artifact];
+    chosenNote.hidden = artifact === undefined; chosenNote.textContent = artifact === undefined ? "" : kind === "bearer" ? ARTIFACT_NOTE_LINK : ARTIFACT_NOTE_ADDRESSED;
     refreshNote();
   };
   form.querySelectorAll<HTMLInputElement>("input[name=recipient]").forEach((input) => input.addEventListener("change", refreshRecipient));
@@ -931,6 +955,17 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
     event.preventDefault();
     void (async () => {
       const kind = selectedKind();
+      // TC-1583. While the page waits on OpenKey, say so; the hint is gone the moment the approval closes or the attempt ends.
+      let approvalHint: ApprovalHint | undefined;
+      let unsubscribeApproval: (() => void) | undefined;
+      const showApproval = (open: boolean): void => {
+        if (open && approvalHint === undefined) {
+          approvalHint = showApprovalHint(approvalSlot, { text: COMPOSER_APPROVAL_HINT, lineClass: "sender-approval-line", timeoutCopy: COMPOSER_APPROVAL_TIMEOUT_COPY, ...(options.session === undefined ? {} : { onCancel: () => options.session!.openkey.disconnect() }) });
+          say(`${COMPOSER_APPROVAL_HINT}.`);
+        } else if (!open && approvalHint !== undefined) { approvalHint.dispose(); approvalHint = undefined; }
+      };
+      const startApprovalWatch = (): void => { unsubscribeApproval = subscribeWalletApproval(showApproval); showApproval(walletApprovalOpen()); };
+      const stopApprovalWatch = (): void => { unsubscribeApproval?.(); showApproval(false); };
       try {
         const selectedOption = source.selectedOptions[0];
         const selectedPath = selectedOption?.value || source.value || undefined;
@@ -974,8 +1009,10 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         };
         const model = validateComposerModel(modelInput);
         projectCapabilities(model);
+        startApprovalWatch();
         submit.disabled = true; setStatus(status, "Creating your link", model.encryption ? "Encrypting in your browser, then saving to your TinyCloud. No email is being sent." : "Saving to your TinyCloud. No email is being sent.", "encrypting");
         created = options.createShare === undefined ? await defaultCreate(files, model, options) : await options.createShare({ file, files, model });
+        stopApprovalWatch();
         if (options.persistShare !== undefined) {
           const save = async (): Promise<void> => options.persistShare!({ share: created!, model, file, files });
           try {
@@ -995,6 +1032,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         status.dataset.state = "created"; status.replaceChildren(el(doc, "strong", "sender-status-title result-title", "Your link is ready"), el(doc, "span", "sender-status-detail", model.recipient.kind === "emailDomain"
           ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can open it. ${canNotify(model) ? "Copy the link, or have us email it to the addresses you listed." : "Copy the link and send it to people at that domain."}`
           : model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
+        status.append(el(doc, "span", "sender-status-detail result-expiry", `Works until ${shortDate(created.expiresAt ?? model.expiresAt)}. Revoke it any time from All shares. Anyone who already saved or copied the file keeps their copy.`));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";
@@ -1052,9 +1090,11 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         copy.focus();
       } catch (error) {
         console.debug("tinycloud share: sender request failed");
-        setStatus(status, "Check the sharing details", senderFailureMessage(error), "error-invalid", true);
+        const approval = options.tinycloud === undefined ? undefined : takeWalletApprovalFailure(options.tinycloud);
+        if (approval === "cancelled" || approval === "timeout") setStatus(status, approval === "cancelled" ? "Approval cancelled" : "Approval timed out", SENDER_FAILURE[approval === "cancelled" ? "approvalCancelled" : "approvalTimeout"], "error-approval", true);
+        else setStatus(status, "Check the sharing details", senderFailureMessage(error), "error-invalid", true);
       }
-      finally { submit.disabled = false; }
+      finally { stopApprovalWatch(); submit.disabled = false; }
     })();
   });
 }
