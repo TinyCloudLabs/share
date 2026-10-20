@@ -350,7 +350,8 @@ try {
     assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`].sort(), "the read session asks for more than a get on the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
-    for (const message of sessions) assert.equal(lifetimeMs(message), 3_600_000, "a session lasts exactly one hour");
+    assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
+    assert.equal(lifetimeMs(sessions[1]), 3_600_000, "the runtime session lasts exactly one hour");
     report.signedRuntimeRecap = recapOf(sessions[1]);
     assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "two approvals but one OpenKey connect");
 
