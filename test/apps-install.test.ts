@@ -5,13 +5,13 @@ import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type BundleResponse, INSTALL_RECORD_PATH, bundleDigest, fetchVerifiedBundle, installPathProblem, sha256Hex } from "../src/apps/bundle.ts";
-import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
+import { EntryDisabledError, MAX_DISABLED_REASON_CHARS, type CatalogEntry, assertAvailable, availabilityOf, catalog } from "../src/apps/catalog.ts";
 import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor } from "../src/apps/consent.ts";
 import { resetInstallFlights, startInstall } from "../src/apps/install-flight.ts";
 import { InstallError, type InstallPorts, type InstallSession, type PutResult, runInstall } from "../src/apps/install.ts";
 import { REGISTRY_RESOURCES, expectedInstallerResources, installerAccess, installerManifest, installerScope, resourceMismatch } from "../src/apps/install-plan.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
-import { installPathProblem as buildTimePathProblem } from "../scripts/apps-catalog.mjs";
+import { MAX_DISABLED_REASON_CHARS as buildTimeReasonCap, installPathProblem as buildTimePathProblem } from "../scripts/apps-catalog.mjs";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES = "xyz.tinycloud.sample.recipes";
@@ -223,26 +223,42 @@ describe("verification before any write", () => {
     expect(node.sessions).toEqual([]);
   });
 
-  it("a manifest whose app_id or name differs from the catalog entry is refused", async () => {
+  /** A copy of the entry that pins `manifestBytes` as its manifest (digests recomputed), and a server that serves them. */
+  async function forgedWith(manifestBytes: Uint8Array<ArrayBuffer>): Promise<{ forged: CatalogEntry; fetch: NonNullable<InstallPorts["fetch"]> }> {
     const entry = entryOf(HEALTH);
-    const manifest = JSON.parse(readFileSync(join("public", entry.bundle.root, "manifest.json"), "utf8"));
-    const other = new TextEncoder().encode(JSON.stringify({ ...manifest, name: "Other" }));
-    // Same hash as the catalog cannot be forged; so check the identity rule on a copy of the entry that pins the forged bytes.
     const forged = structuredClone(entry);
     const file = forged.bundle.files.find((candidate) => candidate.path === "manifest.json");
     if (file === undefined) throw new Error("fixture");
-    file.sha256 = await sha256Hex(other);
-    file.size = other.byteLength;
+    file.sha256 = await sha256Hex(manifestBytes);
+    file.size = manifestBytes.byteLength;
     forged.manifest.sha256 = file.sha256;
     forged.bundle.digest = await bundleDigest(forged.bundle.files);
     forged.bundle.root = `/apps/b/${forged.bundle.digest}/`;
-    const server = { fetch: async (url: string): Promise<FetchResult> => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(url.endsWith("manifest.json") ? other : readFileSync(join("public", entry.bundle.root, url.slice(forged.bundle.root.length)))) }) };
-    await expect(fetchVerifiedBundle(forged, server.fetch)).rejects.toMatchObject({ reason: "catalog" });
+    return { forged, fetch: async (url: string): Promise<FetchResult> => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(url.endsWith("manifest.json") ? manifestBytes : readFileSync(join("public", entry.bundle.root, url.slice(forged.bundle.root.length)))) }) };
+  }
+  const healthManifest = (): Record<string, unknown> => JSON.parse(readFileSync(join("public", entryOf(HEALTH).bundle.root, "manifest.json"), "utf8"));
+
+  it("a manifest whose app_id or name differs from the catalog entry is refused", async () => {
+    const { forged, fetch } = await forgedWith(new TextEncoder().encode(JSON.stringify({ ...healthManifest(), name: "Other" })));
+    await expect(fetchVerifiedBundle(forged, fetch)).rejects.toMatchObject({ reason: "catalog" });
+  });
+
+  it.each([
+    ["a delegate DID (it hands all the app's access to another key)", { did: "did:key:z6MkexampleexampleexampleexampleexampleexampleABC" }],
+    ["a prefix that is not text", { prefix: 5 }],
+    ["a null prefix", { prefix: null }],
+    ["a space that is not text", { space: ["applications"] }],
+  ])("a manifest with %s is refused before OpenKey opens: nothing signed, nothing written", async (_name, patch) => {
+    const { forged, fetch } = await forgedWith(new TextEncoder().encode(JSON.stringify({ ...healthManifest(), ...patch })));
+    const node = fakeNode();
+    await expect(runInstall(forged, node.ports({ fetch }), () => undefined)).rejects.toMatchObject({ name: "InstallError", reason: "catalog", written: [] });
+    expect(node.sessions).toEqual([]);
+    expect(node.calls).toEqual([]);
   });
 });
 
 describe("a hostile or odd catalog entry is rejected at load, before any fetch", () => {
-  const hostile = ["../escape.txt", "a/../../b", "/etc/passwd", "a\\b.txt", "a\u0000b.txt", "nul\u0000", ".hidden", "knowledge/.env", "a//b", "a/./b", "", INSTALL_RECORD_PATH, "has space.md", "naïve.md", `${"a/".repeat(9)}b`, "x".repeat(200)];
+  const hostile = ["../escape.txt", "a/../../b", "/etc/passwd", "a\\b.txt", "a\u0000b.txt", "nul\u0000", ".hidden", "knowledge/.env", "a//b", "a/./b", "", INSTALL_RECORD_PATH, "has space.md", "naïve.md", "dev/shim.mjs", "node_modules/dep/index.js", "knowledge/tests/a.md", "Scripts/run.mjs", "test/x.md", `${"a/".repeat(9)}b`, "x".repeat(200)];
 
   it.each(hostile.map((path) => [JSON.stringify(path), path]))("path %s", async (_label, path) => {
     expect(installPathProblem(path)).not.toBeNull();
@@ -250,7 +266,16 @@ describe("a hostile or odd catalog entry is rejected at load, before any fetch",
     const entry = structuredClone(entryOf(HEALTH));
     entry.bundle.files.push({ path, sha256: "a".repeat(64), size: 1 });
     const fetchSpy = vi.fn();
-    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog" });
+    // Refused for the PATH (not just because the digest no longer follows), before any fetch.
+    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog", message: expect.stringContaining("file path") });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses two paths that differ only by case, for that reason, before any fetch", async () => {
+    const entry = structuredClone(entryOf(HEALTH));
+    entry.bundle.files.push({ path: "App.jsx", sha256: "a".repeat(64), size: 1 });
+    const fetchSpy = vi.fn();
+    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog", message: expect.stringContaining("differ only by case") });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -402,5 +427,54 @@ describe("what the pre-consent sheet says", () => {
     const readOnly = { app_id: entry.app_id, name: "R", defaults: false, permissions: [{ service: "tinycloud.sql", path: "db", actions: ["read"] }] };
     const { sample: _sample, ...plain } = entry;
     expect(consentFor(plain, readOnly, catalog.apps).notices).toEqual([]);
+  });
+});
+
+describe("the kill switch", () => {
+  const off = (reason?: string): CatalogEntry => ({ ...entryOf(HEALTH), disabled: true, ...(reason === undefined ? {} : { disabledReason: reason }) });
+
+  it("an entry is available unless it says otherwise, and a disabled one carries its reason", () => {
+    expect(availabilityOf(entryOf(HEALTH))).toEqual({ available: true });
+    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled." });
+    expect(availabilityOf(off("   "))).toEqual({ available: false, reason: "This app is temporarily unavailable." });
+    expect(availabilityOf(off())).toEqual({ available: false, reason: "This app is temporarily unavailable." });
+    // Only `true` switches it off.
+    expect(availabilityOf({ ...entryOf(HEALTH), disabled: false } as unknown as CatalogEntry)).toEqual({ available: true });
+  });
+
+  it("cuts a reason over the cap at render time, with a mark, using the same cap as the catalog check", () => {
+    expect(MAX_DISABLED_REASON_CHARS).toBe(buildTimeReasonCap);
+    const long = off("é".repeat(MAX_DISABLED_REASON_CHARS + 50));
+    const shown = availabilityOf(long);
+    expect(shown.available).toBe(false);
+    if (shown.available) throw new Error("unreachable");
+    expect([...shown.reason]).toHaveLength(MAX_DISABLED_REASON_CHARS);
+    expect(shown.reason.endsWith("…")).toBe(true);
+    const exact = off("x".repeat(MAX_DISABLED_REASON_CHARS));
+    expect(availabilityOf(exact)).toEqual({ available: false, reason: "x".repeat(MAX_DISABLED_REASON_CHARS) });
+  });
+
+  it("assertAvailable is the runner's gate: it throws for a disabled entry and for nothing else", () => {
+    expect(() => assertAvailable(entryOf(HEALTH))).not.toThrow();
+    expect(() => assertAvailable(off("Pulled."))).toThrow(EntryDisabledError);
+    try { assertAvailable(off("Pulled.")); } catch (error) { expect((error as EntryDisabledError).reason).toBe("Pulled."); }
+  });
+
+  it("a disabled entry is refused before anything is fetched, signed or written", async () => {
+    const entry = off("Pulled.");
+    const server = bundleServer(entry);
+    const fetchSpy = vi.fn(server.fetch);
+    const node = fakeNode();
+    await expect(runInstall(entry, node.ports({ fetch: fetchSpy }), () => undefined)).rejects.toMatchObject({ name: "InstallError", reason: "disabled", written: [] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(node.sessions).toEqual([]);
+    expect(node.calls).toEqual([]);
+  });
+
+  it("the flight refuses it too, without making the ports", async () => {
+    const makePorts = vi.fn(() => fakeNode().ports());
+    const flight = startInstall(off("Pulled."), makePorts);
+    expect((await flight.done)).toMatchObject({ phase: "failed", error: { reason: "disabled" } });
+    expect(makePorts).not.toHaveBeenCalled();
   });
 });

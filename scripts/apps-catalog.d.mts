@@ -6,6 +6,8 @@ export const INSTALL_RECORD_PATH: "install.json";
 export const RELEASE_PATH: "release.json";
 export const RELEASE_SCHEMA: "tinycloud.app-release/v1";
 export const MAX_INSTALL_PATH_LENGTH: number;
+export const MAX_DISABLED_REASON_CHARS: number;
+export const INSTALL_FORBIDDEN_FOLDERS: readonly string[];
 export const MAX_INSTALL_PATH_DEPTH: number;
 
 export interface BundleFile { path: string; sha256: string; size: number }
@@ -19,6 +21,7 @@ export interface BundleDescription {
 export function sha256Hex(bytes: Uint8Array): string;
 export function bundlePathProblem(path: unknown): string | null;
 export function installPathProblem(path: unknown): string | null;
+export function caseCollision(paths: string[]): string | null;
 export function installAppIdProblem(appId: unknown): string | null;
 export function releaseDigest(files: { path: string; sha256: string }[]): string;
 export function compareByPath(a: { path: string }, b: { path: string }): number;

@@ -20,14 +20,36 @@
 import type { Manifest } from "@tinycloud/web-sdk";
 
 import type { ManifestScope } from "../share/manifest-policy.js";
+import { isSignInLabel } from "../share/sign-in-label.js";
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_SPACE = "applications";
-/** The install only copies files, so its session is short: 15 minutes (a brand-new account is asked several times). */
-export const INSTALL_EXPIRY = "15m";
+/** The install only copies files, so its session is short (a brand-new account is asked several times). Everything below derives from this one constant. */
 export const INSTALL_EXPIRY_MS = 15 * 60 * 1000;
+/** The manifest's own expiry string (ms-format), derived from the constant. */
+export const INSTALL_EXPIRY = `${INSTALL_EXPIRY_MS / 60_000}m`;
+/** How the sheet says how long the install's session lasts: "15 minutes". */
+export const INSTALL_SESSION_LABEL = `${INSTALL_EXPIRY_MS / 60_000} ${INSTALL_EXPIRY_MS === 60_000 ? "minute" : "minutes"}`;
+
+/** The most characters the shared sign-in accepts in the name OpenKey shows. */
+const APP_NAME_MAX_CHARS = 64;
+const APP_NAME_PREFIX = "TinyCloud Share: install ";
+/** Used where the catalog's own name is not a name the shared sign-in accepts. */
+export const APP_NAME_FALLBACK = "Tiny app";
+
+/**
+ * The name OpenKey shows for the install. DISPLAY ONLY: it never identifies the app (the app id and the grants come
+ * from the catalog entry). The catalog's name goes in only if the shared sign-in would accept it as a name
+ * (`isSignInLabel`: no link-like text such as "Node.js Notes", no invisible characters); otherwise the fixed
+ * name "Tiny app" stands in, and the install proceeds. The whole line is cut to 64 characters, which the helper allows.
+ */
+export function installAppName(appName: string): string {
+  const named = isSignInLabel(appName) ? appName : APP_NAME_FALLBACK;
+  const cut = [...`${APP_NAME_PREFIX}${named}`].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
+  return isSignInLabel(cut) ? cut : `${APP_NAME_PREFIX}${APP_NAME_FALLBACK}`;
+}
 
 /**
  * What `signInWithManifest` may let the installer manifest ask for: `put` on
@@ -124,7 +146,7 @@ function registryItems(): { read: AccessItem[]; change: AccessItem[] } {
   const change: AccessItem[] = [];
   REGISTRY_RESOURCES.forEach((resource, index) => {
     const actions = resource.actions.map((action) => action.slice(action.lastIndexOf("/") + 1));
-    const base = { description: REGISTRY_DESCRIPTIONS[index] ?? null, service: SERVICE_LABEL[resource.service] ?? resource.service, space: resource.space, target: resource.path === "" ? resource.space : resource.path };
+    const base = { description: REGISTRY_DESCRIPTIONS[index] ?? null, service: SERVICE_LABEL[resource.service] ?? resource.service, space: resource.space, target: resource.path === "" ? resource.space : resource.path, path: resource.path };
     const isRead = (action: string): boolean => action === "get" || action === "list" || action === "read";
     const reads = actions.filter(isRead);
     const changes = actions.filter((action) => !isRead(action));

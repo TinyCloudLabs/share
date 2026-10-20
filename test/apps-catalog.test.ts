@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -89,6 +89,55 @@ describe("apps catalog digests", () => {
     expect(verifyCatalog(notBoolean, "public").some((error) => error.includes("sample must be true"))).toBe(true);
   });
 
+  describe("the kill switch", () => {
+    const clone = () => structuredClone(catalog) as unknown as { apps: Record<string, unknown>[] };
+
+    it("flipping it changes no digest and the catalog stays valid; the bundle bytes are untouched", () => {
+      const before = clone();
+      const switched = clone();
+      Object.assign(switched.apps[0] as object, { disabled: true, disabledReason: "Pulled while a problem is looked into." });
+      expect(verifyCatalog(switched, "public")).toEqual([]);
+      expect(switched.apps[0]?.bundle).toEqual(before.apps[0]?.bundle);
+      expect(switched.apps[0]?.manifest).toEqual(before.apps[0]?.manifest);
+    });
+
+    it.each([
+      ["disabled: false", { disabled: false }, "disabled must be true"],
+      ["disabled without a reason", { disabled: true }, "needs a disabledReason"],
+      ["a blank reason", { disabled: true, disabledReason: "   " }, "needs a disabledReason"],
+      ["a reason on an enabled entry", { disabledReason: "Why." }, "only on a disabled entry"],
+      ["a reason over the limit", { disabled: true, disabledReason: "x".repeat(281) }, "at most 280"],
+      ["a reason that is not text", { disabled: true, disabledReason: 5 }, "needs a disabledReason"],
+    ])("refuses %s", (_name, patch, message) => {
+      const broken = clone();
+      Object.assign(broken.apps[0] as object, patch);
+      expect(verifyCatalog(broken, "public").some((error) => error.includes(message))).toBe(true);
+    });
+  });
+
+  it("refuses a catalog manifest the sheet cannot describe: a delegate DID, a prefix or a space that is not text", () => {
+    const { publicDir, catalog: copy, folder } = privateCopy();
+    const file = join(folder, "manifest.json");
+    const original = JSON.parse(readFileSync(file, "utf8"));
+    for (const [patch, message] of [[{ did: "did:key:zExample" }, "delegate DID"], [{ prefix: 5 }, "prefix must be text"], [{ prefix: null }, "prefix must be text"], [{ space: ["applications"] }, "space must be text"]] as const) {
+      writeFileSync(file, JSON.stringify({ ...original, ...patch }));
+      expect(verifyCatalog(copy, publicDir).some((error) => error.includes(message)), message).toBe(true);
+    }
+  });
+
+  it("refuses a catalog whose file list holds a development folder, a case collision or an unsafe path", () => {
+    for (const path of ["dev/shim.mjs", "node_modules/x.js", "tests/a.mjs", "scripts/b.mjs", ".hidden/x", "../up.txt", "a\\b", "/abs"]) {
+      const bad = structuredClone(catalog);
+      bad.apps[0]?.bundle.files.push({ path, sha256: "a".repeat(64), size: 1 });
+      expect(verifyCatalog(bad, "public").some((error) => error.includes(`bundle.files[`) && error.includes("path")), path).toBe(true);
+    }
+    const collide = structuredClone(catalog);
+    const first = collide.apps[0];
+    if (first === undefined) throw new Error("fixture");
+    first.bundle.files = [...first.bundle.files, { path: "Schema.sql", sha256: "b".repeat(64), size: 1 }].sort((a, b) => (a.path < b.path ? -1 : 1));
+    expect(verifyCatalog(collide, "public").some((error) => error.includes("differs only by case"))).toBe(true);
+  });
+
   it("detects a bundle folder that no entry pins", () => {
     const { publicDir, catalog: copy } = privateCopy();
     mkdirSync(join(publicDir, "apps", "b", "f".repeat(64)));
@@ -163,8 +212,12 @@ describe("scripts/vendor-app.mjs", () => {
     expect(JSON.parse(readFileSync(catalogFile, "utf8"))).toEqual(after);
   }, 60_000);
 
-  /** A kit-style repo: an app folder with a release.json allow-list, plus folders that must never be vendored. */
-  function releaseRepo(options: { tamper?: boolean; badPath?: string } = {}): { repo: string; url: string } {
+  /**
+   * A kit-style repo: an app folder with a release.json allow-list, plus folders that must never be vendored.
+   * `extra` files are created AND listed with their true sha256 (the hostile case: the hashes are right, the path is the problem);
+   * `outside` files live in the repo beside the app folder; `symlinkDir` makes `<name>` a symlink to a folder outside the checkout.
+   */
+  function releaseRepo(options: { tamper?: boolean; extra?: Record<string, string>; outside?: Record<string, string>; listRaw?: string[]; symlinkDir?: string } = {}): { repo: string; url: string } {
     const work = tempDir();
     const repo = join(work, "app-repo");
     const app = join(repo, "examples", "sample");
@@ -184,7 +237,24 @@ describe("scripts/vendor-app.mjs", () => {
     writeFileSync(join(app, "node_modules", "dep", "index.js"), "dep");
     writeFileSync(join(app, "package.json"), "{}");
     const listed = Object.entries(files).map(([path, text]) => ({ path, sha256: sha256Hex(Buffer.from(text)), size: Buffer.byteLength(text) }));
-    if (options.badPath !== undefined) listed.push({ path: options.badPath, sha256: "a".repeat(64), size: 1 });
+    for (const [path, text] of Object.entries(options.extra ?? {})) {
+      mkdirSync(join(app, path, ".."), { recursive: true });
+      writeFileSync(join(app, path), text);
+      listed.push({ path, sha256: sha256Hex(Buffer.from(text)), size: Buffer.byteLength(text) });
+    }
+    for (const [path, text] of Object.entries(options.outside ?? {})) {
+      mkdirSync(join(repo, path, ".."), { recursive: true });
+      writeFileSync(join(repo, path), text);
+    }
+    // A listed path written exactly as given (backslash, absolute, ..): its true bytes are `raw`.
+    for (const path of options.listRaw ?? []) listed.push({ path, sha256: sha256Hex(Buffer.from("raw")), size: 3 });
+    if (options.symlinkDir !== undefined) {
+      const outside = join(work, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "s.txt"), "outside the checkout");
+      symlinkSync(outside, join(app, options.symlinkDir));
+      listed.push({ path: `${options.symlinkDir}/s.txt`, sha256: sha256Hex(Buffer.from("outside the checkout")), size: 20 });
+    }
     const digest = releaseDigest(listed);
     writeFileSync(join(app, "release.json"), JSON.stringify({ schema: "tinycloud.app-release/v1", app_id: "test.sample", version: "0.1.0", digest, files: listed }));
     if (options.tamper === true) writeFileSync(join(app, "app.jsx"), "export default () => 'changed after the release was made';\n");
@@ -220,15 +290,77 @@ describe("scripts/vendor-app.mjs", () => {
     expect(JSON.parse(readFileSync(catalogFile, "utf8")).apps[0].sample).toBe(true);
   }, 60_000);
 
-  it("refuses a listed file whose bytes differ from the release, and a release that lists an unsafe path", () => {
-    for (const options of [{ tamper: true }, { badPath: "../dev/shim.mjs" }, { badPath: "install.json" }]) {
-      const { repo, url } = releaseRepo(options);
-      const work = tempDir();
-      const commit = git(repo, "rev-parse", "HEAD");
-      const run = vendor(`${url}@${commit}`, join(work, "catalog.json"), join(work, "public"), "--path", "examples/sample", "--publisher", "Tests");
-      expect(run.status, JSON.stringify(options)).toBe(1);
-      expect(readdirSync(work)).toEqual([]); // nothing written
-    }
+  it("refuses a listed file whose bytes differ from the release", () => {
+    const { repo, url } = releaseRepo({ tamper: true });
+    const work = tempDir();
+    const run = vendor(`${url}@${git(repo, "rev-parse", "HEAD")}`, join(work, "catalog.json"), join(work, "public"), "--path", "examples/sample", "--publisher", "Tests");
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("does not match the sha256");
+    expect(readdirSync(work)).toEqual([]);
+  }, 60_000);
+
+  // Every case lists the file with its TRUE sha256, so only the path rule can refuse it.
+  const hostile: { name: string; options: Parameters<typeof releaseRepo>[0]; message: RegExp }[] = [
+    { name: "a dev/ folder", options: { extra: { "dev/shim2.mjs": "dev code" } }, message: /development folder/ },
+    { name: "node_modules/", options: { extra: { "node_modules/dep/index2.js": "dep" } }, message: /development folder/ },
+    { name: "tests/ and scripts/", options: { extra: { "tests/a.mjs": "t", "scripts/b.mjs": "s" } }, message: /development folder/ },
+    { name: "a nested dev folder", options: { extra: { "knowledge/dev/notes.md": "n" } }, message: /development folder/ },
+    { name: "a hidden folder", options: { extra: { ".hidden/x.md": "h" } }, message: /letters, digits/ },
+    { name: "a hidden file", options: { extra: { ".env": "SECRET=1" } }, message: /letters, digits/ },
+    { name: "a .. segment to a real file beside the app", options: { outside: { "examples/secret.txt": "secret" }, listRaw: ["../secret.txt"] }, message: /"\.\." segment/ },
+    { name: "an absolute path", options: { listRaw: ["/etc/hostname"] }, message: /must be relative/ },
+    { name: "a backslash path", options: { listRaw: ["dir\\file.md"] }, message: /backslash/ },
+    { name: "a NUL byte in a path", options: { listRaw: ["a\u0000b.md"] }, message: /control character/ },
+    { name: "the reserved install.json", options: { listRaw: ["install.json"] }, message: /reserved/ },
+    { name: "paths that differ only by case", options: { extra: { "Knowledge/Index.md": "x", "knowledge/index.MD": "y" } }, message: /differs only by case/ },
+    { name: "a file reached through a symlinked folder", options: { symlinkDir: "lnk" }, message: /symlink/ },
+  ];
+
+  it.each(hostile.map((item) => [item.name, item]))("refuses %s in release.json, writing nothing", (_name, item) => {
+    const { repo, url } = releaseRepo(item.options);
+    const work = tempDir();
+    const run = vendor(`${url}@${git(repo, "rev-parse", "HEAD")}`, join(work, "catalog.json"), join(work, "public"), "--path", "examples/sample", "--publisher", "Tests");
+    expect(run.status, run.stderr).toBe(1);
+    expect(run.stderr).toMatch(item.message);
+    expect(readdirSync(work)).toEqual([]); // nothing written
+  }, 60_000);
+
+  it("refuses an app folder that is itself a symlink, and a release-less folder with a dev/ folder", () => {
+    const work = tempDir();
+    const repo = join(work, "app-repo");
+    mkdirSync(join(repo, "real", "dev"), { recursive: true });
+    writeFileSync(join(repo, "real", "manifest.json"), JSON.stringify({ app_id: "test.plain", name: "Plain", description: "d" }));
+    writeFileSync(join(repo, "real", "dev", "x.js"), "x");
+    symlinkSync(join(repo, "real"), join(repo, "linked"));
+    git(repo, "init", "-q", "-b", "main"); git(repo, "config", "user.email", "t@example.com"); git(repo, "config", "user.name", "T");
+    git(repo, "add", "-A"); git(repo, "commit", "-q", "-m", "one");
+    localRepo = repo;
+    const out = tempDir();
+    const commit = git(repo, "rev-parse", "HEAD");
+    const viaLink = vendor(`https://example.test/app-repo@${commit}`, join(out, "c.json"), join(out, "p"), "--path", "linked", "--publisher", "T");
+    expect(viaLink.status).toBe(1);
+    expect(viaLink.stderr).toMatch(/symlink/);
+    const withDev = vendor(`https://example.test/app-repo@${commit}`, join(out, "c.json"), join(out, "p"), "--path", "real", "--publisher", "T");
+    expect(withDev.status).toBe(1);
+    expect(withDev.stderr).toMatch(/development folder/);
+    expect(readdirSync(out)).toEqual([]);
+  }, 60_000);
+
+  it("keeps a kill switch across an update", () => {
+    const { repo, url } = releaseRepo();
+    const work = tempDir();
+    const catalogFile = join(work, "catalog.json");
+    const publicDir = join(work, "public");
+    const spec = `${url}@${git(repo, "rev-parse", "HEAD")}`;
+    expect(vendor(spec, catalogFile, publicDir, "--path", "examples/sample", "--publisher", "Tests").status).toBe(0);
+    const switched = JSON.parse(readFileSync(catalogFile, "utf8"));
+    switched.apps[0].disabled = true;
+    switched.apps[0].disabledReason = "Pulled while a problem is looked into.";
+    writeFileSync(catalogFile, JSON.stringify(switched));
+    expect(vendor(spec, catalogFile, publicDir, "--path", "examples/sample").status).toBe(0);
+    const after = JSON.parse(readFileSync(catalogFile, "utf8")).apps[0];
+    expect(after).toMatchObject({ disabled: true, disabledReason: "Pulled while a problem is looked into." });
+    expect(verifyCatalog(JSON.parse(readFileSync(catalogFile, "utf8")), publicDir)).toEqual([]);
   }, 60_000);
 });
 
@@ -269,8 +401,8 @@ describe("what an app can read and change", () => {
         { service: "tinycloud.kv", path: "inbox/", actions: ["tinycloud.kv/put", "frobnicate"] },
       ],
     });
-    expect(own(summary.read)).toEqual([{ description: "Show photos. Read only.", service: "Key-value", space: null, target: "other.app/photos/", actions: ["get", "list"] }]);
-    expect(own(summary.change)).toEqual([{ description: null, service: "Key-value", space: null, target: "t.app/inbox/", actions: ["put", "frobnicate"] }]);
+    expect(own(summary.read)).toEqual([{ description: "Show photos. Read only.", service: "Key-value", space: null, target: "other.app/photos/", path: "other.app/photos/", actions: ["get", "list"] }]);
+    expect(own(summary.change)).toEqual([{ description: null, service: "Key-value", space: null, target: "t.app/inbox/", path: "t.app/inbox/", actions: ["put", "frobnicate"] }]);
   });
 
   it("lists `secrets` (an object keyed by name) as vault grants in the secrets space", () => {
@@ -279,13 +411,13 @@ describe("what an app can read and change", () => {
       secrets: {
         OPENAI_KEY: ["read", "write"],
         TOKEN: true,
-        SESSION: { name: "session-key", scope: "chat", actions: "delete", description: "Signs the chat session." },
+        SESSION: { name: "SESSION_KEY", scope: "chat", actions: "delete", description: "Signs the chat session." },
       },
     });
     expect(own(summary.read).map((item) => `${item.target} ${item.actions}`)).toEqual(["OPENAI_KEY get", "TOKEN get"]);
     expect(own(summary.change)).toEqual([
-      { description: null, service: "Secret", space: "secrets", target: "OPENAI_KEY", actions: ["put"] },
-      { description: "Signs the chat session.", service: "Secret", space: "secrets", target: "chat/session-key", actions: ["del"] },
+      { description: null, service: "Secret", space: "secrets", target: "OPENAI_KEY", path: "vault/secrets/OPENAI_KEY", actions: ["put"] },
+      { description: "Signs the chat session.", service: "Secret", space: "secrets", target: "chat/SESSION_KEY", path: "vault/secrets/scoped/chat/SESSION_KEY", actions: ["del"] },
     ]);
   });
 

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { resetInstallFlights } from "../src/apps/install-flight.ts";
+import { INSTALL_EXPIRY_MS, INSTALL_SESSION_LABEL } from "../src/apps/install-plan.ts";
 import { InstallError, type InstallPorts, type InstallSession, type PutResult } from "../src/apps/install.ts";
 import { mountApps } from "../src/apps/view.ts";
 
@@ -105,6 +107,18 @@ describe("the install sheet before anything is signed", () => {
     expect(buttons(sheet, "Not now")).toHaveLength(1);
   });
 
+  it("says how long the session lasts, and that number is the one the session is signed for", async () => {
+    stubBundleFetch();
+    mountApps(list, sheet, catalog.apps, { ports: () => controlledPorts().ports });
+    cardInstall(HEALTH).click();
+    await loaded();
+    // Read the number back from the rendered sentence: a literal in the view or a changed constant alone makes this fail.
+    const said = /For the next (\d+) minutes?, Share can then:/.exec(sheet.textContent ?? "");
+    expect(said, "the sheet states the session length").not.toBeNull();
+    expect(Number(said?.[1]) * 60_000).toBe(INSTALL_EXPIRY_MS);
+    expect(sheet.textContent).toContain(`For the next ${INSTALL_SESSION_LABEL}, Share can then:`);
+  });
+
   it("lists a cross-app read as a whole-database read", async () => {
     stubBundleFetch();
     mountApps(list, sheet, catalog.apps, { ports: () => controlledPorts().ports });
@@ -112,6 +126,18 @@ describe("the install sheet before anything is signed", () => {
     await loaded();
     expect(sheet.textContent).toContain("This app can read Health Log (sample)'s database (whole database).");
     expect(sheet.textContent).toContain("Sample app: use throwaway data only.");
+  });
+
+  it("a manifest the page cannot describe (a delegate DID) cannot be installed, and says why", async () => {
+    const manifest = { ...JSON.parse(readFileSync(join("public", entry(HEALTH).bundle.root, "manifest.json"), "utf8")), did: "did:key:z6MkexampleexampleexampleexampleexampleexampleABC" };
+    const bytes = Buffer.from(JSON.stringify(manifest));
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(bytes) })));
+    mountApps(list, sheet, [{ ...entry(HEALTH), app_id: "t.delegate", manifest: { path: "manifest.json", sha256: sha } }], { ports: () => { throw new Error("never"); } });
+    list.querySelectorAll("button")[1]?.click();
+    await vi.waitFor(() => expect(sheet.querySelector("[role=alert]")?.textContent).toContain("can't describe"));
+    expect(sheet.querySelector("[role=alert]")?.textContent).toContain("did");
+    expect(buttons(sheet, "Continue")[0]?.disabled).toBe(true);
   });
 
   it("a manifest that does not match the catalog cannot be installed", async () => {
@@ -220,5 +246,50 @@ describe("the states of an install", () => {
     buttons(sheet, "Continue")[0]?.click();
     await vi.waitFor(() => expect(status()).toContain("Sign-in cancelled. Nothing was installed."));
     expect(sheet.querySelector(".apps-install-status [role=alert]")).toBeNull();
+  });
+});
+
+describe("the kill switch on the page", () => {
+  const HOSTILE_REASON = "<img src=x onerror=\"window.__pwned=1\"> Pulled while a problem is looked into.";
+  const off = (): CatalogEntry => ({ ...entry(HEALTH), disabled: true, disabledReason: HOSTILE_REASON });
+
+  it("shows 'Temporarily unavailable' and the reason as text on the card, with Install disabled", () => {
+    const fetchSpy = stubBundleFetch();
+    mountApps(list, sheet, [off(), entry(RECIPES)], { ports: () => { throw new Error("never"); } });
+    const [first, second] = [...list.children] as HTMLElement[];
+    expect(first?.textContent).toContain("Temporarily unavailable");
+    expect(first?.textContent).toContain(HOSTILE_REASON);
+    expect(first?.querySelectorAll("img, script, iframe, svg")).toHaveLength(0);
+    expect((window as unknown as Record<string, unknown>).__pwned).toBeUndefined();
+    expect(buttons(first as HTMLElement, "Install")[0]?.disabled).toBe(true);
+    expect(buttons(first as HTMLElement, "Details")[0]?.disabled).toBe(false);
+    // The other card is untouched.
+    expect(second?.textContent).not.toContain("Temporarily unavailable");
+    expect(buttons(second as HTMLElement, "Install")[0]?.disabled).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("the details sheet says so and its Install is disabled", async () => {
+    stubBundleFetch();
+    mountApps(list, sheet, [off()], { ports: () => { throw new Error("never"); } });
+    list.querySelector<HTMLButtonElement>("button")?.click();
+    await vi.waitFor(() => expect(sheet.querySelector("[aria-busy]")).toBeNull());
+    expect(sheet.textContent).toContain("Temporarily unavailable");
+    expect(sheet.textContent).toContain(HOSTILE_REASON);
+    expect(buttons(sheet, "Install")[0]?.disabled).toBe(true);
+  });
+
+  it("even a forced click opens no install: no manifest fetch, no Continue, no ports, no OpenKey", () => {
+    const fetchSpy = stubBundleFetch();
+    const makePorts = vi.fn(() => { throw new Error("the install ports must not be created"); });
+    mountApps(list, sheet, [off()], { ports: makePorts });
+    const install = buttons(list, "Install")[0] as HTMLButtonElement;
+    install.disabled = false; // what a script or a stale button could do
+    install.click();
+    expect(sheet.textContent).toContain("Temporarily unavailable");
+    expect(sheet.textContent).toContain("can't be installed right now");
+    expect(buttons(sheet, "Continue")).toHaveLength(0);
+    expect(makePorts).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

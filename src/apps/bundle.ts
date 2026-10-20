@@ -12,6 +12,7 @@
  * scripts/apps-catalog.mjs holds the same path rule for the build-time check
  * (the unit test keeps the two in step).
  */
+import { unsupportedManifest } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_RECORD_PATH = "install.json";
@@ -21,6 +22,8 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_BUNDLE_BYTES = 4 * 1024 * 1024;
 const MAX_FILES = 64;
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+/** Folders that belong to an app's development, never to the app an installer copies (mirrors scripts/apps-catalog.mjs). */
+const FORBIDDEN_FOLDERS: readonly string[] = ["dev", "tests", "test", "scripts", "node_modules"];
 const HEX64 = /^[0-9a-f]{64}$/;
 const APP_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -41,6 +44,7 @@ export function installPathProblem(path: unknown): string | null {
   if (segments.length > MAX_PATH_DEPTH) return "is too deep";
   if (segments.some((segment) => segment === "." || segment === ".." || !SEGMENT.test(segment))) return "may only use letters, digits, \".\", \"_\" and \"-\"";
   if (path === INSTALL_RECORD_PATH) return "is reserved for the installer";
+  if (segments.slice(0, -1).some((segment) => FORBIDDEN_FOLDERS.includes(segment.toLowerCase()))) return "is inside a development folder";
   return null;
 }
 
@@ -94,14 +98,14 @@ export async function declaredFiles(entry: CatalogEntry): Promise<readonly Bundl
   for (const file of bundle.files) {
     const problem = installPathProblem(file?.path);
     if (problem !== null) refuse(`file path ${problem}`);
-    if (seen.has(file.path)) refuse("duplicate file path");
-    seen.add(file.path);
+    if (seen.has(file.path.toLowerCase())) refuse("duplicate file path (paths that differ only by case collide)");
+    seen.add(file.path.toLowerCase());
     if (typeof file.sha256 !== "string" || !HEX64.test(file.sha256)) refuse("file sha256");
     if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) refuse("file size");
     total += file.size;
   }
   if (total > MAX_BUNDLE_BYTES) refuse("bundle size");
-  if (entry.manifest?.path !== "manifest.json" || !seen.has("manifest.json")) refuse("manifest path");
+  if (entry.manifest?.path !== "manifest.json" || !bundle.files.some((file) => file.path === "manifest.json")) refuse("manifest path");
   if (bundle.files.find((file) => file.path === "manifest.json")?.sha256 !== entry.manifest.sha256) refuse("manifest sha256");
   // The list is its own check: it must hash to the digest the bundle root is named after.
   if (await bundleDigest(bundle.files) !== bundle.digest) refuse("digest");
@@ -139,5 +143,8 @@ export async function fetchVerifiedBundle(entry: CatalogEntry, fetchFn: BundleFe
   // The entry repeats the manifest's identity; the installer signs in with the entry's copy, so the two must agree.
   if (typeof manifest !== "object" || manifest === null || !("app_id" in manifest) || !("name" in manifest) || !("description" in manifest)
     || manifest.app_id !== entry.app_id || manifest.name !== entry.name || manifest.description !== entry.description) throw new BundleRefusal("catalog", "manifest identity differs from the catalog");
+  // Fail closed: a manifest the sheet cannot describe (a delegate DID, a prefix or space that is not text) is not installed, before OpenKey opens.
+  const unsupported = unsupportedManifest(manifest);
+  if (unsupported !== null) throw new BundleRefusal("catalog", `manifest not supported: ${unsupported}`);
   return { files, manifest };
 }

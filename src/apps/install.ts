@@ -15,7 +15,7 @@
  * The sign-in, the node and the clock are ports so tests can drive each step.
  */
 import { type BundleFetch, BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
-import type { CatalogEntry } from "./catalog.ts";
+import { type CatalogEntry, availabilityOf } from "./catalog.ts";
 import { installKey, installRecord, installRecordKey, installerManifest } from "./install-plan.ts";
 import type { Manifest } from "@tinycloud/web-sdk";
 
@@ -38,7 +38,7 @@ export interface InstallPorts {
   now?: () => Date;
 }
 
-export type InstallFailure = "catalog" | "tampered" | "unavailable" | "cancelled" | "timeout" | "busy" | "wrong-account" | "write-failed" | "failed";
+export type InstallFailure = "disabled" | "catalog" | "tampered" | "unavailable" | "cancelled" | "timeout" | "busy" | "wrong-account" | "write-failed" | "failed";
 
 /** An install that did not finish. `written` is what is in the person's TinyCloud now. */
 export class InstallError extends Error {
@@ -80,6 +80,8 @@ function contentTypeOf(path: string): string {
 }
 
 export async function runInstall(entry: CatalogEntry, ports: InstallPorts, report: (progress: InstallProgress) => void): Promise<InstallOutcome> {
+  // The kill switch: a disabled entry is refused before anything is fetched or any OpenKey window opens.
+  if (!availabilityOf(entry).available) throw new InstallError("disabled");
   report({ phase: "checking" });
   let bundle;
   try {

@@ -9,7 +9,7 @@
  * stays (so reopening the sheet shows how it ended) until the person tries
  * again, which replaces it.
  */
-import type { CatalogEntry } from "./catalog.ts";
+import { type CatalogEntry, availabilityOf } from "./catalog.ts";
 import { InstallError, type InstallOutcome, type InstallPorts, runInstall } from "./install.ts";
 
 export type InstallState =
@@ -54,7 +54,11 @@ export function flightFor(appId: string): InstallFlight | undefined {
 export function startInstall(entry: CatalogEntry, makePorts: () => InstallPorts): InstallFlight {
   const current = flights.get(entry.app_id);
   if (current?.active === true) return current;
-  const flight = new InstallFlight(entry.app_id, (self) => runInstall(entry, makePorts(), (progress) => self.set(progress)));
+  const flight = new InstallFlight(entry.app_id, async (self) => {
+    // The kill switch: a disabled entry never gets ports, a fetch or a sign-in (runInstall refuses it again).
+    if (!availabilityOf(entry).available) throw new InstallError("disabled");
+    return runInstall(entry, makePorts(), (progress) => self.set(progress));
+  });
   flights.set(entry.app_id, flight);
   return flight;
 }

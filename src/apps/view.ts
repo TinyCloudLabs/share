@@ -4,13 +4,13 @@
  * so Trusted Types can stay required for scripts. The install sheet's words are
  * fixed text plus those same textContent values; it adds no markup path.
  */
-import { type AccessItem, type AccessSummary } from "./access.ts";
-import { type CatalogEntry, versionLabel } from "./catalog.ts";
+import { type AccessItem, type AccessSummary, unsupportedManifest } from "./access.ts";
+import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
 import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts";
 import type { InstallError, InstallPorts } from "./install.ts";
 import { createInstallPorts } from "./install-session.ts";
-import { installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
+import { INSTALL_SESSION_LABEL, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
 import { loadManifest } from "./manifest.ts";
 
 type Child = Node | string;
@@ -74,6 +74,11 @@ async function renderAccess(entry: CatalogEntry, catalog: readonly CatalogEntry[
     target.replaceChildren(el("p", "tc-status tc-status--danger", [result.reason === "mismatch" ? MANIFEST_MISMATCH : MANIFEST_UNAVAILABLE], { role: "alert" }));
     return;
   }
+  const unsupported = unsupportedManifest(result.manifest);
+  if (unsupported !== null) {
+    target.replaceChildren(el("p", "tc-status tc-status--danger", [`This app's manifest asks for something this page can't describe (${unsupported}), so what it can do isn't shown and it can't be installed.`], { role: "alert" }));
+    return;
+  }
   const consent = consentFor(entry, result.manifest, catalog);
   target.replaceChildren(
     ...(entry.sample === true ? [sampleNotice()] : []),
@@ -87,6 +92,11 @@ async function renderAccess(entry: CatalogEntry, catalog: readonly CatalogEntry[
 export function noticeList(notices: readonly string[]): HTMLElement[] {
   const own = notices.filter((notice) => notice !== SAMPLE_NOTICE);
   return own.length === 0 ? [] : [el("ul", "apps-notes apps-notes--strong", own.map((notice) => el("li", null, [notice])))];
+}
+
+/** The kill switch's banner: fixed heading, the catalog's reason as text. */
+function unavailableNotice(reason: string): HTMLElement {
+  return el("div", "tc-status tc-status--warning apps-notice apps-unavailable", [el("strong", null, ["Temporarily unavailable"]), el("span", null, [reason])]);
 }
 
 function sampleNotice(): HTMLElement {
@@ -129,7 +139,7 @@ function signInSection(entry: CatalogEntry): HTMLElement {
   const { app, registry } = installerAccess(installerManifest({ app_id: entry.app_id, name: entry.name, description: entry.description }));
   return el("section", "apps-section", [
     el("h3", null, ["What this sign-in allows"]),
-    el("p", null, ["You approve in OpenKey. A brand-new account is asked a few times while its spaces are set up. For the next 15 minutes, Share can then:"]),
+    el("p", null, [`You approve in OpenKey. A brand-new account is asked a few times while its spaces are set up. For the next ${INSTALL_SESSION_LABEL}, Share can then:`]),
     accessList([...app.change, ...app.read]),
     el("p", null, [`Share also updates your account's list of apps so ${entry.name} shows up there. Other than that list, the sign-in can't read or change anything else in your TinyCloud. The exact list:`]),
     el("details", "apps-files", [
@@ -170,6 +180,12 @@ async function renderConsent(entry: CatalogEntry, catalog: readonly CatalogEntry
     target.replaceChildren(el("p", "tc-status tc-status--danger", [result.reason === "mismatch" ? "This app's manifest doesn't match the catalog, so it can't be installed." : MANIFEST_UNAVAILABLE], { role: "alert" }));
     return false;
   }
+  const unsupported = unsupportedManifest(result.manifest);
+  if (unsupported !== null) {
+    // Fail closed: nothing it asks for is shown or installed (Continue stays off, as for a manifest that does not match).
+    target.replaceChildren(el("p", "tc-status tc-status--danger", [`This app's manifest asks for something this page can't describe (${unsupported}), so it can't be installed.`], { role: "alert" }));
+    return false;
+  }
   const consent = consentFor(entry, result.manifest, catalog);
   target.replaceChildren(
     ...(entry.sample === true ? [sampleNotice()] : []),
@@ -188,6 +204,7 @@ interface StatusText {
 
 function failureText(entry: CatalogEntry, error: InstallError): StatusText {
   switch (error.reason) {
+    case "disabled": return { message: "This app is temporarily unavailable. Nothing was installed.", tone: "danger" };
     case "cancelled": return { message: "Sign-in cancelled. Nothing was installed.", tone: "neutral" };
     case "timeout": return { message: "OpenKey didn't answer in time. Nothing was installed. Try again.", tone: "neutral" };
     case "busy": return { message: "Another OpenKey request is waiting. Finish or cancel it, then try again.", tone: "neutral" };
@@ -226,6 +243,13 @@ function openControl(entry: CatalogEntry): HTMLElement {
 /** The install sheet: the pre-consent text, then the live state of this app's install. */
 function installContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], ports: () => InstallPorts, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement; detach: () => void } {
   const header = sheetHeader("Install", `Install ${entry.name} to your TinyCloud`, entry, close);
+  const availability = availabilityOf(entry);
+  if (!availability.available) {
+    // The kill switch: no manifest fetch, no Continue, no ports, no OpenKey.
+    const closeButton = el("button", "tc-button tc-button--primary apps-button", ["Close"], { type: "button" });
+    closeButton.addEventListener("click", close);
+    return { header, body: el("div", "apps-sheet__body", [unavailableNotice(availability.reason), el("p", "apps-muted", [`${entry.name} can't be installed right now.`])]), footer: el("footer", "apps-sheet__footer", [closeButton]), detach: () => undefined };
+  }
   const consentBody = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const body = el("div", "apps-sheet__body", [consentBody]);
   const status = el("div", "apps-install-status", [], { "aria-live": "polite" });
@@ -291,10 +315,12 @@ function installContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], p
 function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], close: () => void, install: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
   const header = sheetHeader(`by ${entry.publisher.name}`, entry.name, entry, close);
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
-  const body = el("div", "apps-sheet__body", [el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
+  const availability = availabilityOf(entry);
+  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
   const installNow = el("button", "tc-button tc-button--primary apps-button", ["Install"], { type: "button", "aria-label": `Install ${entry.name}`, "aria-describedby": INSTALL_NOTE_ID });
+  installNow.disabled = !availability.available;
   installNow.addEventListener("click", install);
-  const footer = el("footer", "apps-sheet__footer", [installNow, el("p", "apps-muted", ["You'll see what it asks for before anything is saved."])]);
+  const footer = el("footer", "apps-sheet__footer", [installNow, el("p", "apps-muted", [availability.available ? "You'll see what it asks for before anything is saved." : "Installing is switched off for this app."])]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -343,12 +369,16 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   for (const entry of entries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry, "details"); });
+    const availability = availabilityOf(entry);
     const install = el("button", "tc-button tc-button--primary apps-button", ["Install"], { type: "button", "aria-label": `Install ${entry.name}`, "aria-describedby": INSTALL_NOTE_ID });
+    // A disabled entry refuses here and again in runInstall; the click does nothing and no OpenKey window can open.
+    install.disabled = !availability.available;
     install.addEventListener("click", () => { opener = install; show(entry, "install"); });
     list.append(el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`, ...(entry.sample === true ? [" ", el("span", "tc-badge apps-badge", ["Sample"])] : [])]),
       el("p", "apps-card__description", [entry.description]),
+      ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
       el("div", "apps-card__actions", [details, install, el("a", "tc-button apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })]),
     ]));
   }
