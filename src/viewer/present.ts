@@ -55,8 +55,6 @@ function saveAction(result: OkResult, kind: SafeContentKind, filename: string, s
       pendingMessage: "Saving a copy to your TinyCloud…",
       approvalMessage: SAVE_APPROVAL_HINT,
       doneLabel: "Saved",
-      doneMessage: "Saved.",
-      doneLink: { text: "Open in TinyCloud", href: "/share/#/library" },
       failure: saveFailureMessage,
       start: async (progress) => {
         const bytes = result.contentBytes ?? new TextEncoder().encode(result.content ?? "");
@@ -64,7 +62,9 @@ function saveAction(result: OkResult, kind: SafeContentKind, filename: string, s
         // serves the object back must never present a stranger's HTML as a page, so the type says "text" and
         // the filename keeps `.html` / `.jsx`.
         const mediaType = kind === "markdown" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8";
-        await save({ bytes, filename, mediaType }, progress);
+        const saved = await save({ bytes, filename, mediaType }, progress);
+        // The name the copy really got (a clash becomes "name (2).md"), as text. There is no link: the library lists shares, not saved copies.
+        return { doneMessage: `Saved to your TinyCloud files as “${saved.name}”.` };
       },
     },
   };

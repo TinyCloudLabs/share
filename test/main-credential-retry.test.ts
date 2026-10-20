@@ -71,6 +71,7 @@ vi.mock("../src/share/openkey-session.js", () => ({
   createTinyCloudClient: (...args: unknown[]) => state.createAccountClient(...args),
   signInWithManifest: (...args: unknown[]) => state.signInWithManifest(...args),
   saveCopyManifest: () => ({}),
+  SAVE_COPY_MANIFEST_SCOPE: {},
   takeWalletApprovalFailure: () => undefined,
   FILES_FOR_YOU_SPACE: "files-for-you",
   FILES_FOR_YOU_PREFIX: "v1/",
@@ -118,6 +119,7 @@ beforeEach(() => {
   state.signInWithManifest.mockResolvedValue({
     tinycloud: { kvForSpace: () => ({ put: async (key: string, value: Uint8Array) => { state.puts.push({ key, value }); return { ok: true }; } }) },
     spaces: { "files-for-you": "space-of-files-for-you" },
+    dispose: async () => undefined,
   });
   const envelope = {
     version: 3,
@@ -202,7 +204,7 @@ describe("first-class accountless receiver", () => {
     expect(state.signInWithManifest).not.toHaveBeenCalled();
 
     const bytes = new Uint8Array([1, 2, 3, 0xff]);
-    await expect(save({ bytes, filename: "report.md", mediaType: "text/markdown;charset=utf-8" }, { approval: () => undefined })).resolves.toEqual({ path: "files-for-you/v1/report.md" });
+    await expect(save({ bytes, filename: "report.md", mediaType: "text/markdown;charset=utf-8" }, { approval: () => undefined })).resolves.toEqual({ path: "files-for-you/v1/report.md", name: "report.md" });
     expect(state.signInWithManifest).toHaveBeenCalledTimes(1);
     expect(state.puts).toEqual([{ key: "v1/report.md", value: bytes }]);
     // The library's own sign-in was never involved.

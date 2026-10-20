@@ -772,9 +772,10 @@ async function readBackCopies(page) {
     // keeps the real names: that is where the two helpers are.
     const session = Object.values(chunkExports).find((value) => typeof value === "object" && value !== null && typeof value.signInWithManifest === "function");
     if (session === undefined) throw new Error("the account chunk does not carry the sign-in helpers");
-    const { signInWithManifest, saveCopyManifest } = session;
+    const { signInWithManifest, saveCopyManifest, SAVE_COPY_MANIFEST_SCOPE } = session;
     const config = await (await fetch("/.well-known/tinycloud-share/config.json")).json();
-    const { tinycloud, spaces } = await signInWithManifest({ manifest: saveCopyManifest(), config, hostSpaces: ["files-for-you"] });
+    const signedIn = await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config, hostSpaces: ["files-for-you"] });
+    const { tinycloud, spaces } = signedIn;
     const kv = tinycloud.kvForSpace(spaces["files-for-you"]);
     const listed = await kv.list({ prefix: "v1/" });
     if (!listed.ok) throw new Error(`list failed: ${listed.error?.code}`);
@@ -785,6 +786,8 @@ async function readBackCopies(page) {
       const digest = await crypto.subtle.digest("SHA-256", got.data.data);
       copies.push({ key, sha256: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""), contentType: got.data.headers.contentType ?? null, byteLength: got.data.data.byteLength });
     }
+    // The helper's own teardown, against the real SDK: it must not throw.
+    await signedIn.dispose();
     return { copies };
   });
 }
@@ -808,7 +811,7 @@ async function shareSaveCopyFixture(sender) {
 }
 
 /** Opens `url` as a recipient with their own OpenKey account, clicks Save a copy, and waits for Saved. */
-async function saveFromRecipient({ browser, stack, url, label }) {
+async function saveFromRecipient({ browser, stack, url, label, expectedName }) {
   phase = `save-recipient-${label}`;
   const context = await browser.createBrowserContext(); const reader = await context.newPage();
   await installRouting(reader, stack, { openKeyOrigin: stack.services.recipientOpenKeyOrigin });
@@ -823,22 +826,21 @@ async function saveFromRecipient({ browser, stack, url, label }) {
   // Record what the live region says, in order, from before the click.
   await reader.evaluate(() => {
     window.__toastLog = [];
-    const toast = document.querySelector(".artifact-chrome-toast");
+    const toast = document.querySelector(".artifact-chrome-toast--job");
     new MutationObserver(() => window.__toastLog.push({ role: toast.getAttribute("role"), live: toast.getAttribute("aria-live"), text: toast.textContent })).observe(toast, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["role"] });
   });
   await reader.click(".viewer-save-to-tinycloud");
-  await reader.waitForFunction(() => /^(Saved\.|Sign-in cancelled|OpenKey didn't answer|Another OpenKey|That approval came|We couldn't save)/.test(document.querySelector(".artifact-chrome-toast")?.textContent ?? ""), { timeout: 300_000 });
+  await reader.waitForFunction(() => /^(Saved to your TinyCloud files|Sign-in cancelled|OpenKey didn't answer|Another OpenKey|That approval came|We couldn't save)/.test(document.querySelector(".artifact-chrome-toast--job")?.textContent ?? ""), { timeout: 300_000 });
   // The bar's own copy is fixed UI text (never a response body), so it is safe to report.
-  const outcome = await reader.$eval(".artifact-chrome-toast", (node) => node.textContent);
-  assert(outcome.startsWith("Saved."), `Save did not finish: the bar said "${outcome}"`);
+  const outcome = await reader.$eval(".artifact-chrome-toast--job", (node) => node.textContent);
+  assert(outcome.startsWith("Saved to your TinyCloud files as"), `Save did not finish: the bar said "${outcome}"`);
   const toastLog = await reader.evaluate(() => window.__toastLog);
   const spoken = toastLog.map((entry) => entry.text);
   assert(spoken.includes("Saving a copy to your TinyCloud…"), "the pending state was never announced");
   assert(spoken.includes("Approve in the OpenKey window to save a copy"), "the OpenKey approval hint never appeared");
-  assert.equal(spoken.at(-1), "Saved. Open in TinyCloud", "the page did not end on Saved");
+  assert.equal(spoken.at(-1), `Saved to your TinyCloud files as “${expectedName}”.`, "the page did not end on Saved, naming the copy");
   assert(toastLog.every((entry) => entry.live === "polite" || entry.role === "alert"), "a toast message was not in a live region");
-  const link = await reader.$eval(".artifact-chrome-toast a", (node) => ({ href: node.getAttribute("href"), target: node.target }));
-  assert.deepEqual(link, { href: "/share/#/library", target: "_blank" });
+  assert.equal(await reader.$(".artifact-chrome-toasts a"), null, "the Saved message links to a library that does not list copies");
   const after = trace.slice(clickedAt).filter((entry) => entry.phase === phase);
   assert(after.some((entry) => /openkey/i.test(entry.origin)), "Save never opened OpenKey");
   // The bytes that left the page for the node are the fixture's.
@@ -856,7 +858,9 @@ async function saveFromRecipient({ browser, stack, url, label }) {
     || (entry.type === "warn" && /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/.test(entry.text))
   ));
   assert.equal(unexpectedLogs.length, 0, "the Save path logged something other than the account bootstrap and the taken-name answer");
-  return { context, reader, storageEntries: stored.entries.length, announced: spoken.length };
+  // Every OpenKey approval is one signature the widget was asked for; the first Save on a new account asks several (documented), a later one fewer.
+  const approvals = after.filter((entry) => /openkey/i.test(entry.origin) && entry.method === "POST" && entry.path === "/sign").length;
+  return { context, reader, storageEntries: stored.entries.length, announced: spoken.length, approvals };
 }
 
 /**
@@ -870,13 +874,13 @@ async function verifySaveCopy({ browser, sender, stack }) {
   // Keys are stored percent-encoded (the node refuses a raw space or non-ASCII character); decoded, they are the names.
   const decoded = (copies) => copies.map((copy) => decodeURIComponent(copy.key.slice("v1/".length))).sort();
   const url = await shareSaveCopyFixture(sender);
-  const first = await saveFromRecipient({ browser, stack, url, label: "one" });
+  const first = await saveFromRecipient({ browser, stack, url, label: "one", expectedName: saveCopyName });
   const afterFirst = await readBackCopies(first.reader);
   assert.deepEqual(decoded(afterFirst.copies), [saveCopyName], "the first save is not the recipient's only copy");
   assert.equal(afterFirst.copies[0].sha256, saveCopyDigest, "the saved bytes differ from the original");
   assert.equal(afterFirst.copies[0].byteLength, saveCopyFixture.byteLength);
   assert.match(afterFirst.copies[0].contentType ?? "", /^text\/markdown/, "the copy is not stored as markdown");
-  const second = await saveFromRecipient({ browser, stack, url, label: "two" });
+  const second = await saveFromRecipient({ browser, stack, url, label: "two", expectedName: saveCopyName.replace(".md", " (2).md") });
   const afterSecond = await readBackCopies(second.reader);
   assert.deepEqual(decoded(afterSecond.copies), [saveCopyName, saveCopyName.replace(".md", " (2).md")].sort(), "a second save did not keep both copies");
   assert(afterSecond.copies.every((copy) => copy.sha256 === saveCopyDigest), "a saved copy differs from the original");
@@ -897,7 +901,7 @@ async function verifySaveCopy({ browser, sender, stack }) {
     savedOnce: true, savedTwice: true,
     copyKeys: afterRevoke.copies.map((copy) => copy.key),
     copySha256: saveCopyDigest, copiesEqualOriginal: true, copyContentType: afterRevoke.copies[0].contentType,
-    openKeyBeforeClick: 0, pendingAnnounced: true, approvalHintShown: true, savedAnnounced: true,
+    openKeyBeforeClick: 0, openKeyApprovals: [first.approvals, second.approvals], pendingAnnounced: true, approvalHintShown: true, savedAnnounced: true,
     storageEntriesAfterSave: first.storageEntries + second.storageEntries,
     revokedOriginalOffersNoSave: true, copiesSurviveRevoke: true, revocationWallet: revocation.wallet,
   };
