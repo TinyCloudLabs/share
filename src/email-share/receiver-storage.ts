@@ -1,37 +1,19 @@
-/** Receiver key and credential records that earlier builds kept in session storage. */
-export const LEGACY_RECEIVER_STORAGE_KEYS = Object.freeze([
-  "tinycloud.share.receiver-session.v1",
-  "tinycloud.share.receiver-credentials.v1",
-]);
+/** Where earlier builds kept the receiver's exportable key; it is only ever removed. */
+export const LEGACY_RECEIVER_SESSION_KEY = "tinycloud.share.receiver-session.v1";
+/** Receiver credentials; those issued to a legacy key go with it. */
+export const RECEIVER_CREDENTIALS_KEY = "tinycloud.share.receiver-credentials.v1";
 
 /**
- * Removes receiver records left in session storage by earlier builds. The
- * storage getter itself throws where site storage is blocked, so it is read
- * inside the guard; the page then simply has nothing to purge.
+ * Removes a receiver key record an earlier build left in this tab, with the
+ * credentials issued to it. Credentials for the current non-extractable key
+ * stay. The storage getter itself throws where site storage is blocked, so it
+ * is read inside the guard; the page then simply has nothing to purge.
  */
-export function purgeLegacyReceiverStorage(storage: () => Pick<Storage, "removeItem"> = () => window.sessionStorage): void {
+export function purgeLegacyReceiverStorage(storage: () => Pick<Storage, "getItem" | "removeItem"> = () => window.sessionStorage): void {
   try {
     const target = storage();
-    for (const key of LEGACY_RECEIVER_STORAGE_KEYS) target.removeItem(key);
+    if (target.getItem(LEGACY_RECEIVER_SESSION_KEY) === null) return;
+    target.removeItem(LEGACY_RECEIVER_SESSION_KEY);
+    target.removeItem(RECEIVER_CREDENTIALS_KEY);
   } catch { /* storage is blocked, so it holds no receiver records */ }
-}
-
-export interface PageMemoryStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
-/**
- * Storage for the receiver's key and credential records that lives only in
- * this page: nothing is written to session storage, and a reload asks the
- * recipient to verify their email again.
- */
-export function pageMemoryStorage(): PageMemoryStorage {
-  const values = new Map<string, string>();
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    setItem: (key, value) => { values.set(key, value); },
-    removeItem: (key) => { values.delete(key); },
-  };
 }
