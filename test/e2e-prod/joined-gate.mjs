@@ -837,7 +837,10 @@ async function saveFromRecipient({ browser, stack, url, label, expectedName }) {
   const toastLog = await reader.evaluate(() => window.__toastLog);
   const spoken = toastLog.map((entry) => entry.text);
   assert(spoken.includes("Saving a copy to your TinyCloud…"), "the pending state was never announced");
-  assert(spoken.includes("Approve in the OpenKey window to save a copy"), "the OpenKey approval hint never appeared");
+  // One hint per signature, counted in order, with the same words each time.
+  const hints = spoken.filter((text) => /^Approval \d+ of up to \d+\. Approve in the OpenKey window to save a copy$/.test(text));
+  assert(hints.length >= 1, "the OpenKey approval hint never appeared");
+  hints.forEach((text, index) => assert(text.startsWith(`Approval ${index + 1} of up to`), `approval hints were not counted in order: ${JSON.stringify(hints)}`));
   assert.equal(spoken.at(-1), `Saved to your TinyCloud files as “${expectedName}”.`, "the page did not end on Saved, naming the copy");
   assert(toastLog.every((entry) => entry.live === "polite" || entry.role === "alert"), "a toast message was not in a live region");
   assert.equal(await reader.$(".artifact-chrome-toasts a"), null, "the Saved message links to a library that does not list copies");
@@ -860,7 +863,7 @@ async function saveFromRecipient({ browser, stack, url, label, expectedName }) {
   assert.equal(unexpectedLogs.length, 0, "the Save path logged something other than the account bootstrap and the taken-name answer");
   // Every OpenKey approval is one signature the widget was asked for; the first Save on a new account asks several (documented), a later one fewer.
   const approvals = after.filter((entry) => /openkey/i.test(entry.origin) && entry.method === "POST" && entry.path === "/sign").length;
-  return { context, reader, storageEntries: stored.entries.length, announced: spoken.length, approvals };
+  return { context, reader, storageEntries: stored.entries.length, announced: spoken.length, approvals, hints: hints.length };
 }
 
 /**
@@ -901,7 +904,7 @@ async function verifySaveCopy({ browser, sender, stack }) {
     savedOnce: true, savedTwice: true,
     copyKeys: afterRevoke.copies.map((copy) => copy.key),
     copySha256: saveCopyDigest, copiesEqualOriginal: true, copyContentType: afterRevoke.copies[0].contentType,
-    openKeyBeforeClick: 0, openKeyApprovals: [first.approvals, second.approvals], pendingAnnounced: true, approvalHintShown: true, savedAnnounced: true,
+    openKeyBeforeClick: 0, openKeyApprovals: [first.approvals, second.approvals], approvalHints: [first.hints, second.hints], pendingAnnounced: true, approvalHintShown: true, savedAnnounced: true,
     storageEntriesAfterSave: first.storageEntries + second.storageEntries,
     revokedOriginalOffersNoSave: true, copiesSurviveRevoke: true, revocationWallet: revocation.wallet,
   };

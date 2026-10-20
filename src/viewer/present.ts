@@ -14,7 +14,7 @@ import type { ResolveResult } from "./resolve.js";
 import { describeShare, renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { classifyContent, FRAME_LAYOUT_CLASS, renderSafeContent, type SafeContentKind } from "./content.js";
 import { mountArtifactChrome, type ArtifactChrome, type ArtifactChromeAction } from "./artifact-chrome.js";
-import { SAVE_APPROVAL_HINT, saveFailureMessage, type SaveToTinyCloud } from "./save-copy.js";
+import { saveApprovalMessage, saveFailureMessage, type SaveToTinyCloud } from "./save-copy.js";
 import { copyWithFallback } from "../share/clipboard.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 import { downloadMediaType, safeDownloadName } from "./download-name.js";
@@ -53,7 +53,7 @@ function saveAction(result: OkResult, kind: SafeContentKind, filename: string, s
     job: {
       pendingLabel: "Saving…",
       pendingMessage: "Saving a copy to your TinyCloud…",
-      approvalMessage: SAVE_APPROVAL_HINT,
+      approvalMessage: saveApprovalMessage,
       doneLabel: "Saved",
       failure: saveFailureMessage,
       start: async (progress) => {

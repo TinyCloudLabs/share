@@ -18,7 +18,8 @@
  * cleared) when the call ends, and lasts at most an hour if it is not; no key,
  * token or session is stored or logged. A first Save on a new account asks for
  * four OpenKey approvals: the session itself, then hosting the `files-for-you`
- * space, the `account` space, and `files-for-you` again.
+ * space, the `account` space, and `files-for-you` again; the bar counts them
+ * ("Approval 2 of up to 4").
  */
 import type { SharePublicConfig } from "../email-share/config.js";
 import type { ApprovalGuard, ManifestSignIn, ShareTinyCloud, WalletApprovalFailure } from "../share/openkey-session.js";
@@ -27,11 +28,24 @@ import { withWalletApproval } from "../share/revoke-flight.js";
 
 export type { SavedCopyInput } from "../share/saved-copy.js";
 
+/** Which OpenKey approval is open: the n-th of up to `of`. */
+export interface ApprovalStep {
+  readonly n: number;
+  readonly of: number;
+}
+
 /** What the bar learns while a save runs. */
 export interface SaveProgress {
-  /** True while an OpenKey approval is open, false when it closes. */
-  approval(open: boolean): void;
+  /** True while an OpenKey approval is open, false when it closes. `step` says which signature it is, when it is one. */
+  approval(open: boolean, step?: ApprovalStep): void;
 }
+
+/**
+ * A first Save on a new account asks for up to four signatures, one at a time (measured on the native stack):
+ * the sign-in, then hosting the `files-for-you` space, the `account` space, and `files-for-you` again. The
+ * SDK's order is not a contract, so the bar counts ("Approval 2 of up to 4") instead of naming the steps.
+ */
+export const SAVE_MAX_APPROVALS = 4;
 
 export interface SaveResult {
   /** `files-for-you/v1/<name>`, the name percent-encoded as stored. */
@@ -44,6 +58,11 @@ export interface SaveResult {
 export type SaveToTinyCloud = (copy: SavedCopyInput, progress: SaveProgress) => Promise<SaveResult>;
 
 export const SAVE_APPROVAL_HINT = "Approve in the OpenKey window to save a copy";
+
+/** The hint while an approval is open; the same words every time, with the count in front when it is a signature. */
+export function saveApprovalMessage(step?: ApprovalStep): string {
+  return step === undefined ? SAVE_APPROVAL_HINT : `Approval ${step.n} of up to ${step.of}. ${SAVE_APPROVAL_HINT}`;
+}
 
 export type SaveFailureReason = WalletApprovalFailure | "busy" | "failed";
 
@@ -85,9 +104,12 @@ export function createSaveToTinyCloud(config: SharePublicConfig): SaveToTinyClou
     let observed: SaveFailureReason | undefined;
     let takeFailure: ((tinycloud: ShareTinyCloud) => WalletApprovalFailure | undefined) | undefined;
     // One approval at a time, for at most the 60-second window; the bar shows the hint while it is open.
-    const guardApproval: ApprovalGuard = async (wait) => {
+    let approvals = 0;
+    const guardApproval: ApprovalGuard = async (wait, info) => {
+      // Opening OpenKey is not a signature; each signature is the next approval.
+      const step: ApprovalStep | undefined = info?.kind === "sign" ? (approvals += 1, { n: approvals, of: Math.max(SAVE_MAX_APPROVALS, approvals) }) : undefined;
       try {
-        return await withWalletApproval({ setApproval: (open) => progress.approval(open) }, () => wait());
+        return await withWalletApproval({ setApproval: (open) => progress.approval(open, open ? step : undefined) }, () => wait());
       } catch (error) {
         observed ??= guardReason(error);
         throw error;
