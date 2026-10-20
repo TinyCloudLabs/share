@@ -851,6 +851,25 @@ try {
     await context.close();
   }
 
+  // ---- 8. Uninstall the Health Log from the apps page: the runner then says it needs installing and starts nothing.
+  phase = "8. Uninstall the Health Log from the apps page: the runner t"; console.error(`[t5b] ${phase}`);
+  {
+    const { page, context } = await newPage(browser, stack, "uninstall-health", `${stack.canonical.share}/apps/`);
+    await page.waitForSelector(".apps-card", { timeout: 60_000 });
+    await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), health.name);
+    await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), health.name);
+    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
+    const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
+    assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
+    await context.close();
+    const { page: runner, context: runnerContext } = await openRunner(browser, stack, "after-uninstall", HEALTH);
+    await start(runner);
+    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === "This app needs to be installed first"), true, `after uninstall the runner did not say it needs installing (status: ${await statusText(runner)})`);
+    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame");
+    report.stages.uninstalled = { screen: "This app needs to be installed first", frame: false };
+    await runnerContext.close();
+  }
+
   // ---- Diagnostics: no page error, no unexpected console output, nothing left the allowed origins.
   const pageErrors = consoleLog.filter((entry) => entry.type === "pageerror");
   assert.deepEqual(pageErrors, [], "a page error was raised");
