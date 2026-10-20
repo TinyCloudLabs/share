@@ -8,7 +8,7 @@ import "../../../src/email-share/recipient.css";
 import "../../../src/viewer/viewer.css";
 import { presentShare } from "../../../src/viewer/present.js";
 import { presentationEnvelope } from "../../../src/viewer/resolve.js";
-import { renderShareUnavailable } from "../../../src/viewer/ui.js";
+import { renderLinkNeeded, renderShareUnavailable } from "../../../src/viewer/ui.js";
 import report from "./report.md?raw";
 import page from "./page.html?raw";
 import gaps from "./gaps.html?raw";
@@ -21,7 +21,9 @@ document.documentElement.classList.remove("viewer-first-paint");
 
 try {
   const state = params.get("state");
-  if (state === "revoked" || state === "expired" || state === "unavailable") {
+  if (state === "needs-link") {
+    renderLinkNeeded(root);
+  } else if (state === "revoked" || state === "expired" || state === "unavailable") {
     renderShareUnavailable(root, state, state === "expired" ? "2026-10-12T00:00:00.000Z" : undefined, () => undefined);
   } else {
     const filename = kind === "md" ? "q3-agent-report.md" : kind === "gaps" ? "gaps.html" : "q3-agent-report.html";

@@ -4,7 +4,7 @@ import { ARTIFACT_SANDBOX_HTTP_CSP } from "../src/viewer/artifact-frame.js";
 import { NativeBearerError, classifyBearerFailure, receiveNativeBearer } from "../src/viewer/native-bearer.js";
 import { PREVIEW_FRAME_CSP, buildPreviewDocument } from "../src/viewer/preview-frame.js";
 import { BLOCKED_IMAGE_NOTICE, markdownToSanitizedHtml } from "../src/viewer/render.js";
-import { renderShareUnavailable } from "../src/viewer/ui.js";
+import { renderLinkNeeded, renderShareUnavailable } from "../src/viewer/ui.js";
 
 const URL_OF_LINK = "https://share.tinycloud.xyz/viewer#tc1=tc1%3Atoken";
 
@@ -73,6 +73,19 @@ describe("revoked, expired and unavailable screens", () => {
     expect(root.querySelector("button")).toBeNull();
     renderShareUnavailable(root, "revoked", undefined, retry);
     expect(root.querySelector("button")).toBeNull();
+  });
+});
+
+describe("opening /viewer without the private part of a link", () => {
+  it("explains why a reload cannot reopen the file, and offers no way to guess", () => {
+    document.body.replaceChildren();
+    const root = document.createElement("div");
+    document.body.append(root);
+    renderLinkNeeded(root);
+    expect(root.querySelector("h1")?.textContent).toBe("Open the original link again");
+    expect(root.textContent).toContain("never stored");
+    expect(root.textContent).toContain("Copy link in the bar");
+    expect(root.querySelector("iframe, .viewer-content, button")).toBeNull();
   });
 });
 

@@ -217,8 +217,11 @@ rendered into the document.
 
 ## Viewer privacy
 
-A shared artifact must not be able to tell its author who opened it or when.
-Both frames' policies refuse every outbound load:
+Markdown artifacts make zero requests and zero connections. HTML artifacts
+cannot make any content or script request (CSP), but connection-level signals
+(a preconnect or navigation-attempt TCP connect, prerender, dns-prefetch,
+WebRTC) can still reveal the viewer's IP and the time of opening to a hostile
+author; the viewer says so in a plain notice and does not claim more.
 
 - **Markdown** renders in a scriptless `sandbox=""` frame whose CSP is
   `default-src 'none'; img-src data: blob:; font-src data: blob:;
@@ -235,9 +238,19 @@ Both frames' policies refuse every outbound load:
 `test/e2e-viewer-page.mjs` points a loopback server at both kinds of artifact
 (img, srcset, picture, video, audio, object, embed, script, CSS, `@import`,
 fonts, prefetch, preload, modulepreload, dns-prefetch, fetch, XHR, WebSocket,
-EventSource, beacon, form, worker) and requires zero HTTP requests. The browser
-actions CSP cannot govern (WebRTC, `rel=prerender`, `rel=preconnect`, see
-Isolation) are recorded there and in `test/e2e-html-share.mjs`, not hidden.
+EventSource, beacon, form, worker) and requires zero HTTP requests, and for
+Markdown zero connections. The behaviours CSP cannot govern are recorded in
+that output and in `test/e2e-html-share.mjs`, not hidden.
+
+## Opening a link again
+
+The private part of a link (`#tc1=…` for bearer links, `#v=2&p=…` for addressed
+links) is removed from the address bar the moment the viewer opens, and the
+viewer does not store it. Reloading a share, or opening `/viewer` without the
+fragment, therefore cannot re-read it: the page asks the recipient to open the
+original link again. **Copy link** in the bar gives the complete link while the
+file is open. A temporary outage offers **Try again**, which re-runs the read
+from the copy held in page memory instead of reloading.
 
 The example bundle in [`examples/html-artifact/`](../examples/html-artifact/)
 contains separate HTML, CSS, classic JavaScript, and nested SVG files.

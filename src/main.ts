@@ -35,7 +35,8 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   renderRecipientLoading(root);
   if (launch === undefined) {
-    renderRecipientInvalid(root, "Part of this link is missing. Copy the complete link from the message you received and paste it into a new tab.");
+    const { renderLinkNeeded } = await import("./viewer/ui.js");
+    renderLinkNeeded(root);
     return;
   }
 

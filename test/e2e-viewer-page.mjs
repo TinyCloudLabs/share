@@ -201,7 +201,7 @@ try {
     assert.deepEqual(await axeViolations(dark.mainFrame()), [], "dark viewer: axe AA");
     assert.deepEqual(await axeSrcdoc(browser, dark, "dark"), [], "dark markdown frame: axe AA");
     await dark.close();
-    for (const state of ["revoked", "expired", "unavailable"]) {
+    for (const state of ["revoked", "expired", "unavailable", "needs-link"]) {
       for (const scheme of ["light", "dark"]) {
         const page = await open(browser, `state=${state}`, { scheme });
         assert.equal(await page.evaluate(() => document.body.classList.contains("viewer-fullpage")), false);
@@ -226,7 +226,7 @@ try {
   // ---- screenshots -----------------------------------------------------------
   for (const [width, height] of [[1440, 900], [390, 844]]) {
     for (const scheme of ["light", "dark"]) {
-      for (const [name, query] of [["markdown", "kind=md"], ["html", "kind=html"], ["revoked", "state=revoked"], ["expired", "state=expired"], ["unavailable", "state=unavailable"]]) {
+      for (const [name, query] of [["markdown", "kind=md"], ["html", "kind=html"], ["revoked", "state=revoked"], ["expired", "state=expired"], ["unavailable", "state=unavailable"], ["needs-link", "state=needs-link"]]) {
         const page = await open(browser, `${query}&nonce=shot`, { width, height, scheme });
         await new Promise((resolve) => setTimeout(resolve, 400));
         await shoot(page, `viewer-${name}-${width}-${scheme}`);

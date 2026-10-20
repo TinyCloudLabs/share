@@ -63,8 +63,8 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
  * The srcdoc document's own CSP (additive to the inherited viewer CSP —
  * see module doc). Deliberately NO script-src directive: it falls back to
  * default-src 'none'. Script inertness itself comes from sandbox="", not
- * from this policy. VIEWER PRIVACY: nothing in a shared document may cause a
- * request to any host, so the author cannot learn who opened it or when —
+ * from this policy. VIEWER PRIVACY: a Markdown document makes no request and
+ * no connection to any host, so its author cannot tell who opened it or when:
  * images, fonts and media are data:/blob: only, there is no `connect-src`,
  * `frame-src` or `script-src`, and styles are inline (tokens and fonts come
  * from the strings inlined below; fonts are the system stack, never fetched).

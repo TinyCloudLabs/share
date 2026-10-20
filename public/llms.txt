@@ -23,5 +23,5 @@ Publish one file with the TinyCloud CLI; the sender's own TinyCloud space holds 
 
 - The default target is `anyone`: a bearer link of the form `https://share.tinycloud.xyz/viewer#tc1=…`. `--json` redacts the link; use `tc share show <share-id> --reveal-link` to get it.
 - Markdown (`.md`) renders as a document. A single self-contained `.html` file renders as a full page in an isolated frame on bearer links. Other file types (including `.jsx`) are offered as a download.
-- The viewer never loads anything from outside the shared file: remote images, fonts, stylesheets, scripts and media in an artifact are blocked, so the author cannot learn who opened it or when. Embed images as `data:` URIs and inline all CSS and JS.
+- Markdown artifacts make zero requests and zero connections when opened: remote images, fonts, stylesheets and media are blocked (embed images as `data:` URIs). HTML artifacts cannot make any content or script request (CSP), but connection-level signals (a preconnect or navigation-attempt TCP connect, prerender, dns-prefetch, WebRTC) can still reveal the viewer's IP and the time of opening to a hostile author. Inline all CSS and JS in an HTML artifact; do not rely on external loads.
 - A revoked link shows "This share was revoked by its sender"; an expired one shows the expiry date. Neither shows any content.
