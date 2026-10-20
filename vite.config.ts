@@ -176,6 +176,14 @@ function userContentOriginPolicy(userContentOrigin: string): Plugin {
         ? html.replace(/(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")/, (_match, open: string, csp: string, close: string) => `${open}${withUserContentOrigin(csp, userContentOrigin)}${close}`)
         : html,
     },
+    // The policy above names the origin; the viewer's code (src/viewer/user-content-origin.ts)
+    // must carry the same one. If the build did not bake it into a chunk the viewer would
+    // frame same-origin while its CSP allows the user-content host, so fail the build instead.
+    generateBundle(_options, bundle) {
+      if (userContentOrigin === "") return;
+      const baked = Object.values(bundle).some((item) => item.type === "chunk" && item.code.includes(`"${userContentOrigin}"`));
+      if (!baked) this.error(`VITE_USER_CONTENT_ORIGIN ${userContentOrigin} is in the CSP but no JS chunk carries it`);
+    },
     closeBundle() {
       if (userContentOrigin === "" || config.command !== "build") return;
       const target = resolve(config.root, config.build.outDir, "_headers");
