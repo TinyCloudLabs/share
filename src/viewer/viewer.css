@@ -149,17 +149,18 @@ body.viewer-fullpage #viewer {
   overflow: auto;
   padding: var(--tc-space-6) max(var(--tc-space-4), calc((100% - var(--tc-prose-max)) / 2));
 }
-/* A document or page owns the whole area under the bar. */
-.viewer-content--frame { display: flex; flex-direction: column; padding: 0; overflow: auto; }
-.viewer-content--frame > iframe { display: block; flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+/* A document or page owns the whole area under the bar. Only on the full-page view (`body.viewer-fullpage`):
+   a harness or preview that mounts the content elsewhere keeps the content's own sizes. */
+body.viewer-fullpage .viewer-content--frame { display: flex; flex-direction: column; padding: 0; overflow: auto; }
+body.viewer-fullpage .viewer-content--frame > iframe { display: block; flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
 /* The page's frame sits under the sender-code notice, which belongs to the viewer: under the bar,
    edge to edge, and never part of (or covered by) the frame's own box. */
-.viewer-content--frame > .viewer-artifact-notice { flex: none; margin: 0; border-width: 0 0 1px; border-radius: 0; }
-.viewer-content--frame > .viewer-artifact-notice[data-state="collapsed"] { border-width: 0; padding-inline: var(--tc-space-3); }
+body.viewer-fullpage .viewer-content--frame > .viewer-artifact-notice { flex: none; margin: 0; border-width: 0 0 1px; border-radius: 0; }
+body.viewer-fullpage .viewer-content--frame > .viewer-artifact-notice[data-state="collapsed"] { border-width: 0; padding-inline: var(--tc-space-3); }
 /* A JSX page: the stage (frame plus loading cover) takes the rest of the area, not a fixed 80svh. */
-.viewer-content--frame > .viewer-jsx-stage { display: flex; flex: 1 1 auto; min-height: 0; }
-.viewer-content--frame > .viewer-jsx-stage[data-state="loading"] { min-height: 0; }
-.viewer-jsx-stage > iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+body.viewer-fullpage .viewer-content--frame > .viewer-jsx-stage { display: flex; flex: 1 1 auto; min-height: 0; }
+body.viewer-fullpage .viewer-content--frame > .viewer-jsx-stage[data-state="loading"] { min-height: 0; }
+body.viewer-fullpage .viewer-jsx-stage > iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
 .viewer-preview-frame { background: var(--tc-color-page); }
 /* The sender's page paints on white like a normal browser tab, in either viewer theme. */
 .viewer-html-frame { background: var(--tc-palette-white); }
