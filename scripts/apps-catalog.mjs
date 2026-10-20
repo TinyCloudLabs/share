@@ -19,6 +19,8 @@ import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { unsupportedManifest } from "../src/apps/manifest-support.mjs";
+
 export const CATALOG_SCHEMA = "tinycloud.share.apps-catalog/v1";
 export const BUNDLE_URL_PREFIX = "/apps/b/";
 export const MANIFEST_PATH = "manifest.json";
@@ -250,15 +252,9 @@ export function verifyCatalog(catalog, publicDir) {
       if (entry.manifest.sha256 !== manifestFile.sha256) fail("manifest.sha256 does not match the manifest file in bundle.files");
       try {
         const manifest = JSON.parse(readFileSync(join(dir, MANIFEST_PATH), "utf8"));
-        // The same three shapes src/apps/access.ts `unsupportedManifest` refuses at install: the sheet cannot describe them.
-        if (manifest.did !== undefined) fail(`${MANIFEST_PATH}: a delegate DID (did) hands the app's access to another identity`);
-        if (manifest.prefix !== undefined && typeof manifest.prefix !== "string") fail(`${MANIFEST_PATH}: prefix must be text`);
-        if (manifest.space !== undefined && (typeof manifest.space !== "string" || manifest.space.trim() === "")) fail(`${MANIFEST_PATH}: space must be text`);
-        for (const permission of Array.isArray(manifest.permissions) ? manifest.permissions : []) {
-          if (!isObject(permission)) continue;
-          if (permission.space !== undefined && (typeof permission.space !== "string" || permission.space.trim() === "")) fail(`${MANIFEST_PATH}: a permission's space must be text`);
-          if (permission.service === "tinycloud.capabilities" || permission.service === "capabilities") fail(`${MANIFEST_PATH}: the permission-list read is added by the SDK; do not ask for it`);
-        }
+        // The ONE check the installer and the sheet use (src/apps/manifest-support.mjs): a manifest the sheet cannot describe is not listed.
+        const unsupported = unsupportedManifest(manifest);
+        if (unsupported !== null) fail(`${MANIFEST_PATH}: not supported, ${unsupported}`);
         for (const [field, value] of [["app_id", entry.app_id], ["name", entry.name], ["description", entry.description]]) {
           if (manifest[field] !== value) fail(`${field} differs from ${MANIFEST_PATH}`);
         }
