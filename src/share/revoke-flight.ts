@@ -60,6 +60,17 @@ export class RevokeFlight {
 /** The owner wallet's revocation request is valid for this long from the moment the approval is asked for. */
 export const APPROVAL_WINDOW_MS = 60_000;
 
+/** What `withWalletApproval` needs to know about its caller: where to report the open approval, and (for a revoke) the sign-in it belongs to. */
+export interface WalletApprovalSubject {
+  setApproval(open: boolean): void;
+  readonly session?: number;
+}
+
+/** True for the error `withWalletApproval` throws when it stops waiting after the approval window. */
+export function isApprovalAbandoned(error: unknown): boolean {
+  return error instanceof Error && error.message === "revoke-approval-abandoned";
+}
+
 /**
  * Runs `task` (the wallet request) only if no other approval is open. A second
  * share's revoke is refused with `revoke-another-approval` instead of queueing,
@@ -74,8 +85,8 @@ export const APPROVAL_WINDOW_MS = 60_000;
  * revoke the share, the next attempt's node check sees that and finishes with
  * no new approval.
  */
-export async function withWalletApproval<T>(flight: Pick<RevokeFlight, "setApproval"> & Partial<Pick<RevokeFlight, "session">>, task: (current: () => boolean) => Promise<T>): Promise<T> {
-  // A revoke that outlived its sign-in never reaches the wallet.
+export async function withWalletApproval<T>(flight: WalletApprovalSubject, task: (current: () => boolean) => Promise<T>): Promise<T> {
+  // A revoke that outlived its sign-in never reaches the wallet. (A caller that is not a revoke has no sign-in of its own to outlive.)
   if (flight.session !== undefined && flight.session !== session) throw new Error("revoke-session-ended");
   if (walletRequestOpen) throw new Error("revoke-another-approval");
   walletRequestOpen = true;

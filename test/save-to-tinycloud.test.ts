@@ -37,25 +37,28 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 const saveButton = (): HTMLButtonElement | null => root.querySelector<HTMLButtonElement>("button.viewer-save-to-tinycloud");
-const toast = (): HTMLElement => root.querySelector<HTMLElement>(".artifact-chrome-toast")!;
+/** The save's own live region: pending, approval, done, failure. */
+const toast = (): HTMLElement => root.querySelector<HTMLElement>(".artifact-chrome-toast--job")!;
+/** The Copy / Download result, which fades. */
+const copyToast = (): HTMLElement => root.querySelector<HTMLElement>(".artifact-chrome-toast:not(.artifact-chrome-toast--job)")!;
 
 /** A save the test settles by hand, so each state of the bar can be looked at. */
-function pendingSave(): { save: SaveToTinyCloud; calls: SavedCopyInput[]; progress: () => SaveProgress; resolve: () => void; reject: (error: unknown) => void } {
+function pendingSave(): { save: SaveToTinyCloud; calls: SavedCopyInput[]; progress: () => SaveProgress; resolve: (name?: string) => void; reject: (error: unknown) => void } {
   const calls: SavedCopyInput[] = [];
   let progress: SaveProgress | undefined;
-  let resolve!: () => void;
+  let resolve!: (name?: string) => void;
   let reject!: (error: unknown) => void;
   const save: SaveToTinyCloud = (copy, reported) => {
     calls.push(copy);
     progress = reported;
-    return new Promise((done, fail) => { resolve = () => done({ path: "files-for-you/v1/report.md" }); reject = fail; });
+    return new Promise((done, fail) => { resolve = (name = "report.md") => done({ path: `files-for-you/v1/${encodeURIComponent(name)}`, name }); reject = fail; });
   };
-  return { save, calls, progress: () => progress!, resolve: () => resolve(), reject: (error) => reject(error) };
+  return { save, calls, progress: () => progress!, resolve: (name) => resolve(name), reject: (error) => reject(error) };
 }
 
 describe("Save a copy in the bar", () => {
   it("sits next to Copy link, Download and Hide for a document, and starts nothing before a click", async () => {
-    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md" }));
+    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md", name: "report.md" }));
     await presentShare(root, share("report.md", MARKDOWN), { shareUrl: "https://share.tinycloud.xyz/viewer#tc1=x", saveToTinyCloud: save });
 
     const labels = [...root.querySelectorAll(".artifact-chrome-actions .artifact-chrome-label")].map((node) => node.textContent);
@@ -92,7 +95,7 @@ describe("Save a copy in the bar", () => {
   });
 
   it("hands over exactly the received bytes, under the safe name, with a media type for the kind", async () => {
-    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md" }));
+    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md", name: "report.md" }));
     await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: save });
     saveButton()!.click();
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -105,7 +108,7 @@ describe("Save a copy in the bar", () => {
 
   it("saves a page or a component as its source text, never typed as a page, whatever the sender signed", async () => {
     const source = new TextEncoder().encode("<!doctype html><title>t</title><script>alert(1)</script>");
-    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/page.html" }));
+    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/page.html", name: "page.html" }));
     void presentShare(root, share("page.html", source, "text/html"), { saveToTinyCloud: save }).catch(() => undefined);
     await vi.waitFor(() => expect(saveButton()).not.toBeNull());
     saveButton()!.click();
@@ -117,7 +120,7 @@ describe("Save a copy in the bar", () => {
   });
 
   it("does not trust a signed name that claims another type", async () => {
-    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md.exe.md" }));
+    const save = vi.fn<SaveToTinyCloud>(async () => ({ path: "files-for-you/v1/report.md.exe.md", name: "report.md.exe.md" }));
     await presentShare(root, share("report.md.exe", MARKDOWN, "text/markdown"), { saveToTinyCloud: save });
     saveButton()!.click();
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -153,7 +156,7 @@ describe("Save a copy: pending, approval, saved", () => {
     expect(pending.calls).toHaveLength(1);
   });
 
-  it("announces Saved with a link to TinyCloud that stays until something else is said", async () => {
+  it("announces what was saved and where, as plain text with no link, and keeps saying it", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const pending = pendingSave();
@@ -161,26 +164,53 @@ describe("Save a copy: pending, approval, saved", () => {
       const button = saveButton()!;
       button.click();
       await vi.waitFor(() => expect(pending.calls).toHaveLength(1));
-      pending.resolve();
+      pending.resolve("report.md");
       await vi.waitFor(() => expect(button.getAttribute("aria-busy")).toBeNull());
 
       expect(toast().getAttribute("role")).toBe("status");
       expect(toast().getAttribute("aria-live")).toBe("polite");
-      expect(toast().textContent).toBe("Saved. Open in TinyCloud");
-      const link = toast().querySelector<HTMLAnchorElement>("a")!;
-      expect(link.getAttribute("href")).toBe("/share/#/library");
-      // This page's own link is no longer in the address bar, so the library opens beside it.
-      expect(link.target).toBe("_blank");
-      expect(link.rel).toBe("noopener noreferrer");
+      expect(toast().textContent).toBe("Saved to your TinyCloud files as “report.md”.");
+      // The library lists shares, not saved copies, so there is nothing to link to.
+      expect(toast().querySelector("a")).toBeNull();
+      expect(root.querySelector(".artifact-chrome-toasts a")).toBeNull();
 
       vi.advanceTimersByTime(60_000);
-      expect(toast().textContent).toBe("Saved. Open in TinyCloud");
+      expect(toast().textContent).toBe("Saved to your TinyCloud files as “report.md”.");
       // Done is final: another click does not save again.
       button.click();
       expect(pending.calls).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("shows the name the copy really got, decoded and as text, so a clash is noticed", async () => {
+    const pending = pendingSave();
+    await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: pending.save });
+    saveButton()!.click();
+    await vi.waitFor(() => expect(pending.calls).toHaveLength(1));
+    pending.resolve("q3 report (2) <b>é</b>.md");
+    await vi.waitFor(() => expect(toast().textContent).toContain("(2)"));
+    expect(toast().textContent).toBe("Saved to your TinyCloud files as “q3 report (2) <b>é</b>.md”.");
+    expect(toast().querySelector("b")).toBeNull();
+  });
+
+  it("a later Copy link does not replace the lasting Saved message, and its own result still shows", async () => {
+    const pending = pendingSave();
+    await presentShare(root, share("report.md", MARKDOWN), { shareUrl: "https://share.tinycloud.xyz/viewer#tc1=x", saveToTinyCloud: pending.save });
+    Object.assign(navigator, { clipboard: { writeText: vi.fn(async () => undefined) } });
+    saveButton()!.click();
+    await vi.waitFor(() => expect(pending.calls).toHaveLength(1));
+    pending.resolve("report.md");
+    await vi.waitFor(() => expect(toast().textContent).toContain("Saved to your TinyCloud files"));
+
+    root.querySelector<HTMLButtonElement>(".artifact-chrome-button")!.click();
+    await vi.waitFor(() => expect(copyToast().textContent).toBe("Link copied"));
+    expect(toast().textContent).toBe("Saved to your TinyCloud files as “report.md”.");
+    // Two regions, so neither is announced in place of the other.
+    expect(toast()).not.toBe(copyToast());
+    expect(toast().getAttribute("aria-live")).toBe("polite");
+    expect(copyToast().getAttribute("aria-live")).toBe("polite");
   });
 
   it("keeps the Save button focusable while it works and after it is saved", async () => {
@@ -223,13 +253,13 @@ describe("Save a copy: a failed or cancelled sign-in is a plain message and the 
   it("a rejection that is not one of ours is the generic message, and a retry can succeed", async () => {
     const save = vi.fn<SaveToTinyCloud>()
       .mockRejectedValueOnce(new Error("[object Object]"))
-      .mockResolvedValueOnce({ path: "files-for-you/v1/report.md" });
+      .mockResolvedValueOnce({ path: "files-for-you/v1/report.md", name: "report.md" });
     await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: save });
     const button = saveButton()!;
     button.click();
     await vi.waitFor(() => expect(toast().textContent).toBe("We couldn't save a copy. Nothing was saved. Try again."));
     button.click();
-    await vi.waitFor(() => expect(toast().textContent).toBe("Saved. Open in TinyCloud"));
+    await vi.waitFor(() => expect(toast().textContent).toBe("Saved to your TinyCloud files as “report.md”."));
     expect(save).toHaveBeenCalledTimes(2);
   });
 
@@ -241,6 +271,53 @@ describe("Save a copy: a failed or cancelled sign-in is a plain message and the 
     await presentShare(root, share("other.md", MARKDOWN));
     pending.resolve();
     await Promise.resolve();
-    expect(root.textContent).not.toContain("Saved.");
+    expect(root.textContent).not.toContain("Saved to your TinyCloud");
+  });
+});
+
+describe("Nothing but the person's own click on the button can start Save", () => {
+  const MESSAGES: readonly unknown[] = [
+    { type: "tc-save" }, { type: "save" }, { type: "saveToTinyCloud" }, { type: "tinycloud:save" }, { type: "viewer:save" },
+    { type: "artifact:save" }, { type: "tinycloud-artifact", action: "save" }, { action: "save-copy" }, { kind: "save", nonce: "n" },
+    { type: "openkey:auth:response", success: true, address: "0x0000000000000000000000000000000000000001" },
+    { type: "openkey:ready" }, { type: "openkey:sign:response", success: true, signature: "0x00" },
+    "save", "tc-save", "click", 1, null, [], { type: "click", target: ".viewer-save-to-tinycloud" },
+  ];
+
+  it("ignores every message posted to the page, from this window, a frame or nowhere", async () => {
+    const save = vi.fn<SaveToTinyCloud>();
+    await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: save });
+    const frame = root.querySelector("iframe");
+    const sources: (Window | null)[] = [window, frame?.contentWindow ?? null, null];
+    for (const data of MESSAGES) {
+      for (const source of sources) {
+        for (const origin of ["", "null", "https://openkey.so", "https://share.tinycloud.xyz", "https://evil.example"]) {
+          window.dispatchEvent(new MessageEvent("message", { data, origin, source }));
+        }
+      }
+      window.postMessage(data, "*");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(save).not.toHaveBeenCalled();
+    expect(saveButton()!.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("ignores keys, custom events and other clicks on the bar", async () => {
+    const save = vi.fn<SaveToTinyCloud>();
+    await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: save });
+    for (const init of [{ key: "s" }, { key: "Enter" }, { key: "c", altKey: true, shiftKey: true }, { key: "s", ctrlKey: true }, { key: "s", metaKey: true }]) {
+      window.dispatchEvent(new KeyboardEvent("keydown", init));
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { ...init, bubbles: true }));
+    }
+    for (const type of ["tc-save", "save", "tinycloud:save", "submit"]) {
+      window.dispatchEvent(new CustomEvent(type, { detail: { save: true } }));
+      root.dispatchEvent(new CustomEvent(type, { bubbles: true }));
+    }
+    root.querySelector<HTMLElement>(".artifact-chrome")!.click();
+    root.querySelector<HTMLButtonElement>(".viewer-download")?.click();
+    root.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
+    root.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(save).not.toHaveBeenCalled();
   });
 });

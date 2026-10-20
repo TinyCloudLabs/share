@@ -14,8 +14,9 @@ export type ArtifactChromeIcon = "link" | "copy" | "download" | "share" | "save"
 /**
  * A long action that runs to success once (Save a copy). The bar shows it as
  * pending, says when an approval window is open, then keeps a lasting done
- * message (with an optional link) and does not run again. A failure puts the
- * button back so it can be tried again.
+ * message and does not run again. A failure puts the button back so it can be
+ * tried again. Its messages have a live region of their own, so a Copy toast
+ * that fades never replaces them.
  */
 export interface ArtifactChromeJob {
   /** The button's label and the lasting line while the job runs. */
@@ -24,11 +25,10 @@ export interface ArtifactChromeJob {
   /** Shown (and announced) while the job reports an open approval. */
   readonly approvalMessage: string;
   readonly doneLabel: string;
-  readonly doneMessage: string;
-  readonly doneLink?: { readonly text: string; readonly href: string };
   /** Plain words for a rejection; `neutral` is a choice or a wait, not a fault. */
   readonly failure: (error: unknown) => { readonly message: string; readonly neutral: boolean };
-  readonly start: (progress: { approval(open: boolean): void }) => Promise<void>;
+  /** Resolves with the lasting line to show when the job is done (it may name what was made). Set as text, never as HTML. */
+  readonly start: (progress: { approval(open: boolean): void }) => Promise<{ readonly doneMessage: string }>;
 }
 
 export interface ArtifactChromeAction {
@@ -153,31 +153,32 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   const status = el(doc, "span", "artifact-chrome-status");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
+  // The Copy and Download results fade; a job's messages (pending, approval, done) are separate, so one never replaces the other.
+  const toasts = el(doc, "div", "artifact-chrome-toasts");
   const toast = el(doc, "p", "artifact-chrome-toast");
   toast.setAttribute("role", "status");
   toast.setAttribute("aria-live", "polite");
+  const jobToast = el(doc, "p", "artifact-chrome-toast artifact-chrome-toast--job");
+  jobToast.setAttribute("role", "status");
+  jobToast.setAttribute("aria-live", "polite");
+  toasts.append(toast, jobToast);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let jobTimer: ReturnType<typeof setTimeout> | undefined;
   let alive = true;
-  /** `lasting` keeps the message until the next one: an open approval, a finished save and its link must not fade while someone is reading or acting on them. */
-  const say = (value: string, alert = false, lasting = false): void => {
+  const say = (value: string, alert = false): void => {
     clearTimeout(toastTimer);
-    toastTimer = undefined;
     toast.setAttribute("role", alert ? "alert" : "status");
     toast.dataset["tone"] = alert ? "danger" : "info";
     toast.textContent = value;
-    if (!lasting) toastTimer = setTimeout(() => { toast.textContent = ""; toastTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
+    toastTimer = setTimeout(() => { toast.textContent = ""; toastTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
   };
-  /** A lasting message with a link in it, for a finished job. The link opens in a new tab: this page's own link is not in the address bar any more. */
-  const sayDone = (value: string, link: ArtifactChromeJob["doneLink"]): void => {
-    say(value, false, true);
-    if (link === undefined) return;
-    const anchor = doc.createElement("a");
-    anchor.className = "artifact-chrome-toast-link";
-    anchor.href = link.href;
-    anchor.target = "_blank";
-    anchor.rel = "noopener noreferrer";
-    anchor.textContent = link.text;
-    toast.append(" ", anchor);
+  /** `lasting` keeps the message until the job says something else: an open approval or a finished save must not fade while someone is reading or acting on it. */
+  const jobSay = (value: string, alert = false, lasting = true): void => {
+    clearTimeout(jobTimer);
+    jobToast.setAttribute("role", alert ? "alert" : "status");
+    jobToast.dataset["tone"] = alert ? "danger" : "info";
+    jobToast.textContent = value;
+    if (!lasting) jobTimer = setTimeout(() => { jobToast.textContent = ""; jobTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
   };
 
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -215,17 +216,17 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
         running = true;
         settle();
         text.textContent = job.pendingLabel;
-        say(job.pendingMessage, false, true);
+        jobSay(job.pendingMessage);
         void (async () => {
           try {
-            await job.start({ approval: (open) => { if (alive && running) say(open ? job.approvalMessage : job.pendingMessage, false, true); } });
+            const done = await job.start({ approval: (open) => { if (alive && running) jobSay(open ? job.approvalMessage : job.pendingMessage); } });
             finished = true;
             text.textContent = job.doneLabel;
-            if (alive) sayDone(job.doneMessage, job.doneLink);
+            if (alive) jobSay(done.doneMessage);
           } catch (error) {
             text.textContent = action.label;
             const failure = job.failure(error);
-            if (alive) say(failure.message, !failure.neutral);
+            if (alive) jobSay(failure.message, !failure.neutral, false);
           } finally {
             running = false;
             settle();
@@ -277,7 +278,7 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   render();
   // The pill takes the bar's place in reading and Tab order.
   mount.prepend(bar, pill);
-  mount.append(toast, status);
+  mount.append(toasts, status);
 
   const setHidden = (value: boolean, focus: boolean): void => {
     hidden = value;
@@ -301,10 +302,11 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
       alive = false;
       view.removeEventListener("keydown", onKeyDown);
       for (const timer of timers) clearTimeout(timer);
-      if (toastTimer !== undefined) clearTimeout(toastTimer);
+      clearTimeout(toastTimer);
+      clearTimeout(jobTimer);
       bar.remove();
       pill.remove();
-      toast.remove();
+      toasts.remove();
       status.remove();
       delete mount.dataset["chrome"];
     },

@@ -19,13 +19,36 @@
  */
 import type { Manifest } from "@tinycloud/web-sdk";
 
+import type { ManifestScope } from "../share/manifest-policy.js";
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_SPACE = "applications";
-/** One hour, the same as the rest of Share's sessions. */
-export const INSTALL_EXPIRY = "1h";
+/** The install only copies files, so its session is short: 15 minutes (a brand-new account is asked several times). */
+export const INSTALL_EXPIRY = "15m";
+export const INSTALL_EXPIRY_MS = 15 * 60 * 1000;
+
+/**
+ * What `signInWithManifest` may let the installer manifest ask for: `put` on
+ * `<app_id>/app/` and `<app_id>/knowledge/` in `applications`, and nothing
+ * else. The helper resolves the manifest as the SDK would (defaults expanded,
+ * prefix applied) and refuses it before OpenKey opens if anything falls
+ * outside this, so a widened manifest (another prefix or space, a `del`, SQL,
+ * `defaults` on) cannot reach the sign-in. The SDK's account-registry
+ * permissions are added on top by the helper and are not part of the scope.
+ */
+export function installerScope(appId: string): ManifestScope {
+  return {
+    allowedSpaces: [INSTALL_SPACE],
+    allowedServices: ["kv"],
+    allowedActions: ["put"],
+    allowedPathPrefixes: [
+      { space: INSTALL_SPACE, prefix: `${appId}/app/` },
+      { space: INSTALL_SPACE, prefix: `${appId}/knowledge/` },
+    ],
+  };
+}
 
 /** `<app_id>/app/` for the app's files and `<app_id>/knowledge/` for its notes; nothing else is written. */
 export function installKey(appId: string, path: string): string {

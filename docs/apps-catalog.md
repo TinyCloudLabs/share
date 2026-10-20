@@ -124,7 +124,7 @@ OpenKey load only then.
    list can show an app whose install did not finish: `install.json` is the marker of a complete
    install.
 
-No standing delegation is created: the session is in memory for one hour and is dropped; opening an
+No standing delegation is created: the session is in memory for 15 minutes at most and is disposed when the install ends; opening an
 app later asks for a fresh sign-in. Opening an installed app (`/apps/run#<app_id>`) is the next slice;
 until it lands the sheet says so and offers no link.
 

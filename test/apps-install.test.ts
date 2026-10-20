@@ -9,7 +9,8 @@ import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor } from "../src/apps/consent.ts";
 import { resetInstallFlights, startInstall } from "../src/apps/install-flight.ts";
 import { InstallError, type InstallPorts, type InstallSession, type PutResult, runInstall } from "../src/apps/install.ts";
-import { REGISTRY_RESOURCES, expectedInstallerResources, installerAccess, installerManifest, resourceMismatch } from "../src/apps/install-plan.ts";
+import { REGISTRY_RESOURCES, expectedInstallerResources, installerAccess, installerManifest, installerScope, resourceMismatch } from "../src/apps/install-plan.ts";
+import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { installPathProblem as buildTimePathProblem } from "../scripts/apps-catalog.mjs";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -122,6 +123,42 @@ describe("the installer's sign-in", () => {
       expect([...(sheetActions.get(key) ?? [])].sort(), key).toEqual(resource.actions.map((action) => action.slice(action.lastIndexOf("/") + 1)).sort());
     }
     expect(sheetActions.size).toBe(composed.resources.length);
+  });
+
+  describe("the helper's scope check (installerScope)", () => {
+    const rejection = (manifest: unknown): string | undefined => {
+      try { assertManifestInScope(manifest as Parameters<typeof assertManifestInScope>[0], installerScope(HEALTH), MANIFEST_CHECK_ADDRESS); return undefined; } catch (error) { return error instanceof ManifestRejectedError ? error.code : `other:${String(error)}`; }
+    };
+    const base = installerManifest({ app_id: HEALTH, name: "X", description: "Y" });
+    const withPermission = (permission: Record<string, unknown>) => ({ ...base, permissions: [...(base.permissions ?? []), permission] });
+
+    it.each(catalog.apps.map((app) => [app.app_id]))("accepts the installer manifest (%s)", (appId) => {
+      const manifest = installerManifest({ app_id: appId, name: "X", description: "Y" });
+      expect(() => assertManifestInScope(manifest, installerScope(appId), MANIFEST_CHECK_ADDRESS)).not.toThrow();
+    });
+
+    it("refuses a manifest widened to another prefix, another app's folder, another space or another service", () => {
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "other.app/app/", skipPrefix: true, actions: ["put"] }))).toBe("path-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "app/", actions: ["put"], space: "account" }))).toBe("space-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "data/", actions: ["put"] }))).toBe("path-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "", skipPrefix: true, actions: ["put"] }))).toBe("path-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.sql", path: "app/db", actions: ["write"] }))).toBe("service-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "app/", actions: ["put", "del"] }))).toBe("action-not-allowed");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "app/", actions: ["get"] }))).toBe("action-not-allowed");
+    });
+
+    it("refuses delegation abilities, wildcards, a public space, a delegate DID and defaults left on", () => {
+      expect(rejection(withPermission({ service: "tinycloud.delegation", path: "", actions: ["create"] }))).toBe("delegation-ability");
+      expect(rejection(withPermission({ service: "tinycloud.kv", path: "app/", actions: ["tinycloud.kv/*"] }))).toBe("wildcard");
+      expect(rejection({ ...base, includePublicSpace: true })).toBe("public-space");
+      expect(rejection({ ...base, did: "did:key:z6MkexampleexampleexampleexampleexampleexampleABC" })).toBe("delegate-target");
+      expect(rejection({ ...base, defaults: true })).not.toBeUndefined();
+      expect(rejection({ ...base, secrets: { TOKEN: true } })).not.toBeUndefined();
+    });
+
+    it("the scope names this app only: the same manifest under another app id is refused", () => {
+      expect(() => assertManifestInScope(installerManifest({ app_id: RECIPES, name: "X" }), installerScope(HEALTH), MANIFEST_CHECK_ADDRESS)).toThrow(ManifestRejectedError);
+    });
   });
 
   it("refuses to proceed if the SDK would compose something the sheet does not show", () => {

@@ -36,7 +36,7 @@ const saveToTinyCloud: SaveToTinyCloud = (copy, progress) => new Promise((resolv
     __saveControl: {
       copy,
       approval: progress.approval,
-      resolve: () => resolve({ path: "files-for-you/v1/q3-agent-report.md" }),
+      resolve: (name = "q3-agent-report.md") => resolve({ path: `files-for-you/v1/${encodeURIComponent(name)}`, name }),
       reject: (reason: SaveFailureReason) => reject(new SaveCopyError(reason)),
     },
   });

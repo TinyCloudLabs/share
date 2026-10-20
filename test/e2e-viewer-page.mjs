@@ -319,8 +319,8 @@ try {
   // hint, a cancelled and a failed sign-in, and Saved can each be looked at. The real sign-in, the
   // write and the read-back are the joined gate's (test/e2e-prod/joined-gate.mjs).
   {
-    const toastOf = (page) => page.$eval(".artifact-chrome-toast", (node) => { const r = node.getBoundingClientRect(); const s = getComputedStyle(node); return { text: node.textContent, role: node.getAttribute("role"), live: node.getAttribute("aria-live"), visible: r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none", inside: r.left >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5 }; });
-    const toastSays = (page, text) => page.waitForFunction((value) => document.querySelector(".artifact-chrome-toast")?.textContent === value, { timeout: 5_000 }, text);
+    const toastOf = (page, selector = ".artifact-chrome-toast--job") => page.$eval(selector, (node) => { const r = node.getBoundingClientRect(); const s = getComputedStyle(node); return { text: node.textContent, role: node.getAttribute("role"), live: node.getAttribute("aria-live"), visible: r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none", inside: r.left >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5 }; });
+    const toastSays = (page, text) => page.waitForFunction((value) => document.querySelector(".artifact-chrome-toast--job")?.textContent === value, { timeout: 5_000 }, text);
     const click = async (page) => { await page.evaluate(() => { delete window.__saveControl; }); await page.click(".viewer-save-to-tinycloud"); await page.waitForFunction(() => window.__saveControl !== undefined, { timeout: 5_000 }); };
     for (const [width, height] of [[1440, 900], [390, 844]]) {
       for (const scheme of ["light", "dark"]) {
@@ -370,21 +370,29 @@ try {
         await shoot(page, `save-copy-error-${tag}`);
         assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: error: axe AA`);
 
-        // Saved: a lasting, announced message with a working link.
+        // Saved: a lasting, announced message that names the copy. No link: the library lists shares, not saved copies.
         await click(page);
-        await page.evaluate(() => window.__saveControl.resolve());
-        await toastSays(page, "Saved. Open in TinyCloud");
+        await page.evaluate(() => window.__saveControl.resolve("q3 report (2).md"));
+        const savedText = "Saved to your TinyCloud files as “q3 report (2).md”.";
+        await toastSays(page, savedText);
         const saved = await toastOf(page);
         assert.ok(saved.visible && saved.inside && saved.role === "status" && saved.live === "polite", `${label}: Saved is visible and announced (${JSON.stringify(saved)})`);
-        const link = await page.$eval(".artifact-chrome-toast a", (node) => { const r = node.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { href: node.getAttribute("href"), target: node.target, rel: node.rel, clickable: top === node }; });
-        assert.deepEqual({ href: link.href, target: link.target, rel: link.rel }, { href: "/share/#/library", target: "_blank", rel: "noopener noreferrer" }, `${label}: the link opens the library in a new tab`);
-        assert.equal(link.clickable, true, `${label}: the link is clickable, nothing covers it`);
+        assert.equal(await page.$(".artifact-chrome-toasts a"), null, `${label}: Saved has no link`);
         assert.equal(await page.$eval(".viewer-save-to-tinycloud .artifact-chrome-label", (node) => node.textContent), "Saved", `${label}: the button says Saved`);
         await shoot(page, `save-copy-saved-${tag}`);
         assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: saved: axe AA`);
+        // A later Copy link has its own message and does not replace Saved; the two do not overlap.
+        await page.click(".artifact-chrome-button");
+        await page.waitForFunction(() => /Link copied|Couldn't copy the link/.test(document.querySelector(".artifact-chrome-toast:not(.artifact-chrome-toast--job)")?.textContent ?? ""), { timeout: 5_000 });
+        assert.equal((await toastOf(page)).text, savedText, `${label}: Copy link did not replace Saved`);
+        const both = await page.evaluate(() => [...document.querySelectorAll(".artifact-chrome-toast")].map((node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, inside: r.left >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5 }; }));
+        assert.ok(both.length === 2 && both.every((box) => box.inside), `${label}: both messages are on screen (${JSON.stringify(both)})`);
+        assert.ok(both[0].bottom <= both[1].top + 0.5, `${label}: the Copy message sits above Saved, not over it (${JSON.stringify(both)})`);
+        await shoot(page, `save-copy-saved-and-copied-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: saved and copied: axe AA`);
         // Lasting: still there after the ordinary toast time.
         await new Promise((resolve) => setTimeout(resolve, 4_500));
-        assert.equal((await toastOf(page)).text, "Saved. Open in TinyCloud", `${label}: Saved stays`);
+        assert.equal((await toastOf(page)).text, savedText, `${label}: Saved stays`);
         await page.close();
       }
     }

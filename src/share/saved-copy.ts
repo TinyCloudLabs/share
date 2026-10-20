@@ -9,6 +9,8 @@ export interface SavedCopyInput {
 }
 
 export interface SavedCopy {
+  /** The name the copy was saved under (`report (2).md` after a clash), as a person reads it. */
+  readonly name: string;
   /** Space-relative key, `v1/<name>`, the name percent-encoded (see `savedCopyKey`). */
   readonly key: string;
   /** Where a person finds it: `files-for-you/v1/<name>`. */
@@ -48,9 +50,10 @@ export function savedCopyKey(name: string): string {
 export async function writeSavedCopy(kv: SavedCopyKv, copy: SavedCopyInput): Promise<SavedCopy> {
   if (!SAFE_NAME.test(copy.filename)) throw new Error("saved-copy-unsafe-name");
   for (let attempt = 1; attempt <= MAX_NAME_ATTEMPTS; attempt += 1) {
-    const key = savedCopyKey(savedCopyName(copy.filename, attempt));
+    const name = savedCopyName(copy.filename, attempt);
+    const key = savedCopyKey(name);
     const written = await kv.put(key, copy.bytes, { contentType: copy.mediaType, ifNoneMatch: "*" });
-    if (written.ok) return { key, path: `${FILES_FOR_YOU_SPACE}/${key}` };
+    if (written.ok) return { name, key, path: `${FILES_FOR_YOU_SPACE}/${key}` };
     if (written.error.code !== "KV_PRECONDITION_FAILED") throw new Error(`saved-copy-write-failed:${written.error.code}`);
   }
   throw new Error("saved-copy-no-free-name");
