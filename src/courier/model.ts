@@ -18,6 +18,10 @@
  *    capped, with hidden characters shown as visible escapes.
  */
 
+import { VERBS, targetIsCanonical, type Verb } from "./target.js";
+
+export { VERBS, type Verb };
+
 export const EXT = "https://tinycloud.xyz/ext/courier/v0";
 export const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 /** A peer handle as it appears in a key: a local nickname chosen at pairing. */
@@ -41,11 +45,11 @@ export const MAX_ORDERS_BYTES = 64 * 1024;
  * control, format (zero-width, bidi, tag characters), private-use, unassigned,
  * lone surrogates, line and paragraph separators, every default-ignorable
  * (variation selectors, U+034F, Hangul and Khmer fillers), and any space other
- * than a plain one (no-break, em, ideographic: look-alikes for it), plus three
- * symbols that draw as a blank or nothing: U+2800, U+FFFC and U+1D159.
+ * than a plain one (no-break, em, ideographic: look-alikes for it), plus four
+ * symbols that draw as a blank or nothing: U+2800, U+FFFC, U+1D159 and U+16FE4.
  */
-const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}]|(?! )\p{Zs}/u;
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}]|(?! )\p{Zs}/gu;
+const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}\u{16FE4}]|(?! )\p{Zs}/u;
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}\u{16FE4}]|(?! )\p{Zs}/gu;
 /** A long run of combining marks draws over the line above and below. */
 const MARK_RUN = /\p{M}{4,}/u;
 const MARK_RUNS = /\p{M}{4,}/gu;
@@ -321,31 +325,12 @@ export function parseMeta(side: ThreadSide, raw: unknown): ThreadMetaView | unde
 
 // ------------------------------------------------------------------ requests and approvals
 
-export const VERBS = ["merge", "deploy", "publish", "spend", "other"] as const;
-export type Verb = (typeof VERBS)[number];
 /** Caps on the structured fields `courier request` writes (js-sdk packages/courier). A longer value is not shortened: the request is unreviewable. */
 export const MAX_TARGET = 200;
 export const MAX_SUMMARY = 200;
 
-/**
- * The shapes a canonical target takes per verb (the CLI's `canonicalTarget` writes these). Printable ASCII only,
- * which rules out look-alike letters; anything else is unreviewable.
- */
-const SEG = "[A-Za-z0-9_.@/+-]+";
-const NPM_NAME = "(?:@[a-z0-9~][a-z0-9._~-]*/)?[a-z0-9~][a-z0-9._~-]*";
-const VERSION = "[0-9A-Za-z][0-9A-Za-z.+_-]*";
-const NAME = "[A-Za-z0-9_.-]+";
-const SCRIPT = /^script:[^:\s]+:[^:\s]+$/;
-const FREE = "[\\x21-\\x7E](?:[\\x20-\\x7E]*[\\x21-\\x7E])?";
-const shape = (source: string): RegExp => new RegExp(`^(?:${source})$`);
-const TARGET_SHAPES: Readonly<Record<Verb, readonly RegExp[]>> = {
-  // owner/repo is lower-cased by the CLI, so an upper-case spelling was not written by it.
-  merge: [/^[a-z0-9_.-]+\/[a-z0-9_.-]+#[0-9]+$/, /^[a-z0-9_.-]+\/[a-z0-9_.-]+@(?:[A-Za-z0-9_.@/+-]+|\*)$/],
-  publish: [shape(`npm:${NPM_NAME}@${VERSION}`), shape(`release:[a-z0-9_.-]+/[a-z0-9_.-]+@${SEG}`), shape(`changeset:${NPM_NAME}`), SCRIPT],
-  deploy: [shape(`wrangler:${NAME}(?::${NAME})?`), shape(`(?:pages|phala):${NAME}`), SCRIPT],
-  other: [shape(`[a-z][a-z0-9-]{0,30}:${FREE}`)],
-  spend: [shape(`spend:${FREE}`)],
-};
+/** Double-quote characters: the summary is drawn between quotes, so one inside it could end the quote early. Refused, as the CLI refuses them. */
+const QUOTES = /["\u201C-\u201F\u00AB\u00BB\u2039\u203A\uFF02\u275D\u275E\u301D-\u301F]/u;
 
 /** WHAT approving would allow, from structured fields inside the hashed request. Still the agent's words: shown as plain text, never as markup. */
 export interface RequestWhat {
@@ -358,14 +343,9 @@ export function parseWhat(raw: Record<string, unknown>): RequestWhat | undefined
   const verb = VERBS.find((candidate) => candidate === raw.verb);
   const target = strictText(raw.target, MAX_TARGET, { trimmed: true });
   const summary = strictText(raw.summary, MAX_SUMMARY, { trimmed: true });
-  if (verb === undefined || target === undefined || summary === undefined || !/^[\x20-\x7E]+$/.test(target) || !TARGET_SHAPES[verb].some((candidate) => candidate.test(target))) return undefined;
+  if (verb === undefined || target === undefined || summary === undefined) return undefined;
+  if (QUOTES.test(summary) || !/^[\x20-\x7E]+$/.test(target) || !targetIsCanonical(verb, target)) return undefined;
   return { verb, target, summary };
-}
-
-/** A free-text field that is optional: "" when absent, the exact text when it is fit to approve, undefined when it is present but not (a present empty string is refused, as the CLI refuses it). */
-function optionalText(value: unknown, max: number): string | undefined {
-  if (value === undefined) return "";
-  return strictText(value, max, { lines: true });
 }
 
 /** Every string and key in `value` is fit to show (a single \n allowed): the CLI's approval sweeps the whole request, so the view does too. Nesting past the hash limit counts as not fit. */
@@ -377,8 +357,36 @@ export function sweepsClean(value: unknown, depth = 0): boolean {
   return entries.every(([key, item]) => (key === "" || sweepsClean(key, depth + 1)) && sweepsClean(item, depth + 1));
 }
 
+/**
+ * The keys `courier request` writes, and no others: what the hash covers is then what the card shows. The CLI's reader
+ * (`courier approval`) requires the first set, allows the second when well-formed, and refuses any other key.
+ */
+const REQUIRED_KEYS = ["createdAt", "expiresAt", "id", "peer", "requestedBy", "status", "summary", "target", "taskId", "threadId", "verb"];
+const OPTIONAL_KEYS = ["action", "reason", "risk"];
+const REQUESTED_BY_KEYS = ["agent", "owner"] as const;
+const MAX_DID = 300;
+
+function sameKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+/** Every required key is there and no key outside the required and optional sets is. */
+function keysAreRequestKeys(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return REQUIRED_KEYS.every((key) => keys.includes(key)) && keys.every((key) => REQUIRED_KEYS.includes(key) || OPTIONAL_KEYS.includes(key));
+}
+
+/** Who filed the request: exactly `{owner, agent}`, both plain one-line text. */
+function requestedByOf(value: unknown): { readonly owner: string; readonly agent: string } | undefined {
+  if (!isRecord(value) || !sameKeys(value, REQUESTED_BY_KEYS)) return undefined;
+  const owner = strictText(value.owner, MAX_DID, { trimmed: true });
+  const agent = strictText(value.agent, MAX_DID, { trimmed: true });
+  return owner === undefined || agent === undefined ? undefined : { owner, agent };
+}
+
 /** Why a request can be read here but not decided. */
-export type RequestProblem = "fields" | "text" | "hash";
+export type RequestProblem = "fields" | "text" | "hash" | "task";
 
 /** A request from one of the owner's own agents, as `courier request` wrote it. Peer-influenced text is kept apart from the structured fields. */
 export interface RequestView {
@@ -388,11 +396,18 @@ export interface RequestView {
   readonly taskId: string;
   /** Undefined when the request lacks a valid verb, target or summary. */
   readonly what: RequestWhat | undefined;
-  /** The optional free text, exactly as written when `problem` is not "text"; otherwise an escaped, shortened look at it (never approvable). */
+  /** Who filed it, when the field is exactly as the CLI writes it. */
+  readonly requestedBy: { readonly owner: string; readonly agent: string } | undefined;
+  /** The free text, exactly as written when `problem` is not "text"; otherwise an escaped, shortened look at it (never approvable). */
   readonly action: string;
   readonly reason: string;
   readonly risk: string;
-  /** Set when the request can be read here but not decided: "fields" (no valid verb, target and summary), "text" (a quoted field is too long or holds hidden characters) or "hash" (it can't be fingerprinted). */
+  /**
+   * Set when the request can be read here but not decided: "fields" (not exactly the request the CLI writes: a key
+   * missing or extra, no valid verb, target and summary, a status other than pending), "text" (a quoted field is too
+   * long or holds hidden characters), "hash" (it can't be fingerprinted) or "task" (the task it names isn't in the
+   * owner's mailbox for that peer; set by the loader).
+   */
   readonly problem: RequestProblem | undefined;
   readonly createdAt: number;
   readonly expiresAt: number;
@@ -410,16 +425,18 @@ export function parseRequest(id: string, raw: unknown): RequestView | undefined 
   const expiresAt = parseTime(raw.expiresAt);
   if (createdAt === undefined || expiresAt === undefined) return undefined;
   const what = parseWhat(raw);
-  const action = optionalText(raw.action, MAX_ACTION);
-  const reason = optionalText(raw.reason, MAX_REASON);
-  const risk = optionalText(raw.risk, MAX_RISK);
-  const problem: RequestProblem | undefined = what === undefined ? "fields" : action === undefined || reason === undefined || risk === undefined || !sweepsClean(raw) ? "text" : undefined;
+  const requestedBy = requestedByOf(raw.requestedBy);
+  const shapeOk = what !== undefined && requestedBy !== undefined && keysAreRequestKeys(raw) && raw.status === "pending";
+  // Optional free text: absent is fine, present must be well-formed (a present empty string is refused).
+  const optional = (value: unknown, max: number): string | undefined => (value === undefined ? "" : strictText(value, max, { lines: true }));
+  const action = optional(raw.action, MAX_ACTION);
+  const reason = optional(raw.reason, MAX_REASON);
+  const risk = optional(raw.risk, MAX_RISK);
+  const textOk = action !== undefined && reason !== undefined && risk !== undefined && sweepsClean(raw);
+  const problem: RequestProblem | undefined = !shapeOk ? "fields" : !textOk ? "text" : undefined;
   // Exact when fit to approve; otherwise only a safe look at what is there.
-  const look = (value: unknown, exact: string | undefined, max: number): string => exact ?? multiLine(typeof value === "string" ? value : "(not text)", max);
-  return {
-    id, peer, threadId, taskId, what, problem, createdAt, expiresAt, raw,
-    action: look(raw.action, action, 600), reason: look(raw.reason, reason, 600), risk: look(raw.risk, risk, 600),
-  };
+  const look = (value: unknown, exact: string | undefined): string => exact ?? (value === undefined ? "" : multiLine(typeof value === "string" ? value : "(not text)", 600));
+  return { id, peer, threadId, taskId, what, requestedBy, problem, createdAt, expiresAt, raw, action: look(raw.action, action), reason: look(raw.reason, reason), risk: look(raw.risk, risk) };
 }
 
 /** True when the card may offer Approve and Deny. */

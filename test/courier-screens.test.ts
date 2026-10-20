@@ -87,24 +87,33 @@ describe("Needs you", () => {
     expect(Reflect.get(window, "__pwned")).toBeUndefined();
     const blocks = [...card.querySelectorAll(".cr-peer-text")];
     expect(blocks.map((block) => block.querySelector(".cr-peer-label")?.textContent)).toEqual([
-      "Action, as your agent wrote it", "Reason, as your agent wrote it", "Risk, as your agent wrote it", "Thread subject, as hunter wrote it",
+      "Action, as your agent wrote it", "Reason, as your agent wrote it", "Risk, as your agent wrote it", "Thread subject, as your agent wrote it",
     ]);
     // the bidi override is a visible escape, and nothing interactive sits inside peer text
     expect(card.textContent).toContain("⟦U+202E⟧");
     expect(card.textContent).not.toContain("\u202E");
     for (const block of blocks) expect(block.querySelector("a, button, input, textarea")).toBeNull();
     // what approving allows is a fixed sentence around the structured fields, never built from the free text
+    // It is the owner's OWN agent that acts, for the peer (Opus B1): the sentence never says the peer's agent does.
     const line = card.querySelector(".cr-consequence")!;
-    expect(line.textContent).toBe("Approving lets hunter's agent merge tinycloudlabs/eliza#20: \u201CDocs-only README change\u201D");
+    expect(line.querySelector(".cr-sentence")?.textContent).toBe("Approving lets your agent merge tinycloudlabs/eliza#20 for hunter:");
+    expect(line.querySelector(".cr-summary")?.textContent).toBe("\u201CDocs-only README change\u201D");
     expect(line.textContent).not.toContain("gh pr merge");
+    expect(line.textContent).not.toContain("hunter's agent");
     expect([...line.querySelectorAll("strong")].map((node) => node.textContent)).toEqual(["hunter"]);
     const target = line.querySelector("code")!;
     expect([target.textContent, target.getAttribute("dir")]).toEqual(["tinycloudlabs/eliza#20", "ltr"]);
-    expect(line.querySelector("bdi")?.textContent).toBe("Docs-only README change");
+    // the summary sits in its own box, not in the sentence
+    expect(line.querySelector(".cr-sentence")?.contains(line.querySelector(".cr-summary"))).toBe(false);
+    expect(line.querySelector(".cr-summary bdi")?.textContent).toBe("Docs-only README change");
     expect(card.textContent).toContain(TASK.slice(-8));
-    // the request id and the first 8 digits of its hash, for matching with `courier approval --peek`
+    // ids and the fingerprint are behind a disclosure, not in the card's copy
     const hash = await requestHash(request());
-    expect(card.querySelector(".cr-fingerprint")?.textContent).toBe(`Request ${REQ} \u00B7 fingerprint ${hash.slice(0, 8)}`);
+    const details = card.querySelector(".cr-details")!;
+    expect(details.hasAttribute("open")).toBe(false);
+    expect(details.textContent).toContain(REQ);
+    expect(details.textContent).toContain(`first 8 digits: ${hash.slice(0, 8)}`);
+    expect([...card.children].filter((child) => !child.classList.contains("cr-details")).map((child) => child.textContent).join(" ")).not.toContain(REQ);
   });
 
   it("enables Approve and Deny only once the card is painted, and writes one decision for a double click", async () => {
@@ -208,7 +217,8 @@ describe("Needs you", () => {
     await open(fake);
     tab("Needs you").click();
     const line = root.querySelector(".cr-consequence")!;
-    expect(line.textContent).toBe("Approving lets hunter's agent do something outside the usual kinds (other) on https://evil.example/<img src=x onerror=window.__pwned=1>: \u201C**bold** [click](javascript:alert(1)) <script>window.__pwned=1</script>\u201D");
+    expect(line.querySelector(".cr-sentence")?.textContent).toBe("Approving lets your agent do something outside the usual kinds (other) with https://evil.example/<img src=x onerror=window.__pwned=1> for hunter:");
+    expect(line.querySelector(".cr-summary")?.textContent).toBe("\u201C**bold** [click](javascript:alert(1)) <script>window.__pwned=1</script>\u201D");
     expect(line.querySelector("a, img, script, em")).toBeNull();
     expect(Reflect.get(window, "__pwned")).toBeUndefined();
     // `other` is never presented as an ordinary action
@@ -221,7 +231,7 @@ describe("Needs you", () => {
     tab("Needs you").click();
     const line = root.querySelector(".cr-consequence")!;
     expect(line.querySelector("bdi")?.textContent).toBe("\u05D1\u05D3\u05D9\u05E7\u05D4 \u05E9\u05DC \u05DE\u05D6\u05D2");
-    expect(line.querySelector("bdi")?.parentElement).toBe(line);
+    expect(line.querySelector("bdi")?.parentElement).toBe(line.querySelector(".cr-summary"));
     expect(line.querySelector("code")?.getAttribute("dir")).toBe("ltr");
   });
 
@@ -253,6 +263,29 @@ describe("Needs you", () => {
     ["a merge target that is not owner/repo#N", { target: "just some words" }],
     ["a publish target in the wrong shape", { verb: "publish", target: "tinycloudlabs/eliza#20" }],
     ["an other target with no kind", { verb: "other", target: "no kind here" }],
+    // the CLI's canonical spelling is the only one it accepts as stored (Opus N4)
+    ["a merge target with leading zeros", { target: "tinycloudlabs/eliza#0139" }],
+    ["a merge target of #00", { target: "tinycloudlabs/eliza#00" }],
+    ["a merge PR number over 9 digits", { target: "tinycloudlabs/eliza#1234567890" }],
+    ["a secrets target with a double space", { verb: "other", target: "secrets:A  bB" }],
+    ["a workflow target with an upper-case repo", { verb: "other", target: "workflow:O/R:ci.yml" }],
+    // quotes could end the summary's quotation early (Opus N3)
+    ["a summary with a straight double quote", { summary: 'docs fix" and also "nothing' }],
+    ["a summary with curly quotes", { summary: "docs fix\u201D and also \u201Cnothing" }],
+    ["a summary with a low double quote", { summary: "docs \u201Efix" }],
+    ["a summary with angle quotes", { summary: "docs \u00ABfix\u00BB" }],
+    ["a summary with a fullwidth quote", { summary: "docs \uFF02fix" }],
+    // the last invisible filler (Opus N5)
+    ["a summary with the Khitan small script filler", { summary: "Docs\u{16FE4}only" }],
+    ["a summary with a Braille blank", { summary: "Docs\u2800only" }],
+    ["a summary with an object replacement character", { summary: "Docs\uFFFConly" }],
+    ["a summary with a musical null notehead", { summary: `Docs${String.fromCodePoint(0x1d159)}only` }],
+    // the closed set of keys the CLI writes (Opus N2): what is hashed is what is shown
+    ["an extra key", { sneaky: "approve everything" }],
+    ["a missing status", { status: undefined }],
+    ["a status that isn't pending", { status: "approved" }],
+    ["an extra key inside requestedBy", { requestedBy: { owner: "did:pkh:x", agent: "did:key:y", role: "admin" } }],
+    ["a requestedBy that isn't an object", { requestedBy: "did:key:y" }],
     ["a summary with a no-break space", { summary: "Docs\u00A0only" }],
     ["a summary with an ideographic space", { summary: "Docs\u3000only" }],
     ["an upper-case merge target (the CLI writes it lower-case)", { target: "TinyCloudLabs/eliza#20" }],
@@ -265,7 +298,7 @@ describe("Needs you", () => {
       await open(fake);
       tab("Needs you").click();
       const card = root.querySelector<HTMLElement>(".cr-request")!;
-      expect(card.textContent).toContain("doesn't say what it would approve");
+      expect(card.textContent).toMatch(/doesn't say what it would approve|isn't exactly the request/);
       expect(card.querySelector(".cr-consequence, .cr-approve, .cr-deny, textarea, button")).toBeNull();
       expect(fake.approvals).toHaveLength(0);
     });
@@ -273,6 +306,57 @@ describe("Needs you", () => {
 
   // A quoted field the approval depends on must be shown exactly or the request can't be decided: never shortened (Opus B1).
   const tail = " && gh pr merge 999 --admin";
+  it("won't name a peer the request isn't matched to: a task the owner's agent never wrote for that peer and thread", async () => {
+    const OTHER = "01J9ZC4K7T3QZ5W6M8R2N1B040";
+    const cases: [string, Record<string, unknown>][] = [
+      ["another peer", { peer: "mallory" }],
+      ["another thread", { threadId: OTHER }],
+      ["another task", { taskId: OTHER }],
+    ];
+    for (const [name, overrides] of cases) {
+      document.body.innerHTML = '<div id="root" aria-busy="true"></div>';
+      root = document.querySelector<HTMLElement>("#root")!;
+      const fake = fakeStore(baseFiles(request(overrides)));
+      await open(fake);
+      tab("Needs you").click();
+      const card = root.querySelector<HTMLElement>(".cr-request")!;
+      expect(card.textContent, name).toContain("isn't in your mailbox for that conversation");
+      expect(card.querySelector(".cr-consequence, .cr-approve, .cr-deny, button"), name).toBeNull();
+      expect(card.textContent, name).not.toContain("mallory");
+      expect(tab("Needs you").textContent, name).toBe("Needs you");
+    }
+  });
+
+  it("shows every field the hash covers, in a collapsed list", async () => {
+    await open(fakeStore(baseFiles()));
+    tab("Needs you").click();
+    const details = root.querySelector<HTMLElement>(".cr-request .cr-details")!;
+    expect(details.hasAttribute("open")).toBe(false);
+    const rows = Object.fromEntries([...details.querySelectorAll("dt")].map((term) => [term.textContent, term.nextElementSibling?.textContent]));
+    expect(rows).toMatchObject({ Request: REQ, Thread: THREAD, Task: TASK, Status: "pending", "Filed by owner": "did:pkh:x", "Filed by agent": "did:key:y" });
+    const hash = await requestHash(request());
+    expect(rows[`Fingerprint (first 8 digits: ${hash.slice(0, 8)})`]).toBe(hash);
+  });
+
+  it("labels the thread subject by the side it came from", async () => {
+    const files = baseFiles();
+    delete files[keys.thread("me", "hunter", THREAD, "meta", THREAD)];
+    files[keys.thread("peer", "hunter", THREAD, "meta", THREAD)] = { subject: "From the peer", createdAt: "2026-10-20T09:00:00Z" };
+    await open(fakeStore(files));
+    tab("Needs you").click();
+    expect(root.querySelector(".cr-peer-subject .cr-peer-label")?.textContent).toBe("Thread subject, as hunter wrote it");
+  });
+
+  it("decides a request that has none of the optional free text, as the CLI's reader does", async () => {
+    const files = baseFiles();
+    const { action: _a, reason: _r, risk: _k, ...bare } = request();
+    files[keys.request(REQ)] = bare;
+    await open(fakeStore(files));
+    tab("Needs you").click();
+    expect(root.querySelector(".cr-approve")).not.toBeNull();
+    expect(root.querySelector(".cr-peer-action, .cr-peer-reason, .cr-peer-risk")).toBeNull();
+  });
+
   it("shows a long action in full and lets it be decided", async () => {
     const action = `gh pr merge 20 ${"x".repeat(640)}${tail}`;
     await open(fakeStore(baseFiles(request({ action }))));
@@ -293,6 +377,7 @@ describe("Needs you", () => {
     ["a hidden character in a field the card doesn't show (the whole request is swept)", { requestedBy: { owner: "did:pkh:x", agent: "did:key:y\u200B" } }],
     ["a hidden character in a key", { ["note\u200B"]: "x" }],
     ["an empty action", { action: "" }],
+    ["an empty risk", { risk: "" }],
     ["a no-break space in a reason", { reason: "a\u00A0b" }],
   ];
   for (const [name, overrides] of unreviewableText) {
@@ -301,7 +386,7 @@ describe("Needs you", () => {
       await open(fake);
       tab("Needs you").click();
       const card = root.querySelector<HTMLElement>(".cr-request")!;
-      expect(card.textContent).toContain("too long or holds characters you can't see");
+      expect(card.textContent).toMatch(/too long or holds characters you can't see|isn't exactly the request/);
       expect(card.querySelector(".cr-consequence, .cr-approve, .cr-deny, textarea, button")).toBeNull();
       // what can't be seen is shown as an escape, not passed through
       expect(card.textContent).not.toMatch(/[\u200D\u202E\r]|[\u{E0000}-\u{E007F}]/u);
@@ -334,7 +419,7 @@ describe("Needs you", () => {
     const decidable = cards.filter((card) => card.querySelector(".cr-approve") !== null);
     expect(decidable).toHaveLength(1);
     const refused = cards.filter((card) => card.querySelector(".cr-approve") === null);
-    for (const card of refused) expect(card.textContent).toContain("can't be fingerprinted");
+    for (const card of refused) expect(card.querySelector(".cr-card-title")?.textContent).toBe("Request can't be reviewed here");
     expect(tab("Needs you").textContent).toBe("Needs you · 1");
   });
 
@@ -399,12 +484,48 @@ describe("Orders", () => {
   });
 });
 
+describe("what the page keeps and opens", () => {
+  it("leaves no storage, cookie, address-bar change or network call behind after reading, deciding and saving", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const href = location.href;
+    const fake = fakeStore(baseFiles(), { orders: "# old" });
+    await open(fake);
+    root.querySelector<HTMLButtonElement>(".cr-row-button")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".cr-message--peer")).not.toBeNull());
+    tab("Needs you").click();
+    const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
+    await vi.waitFor(() => expect(approve.disabled).toBe(false));
+    approve.click();
+    await vi.waitFor(() => expect(fake.approvals).toHaveLength(1));
+    tab("Orders").click();
+    const text = root.querySelector<HTMLTextAreaElement>(".cr-orders-input")!;
+    await vi.waitFor(() => expect(text.disabled).toBe(false));
+    text.value = "# new";
+    root.querySelector<HTMLButtonElement>(".button-primary")!.click();
+    await vi.waitFor(() => expect(fake.orders).toHaveLength(1));
+    expect([localStorage.length, sessionStorage.length, document.cookie, location.href]).toEqual([0, 0, "", href]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("never turns mailbox text into a link", async () => {
+    const files = baseFiles(request({ summary: "see https://evil.example/ and javascript:alert(1)", action: "open https://evil.example/x", reason: "mailto:a@b.c" }));
+    files[keys.thread("peer", "hunter", THREAD, "msg", "01J9ZC4K7T3QZ5W6M8R2N1B020")] = { messageId: "01J9ZC4K7T3QZ5W6M8R2N1B020", contextId: THREAD, role: "ROLE_USER", parts: [{ url: "https://evil.example/file", name: "https://evil.example/file" }], referenceTaskIds: [], metadata: { [EXT]: { intent: "request", from: { label: "https://evil.example/" } } } };
+    await open(fakeStore(files));
+    root.querySelector<HTMLButtonElement>(".cr-row-button")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".cr-message--peer")).not.toBeNull());
+    tab("Needs you").click();
+    expect(root.querySelectorAll("main a, main [href], main [src]")).toHaveLength(0);
+  });
+});
+
 describe("a mailbox that isn't there", () => {
   it("says how to set it up", async () => {
     const store: CourierStore = { ...fakeStore({}).store, async list() { throw new StoreError("no-space"); } };
     const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store, dispose: async () => undefined, signOut: async () => true };
     mountCourier(root, { signIn: async () => session, renderBody: () => undefined, now: () => NOW });
     root.querySelector<HTMLButtonElement>(".auth-button")!.click();
-    await vi.waitFor(() => expect(root.querySelector(".tc-status--danger")?.textContent).toContain("is not set up yet"));
+    await vi.waitFor(() => expect(root.querySelector(".tc-status--danger")?.textContent).toContain("mailbox isn't set up yet"));
   });
 });

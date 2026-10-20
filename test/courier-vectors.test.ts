@@ -14,7 +14,7 @@ const vectors = JSON.parse(readFileSync("test/vectors/courier-request-fields.jso
 const canonicalVectors = JSON.parse(readFileSync("test/vectors/courier-canonical.json", "utf8")) as { readonly limits: Record<string, number>; readonly vectors: CanonicalRow[] };
 
 const THREAD = "01J9ZC4K7T3QZ5W6M8R2N1B010";
-const base = { id: "01J9ZC4K7T3QZ5W6M8R2N1B030", peer: "hunter", threadId: THREAD, taskId: "01J9ZC4K7T3QZ5W6M8R2N1B022", verb: "merge", target: "o/r#1", summary: "ok", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
+const base = { id: "01J9ZC4K7T3QZ5W6M8R2N1B030", peer: "hunter", threadId: THREAD, taskId: "01J9ZC4K7T3QZ5W6M8R2N1B022", verb: "merge", target: "o/r#1", summary: "ok", action: "a", reason: "r", risk: "k", requestedBy: { owner: "did:pkh:x", agent: "did:key:y" }, status: "pending", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
 
 describe("the shared request-field vectors", () => {
   it("use the limits this view uses", () => {
@@ -33,8 +33,8 @@ describe("the shared request-field vectors", () => {
   it("the free-text rule is the summary rule plus newlines (and the same caps)", () => {
     for (const row of vectors.fields.filter((candidate) => candidate.field === "summary" && typeof candidate.value === "string" && !/^\s|\s$/.test(candidate.value))) {
       const value = row.value as string;
-      // Free text has a longer cap and may hold a newline: those two rows are the only differences.
-      const expected = row.name.startsWith("201 chars") || row.name === "newline" ? true : row.valid;
+            // Free text has a longer cap, may hold a newline and may hold quotes (only a summary is drawn between quotes): those rows are the only differences.
+      const expected = row.name.startsWith("201 chars") || row.name === "newline" || /^summary with .*(quot|guillemet|ornament)/.test(row.name) ? true : row.valid;
       expect(strictText(value, MAX_ACTION, { lines: true }) !== undefined, row.name).toBe(expected);
     }
   });

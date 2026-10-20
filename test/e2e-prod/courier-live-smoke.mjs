@@ -272,10 +272,12 @@ try {
   await view.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Needs you")).click());
   await view.waitForSelector(".cr-request", { timeout: 30_000 });
   await view.waitForFunction(() => document.querySelector(".cr-approve")?.disabled === false, { timeout: 10_000 });
-  const cards = await view.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-consequence")?.textContent ?? null, buttons: card.querySelectorAll("button").length })));
+  const cards = await view.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-sentence")?.textContent ?? null, summary: card.querySelector(".cr-summary")?.textContent ?? null, buttons: card.querySelectorAll("button").length })));
   assert.equal(cards.length, 2, "both seeded requests are listed");
   assert.ok(cards.some((card) => card.line === null && card.buttons === 0), "the request without verb/target/summary has no buttons");
-  assert.equal(cards.find((card) => card.line !== null).line, "Approving lets hunter's agent merge throwaway/repo#20: \u201CSquash-merge a throwaway PR; nothing is merged\u201D");
+  const reviewable = cards.find((card) => card.line !== null);
+  assert.equal(reviewable.line, "Approving lets your agent merge throwaway/repo#20 for hunter:");
+  assert.equal(reviewable.summary, "\u201CSquash-merge a throwaway PR; nothing is merged\u201D");
   await view.type(".cr-note-input", "Throwaway approval from the live smoke.");
   await shot(view, "04-needs-you");
   await view.click(".cr-approve");

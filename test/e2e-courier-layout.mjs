@@ -110,7 +110,7 @@ try {
       await tab(page, "Needs you");
       await waitFor(page, ".cr-request");
       await page.waitForFunction(() => document.querySelector(".cr-approve")?.disabled === false, { timeout: 5_000 });
-      const cards = await page.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-consequence")?.textContent ?? null, buttons: card.querySelectorAll("button").length, warning: card.querySelector(".tc-status--warning")?.textContent ?? null })));
+      const cards = await page.evaluate(() => [...document.querySelectorAll(".cr-request")].map((card) => ({ line: card.querySelector(".cr-sentence")?.textContent ?? null, buttons: card.querySelectorAll("button").length, warning: card.querySelector(".tc-status--warning")?.textContent ?? null })));
       assert.equal(cards.length, 4, "two reviewable and two unreviewable requests are pending");
       const unreviewableCards = cards.filter((card) => card.line === null);
       assert.equal(unreviewableCards.length, 2);
@@ -122,9 +122,9 @@ try {
       const containment = await page.evaluate(() => { const style = getComputedStyle(document.querySelector(".cr-request")); const quote = getComputedStyle(document.querySelector(".cr-peer-text")); return [style.overflow, style.contain, quote.overflow, quote.contain]; });
       assert.deepEqual([containment[0], containment[2]], ["hidden", "hidden"]);
       assert.ok(containment[1].includes("paint") && containment[3].includes("paint"));
-      const rtl = await page.evaluate(() => { const bdi = [...document.querySelectorAll(".cr-consequence bdi")].find((node) => /[\u0590-\u05FF]/.test(node.textContent)); return bdi ? { parent: bdi.parentElement.className, isolate: getComputedStyle(bdi).unicodeBidi, target: getComputedStyle(bdi.parentElement.querySelector("code")).direction } : null; });
-      assert.deepEqual(rtl, { parent: "cr-consequence", isolate: "isolate", target: "ltr" }, "right-to-left text sits in its own isolate");
-      assert.match(cards.find((card) => card.line?.includes("merge tinycloudlabs/eliza#20")).line, /^Approving lets hunter's agent merge tinycloudlabs\/eliza#20: /, "the card says what is approved, from the structured fields");
+      const rtl = await page.evaluate(() => { const bdi = [...document.querySelectorAll(".cr-consequence .cr-summary bdi")].find((node) => /[\u0590-\u05FF]/.test(node.textContent)); return bdi ? { parent: bdi.parentElement.className, isolate: getComputedStyle(bdi).unicodeBidi, target: getComputedStyle(bdi.closest(".cr-consequence").querySelector("code")).direction } : null; });
+      assert.deepEqual(rtl, { parent: "cr-summary", isolate: "isolate", target: "ltr" }, "right-to-left text sits in its own isolate");
+      assert.match(cards.find((card) => card.line?.includes("merge tinycloudlabs/eliza#20")).line, /^Approving lets your agent merge tinycloudlabs\/eliza#20 for hunter:$/, "the card says what is approved, from the structured fields");
       await page.type(".cr-note-input", "Docs only. Go ahead.");
       await check(page, "needs-you", scheme, width);
 

@@ -30,7 +30,8 @@ const TABS: readonly { id: Screen; label: string }[] = [
   { id: "orders", label: "Orders" },
 ];
 
-export const NO_SPACE_COPY = "Your TinyCloud \"agents\" space is not set up yet. Sign in once at Share (share.tinycloud.xyz/share), or run `tc space host agents`, then come back.";
+export const NO_SPACE_COPY = "Your agent mailbox isn't set up yet. Set it up in Share or with the TinyCloud command line, then come back.";
+export const NO_SPACE_HINT = "From the command line: tc space host agents";
 const SIGNED_OUT_NOTICE = "Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.";
 const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Courier, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device.";
 const REFRESH_AFTER_HIDDEN_MS = 30_000;
@@ -164,7 +165,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
       if (loadError !== undefined) {
         const retry = el(doc, "button", "button button-secondary tc-button tc-button--compact", "Try again"); retry.type = "button";
         retry.addEventListener("click", () => { void load(); });
-        panel.replaceChildren(status(doc, "danger", loadError), retry);
+        panel.replaceChildren(status(doc, "danger", loadError), ...(loadError === NO_SPACE_COPY ? [el(doc, "p", "cr-muted cr-small", NO_SPACE_HINT)] : []), retry);
         return;
       }
       if (overview === undefined) { panel.replaceChildren(el(doc, "p", "cr-muted", "Loading your mailbox…")); return; }

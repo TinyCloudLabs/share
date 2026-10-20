@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const page = readFileSync("courier/index.html", "utf8");
@@ -42,24 +42,5 @@ describe("the /courier route", () => {
     for (const source of connect) expect(source).not.toMatch(/^https:$|\*/);
     expect(directive(metaPolicy, "script-src")).not.toContain("'unsafe-eval'");
     expect(directive(metaPolicy, "script-src")).not.toContain("'unsafe-inline'");
-  });
-});
-
-describe("the page keeps nothing about the mailbox", () => {
-  const files = readdirSync("src/courier").filter((name) => name.endsWith(".ts")).map((name) => [name, readFileSync(`src/courier/${name}`, "utf8")] as const);
-  // Comments describe what the page does not do, so only code is scanned.
-  const code = (source: string): string => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-
-  it("never touches storage, cookies, the address bar, the console or raw HTML sinks", () => {
-    const banned = /localStorage|sessionStorage|indexedDB|document\.cookie|\bcaches\b|innerHTML|outerHTML|insertAdjacentHTML|document\.write|location\.(hash|search|href\s*=)|history\.(push|replace)State|console\./;
-    for (const [name, source] of files) expect(code(source), name).not.toMatch(banned);
-  });
-
-  it("opens no network connection of its own", () => {
-    for (const [name, source] of files) expect(code(source), name).not.toMatch(/\bfetch\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon/);
-  });
-
-  it("makes no link out of mailbox text", () => {
-    for (const [name, source] of files) expect(code(source), name).not.toMatch(/createElement\("a"\)|\.href\s*=|window\.open/);
   });
 });

@@ -69,6 +69,3 @@ export function status(doc: Document, kind: "info" | "success" | "warning" | "da
   return node;
 }
 
-export function shortId(id: string): string {
-  return id.slice(-8);
-}

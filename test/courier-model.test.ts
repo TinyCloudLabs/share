@@ -122,7 +122,7 @@ describe("a thread is both sides' files merged by ULID", () => {
     expect(first.kind === "message" && first.message.side).toBe("peer");
   });
   it("lists the thread with its open tasks, last activity and a needs-you count", async () => {
-    const request = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "ordered", risk: "redeploys", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z", status: "pending" };
+    const request = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "ordered", risk: "redeploys", requestedBy: { owner: "did:pkh:x", agent: "did:key:y" }, createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z", status: "pending" };
     const overview = await loadOverview(fakeStore({ ...files, [keys.request(REQ)]: request }), Date.parse("2026-10-20T12:00:00Z"));
     expect(overview.threads).toHaveLength(1);
     expect(overview.threads[0]).toMatchObject({ peer: "hunter", subject: "Handoff", openTasks: 1, needsYou: 1 });
@@ -139,16 +139,16 @@ describe("a thread is both sides' files merged by ULID", () => {
 });
 
 describe("requests and decisions", () => {
-  const good = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "r", risk: "k", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
+  const good = { id: REQ, peer: "hunter", threadId: THREAD, taskId: TASK, verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only", action: "gh pr merge 20", reason: "r", risk: "k", requestedBy: { owner: "did:pkh:x", agent: "did:key:y" }, status: "pending", createdAt: "2026-10-20T10:00:00Z", expiresAt: "2026-10-21T10:00:00Z" };
   it("reads what a request approves only from a valid verb, target and summary, exactly as written", () => {
     expect(parseRequest(REQ, good)?.what).toEqual({ verb: "merge", target: "tinycloudlabs/eliza#20", summary: "Docs only" });
     const targets: Record<string, string> = { merge: "o/r#1", deploy: "wrangler:worker:prod", publish: "npm:@scope/pkg@1.2.3", spend: "spend:$20 of credits", other: "workflow:o/r:ci.yml" };
     for (const [verb, target] of Object.entries(targets)) expect(parseRequest(REQ, { ...good, verb, target })?.what?.verb, verb).toBe(verb);
     const exactly200 = "x".repeat(200);
-    const target200 = `o/r#${"1".repeat(196)}`;
+    const target200 = `spend:${"x".repeat(194)}`;
     expect(target200).toHaveLength(200);
-    expect(parseRequest(REQ, { ...good, target: target200, summary: exactly200 })?.what).toEqual({ verb: "merge", target: target200, summary: exactly200 });
-    expect(parseRequest(REQ, { ...good, target: `${target200}1` })?.what).toBeUndefined();
+    expect(parseRequest(REQ, { ...good, verb: "spend", target: target200, summary: exactly200 })?.what).toEqual({ verb: "spend", target: target200, summary: exactly200 });
+    expect(parseRequest(REQ, { ...good, verb: "spend", target: `${target200}x` })?.what).toBeUndefined();
     expect(parseRequest(REQ, { ...good, summary: `${exactly200}x` })?.what).toBeUndefined();
     expect(parseRequest(REQ, { ...good, target: `${exactly200}x` })?.what).toBeUndefined();
     expect(parseRequest(REQ, { ...good, summary: "a\u200Bb" })?.what).toBeUndefined();
@@ -161,9 +161,13 @@ describe("requests and decisions", () => {
     expect(parseRequest(REQ, { ...good, peer: "../x" })).toBeUndefined();
     expect(parseRequest(REQ, { ...good, threadId: "nope" })).toBeUndefined();
     expect(parseRequest(REQ, { ...good, expiresAt: "soon" })).toBeUndefined();
-    // the CLI's `action` is optional free text: a request without it is still a request
+    // the free text is optional, but every other key is required and no other key is allowed
     const { action: _action, ...withoutAction } = good;
     expect(parseRequest(REQ, withoutAction)?.problem).toBeUndefined();
+    const { status: _status, ...withoutStatus } = good;
+    expect(parseRequest(REQ, withoutStatus)?.problem).toBe("fields");
+    expect(parseRequest(REQ, { ...good, extra: 1 })?.problem).toBe("fields");
+    expect(parseRequest(REQ, { ...good, action: "" })?.problem).toBe("text");
   });
   it("is pending until decided or 24 hours pass; a decision wins over expiry", () => {
     const request = parseRequest(REQ, good)!;

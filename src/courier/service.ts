@@ -34,6 +34,8 @@ export const MAX_THREAD_ITEMS = 300;
 
 export interface ThreadSummary extends ThreadRef {
   readonly subject: string;
+  /** Whose meta file the subject came from: the owner's own ("me") or the peer's mirrored copy. */
+  readonly subjectSide: ThreadSide | undefined;
   readonly lastActivity: number | undefined;
   readonly openTasks: number;
   /** Pending approval requests that belong to this thread. */
@@ -48,6 +50,7 @@ export interface RequestCard {
   readonly approval: ApprovalView | undefined;
   /** The subject of the thread the request is about, when that thread is in the mailbox. */
   readonly subject: string | undefined;
+  readonly subjectSide: ThreadSide | undefined;
 }
 
 export interface Overview {
@@ -104,10 +107,14 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
     try {
       hash = await requestHash(request.raw);
     } catch {
-      shown = { ...request, problem: "hash" };
+      shown = { ...request, problem: request.problem ?? "hash" };
     }
+    // The card names a peer, so the task it points at must be one the owner's own agent wrote for that peer and thread
+    // (`courier request` writes it in the same command). A request naming another peer, or a task that isn't there, isn't decidable.
+    const taskThere = index.threads.some((entry) => entry.peer === request.peer && entry.threadId === request.threadId && entry.tasks.some((task) => task.side === "me" && task.id === request.taskId));
+    if (!taskThere) shown = { ...shown, problem: shown.problem ?? "task" };
     // A decision file that does not parse is not a decision: the request stays open and the agent side refuses it too.
-    return { request: shown, hash, standing: requestStanding(request, approval, now), approval, subject: undefined };
+    return { request: shown, hash, standing: requestStanding(request, approval, now), approval, subject: undefined, subjectSide: undefined };
   }));
   const requests = cards.filter((card): card is RequestCard => card !== "unreadable");
 
@@ -125,15 +132,15 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
     }));
     // Only a request the person can decide counts: one that can't be reviewed is listed but not actionable.
     const needsYou = requests.filter((card) => card.standing === "pending" && isDecidable(card.request) && card.request.peer === entry.peer && card.request.threadId === entry.threadId).length;
-    return { peer: entry.peer, threadId: entry.threadId, subject: meta?.subject ?? "(no subject)", lastActivity, openTasks, needsYou };
+    return { peer: entry.peer, threadId: entry.threadId, subject: meta?.subject ?? "(no subject)", subjectSide: meta === undefined ? undefined : metaSide, lastActivity, openTasks, needsYou };
   }));
   summaries.sort((a, b) => (b.lastActivity ?? 0) - (a.lastActivity ?? 0));
 
-  const subjectOf = (card: RequestCard): string | undefined => summaries.find((thread) => thread.peer === card.request.peer && thread.threadId === card.request.threadId)?.subject;
+  const threadOf = (card: RequestCard): ThreadSummary | undefined => summaries.find((thread) => thread.peer === card.request.peer && thread.threadId === card.request.threadId);
   const peers = [...new Set([...index.threads.map((entry) => entry.peer), ...index.orderPeers, ...requests.map((card) => card.request.peer)])].sort();
   return {
     threads: summaries,
-    requests: requests.map((card) => ({ ...card, subject: subjectOf(card) })),
+    requests: requests.map((card) => ({ ...card, subject: threadOf(card)?.subject, subjectSide: threadOf(card)?.subjectSide })),
     peers,
     unreadable: cards.length - requests.length,
     partial: failures.count > 0 || index.truncated || index.threads.length > MAX_THREADS || index.requestIds.length > MAX_REQUESTS,

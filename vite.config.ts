@@ -174,7 +174,7 @@ function userContentOriginPolicy(userContentOrigin: string): Plugin {
     configResolved(resolved) { config = resolved; },
     transformIndexHtml: {
       order: "pre",
-      handler: (html, ctx) => ctx.filename.endsWith("/viewer/index.html")
+      handler: (html, ctx) => /\/(?:viewer|courier)\/index\.html$/.test(ctx.filename)
         ? html.replace(/(<meta http-equiv="Content-Security-Policy" content=")([^"]*)(")/, (_match, open: string, csp: string, close: string) => `${open}${withUserContentOrigin(csp, userContentOrigin)}${close}`)
         : html,
     },

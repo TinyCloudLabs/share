@@ -7,7 +7,7 @@
  * marked as a counterparty request, and a file a message names is shown by name
  * only: nothing here follows or links to what a peer's text points at.
  */
-import { el, shortId, status, timeElement, uid, type ViewContext } from "./dom.js";
+import { el, status, timeElement, uid, type ViewContext } from "./dom.js";
 import { ulidTime, type MessageView, type TaskView, type TextPart } from "./model.js";
 import { loadThread, type Overview, type ThreadDetail, type ThreadSummary, type TimelineItem } from "./service.js";
 import { StoreError } from "./store.js";
@@ -123,7 +123,9 @@ function taskCard(ctx: ViewContext, peer: string, task: TaskView): HTMLElement {
   heading.append(el(doc, "span", `tc-badge cr-badge cr-state cr-state--${task.state.toLowerCase()}`, STATE_LABEL[task.state] ?? "Unknown state"));
   heading.append(timeElement(doc, task.timestamp ?? ulidTime(task.id), ctx.now()));
   card.append(heading);
-  const ids = el(doc, "p", "cr-muted cr-small", `Task ${shortId(task.id)}${task.ask === "" ? "" : ` · ask ${task.ask}`}`);
+  // The id is for matching with the agent, not for reading: it is on hover, not in the copy.
+  const ids = el(doc, "p", "cr-muted cr-small", task.ask === "" ? "Task" : `Task for ask ${task.ask}`);
+  ids.title = `Task ${task.id}`;
   card.append(ids);
   if (task.note !== "") card.append(el(doc, "p", "cr-note", task.note));
   for (const artifact of task.artifacts) {
