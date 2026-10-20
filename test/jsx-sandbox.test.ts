@@ -571,7 +571,9 @@ describe("extension points", () => {
     send(wired, { v: 1, type: "cap/kv.get", nonce, extra: 1 });
     expect(handler).not.toHaveBeenCalled();
     send(wired, { v: 1, type: "cap/kv.get", nonce, body: { path: "a" } });
-    expect(handler).toHaveBeenCalledExactlyOnceWith({ type: "cap/kv.get", body: { path: "a" } });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]![0]).toEqual({ type: "cap/kv.get", body: { path: "a" } });
+    expect(typeof handler.mock.calls[0]![1]).toBe("function");
     wired.destroy();
   });
 
@@ -621,7 +623,10 @@ describe("bridge document script", () => {
     child(): FakeChild | null;
     fireChildLoad(): void;
     listening: boolean;
+    /** What the bridge posted into its child frame. */
+    childPosted: Array<Record<string, unknown>>;
   } {
+    const childPosted: Array<Record<string, unknown>> = [];
     const posted: Array<Record<string, unknown>> = [];
     const replaced: unknown[][] = [];
     let handler: ((event: { source: unknown; origin: string; data: unknown }) => void) | undefined;
@@ -631,12 +636,12 @@ describe("bridge document script", () => {
       getElementById: () => ({ textContent: "/* frame css */" }),
       createElement: () => {
         const created: FakeChild = {
-          attrs: {}, srcdoc: "", removed: false, listeners: {}, contentWindow: {},
+          attrs: {}, srcdoc: "", removed: false, listeners: {}, contentWindow: { postMessage: (message: Record<string, unknown>, target: string) => { expect(target).toBe("*"); childPosted.push(message); } },
         };
         return Object.assign(created, {
           setAttribute: (name: string, value: string) => { created.attrs[name] = value; },
           addEventListener: (type: string, listener: () => void) => { created.listeners[type] = listener; },
-          remove: () => { created.removed = true; },
+          remove: () => { created.removed = true; if (child === created) child = null; },
           className: "",
         });
       },
@@ -652,6 +657,7 @@ describe("bridge document script", () => {
     return {
       posted,
       replaced,
+      childPosted,
       listening: handler !== undefined,
       child: () => child,
       fireChildLoad: () => child?.listeners["load"]?.(),
@@ -798,5 +804,133 @@ describe("bridge document script", () => {
     bridge.fireChildLoad();
     expect(child.removed).toBe(true);
     expect(bridge.posted.at(-1)).toMatchObject({ type: "error", phase: "runtime", message: expect.stringContaining("another page") });
+  });
+
+  describe("cap/* relay (installed apps)", () => {
+    const request = (op: string, id: string, args: unknown = { key: "prefs/a" }, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ v: 1, type: `cap/${op}`, id, args, ...extra });
+    const capPosts = (bridge: ReturnType<typeof startBridge>): Array<Record<string, unknown>> => bridge.posted.filter((message) => typeof message["type"] === "string" && message["type"].startsWith("cap/"));
+    const started = (): ReturnType<typeof startBridge> => { const bridge = startBridge(); bridge.send(render()); return bridge; };
+    const resultFor = (id: string, result: unknown, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({ v: 1, type: "cap/result", nonce: NONCE, id, result, ...overrides });
+    const childInbox = (bridge: ReturnType<typeof startBridge>): Array<Record<string, unknown>> => bridge.childPosted;
+
+    it("forwards a known call from its own child to its parent as {type, body:{id,args}} under the nonce", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1"), "child");
+      expect(capPosts(bridge)).toEqual([{ v: 1, nonce: NONCE, type: "cap/kv.get", body: { id: "1", args: { key: "prefs/a" } } }]);
+    });
+
+    it("forwards only the six operations, from the child, with exactly the keys {v,type,id,args}", () => {
+      const bridge = started();
+      ["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute"].forEach((op, index) => {
+        bridge.send(request(op, String(index + 1)), "child");
+        bridge.send(resultFor(String(index + 1), { ok: true }));
+      });
+      expect(capPosts(bridge).map((message) => message["type"])).toEqual(["cap/kv.get", "cap/kv.put", "cap/kv.list", "cap/kv.del", "cap/sql.query", "cap/sql.execute"]);
+      const before = capPosts(bridge).length;
+      // Unknown operations, other services, traversal in the name.
+      for (const op of ["vault.get", "delegation.create", "kv.get/../x", "storage.get", "result", "kv.GET", ""]) bridge.send(request(op, "90"), "child");
+      // Wrong sender, origin, version.
+      bridge.send(request("kv.get", "91"), "other");
+      bridge.send(request("kv.get", "92"), "parent");
+      bridge.send(request("kv.get", "93"), "child", "https://share.tinycloud.xyz");
+      bridge.send({ ...request("kv.get", "94"), v: 2 }, "child");
+      // Extra keys, including a nonce or a body the child tries to supply.
+      bridge.send(request("kv.get", "95", { key: "a" }, { nonce: NONCE }), "child");
+      bridge.send(request("kv.get", "96", { key: "a" }, { body: {} }), "child");
+      bridge.send(request("kv.get", "97", { key: "a" }, { origin: "x" }), "child");
+      const { args: _args, ...noArgs } = request("kv.get", "98");
+      bridge.send(noArgs, "child");
+      expect(capPosts(bridge)).toHaveLength(before);
+    });
+
+    it("drops a request before the page exists, and one with no usable id (there is nobody to answer)", () => {
+      const early = startBridge();
+      early.send(request("kv.get", "1"), "child");
+      expect(capPosts(early)).toEqual([]);
+      const bridge = started();
+      for (const id of ["", "x", "1a", "-1", "1234567890", "__proto__", 5, null, undefined]) bridge.send(request("kv.get", id as string), "child");
+      expect(capPosts(bridge)).toEqual([]);
+      expect(childInbox(bridge)).toEqual([]);
+    });
+
+    it("answers a malformed or oversize call itself, without forwarding it", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1", "not an object"), "child");
+      bridge.send(request("kv.get", "2", [1, 2]), "child");
+      bridge.send(request("kv.put", "3", { key: "a", body: "x".repeat(1_000_001) }), "child");
+      bridge.send(request("kv.put", "4", { key: "a", body: new Uint8Array(1_000_001) }), "child");
+      bridge.send(request("kv.get", "5", { key: () => 1 }), "child");
+      bridge.send(request("kv.get", "6", { key: new Date() }), "child");
+      const nested: Record<string, unknown> = {};
+      nested["self"] = nested;
+      bridge.send(request("kv.get", "7", nested), "child");
+      expect(capPosts(bridge)).toEqual([]);
+      expect(childInbox(bridge).map((message) => [message["id"], (message["result"] as { error: { code: string } }).error.code])).toEqual([
+        ["1", "BAD_REQUEST"], ["2", "BAD_REQUEST"], ["3", "TOO_LARGE"], ["4", "TOO_LARGE"], ["5", "BAD_REQUEST"], ["6", "BAD_REQUEST"], ["7", "BAD_REQUEST"],
+      ]);
+      expect(childInbox(bridge).every((message) => message["type"] === "cap/result" && message["v"] === 1 && Object.keys(message).sort().join() === "id,result,type,v")).toBe(true);
+    });
+
+    it("lets four calls be in flight and answers the fifth BUSY itself; an answer frees a slot", () => {
+      const bridge = started();
+      for (let id = 1; id <= 5; id += 1) bridge.send(request("kv.get", String(id)), "child");
+      expect(capPosts(bridge)).toHaveLength(4);
+      expect(childInbox(bridge)).toEqual([{ v: 1, type: "cap/result", id: "5", result: { ok: false, error: { code: "BUSY", message: expect.stringContaining("4 calls") } } }]);
+      bridge.send(resultFor("2", { ok: true }));
+      bridge.send(request("kv.get", "6"), "child");
+      expect(capPosts(bridge)).toHaveLength(5);
+      // The same id again while it runs is dropped.
+      bridge.send(request("kv.get", "6"), "child");
+      expect(capPosts(bridge)).toHaveLength(5);
+    });
+
+    it("passes the parent's answer to the child, for a pending id only, from the parent only, under the nonce", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1"), "child");
+      const answer = { ok: true, bytes: new Uint8Array([1, 2]), contentType: "text/plain" };
+      // Wrong sender, nonce, version, type, extra keys, unknown id, malformed result.
+      bridge.send(resultFor("1", answer), "child");
+      bridge.send(resultFor("1", answer), "other");
+      bridge.send(resultFor("1", answer, { nonce: "f".repeat(32) }));
+      bridge.send(resultFor("1", answer, { v: 2 }));
+      bridge.send(resultFor("1", answer, { type: "cap/results" }));
+      bridge.send(resultFor("1", answer, { extra: 1 }));
+      bridge.send(resultFor("2", answer));
+      bridge.send(resultFor("1", "ok"));
+      bridge.send(resultFor("1", { ok: "yes" }));
+      bridge.send(resultFor("1", [true]));
+      expect(childInbox(bridge)).toEqual([]);
+      bridge.send(resultFor("1", answer));
+      expect(childInbox(bridge)).toEqual([{ v: 1, type: "cap/result", id: "1", result: answer }]);
+      // Once only.
+      bridge.send(resultFor("1", answer));
+      expect(childInbox(bridge)).toHaveLength(1);
+    });
+
+    it("refuses to relay an answer larger than the cap or one that is not plain data", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1"), "child");
+      bridge.send(request("kv.get", "2"), "child");
+      bridge.send(resultFor("1", { ok: true, bytes: new Uint8Array(1_000_001) }));
+      bridge.send(resultFor("2", { ok: true, value: () => 1 }));
+      expect(childInbox(bridge).map((message) => (message["result"] as { error: { code: string } }).error.code)).toEqual(["TOO_LARGE", "INTERNAL"]);
+    });
+
+    it("an answer is accepted again only for a call made after the child was replaced", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1"), "child");
+      bridge.fireChildLoad();
+      bridge.fireChildLoad();
+      expect(bridge.child()).toBeNull();
+      bridge.send(resultFor("1", { ok: true }));
+      expect(childInbox(bridge)).toEqual([]);
+    });
+
+    it("nothing a call carries reaches the child as anything but plain data: no nonce, no parent reference", () => {
+      const bridge = started();
+      bridge.send(request("kv.get", "1"), "child");
+      bridge.send(resultFor("1", { ok: true }));
+      expect(JSON.stringify(childInbox(bridge))).not.toContain(NONCE);
+    });
   });
 });

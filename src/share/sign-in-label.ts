@@ -4,6 +4,8 @@
  * data (an app catalog) can ask `isSignInLabel` first and fall back to a fixed name, without loading OpenKey.
  */
 
+import { hasInvisibleOrSpecialSpace } from "./invisible-text.mjs";
+
 /** A sign-in option outside what the helper allows (an expiry over an hour, a domain that is not a host name). */
 export class SignInOptionError extends Error {
   constructor(option: string, detail: string) {
@@ -14,13 +16,6 @@ export class SignInOptionError extends Error {
 
 /** Longest app name, session prefix or domain label the helper accepts, in characters. */
 const MAX_LABEL_CHARS = 64;
-/**
- * Characters a name may not contain, whatever they look like: control, format (zero-width, joiners, soft hyphen, word
- * joiner, bidi controls, tag characters), surrogate, private-use and unassigned code points, every space and
- * separator other than a plain U+0020, the fillers that render as blanks (Hangul and Mongolian), variation selectors,
- * and the combining grapheme joiner.
- */
-const INVISIBLE_OR_SPACE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}\u3164\uffa0\u115f\u1160\u17b4\u17b5\u180e\u034f\ufe00-\ufe0f\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
 /** Look-alikes of the characters that make a link, folded to the real ones before the link check (NFKC folds the full-width forms; these it leaves alone). */
 const LINK_LOOKALIKES: ReadonlyArray<readonly [RegExp, string]> = [
   [/[\u2215\u2044\u29f8\u2571\u2afd]/g, "/"],
@@ -51,7 +46,7 @@ function looksLikeLink(value: string): boolean {
 export function checkLabel(option: string, value: string): void {
   if ([...value].length === 0 || [...value].length > MAX_LABEL_CHARS) throw new SignInOptionError(option, `1 to ${MAX_LABEL_CHARS} characters`);
   if (value.normalize("NFC") !== value) throw new SignInOptionError(option, "must be written in normalised (NFC) form");
-  if (INVISIBLE_OR_SPACE.test(value.replaceAll(" ", ""))) throw new SignInOptionError(option, "no control, invisible, direction or special space characters");
+  if (hasInvisibleOrSpecialSpace(value)) throw new SignInOptionError(option, "no control, invisible, direction or special space characters");
   if (value.startsWith(" ") || value.endsWith(" ") || value.includes("  ")) throw new SignInOptionError(option, "no leading, trailing or repeated spaces");
   if (looksLikeLink(value)) throw new SignInOptionError(option, "must not look like a link or an address");
 }

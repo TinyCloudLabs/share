@@ -33,6 +33,11 @@ export default function Counter() {
   `mermaid`. Tailwind v4's browser runtime is always on, mapped to the TinyCloud
   tokens: `bg-tc-surface`, `text-tc-muted`, `border-tc-border`, `bg-tc-accent`,
   `rounded-tc-md`, `font-tc-sans`, and so on. Light and dark follow the system.
+- Forms work as on any page, without submitting: a sandbox without `allow-forms` refuses a form
+  submission before the browser fires the `submit` event, so the runtime (`form-events.ts`) cancels
+  the browser's own attempt and dispatches `submit` to the page's handlers itself when a submit
+  button is clicked, Enter is pressed in a field (the HTML implicit-submission rules) or
+  `requestSubmit()` is called. Nothing is sent or navigated; `form.submit()` stays blocked.
 - Anything else (`import x from "left-pad"`) shows "x isn't available" with the
   list above. Bundle the code into the file or publish a self-contained HTML page.
 - Source is limited to 512 KB (checked before the viewer scans it for imports); the frame has 15 seconds to start.
@@ -58,7 +63,9 @@ viewer ─ <iframe sandbox="allow-scripts" allow="" referrerpolicy="no-referrer"
   an allowlist of types (`bridge-ready`, `ready`, `error`, `restore-controls`);
   the bridge accepts `render` only from its parent and child messages only from
   its own child. Anything else is dropped without a reply. The reserved `cap/*`
-  namespace is dropped by default.
+  namespace is dropped by the viewer. The bridge relays six known `cap/*` operations
+  (bounded: plain data, 1 MB, 4 in flight) to its parent, and only a registered
+  handler answers them: the installed-app runner ([tiny-app-runner.md](tiny-app-runner.md)).
 - What enters the frame: `{v,type,nonce,kind,source,modules,theme}`. Never the
   link or its fragment, session or delegation material, keys, the sender's
   identity or storage handles.
@@ -90,6 +97,16 @@ CSP blocks every content and script request the frame could make (img/CSS url/@i
 | `<link rel=prerender>` | one HTTP GET to the author's address carrying author-chosen query data (`/link-prerender?data=author-chosen-value` in the test), plus a connection | notice |
 | `<link rel=dns-prefetch>` | DNS lookup (not observable on loopback) | notice |
 | WebRTC (ICE to a STUN server) | UDP packets to the server | notice. The CSP `webrtc` directive is not recognised by the Chromium used here, so it is not set. |
+
+The table is the CSP alone, and the CSP does not govern a prerender, a preconnect, a DNS prefetch, `<a ping>` or WebRTC. The frame's runtime adds a
+best-effort guard (`src/artifact/jsx-runtime/url-guard.ts`; design and the paths it covers in [Opening an installed app](tiny-app-runner.md#frame-hardening-best-effort)):
+an element-type and attribute allow-list (React elements when created; every DOM node, HTML-string and attribute path known to the guard is vetted before it
+applies, `<template>` content and shadow roots included) plus a MutationObserver backstop refuse `<link>`, `<meta http-equiv>`, `<a ping>`, `<img>`, `<source>`,
+`<video>`, `<audio>`, `<iframe>`, `<object>`, `<embed>`, `<form action>`, `<base>` and `<script>` with any URL that is not `data:`, `blob:` or `#`, and remove
+`RTCPeerConnection`. **Best effort: these paths are known closed; same-realm code may find others.** The probe (`test/fixtures/apps/leak-vectors.js`, 147 vectors,
+`npm run test:e2e:jsx`) sees zero requests, connections, upgrades and UDP packets, including for prerender, preconnect, dns-prefetch and WebRTC. Still leaking:
+a navigation attempt (`location`, a followed link: one DNS lookup and one TCP connection, no request, and the address can carry a little data), the IP address
+and time of opening, and any browser-initiated request through a path the guard does not know. The runner and the install sheet say so in one line (`src/apps/limits.ts`).
 
 The viewer says so above the frame: "This page runs the sender's code. The sender
 can tell that you opened it." It is rendered by the viewer, outside the frame,
@@ -139,9 +156,12 @@ is Unlicense.
 
 ## Extension points
 
-- Capabilities: a handler for the reserved `cap/*` messages can be registered on
-  `createJsxSandbox({ onCapability })`. The default handler does not exist and the
-  messages are dropped. The bridge does not forward them yet.
+- Capabilities: the handler for the reserved `cap/*` messages is registered on
+  `createJsxSandbox({ onCapability })` (or `renderJsxPage`'s `onCapability`) as
+  `(request, reply) => void`; `reply(id, result)` posts the `cap/result`. The default is no handler:
+  the messages are dropped, and the share viewer registers none and never sends the
+  `@tinycloud/app` client module. The installed-app runner registers the one handler
+  (`src/apps/bridge.ts`); see [tiny-app-runner.md](tiny-app-runner.md).
 - The runner entry `renderJsxPage(container, sourceTextOrBytes, options)` takes
   source bytes and an options object (theme, title, preloaded verified modules); it
   knows nothing about shares. `content.ts` adapts a share to it.

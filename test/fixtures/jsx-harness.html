@@ -16,6 +16,8 @@
         ...import.meta.glob("/test/fixtures/jsx/*.jsx", { query: "?raw", import: "default", eager: true }),
         ...import.meta.glob("/test/fixtures/html/*.html", { query: "?raw", import: "default", eager: true }),
       };
+      // The shared leak-vector script (also spliced into the installed-app hostile fixture by the runner gate).
+      const leakVectors = Object.values(import.meta.glob("/test/fixtures/apps/leak-vectors.js", { query: "?raw", import: "default", eager: true }))[0] ?? "";
       const params = new URLSearchParams(location.search);
       const name = params.get("f") ?? "counter.jsx";
       const path = Object.keys(fixtures).find((key) => key.endsWith(`/${name}`));
@@ -25,7 +27,8 @@
         // Test-only substitutions for the benign self-check/privacy fixtures.
         const source = fixtures[path]
           .replaceAll("__BEACON__", params.get("beacon") ?? "http://127.0.0.1:9")
-          .replaceAll("__PROBES__", params.get("probes") ?? "");
+          .replaceAll("__PROBES__", params.get("probes") ?? "")
+          .replace("/*__LEAK_VECTORS__*/", leakVectors);
         const bytes = new TextEncoder().encode(source);
         const kind = await renderSafeContent(harness, bytes, {
           mediaType: "application/octet-stream",

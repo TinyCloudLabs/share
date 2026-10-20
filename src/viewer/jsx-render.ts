@@ -14,7 +14,7 @@ import { JSX_LIBRARY_SET } from "../artifact/jsx-runtime/files.js";
 import { JsxModuleIntegrityError, loadJsxModules } from "./jsx-modules.js";
 import type { ArtifactNotice } from "./artifact-notice.js";
 import { JSX_MAX_SOURCE_CHARS, JSX_START_TIMEOUT_MS, type JsxTheme } from "./jsx-frame.js";
-import { JsxRenderError, createJsxSandbox, type JsxSandbox } from "./jsx-sandbox.js";
+import { JsxRenderError, createJsxSandbox, type JsxCapabilityHandler, type JsxSandbox } from "./jsx-sandbox.js";
 import type { JsxManifest } from "../artifact/jsx-runtime/files.js";
 
 /**
@@ -44,6 +44,14 @@ export interface RenderJsxOptions {
   readonly frameClassName?: string;
   /** After this long without the first render, the loading cover says so and offers Try again. */
   readonly slowAfterMs?: number;
+  /**
+   * The installed-app runner only (src/apps): the handler for the frame's `cap/*`
+   * requests, and with it the `@tinycloud/app` client module. The share viewer
+   * sets neither: it drops `cap/*` and never sends the client module.
+   */
+  readonly onCapability?: JsxCapabilityHandler;
+  /** The page started (`running`), or stopped with a panel (`failed`), at most once each; the runner mirrors it in its status line. */
+  readonly onState?: (state: "running" | "failed") => void;
 }
 
 interface PanelCopy {
@@ -220,6 +228,7 @@ export async function renderJsxPage(container: HTMLElement, input: string | Uint
     const { panel, revoke } = buildPanel(doc, copyFor(error), options, bytes, retry);
     revokePanel = revoke;
     container.replaceChildren(...chrome(panel));
+    options.onState?.("failed");
   };
   const retry = (): void => {
     teardown();
@@ -245,13 +254,14 @@ export async function renderJsxPage(container: HTMLElement, input: string | Uint
       // Before anything scans or sends it: a hostile source must not cost the viewer time.
       if (source.length > JSX_MAX_SOURCE_CHARS) throw new JsxRenderError("limit", "This file is too large to run here.");
       // Dynamic: the manifest module is a build-time virtual module that tests replace.
-      const modules = options.modules ?? await loadJsxModules(options.manifest ?? (await import("./jsx-manifest.js")).manifest, source, options.fetch === undefined ? {} : { fetch: options.fetch });
+      const modules = options.modules ?? await loadJsxModules(options.manifest ?? (await import("./jsx-manifest.js")).manifest, source, { ...(options.fetch === undefined ? {} : { fetch: options.fetch }), ...(options.onCapability === undefined ? {} : { allowRunnerModules: true }) });
       if (mine !== attempt) return;
       sandbox = createJsxSandbox(doc, {
         mount: stage,
         ...(options.frameClassName === undefined ? {} : { className: options.frameClassName }),
         title: options.title ?? `Shared app: ${options.filename}`,
         onFailure: (error) => showPanel(error, mine),
+        ...(options.onCapability === undefined ? {} : { onCapability: options.onCapability }),
         ...(options.onRestoreControls === undefined ? {} : { onRestoreControls: options.onRestoreControls }),
       });
       // Visible underneath the cover: the page needs real layout to measure (diagrams, charts).
@@ -261,6 +271,7 @@ export async function renderJsxPage(container: HTMLElement, input: string | Uint
       clearTimeout(slowTimer);
       cover.element.remove();
       delete stage.dataset["state"];
+      options.onState?.("running");
     } catch (error) {
       showPanel(error, mine);
     }

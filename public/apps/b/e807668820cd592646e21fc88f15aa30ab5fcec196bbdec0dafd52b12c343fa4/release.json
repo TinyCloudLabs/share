@@ -1,0 +1,73 @@
+{
+  "schema": "tinycloud.app-release/v1",
+  "app_id": "xyz.tinycloud.sample.healthlog",
+  "version": "0.1.0",
+  "files": [
+    {
+      "path": "app.jsx",
+      "sha256": "56075597ad5f7dcfcc027d2a105c275a7713f7fc0588cec5290d56ebfee2e83f",
+      "size": 25459
+    },
+    {
+      "path": "knowledge/app.md",
+      "sha256": "3050818fd96e048e8c26bf1ec04c74b7c2681128d51e173cae2a2718257bb445",
+      "size": 4064
+    },
+    {
+      "path": "knowledge/index.md",
+      "sha256": "df4d75cd52928ffe059568093c60a84b105e542b005bf36e939516fed5eec7fc",
+      "size": 954
+    },
+    {
+      "path": "knowledge/kv/app.md",
+      "sha256": "1583fdefdf6261a8ce110d8de22843855f8393f760de9fa79c3491868924bd42",
+      "size": 1283
+    },
+    {
+      "path": "knowledge/kv/knowledge.md",
+      "sha256": "1f3fb9d50e0ccea10dbe4a223efdbbde2b277bbed8f4790251331c5a7dcebc0f",
+      "size": 1170
+    },
+    {
+      "path": "knowledge/kv/prefs.md",
+      "sha256": "0de88eb2cd8c2ad7302b84c2f6b972364d9e9354f15b70657349339167dd52e4",
+      "size": 831
+    },
+    {
+      "path": "knowledge/log.md",
+      "sha256": "7753435d03afe51c36023c596330c7f04c597319586b5b39d4cf8a675512b1d0",
+      "size": 263
+    },
+    {
+      "path": "knowledge/tables/meal.md",
+      "sha256": "1bc09271c8c2cf987ef81dfb99c4427234fdfbc795f5229a1d631aef0fbff795",
+      "size": 1921
+    },
+    {
+      "path": "knowledge/tables/weight.md",
+      "sha256": "fbae8b103931f976b838024d3ec7ea2596f1b1af3e9834e8aaba1d216d227bc0",
+      "size": 1401
+    },
+    {
+      "path": "knowledge/views/day_card.md",
+      "sha256": "f1ea0738b6905a4952ab1f9c269310f2f888c6606b16304c12bdf69dfb3fafbe",
+      "size": 1707
+    },
+    {
+      "path": "knowledge/views/week_rollup.md",
+      "sha256": "b9773f2ae10fadb9b0ce5f5a78885c87f90bd202a00f7f157428911239c2077e",
+      "size": 1579
+    },
+    {
+      "path": "manifest.json",
+      "sha256": "0b6162faa784fa2698a50481b2edf6385f10cb7bba03183bfe3c2047a4d622df",
+      "size": 1458
+    },
+    {
+      "path": "schema.sql",
+      "sha256": "3ca912568852c8a4fea184bd54c7d3e606ae52b2dc1230dd37bdf84bc2876439",
+      "size": 4114
+    }
+  ],
+  "digest": "f001d6618c535182c5a64cad1a18ace17d62ced635651ad8b2fba4d01161707c"
+}

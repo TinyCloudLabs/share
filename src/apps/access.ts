@@ -22,8 +22,13 @@ export interface AccessItem {
   service: string;
   /** The space it applies in, or null for the app's own default space ("applications"). */
   space: string | null;
-  /** Where it applies: a path, prefix, secret name or database name. */
+  /** Where it applies, for display: a path, prefix, secret name or database name; "everything in ..." for a whole space. */
   target: string;
+  /**
+   * The path as the SDK resolves it (prefix applied unless `skipPrefix`), for the notices:
+   * "" is the whole space; `<folder>/` a folder; no slash a root-level key or database.
+   */
+  path: string;
   /** Short action names, e.g. ["get", "list"]. */
   actions: string[];
 }
@@ -48,6 +53,11 @@ const SERVICE_LABELS: Record<string, string> = {
 
 const DEFAULT_SPACE = "applications";
 const SECRETS_SPACE = "secrets";
+/** The synthetic space the SDK gives every encryption grant: networks belong to the account, not to a space. */
+const ENCRYPTION_SPACE = "encryption";
+const ENCRYPTION_SERVICE = "tinycloud.encryption";
+/** Where the SDK keeps vault data in key-value: `vault/<key>`; a named secret is `vault/secrets/<NAME>` (or `.../scoped/<scope>/<NAME>`). */
+const VAULT_ROOT = "vault/";
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -74,8 +84,12 @@ function folderFor(manifest: Json): string {
 }
 
 function resolvePath(folder: string, path: string, skipPrefix: boolean): string {
-  return skipPrefix || folder === "" ? path : `${folder}${path.replace(/^\/+/, "")}`;
+  const resolved = skipPrefix || folder === "" ? path : `${folder}${path.replace(/^\/+/, "")}`;
+  // "/" alone is "everything" in a key-value or SQL grant, the same as an empty path.
+  return /^\/*$/.test(resolved) ? "" : resolved;
 }
+
+const wholeSpace = (space: string | null): string => `everything in the ${space ?? DEFAULT_SPACE} space`;
 
 /** The SDK's reading of `defaults`: only `false` turns it off; "admin" and "all" widen; anything else is standard. */
 export function defaultsTier(value: unknown): "none" | "standard" | "admin" | "all" {
@@ -92,7 +106,7 @@ function defaultItems(manifest: Json): { read: AccessItem[]; change: AccessItem[
   if (tier === "none") return { read: [], change: [] };
   const folder = folderFor(manifest);
   const target = folder === "" ? "everything in the app's space" : `${folder}*`;
-  const item = (service: string, description: string, actions: string[]): AccessItem => ({ description, service: serviceLabel(service), space: null, target, actions });
+  const item = (service: string, description: string, actions: string[]): AccessItem => ({ description, service: serviceLabel(service), space: null, target, path: folder, actions });
   const read = [
     item("tinycloud.kv", "Everything the app has stored in its own folder (default grant).", ["get", "list", "metadata"]),
     item("tinycloud.sql", "Everything in the app's own SQL databases (default grant).", ["read"]),
@@ -121,7 +135,8 @@ function secretItem(key: string, spec: unknown): { item: Omit<AccessItem, "actio
   const scope = text(fields.scope);
   const rawActions = isObject(spec) ? (spec.actions === undefined ? ["read"] : typeof spec.actions === "string" ? [spec.actions] : spec.actions) : typeof spec === "string" ? [spec] : Array.isArray(spec) ? spec : ["read"];
   return {
-    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}` },
+    // `path` is where the SDK puts the secret (`vault/secrets/<NAME>`); `target` is the name a person knows it by.
+    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}`, path: scope === null ? `${VAULT_ROOT}secrets/${name.trim()}` : `${VAULT_ROOT}secrets/scoped/${scope}/${name.trim()}` },
     actions: vaultActions(rawActions),
   };
 }
@@ -132,6 +147,8 @@ function place(summary: AccessSummary, item: Omit<AccessItem, "actions">, action
   if (reads.length > 0) summary.read.push({ ...item, actions: reads });
   if (changes.length > 0) summary.change.push({ ...item, actions: changes });
 }
+
+export { unsupportedManifest } from "./manifest-support.mjs";
 
 /** Reads a manifest of unknown shape. Never throws; fields it cannot read are left out. */
 export function summarizeAccess(manifest: unknown): AccessSummary {
@@ -149,8 +166,17 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
     const service = text(entry.service);
     const path = typeof entry.path === "string" ? entry.path : null;
     if (service === null || path === null) continue;
+    if (service === ENCRYPTION_SERVICE) {
+      // The SDK forces the synthetic `encryption` space and no prefix: the path is a network id, not a folder.
+      place(summary, { description: text(entry.description), service: serviceLabel(service), space: ENCRYPTION_SPACE, target: path, path }, actionsOf(entry.actions));
+      continue;
+    }
     const space = text(entry.space) ?? manifestSpace;
-    place(summary, { description: text(entry.description), service: serviceLabel(service), space: space === DEFAULT_SPACE ? null : space, target: resolvePath(folder, path, entry.skipPrefix === true) }, actionsOf(entry.actions));
+    const shownSpace = space === DEFAULT_SPACE ? null : space;
+    // `tinycloud.vault` is the SDK's shorthand for key-value under `vault/` (the prefix, if any, comes first): it is key-value to a reader.
+    const vault = service === "tinycloud.vault";
+    const resolved = vault ? `${VAULT_ROOT}${resolvePath(folder, path, entry.skipPrefix === true)}` : resolvePath(folder, path, entry.skipPrefix === true);
+    place(summary, { description: text(entry.description), service: serviceLabel(vault ? "tinycloud.kv" : service), space: shownSpace, target: resolved === "" ? wholeSpace(shownSpace) : resolved, path: resolved }, actionsOf(entry.actions));
   }
 
   if (isObject(manifest.secrets)) {
@@ -164,7 +190,7 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
   // (A public-space companion exists only when a KV grant is handed to another DID, not at sign-in.)
   const all = [...summary.read, ...summary.change];
   for (const space of new Set(all.map((item) => item.space ?? DEFAULT_SPACE))) {
-    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, actions: ["read"] });
+    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, path: "", actions: ["read"] });
   }
   return summary;
 }
