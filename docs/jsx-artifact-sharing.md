@@ -33,6 +33,11 @@ export default function Counter() {
   `mermaid`. Tailwind v4's browser runtime is always on, mapped to the TinyCloud
   tokens: `bg-tc-surface`, `text-tc-muted`, `border-tc-border`, `bg-tc-accent`,
   `rounded-tc-md`, `font-tc-sans`, and so on. Light and dark follow the system.
+- Forms work as on any page, without submitting: a sandbox without `allow-forms` refuses a form
+  submission before the browser fires the `submit` event, so the runtime (`form-events.ts`) cancels
+  the browser's own attempt and dispatches `submit` to the page's handlers itself when a submit
+  button is clicked, Enter is pressed in a field (the HTML implicit-submission rules) or
+  `requestSubmit()` is called. Nothing is sent or navigated; `form.submit()` stays blocked.
 - Anything else (`import x from "left-pad"`) shows "x isn't available" with the
   list above. Bundle the code into the file or publish a self-contained HTML page.
 - Source is limited to 512 KB (checked before the viewer scans it for imports); the frame has 15 seconds to start.
@@ -58,7 +63,9 @@ viewer ─ <iframe sandbox="allow-scripts" allow="" referrerpolicy="no-referrer"
   an allowlist of types (`bridge-ready`, `ready`, `error`, `restore-controls`);
   the bridge accepts `render` only from its parent and child messages only from
   its own child. Anything else is dropped without a reply. The reserved `cap/*`
-  namespace is dropped by default.
+  namespace is dropped by the viewer. The bridge relays six known `cap/*` operations
+  (bounded: plain data, 1 MB, 4 in flight) to its parent, and only a registered
+  handler answers them: the installed-app runner ([tiny-app-runner.md](tiny-app-runner.md)).
 - What enters the frame: `{v,type,nonce,kind,source,modules,theme}`. Never the
   link or its fragment, session or delegation material, keys, the sender's
   identity or storage handles.
@@ -139,9 +146,12 @@ is Unlicense.
 
 ## Extension points
 
-- Capabilities: a handler for the reserved `cap/*` messages can be registered on
-  `createJsxSandbox({ onCapability })`. The default handler does not exist and the
-  messages are dropped. The bridge does not forward them yet.
+- Capabilities: the handler for the reserved `cap/*` messages is registered on
+  `createJsxSandbox({ onCapability })` (or `renderJsxPage`'s `onCapability`) as
+  `(request, reply) => void`; `reply(id, result)` posts the `cap/result`. The default is no handler:
+  the messages are dropped, and the share viewer registers none and never sends the
+  `@tinycloud/app` client module. The installed-app runner registers the one handler
+  (`src/apps/bridge.ts`); see [tiny-app-runner.md](tiny-app-runner.md).
 - The runner entry `renderJsxPage(container, sourceTextOrBytes, options)` takes
   source bytes and an options object (theme, title, preloaded verified modules); it
   knows nothing about shares. `content.ts` adapts a share to it.

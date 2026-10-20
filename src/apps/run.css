@@ -1,6 +1,6 @@
 /* The runner page: chrome around an installed app's sandbox frame. Only --tc-* tokens (apps.css has the page shell). */
 .run-main {
-  width: min(100% - 2rem, 90rem);
+  width: min(100% - 3rem, 70rem);
   padding-block: var(--tc-space-5) var(--tc-space-7);
 }
 
@@ -53,6 +53,12 @@
 
 .run-status {
   margin: 0;
+}
+
+.run-info {
+  display: grid;
+  gap: var(--tc-space-2);
+  margin-top: var(--tc-space-4);
 }
 
 .run-details {
@@ -157,7 +163,7 @@
 
 @media (max-width: 40rem) {
   .run-main {
-    width: min(100% - 1.5rem, 90rem);
+    width: min(100% - 1.5rem, 70rem);
   }
 
   .run-bar,

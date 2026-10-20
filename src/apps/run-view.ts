@@ -121,11 +121,11 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     el("div", "run-bar__top", [title, el("div", "run-actions", [openAnother, signOut])]),
     provenance,
     status,
-    access,
-    reveal,
   ], { "aria-label": "App details" });
+  // Below the app, where it never pushes the app off the screen; open on the start screen, closed while it runs.
+  const info = el("section", "run-info", [access, reveal], { "aria-label": "About this app" });
   const stage = el("div", "run-stage", [], { role: "region", "aria-label": entry === undefined ? "App" : entry.name });
-  root.replaceChildren(bar, stage);
+  root.replaceChildren(bar, stage, info);
 
   const setStatus = (text: string, tone: Tone = "info"): void => {
     status.replaceChildren(...(text === "" ? [] : [el("p", `tc-status tc-status--${tone} run-status`, [text])]));
@@ -233,6 +233,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     live = true;
     title.textContent = result.app.name;
     accessLists(result.app.signing, result.app.entry);
+    // The lists stay one click away; the app itself gets the room.
+    access.open = false;
     signOut.disabled = false;
     let reply: JsxCapabilityReply | undefined;
     bridge = createCapabilityBridge({
@@ -277,22 +279,26 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       if (destroyed || attempt !== 0) return;
       start0.removeAttribute("aria-busy");
       if (!loaded.ok) {
-        showScreen({ title: "Couldn't check this app against the catalog", lines: [loaded.reason === "mismatch" ? "Its manifest doesn't match the catalog, so it can't be opened." : "Check your connection and try again."], retry: loaded.reason === "mismatch" ? undefined : "Try again", tone: "danger" }, () => { mountStart(); });
+        showScreen({ title: "Couldn't check this app against the catalog", lines: [loaded.reason === "mismatch" ? "Its manifest doesn't match the catalog, so it can't be opened." : "Check your connection and try again."], retry: loaded.reason === "mismatch" ? undefined : "Try again", tone: "danger" }, () => { window.location.reload(); });
         return;
       }
       accessLists(loaded.manifest, entry);
-      mountStart();
+      mountStart(loaded.manifest);
     });
   }
 
-  function mountStart(): void {
+  function mountStart(manifest: unknown): void {
     if (entry === undefined) return;
     const go = el("button", "tc-button tc-button--primary apps-button", ["Continue"], { type: "button" });
     go.addEventListener("click", begin);
+    // The plain statements (changes to its own tables, reads of another app) come before Continue; the full lists are below.
+    const consent = consentFor(entry, manifest, ports.catalog ?? catalog.apps);
     stage.replaceChildren(el("section", "run-screen tc-panel", [
       el("h2", "run-screen__title", [`Open ${entry.name}`], { tabindex: "-1" }),
       el("p", null, [entry.description]),
-      el("p", null, ["It runs in a sandbox with no network access. It can use only what's listed under “What this app can do”, and only while this page is open, for one hour at most."]),
+      ...(entry.sample === true ? [el("p", "tc-status tc-status--warning apps-notice", ["Sample app: use throwaway data only."])] : []),
+      ...noticeList(consent.notices),
+      el("p", null, ["It runs in a sandbox with no network access. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
       el("p", null, ["OpenKey asks you to approve twice: once so Share can read the app from your TinyCloud, then once to start it with those permissions."]),
       el("div", "run-screen__actions", [go]),
     ]));
