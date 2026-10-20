@@ -135,6 +135,18 @@ describe("Repair puts the catalog's code files back over the saved ones", () => 
     expect(node.sessions).toBe(0);
   });
 
+  it("deletes nothing outside <app_id>/app/ even if the node lists more than it was asked for", async () => {
+    const store = installedStore();
+    const node = fakeNode(store);
+    const over: RepairPorts = {
+      openSession: async (manifest, hooks) => ({ ...(await node.ports.openSession(manifest, hooks)), list: async () => [...store.keys()] }),
+    };
+    await runRepair(entry, { ...over, fetch: bundleFetch().fetch }, () => undefined);
+    expect(node.log.filter((line) => line.startsWith("del "))).toEqual([]);
+    expect(store.has(`${HEALTH}/knowledge/app.md`)).toBe(true);
+    expect(store.has(`${HEALTH}/prefs/goals.json`)).toBe(true);
+  });
+
   it("a catalog path that would land outside app/ is never written", async () => {
     const hostile: CatalogEntry = { ...entry, bundle: { ...entry.bundle, files: [...entry.bundle.files, { path: "../knowledge/app.md", sha256: "0".repeat(64), size: 1 }] } };
     const node = fakeNode(installedStore());

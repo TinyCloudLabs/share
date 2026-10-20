@@ -101,8 +101,6 @@ export async function runRepair(entry: CatalogEntry, ports: RepairPorts, report:
   }
   const wanted = repairWrites(entry);
   const prefix = `${entry.app_id}/app/`;
-  // Defence: Repair writes only code files under app/. A catalog path that would land anywhere else is a bug, never written.
-  if (wanted.some((write) => !write.key.startsWith(prefix) || write.key.slice(prefix.length) !== write.path)) throw new RepairError("catalog");
   const bytesOf = new Map(bundle.files.map((file) => [file.path, file.bytes]));
 
   report({ phase: "signing-in" });
