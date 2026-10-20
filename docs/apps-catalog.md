@@ -1,7 +1,7 @@
 # Apps catalog
 
 `/apps/` lists TinyCloud apps and shows, for each, what it can read and change, and installs an app's
-files into the person's own TinyCloud. Until a person clicks Install the page has no SDK, no sign-in,
+files into the person's own TinyCloud; an installed app opens at `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)). Until a person clicks Install the page has no SDK, no sign-in,
 and requests only this origin's own files.
 
 ## Files

@@ -26,6 +26,7 @@ const routeFile = (pathname) => {
   if (pathname === "/viewer" || pathname.startsWith("/s/")) return "/viewer/index.html";
   if (pathname === "/how-it-works" || pathname === "/how-it-works/") return "/how-it-works.html";
   if (pathname === "/apps" || pathname === "/apps/") return "/apps/index.html";
+  if (pathname === "/apps/run" || pathname === "/apps/run/") return "/apps/run/index.html";
   return pathname === "/" ? "/index.html" : pathname;
 };
 
