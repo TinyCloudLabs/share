@@ -30,7 +30,8 @@ describe("viewer launch privacy", () => {
     expect(window.location.pathname).toBe("/viewer");
     expect(window.location.search).toBe("");
     expect(window.location.hash).toBe("");
-    await vi.waitFor(() => expect(state.invalid).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("Open the original link again"));
+    expect(state.invalid).not.toHaveBeenCalled();
     expect(state.loadConfig).not.toHaveBeenCalled();
   });
 
@@ -46,7 +47,8 @@ describe("viewer launch privacy", () => {
     expect(window.location.pathname).toBe("/viewer");
     expect(window.location.search).toBe("");
     expect(window.location.hash).toBe("");
-    await vi.waitFor(() => expect(state.invalid).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(document.querySelector("#viewer h1")?.textContent).toBe("Open the original link again"));
+    expect(state.invalid).not.toHaveBeenCalled();
     expect(state.loadConfig).not.toHaveBeenCalled();
   });
 });
