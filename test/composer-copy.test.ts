@@ -7,7 +7,7 @@ interface StoredEntry {
   readonly contentType: string;
 }
 
-function fakeTinyCloud(entries: Record<string, StoredEntry>): { tinycloud: ShareTinyCloud; store: Map<string, StoredEntry> } {
+function fakeTinyCloud(entries: Record<string, StoredEntry>, putError?: { readonly message: string; readonly meta: { readonly status: number } }): { tinycloud: ShareTinyCloud; store: Map<string, StoredEntry> } {
   const store = new Map(Object.entries(entries));
   const kv = {
     get: async (key: string, options?: { binary?: boolean }) => {
@@ -17,6 +17,7 @@ function fakeTinyCloud(entries: Record<string, StoredEntry>): { tinycloud: Share
       return { ok: true as const, data: { data: stored.data, headers: { contentType: stored.contentType } } };
     },
     put: async (key: string, value: Uint8Array, options?: { contentType?: string }) => {
+      if (putError !== undefined) return { ok: false as const, error: putError };
       store.set(key, { data: value, contentType: options?.contentType ?? "application/octet-stream" });
       return { ok: true as const, data: undefined };
     },
@@ -75,6 +76,27 @@ describe("copySelectedSource (share byte-for-byte copy)", () => {
   it("does not substitute an unrelated path when the requested source is missing", async () => {
     const { tinycloud } = fakeTinyCloud({});
     await expect(copySelectedSource(tinycloud, "share", "library/missing.md", "exact", "shares/abc/missing.md")).rejects.toThrow();
+  });
+});
+
+describe("library and upload writes when the node has no row for the space (TC-1578)", () => {
+  const unhosted = { message: "Failed to put key: 404 - Space not found", meta: { status: 404 } };
+  const source: Record<string, StoredEntry> = {
+    "library/report.pdf": { data: new Uint8Array([1]), contentType: "application/pdf" },
+    "library/docs/a.md": { data: new Uint8Array([2]), contentType: "text/markdown" },
+  };
+
+  it("types a 404 Space not found on each library copy and upload write as SPACE_NOT_READY", async () => {
+    const { tinycloud } = fakeTinyCloud(source, unhosted);
+    const rejected = { kind: "spaceNotReady", code: "SPACE_NOT_READY" };
+    await expect(copySelectedSource(tinycloud, "share", "library/report.pdf", "exact", "shares/abc/report.pdf")).rejects.toMatchObject(rejected);
+    await expect(copySelectedSource(tinycloud, "share", "library/docs", "prefix", "shares/xyz")).rejects.toMatchObject(rejected);
+    await expect(uploadSelectedFiles(tinycloud, "share", "shares/exact/one.txt", "exact", [new File(["one"], "one.txt")])).rejects.toMatchObject(rejected);
+  });
+
+  it("keeps the existing failure for any other write error", async () => {
+    const { tinycloud } = fakeTinyCloud(source, { message: "Failed to put key: 503 - busy", meta: { status: 503 } });
+    await expect(copySelectedSource(tinycloud, "share", "library/report.pdf", "exact", "shares/abc/report.pdf")).rejects.toMatchObject({ kind: "libraryCopy" });
   });
 });
 

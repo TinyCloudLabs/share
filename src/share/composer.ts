@@ -480,6 +480,7 @@ export async function uploadSelectedFiles(
     if (content.byteLength !== file.size || content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
     const childPath = resourceKind === "prefix" ? `${resourcePath}/${selectedFilePath(file)}` : resourcePath;
     const result = await kv.put(childPath, content, { contentType: file.type.trim() || "application/octet-stream" });
+    failIfSpaceNotReady(result);
     if (!result.ok) throw fail("upload", "owner file upload was rejected");
   }
 }
@@ -496,6 +497,7 @@ export async function copySelectedSource(
     const result = await kv.get<Uint8Array>(sourcePath, { binary: true });
     if (!result.ok) throw fail("libraryCopy", "library file read failed during copy");
     const stored = await kv.put(targetPath, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
+    failIfSpaceNotReady(stored);
     if (!stored.ok) throw fail("libraryCopy", "library file write failed during copy");
     return [targetPath.split("/").at(-1) ?? targetPath];
   }
@@ -526,6 +528,7 @@ export async function copySelectedSource(
     const result = await kv.get<Uint8Array>(child.source, { binary: true });
     if (!result.ok) throw fail("libraryCopy", "library folder child read failed during copy");
     const stored = await kv.put(`${targetPath}/${child.relative}`, result.data.data, { contentType: result.data.headers.contentType ?? "application/octet-stream" });
+    failIfSpaceNotReady(stored);
     if (!stored.ok) throw fail("libraryCopy", "library folder child write failed during copy");
     paths.push(child.relative);
   }

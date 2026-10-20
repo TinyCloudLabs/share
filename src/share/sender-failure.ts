@@ -65,7 +65,7 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
-  spaceNotReady: "Your TinyCloud storage isn't ready yet. We're setting it up: try again in a moment. If it keeps failing, contact support with code SPACE_NOT_READY.",
+  spaceNotReady: "Your TinyCloud storage isn't ready for this yet. This is a known problem we're fixing. Please try again later. If it keeps failing, contact support with code SPACE_NOT_READY.",
 };
 
 export function fail(kind: SenderFailureKind, detail: string, extra: Record<string, unknown> = {}): Error {
