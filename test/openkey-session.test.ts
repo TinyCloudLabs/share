@@ -467,7 +467,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     ["a carriage return", "Evil\rApp"], ["a tab", "Evil\tApp"], ["a NUL", "Evil\u0000App"],
     ["a right-to-left override", "Evil\u202eApp"], ["a bidi isolate", "Evil\u2066App"], ["a line separator", "Evil\u2028App"], ["a zero-width no-break space", "\ufeffEvil"],
     ["a URL", "Visit https://evil.example now"], ["a bare scheme URL", "ftp://x"], ["a www address", "go to www.evil.example"], ["an email address", "me@evil.example"],
-    ["more than 64 characters", "x".repeat(65)], ["nothing", ""], ["leading space", " Notes"], ["trailing space", "Notes "],
+    ["more than 64 characters", "x".repeat(65)], ["more than 64 characters counted as characters, not bytes", "é".repeat(65)], ["nothing", ""], ["only spaces", "   "],
   ])("refuses an appName with %s, before OpenKey opens", async (_label, raw) => {
     const appName = raw;
     await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName })).rejects.toBeInstanceOf(SignInOptionError);
@@ -480,7 +480,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     expect(state.openKeys).toEqual([]);
   });
 
-  it.each(["TinyCloud Share: install Tiny Notes", "Notes 📓", "Café ünïcode", "a".repeat(64), "TinyCloud Share"])("accepts the app name %j", async (appName) => {
+  it.each(["TinyCloud Share: install Tiny Notes", "Notes ", " Notes", "é".repeat(64), "Notes 📓", "Café ünïcode", "a".repeat(64), "TinyCloud Share"])("accepts the app name %j", async (appName) => {
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
     expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
   });

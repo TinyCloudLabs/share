@@ -285,8 +285,8 @@ const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\S@\S/i;
 
 /** A name that goes into the sign-in statement or OpenKey's window: one short printable line, nothing that looks like a link. */
 function checkLabel(option: string, value: string): void {
-  if (value.length === 0 || [...value].length > MAX_LABEL_CHARS) throw new SignInOptionError(option, `1 to ${MAX_LABEL_CHARS} characters`);
-  if (value !== value.trim() || HIDDEN_CHARS.test(value)) throw new SignInOptionError(option, "one printable line, with no control or direction characters");
+  if (value.trim().length === 0 || [...value].length > MAX_LABEL_CHARS) throw new SignInOptionError(option, `1 to ${MAX_LABEL_CHARS} characters`);
+  if (HIDDEN_CHARS.test(value)) throw new SignInOptionError(option, "one printable line, with no control or direction characters");
   if (LINK_LIKE.test(value)) throw new SignInOptionError(option, "must not look like a link or an address");
 }
 
