@@ -28,7 +28,7 @@ export function renderOrders(ctx: ViewContext, overview: Overview): HTMLElement 
   section.append(head, el(doc, "p", "cr-muted", "Standing orders tell your agent what it may do for a peer without asking, and what it must ask you about first. Your agent reads them before it acts on anything the peer sends."));
   if (overview.peers.length === 0) {
     const empty = el(doc, "div", "cr-empty");
-    empty.append(el(doc, "p", "cr-empty-title", "No peers yet."), el(doc, "p", "cr-muted", "Pairing with a peer is done with the courier command line tool for now. Once you have a thread with someone, they appear here."));
+    empty.append(el(doc, "p", "cr-empty-title", "No peers yet."), el(doc, "p", "cr-muted", "Pairing with a peer is done with the courier command line tool. Once you have a thread with someone, they appear here."));
     section.append(empty);
     return section;
   }

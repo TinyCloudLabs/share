@@ -148,7 +148,7 @@ function timelineCard(ctx: ViewContext, peer: string, item: TimelineItem): HTMLE
 function loadFailure(error: unknown): string {
   const code = error instanceof StoreError ? error.code : "failed";
   if (code === "timeout" || code === "unreachable") return "We couldn't reach your TinyCloud. Try again.";
-  if (code === "no-space") return "Your agent mailbox isn't set up yet. Set it up with the CLI or in Share, then come back.";
+  if (code === "no-space") return "Run tc courier init once on your machine, then reload this page.";
   if (code === "denied") return "This session isn't allowed to read your mailbox. Sign out and sign in again.";
   return "We couldn't load this thread. Try again.";
 }

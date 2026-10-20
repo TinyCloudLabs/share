@@ -153,6 +153,47 @@ describe("Needs you", () => {
     await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("Already decided: denied"));
   });
 
+  const unknownOutcome = "We could not confirm whether the decision was saved. Reload to check.";
+  const writeFailures: { name: string; error: Error; saved?: boolean; mismatch?: Record<string, unknown>; readFails?: boolean; expected: string }[] = [
+    { name: "saved then timed out", error: new StoreError("timeout"), saved: true, expected: "Already decided: approved" },
+    { name: "timed out without saving", error: new StoreError("timeout"), expected: unknownOutcome },
+    { name: "saved then became unreachable", error: new StoreError("unreachable"), saved: true, expected: "Already decided: approved" },
+    { name: "failed without saving", error: new StoreError("failed"), expected: unknownOutcome },
+    { name: "connection rejected without saving", error: new Error("connection closed"), expected: unknownOutcome },
+    { name: "different hash on file", error: new StoreError("timeout"), saved: true, mismatch: { requestHash: "0".repeat(64) }, expected: unknownOutcome },
+    { name: "different request id on file", error: new StoreError("timeout"), saved: true, mismatch: { requestId: TASK }, expected: unknownOutcome },
+    { name: "read-back failed", error: new StoreError("timeout"), saved: true, readFails: true, expected: unknownOutcome },
+    { name: "explicitly denied", error: new StoreError("denied"), expected: "This session isn't allowed to record the decision" },
+  ];
+  for (const row of writeFailures) {
+    it(`checks the saved decision after a write ${row.name}`, async () => {
+      const fake = fakeStore(baseFiles());
+      fake.store.createApproval = async (file) => {
+        if (row.saved) fake.files.set(keys.approval(REQ), { ...file, ...row.mismatch });
+        throw row.error;
+      };
+      const read = vi.spyOn(fake.store, "readJson");
+      if (row.readFails) read.mockImplementation(async (key) => {
+        if (key === keys.approval(REQ)) throw new StoreError("unreachable");
+        return fake.files.get(key);
+      });
+      await open(fake);
+      tab("Needs you").click();
+      const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
+      await vi.waitFor(() => expect(approve.disabled).toBe(false));
+      read.mockClear();
+      approve.click();
+      await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain(row.expected));
+      expect(root.textContent).not.toContain("Nothing was recorded");
+      if (row.error instanceof StoreError && row.error.code === "denied") {
+        expect(read).not.toHaveBeenCalledWith(keys.approval(REQ));
+      } else {
+        expect(read).toHaveBeenCalledWith(keys.approval(REQ));
+        expect(root.querySelector<HTMLElement>(".cr-actions")!.hidden).toBe(true);
+      }
+    });
+  }
+
   it("won't stamp a decision earlier than the request when this device's clock is behind it", async () => {
     const fake = fakeStore(baseFiles(request({ createdAt: "2026-10-20T12:30:00Z", expiresAt: "2026-10-21T12:30:00Z" })));
     await open(fake);

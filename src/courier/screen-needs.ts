@@ -22,7 +22,7 @@
  */
 import { requestHash } from "./canonical.js";
 import { absoluteTime, el, status, timeElement, uid, type ViewContext } from "./dom.js";
-import { approvalFile, isDecidable, keys, MAX_NOTE, noteFitsToSave, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
+import { approvalFile, isDecidable, isRecord, keys, MAX_NOTE, noteFitsToSave, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
 import type { Overview, RequestCard } from "./service.js";
 import { StoreError } from "./store.js";
 
@@ -47,8 +47,8 @@ function peerBlock(ctx: ViewContext, label: string, text: string, className: str
 function decisionFailure(error: unknown): string {
   const code = error instanceof StoreError ? error.code : "failed";
   if (code === "denied") return "This session isn't allowed to record the decision. Sign out and sign in again. Nothing was approved.";
-  if (code === "timeout" || code === "unreachable") return "We couldn't reach your TinyCloud. Nothing was recorded. Try again.";
-  return "We couldn't record your decision. Nothing was recorded. Try again.";
+  if (code === "timeout" || code === "unreachable") return "We couldn't reach your TinyCloud. Try again.";
+  return "We couldn't record your decision. Try again.";
 }
 
 /** Every other field the hash covers, so what is hashed is what can be seen: ids, who filed it, its status. */
@@ -188,16 +188,24 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
     ctx.announcer.say(text);
   };
 
+  const decisionOnFile = async (): Promise<void> => {
+    const raw = await ctx.store.readJson(keys.approval(request.id)).catch(() => undefined);
+    const earlier = parseApproval(request.id, raw);
+    const matched = earlier !== undefined && isRecord(raw) && raw.requestHash === card.hash;
+    settle(matched ? `Already decided: ${earlier.decision}. Nothing was changed.` : "We could not confirm whether the decision was saved. Reload to check.", "info");
+  };
+
   const decide = async (decision: Decision): Promise<void> => {
     if (deciding) return;
     deciding = true;
     lock(true);
     result.replaceChildren(el(doc, "p", "cr-muted", "Recording your decision…"));
+    let writeAttempted = false;
     try {
       // Re-read the request: what is approved is what is on file now, not what was on screen.
       const fresh = parseRequest(request.id, await ctx.store.readJson(keys.request(request.id)));
       if (fresh === undefined || !isDecidable(fresh) || await requestHash(fresh.raw) !== card.hash) {
-        settle("This request changed after it was shown. Nothing was recorded. Refresh to see it again.", "warning");
+        settle("This request changed after it was shown. Refresh to see it again.", "warning");
         return;
       }
       if (requestStanding(fresh, undefined, ctx.now()) === "expired") {
@@ -206,25 +214,29 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
       }
       // The agent only accepts a decision stamped inside the request's own window, so a clock that is behind it can't decide.
       if (ctx.now() < fresh.createdAt) {
-        result.replaceChildren(status(doc, "warning", "This device's clock is earlier than the time this request was made. Nothing was recorded. Check the date and time on this device, then try again."));
+        result.replaceChildren(status(doc, "warning", "This device's clock is earlier than the time this request was made. Check the date and time on this device, then try again."));
         return;
       }
       // The note is echoed to the agent: text it would refuse is refused here, not silently changed.
       if (!noteFitsToSave(note.value)) {
-        result.replaceChildren(status(doc, "warning", "Your note has characters that can't be saved (hidden or look-alike characters, or it is too long). Nothing was recorded. Remove them and try again."));
+        result.replaceChildren(status(doc, "warning", "Your note has characters that can't be saved (hidden or look-alike characters, or it is too long). Remove them and try again."));
         return;
       }
+      writeAttempted = true;
       const written = await ctx.store.createApproval(approvalFile(fresh, card.hash, decision, note.value, ctx.now()));
       if (written === "created") {
         settle(decision === "approved" ? "Approved. Your agent will see it and carry out the action once." : "Denied. Your agent will see it and won't carry out the action.");
         return;
       }
       // Another tab or an earlier click got there first: show what was decided, and never overwrite it.
-      const earlier = parseApproval(request.id, await ctx.store.readJson(keys.approval(request.id)));
-      settle(earlier === undefined ? "This request was already decided. Nothing was changed." : `Already decided: ${earlier.decision}. Nothing was changed.`, "info");
+      await decisionOnFile();
     } catch (error) {
-      result.replaceChildren(status(doc, "danger", decisionFailure(error)));
-      ctx.announcer.say("We couldn't record your decision.");
+      if (writeAttempted && !(error instanceof StoreError && error.code === "denied")) {
+        await decisionOnFile();
+      } else {
+        result.replaceChildren(status(doc, "danger", decisionFailure(error)));
+        ctx.announcer.say("We couldn't record your decision.");
+      }
     } finally {
       deciding = false;
       lock(false);
