@@ -222,6 +222,24 @@ describe("first-class accountless receiver", () => {
     expect(presentedText()).toBe("# notes");
   });
 
+  it("hands the invitation's node origin and both policy roots to the receiver for the availability pre-check", async () => {
+    state.resolved = {
+      state: "policy-authorization-required",
+      shareCid: "bafkreicredentialshare",
+      envelope: {
+        version: 3,
+        recipientMatcher: { kind: "exactEmail", value: "reader@example.com" },
+        display: { filename: "report.md" },
+        target: { origin: "https://tee.node.tinycloud.xyz", nodeAudience: "did:key:z6MkNode", spaceId: "space-1" },
+        policyRoot: { cid: "bafyPolicyRoot" },
+        enforcementRoot: { cid: "bafyEnforcementRoot" },
+      },
+    };
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receiveWithSdk).toHaveBeenCalledTimes(1));
+    expect(state.receiveWithSdk.mock.calls[0]![0]).toMatchObject({ availability: { nodeOrigin: "https://tee.node.tinycloud.xyz", rootCids: ["bafyPolicyRoot", "bafyEnforcementRoot"] } });
+  });
+
   it("drops a legacy receiver key record and its credentials before the receiver starts, after the launch scrub", async () => {
     window.sessionStorage.setItem("tinycloud.share.receiver-session.v1", JSON.stringify({ jwk: { d: "legacy" } }));
     window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{}");

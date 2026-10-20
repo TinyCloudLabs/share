@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
   receive: vi.fn(),
   get: vi.fn(),
+  clients: 0,
   custody: "persistent" as "persistent" | "memory",
   options: undefined as undefined | { interaction: { mountTarget: HTMLElement }; onProgress?: (event: unknown) => void },
 }));
@@ -13,7 +14,7 @@ function identity() {
 }
 
 vi.mock("../src/share/receiver.js", () => ({
-  createShareReceiverClient: async () => ({ share: { receive: (...args: unknown[]) => state.receive(...args) } }),
+  createShareReceiverClient: async () => { state.clients += 1; return { share: { receive: (...args: unknown[]) => state.receive(...args) } }; },
 }));
 
 const config = {
@@ -30,6 +31,7 @@ function credentialError(code: string, details: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  state.clients = 0;
   vi.resetModules();
   document.body.innerHTML = '<div id="viewer"></div>';
   state.get.mockReset();
@@ -185,5 +187,107 @@ describe("exact-email claim screen", () => {
     const { root, done } = await start(undefined, { requestCode: false });
     await expect(done).rejects.toThrow("policy commitment");
     expect(root.querySelector(".claim")).toBeNull();
+  });
+});
+
+describe("share availability before a code is offered or sent", () => {
+  const NODE = "https://tee.node.tinycloud.xyz";
+  const availability = { nodeOrigin: NODE, rootCids: ["bafyPolicyRoot", "bafyEnforcementRoot"] };
+  const live = { value: "active" as "active" | "revoked", freshUntil: "2030-01-01T00:00:00Z", fail: false };
+  const statusFetch = vi.fn(async (input: RequestInfo | URL) => {
+    if (live.fail) throw new TypeError("Failed to fetch");
+    const rootCid = decodeURIComponent(new URL(String(input)).pathname.split("/").at(-1)!);
+    return Response.json({ rootCid, state: live.value, checkpoint: { state: live.value, freshUntil: live.freshUntil } });
+  });
+
+  beforeEach(() => {
+    live.value = "active";
+    live.freshUntil = "2030-01-01T00:00:00Z";
+    live.fail = false;
+    statusFetch.mockClear();
+    vi.stubGlobal("fetch", statusFetch);
+    state.get.mockImplementation(() => new Promise(() => undefined));
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  async function begin(extra: { availability?: typeof availability } = { availability }) {
+    const { receiveWithSdk } = await import("../src/viewer/sdk-accountless-receiver.js");
+    const root = document.getElementById("viewer")!;
+    const onComplete = vi.fn(async () => undefined);
+    const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test", config, invitation: { filename: "Q3 report.pdf" }, onComplete, ...extra });
+    return { root, done, onComplete };
+  }
+
+  it("shows the unavailable screen for a revoked share and never makes a key, offers a button or requests a code", async () => {
+    live.value = "revoked";
+    const { root, done, onComplete } = await begin();
+    await done;
+    expect(root.querySelector("h1")?.textContent).toBe("This share is no longer available");
+    expect(root.querySelector(".recipient-detail")?.textContent).toBe("The sender may have revoked it, or it has expired.");
+    expect(root.querySelector(".recipient-unavailable")?.getAttribute("role")).toBe("alert");
+    expect(root.querySelector(".claim-request-code")).toBeNull();
+    expect(root.textContent).not.toContain("Verify your email");
+    expect(root.textContent).not.toContain("reader@example.com");
+    expect(document.activeElement).toBe(root);
+    expect(state.clients).toBe(0);
+    expect(state.receive).not.toHaveBeenCalled();
+    expect(state.get).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it("says expired for a root whose lifetime is over, without requesting a code", async () => {
+    live.freshUntil = "2020-01-01T00:00:00Z";
+    const { root, done } = await begin();
+    await done;
+    expect(root.querySelector("h1")?.textContent).toBe("This share has expired");
+    expect(root.querySelector(".claim-request-code")).toBeNull();
+    expect(state.get).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the node is unreachable", () => { live.fail = true; }],
+    ["the node knows nothing of the root", () => { statusFetch.mockImplementationOnce(async () => new Response("policy-root-missing", { status: 404 })).mockImplementationOnce(async () => new Response("policy-root-missing", { status: 404 })); }],
+    ["the pre-check has no target", () => undefined],
+  ])("runs the normal flow unchanged when %s", async (name, arrange) => {
+    arrange();
+    const { root } = await begin(name === "the pre-check has no target" ? {} : { availability });
+    await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
+    expect(root.querySelector("h1")?.textContent).toBe("Verify your email to open this file");
+    expect(state.get).not.toHaveBeenCalled();
+    root.querySelector<HTMLButtonElement>(".claim-request-code")!.click();
+    await vi.waitFor(() => expect(state.get).toHaveBeenCalledTimes(1));
+  });
+
+  it("checks again after the click, so a share revoked while the page was open sends no code", async () => {
+    const { root, done } = await begin();
+    await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
+    expect(statusFetch).toHaveBeenCalledTimes(2);
+    live.value = "revoked";
+    root.querySelector<HTMLButtonElement>(".claim-request-code")!.click();
+    await done;
+    expect(statusFetch).toHaveBeenCalledTimes(4);
+    expect(state.get).not.toHaveBeenCalled();
+    expect(root.querySelector("h1")?.textContent).toBe("This share is no longer available");
+    expect(root.querySelector(".claim-requested")).toBeNull();
+  });
+
+  it("checks again before a new code is requested after a recovery", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      state.get.mockRejectedValueOnce(credentialError("REQUEST_EXPIRED"));
+      const { root, done } = await begin();
+      await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
+      root.querySelector<HTMLButtonElement>(".claim-request-code")!.click();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      expect(state.get).toHaveBeenCalledTimes(1);
+      live.value = "revoked";
+      vi.advanceTimersByTime(30_000);
+      root.querySelector<HTMLButtonElement>(".claim-state button")!.click();
+      await done;
+      expect(state.get).toHaveBeenCalledTimes(1);
+      expect(root.querySelector("h1")?.textContent).toBe("This share is no longer available");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -87,11 +87,13 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // policy admission followed by generic /delegate and /invoke.
     if (shareConfig.accountlessReceiverEnabled === true && resolved.state === "policy-authorization-required") {
       const { receiveWithSdk } = await import("./viewer/sdk-accountless-receiver.js");
+      const { availabilityTarget } = await import("./email-share/share-status.js");
       const accountlessEnvelope = resolved.envelope;
       await receiveWithSdk({
         root,
         shareUrl: shareHref,
         config: shareConfig,
+        availability: availabilityTarget(accountlessEnvelope),
         invitation: {
           ...(accountlessEnvelope.display.filename === undefined ? {} : { filename: accountlessEnvelope.display.filename }),
           expiresAt: accountlessEnvelope.expiry,

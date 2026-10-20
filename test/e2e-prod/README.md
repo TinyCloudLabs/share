@@ -71,6 +71,17 @@ install a CLI there first (`npm install --prefix /tmp/tc500-cli
 the recipient (TC-1424, fixed by TinyCloudLabs/js-sdk#581). It turns green once
 a CLI containing that fix is used.
 
+The recipient page also asks the owner Node whether the share can still open
+before it offers a code (`GET /policy/v3/status/<root CID>`, public, for each of
+the invitation's two policy roots). A live share reads `active` for both roots
+before the "Email me a code" button appears and again after the click. After
+the first email share is revoked, opening its invitation link in a fresh
+context must show "This share is no longer available" and make no
+OpenCredentials, OpenKey or Node POST request, send no mail, and create no key
+or browser storage; the stage also checks the screen with axe (WCAG 2 A/AA, 390
+and 1440 px, light and dark) and probes the real Node for the CORS header on the
+status route. `TC1582_SHOT_DIR` saves the four screenshots.
+
 Revoking after a new sign-in is part of the journey. The sender page keeps no
 session across a load, so each stage that reloads it and signs in again makes a
 new session key: the key that signed the earlier shares is gone. The domain
