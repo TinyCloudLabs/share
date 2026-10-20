@@ -78,10 +78,17 @@ The lists mirror what the SDK's `resolveManifest` would sign, and only that
 - `permissions[]`, with the app's path prefix applied unless `skipPrefix`, and each entry's `space`;
 - `secrets{}` (an object keyed by secret name), as vault grants in the `secrets` space;
 - the default tier: a manifest that does not set `defaults: false` also gets the SDK's standard grant for its own folder (`"admin"` adds SQL schema changes, `"all"` adds DuckDB);
-- additions the SDK makes itself: `capabilities/read` in each space used, and key-value access to the public space unless `includePublicSpace: false`.
+- the one addition the SDK makes itself: `capabilities/read` in each space used. (A public-space grant is made only when a key-value grant is handed to another DID, not at sign-in, so it is not listed.)
 
 The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are not listed.
 
 `npm run test:e2e:apps-page` builds the site and checks the page in Chromium at 390 and
 1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and
 screenshots (`APPS_SCREENSHOT_DIR`).
+
+## Provenance
+
+The only vendored app is `examples/sqlite-app` from `TinyCloudLabs/tinycloud-app-kit`
+at commit `5059c5b`. That repository is public and has no LICENSE file. Other apps
+(for example the TinyHealth and TinyRecipes forks) are not vendored until their
+licensing allows it.

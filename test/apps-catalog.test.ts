@@ -157,10 +157,8 @@ describe("what an app can read and change", () => {
       "Key-value get,list,metadata com.example.notes/*",
       "SQL database read com.example.notes/*",
       "Capabilities read applications",
-      "Key-value get,metadata everything in your public space",
       "Key-value put,del com.example.notes/*",
       "SQL database write com.example.notes/*",
-      "Key-value put everything in your public space",
     ]);
   });
 
@@ -202,16 +200,15 @@ describe("what an app can read and change", () => {
     ]);
   });
 
-  it("shows an entry's own space, adds capabilities/read per space, and the public space unless opted out", () => {
+  it("shows an entry's own space and adds capabilities/read per space, only when something is granted", () => {
     const manifest = { app_id: "t.app", name: "T", defaults: false, permissions: [{ service: "tinycloud.kv", space: "account", path: "prefs/", actions: ["get"] }] };
     const summary = summarizeAccess(manifest);
     expect(summary.read.map((item) => `${item.service} ${item.space ?? "-"} ${item.target}`)).toEqual([
       "Key-value account t.app/prefs/",
       "Capabilities account account",
-      "Key-value public everything in your public space",
     ]);
-    expect(summarizeAccess({ ...manifest, includePublicSpace: false }).read.some((item) => item.space === "public")).toBe(false);
-    // A manifest that asks for nothing is not given the additions.
+    // The SDK signs nothing for a public space at sign-in, so none is listed whatever `includePublicSpace` says.
+    expect(summarizeAccess({ ...manifest, includePublicSpace: true })).toEqual(summary);
     expect(summarizeAccess({ app_id: "t.app", name: "T", defaults: false })).toEqual({ read: [], change: [] });
   });
 

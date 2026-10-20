@@ -10,9 +10,7 @@
  *  - the default tier: a manifest that does not set `defaults: false` also gets
  *    the standard tier (key-value and SQL read/write of the app's own folder);
  *    "admin" adds SQL schema changes, "all" adds DuckDB;
- *  - automatic additions: `capabilities/read` in every space used, and, unless
- *    `includePublicSpace: false`, key-value access to the user's public space
- *    for an app that has any key-value grant.
+ *  - an automatic addition: `capabilities/read` in every space used.
  * Kit-style `resources.*` blocks are descriptive and grant nothing, so they are
  * not listed.
  */
@@ -162,18 +160,11 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
     }
   }
 
-  // Additions the SDK makes itself. Nothing is added to a manifest that asks for nothing.
+  // The one grant the SDK adds itself: capabilities/read in every space the manifest uses.
+  // (A public-space companion exists only when a KV grant is handed to another DID, not at sign-in.)
   const all = [...summary.read, ...summary.change];
-  if (all.length > 0) {
-    const spaces = [...new Set(all.map((item) => item.space ?? DEFAULT_SPACE))];
-    for (const space of spaces) {
-      summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, actions: ["read"] });
-    }
-    if (manifest.includePublicSpace !== false && all.some((item) => item.service === serviceLabel("tinycloud.kv") || item.service === serviceLabel("tinycloud.vault"))) {
-      const publicSpace = { description: "Your public space. Added automatically for apps with key-value access, unless the app opts out.", service: serviceLabel("tinycloud.kv"), space: "public", target: "everything in your public space" };
-      summary.read.push({ ...publicSpace, actions: ["get", "metadata"] });
-      summary.change.push({ ...publicSpace, actions: ["put"] });
-    }
+  for (const space of new Set(all.map((item) => item.space ?? DEFAULT_SPACE))) {
+    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, actions: ["read"] });
   }
   return summary;
 }
