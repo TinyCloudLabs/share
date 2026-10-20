@@ -33,6 +33,15 @@ describe("the bar has no message channel at all", () => {
     document.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!.click();
     expect(registered.length).toBeGreaterThan(0);
     expect(registered.filter((type) => type.toLowerCase().includes("message"))).toEqual([]);
+    // ...nor through the `on…` property route.
+    expect(window.onmessage).toBeNull();
+    expect((document as unknown as { onmessage?: unknown }).onmessage ?? null).toBeNull();
+    // ...and a message of any shape, from anywhere, changes nothing.
+    const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
+    for (const data of [{ type: "artifact-restore-controls" }, { type: "tc-chrome-toggle" }, { type: "hide" }, "show", null]) {
+      window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data }));
+      expect(bar.hidden, JSON.stringify(data)).toBe(false);
+    }
     chrome.destroy();
   });
 });

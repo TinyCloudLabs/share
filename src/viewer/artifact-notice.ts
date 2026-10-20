@@ -28,7 +28,7 @@ import { hashedShareKey } from "./share-key-hash.js";
 export const ARTIFACT_NOTICE_TEXT = "This page runs the sender's code. The sender can tell that you opened it.";
 export const ARTIFACT_NOTICE_CLASS = "viewer-artifact-notice";
 /** The detail under the headline: what CSP stops, and what a page can still do. Open on first view. */
-export const ARTIFACT_NOTICE_DETAIL = "The viewer stops this page from loading anything or making requests. A page can still reach out another way: prerender sends an HTTP GET to an address the sender chooses (with data they choose, and that site's cookies), and preconnect, navigation attempts, DNS prefetch and WebRTC open connections. The sender can learn your IP address, the time, and that the page was opened.";
+export const ARTIFACT_NOTICE_DETAIL = "The page can't load content or run scripts outside its box. It can still reveal that you opened it: your IP address and the time, and a prerender can even send a request carrying data the sender chose.";
 
 const STORAGE_PREFIX = "tc.artifact-notice.v1:";
 

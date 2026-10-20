@@ -7,6 +7,8 @@ import { downloadMediaType, safeDownloadName } from "./download-name.js";
 export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
 
 export const HTML_FRAME_CLASS = "viewer-html-frame";
+/** A page, document or component owns the whole area under the bar: set as soon as its frame is created, so loading and ready share one layout. */
+export const FRAME_LAYOUT_CLASS = "viewer-content--frame";
 
 export interface ContentDescriptor {
   readonly mediaType: string;
@@ -94,6 +96,7 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
+    container.classList.add(FRAME_LAYOUT_CLASS);
     await renderHtmlPage(container, source, actualDescriptor.filename, options);
     return kind;
   }
@@ -105,6 +108,7 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
+    container.classList.add(FRAME_LAYOUT_CLASS);
     const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
       // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
     const { renderJsxPage } = await import("./jsx-render.js");

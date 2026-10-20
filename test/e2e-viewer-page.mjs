@@ -146,6 +146,66 @@ async function axeSrcdoc(browser, page, scheme, width = 1440) {
   return violations;
 }
 
+/**
+ * Where the sender-code notice is and what is on top of it: every line of its headline, its
+ * buttons and its detail, probed with elementFromPoint. A hit counts only when the notice itself
+ * is what is under the point, and never the recall pill.
+ */
+async function probeNotice(page) {
+  return page.evaluate(() => {
+    const notice = document.querySelector(".viewer-artifact-notice");
+    if (notice === null) return { present: false };
+    const style = getComputedStyle(notice);
+    const rect = notice.getBoundingClientRect();
+    const points = [];
+    const add = (name, box) => { if (box.width > 0 && box.height > 0) points.push([name, box.left + box.width / 2, box.top + box.height / 2]); };
+    const text = notice.querySelector(".viewer-artifact-notice-text");
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    for (const line of range.getClientRects()) add("headline", line);
+    for (const name of ["dismiss", "recall"]) {
+      const button = notice.querySelector(`.viewer-artifact-notice-${name}`);
+      if (button !== null && !button.hidden) add(name, button.getBoundingClientRect());
+    }
+    add("summary", notice.querySelector("summary")?.getBoundingClientRect() ?? new DOMRect());
+    const hits = points.map(([name, x, y]) => {
+      const el = document.elementFromPoint(x, y);
+      return { name, x: Math.round(x), y: Math.round(y), ok: el !== null && el.closest(".viewer-artifact-notice") !== null && el.closest(".artifact-chrome-pill") === null, top: el?.className?.toString().slice(0, 60) ?? null };
+    });
+    return {
+      present: true,
+      display: style.display,
+      visibility: style.visibility,
+      hidden: notice.hidden,
+      state: notice.dataset.state,
+      rect: { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height },
+      inViewport: rect.top >= 0 && rect.left >= 0 && rect.right <= innerWidth + 0.5 && rect.bottom <= innerHeight + 0.5,
+      hits,
+    };
+  });
+}
+
+function assertNoticeShown(probe, label) {
+  assert.equal(probe.present, true, `${label}: the notice exists`);
+  assert.notEqual(probe.display, "none", `${label}: the notice is displayed`);
+  assert.notEqual(probe.visibility, "hidden", `${label}: the notice is visible`);
+  assert.equal(probe.hidden, false, `${label}: the notice is not [hidden]`);
+  assert.equal(probe.state, "open", `${label}: the notice is open`);
+  assert.ok(probe.rect.width > 0 && probe.rect.height > 0, `${label}: the notice has a box`);
+  assert.ok(probe.inViewport, `${label}: the notice is inside the viewport ${JSON.stringify(probe.rect)}`);
+  assert.ok(probe.hits.some((hit) => hit.name === "headline") && probe.hits.some((hit) => hit.name === "dismiss"), `${label}: headline and Got it were probed`);
+  const covered = probe.hits.filter((hit) => !hit.ok);
+  assert.deepEqual(covered, [], `${label}: nothing covers the notice (the recall pill included)`);
+}
+
+async function tabTo(page, selector, limit = 20) {
+  for (let step = 0; step < limit; step += 1) {
+    await page.keyboard.press("Tab");
+    if (await page.evaluate((query) => document.activeElement?.matches(query) === true, selector)) return step + 1;
+  }
+  return 0;
+}
+
 async function shoot(page, name) {
   await mkdir(screenshotDir, { recursive: true });
   await page.screenshot({ path: `${screenshotDir}/${name}.png` });
@@ -313,6 +373,79 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     await shoot(phone, "viewer-jsx-390-dark");
     await phone.close();
+  }
+
+  // ---- Hide with a bearer HTML page and a JSX component: the sender-code notice stays, uncovered ----
+  // The bar is the viewer's and may be hidden; the notice is the viewer's disclosure and may not.
+  // After Hide the recall pill floats in the corner, so the notice keeps that corner free.
+  for (const kind of ["html", "jsx"]) {
+    for (const [width, height] of [[320, 568], [390, 844], [700, 900], [1440, 900]]) {
+      const label = `${kind} hidden at ${width}px`;
+      const nonce = `hide-${kind}-${width}`;
+      const page = await open(browser, `kind=${kind}&nonce=${nonce}`, { width, height });
+      assertNoticeShown(await probeNotice(page), `${label} (bar shown)`);
+      await page.click(".artifact-chrome-hide");
+      assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), true, `${label}: the bar is hidden`);
+      assertNoticeShown(await probeNotice(page), `${label} (just hidden)`);
+      // The pill is in Tab order, and Alt+Shift+C on the page brings the bar back; the notice never moves out.
+      await page.evaluate(() => document.getElementById("viewer").focus());
+      assert.ok(await tabTo(page, ".artifact-chrome-pill") > 0, `${label}: the recall pill is reachable by Tab`);
+      await page.keyboard.down("Alt"); await page.keyboard.down("Shift"); await page.keyboard.press("KeyC"); await page.keyboard.up("Shift"); await page.keyboard.up("Alt");
+      assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), false, `${label}: Alt+Shift+C restores the bar`);
+      assertNoticeShown(await probeNotice(page), `${label} (restored)`);
+      // The hidden choice is remembered per share: a later visit starts hidden, still with the notice.
+      await page.click(".artifact-chrome-hide");
+      await page.reload({ waitUntil: "load" });
+      await page.waitForFunction(() => document.documentElement.dataset.ready === "yes", { timeout: 60_000 });
+      assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), true, `${label}: a later visit starts hidden`);
+      assertNoticeShown(await probeNotice(page), `${label} (after reload, still hidden)`);
+      if (width === 390 || width === 1440) await shoot(page, `viewer-${kind}-hidden-${width}-light`);
+      await page.close();
+    }
+  }
+
+  // ---- JSX while it loads: the same full-width, fill-the-area layout as when it is ready ----
+  for (const [width, height] of [[390, 844], [1440, 900]]) {
+    const label = `jsx loading at ${width}px`;
+    const page = await browser.newPage();
+    await page.setViewport({ width, height, deviceScaleFactor: 1 });
+    const held = [];
+    let hold = true;
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      if (hold && /\/jsx-sandbox(?:\.html)?$/.test(new URL(request.url()).pathname)) held.push(request); else void request.continue();
+    });
+    await page.goto(harness(`kind=jsx&nonce=loading-${width}`), { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".viewer-jsx-loading", { timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelector(".viewer-jsx-stage") !== null && document.querySelector(".viewer-artifact-notice") !== null);
+    const measure = () => page.evaluate(() => {
+      const box = (selector) => { const node = document.querySelector(selector); const r = node?.getBoundingClientRect(); return r === undefined ? null : { top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width), height: Math.round(r.height), bottom: Math.round(r.bottom) }; };
+      const content = document.querySelector(".viewer-content");
+      return {
+        notice: box(".viewer-artifact-notice"),
+        stage: box(".viewer-jsx-stage"),
+        cover: box(".viewer-jsx-loading"),
+        frameLayout: content.classList.contains("viewer-content--frame"),
+        pageOverflow: document.documentElement.scrollHeight - innerHeight,
+        contentOverflow: content.scrollHeight - content.clientHeight,
+        innerHeight,
+      };
+    });
+    const loading = await measure();
+    assert.equal(loading.frameLayout, true, `${label}: the frame layout is on while loading`);
+    assert.ok(loading.cover !== null && loading.cover.bottom <= loading.innerHeight, `${label}: the cover ends inside the viewport (${JSON.stringify(loading.cover)})`);
+    assert.ok(loading.pageOverflow <= 0 && loading.contentOverflow <= 0, `${label}: nothing scrolls while loading (${loading.pageOverflow}, ${loading.contentOverflow})`);
+    assert.equal(loading.notice.left, 0, `${label}: the notice is edge to edge`);
+    assert.equal(loading.notice.width, width, `${label}: the notice spans the width`);
+    hold = false;
+    for (const request of held) void request.continue();
+    await page.waitForFunction(() => document.documentElement.dataset.ready === "yes", { timeout: 60_000 });
+    const ready = await measure();
+    assert.equal(ready.cover, null, `${label}: the cover is gone when ready`);
+    assert.deepEqual(ready.notice, loading.notice, `${label}: the notice does not move when the page becomes ready`);
+    assert.deepEqual(ready.stage, loading.stage, `${label}: the stage does not change size or place when ready`);
+    assert.ok(ready.pageOverflow <= 0 && ready.contentOverflow <= 0, `${label}: nothing scrolls when ready`);
+    await page.close();
   }
 
   // ---- privacy: the author's host saw nothing ------------------------------

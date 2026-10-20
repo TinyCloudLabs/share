@@ -12,7 +12,7 @@ import {
 } from "./render.js";
 import type { ResolveResult } from "./resolve.js";
 import { describeShare, renderViewerState, type ViewerStateOptions } from "./ui.js";
-import { classifyContent, renderSafeContent, type SafeContentKind } from "./content.js";
+import { classifyContent, FRAME_LAYOUT_CLASS, renderSafeContent, type SafeContentKind } from "./content.js";
 import { mountArtifactChrome, type ArtifactChrome, type ArtifactChromeAction } from "./artifact-chrome.js";
 import { copyWithFallback } from "../share/clipboard.js";
 import { canonicalShareFilename } from "../filename-policy.js";
@@ -200,7 +200,7 @@ export async function presentShare(
     }
     // Documents and pages own the whole area under the bar; everything else
     // (text, images, download notes) sits in a padded, scrolling column.
-    container.classList.toggle("viewer-content--frame", renderedKind === "markdown" || renderedKind === "html" || renderedKind === "jsx");
+    container.classList.toggle(FRAME_LAYOUT_CLASS, renderedKind === "markdown" || renderedKind === "html" || renderedKind === "jsx");
     if (options.saveToTinyCloud !== undefined) {
       appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
     }
@@ -208,7 +208,7 @@ export async function presentShare(
     // renderMarkdownInto throws before touching the DOM (oversize source,
     // node-count breach); leave a message, never partial content. Fail closed.
     container.replaceChildren();
-    container.classList.remove("viewer-content--frame");
+    container.classList.remove(FRAME_LAYOUT_CLASS);
     const notice = root.ownerDocument.createElement("p");
     notice.className = "viewer-render-error";
     notice.textContent =

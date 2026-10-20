@@ -162,7 +162,7 @@ to a few diagrams whole on paper.
 **Print limit:** a document taller than the printed frame is still cut off at
 the frame's bottom edge, and the rest does not continue on the next page. This
 applies to long text and to many diagrams alike, and predates diagram
-support. **Download original** is the full-fidelity way to print or keep such
+support. **Download** is the full-fidelity way to print or keep such
 a document.
 
 Dev and preview serve the sandbox on both `/mermaid-sandbox` and
@@ -208,7 +208,11 @@ this on yet”). On narrow or touch screens the actions are icon-only with 44px
 targets.
 
 **Hide** collapses the bar to a persistent 44px “TinyCloud” pill in the corner;
-the pill, or **Alt+Shift+C** on the page, brings it back. Whether the bar is
+the pill, or **Alt+Shift+C** on the page, brings it back. Hiding the bar never
+hides the sender-code notice (it belongs to the viewer, not to the bar), and the
+notice keeps the pill's corner free, so the pill never covers its headline or its
+buttons at any width; on a phone the pill is the TinyCloud mark alone, with the
+same accessible name. The pill comes first in Tab order, where the bar was. Whether the bar is
 hidden is remembered per share in local browser storage, keyed by a SHA-256 of
 the share id; no URL or recipient data is stored. The artifact frames have no
 channel to the bar: Alt+Shift+C does not work while focus is inside a sandboxed

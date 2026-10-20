@@ -30,11 +30,11 @@ describe("artifact notice", () => {
     expect(detail.open).toBe(true);
     expect(detail.hidden).toBe(false);
     expect(detail.querySelector("summary")?.textContent).toBe("What the sender can learn");
-    const text = detail.textContent ?? "";
-    // Accurate: CSP stops content requests, but prerender is an HTTP GET and connections remain.
-    expect(text).toContain("prerender sends an HTTP GET");
-    expect(text).toContain("preconnect, navigation attempts, DNS prefetch and WebRTC");
-    expect(text).toContain("your IP address, the time, and that the page was opened");
+    const text = detail.querySelector("p")?.textContent ?? "";
+    // Accurate and no stronger than the facts: ordinary loads and scripts are contained, but the
+    // page can still reveal that it was opened, and a prerender can carry author-chosen data.
+    expect(text).toBe("The page can't load content or run scripts outside its box. It can still reveal that you opened it: your IP address and the time, and a prerender can even send a request carrying data the sender chose.");
+    expect(text).not.toMatch(/stops this page from loading anything/);
     click(notice.element.querySelector(".viewer-artifact-notice-dismiss")!);
     expect(detail.hidden).toBe(true);
     click(notice.element.querySelector(".viewer-artifact-notice-recall")!);

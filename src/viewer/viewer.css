@@ -115,8 +115,11 @@ body.viewer-fullpage #viewer {
   padding-inline: var(--tc-space-4);
   background: var(--tc-color-surface);
   border: 1px solid var(--tc-color-border);
-  box-shadow: var(--tc-shadow-compact);
 }
+/* The pill floats over the top-right corner while the bar is hidden. A sender-code notice is
+   directly under where the bar was, so it keeps that corner free: the pill never covers its
+   headline or its buttons, at any width (the e2e probes this with elementFromPoint). */
+#viewer[data-chrome="hidden"] .viewer-content--frame > .viewer-artifact-notice { padding-inline-end: calc(10rem + max(var(--tc-space-2), env(safe-area-inset-right))); }
 .artifact-chrome-pill .brand-mark { display: grid; width: 1.25rem; height: 1.25rem; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); gap: 2px; }
 .artifact-chrome-pill .brand-mark span { border: 1px solid var(--tc-color-accent); border-radius: 50%; }
 .artifact-chrome-pill .brand-mark span:nth-child(1), .artifact-chrome-pill .brand-mark span:nth-child(5), .artifact-chrome-pill .brand-mark span:nth-child(9) { background: var(--tc-color-accent); }
@@ -127,6 +130,10 @@ body.viewer-fullpage #viewer {
   .artifact-chrome-button { min-width: 2.75rem; min-height: 2.75rem; padding-inline: var(--tc-space-3); }
 }
 @media (max-width: 40rem) {
+  /* A phone: the pill is the TinyCloud mark alone (its accessible name is unchanged). */
+  .artifact-chrome-pill { width: 2.75rem; padding-inline: 0; }
+  .artifact-chrome-pill-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #viewer[data-chrome="hidden"] .viewer-content--frame > .viewer-artifact-notice { padding-inline-end: calc(3.25rem + max(var(--tc-space-2), env(safe-area-inset-right))); }
   .artifact-chrome { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "identity actions" "meta meta"; align-items: center; column-gap: var(--tc-space-2); row-gap: 0; }
   .artifact-chrome-identity { grid-area: identity; }
   .artifact-chrome-actions { grid-area: actions; gap: var(--tc-space-1); }

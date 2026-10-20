@@ -202,8 +202,9 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
     mount.dataset["chrome"] = hidden ? "hidden" : "shown";
   };
   render();
-  mount.prepend(bar);
-  mount.append(pill, toast, status);
+  // The pill takes the bar's place in reading and Tab order.
+  mount.prepend(bar, pill);
+  mount.append(toast, status);
 
   const setHidden = (value: boolean, focus: boolean): void => {
     hidden = value;
