@@ -89,7 +89,8 @@ export async function loadJsxModules(manifest: JsxManifest, source: string, opti
     if (!response.ok) throw new JsxModuleIntegrityError(id, `HTTP ${response.status}`);
     const bytes = await response.arrayBuffer();
     if (bytes.byteLength !== file.bytes) throw new JsxModuleIntegrityError(id, "size differs from the manifest");
-    if (hex(await crypto.subtle.digest("SHA-256", bytes)) !== file.sha256) throw new JsxModuleIntegrityError(id, "sha256 differs from the manifest");
+    // A typed-array view (no copy): some runtimes (Node 20 under jsdom) reject a bare ArrayBuffer from fetch.
+    if (hex(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))) !== file.sha256) throw new JsxModuleIntegrityError(id, "sha256 differs from the manifest");
     return [id, new TextDecoder("utf-8", { fatal: true }).decode(bytes)];
   }));
   return Object.fromEntries(entries);
