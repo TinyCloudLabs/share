@@ -44,14 +44,17 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   // "Try again" must re-run the receive from this copy rather than reload the page.
   let retryHref: string | undefined;
   try {
-    const [config, { presentShare }] = await Promise.all([
+    const [config, { presentShare }, { createSaveToTinyCloud }] = await Promise.all([
       import("./email-share/config.js"),
       import("./viewer/present.js"),
+      import("./viewer/save-copy.js"),
     ]);
     const shareHref = launch.shareHref;
     launch.shareHref = "";
     retryHref = shareHref;
     const shareConfig = await config.loadSharePublicConfig();
+    // Only builds the function Save calls. OpenKey and the account SDK load on that click, never before.
+    const saveToTinyCloud = createSaveToTinyCloud(shareConfig);
     if (launch.kind === "bearer") {
       const { receiveNativeBearerAccess } = await import("./viewer/native-bearer.js");
       // The fragment was already captured and scrubbed before config or this
@@ -74,7 +77,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           display: access.path.split("/").at(-1) === undefined ? {} : { filename: access.path.split("/").at(-1)! },
           expiresAt: access.expiresAt,
         }),
-      }, { shareUrl: shareHref });
+      }, { shareUrl: shareHref, saveToTinyCloud });
       return;
     }
     const { resolveShare } = await import("./viewer/resolve.js");
@@ -101,12 +104,12 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
             envelope: accountlessEnvelope,
             senderVerified: true,
             contentBytes: content.bytes,
-          }, { shareUrl: shareHref });
+          }, { shareUrl: shareHref, saveToTinyCloud });
         },
       });
       return;
     }
-    await presentShare(root, resolved, { shareUrl: shareHref });
+    await presentShare(root, resolved, { shareUrl: shareHref, saveToTinyCloud });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed");
     // Bearer links fail with a typed reason; revoked, expired and unavailable

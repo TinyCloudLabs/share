@@ -18,10 +18,10 @@ export const FILES_FOR_YOU_SPACE = "files-for-you";
 export const FILES_FOR_YOU_PREFIX = "v1/";
 export const MAX_SHARE_FILE_BYTES = 100 * 1024 * 1024;
 
-export async function authenticateWithOpenKey(onStatus: (message: string) => void): Promise<OpenKeyShareSession> {
+export async function authenticateWithOpenKey(onStatus: (message: string) => void, guardApproval: ApprovalGuard = (wait) => wait()): Promise<OpenKeyShareSession> {
   const openkey = new OpenKey({ host: OPENKEY_ORIGIN, appName: "TinyCloud Share", mode: "iframe" });
   onStatus("Opening OpenKey…");
-  const auth = await openkey.connect();
+  const auth = await guardApproval(() => openkey.connect());
   onStatus("OpenKey connected.");
   return { address: auth.address, openkey, auth };
 }
@@ -105,12 +105,18 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
     auth: AuthResult,
     private readonly signedInAddress: string,
     private readonly verify: SignatureVerifier = verifyEip191MessageSignature,
+    private readonly guard?: ApprovalGuard,
   ) {
     super(openkey, auth);
   }
 
   override async request(args: { method: string; params?: any[] }): Promise<any> {
     if (args.method !== "personal_sign") return super.request(args);
+    if (this.guard !== undefined) return this.guard(() => this.signObserved(args));
+    return this.signObserved(args);
+  }
+
+  private async signObserved(args: { method: string; params?: unknown[] }): Promise<unknown> {
     this.failure = undefined;
     const mine = ++this.asked;
     let signature: unknown;
@@ -152,12 +158,98 @@ export function ownerEncryptionNetwork(address: string): string {
   return `urn:tinycloud:encryption:did:pkh:eip155:1:${address.toLowerCase()}:default`;
 }
 
-export async function createTinyCloudClient(
-  session: OpenKeyShareSession,
-  config: SharePublicConfig,
-  onStatus: (message: string) => void,
-): Promise<ShareTinyCloud> {
-  const manifest: Manifest = {
+/**
+ * Wraps every wait on an OpenKey window (connect, each signature). A caller
+ * that needs to know when an approval is open, or to give up on one, passes a
+ * guard; the default runs the wait as is.
+ */
+export type ApprovalGuard = <T>(wait: () => Promise<T>) => Promise<T>;
+
+export interface SignInWithManifestOptions {
+  /**
+   * What the signed-in session may do. A function receives the signed-in
+   * address, for manifests that name an account-specific resource (the share
+   * manifest names the owner's encryption network).
+   */
+  readonly manifest: Manifest | ((address: string) => Manifest);
+  readonly config: SharePublicConfig;
+  /** An OpenKey connection that already exists; omitted, OpenKey opens first. */
+  readonly session?: OpenKeyShareSession;
+  readonly onStatus?: (message: string) => void;
+  /**
+   * Owned spaces to host through the real SIWE flow once signed in, in order.
+   * `account` is always hosted first: the Web SDK's manifest bootstrap reads
+   * the canonical account space even when the manifest names another space.
+   */
+  readonly hostSpaces?: readonly string[];
+  readonly guardApproval?: ApprovalGuard;
+  /** Called with the client as soon as it exists, so a caller can read why an approval failed even if sign-in throws. */
+  readonly onClient?: (tinycloud: ShareTinyCloud) => void;
+}
+
+export interface ManifestSignIn {
+  readonly tinycloud: ShareTinyCloud;
+  readonly session: OpenKeyShareSession;
+  /** Space name to the id `ensureOwnedSpaceHosted` returned, for `account` and every `hostSpaces` entry. */
+  readonly spaces: Readonly<Record<string, string>>;
+}
+
+/**
+ * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds exactly
+ * `manifest`, then the owned spaces hosted. The session lives in memory only
+ * (`persistSession: false`); nothing is written to storage. Share's own
+ * library and the viewer's "Save a copy" both sign in here, each with its own
+ * manifest, and an app-install flow can do the same with an app's manifest.
+ *
+ * Every signature needs the person's approval in the OpenKey window and must
+ * recover to the signed-in account (see `ObservedOpenKeyProvider`). A failed
+ * or cancelled approval rejects; the caller decides what to say.
+ */
+export async function signInWithManifest(options: SignInWithManifestOptions): Promise<ManifestSignIn> {
+  const { config, guardApproval, hostSpaces = [] } = options;
+  const onStatus = options.onStatus ?? (() => undefined);
+  const session = options.session ?? await authenticateWithOpenKey(onStatus, guardApproval);
+  const manifest = typeof options.manifest === "function" ? options.manifest(session.address) : options.manifest;
+  const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
+  const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardApproval);
+  const tinycloud = new TinyCloudWeb({
+    provider,
+    signStrategy: { type: "callback", handler: (request: SignRequest) => (guardApproval ?? runUnguarded)(() => explicitOpenKeyApproval(session, request)) },
+    ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
+    // A new sender cannot resolve a signed location record before its first
+    // session exists. Use the explicitly configured owner-node choice only
+    // for that bootstrap; addressed recipients never receive this fallback.
+    tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
+    tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
+    autoDiscoverLocalNode: false,
+    autoCreateSpace: true,
+    autoBootstrapAccount: false,
+    includeAccountRegistryPermissions: true,
+    domain: new URL(config.shareOrigin).hostname,
+    spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
+    sessionStorageKeyPrefix: "tinycloud-share",
+    sessionExpirationMs: 60 * 60 * 1000,
+    persistSession: false,
+    siweConfig: { statement: "Sign in to TinyCloud Share." },
+    manifest,
+    notifications: { popups: false },
+  });
+  registerWalletApprovalObserver(tinycloud, provider);
+  options.onClient?.(tinycloud);
+  onStatus("Connecting to your encrypted TinyCloud…");
+  await tinycloud.signIn();
+  const spaces: Record<string, string> = {};
+  for (const name of new Set(["account", ...hostSpaces])) {
+    spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
+  }
+  return { tinycloud, session, spaces };
+}
+
+const runUnguarded: ApprovalGuard = (wait) => wait();
+
+/** What Share's own library needs: the owner space, history, credentials and the private copies area, and the owner's decrypt grant. */
+export function shareManifest(address: string): Manifest {
+  return {
     manifest_version: 1,
     app_id: "xyz.tinycloud.share",
     name: "TinyCloud Share",
@@ -171,40 +263,36 @@ export async function createTinyCloudClient(
       ...historyPermissions(),
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
-      { service: "tinycloud.encryption", path: ownerEncryptionNetwork(session.address), actions: ["decrypt", "network.create"], skipPrefix: true },
+      { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
     ],
   };
-  const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
-  const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address);
-  const tinycloud = new TinyCloudWeb({
-    provider,
-    signStrategy: { type: "callback", handler: (request: SignRequest) => explicitOpenKeyApproval(session, request) },
-    ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
-    // A new sender cannot resolve a signed location record before its first
-    // session exists. Use the explicitly configured owner-node choice only
-    // for that bootstrap; addressed recipients never receive this fallback.
-    tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
-    tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
-    autoDiscoverLocalNode: false,
-    autoCreateSpace: true,
-    autoBootstrapAccount: false,
-    includeAccountRegistryPermissions: true,
-    domain: new URL(config.shareOrigin).hostname,
-    spacePrefix: SHARE_APPLICATION_SPACE,
-    sessionStorageKeyPrefix: "tinycloud-share",
-    sessionExpirationMs: 60 * 60 * 1000,
-    persistSession: false,
-    siweConfig: { statement: "Sign in to TinyCloud Share." },
-    manifest,
-    notifications: { popups: false },
-  });
-  registerWalletApprovalObserver(tinycloud, provider);
-  onStatus("Connecting to your encrypted TinyCloud…");
-  await tinycloud.signIn();
-  // The Web SDK's manifest bootstrap reads the canonical account space even
-  // when the application data space is named explicitly. Host that owned
-  // account space through the real SIWE flow before the first manifest read.
-  await tinycloud.ensureOwnedSpaceHosted("account");
+}
+
+/**
+ * What the viewer's "Save a copy" needs, and nothing else: read, write and
+ * list under `files-for-you/v1/`. No share, history, credential or decrypt
+ * grant is requested from a recipient.
+ */
+export function saveCopyManifest(): Manifest {
+  return {
+    manifest_version: 1,
+    app_id: "xyz.tinycloud.share",
+    name: "TinyCloud Share",
+    description: "Save a private copy of a file you opened.",
+    space: SHARE_APPLICATION_SPACE,
+    prefix: "",
+    defaults: false,
+    includePublicSpace: false,
+    permissions: filesForYouPermissions(),
+  };
+}
+
+export async function createTinyCloudClient(
+  session: OpenKeyShareSession,
+  config: SharePublicConfig,
+  onStatus: (message: string) => void,
+): Promise<ShareTinyCloud> {
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, config, session, onStatus });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

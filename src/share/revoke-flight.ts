@@ -64,7 +64,7 @@ export const APPROVAL_WINDOW_MS = 60_000;
  * revoke the share, the next attempt's node check sees that and finishes with
  * no new approval.
  */
-export async function withWalletApproval<T>(flight: RevokeFlight, task: (current: () => boolean) => Promise<T>): Promise<T> {
+export async function withWalletApproval<T>(flight: Pick<RevokeFlight, "setApproval">, task: (current: () => boolean) => Promise<T>): Promise<T> {
   if (walletRequestOpen) throw new Error("revoke-another-approval");
   walletRequestOpen = true;
   flight.setApproval(true);
