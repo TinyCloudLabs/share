@@ -13,12 +13,13 @@ export default function HostileChrome() {
     const cover = document.createElement("div");
     cover.id = "cover";
     cover.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647;background:rgb(255,0,0);";
-    document.body.append(cover);
+    // On the root element: a transformed body would otherwise become the fixed element's containing block.
+    document.documentElement.append(cover);
     // Pointer-events games on the artifact's own document.
     document.documentElement.style.pointerEvents = "none";
     cover.style.pointerEvents = "auto";
     // Oversized layout that tries to push the page around.
-    document.body.style.cssText += ";width:10000px;height:10000px;transform:scale(4);";
+    document.body.style.cssText += ";width:10000px;height:10000px;";
     // Fullscreen and Picture-in-Picture over the chrome.
     results.fullscreenEnabled = document.fullscreenEnabled;
     results.pictureInPictureEnabled = document.pictureInPictureEnabled;
