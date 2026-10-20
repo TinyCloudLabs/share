@@ -21,11 +21,36 @@ export interface NodeShareStatus {
   readonly expiredAt?: string;
 }
 
-/** `signal` aborts the read: no further page is asked for once it has fired. */
+/**
+ * `signal` aborts the read: no further request is made once it has fired, the
+ * request waited on stops being waited for, and what was learned until then
+ * is returned (a share the read never reached stays `unknown`).
+ */
 export type NodeStatusReader = (records: readonly SenderHistoryDisplayRecord[], signal?: AbortSignal) => Promise<ReadonlyMap<string, NodeShareStatus>>;
 
 const MAX_LISTING_PAGES = 20;
 const LISTING_PAGE_SIZE = 100;
+
+/**
+ * TC-1494. The node answers in 1.5 to 3 seconds per call, and one status read
+ * is several calls (the node identity, then one per page of the delegation
+ * listing). Each call gets this long on its own; the read as a whole is
+ * bounded by the caller (the library's overall budget).
+ */
+export const STATUS_REQUEST_TIMEOUT_MS = 8_000;
+
+/** Waits for `work`, but no longer than `timeoutMs` and not past `signal`; either way the wait ends with a rejection and nothing is left pending. */
+function boundedRequest<T>(work: () => Promise<T>, signal: AbortSignal | undefined, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted === true) { reject(new Error("status-read-aborted")); return; }
+    const finish = (): void => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); };
+    const onAbort = (): void => { finish(); reject(new Error("status-read-aborted")); };
+    const timer = setTimeout(() => { finish(); reject(new Error("status-request-timeout")); }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // A call given up on may still reject later; nobody is waiting for it.
+    work().then((value) => { finish(); resolve(value); }, (failure: unknown) => { finish(); reject(failure); });
+  });
+}
 
 interface NodeRow { readonly state: "active" | "revoked" | "expired"; readonly expiresAt: string | undefined }
 
@@ -45,14 +70,15 @@ function rootsOf(record: SenderHistoryDisplayRecord): readonly string[] {
   return [record.ownerDelegationCid, record.enforcementDelegationCid].filter((cid): cid is string => cid !== undefined && cid.length > 0);
 }
 
-export function createNodeStatusReader(tinycloud: Pick<ShareTinyCloud, "delegations" | "activeNodeIdentity">, address: string): NodeStatusReader {
+export function createNodeStatusReader(tinycloud: Pick<ShareTinyCloud, "delegations" | "activeNodeIdentity">, address: string, options: { readonly requestTimeoutMs?: number } = {}): NodeStatusReader {
+  const requestTimeoutMs = options.requestTimeoutMs ?? STATUS_REQUEST_TIMEOUT_MS;
   return async (records, signal) => {
     // A function, so the check is read again after every await.
     const stopped = (): boolean => signal?.aborted === true;
     const result = new Map<string, NodeShareStatus>(records.map((record) => [record.shareId, { state: "unknown" }]));
     let node: { readonly origin: string; readonly nodeDid: string };
     try {
-      node = await tinycloud.activeNodeIdentity();
+      node = await boundedRequest(() => tinycloud.activeNodeIdentity(), signal, requestTimeoutMs);
     } catch {
       return result;
     }
@@ -69,7 +95,7 @@ export function createNodeStatusReader(tinycloud: Pick<ShareTinyCloud, "delegati
       try {
         let cursor: string | undefined;
         for (let page = 0; page < MAX_LISTING_PAGES && !stopped(); page += 1) {
-          const listing = await tinycloud.delegations.query({ direction: "granted", space: spaceId, limit: LISTING_PAGE_SIZE, ...(cursor === undefined ? {} : { cursor }) });
+          const listing = await boundedRequest(() => tinycloud.delegations.query({ direction: "granted", space: spaceId, limit: LISTING_PAGE_SIZE, ...(cursor === undefined ? {} : { cursor }) }), signal, requestTimeoutMs);
           if (!listing.ok) break;
           for (const row of listing.data.items) known.set(row.cid, { state: rowState(row.status), expiresAt: isoOf(row.expiresAt) });
           cursor = listing.data.nextCursor;
