@@ -15,13 +15,22 @@
  *    markdown frame;
  *  - revoked / expired / unavailable screens;
  *  - screenshots at 390 and 1440 px, light and dark.
+ *
+ * VIEWER_PAGE_USERCONTENT=1 runs the whole suite with every sandbox frame served from a SEPARATE
+ * origin (VITE_USER_CONTENT_ORIGIN, as on production once the user-content host is live): the
+ * dist-usercontent build on a second loopback origin with its own `_headers`, and the viewer's
+ * `frame-src`/`connect-src` naming that origin. Everything below must hold unchanged.
  */
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { createServer as httpServer } from "node:http";
+import { extname, join } from "node:path";
 
 import puppeteer from "puppeteer";
 import { createServer } from "vite";
+
+import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/production-headers.mjs";
 
 const screenshotDir = process.env.VIEWER_PAGE_SCREENSHOT_DIR ?? ".context";
 const axeSource = await readFile(new URL("../node_modules/axe-core/axe.min.js", import.meta.url), "utf8");
@@ -34,16 +43,73 @@ probe.on("connection", () => { probeConnections += 1; });
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const probeOrigin = `http://127.0.0.1:${probe.address().port}`;
 
-const viewerPagePort = Number(process.env.VIEWER_PAGE_PORT ?? 43187);
+const separateOrigin = process.env.VIEWER_PAGE_USERCONTENT === "1";
+const freePort = async () => {
+  const listener = httpServer();
+  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
+  const { port } = listener.address();
+  await new Promise((resolve) => listener.close(resolve));
+  return port;
+};
+const viewerPagePort = Number(process.env.VIEWER_PAGE_PORT ?? (separateOrigin ? await freePort() : 43187));
+const origin = `http://127.0.0.1:${viewerPagePort}`;
+
+let contentOrigin = "";
+let contentServer;
+let viewerProxy;
+const contentLog = [];
+let vitePort = viewerPagePort;
+if (separateOrigin) {
+  const contentPort = await freePort();
+  contentOrigin = `http://127.0.0.1:${contentPort}`;
+  await new Promise((resolve, reject) => {
+    const build = spawn("npx", ["tsx", "scripts/build-usercontent.mts"], { env: { ...process.env, USER_CONTENT_VIEWER_ORIGIN: origin }, stdio: ["ignore", "ignore", "inherit"] });
+    build.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`build:usercontent exited ${code}`))));
+  });
+  const rules = parseProductionHeaders(await readFile("dist-usercontent/_headers", "utf8"));
+  const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json" };
+  contentServer = httpServer(async (request, response) => {
+    const url = new URL(request.url, contentOrigin);
+    contentLog.push({ path: url.pathname, cookie: request.headers.cookie ?? null });
+    const headers = productionHeadersForPath(rules, url.pathname);
+    try {
+      if (request.method !== "GET" || url.pathname.includes("..") || url.pathname === "/_headers") throw new Error("not served");
+      const body = await readFile(join("dist-usercontent", url.pathname));
+      response.writeHead(200, { ...headers, "content-type": types[extname(url.pathname)] ?? "text/plain" });
+      response.end(body);
+    } catch {
+      response.writeHead(404, headers);
+      response.end("not found");
+    }
+  });
+  await new Promise((resolve) => contentServer.listen(contentPort, "127.0.0.1", resolve));
+  vitePort = await freePort();
+  process.env.VITE_USER_CONTENT_ORIGIN = contentOrigin;
+}
 const server = await createServer({
   configFile: "vite.config.ts",
   logLevel: "error",
-  server: { host: "127.0.0.1", port: viewerPagePort, strictPort: true, hmr: false },
+  server: { host: "127.0.0.1", port: vitePort, strictPort: true, hmr: false },
 });
 await server.listen();
+if (separateOrigin) {
+  // The viewer origin: the dev server behind a proxy that gives the harness page the viewer's real
+  // frame-src / connect-src for the user-content origin (the function the production build uses).
+  const { withUserContentOrigin } = await server.ssrLoadModule("/src/artifact/user-content/headers.ts");
+  viewerProxy = httpServer(async (request, response) => {
+    const upstream = await fetch(`http://127.0.0.1:${vitePort}${request.url}`, { headers: { accept: request.headers.accept ?? "*/*" } });
+    const headers = Object.fromEntries([...upstream.headers].filter(([name]) => !["content-encoding", "content-length", "transfer-encoding"].includes(name)));
+    let body = Buffer.from(await upstream.arrayBuffer());
+    if (new URL(request.url, origin).pathname === "/test/fixtures/viewer-page/harness.html") {
+      body = Buffer.from(body.toString("utf8").replace(/(http-equiv="Content-Security-Policy" content=")([^"]*)"/, (_match, prefix, csp) => `${prefix}${withUserContentOrigin(csp, contentOrigin)}"`));
+    }
+    response.writeHead(upstream.status, headers);
+    response.end(body);
+  });
+  await new Promise((resolve) => viewerProxy.listen(viewerPagePort, "127.0.0.1", resolve));
+}
 const { ARTIFACT_SANDBOX_HTTP_CSP } = await server.ssrLoadModule("/src/viewer/artifact-frame.ts");
 const { PREVIEW_FRAME_CSP } = await server.ssrLoadModule("/src/viewer/preview-frame.ts");
-const origin = `http://127.0.0.1:${viewerPagePort}`;
 const harness = (query) => `${origin}/test/fixtures/viewer-page/harness.html?probe=${encodeURIComponent(probeOrigin)}&${query}`;
 
 const consoleOf = new WeakMap();
@@ -195,7 +261,8 @@ try {
     assert.deepEqual(await page.$$eval(".artifact-chrome-button", (nodes) => nodes.map((node) => node.textContent)), ["Copy link", "Download", "Share on", "Hide"]);
     const outerHandle = await page.waitForSelector("iframe.viewer-html-frame");
     assert.equal(await outerHandle.evaluate((node) => node.getAttribute("sandbox")), "allow-scripts");
-    assert.match(await outerHandle.evaluate((node) => node.getAttribute("src")), /^\/artifact-sandbox\.html#/);
+    const frameSrc = await outerHandle.evaluate((node) => node.getAttribute("src"));
+    assert.ok(frameSrc.startsWith(`${contentOrigin}/artifact-sandbox.html#`), `the HTML sandbox frame comes from ${contentOrigin === "" ? "this origin" : contentOrigin}: ${frameSrc}`);
     const outer = await outerHandle.contentFrame();
     const inner = await (await outer.waitForSelector("iframe.artifact-document")).contentFrame();
     assert.equal(await inner.$eval("#status", (node) => node.textContent), "Script ran inside the frame.");
@@ -308,9 +375,18 @@ try {
     }
   }
   assert.deepEqual(probeRequests, [], "screenshots runs sent nothing to the author's host either");
-  console.log("Full-page viewer browser e2e passed");
+  if (separateOrigin) {
+    const served = new Set(contentLog.map((entry) => entry.path));
+    assert.ok(served.has("/artifact-sandbox.html") || served.has("/artifact-sandbox"), "the HTML sandbox document came from the user-content origin");
+    assert.ok([...served].some((path) => path.startsWith("/mermaid-sandbox")), "the mermaid sandbox came from the user-content origin");
+    assert.ok([...served].some((path) => path.startsWith("/assets/jsx-runtime/")), "the JSX libraries came from the user-content origin");
+    assert.equal(contentLog.some((entry) => entry.cookie !== null), false, "no cookie reached the user-content origin");
+  }
+  console.log(`Full-page viewer browser e2e passed${separateOrigin ? ` (sandbox frames from ${contentOrigin})` : ""}`);
 } finally {
   await browser?.close();
   await server.close();
+  viewerProxy?.close();
+  contentServer?.close();
   probe.close();
 }
