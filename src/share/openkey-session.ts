@@ -97,6 +97,8 @@ function hexToText(hex: string): string | undefined {
  */
 export class ObservedOpenKeyProvider extends OpenKeyProvider {
   private failure: WalletApprovalFailure | undefined;
+  /** Counts approvals asked for; an answer to an older one is not the current approval's. */
+  private asked = 0;
 
   constructor(
     openkey: OpenKey,
@@ -110,16 +112,17 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
   override async request(args: { method: string; params?: any[] }): Promise<any> {
     if (args.method !== "personal_sign") return super.request(args);
     this.failure = undefined;
+    const mine = ++this.asked;
     let signature: unknown;
     try {
       signature = await super.request(args);
     } catch (caught) {
-      this.failure = approvalFailureOf(caught);
+      if (mine === this.asked) this.failure = approvalFailureOf(caught);
       throw caught;
     }
     const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
     if (message !== undefined && (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress)))) {
-      this.failure = "wrong-account";
+      if (mine === this.asked) this.failure = "wrong-account";
       throw new Error("wallet-approval-wrong-account");
     }
     return signature;

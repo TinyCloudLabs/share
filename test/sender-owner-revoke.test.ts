@@ -217,8 +217,10 @@ describe("revoking a share made in an earlier sign-in (same account, new session
     await revoke(root);
     await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
     expect(root.querySelector(".sender-row-hint")?.textContent).toBe("Approve in the OpenKey window to revoke");
-    // The inserted node is not announced reliably; the persistent live region says it too.
-    expect(root.querySelector(".sender-live")?.textContent).toContain("Approve in the OpenKey window to revoke");
+    // The inserted node is not announced reliably; the spoken-only region says it, and the visible live line does not repeat it.
+    await vi.waitFor(() => expect(root.querySelector(".sender-announce")?.textContent).toBe("Approve in the OpenKey window to revoke."));
+    expect(root.querySelector(".sender-announce")?.className).toContain("sr-only");
+    expect(root.querySelector(".sender-live")?.textContent).not.toContain("OpenKey");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
     gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
     await settled(root);
@@ -288,12 +290,12 @@ describe("the node check cannot be satisfied by a different space name, or by th
     expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
   });
 
-  it("a long listing that never shows the root says the list was not fully read, not that the share is from an earlier sign-in", async () => {
+  it("a listing longer than the pages read says Share could not read the whole permissions list, not that the share is from an earlier sign-in", async () => {
     // 25 pages of one row each: more than the pages the page will read.
     const rows = [...Array.from({ length: 24 }, (_, index) => sessionDelegationRow({ cid: `filler-${index}` })), policyRootRow()];
     const { root, tinycloud } = await mountAs({ rows, pageSize: 1 });
     await revoke(root); await settled(root);
-    expect(errorText(root)).toBe("Could not revoke: Share couldn't find this share's permission in your list. Try again, or contact support. The share is still active.");
+    expect(errorText(root)).toBe("Could not revoke: Share couldn't read your whole permissions list, so it can't find this share. Try again or contact support. The share is still active.");
     expect(root.textContent).not.toContain("earlier sign-in");
     expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
   });
@@ -378,7 +380,8 @@ describe("approval outcomes in the OpenKey window", () => {
     expect(noteText(root)).toBe("Revoke cancelled. The share is still active.");
     expect(errorText(root)).toBeNull();
     expect(root.querySelector('.sender-row-actions [role="alert"]')).toBeNull();
-    expect(root.querySelector(".sender-live")?.textContent).toBe("Revoke cancelled. The share is still active.");
+    await vi.waitFor(() => expect(root.querySelector(".sender-announce")?.textContent).toBe("Revoke cancelled. The share is still active."));
+    expect(root.querySelector(".sender-live")?.textContent).toBe("");
     expect(root.textContent).not.toContain("object Object");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Ready");
     expect(root.querySelector(".sender-row-hint")).toBeNull();
@@ -468,6 +471,8 @@ describe("the in-flight guard outlives the library view", () => {
     expect(button.textContent).toBe("Revoking…");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
     expect(root.querySelector(".sender-row-hint")?.textContent).toBe("Approve in the OpenKey window to revoke");
+    // A screen reader hears the hint again when the view is mounted while the approval is open.
+    await vi.waitFor(() => expect(root.querySelector(".sender-announce")?.textContent).toBe("Approve in the OpenKey window to revoke."));
     button.click();
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(root.querySelector(".sender-confirm-dialog")).toBeNull();
@@ -542,5 +547,132 @@ describe("link-only (bearer) shares from a new session", () => {
       expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
       document.body.replaceChildren();
     }
+  });
+});
+
+describe("an approval that is never answered cannot hold the page", () => {
+  const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
+  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
+  const pressRevoke = (root: HTMLElement, name: string) => { rowOf(root, name).querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root); };
+  const GIVE_UP = "The approval wasn't completed. The share is still active. Try again.";
+  const fakeClock = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+  it("after 60 seconds Share stops waiting: a quiet note, the lock is free, the other share proceeds and the first can be tried again", async () => {
+    fakeClock();
+    const neverAnswered = deferred<unknown>();
+    let firstAsked = false;
+    const { root, tinycloud } = await mountAs({
+      extra: [second()], rows: [policyRootRow(), secondRow()],
+      revokeDelegation: (cid) => { if (cid === "policy-root" && !firstAsked) { firstAsked = true; return neverAnswered.promise; } return { ok: true, data: { revoked: true, cid } }; },
+    });
+    pressRevoke(root, "qa.txt");
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    // Just inside the window the other share is still told to wait.
+    await vi.advanceTimersByTimeAsync(59_000);
+    pressRevoke(root, "second.txt");
+    await vi.waitFor(() => expect(rowOf(root, "second.txt").querySelector(".sender-row-note")?.textContent).toContain("Another approval is waiting"));
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_500);
+    // A quiet note, not an alert; Revoke is back.
+    expect(rowOf(root, "qa.txt").querySelector(".sender-row-note")?.textContent).toBe(GIVE_UP);
+    expect(rowOf(root, "qa.txt").querySelector(".sender-row-error")).toBeNull();
+    expect(rowOf(root, "qa.txt").querySelector(".sender-row-hint")).toBeNull();
+    expect(rowOf(root, "qa.txt").querySelector<HTMLButtonElement>(".sender-revoke")?.disabled).toBe(false);
+    // The lock is free: the other share's Revoke is a new request and goes through.
+    pressRevoke(root, "second.txt");
+    await vi.waitFor(() => expect(rowOf(root, "second.txt").querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(tinycloud.revokeDelegation).toHaveBeenLastCalledWith("policy-root-2");
+    // The first share can be tried again: a new attempt is a new request, once.
+    pressRevoke(root, "qa.txt");
+    await vi.waitFor(() => expect(rowOf(root, "qa.txt").querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(tinycloud.revokeDelegation.mock.calls.filter(([cid]) => cid === "policy-root")).toHaveLength(2);
+    // The first attempt answers very late: nothing about the revoked row changes and nothing is asked again.
+    neverAnswered.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(3);
+    expect(rowOf(root, "qa.txt").querySelector(".sender-row-error, .sender-row-note")).toBeNull();
+  });
+
+  it("a late answer after Share gave up never turns the row Revoked by itself; the next attempt asks the node and finishes without a new approval", async () => {
+    fakeClock();
+    const late = deferred<unknown>();
+    const rows: Row[] = [policyRootRow()];
+    const { root, tinycloud } = await mountAs({ rows, revokeDelegation: () => late.promise });
+    revokeButton(root)!.click(); confirm(root);
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(60_500);
+    expect(root.querySelector(".sender-row-note")?.textContent).toBe(GIVE_UP);
+    // The request did revoke the share after all, and answers late.
+    rows[0] = policyRootRow({ status: "revoked" });
+    late.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
+    expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Ready");
+    // Trying again checks the node, sees it revoked, and asks for nothing more.
+    await revoke(root);
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
+  });
+
+  it("an abandoned request that answers late does not consume the cancel of the attempt that replaced it", async () => {
+    fakeClock();
+    const firstSigned = deferred<{ signature: string }>();
+    const secondCancelled = deferred<void>();
+    let asked = 0;
+    const openkey = { signMessage: vi.fn(async () => { asked += 1; if (asked === 1) return firstSigned.promise; throw { code: "USER_CANCELLED" }; }) };
+    const provider = new ObservedOpenKeyProvider(openkey as never, { address: ADDRESS, keyId: "key-1", keyType: "MANAGED" } as never, ADDRESS, async () => true);
+    let calls = 0;
+    const { root, tinycloud } = await mountAs({
+      revokeDelegation: async () => {
+        calls += 1;
+        const mine = calls;
+        try { await provider.request({ method: "personal_sign", params: ["0x70", ADDRESS] }); } catch (caught) { await secondCancelled.promise; return { ok: false, error: { code: "NETWORK_ERROR", message: `Network error during delegation revocation: ${String(caught)}` } }; }
+        return { ok: false, error: { code: "REVOCATION_FAILED", message: `Failed to revoke delegation: 500 - attempt ${mine}` } };
+      },
+    });
+    registerWalletApprovalObserver(tinycloud as unknown as ShareTinyCloud, provider);
+    revokeButton(root)!.click(); confirm(root);
+    await vi.waitFor(() => expect(openkey.signMessage).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(60_500);
+    expect(root.querySelector(".sender-row-note")?.textContent).toBe(GIVE_UP);
+    // The second attempt is cancelled in the OpenKey window; its request is still finishing when the first one answers.
+    await revoke(root);
+    await vi.waitFor(() => expect(openkey.signMessage).toHaveBeenCalledTimes(2));
+    firstSigned.resolve({ signature: `0x${"11".repeat(65)}` });
+    await vi.advanceTimersByTimeAsync(100);
+    secondCancelled.resolve();
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-note")?.textContent).toBe("Revoke cancelled. The share is still active."));
+    expect(root.querySelector(".sender-row-error")).toBeNull();
+  });
+
+  it("a wallet call that throws frees the lock for the other share", async () => {
+    let first = true;
+    const { root, tinycloud } = await mountAs({
+      extra: [second()], rows: [policyRootRow(), secondRow()],
+      revokeDelegation: (cid) => { if (first) { first = false; throw new Error("provider exploded"); } return { ok: true, data: { revoked: true, cid } }; },
+    });
+    pressRevoke(root, "qa.txt");
+    await vi.waitFor(() => expect(rowOf(root, "qa.txt").querySelector(".sender-row-error")).not.toBeNull());
+    expect(root.textContent).not.toContain("provider exploded");
+    pressRevoke(root, "second.txt");
+    await vi.waitFor(() => expect(rowOf(root, "second.txt").querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the provider reads the answer of the approval that is current", () => {
+  it("a late cancel of an older approval is not read as the newer approval's answer", async () => {
+    const settle: Array<(outcome: { signature?: string; reject?: unknown }) => void> = [];
+    const openkey = { signMessage: vi.fn(() => new Promise((resolve, reject) => { settle.push((outcome) => outcome.reject !== undefined ? reject(outcome.reject) : resolve({ signature: outcome.signature })); })) };
+    const provider = new ObservedOpenKeyProvider(openkey as never, { address: ADDRESS, keyId: "key-1", keyType: "MANAGED" } as never, ADDRESS, async () => true);
+    const older = provider.request({ method: "personal_sign", params: ["0x70", ADDRESS] }).catch(() => undefined);
+    const newer = provider.request({ method: "personal_sign", params: ["0x70", ADDRESS] }).catch(() => undefined);
+    settle[0]!({ reject: { code: "USER_CANCELLED" } });
+    await older;
+    expect(provider.takeFailure()).toBeUndefined();
+    settle[1]!({ reject: { code: "TIMEOUT" } });
+    await newer;
+    expect(provider.takeFailure()).toBe("timeout");
   });
 });

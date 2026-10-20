@@ -4,11 +4,9 @@ import { takeWalletApprovalFailure, type OpenKeyShareSession, type ShareTinyClou
 import { revokeShare, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { getPolicyRootStatusV3, revokePolicyRootV3 } from "@tinycloud/sdk-core";
 import { httpStatusOf, revokeFailureMessage, revokeOutcomeIsNeutral } from "./sender-failure.js";
-import { activeFlight, flightKey, RevokeFlight, withWalletApproval } from "./revoke-flight.js";
+import { activeFlight, APPROVAL_WINDOW_MS, flightKey, RevokeFlight, withWalletApproval } from "./revoke-flight.js";
 import { verifyShareRootOnNode, type ShareRootKind } from "./owner-revoke.js";
 
-/** The owner wallet's revocation request is valid for this long from the moment the approval is asked for. */
-const APPROVAL_WINDOW_MS = 60_000;
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
 export interface SenderHomeOptions {
@@ -100,6 +98,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   const account = node(doc, "span", "sender-account", options.session.address.length > 12 ? `${options.session.address.slice(0, 6)}…${options.session.address.slice(-4)}` : options.session.address);
   toolbar.append(newShare, account);
   const live = node(doc, "p", "sender-live"); live.setAttribute("role", "status"); live.setAttribute("aria-live", "polite");
+  // Spoken only: the row already shows the approval hint and the notes, so the visible live line must not repeat them.
+  const announce = node(doc, "p", "sr-only sender-announce"); announce.setAttribute("role", "status"); announce.setAttribute("aria-live", "polite");
+  /** A region is announced when its text changes after it exists, so clear it and set the text a moment later (also right after a mount). */
+  const say = (text: string): void => { announce.textContent = ""; window.setTimeout(() => { announce.textContent = text; }, 100); };
   const content = node(doc, "section", "sender-library"); content.setAttribute("aria-labelledby", "sender-library-title");
   const title = node(doc, "h2", "sender-library-title", "All shares");
   const table = node(doc, "table", "sender-history-table");
@@ -111,7 +113,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   const empty = node(doc, "div", "sender-empty-state"); empty.hidden = true;
   const more = node(doc, "button", "button button-secondary sender-load-more", "Load more") as HTMLButtonElement; more.type = "button"; more.hidden = true;
   const error = node(doc, "div", "sender-status"); error.hidden = true; error.setAttribute("role", "alert");
-  content.append(title, table, empty, more, error); shell.append(header, toolbar, live, content); root.append(shell);
+  content.append(title, table, empty, more, error); shell.append(header, toolbar, live, announce, content); root.append(shell);
 
   const pageRows: HTMLElement[] = [];
   let cursor: string | undefined;
@@ -157,8 +159,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const repaint = (): void => {
       if (!flight.approval || hint !== undefined) return;
       hint = node(doc, "p", "sender-row-hint", APPROVAL_HINT); controls.append(hint);
-      // The inserted node is not announced reliably; the persistent live region is.
-      live.textContent = `${APPROVAL_HINT}.`;
+      // The inserted node is not announced reliably; the persistent spoken region is, also for a row mounted while the approval is open.
+      say(`${APPROVAL_HINT}.`);
     };
     flight.subscribers.add(repaint); repaint();
     void flight.done.then((outcome) => {
@@ -177,7 +179,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       // A cancel, or another approval still open, is not an error: a quiet note, not an alert.
       if (revokeOutcomeIsNeutral(outcome.failure)) {
         controls.append(node(doc, "p", "sender-row-note", message));
-        live.textContent = message;
+        live.textContent = "";
+        say(message);
         return;
       }
       const detail = node(doc, "p", "sender-row-error", message); detail.setAttribute("role", "alert");
@@ -199,13 +202,13 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       if (state === "revoked" || cid === undefined) return;
       let started = Date.now();
       // One OpenKey approval at a time, so the window's answer is read for the request that asked.
-      const { outcome, approval } = await withWalletApproval(flight, async () => {
+      const { outcome, approval } = await withWalletApproval(flight, async (current) => {
         // A failure left by an earlier approval is not this one's.
         takeWalletApprovalFailure(options.tinycloud);
         started = Date.now();
         const result = await options.tinycloud.revokeDelegation(cid);
-        // The OpenKey window's own answer: a cancel is the sender's choice, not a node refusal.
-        return { outcome: result, approval: result.ok ? undefined : takeWalletApprovalFailure(options.tinycloud) };
+        // The OpenKey window's own answer: a cancel is the sender's choice, not a node refusal. A request already given up on must not consume a newer attempt's answer.
+        return { outcome: result, approval: result.ok || !current() ? undefined : takeWalletApprovalFailure(options.tinycloud) };
       });
       if (outcome.ok) return;
       if (approval !== undefined) throw new Error(`revoke-approval-${approval}`);

@@ -47,18 +47,39 @@ export class RevokeFlight {
   }
 }
 
+/** The owner wallet's revocation request is valid for this long from the moment the approval is asked for. */
+export const APPROVAL_WINDOW_MS = 60_000;
+
 /**
  * Runs `task` (the wallet request) only if no other approval is open. A second
  * share's revoke is refused with `revoke-another-approval` instead of queueing,
  * so the person is never asked to approve something they did not just click.
+ *
+ * The lock is held for at most the approval window: the signed request is
+ * dead after 60 seconds, and an external wallet or a closed window may never
+ * answer. After that Share stops waiting (`revoke-approval-abandoned`), frees
+ * the lock and lets the sender try again. The abandoned request is told it is
+ * no longer current (`current()` is false), so a late answer cannot touch the
+ * state of a newer attempt; the row never turns Revoked from it. If it did
+ * revoke the share, the next attempt's node check sees that and finishes with
+ * no new approval.
  */
-export async function withWalletApproval<T>(flight: RevokeFlight, task: () => Promise<T>): Promise<T> {
+export async function withWalletApproval<T>(flight: RevokeFlight, task: (current: () => boolean) => Promise<T>): Promise<T> {
   if (walletRequestOpen) throw new Error("revoke-another-approval");
   walletRequestOpen = true;
   flight.setApproval(true);
+  let abandoned = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, APPROVAL_WINDOW_MS);
+  });
   try {
-    return await task();
+    const running = task(() => !abandoned);
+    // A request abandoned here may still reject later; nobody is waiting for it.
+    running.catch(() => undefined);
+    return await Promise.race([running, expiry]);
   } finally {
+    clearTimeout(timer);
     walletRequestOpen = false;
     flight.setApproval(false);
   }
