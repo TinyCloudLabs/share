@@ -12,10 +12,14 @@ const state = vi.hoisted(() => ({
   presented: [] as { result: unknown; options: Record<string, unknown> }[],
   resolved: undefined as unknown,
   invalid: vi.fn(),
+  events: [] as string[],
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
-  captureAndScrubLaunch: () => ({ shareHref: "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: "addressed" }),
+  captureAndScrubLaunch: () => {
+    state.events.push("scrub");
+    return { shareHref: "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: "addressed" };
+  },
 }));
 
 vi.mock("../src/email-share/view.js", () => ({
@@ -75,6 +79,7 @@ beforeEach(() => {
   state.importInto.mockReset();
   state.resolve.mockReset();
   state.invalid.mockReset();
+  state.events.length = 0;
   state.presented.length = 0;
   const envelope = {
     version: 3,
@@ -146,6 +151,40 @@ describe("first-class accountless receiver", () => {
     expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
 
     expect(state.createAccountClient).not.toHaveBeenCalled();
+  });
+
+  it("drops a legacy receiver key record and its credentials before the receiver starts, after the launch scrub", async () => {
+    window.sessionStorage.setItem("tinycloud.share.receiver-session.v1", JSON.stringify({ jwk: { d: "legacy" } }));
+    window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{}");
+    window.sessionStorage.setItem("unrelated", "kept");
+    const read = Storage.prototype.getItem;
+    const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key: string) {
+      state.events.push(`get ${key}`);
+      return read.call(this, key);
+    });
+    const seen: (string | null)[] = [];
+    state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
+      spy.mockRestore();
+      seen.push(window.sessionStorage.getItem("tinycloud.share.receiver-session.v1"), window.sessionStorage.getItem("tinycloud.share.receiver-credentials.v1"));
+      void options.onComplete({ bytes: new Uint8Array([1]) });
+    });
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receiveWithSdk).toHaveBeenCalledTimes(1));
+    expect(seen).toEqual([null, null]);
+    expect(window.sessionStorage.getItem("unrelated")).toBe("kept");
+    expect(state.events.slice(0, 2)).toEqual(["scrub", "get tinycloud.share.receiver-session.v1"]);
+  });
+
+  it("keeps credentials issued to the current key when no legacy key record exists", async () => {
+    window.sessionStorage.setItem("tinycloud.share.receiver-credentials.v1", "{\"current\":true}");
+    const seen: (string | null)[] = [];
+    state.receiveWithSdk.mockImplementation((options: { onComplete: (content: { bytes: Uint8Array }) => Promise<void> }) => {
+      seen.push(window.sessionStorage.getItem("tinycloud.share.receiver-credentials.v1"));
+      void options.onComplete({ bytes: new Uint8Array([1]) });
+    });
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receiveWithSdk).toHaveBeenCalledTimes(1));
+    expect(seen).toEqual(["{\"current\":true}"]);
   });
 
   it("stops with a browser message when no signing key can be created", async () => {
