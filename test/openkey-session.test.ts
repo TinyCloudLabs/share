@@ -21,6 +21,7 @@ import {
 } from "../src/share/openkey-session.js";
 import { isSignInLabel } from "../src/share/sign-in-label.js";
 import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
+import { signInToCourier } from "../src/courier/session.ts";
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
 
 const state = vi.hoisted(() => ({
@@ -78,6 +79,7 @@ vi.mock("@tinycloud/web-sdk", () => ({
       this.record = { config, hosted: [], order: [], signedOut: 0 };
       state.clients.push(this.record);
     }
+    space() { return { kv: {} }; }
     async signIn(): Promise<void> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; }
     async signOut(): Promise<void> { this.record.signedOut += 1; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
@@ -180,6 +182,34 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(manifestOf(2)).toEqual(APP_MANIFEST);
     expect(new Set([library.tinycloud, save.tinycloud, app.tinycloud]).size).toBe(3);
     for (const signedIn of [library, save, app]) expect(signedIn.session.address).toBe(SENDER.address);
+    for (const client of state.clients) {
+      expect(client.config.includeAccountRegistryPermissions).toBe(true);
+      expect(client.config.autoCreateSpace).toBe(true);
+      expect(client.hosted).toEqual(["account"]);
+    }
+  });
+
+  it("Courier's actual caller/helper configuration composes exactly the five allowed grant entries and hosts no space", async () => {
+    await signInToCourier(CONFIG, { approval: () => undefined, status: () => undefined });
+    const client = state.clients[0]!;
+    expect(client.config.includeAccountRegistryPermissions).toBe(false);
+    expect(client.config.autoCreateSpace).toBe(false);
+    expect(client.config.autoBootstrapAccount).toBe(false);
+    expect(client.hosted).toEqual([]);
+    const request = composeManifestRequest([client.config.manifest as Manifest], {
+      includeAccountRegistryPermissions: client.config.includeAccountRegistryPermissions as boolean,
+    });
+    const grant = request.resources.flatMap(({ space, service, path, actions }) => actions.map((action) =>
+      `${space}/${service.replace(/^tinycloud\./, "")}${path ? `/${path}` : ""} ${action}`,
+    )).sort();
+    expect(grant).toEqual([
+      "agents/capabilities tinycloud.capabilities/read",
+      "agents/kv/xyz.tinycloud.courier/ tinycloud.kv/get",
+      "agents/kv/xyz.tinycloud.courier/ tinycloud.kv/list",
+      "agents/kv/xyz.tinycloud.courier/me/approvals/ tinycloud.kv/put",
+      "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
+    ].sort());
+    expect(request.registryRecords).toEqual([]);
   });
 
   it("the library and Save register under different app ids, so an account using both never has one overwrite the other's registry record", async () => {

@@ -16,6 +16,22 @@ test("production-origin viewer reproduces the deployed CSP and browser isolation
   assert.equal(headers["cache-control"], "no-store, no-transform");
 });
 
+test("production-origin /courier sends only its own narrowed policy and the shared isolation headers", () => {
+  for (const pathname of ["/courier", "/courier/"]) {
+    const headers = productionHeadersForPath(rules, pathname);
+    const csp = headers["content-security-policy"];
+    assert.match(csp, /connect-src 'self' https:\/\/tee\.node\.tinycloud\.xyz https:\/\/registry\.tinycloud\.xyz https:\/\/openkey\.so;/, `${pathname} names exact hosts`);
+    assert.doesNotMatch(csp, /connect-src[^;]*(?: https:(?: |;)|\*)/, `${pathname} has no wildcard connect source`);
+    assert.match(csp, /require-trusted-types-for 'script'/);
+    assert.match(csp, /frame-ancestors 'none'/);
+    assert.doesNotMatch(csp, /script-src[^;]*'unsafe-(?:inline|eval)'/);
+    assert.equal((csp.match(/Content-Security-Policy/gi) ?? []).length, 0);
+    assert.equal(headers["referrer-policy"], "no-referrer");
+    assert.equal(headers["x-content-type-options"], "nosniff");
+    assert.equal(headers["cache-control"], "no-store, no-transform");
+  }
+});
+
 // Cloudflare's pretty-URL redirect sends each .html path to the extensionless
 // one, so both forms of every sandbox document need their own rule.
 const SANDBOX_ROUTES = ["/artifact-sandbox", "/artifact-sandbox.html", "/mermaid-sandbox", "/mermaid-sandbox.html"];

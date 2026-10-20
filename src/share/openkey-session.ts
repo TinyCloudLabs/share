@@ -209,11 +209,15 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly onStatus?: (message: string) => void;
   /**
    * Owned spaces to host through the real SIWE flow once signed in, in order.
-   * `account` is always hosted first: the Web SDK's manifest bootstrap reads
-   * the canonical account space even when the manifest names another space.
+   * When account-registry permissions are enabled (the default), `account`
+   * is hosted first for the SDK's registry/index setup.
    * Each must be in `allowedSpaces`.
    */
   readonly hostSpaces?: readonly string[];
+  /** Include the SDK's account registry/index grants and host `account`. Default true. */
+  readonly includeAccountRegistryPermissions?: boolean;
+  /** Let the SDK create the manifest's primary space when absent. Default true. */
+  readonly autoCreateSpace?: boolean;
   readonly guardApproval?: ApprovalGuard;
   /** Called with the client as soon as it exists, so a caller can read why an approval failed even if sign-in throws. */
   readonly onClient?: (tinycloud: ShareTinyCloud) => void;
@@ -244,7 +248,7 @@ export interface SignInWithManifestOptions extends ManifestScope {
 export interface ManifestSignIn {
   readonly tinycloud: ShareTinyCloud;
   readonly session: OpenKeyShareSession;
-  /** Space name to the id `ensureOwnedSpaceHosted` returned, for `account` and every `hostSpaces` entry. */
+  /** Space name to the id `ensureOwnedSpaceHosted` returned, for any requested hosting. */
   readonly spaces: Readonly<Record<string, string>>;
   /** Clears the SDK's in-memory session and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
   dispose(): Promise<void>;
@@ -304,7 +308,7 @@ function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, a
 
 /**
  * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds `manifest`
- * plus the SDK's own account-registry permissions (below), then the owned
+ * plus the SDK's account-registry permissions by default (below), then the owned
  * spaces hosted. The session lives in memory only (`persistSession: false`);
  * nothing is written to storage. Share's library and the viewer's "Save a
  * copy" sign in here, each with its own manifest and scope, and an app-install
@@ -316,8 +320,8 @@ function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, a
  * sign-in so it can keep a new account's own space registry in sync:
  * get/put/list on `account/applications/` and `account/spaces/`, the bootstrap
  * flag, read/write/schema on the account database and delegation list. They
- * are not removable: without them the SDK's registry sync makes unauthorized
- * calls (401) and logs them. A narrower session waits on the SDK.
+ * can be omitted with `includeAccountRegistryPermissions: false`; the SDK
+ * skips registry sync without account SQL-read, and this helper skips account hosting.
  *
  * Every signature needs the person's approval in the OpenKey window and must
  * recover to the signed-in account (see `ObservedOpenKeyProvider`). A failed
@@ -325,7 +329,7 @@ function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, a
  * what to say. Whatever ends the sign-in early also disposes the session.
  */
 export async function signInWithManifest(options: SignInWithManifestOptions): Promise<ManifestSignIn> {
-  const { config, hostSpaces = [] } = options;
+  const { config, hostSpaces = [], includeAccountRegistryPermissions = true, autoCreateSpace = true } = options;
   const onStatus = options.onStatus ?? (() => undefined);
   checkOptions(options);
   // The manifest that is checked is a frozen private copy, and that copy is what gets signed: nothing the caller holds can
@@ -370,11 +374,10 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
       tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
       autoDiscoverLocalNode: false,
-      autoCreateSpace: true,
+      autoCreateSpace,
       autoBootstrapAccount: false,
-      // The SDK keeps a new account's own space registry in sync during sign-in and needs these permissions for it
-      // (see the helper's doc comment for what they are); without them it makes unauthorized calls (401) and logs them.
-      includeAccountRegistryPermissions: true,
+      // Opting out also suppresses the SDK's registry sync and this helper's account hosting.
+      includeAccountRegistryPermissions,
       domain: options.domain ?? new URL(config.shareOrigin).hostname,
       spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
       sessionStorageKeyPrefix: options.sessionPrefix ?? DEFAULT_SESSION_PREFIX,
@@ -397,7 +400,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     onStatus("Connecting to your encrypted TinyCloud…");
     await tinycloud.signIn();
     const spaces: Record<string, string> = {};
-    for (const name of new Set(["account", ...hostSpaces])) {
+    for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
       spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
     }
     if (options.waitForAccountRegistrySync !== undefined && options.waitForAccountRegistrySync !== false) {

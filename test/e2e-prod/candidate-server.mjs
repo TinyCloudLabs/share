@@ -23,6 +23,7 @@ const CONTENT_TYPES = {
 
 const routeFile = (pathname) => {
   if (pathname === "/share") return "/share/index.html";
+  if (pathname === "/courier" || pathname === "/courier/") return "/courier/index.html";
   if (pathname === "/viewer" || pathname.startsWith("/s/")) return "/viewer/index.html";
   if (pathname === "/how-it-works" || pathname === "/how-it-works/") return "/how-it-works.html";
   if (pathname === "/apps" || pathname === "/apps/") return "/apps/index.html";
