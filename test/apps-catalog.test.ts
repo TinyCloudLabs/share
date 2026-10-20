@@ -24,6 +24,9 @@ function privateCopy(): { publicDir: string; catalog: typeof catalog; folder: st
   return { publicDir, catalog: copy, folder: join(publicDir, "apps", "b", copy.apps[0]?.bundle.digest ?? "") };
 }
 
+/** One of each class the sheet must not show as a name, including the three that `trim()` keeps. */
+const INVISIBLE_SPACES = ["\u200b", "\u200c", "\u2060", "\u0085", "\u200d", "\ufeff", "\u202e", "\u3164", "\uffa0", "\u115f", "\u1160", "\u17b4", "\u17b5", "\u180e", "\u00a0", "\u2003", "\u2028", "\u2029", "\ud800", "\ue000", "\u0378", "\u0000", "\u034f", "\ufe0f", "a\u200bb", "app lications\u00a0"];
+
 describe("apps catalog digests", () => {
   it("every entry's digests and file hashes match the committed bytes", () => {
     expect(catalog.apps.length).toBeGreaterThan(0);
@@ -119,9 +122,9 @@ describe("apps catalog digests", () => {
     const { publicDir, catalog: copy, folder } = privateCopy();
     const file = join(folder, "manifest.json");
     const original = JSON.parse(readFileSync(file, "utf8"));
-    for (const [patch, message] of [[{ did: "did:key:zExample" }, "delegate DID"], [{ prefix: 5 }, "prefix must be text"], [{ prefix: null }, "prefix must be text"], [{ space: ["applications"] }, "space must be text"], [{ space: "  " }, "space must be text"], [{ permissions: [{ service: "tinycloud.kv", path: "a/", actions: ["put"], space: " " }] }, "a permission's space must be text"], [{ permissions: [{ service: "tinycloud.capabilities", path: "", actions: ["read"], space: "account" }] }, "permission-list read"]] as const) {
+    for (const [patch, message] of [[{ did: "did:key:zExample" }, "(did)"], [{ prefix: 5 }, "prefix is not text"], [{ prefix: null }, "prefix is not text"], [{ space: ["applications"] }, "space is not visible text"], [{ space: "  " }, "space is not visible text"], [{ permissions: [{ service: "tinycloud.kv", path: "a/", actions: ["put"], space: " " }] }, "names a space that is not visible text"], [{ permissions: [{ service: "tinycloud.capabilities", path: "", actions: ["read"], space: "account" }] }, "permission-list read"], [{ permissions: [{ service: "capabilities", path: "", actions: ["read"] }] }, "permission-list read"], ...INVISIBLE_SPACES.map((space) => [{ space }, "space is not visible text"] as const)] as const) {
       writeFileSync(file, JSON.stringify({ ...original, ...patch }));
-      expect(verifyCatalog(copy, publicDir).some((error) => error.includes(message)), message).toBe(true);
+      expect(verifyCatalog(copy, publicDir).some((error) => error.includes(message)), `${JSON.stringify(patch)}: ${message}`).toBe(true);
     }
   });
 

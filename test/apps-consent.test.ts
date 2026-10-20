@@ -90,6 +90,7 @@ describe("what the sheet says about what an app can do once it is opened", () =>
       { name: "a blank manifest space", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { space: "  " }), sdk: (m) => expect(resolveManifest(m).resources[0]?.space, "the SDK uses it as written").toBe("  ") },
       { name: "a permission with a blank space", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"], space: "  " }]), sdk: (m) => expect(resolveManifest(m).resources[0]?.space).toBe("  ") },
       { name: "a permission whose space is not text", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"], space: 5 as unknown as string }]), sdk: (m) => expect(() => resolveManifest(m), "the SDK refuses it itself").toThrow() },
+      { name: "the short-form permission-list read", manifest: manifestOf([{ service: "capabilities", path: "", actions: ["read"] }]), sdk: (m) => expect(resolveManifest(m).resources.some((resource) => resource.service === "capabilities" || resource.service === "tinycloud.capabilities"), "the SDK reads the short form as the same service").toBe(true) },
       { name: "an explicit permission-list read in another space", manifest: manifestOf([{ service: "tinycloud.capabilities", path: "", actions: ["read"], space: "account" }]), sdk: (m) => expect(resolveManifest(m).resources.filter((resource) => resource.service === "tinycloud.capabilities" && resource.space === "account").length, "the SDK would add it anyway; a hand-written one doubles it").toBeGreaterThan(0) },
       { name: "a space that is not text", manifest: manifestOf([{ service: "tinycloud.kv", path: "a/", actions: ["put"] }], { space: ["applications"] }), sdk: (m) => expect(() => resolveManifest(m), "the SDK refuses it itself").toThrow() },
     ];
@@ -103,6 +104,47 @@ describe("what the sheet says about what an app can do once it is opened", () =>
       for (const app of committed.apps) expect(unsupportedManifest(JSON.parse(readFileSync(join("public", app.bundle.root, "manifest.json"), "utf8"))), app.app_id).toBeNull();
       expect(unsupportedManifest(manifestOf([], { prefix: "" }))).toBeNull();
       expect(unsupportedManifest("not an object")).toBeNull();
+    });
+  });
+
+  describe("names the page would show as something they are not", () => {
+    // One of each class: control, format, surrogate, private-use, unassigned, line/paragraph separator, other spaces, fillers, selectors.
+    const CLASSES: [string, string][] = [
+      ["zero-width space U+200B", "\u200b"], ["zero-width non-joiner U+200C", "\u200c"], ["word joiner U+2060", "\u2060"], ["next line U+0085", "\u0085"],
+      ["zero-width joiner", "\u200d"], ["byte-order mark", "\ufeff"], ["right-to-left override", "\u202e"], ["Hangul filler U+3164", "\u3164"], ["halfwidth Hangul filler U+FFA0", "\uffa0"],
+      ["Hangul choseong filler U+115F", "\u115f"], ["Hangul jungseong filler U+1160", "\u1160"], ["Khmer vowel inherent U+17B4", "\u17b4"], ["Khmer vowel inherent U+17B5", "\u17b5"],
+      ["Mongolian vowel separator U+180E", "\u180e"], ["no-break space", "\u00a0"], ["em space", "\u2003"], ["line separator", "\u2028"], ["paragraph separator", "\u2029"],
+      ["lone surrogate", "\ud800"], ["private use", "\ue000"], ["unassigned", "\u0378"], ["NUL", "\u0000"], ["combining grapheme joiner", "\u034f"], ["variation selector", "\ufe0f"],
+      ["tag character", "\u{e0041}"], ["only plain spaces", "   "], ["nothing", ""], ["visible text with a zero-width space inside", "app\u200blications"], ["visible text with a no-break space inside", "my\u00a0space"],
+    ];
+    const kv = (extra: Record<string, unknown> = {}) => ({ service: "tinycloud.kv", path: "a/", actions: ["put"], ...extra }) as Permission;
+
+    it.each(CLASSES)("a space of %j is refused, in the manifest and in a permission", (_name, space) => {
+      expect(unsupportedManifest(manifestOf([kv()], { space })), "manifest space").toBeTypeOf("string");
+      expect(unsupportedManifest(manifestOf([kv({ space })])), "permission space").toBeTypeOf("string");
+    });
+
+    it("the SDK takes the three characters `trim()` keeps as a space name, written exactly as given: that is why they are refused", () => {
+      for (const space of ["\u200b", "\u200c", "\u2060"]) {
+        expect(space.trim(), "trim() leaves it").toBe(space);
+        expect(resolveManifest(manifestOf([kv({ space })]) as Parameters<typeof resolveManifest>[0]).resources[0]?.space).toBe(space);
+        expect(unsupportedManifest(manifestOf([kv({ space })]))).toBeTypeOf("string");
+      }
+    });
+
+    it.each(CLASSES.filter(([, value]) => value !== "" && value.replaceAll(" ", "") !== ""))("%j in a path, a service, a prefix or a secret's name is refused", (_name, hidden) => {
+      expect(unsupportedManifest(manifestOf([kv({ path: `a${hidden}b/` })]))).toBeTypeOf("string");
+      expect(unsupportedManifest(manifestOf([kv({ service: `tinycloud.kv${hidden}` })]))).toBeTypeOf("string");
+      expect(unsupportedManifest(manifestOf([kv()], { prefix: `p${hidden}` }))).toBeTypeOf("string");
+      expect(unsupportedManifest({ app_id: APP, name: "T", defaults: false, secrets: { [`API${hidden}KEY`]: true } })).toBeTypeOf("string");
+      expect(unsupportedManifest({ app_id: APP, name: "T", defaults: false, secrets: { API_KEY: { scope: `s${hidden}`, actions: "read" } } })).toBeTypeOf("string");
+    });
+
+    it("visible names, in any script, are not refused", () => {
+      for (const space of ["applications", "default", "my space", "café", "日本語", "acct-1_x.y"]) {
+        expect(unsupportedManifest(manifestOf([kv({ space })], { space })), space).toBeNull();
+      }
+      expect(unsupportedManifest(manifestOf([kv({ path: "notes café/" })], { prefix: "" }))).toBeNull();
     });
   });
 

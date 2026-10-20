@@ -180,20 +180,25 @@ sentence repeats is cut at 120 characters with a "…". An empty path is shown a
 including other apps' files.", "...every file in your default space.", "...the database healthlog,
 which is not inside its own folder."
 
-**Described, with no sentence of their own** (the lists already say them): key-value access in the
-app's own folder, reads of its own SQL or DuckDB databases, and the read of each space's permission list
-that the SDK adds itself (marked "added automatically"). Every other change or read gets a sentence.
+**Described, with no sentence of their own** (the lists already say them): any read inside the app's
+own folder, key-value changes inside the app's own folder, and the read of each space's permission list
+that the SDK adds itself (marked "added automatically"). Changes inside the own folder to anything
+other than key-value (SQL, DuckDB and any other service) do get a sentence ("This app can change or
+delete its own tables.", "...its own DuckDB data."), and so does every change or read outside the own
+folder.
 
 **Refused, not described**, because the SDK resolves them in a way the lists do not mirror:
 - a manifest `did` (it hands everything the app is granted to that key);
-- a `prefix` that is not text, or a `space` that is not text or is blank (the SDK uses them as written, where the page would read them as "not given"), in the manifest or in a permission;
-- an explicit `tinycloud.capabilities` permission (the SDK adds that read per space itself, so a hand-written one is a second row for the same thing).
+- a `prefix` that is not text, or a `space` (in the manifest or in a permission) that is not text or has no visible character in it (the SDK uses them as written, where the page would read them as "not given" or show an invisible name);
+- an invisible character, or any space other than U+0020, in a displayed space, path, service, prefix or secret name or scope. "Invisible" is one definition (`src/share/invisible-text.mjs`, shared with the sign-in labels): any Unicode control, format, surrogate, private-use, unassigned, line or paragraph separator character, any space separator other than U+0020, the Hangul, Khmer and Mongolian fillers, variation selectors and the combining grapheme joiner (U+200B, U+200C, U+2060 and U+0085 among them);
+- an explicit `tinycloud.capabilities` (or `capabilities`) permission (the SDK adds that read per space itself, so a hand-written one is a second row for the same thing).
 
-`unsupportedManifest` (`src/apps/access.ts`) refuses them before OpenKey opens (`bundle.ts`), the
-sheet says so and keeps Continue off, and `verifyCatalog` refuses a catalog manifest with one. No
-catalog app has any of them. `test/apps-consent.test.ts` checks each shape, that the lists equal what
+`unsupportedManifest` (`src/apps/manifest-support.mjs`, one function) is what the installer
+(`bundle.ts`, before OpenKey opens), the sheet (an alert, Continue off) and `verifyCatalog` all call. No
+catalog app is refused by it. `test/apps-consent.test.ts` checks each shape, that the lists equal what
 the SDK's `resolveManifest` resolves for every shape (nothing skipped), that every grant outside the
-own folder has a sentence, and that each refused shape is one the SDK really resolves differently.
+own folder has a sentence, that each refused shape is one the SDK really resolves differently, and each
+class of invisible character.
 
 When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the kit's samples do),
 `vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256

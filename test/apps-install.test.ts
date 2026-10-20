@@ -248,6 +248,9 @@ describe("verification before any write", () => {
     ["a prefix that is not text", { prefix: 5 }],
     ["a null prefix", { prefix: null }],
     ["a space that is not text", { space: ["applications"] }],
+    ["a space of zero-width characters", { space: "\u200b" }],
+    ["a space of U+2060", { space: "\u2060" }],
+    ["a space of U+200C", { space: "\u200c" }],
   ])("a manifest with %s is refused before OpenKey opens: nothing signed, nothing written", async (_name, patch) => {
     const { forged, fetch } = await forgedWith(new TextEncoder().encode(JSON.stringify({ ...healthManifest(), ...patch })));
     const node = fakeNode();
