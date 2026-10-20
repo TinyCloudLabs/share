@@ -399,6 +399,21 @@ body {
   margin-top: 0.45em;
 }
 
+.apps-unavailable {
+  display: grid;
+  gap: var(--tc-space-1);
+  font-weight: var(--tc-weight-regular, 400);
+  overflow-wrap: anywhere;
+}
+
+.apps-unavailable strong {
+  font-weight: var(--tc-weight-semibold);
+}
+
+.apps-unavailable::before {
+  display: none;
+}
+
 .apps-notes {
   display: grid;
   gap: var(--tc-space-2);

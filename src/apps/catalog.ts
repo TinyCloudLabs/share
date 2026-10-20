@@ -7,6 +7,10 @@ export interface CatalogEntry {
   description: string;
   /** A sample app: its install sheet says to use throwaway data only. */
   sample?: true;
+  /** Kill switch: the entry stays listed, but cannot be installed or opened. Lives here, not in the bundle, so the digests do not change. */
+  disabled?: true;
+  /** Why it is unavailable, in a sentence; shown as text. Present only with `disabled`. */
+  disabledReason?: string;
   publisher: { name: string; did?: string };
   /** `tag` is null when the entry pins a bare commit. */
   source: { repo: string; tag: string | null; commit: string };
@@ -28,4 +32,32 @@ export const catalog: Catalog = catalogJson as Catalog;
 /** "v1.2.0", or "commit 5059c5b" for an entry pinned to a bare commit. */
 export function versionLabel(entry: CatalogEntry): string {
   return entry.source.tag ?? `commit ${entry.source.commit.slice(0, 7)}`;
+}
+
+/** The longest reason the page shows; the catalog check refuses a longer one. */
+export const MAX_DISABLED_REASON_CHARS = 280;
+
+export type Availability = { available: true } | { available: false; reason: string };
+
+/** Whether an entry may be installed or opened. The /apps page and the runner both ask this, so one flag stops both. */
+export function availabilityOf(entry: CatalogEntry): Availability {
+  if (entry.disabled !== true) return { available: true };
+  const reason = typeof entry.disabledReason === "string" ? entry.disabledReason.trim() : "";
+  return { available: false, reason: reason === "" ? "This app is temporarily unavailable." : reason };
+}
+
+/** Thrown by `assertAvailable` for a disabled entry. */
+export class EntryDisabledError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super("catalog-entry-disabled");
+    this.name = "EntryDisabledError";
+    this.reason = reason;
+  }
+}
+
+/** The runner's gate (and the installer's): throws `EntryDisabledError` for a disabled entry, before any fetch or sign-in. */
+export function assertAvailable(entry: CatalogEntry): void {
+  const availability = availabilityOf(entry);
+  if (!availability.available) throw new EntryDisabledError(availability.reason);
 }

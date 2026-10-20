@@ -22,8 +22,13 @@ export interface AccessItem {
   service: string;
   /** The space it applies in, or null for the app's own default space ("applications"). */
   space: string | null;
-  /** Where it applies: a path, prefix, secret name or database name. */
+  /** Where it applies, for display: a path, prefix, secret name or database name; "everything in ..." for a whole space. */
   target: string;
+  /**
+   * The path as the SDK resolves it (prefix applied unless `skipPrefix`), for the notices:
+   * "" is the whole space; `<folder>/` a folder; no slash a root-level key or database.
+   */
+  path: string;
   /** Short action names, e.g. ["get", "list"]. */
   actions: string[];
 }
@@ -74,8 +79,12 @@ function folderFor(manifest: Json): string {
 }
 
 function resolvePath(folder: string, path: string, skipPrefix: boolean): string {
-  return skipPrefix || folder === "" ? path : `${folder}${path.replace(/^\/+/, "")}`;
+  const resolved = skipPrefix || folder === "" ? path : `${folder}${path.replace(/^\/+/, "")}`;
+  // "/" alone is "everything" in a key-value or SQL grant, the same as an empty path.
+  return /^\/*$/.test(resolved) ? "" : resolved;
 }
+
+const wholeSpace = (space: string | null): string => `everything in the ${space ?? DEFAULT_SPACE} space`;
 
 /** The SDK's reading of `defaults`: only `false` turns it off; "admin" and "all" widen; anything else is standard. */
 export function defaultsTier(value: unknown): "none" | "standard" | "admin" | "all" {
@@ -92,7 +101,7 @@ function defaultItems(manifest: Json): { read: AccessItem[]; change: AccessItem[
   if (tier === "none") return { read: [], change: [] };
   const folder = folderFor(manifest);
   const target = folder === "" ? "everything in the app's space" : `${folder}*`;
-  const item = (service: string, description: string, actions: string[]): AccessItem => ({ description, service: serviceLabel(service), space: null, target, actions });
+  const item = (service: string, description: string, actions: string[]): AccessItem => ({ description, service: serviceLabel(service), space: null, target, path: folder, actions });
   const read = [
     item("tinycloud.kv", "Everything the app has stored in its own folder (default grant).", ["get", "list", "metadata"]),
     item("tinycloud.sql", "Everything in the app's own SQL databases (default grant).", ["read"]),
@@ -121,7 +130,7 @@ function secretItem(key: string, spec: unknown): { item: Omit<AccessItem, "actio
   const scope = text(fields.scope);
   const rawActions = isObject(spec) ? (spec.actions === undefined ? ["read"] : typeof spec.actions === "string" ? [spec.actions] : spec.actions) : typeof spec === "string" ? [spec] : Array.isArray(spec) ? spec : ["read"];
   return {
-    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}` },
+    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}`, path: scope === null ? name : `${scope}/${name}` },
     actions: vaultActions(rawActions),
   };
 }
@@ -150,7 +159,9 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
     const path = typeof entry.path === "string" ? entry.path : null;
     if (service === null || path === null) continue;
     const space = text(entry.space) ?? manifestSpace;
-    place(summary, { description: text(entry.description), service: serviceLabel(service), space: space === DEFAULT_SPACE ? null : space, target: resolvePath(folder, path, entry.skipPrefix === true) }, actionsOf(entry.actions));
+    const resolved = resolvePath(folder, path, entry.skipPrefix === true);
+    const shownSpace = space === DEFAULT_SPACE ? null : space;
+    place(summary, { description: text(entry.description), service: serviceLabel(service), space: shownSpace, target: resolved === "" ? wholeSpace(shownSpace) : resolved, path: resolved }, actionsOf(entry.actions));
   }
 
   if (isObject(manifest.secrets)) {
@@ -164,7 +175,7 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
   // (A public-space companion exists only when a KV grant is handed to another DID, not at sign-in.)
   const all = [...summary.read, ...summary.change];
   for (const space of new Set(all.map((item) => item.space ?? DEFAULT_SPACE))) {
-    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, actions: ["read"] });
+    summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, path: "", actions: ["read"] });
   }
   return summary;
 }

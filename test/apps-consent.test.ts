@@ -1,0 +1,87 @@
+import { resolveManifest } from "@tinycloud/sdk-core";
+import { describe, expect, it } from "vitest";
+
+import { summarizeAccess } from "../src/apps/access.ts";
+import type { CatalogEntry } from "../src/apps/catalog.ts";
+import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor, reachOf, statementFor } from "../src/apps/consent.ts";
+
+const APP = "t.app";
+const OTHER = "other.app";
+const entry = (overrides: Partial<CatalogEntry> = {}): CatalogEntry => ({
+  app_id: APP, name: "T", description: "d", publisher: { name: "P" },
+  source: { repo: "https://example.test/r", tag: null, commit: "c".repeat(40) },
+  manifest: { path: "manifest.json", sha256: "a".repeat(64) },
+  bundle: { root: `/apps/b/${"b".repeat(64)}/`, files: [], digest: "b".repeat(64) }, knowledge: null, ...overrides,
+});
+const catalog: CatalogEntry[] = [entry(), entry({ app_id: OTHER, name: "Other App" })];
+
+type Permission = { service: string; path: string; actions: string[]; space?: string; skipPrefix?: boolean };
+const manifestOf = (permissions: Permission[], extra: Record<string, unknown> = {}) => ({ app_id: APP, name: "T", defaults: false, includePublicSpace: false, permissions, ...extra });
+const noticesOf = (manifest: unknown): string[] => consentFor(entry(), manifest, catalog).notices;
+
+/** Every shape a manifest can give a write or read grant: where it lands, and the sentence the sheet owes for it. */
+const SHAPES: { name: string; manifest: unknown; expected: string[] }[] = [
+  { name: "key-value write over the whole applications space", manifest: manifestOf([{ service: "tinycloud.kv", path: "", skipPrefix: true, actions: ["put", "del"] }]), expected: ["This app can change or delete any file in your applications space, including other apps' files."] },
+  { name: "the same through path '/'", manifest: manifestOf([{ service: "tinycloud.kv", path: "/", skipPrefix: true, actions: ["put"] }]), expected: ["This app can change or delete any file in your applications space, including other apps' files."] },
+  { name: "the same through an empty prefix", manifest: manifestOf([{ service: "tinycloud.kv", path: "/", actions: ["put"] }], { prefix: "" }), expected: ["This app can change or delete any file in your applications space, including other apps' files."] },
+  { name: "key-value write in another space (everything)", manifest: manifestOf([{ service: "tinycloud.kv", space: "default", path: "", skipPrefix: true, actions: ["put", "del"] }]), expected: ["This app can change or delete every file in your default space."] },
+  { name: "key-value write in another space (a folder)", manifest: manifestOf([{ service: "tinycloud.kv", space: "default", path: "notes/", skipPrefix: true, actions: ["put"] }]), expected: ["This app can change or delete files under notes/ in your default space."] },
+  { name: "key-value write in another space through the app's prefix", manifest: manifestOf([{ service: "tinycloud.kv", space: "account", path: "prefs/", actions: ["put"] }]), expected: [`This app can change or delete files under ${APP}/prefs/ in your account space.`] },
+  { name: "key-value write under another app's folder (skipPrefix)", manifest: manifestOf([{ service: "tinycloud.kv", path: `${OTHER}/photos/`, skipPrefix: true, actions: ["put"] }]), expected: [`This app can change or delete Other App's files under ${OTHER}/photos/.`] },
+  { name: "key-value write to a root-level key (skipPrefix, no folder)", manifest: manifestOf([{ service: "tinycloud.kv", path: "settings.json", skipPrefix: true, actions: ["put"] }]), expected: ["This app can change or delete files outside its own folder: settings.json in your applications space."] },
+  { name: "key-value write at a root-level path through an empty prefix", manifest: manifestOf([{ service: "tinycloud.kv", path: "data/", actions: ["put"] }], { prefix: "" }), expected: ["This app can change or delete files outside its own folder: data/ in your applications space."] },
+  { name: "key-value write under a folder no listed app owns", manifest: manifestOf([{ service: "tinycloud.kv", path: "com.unlisted.app/files/", skipPrefix: true, actions: ["put"] }]), expected: ["This app can change or delete files outside its own folder: com.unlisted.app/files/ in your applications space."] },
+  { name: "SQL write on a root database (skipPrefix)", manifest: manifestOf([{ service: "tinycloud.sql", path: "healthlog", skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete tables in the database healthlog, which is not inside its own folder."] },
+  { name: "SQL write over every database in the applications space", manifest: manifestOf([{ service: "tinycloud.sql", path: "", skipPrefix: true, actions: ["write", "schema"] }]), expected: ["This app can change or delete tables in every SQL database in your applications space, including other apps'."] },
+  { name: "SQL write on another app's database", manifest: manifestOf([{ service: "tinycloud.sql", path: `${OTHER}/db`, skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete tables in Other App's database (whole database)."] },
+  { name: "SQL write on all of another app's databases", manifest: manifestOf([{ service: "tinycloud.sql", path: `${OTHER}/`, skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete tables in Other App's database (all of its databases)."] },
+  { name: "SQL write in another space", manifest: manifestOf([{ service: "tinycloud.sql", space: "account", path: "ledger", skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete tables in the database ledger in your account space."] },
+  { name: "SQL write on every database in another space", manifest: manifestOf([{ service: "tinycloud.sql", space: "account", path: "", skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete tables in every SQL database in your account space."] },
+  { name: "SQL write on its own database", manifest: manifestOf([{ service: "tinycloud.sql", path: "db", actions: ["write"] }]), expected: [SQL_CHANGE_NOTICE] },
+  { name: "reads of every file and every database in the applications space", manifest: manifestOf([{ service: "tinycloud.kv", path: "", skipPrefix: true, actions: ["get", "list"] }, { service: "tinycloud.sql", path: "", skipPrefix: true, actions: ["read"] }]), expected: ["This app can read everything in your applications space, including other apps' data.", "This app can read every SQL database in your applications space, including other apps'."] },
+  { name: "reads in another space", manifest: manifestOf([{ service: "tinycloud.kv", space: "default", path: "", skipPrefix: true, actions: ["get"] }]), expected: ["This app can read every file in your default space."] },
+  { name: "a cross-app read of a whole database", manifest: manifestOf([{ service: "tinycloud.sql", path: `${OTHER}/db`, skipPrefix: true, actions: ["read"] }]), expected: ["This app can read Other App's database (whole database)."] },
+  { name: "DuckDB write elsewhere", manifest: manifestOf([{ service: "tinycloud.duckdb", path: "warehouse", skipPrefix: true, actions: ["write"] }]), expected: ["This app can change or delete DuckDB data: warehouse in your applications space."] },
+  { name: "a delegation grant", manifest: manifestOf([{ service: "tinycloud.delegation", path: "", skipPrefix: true, actions: ["create"] }]), expected: ["This app can hand access to your data on to other keys."] },
+  { name: "a secret write", manifest: { app_id: APP, name: "T", defaults: false, secrets: { API_KEY: ["read", "write"] } }, expected: ["This app can change or delete the secret API_KEY.", "This app can read the secret API_KEY."] },
+  { name: "the default grants with the app's own folder", manifest: { app_id: APP, name: "T" }, expected: [SQL_CHANGE_NOTICE] },
+  { name: "the default grants with no folder at all (prefix '')", manifest: { app_id: APP, name: "T", prefix: "" }, expected: ["This app can change or delete tables in every SQL database in your applications space, including other apps'.", "This app can change or delete any file in your applications space, including other apps' files.", "This app can read everything in your applications space, including other apps' data.", "This app can read every SQL database in your applications space, including other apps'."] },
+  { name: "the all-tier defaults add DuckDB", manifest: { app_id: APP, name: "T", defaults: "all" }, expected: [SQL_CHANGE_NOTICE, `This app can change or delete its own DuckDB data.`] },
+];
+
+describe("what the sheet says about what an app can do once it is opened", () => {
+  it.each(SHAPES.map((shape) => [shape.name, shape]))("%s", (_name, shape) => {
+    const notices = noticesOf(shape.manifest);
+    expect(notices.filter((notice) => notice !== SAMPLE_NOTICE).sort()).toEqual([...shape.expected].sort());
+  });
+
+  it("an app cannot ask for a reach the sheet does not state: every grant outside its own folder has a sentence, and the lists match what the SDK resolves", () => {
+    for (const { name, manifest } of SHAPES) {
+      const summary = summarizeAccess(manifest);
+      for (const kind of ["read", "change"] as const) {
+        for (const item of summary[kind]) {
+          const sentence = statementFor(item, kind, APP, (id) => catalog.find((candidate) => candidate.app_id === id)?.name);
+          const reach = reachOf(item, APP);
+          // Only an ordinary key-value grant on the app's own folder (and the SDK's own permission-list read) goes without one.
+          if (sentence === null) expect(item.service === "Capabilities" || (item.service === "Key-value" && reach === "own") || (kind === "read" && reach === "own"), `${name}: ${item.service} ${item.target}`).toBe(true);
+        }
+      }
+      // The mirror: what the lists show is what the real resolver resolves (secrets are vault paths there, so they are compared by name elsewhere).
+      if ((manifest as { secrets?: unknown }).secrets !== undefined) continue;
+      const labels: Record<string, string> = { "Key-value": "tinycloud.kv", "SQL database": "tinycloud.sql", DuckDB: "tinycloud.duckdb", Delegation: "tinycloud.delegation" };
+      const normal = (path: string): string => (/^\/*$/.test(path) ? "" : path);
+      const shown = new Set([...summary.read, ...summary.change].filter((item) => item.service !== "Capabilities").flatMap((item) => item.actions.map((action) => `${labels[item.service]}|${item.space ?? "applications"}|${normal(item.path)}|${action}`)));
+      const resolved = new Set(resolveManifest(manifest as Parameters<typeof resolveManifest>[0]).resources.filter((resource) => resource.service !== "tinycloud.capabilities").flatMap((resource) => resource.actions.map((action) => `${resource.service}|${resource.space}|${normal(resource.path)}|${action.slice(action.lastIndexOf("/") + 1)}`)));
+      expect([...shown].sort(), name).toEqual([...resolved].sort());
+    }
+  });
+
+  it("shows an empty path as everything in its space, never as an empty box", () => {
+    const summary = summarizeAccess(manifestOf([{ service: "tinycloud.kv", path: "", skipPrefix: true, actions: ["put"] }, { service: "tinycloud.kv", space: "default", path: "/", skipPrefix: true, actions: ["del"] }]));
+    expect(summary.change.map((item) => item.target)).toEqual(["everything in the applications space", "everything in the default space"]);
+  });
+
+  it("a sample says so first", () => {
+    expect(consentFor(entry({ sample: true }), manifestOf([]), catalog).notices[0]).toBe(SAMPLE_NOTICE);
+  });
+});

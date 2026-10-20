@@ -25,17 +25,20 @@
  * lists, and the release's own digest must recompute. The catalog digest is
  * computed separately over what was copied and is the one an installer
  * verifies; the kit's digest and version are recorded as `release`.
+ * Every copied path must pass the installer's path rule (no `..`, absolute, backslash, control or hidden-folder paths, no
+ * `dev/`, `tests/`, `scripts/` or `node_modules/` folders, no case collisions), and no component of it may be a symlink.
+ * An entry's `disabled`/`disabledReason` (the kill switch) is kept on update.
  * `--sample` marks the entry `sample: true` (kept on update): the install sheet
  * then tells people to use throwaway data only.
  */
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { CATALOG_SCHEMA, RELEASE_PATH, RELEASE_SCHEMA, describeBundle, fileListDigest, installPathProblem, listFiles, releaseDigest, sha256Hex, verifyCatalog } from "./apps-catalog.mjs";
+import { CATALOG_SCHEMA, RELEASE_PATH, RELEASE_SCHEMA, caseCollision, describeBundle, fileListDigest, installPathProblem, listFiles, releaseDigest, sha256Hex, verifyCatalog } from "./apps-catalog.mjs";
 
 class Fatal extends Error {}
 
@@ -69,14 +72,25 @@ function splitSpec(spec) {
   return { url: spec.slice(0, at), ref };
 }
 
+/** Refuses a path whose every component, from the checkout root down, is not a plain directory or file: no symlink anywhere on the way in. */
+function assertNoSymlinkOnPath(checkout, absolute) {
+  const parts = relative(checkout, absolute).split(sep);
+  let current = checkout;
+  for (const part of parts) {
+    current = join(current, part);
+    if (lstatSync(current).isSymbolicLink()) die(`${relative(checkout, current)} is a symlink; a bundle is plain files`);
+  }
+}
+
 /**
  * Copies the app's files into `staged`. With a `release.json`, ONLY the files
  * it lists (plus the release file) are copied, each checked against the sha256
  * the release declares; without one, the whole folder is the bundle.
  * @returns the parsed release record, or undefined when the folder has none
  */
-function stageBundle(from, staged) {
+function stageBundle(checkout, from, staged) {
   const releaseFile = join(from, RELEASE_PATH);
+  assertNoSymlinkOnPath(checkout, from);
   if (!existsSync(releaseFile)) {
     cpSync(from, staged, { recursive: true, filter: (source) => !/(^|\/)\.git$/.test(source) });
     return undefined;
@@ -87,6 +101,8 @@ function stageBundle(from, staged) {
   if (typeof record.app_id !== "string" || typeof record.version !== "string" || record.version === "" || typeof record.digest !== "string") die(`${RELEASE_PATH} needs app_id, version and digest`);
   if (!Array.isArray(record.files) || record.files.length === 0) die(`${RELEASE_PATH} lists no files`);
   const seen = new Set();
+  const collides = caseCollision(record.files.map((file) => String(file?.path)));
+  if (collides !== null) die(`${RELEASE_PATH}: ${collides} differs only by case from another path`);
   mkdirSync(staged, { recursive: true });
   for (const file of record.files) {
     const problem = installPathProblem(file?.path);
@@ -95,7 +111,9 @@ function stageBundle(from, staged) {
     if (seen.has(file.path)) die(`${RELEASE_PATH}: ${file.path} is listed twice`);
     seen.add(file.path);
     const source = join(from, file.path);
-    if (!existsSync(source) || !lstatSync(source).isFile()) die(`${file.path} is listed by ${RELEASE_PATH} but is not a regular file`);
+    if (!existsSync(source)) die(`${file.path} is listed by ${RELEASE_PATH} but does not exist`);
+    assertNoSymlinkOnPath(checkout, source);
+    if (!lstatSync(source).isFile()) die(`${file.path} is listed by ${RELEASE_PATH} but is not a regular file`);
     const bytes = readFileSync(source);
     if (sha256Hex(bytes) !== file.sha256 || (file.size !== undefined && bytes.length !== file.size)) die(`${file.path} does not match the sha256/size in ${RELEASE_PATH}`);
     mkdirSync(dirname(join(staged, file.path)), { recursive: true });
@@ -138,9 +156,16 @@ try {
   const from = join(checkout, subdir);
   if (!existsSync(from)) die(`${subdir} does not exist at ${ref}`);
   const staged = join(work, "bundle");
-  const releaseRecord = stageBundle(from, staged);
+  const releaseRecord = stageBundle(checkout, from, staged);
 
   const described = describeBundle(staged);
+  // The same rules the installer applies, over what was copied (a release-less folder included).
+  for (const file of described.bundle.files) {
+    const problem = file.path === RELEASE_PATH ? null : installPathProblem(file.path);
+    if (problem !== null) die(`${file.path} ${problem}`);
+  }
+  const folded = caseCollision(described.bundle.files.map((file) => file.path));
+  if (folded !== null) die(`${folded} differs only by case from another path`);
   const tooBig = described.bundle.files.find((file) => file.size > MAX_FILE_BYTES);
   if (tooBig !== undefined) die(`${tooBig.path} is ${tooBig.size} bytes; the limit is ${MAX_FILE_BYTES}`);
   const total = described.bundle.files.reduce((sum, file) => sum + file.size, 0);
@@ -160,11 +185,14 @@ try {
   if (publisher === undefined) die("--publisher <name> is required for a new app");
 
   const sample = values.sample === true || previous?.sample === true;
+  // A kill switch survives an update: re-vendoring must not quietly re-enable an app someone switched off.
+  const killSwitch = previous?.disabled === true ? { disabled: true, disabledReason: previous.disabledReason } : {};
   const entry = {
     app_id: manifest.app_id,
     name: manifest.name,
     description: manifest.description,
     ...(sample ? { sample: true } : {}),
+    ...killSwitch,
     publisher,
     source: { repo: url.replace(/\.git$/, ""), tag: COMMIT_ID.test(ref) ? null : ref, commit },
     ...(release === undefined ? {} : { release }),

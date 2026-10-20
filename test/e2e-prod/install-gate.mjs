@@ -331,7 +331,8 @@ try {
     // The SDK's registry record for this app is its id and a manifest hash (the web SDK stores `manifests: []`): the record cannot carry the app's own grants.
     const record_ = stored.records[HEALTH];
     assert.equal(record_?.appId, HEALTH);
-    assert.match(record_?.manifestHash ?? "", /^[0-9a-f]{16}$/, "the registry record has a manifest hash");
+    // (Its manifestHash is the hash of an empty manifest list, the same for every app: it says nothing about grants.)
+    assert.deepEqual(record_?.manifests, [], "the registry record carries manifests");
     assert(!JSON.stringify(record_).match(/tinycloud\.sql|secrets|"did"/), "the registry record carries the app's own runtime grants");
     // The session the install signed: its ReCap, decoded from the SIWE message OpenKey signed, is exactly the sheet's list.
     const sessionMessage = signedMessages.filter((entry) => entry.phase === "install-health").map((entry) => entry.message).find((message) => message.includes("urn:recap:"));
@@ -341,9 +342,17 @@ try {
     const sheetExpects = expectedResources(HEALTH).sort();
     assert.deepEqual(granted, sheetExpects, "the signed ReCap is not exactly the installer's two folders plus the account registry");
     report.signedRecap = granted;
+    // The session lasts exactly what the sheet says: "For the next 15 minutes" is derived from the constant the signed expiry comes from.
+    const issued = Date.parse(sessionMessage.match(/Issued At: (\S+)/)[1]);
+    const expires = Date.parse(sessionMessage.match(/Expiration Time: (\S+)/)[1]);
+    const said = (await page.$$eval("#apps-sheet p", (nodes) => nodes.map((node) => node.textContent))).find((text) => /For the next \d+ minutes?, Share can then:/.test(text ?? ""));
+    assert(said, "the sheet does not state how long the session lasts");
+    const minutes = Number(said.match(/For the next (\d+) minute/)[1]);
+    assert.equal(expires - issued, minutes * 60_000, `the signed session lasts ${(expires - issued) / 60_000} minutes; the sheet says ${minutes}`);
+    report.sessionMinutes = minutes;
     // OpenKey signatures this install needed (connect is separate): a brand-new account also hosts its spaces.
     const signs = during.filter((entry) => entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;
-    report.stages.freshInstall = { openKeySignatures: signs, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length, hasManifestHash: true } };
+    report.stages.freshInstall = { openKeySignatures: signs, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length } };
     // Nothing is kept by the page.
     const storage = await page.evaluate(async () => ({ entries: [...Object.entries(localStorage), ...Object.entries(sessionStorage), ...document.cookie.split(";").map((cookie) => cookie.trim()).filter(Boolean)], databases: (await indexedDB.databases()).map((database) => database.name ?? "") }));
     assert.deepEqual(storage, { entries: [], databases: [] }, "the page stored something while installing");

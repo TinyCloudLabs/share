@@ -223,3 +223,48 @@ describe("the states of an install", () => {
     expect(sheet.querySelector(".apps-install-status [role=alert]")).toBeNull();
   });
 });
+
+describe("the kill switch on the page", () => {
+  const HOSTILE_REASON = "<img src=x onerror=\"window.__pwned=1\"> Pulled while a problem is looked into.";
+  const off = (): CatalogEntry => ({ ...entry(HEALTH), disabled: true, disabledReason: HOSTILE_REASON });
+
+  it("shows 'Temporarily unavailable' and the reason as text on the card, with Install disabled", () => {
+    const fetchSpy = stubBundleFetch();
+    mountApps(list, sheet, [off(), entry(RECIPES)], { ports: () => { throw new Error("never"); } });
+    const [first, second] = [...list.children] as HTMLElement[];
+    expect(first?.textContent).toContain("Temporarily unavailable");
+    expect(first?.textContent).toContain(HOSTILE_REASON);
+    expect(first?.querySelectorAll("img, script, iframe, svg")).toHaveLength(0);
+    expect((window as unknown as Record<string, unknown>).__pwned).toBeUndefined();
+    expect(buttons(first as HTMLElement, "Install")[0]?.disabled).toBe(true);
+    expect(buttons(first as HTMLElement, "Details")[0]?.disabled).toBe(false);
+    // The other card is untouched.
+    expect(second?.textContent).not.toContain("Temporarily unavailable");
+    expect(buttons(second as HTMLElement, "Install")[0]?.disabled).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("the details sheet says so and its Install is disabled", async () => {
+    stubBundleFetch();
+    mountApps(list, sheet, [off()], { ports: () => { throw new Error("never"); } });
+    list.querySelector<HTMLButtonElement>("button")?.click();
+    await vi.waitFor(() => expect(sheet.querySelector("[aria-busy]")).toBeNull());
+    expect(sheet.textContent).toContain("Temporarily unavailable");
+    expect(sheet.textContent).toContain(HOSTILE_REASON);
+    expect(buttons(sheet, "Install")[0]?.disabled).toBe(true);
+  });
+
+  it("even a forced click opens no install: no manifest fetch, no Continue, no ports, no OpenKey", () => {
+    const fetchSpy = stubBundleFetch();
+    const makePorts = vi.fn(() => { throw new Error("the install ports must not be created"); });
+    mountApps(list, sheet, [off()], { ports: makePorts });
+    const install = buttons(list, "Install")[0] as HTMLButtonElement;
+    install.disabled = false; // what a script or a stale button could do
+    install.click();
+    expect(sheet.textContent).toContain("Temporarily unavailable");
+    expect(sheet.textContent).toContain("can't be installed right now");
+    expect(buttons(sheet, "Continue")).toHaveLength(0);
+    expect(makePorts).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

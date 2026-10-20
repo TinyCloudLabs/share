@@ -25,9 +25,31 @@ import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_SPACE = "applications";
-/** The install only copies files, so its session is short: 15 minutes (a brand-new account is asked several times). */
-export const INSTALL_EXPIRY = "15m";
+/** The install only copies files, so its session is short (a brand-new account is asked several times). Everything below derives from this one constant. */
 export const INSTALL_EXPIRY_MS = 15 * 60 * 1000;
+/** The manifest's own expiry string (ms-format), derived from the constant. */
+export const INSTALL_EXPIRY = `${INSTALL_EXPIRY_MS / 60_000}m`;
+/** How the sheet says how long the install's session lasts: "15 minutes". */
+export const INSTALL_SESSION_LABEL = `${INSTALL_EXPIRY_MS / 60_000} ${INSTALL_EXPIRY_MS === 60_000 ? "minute" : "minutes"}`;
+
+/** The most characters the shared sign-in accepts in the name OpenKey shows. */
+const APP_NAME_MAX_CHARS = 64;
+const APP_NAME_FALLBACK = "TinyCloud Share: install an app";
+// The helper refuses control and direction characters, and text that reads as a link or an address.
+const HIDDEN = /[\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c\ufeff]/gu;
+const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\S@\S/i;
+
+/**
+ * The name OpenKey shows for the install. DISPLAY ONLY: it is cut to what the
+ * helper accepts (64 characters, one printable line, nothing that reads as a
+ * link) and never identifies the app; the app id and the grants come from the
+ * catalog entry. A name the helper would refuse falls back to a fixed one.
+ */
+export function installAppName(appName: string): string {
+  const clean = appName.replace(HIDDEN, " ").replace(/\s+/g, " ").trim();
+  const candidate = [...`TinyCloud Share: install ${clean}`].slice(0, APP_NAME_MAX_CHARS).join("").trim();
+  return clean === "" || LINK_LIKE.test(candidate) ? APP_NAME_FALLBACK : candidate;
+}
 
 /**
  * What `signInWithManifest` may let the installer manifest ask for: `put` on
@@ -124,7 +146,7 @@ function registryItems(): { read: AccessItem[]; change: AccessItem[] } {
   const change: AccessItem[] = [];
   REGISTRY_RESOURCES.forEach((resource, index) => {
     const actions = resource.actions.map((action) => action.slice(action.lastIndexOf("/") + 1));
-    const base = { description: REGISTRY_DESCRIPTIONS[index] ?? null, service: SERVICE_LABEL[resource.service] ?? resource.service, space: resource.space, target: resource.path === "" ? resource.space : resource.path };
+    const base = { description: REGISTRY_DESCRIPTIONS[index] ?? null, service: SERVICE_LABEL[resource.service] ?? resource.service, space: resource.space, target: resource.path === "" ? resource.space : resource.path, path: resource.path };
     const isRead = (action: string): boolean => action === "get" || action === "list" || action === "read";
     const reads = actions.filter(isRead);
     const changes = actions.filter((action) => !isRead(action));

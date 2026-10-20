@@ -5,7 +5,7 @@ import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type BundleResponse, INSTALL_RECORD_PATH, bundleDigest, fetchVerifiedBundle, installPathProblem, sha256Hex } from "../src/apps/bundle.ts";
-import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
+import { EntryDisabledError, type CatalogEntry, assertAvailable, availabilityOf, catalog } from "../src/apps/catalog.ts";
 import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor } from "../src/apps/consent.ts";
 import { resetInstallFlights, startInstall } from "../src/apps/install-flight.ts";
 import { InstallError, type InstallPorts, type InstallSession, type PutResult, runInstall } from "../src/apps/install.ts";
@@ -242,7 +242,7 @@ describe("verification before any write", () => {
 });
 
 describe("a hostile or odd catalog entry is rejected at load, before any fetch", () => {
-  const hostile = ["../escape.txt", "a/../../b", "/etc/passwd", "a\\b.txt", "a\u0000b.txt", "nul\u0000", ".hidden", "knowledge/.env", "a//b", "a/./b", "", INSTALL_RECORD_PATH, "has space.md", "naïve.md", `${"a/".repeat(9)}b`, "x".repeat(200)];
+  const hostile = ["../escape.txt", "a/../../b", "/etc/passwd", "a\\b.txt", "a\u0000b.txt", "nul\u0000", ".hidden", "knowledge/.env", "a//b", "a/./b", "", INSTALL_RECORD_PATH, "has space.md", "naïve.md", "dev/shim.mjs", "node_modules/dep/index.js", "knowledge/tests/a.md", "Scripts/run.mjs", "test/x.md", `${"a/".repeat(9)}b`, "x".repeat(200)];
 
   it.each(hostile.map((path) => [JSON.stringify(path), path]))("path %s", async (_label, path) => {
     expect(installPathProblem(path)).not.toBeNull();
@@ -250,7 +250,16 @@ describe("a hostile or odd catalog entry is rejected at load, before any fetch",
     const entry = structuredClone(entryOf(HEALTH));
     entry.bundle.files.push({ path, sha256: "a".repeat(64), size: 1 });
     const fetchSpy = vi.fn();
-    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog" });
+    // Refused for the PATH (not just because the digest no longer follows), before any fetch.
+    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog", message: expect.stringContaining("file path") });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses two paths that differ only by case, for that reason, before any fetch", async () => {
+    const entry = structuredClone(entryOf(HEALTH));
+    entry.bundle.files.push({ path: "App.jsx", sha256: "a".repeat(64), size: 1 });
+    const fetchSpy = vi.fn();
+    await expect(fetchVerifiedBundle(entry, fetchSpy)).rejects.toMatchObject({ reason: "catalog", message: expect.stringContaining("differ only by case") });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -402,5 +411,42 @@ describe("what the pre-consent sheet says", () => {
     const readOnly = { app_id: entry.app_id, name: "R", defaults: false, permissions: [{ service: "tinycloud.sql", path: "db", actions: ["read"] }] };
     const { sample: _sample, ...plain } = entry;
     expect(consentFor(plain, readOnly, catalog.apps).notices).toEqual([]);
+  });
+});
+
+describe("the kill switch", () => {
+  const off = (reason?: string): CatalogEntry => ({ ...entryOf(HEALTH), disabled: true, ...(reason === undefined ? {} : { disabledReason: reason }) });
+
+  it("an entry is available unless it says otherwise, and a disabled one carries its reason", () => {
+    expect(availabilityOf(entryOf(HEALTH))).toEqual({ available: true });
+    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled." });
+    expect(availabilityOf(off("   "))).toEqual({ available: false, reason: "This app is temporarily unavailable." });
+    expect(availabilityOf(off())).toEqual({ available: false, reason: "This app is temporarily unavailable." });
+    // Only `true` switches it off.
+    expect(availabilityOf({ ...entryOf(HEALTH), disabled: false } as unknown as CatalogEntry)).toEqual({ available: true });
+  });
+
+  it("assertAvailable is the runner's gate: it throws for a disabled entry and for nothing else", () => {
+    expect(() => assertAvailable(entryOf(HEALTH))).not.toThrow();
+    expect(() => assertAvailable(off("Pulled."))).toThrow(EntryDisabledError);
+    try { assertAvailable(off("Pulled.")); } catch (error) { expect((error as EntryDisabledError).reason).toBe("Pulled."); }
+  });
+
+  it("a disabled entry is refused before anything is fetched, signed or written", async () => {
+    const entry = off("Pulled.");
+    const server = bundleServer(entry);
+    const fetchSpy = vi.fn(server.fetch);
+    const node = fakeNode();
+    await expect(runInstall(entry, node.ports({ fetch: fetchSpy }), () => undefined)).rejects.toMatchObject({ name: "InstallError", reason: "disabled", written: [] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(node.sessions).toEqual([]);
+    expect(node.calls).toEqual([]);
+  });
+
+  it("the flight refuses it too, without making the ports", async () => {
+    const makePorts = vi.fn(() => fakeNode().ports());
+    const flight = startInstall(off("Pulled."), makePorts);
+    expect((await flight.done)).toMatchObject({ phase: "failed", error: { reason: "disabled" } });
+    expect(makePorts).not.toHaveBeenCalled();
   });
 });

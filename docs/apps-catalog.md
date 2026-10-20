@@ -36,7 +36,20 @@ and requests only this origin's own files.
 - `source.tag` is `null` when the entry pins a bare commit (the source repo has no tag).
 - `knowledge` is `null` when the bundle has no `knowledge/` folder.
 - `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and the installer refuses a bundle whose manifest differs.
-- `sample` is `true` for sample apps and absent otherwise; `release` is present when the bundle ships a `release.json` (see "Sample apps").
+- `sample` is `true` for sample apps and absent otherwise; `release` is present when the bundle ships a `release.json` (see "Sample apps"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
+
+## Kill switch
+
+An entry can be switched off without touching its bundle:
+
+```json
+{ "app_id": "…", "disabled": true, "disabledReason": "Pulled while a problem is looked into." }
+```
+
+- `disabled` is `true` or absent; `disabledReason` (1 to 280 characters) is required with it and allowed only with it. `verifyCatalog` checks this.
+- The flag lives in the entry, not in the bundle, so no digest changes when it flips and the integrity checks stay valid. `vendor-app.mjs` keeps it when an app is updated.
+- The page shows the card with "Temporarily unavailable" and the reason (as text), disables Install on the card and in the details sheet, and a forced click opens only a sheet that says so. The installer refuses a disabled entry before it fetches a file or makes the sign-in ports (`InstallError` reason `disabled`).
+- The runner (T5b) uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops install and open.
 
 ## Digest
 
@@ -97,8 +110,10 @@ OpenKey load only then.
    `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size. The
    entry's own file list must hash to its digest, and its paths must pass the install rule
    (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`):
-   relative, ASCII `[A-Za-z0-9._-]` segments with no leading dot, at most 8 folders and 128
-   characters, and never `install.json`. One bad file refuses the whole install: nothing is
+   relative, ASCII `[A-Za-z0-9._-]` segments with no leading dot (so no hidden folder, `..`,
+   absolute, backslash or control-character path), at most 8 folders and 128 characters, never
+   `install.json`, no file below a `dev/`, `tests/`, `test/`, `scripts/` or `node_modules/` folder, and
+   no two paths that differ only by case. One bad file refuses the whole install: nothing is
    written and OpenKey is not opened.
 2. **One sign-in** (`signInWithManifest`; a brand-new account is also asked to host its spaces, which the gate measured as 4 OpenKey signatures, and an existing account as 1) with the *installer manifest* (`src/apps/install-plan.ts`).
    It takes the app's id, name and description from the verified manifest and nothing else:
@@ -120,9 +135,12 @@ OpenKey load only then.
 5. **Apps list.** The SDK records the app in the account's apps list in the background right after
    sign-in; the install waits for it to show (and registers it itself once if it does not). The
    record is the installer's: the app id and a manifest hash (the web SDK stores `manifests: []`),
-   never the app's own grants. Because the SDK does that at sign-in, the apps
-   list can show an app whose install did not finish: `install.json` is the marker of a complete
-   install.
+   never the app's own grants. **A half-finished install shows in the apps list**, because the SDK
+   records the app at sign-in, before any file is written: `install.json`, written last, is the only
+   marker of a complete install (the runner, agents and the knowledge docs must use it, not the list).
+   For the same reason the record cannot be used to compare grants later: its hash is the hash of an
+   empty manifest list, the same for every app. The runner (T5b) caps an app's grants against the
+   catalog manifest instead.
 
 No standing delegation is created: the session is in memory for 15 minutes at most and is disposed when the install ends; opening an
 app later asks for a fresh sign-in. Opening an installed app (`/apps/run#<app_id>`) is the next slice;
@@ -133,8 +151,10 @@ install and starts no second sign-in. A catalog update between a failed install 
 fill the missing files from the newer bundle while `install.json` records the newer digest; updates
 are a separate feature.
 
-`test/apps-install*.test.ts` cover verification, create-only handling, resume, the double click and
-the sheet. `node test/e2e-prod/install-gate.mjs` installs the Health Log sample on the hermetic
+`test/apps-install*.test.ts` cover verification, create-only handling (through the real port with a
+fake client: every put carries `ifNoneMatch`, only a precondition failure means "kept"), the
+sheet-versus-SDK check before OpenKey opens, the session length (one constant, `INSTALL_EXPIRY_MS`; the
+sheet's "15 minutes" is derived from it), disposal, resume, the double click and the sheet. `node test/e2e-prod/install-gate.mjs` installs the Health Log sample on the hermetic
 native stack in a real browser (see that file's header).
 
 ## Sample apps
@@ -144,6 +164,16 @@ only." and its card shows a Sample badge. Any app that writes SQL (the default g
 says "This app can change or delete its own tables.", and a grant on another app's database is listed
 as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
 `summarizeAccess` the lists use.)
+
+Those sentences cover every reach a grant can have, from its resolved path (`path` on each list
+item): its own folder, the whole space (an empty path), another app's folder, a root-level key or
+database that no folder holds (`skipPrefix` with a bare name), and any space other than
+`applications`. A change or read outside the app's own folder always gets a sentence ("This app can
+change or delete any file in your applications space, including other apps' files.", "...every file in
+your default space.", "...the database healthlog, which is not inside its own folder."), and an empty
+path is shown as "everything in the <space> space". Own-folder key-value access is the only grant with
+none. `test/apps-consent.test.ts` checks each shape, that the lists equal what the SDK's
+`resolveManifest` resolves, and that every grant outside the own folder has a sentence.
 
 When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the kit's samples do),
 `vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256

@@ -46,6 +46,8 @@ export const INSTALL_RECORD_PATH = "install.json";
 export const MAX_INSTALL_PATH_LENGTH = 128;
 export const MAX_INSTALL_PATH_DEPTH = 8;
 const INSTALL_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+/** Folders that belong to an app's development, never to the app an installer copies. A bundle cannot carry a file below one. */
+export const INSTALL_FORBIDDEN_FOLDERS = Object.freeze(["dev", "tests", "test", "scripts", "node_modules"]);
 
 /**
  * The stricter rule for a file an installer will write into the user's
@@ -63,6 +65,22 @@ export function installPathProblem(path) {
   if (segments.length > MAX_INSTALL_PATH_DEPTH) return `is more than ${MAX_INSTALL_PATH_DEPTH} folders deep`;
   if (!segments.every((segment) => INSTALL_SEGMENT.test(segment))) return "may only use letters, digits, \".\", \"_\" and \"-\" (no leading dot)";
   if (path === INSTALL_RECORD_PATH) return `${INSTALL_RECORD_PATH} is reserved for the installer`;
+  if (segments.slice(0, -1).some((segment) => INSTALL_FORBIDDEN_FOLDERS.includes(segment.toLowerCase()))) return "is inside a development folder (dev, tests, scripts, node_modules)";
+  return null;
+}
+
+/**
+ * Keys are case-sensitive on the node but not on every machine that reads a
+ * bundle: two paths that differ only by case are refused.
+ * @returns {string|null} the first path that collides with an earlier one, or null.
+ */
+export function caseCollision(paths) {
+  const seen = new Set();
+  for (const path of paths) {
+    const folded = path.toLowerCase();
+    if (seen.has(folded)) return path;
+    seen.add(folded);
+  }
   return null;
 }
 
@@ -138,6 +156,7 @@ export function describeBundle(dir) {
   };
 }
 
+export const MAX_DISABLED_REASON_CHARS = 280;
 export const RELEASE_PATH = "release.json";
 export const RELEASE_SCHEMA = "tinycloud.app-release/v1";
 
@@ -172,6 +191,10 @@ export function verifyCatalog(catalog, publicDir) {
     else seenIds.add(entry.app_id);
     if (isText(entry.app_id) && installAppIdProblem(entry.app_id) !== null) fail(`app_id ${installAppIdProblem(entry.app_id)}`);
     if (entry.sample !== undefined && entry.sample !== true) fail("sample must be true when present");
+    // The kill switch lives in the entry, not in the bundle: flipping it changes no digest.
+    if (entry.disabled !== undefined && entry.disabled !== true) fail("disabled must be true when present");
+    if (entry.disabled === true && !isText(entry.disabledReason)) fail("disabled needs a disabledReason");
+    if (entry.disabledReason !== undefined && (entry.disabled !== true || !isText(entry.disabledReason) || entry.disabledReason.length > MAX_DISABLED_REASON_CHARS)) fail(`disabledReason must be a sentence of at most ${MAX_DISABLED_REASON_CHARS} characters, and only on a disabled entry`);
     for (const field of ["name", "description"]) if (!isText(entry[field])) fail(`${field} is required`);
     if (!isObject(entry.publisher) || !isText(entry.publisher.name)) fail("publisher.name is required");
     else if (entry.publisher.did !== undefined && !isText(entry.publisher.did)) fail("publisher.did must be a non-empty string when present");
@@ -201,6 +224,8 @@ export function verifyCatalog(catalog, publicDir) {
       if (position > 0 && isObject(previous) && typeof previous.path === "string" && compareByPath(previous, file) >= 0) { fail(`${file.path}: files must be sorted by path without duplicates`); listOk = false; }
     }
     if (!listOk) continue;
+    const collides = caseCollision(bundle.files.map((file) => file.path));
+    if (collides !== null) { fail(`${collides}: differs only by case from another path`); continue; }
     if (fileListDigest(bundle.files) !== bundle.digest) fail("bundle.digest does not match the declared file list");
 
     // The declared list against the bytes on disk.

@@ -17,13 +17,12 @@ import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { loadSharePublicConfig, type SharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn, WalletApprovalFailure } from "../share/openkey-session.js";
-import { INSTALL_EXPIRY_MS, INSTALL_SPACE, expectedInstallerResources, installerScope, resourceMismatch, type RequestedResource } from "./install-plan.ts";
+import { INSTALL_EXPIRY_MS, INSTALL_SPACE, expectedInstallerResources, installAppName, installerScope, resourceMismatch, type RequestedResource } from "./install-plan.ts";
 import { InstallError, type InstallFailure, type InstallPorts, type InstallSession, type PutResult } from "./install.ts";
 
 /** The helper waits for the SDK's apps-list sync; this is only the bounded fallback if the list still lacks the app. */
 const LISTED_POLL_MS = 1_000;
 const LISTED_ATTEMPTS = 5;
-const APP_NAME_MAX = 80;
 
 function guardFailure(error: unknown): InstallFailure | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -75,7 +74,7 @@ export function createInstallPorts(): InstallPorts {
           hostSpaces: [INSTALL_SPACE],
           guardApproval,
           onClient: (created) => { client = created; },
-          appName: `TinyCloud Share: install ${manifest.name}`.slice(0, APP_NAME_MAX),
+          appName: installAppName(manifest.name),
           sessionPrefix: "tinycloud-share-install",
           expiry: INSTALL_EXPIRY_MS,
           waitForAccountRegistrySync: true,
