@@ -31,7 +31,9 @@ export type SenderFailureKind =
   | "linkOnlyFolder"
   | "folderUnsupported"
   | "signIn"
-  | "spaceNotReady";
+  | "spaceNotReady"
+  | "approvalCancelled"
+  | "approvalTimeout";
 
 export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   session: "Your session expired. Reload and sign in again.",
@@ -65,6 +67,8 @@ export const SENDER_FAILURE: Record<SenderFailureKind, string> = {
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
+  approvalCancelled: "You closed the OpenKey window before approving. No link was created. Press Create link to try again.",
+  approvalTimeout: "OpenKey didn't get an answer in time. No link was created. Press Create link to try again.",
   spaceNotReady: "Your TinyCloud storage isn't ready for this yet. This is a known problem we're fixing. Please try again later. If it keeps failing, contact support with code SPACE_NOT_READY.",
 };
 
@@ -124,7 +128,7 @@ export function httpStatusOf(error: unknown): number | undefined {
 
 /** A cancelled or unanswered approval, or another approval still open: the share is untouched and nothing went wrong. */
 export function revokeOutcomeIsNeutral(error: unknown): boolean {
-  return error instanceof Error && (error.message === "revoke-approval-cancelled" || error.message === "revoke-approval-abandoned" || error.message === "revoke-another-approval");
+  return error instanceof Error && (error.message === "revoke-approval-cancelled" || error.message === "revoke-approval-abandoned" || error.message === "revoke-another-approval" || error.message === "revoke-session-ended");
 }
 
 /**
@@ -137,6 +141,7 @@ export function revokeFailureMessage(error: unknown): string {
   if (text === "revoke-approval-cancelled") return "Revoke cancelled. The share is still active.";
   if (text === "revoke-approval-abandoned") return "The approval wasn't completed. The share is still active. Try again.";
   if (text === "revoke-another-approval") return "Another approval is waiting. Finish or cancel it in the OpenKey window, then try again. The share is still active.";
+  if (text === "revoke-session-ended") return "You signed out before this finished. Sign in again and check the share's status.";
   const reason = ((): string => {
     const status = httpStatusOf(error);
     if (text === "revoke-unbound-policy-root") return "This share was made with a different account or TinyCloud node than this session. Sign in with the account that created it.";

@@ -212,7 +212,8 @@ describe("TC-657 revoke retry after a lost response", () => {
 });
 
 describe("TC-721 revoke is confirmed, shown and never silent", () => {
-  const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]');
+  // By class, not name: while a revoke is pending the button's name is "Revoking retry-me.md".
+  const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>(".sender-revoke");
   const dialog = (root: HTMLElement) => root.querySelector<HTMLElement>(".sender-confirm-dialog");
 
   it("opens an in-page confirmation even when native dialogs are suppressed, and revokes nothing until it is confirmed", async () => {
@@ -220,8 +221,11 @@ describe("TC-721 revoke is confirmed, shown and never silent", () => {
     revokeButton(root)!.click();
     expect(nativeConfirm).not.toHaveBeenCalled();
     expect(dialog(root)?.textContent).toContain("Revoke this share?");
-    expect(dialog(root)?.textContent).toContain("including anyone they passed it to");
-    expect(dialog(root)?.textContent).toContain("Anyone holding a share link can also revoke it.");
+    // An addressed share cannot be passed on, and only its owner or signer can revoke it: no link-holder caveat.
+    expect(dialog(root)?.textContent).toContain("The people you shared it with lose access right away");
+    expect(dialog(root)?.textContent).toContain("The encrypted copy stays in your TinyCloud until you delete it");
+    expect(dialog(root)?.textContent).toContain("Share can't delete it yet");
+    expect(dialog(root)?.textContent).not.toContain("Anyone holding a share link can also revoke it.");
     expect(revokePolicyRootV3).not.toHaveBeenCalled();
     confirmInPage(root);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());

@@ -2,6 +2,7 @@ import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { trackWalletApproval } from "./wallet-approval.js";
 
 export interface OpenKeyShareSession {
   readonly address: string;
@@ -36,7 +37,7 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
  * non-sign-in purposes back to OpenKey's server-side Auto-Sign here.
  */
 async function explicitOpenKeyApproval(session: OpenKeyShareSession, request: SignRequest): Promise<SignResponse> {
-  const { signature } = await session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId });
+  const { signature } = await trackWalletApproval(() => session.openkey.signMessage({ message: request.message, keyId: session.auth.keyId }));
   return typeof signature === "string" && await verifyEip191MessageSignature(request.message, signature, session.address)
     ? { approved: true, signature }
     : { approved: false, reason: "OpenKey did not return a signature from the signed-in account" };
@@ -121,7 +122,7 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
     const mine = ++this.asked;
     let signature: unknown;
     try {
-      signature = await super.request(args);
+      signature = await trackWalletApproval(() => super.request(args));
     } catch (caught) {
       if (mine === this.asked) this.failure = approvalFailureOf(caught);
       throw caught;

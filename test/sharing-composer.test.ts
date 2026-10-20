@@ -60,6 +60,8 @@ const EXPECTED_SENDER_COPY = {
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
   spaceNotReady: "Your TinyCloud storage isn't ready for this yet. This is a known problem we're fixing. Please try again later. If it keeps failing, contact support with code SPACE_NOT_READY.",
+  approvalCancelled: "You closed the OpenKey window before approving. No link was created. Press Create link to try again.",
+  approvalTimeout: "OpenKey didn't get an answer in time. No link was created. Press Create link to try again.",
 } as const;
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");

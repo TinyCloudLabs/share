@@ -28,6 +28,9 @@ vi.mock("../src/share/openkey-session.js", () => ({
   createTinyCloudClient: async () => ({ vault: { unlock: async () => ({ ok: true, data: undefined }) }, spaceId: "applications", did: "did:pkh:eip155:1:0xabc" }),
   createTinyCloudUploader: async () => async () => undefined,
   MAX_SHARE_FILE_BYTES: 100 * 1024 * 1024,
+  SHARE_APPLICATION_PREFIX: "xyz.tinycloud.share/",
+  SHARE_APPLICATION_SPACE: "applications",
+  ownerEncryptionNetwork: (address: string) => `urn:tinycloud:encryption:did:pkh:eip155:1:${address.toLowerCase()}:default`,
 }));
 
 vi.mock("../src/share/capability-list.js", () => ({
@@ -61,6 +64,7 @@ vi.mock("../src/share/sender-home.js", () => ({
     marker.className = "sender-home";
     root.append(marker);
   },
+  endSenderLibrary: () => undefined,
 }));
 
 vi.mock("../src/share/composer.js", () => ({
@@ -72,6 +76,7 @@ vi.mock("../src/share/composer.js", () => ({
     marker.className = "composer-form";
     root.append(marker);
   },
+  endShareComposer: () => undefined,
   copySelectedSource: async () => undefined,
   emailDomainOf: (value: string) => value,
 }));

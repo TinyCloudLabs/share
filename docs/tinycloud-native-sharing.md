@@ -51,3 +51,15 @@ On the click, Share signs the recipient in with OpenKey (`signInWithManifest` in
 - An OpenKey approval is asked for one at a time, for up to 60 seconds. While it is open the bar says "Approve in the OpenKey window to save a copy"; a cancel, a timeout or another failure is a plain message and the viewer stays usable. When it is done the bar says "Saved." with a link to "Open in TinyCloud", and announces it.
 
 `signInWithManifest({ manifest, config, session?, onStatus?, hostSpaces?, guardApproval?, onClient? })` takes any manifest (or a function of the signed-in address) and returns `{ tinycloud, session, spaces }`; the library, Save a copy and an app-install flow differ only in the manifest they pass.
+
+While Share waits for the OpenKey approval (creating a share or revoking one), the page says "Approve in the OpenKey window", offers Cancel (it closes the OpenKey window; the action can be tried again), and says so if the wait runs long. The hint disappears the moment the approval closes. After a cancel or a timeout no link was created and nothing was revoked.
+
+Revoking stops access; it does not delete anything. The encrypted copy stays in the owner's TinyCloud until the owner deletes it, because Share's session holds no delete grant. Anyone who already downloaded or copied the content keeps their copy. A link can be revoked by anyone who holds it, so the confirmation says so for link shares.
+
+The library shows what the owner's node says about each share, not only what this browser saved: a share revoked or expired elsewhere (the account site, the CLI) is shown as Revoked or Expired when the library loads, when "Check status" is pressed and when the tab is focused again. Share never shows a status as confirmed when the node could not be asked; it says statuses may be out of date.
+
+"Sign out" in the bar above every screen ends the OpenKey sign-in on this device and clears Share's session in the tab. Shares stay active; nothing is revoked or deleted.
+
+The status check waits at most 4 seconds for the node; after that the statuses are shown as unconfirmed ("may be out of date") and "Check again" asks once more. Signing out also clears anything still in flight (an open approval, a revoke under way), so the next sign-in starts clean.
+
+A file name with a space or a non-ASCII character (`q3 report.md`, `über.md`) is stored under a readable URI-safe name (`q3-report.md`, `uber.md`), by the same rule as `tc share publish`, because the node refuses other keys. The library and an addressed share's download show the name you chose; a link page shows the stored name. A name that cannot be shared at all (`..`, a slash, a control or bidi character) is refused with "rename it".
