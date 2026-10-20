@@ -56,8 +56,8 @@ export const JSX_SANDBOX_PATH = "/jsx-sandbox.html";
 
 /**
  * Policy of the bridge document; the srcdoc child inherits it. 'unsafe-eval'
- * adds no capability inside the opaque, network-less frame and lets the
- * runtime evaluate compiled artifact code. `form-action 'none'`,
+ * adds no capability beyond what the policy leaves open inside the opaque
+ * frame and lets the runtime evaluate compiled artifact code. `form-action 'none'`,
  * `frame-src 'none'` and `base-uri 'none'` close forms, navigation and base
  * rewrites; `worker-src 'none'` and `object-src 'none'` close workers and
  * plugins. See the header comment for what CSP does not cover.

@@ -15,7 +15,7 @@
  * dismissable; the privacy limits of the sandbox (what a sandboxed page can still
  * reveal) are one click away in the same words the viewer uses.
  */
-import { type CatalogEntry, catalog, versionLabel } from "./catalog.ts";
+import { type CatalogEntry, availabilityOf, catalog, versionLabel } from "./catalog.ts";
 import { consentFor } from "./consent.ts";
 import { createCapabilityBridge, type CapabilityBridge } from "./bridge.ts";
 import { type RunFailure, type RunPorts, type RunProgress, type RunningApp, RunError, openApp, catalogEntryFor, APP_ID } from "./run.ts";
@@ -23,7 +23,7 @@ import { createRunPorts } from "./run-session.ts";
 import { loadManifest } from "./manifest.ts";
 import { accessSection, el, noticeList } from "./view.ts";
 import { runnerHref } from "./install-plan.ts";
-import { ARTIFACT_NOTICE_DETAIL } from "../viewer/artifact-notice.js";
+import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
 import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS } from "../share/approval-hint.js";
 import type { JsxCapabilityReply } from "../viewer/jsx-sandbox.js";
 import { type RenderJsxOptions, renderJsxPage } from "../viewer/jsx-render.js";
@@ -39,18 +39,36 @@ interface Screen {
   readonly detail?: string | undefined;
   readonly retry?: string | undefined;
   readonly toApps?: boolean | undefined;
+  /** Where "Repair" goes (the install sheet in repair mode), for a refusal that replacing the code files fixes. */
+  readonly repairHref?: string | undefined;
+  /** Command lines shown as code, one per line (set with textContent). */
+  readonly commands?: readonly string[] | undefined;
   readonly tone?: Tone;
 }
 
 const OPEN_AGAIN = (name: string): string => `Open ${name} again`;
 
 /** The plain screen for each way an open can end without starting the app. */
-export function failureScreen(reason: RunFailure, name: string, detail?: string): Screen {
+export function failureScreen(reason: RunFailure, name: string, detail?: string, appId?: string): Screen {
   switch (reason) {
     case "unknown-app": return { title: "We don't know this app", lines: ["This address doesn't match an app in the catalog."], toApps: true };
+    case "unavailable": return { title: "This app is temporarily unavailable", lines: [detail ?? "It has been switched off for now.", "Nothing was started."], toApps: true };
     case "not-installed": return { title: "This app needs to be installed first", lines: [`${name} isn't saved in your TinyCloud yet. Install it from the apps page, then open it here.`], toApps: true };
     case "damaged": return { title: "Your saved copy of this app can't be used", lines: ["Its files in your TinyCloud are incomplete, or were edited into something this page can't read. Nothing was started."], toApps: true, detail };
-    case "not-listed": return { title: "This version of the app isn't in the catalog any more", lines: ["You installed a version that has since been replaced, so what it asks for can't be checked. Nothing was started."], toApps: true };
+    case "code-mismatch": return {
+      title: "This app's code doesn't match the pinned version",
+      lines: ["Remove it and install again.", "Repair replaces the app's code files with the pinned version. Your data is untouched. Nothing was started."],
+      toApps: true, detail, tone: "danger", ...(appId === undefined ? {} : { repairHref: `${APPS_HREF}#repair=${encodeURIComponent(appId)}` }),
+    };
+    case "not-listed": return {
+      title: "This version of the app isn't in the catalog any more",
+      lines: [
+        "You installed a version that has since been replaced or removed, so what it asks for can't be checked and it can't be repaired from here. Nothing was started.",
+        `To remove it, delete the files under ${appId ?? "<app id>"}/app/ in your TinyCloud (your data in the other folders stays), then install the listed version. With the CLI:`,
+      ],
+      toApps: true,
+      commands: [`tinycloud kv list --space applications --prefix ${appId ?? "<app id>"}/app/`, "tinycloud kv delete --space applications <each key listed>"],
+    };
     case "catalog-unavailable": return { title: "Couldn't check this app against the catalog", lines: ["Check your connection and try again. Nothing was started."], retry: "Try again" };
     case "widened": return {
       title: "This app asks for more than it did when you installed it",
@@ -82,7 +100,7 @@ function gitHostPath(repo: string): string {
 
 /** "This app was installed from <source>@<commit>…": from the catalog entry, never from the editable install record. */
 export function provenanceText(entry: CatalogEntry): string {
-  return `This app was installed from ${gitHostPath(entry.source.repo)}@${entry.source.commit.slice(0, 7)} (${versionLabel(entry)}, bundle ${entry.bundle.digest.slice(0, 12)}). It runs in a sandbox with no network access and can use only what's listed under “What this app can do”.`;
+  return `This app was installed from ${gitHostPath(entry.source.repo)}@${entry.source.commit.slice(0, 7)} (${versionLabel(entry)}, bundle ${entry.bundle.digest.slice(0, 12)}). It runs in a sandbox and can use only what's listed under “What this app can do”.`;
 }
 
 export interface RunnerOptions {
@@ -108,7 +126,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   // ---- chrome (always visible, outside the frame)
   const title = el("h1", "run-title", [entry?.name ?? "Open an app"], { tabindex: "-1" });
-  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox with no network access." : provenanceText(entry)]);
+  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : provenanceText(entry)]);
   const openAnother = el("a", "tc-button apps-button", ["Open another app"], { href: APPS_HREF });
   const signOut = el("button", "tc-button apps-button", ["Sign out of this app"], { type: "button" });
   signOut.disabled = true;
@@ -116,10 +134,11 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const status = el("div", "run-status-region", [], { role: "status" });
   const access = el("details", "apps-files run-details", [el("summary", null, ["What this app can do"])]);
   access.hidden = true;
-  const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, [ARTIFACT_NOTICE_DETAIL])]);
+  const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["A page in the sandbox can't load content or run scripts outside its box, but it can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
   const bar = el("section", "run-bar tc-panel", [
     el("div", "run-bar__top", [title, el("div", "run-actions", [openAnother, signOut])]),
     provenance,
+    el("p", "run-caution", [CAUTION]),
     status,
   ], { "aria-label": "App details" });
   // Below the app, where it never pushes the app off the screen; open on the start screen, closed while it runs.
@@ -160,6 +179,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const showScreen = (screen: Screen, onRetry?: () => void): void => {
     const heading = el("h2", "run-screen__title", [screen.title], { tabindex: "-1" });
     const parts: HTMLElement[] = [heading, ...screen.lines.map((line) => el("p", null, [line]))];
+    if (screen.commands !== undefined) parts.push(el("p", "run-screen__detail", screen.commands.flatMap((line, index) => [...(index === 0 ? [] : [el("br", null)]), el("code", null, [line])])));
     if (screen.detail !== undefined) parts.push(el("p", "run-screen__detail", [el("code", null, [screen.detail])]));
     const actions: HTMLElement[] = [];
     if (screen.retry !== undefined && onRetry !== undefined) {
@@ -167,6 +187,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       retry.addEventListener("click", onRetry);
       actions.push(retry);
     }
+    if (screen.repairHref !== undefined) actions.push(el("a", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, ["Repair"], { href: screen.repairHref }));
     if (screen.toApps === true) actions.push(el("a", `tc-button ${actions.length === 0 ? "tc-button--primary " : ""}apps-button`, ["Go to Apps"], { href: APPS_HREF }));
     if (actions.length > 0) parts.push(el("div", "run-screen__actions", actions));
     const alert = screen.tone === "danger";
@@ -194,6 +215,9 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     showScreen({ title: "Signed out of this app", lines: ["Its session is over. Nothing was changed in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
   signOut.addEventListener("click", signOutNow);
+  // The tab is going away (or into the back/forward cache): the session ends with it, and a restored page says so.
+  const onPageHide = (): void => { if (running !== undefined) signOutNow(); };
+  view.addEventListener("pagehide", onPageHide);
 
   const paint = (mine: number, progress: RunProgress): void => {
     if (mine !== attempt || entry === undefined) return;
@@ -221,7 +245,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
         view.clearTimeout(slowTimer);
         if (mine !== attempt || destroyed) return;
         const failure = error instanceof RunError ? error : new RunError("failed", { cause: error });
-        const screen = failureScreen(failure.reason, entry.name, failure.detail);
+        const screen = failureScreen(failure.reason, entry.name, failure.detail, appId);
         setStatus(screen.title, screen.tone === "danger" ? "danger" : "warning");
         showScreen(screen, begin);
       },
@@ -272,6 +296,11 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   if (appId === null || !APP_ID.test(appId) || entry === undefined) {
     setStatus("");
     showScreen(failureScreen("unknown-app", appId ?? ""));
+  } else if (!availabilityOf(entry).available) {
+    // The kill switch: a disabled entry opens nothing, and says why.
+    const availability = availabilityOf(entry);
+    setStatus("");
+    showScreen(failureScreen("unavailable", entry.name, availability.available ? undefined : availability.reason, appId));
   } else {
     const start0 = el("section", "run-screen tc-panel", [], { "aria-busy": "true" });
     stage.replaceChildren(start0);
@@ -298,7 +327,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       el("p", null, [entry.description]),
       ...(entry.sample === true ? [el("p", "tc-status tc-status--warning apps-notice", ["Sample app: use throwaway data only."])] : []),
       ...noticeList(consent.notices),
-      el("p", null, ["It runs in a sandbox with no network access. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
+      el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
+      el("p", "run-caution", [CAUTION]),
       el("p", null, ["OpenKey asks you to approve twice: once so Share can read the app from your TinyCloud, then once to start it with those permissions."]),
       el("div", "run-screen__actions", [go]),
     ]));
@@ -307,6 +337,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   return {
     destroy(): void {
+      view.removeEventListener("pagehide", onPageHide);
       destroyed = true;
       attempt += 1;
       view.clearTimeout(slowTimer);

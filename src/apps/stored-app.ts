@@ -12,9 +12,18 @@
  * `validateManifest` and capped against the catalog manifest of the digest the
  * install recorded (grants.ts), so editing the copy can narrow what the app is
  * signed for but never widen it.
+ *
+ * The CODE is pinned. Every file under `<app_id>/app/` other than manifest.json
+ * (checked by the cap above) and install.json (the install's own record) must be
+ * one the catalog lists for the installed digest, byte for byte (sha256 and size),
+ * and every file the catalog lists there must be present. Anything else (an edited
+ * app.jsx, an extra file, a missing one) is refused before any session or frame:
+ * a hand-edited copy of the code no longer runs. The knowledge folder is not read
+ * here and stays the person's.
  */
 import type { Manifest } from "@tinycloud/sdk-core";
 
+import { sha256Hex } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { type Authorizer, type GrantRefusal, type ManifestSdk, capGrants, makeAuthorizer, runtimeScope } from "./grants.ts";
@@ -31,15 +40,42 @@ export interface InstallRecord {
   readonly installedAt: string;
 }
 
+/** The saved files under `<app_id>/app/`, keyed by path relative to it (`app.jsx`, `manifest.json`, `install.json`, ...). */
 export interface StoredFiles {
-  readonly manifest: Uint8Array;
-  readonly install: Uint8Array;
-  readonly source: Uint8Array;
+  readonly entries: ReadonlyMap<string, Uint8Array>;
+  /** The listing or a read was cut short (too many files or bytes): the code cannot be vouched for. */
+  readonly incomplete?: boolean;
+}
+
+export const MANIFEST_FILE = "manifest.json";
+export const SOURCE_FILE = "app.jsx";
+/** Files under `app/` that are not pinned: the manifest (capped by grants.ts) and the install's own record. */
+const UNPINNED: ReadonlySet<string> = new Set([MANIFEST_FILE, "install.json"]);
+
+/** The catalog's code files for an entry: what it installs under `app/`, except the manifest. */
+export function codePins(entry: CatalogEntry): readonly { path: string; sha256: string; size: number }[] {
+  return entry.bundle.files.filter((file) => !file.path.startsWith("knowledge/") && !UNPINNED.has(file.path));
+}
+
+/** Why the saved code is not the pinned version, or undefined when it is exactly that. */
+export async function pinProblem(entry: CatalogEntry, stored: StoredFiles): Promise<string | undefined> {
+  const pins = codePins(entry);
+  if (!pins.some((pin) => pin.path === SOURCE_FILE)) return "the catalog lists no app.jsx for this version";
+  if (stored.incomplete === true) return "the saved files could not all be read";
+  const wanted = new Set(pins.map((pin) => pin.path));
+  for (const path of stored.entries.keys()) if (!wanted.has(path) && !UNPINNED.has(path)) return `unexpected file ${path}`;
+  for (const pin of pins) {
+    const bytes = stored.entries.get(pin.path);
+    if (bytes === undefined) return `missing file ${pin.path}`;
+    if (bytes.byteLength !== pin.size || await sha256Hex(new Uint8Array(bytes)) !== pin.sha256) return `${pin.path} differs from the pinned version`;
+  }
+  return undefined;
 }
 
 /** Why a stored app cannot be run. `detail` is for logs and tests; the page says it in plain words. */
 export type StoredAppFailure =
   | { readonly reason: "damaged"; readonly detail: string }
+  | { readonly reason: "code-mismatch"; readonly detail: string }
   | { readonly reason: "not-listed"; readonly detail: string }
   | { readonly reason: "catalog-unavailable"; readonly detail: string }
   | GrantRefusal;
@@ -56,7 +92,7 @@ export interface RunnableApp {
   /** What the sign-in helper may let `signing` ask for: derived from the catalog manifest, not the stored one. */
   readonly scope: ManifestScope;
   readonly authorize: Authorizer;
-  /** The person's copy of app.jsx, as stored. */
+  /** app.jsx, byte for byte the pinned file. */
   readonly source: Uint8Array;
 }
 
@@ -94,21 +130,27 @@ export function parseInstallRecord(bytes: Uint8Array): InstallRecord | null {
 
 export async function verifyStoredApp(appId: string, files: StoredFiles, deps: VerifyDeps): Promise<{ ok: true; app: RunnableApp } | { ok: false; failure: StoredAppFailure }> {
   const fail = (failure: StoredAppFailure): { ok: false; failure: StoredAppFailure } => ({ ok: false, failure });
-  const install = parseInstallRecord(files.install);
+  const installBytes = files.entries.get("install.json");
+  const manifestBytes = files.entries.get(MANIFEST_FILE);
+  const source = files.entries.get(SOURCE_FILE);
+  if (installBytes === undefined || manifestBytes === undefined || source === undefined) return fail({ reason: "damaged", detail: "a saved file is missing" });
+  const install = parseInstallRecord(installBytes);
   if (install === null) return fail({ reason: "damaged", detail: "install.json is not a valid install record" });
-  if (files.source.byteLength === 0 || files.source.byteLength > MAX_APP_SOURCE_BYTES) return fail({ reason: "damaged", detail: "app.jsx is empty or too large" });
+  if (source.byteLength === 0 || source.byteLength > MAX_APP_SOURCE_BYTES) return fail({ reason: "damaged", detail: "app.jsx is empty or too large" });
 
   let stored: Manifest;
   try {
-    stored = deps.sdk.validateManifest(parseJson(files.manifest, MAX_MANIFEST_BYTES));
+    stored = deps.sdk.validateManifest(parseJson(manifestBytes, MAX_MANIFEST_BYTES));
   } catch (error) {
     return fail({ reason: "damaged", detail: `manifest.json: ${error instanceof Error ? error.message.slice(0, 200) : "unreadable"}` });
   }
   if (stored.app_id !== appId) return fail({ reason: "damaged", detail: "manifest.json names a different app" });
 
-  // The catalog entry of the exact bundle that was installed; its manifest is the cap.
+  // The catalog entry of the exact bundle that was installed; its pins are the code, its manifest is the cap.
   const entry = deps.catalog.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === install.digest);
   if (entry === undefined) return fail({ reason: "not-listed", detail: "the installed bundle is not in the catalog" });
+  const pin = await pinProblem(entry, files);
+  if (pin !== undefined) return fail({ reason: "code-mismatch", detail: pin });
   const loaded = await deps.loadCatalogManifest(entry);
   if (!loaded.ok) return fail({ reason: "catalog-unavailable", detail: loaded.reason });
   let catalogManifest: Manifest;
@@ -130,7 +172,7 @@ export async function verifyStoredApp(appId: string, files: StoredFiles, deps: V
       signing: capped.value.signing,
       scope: runtimeScope(catalogManifest, deps.sdk),
       authorize: makeAuthorizer(capped.value.signing, deps.sdk),
-      source: files.source,
+      source,
     },
   };
 }

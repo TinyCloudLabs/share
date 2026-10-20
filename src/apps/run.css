@@ -42,6 +42,14 @@
   font-size: var(--tc-text-sm);
 }
 
+.run-caution {
+  margin: 0;
+  max-width: 80ch;
+  color: var(--tc-color-text);
+  font-size: var(--tc-text-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
 .run-status-region {
   display: grid;
   gap: var(--tc-space-2);

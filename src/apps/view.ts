@@ -11,7 +11,10 @@ import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts
 import type { InstallError, InstallPorts } from "./install.ts";
 import { createInstallPorts } from "./install-session.ts";
 import { INSTALL_SESSION_LABEL, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
+import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
 import { loadManifest } from "./manifest.ts";
+import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
+import { createRepairPorts } from "./repair-session.ts";
 
 type Child = Node | string;
 
@@ -164,6 +167,8 @@ function runtimeSection(entry: CatalogEntry, runtime: AccessSummary, notices: st
     el("h3", null, [`When you open ${entry.name}`]),
     el("p", null, [`None of this is granted now. ${entry.name} asks for it with its own sign-in each time you open it.`]),
     ...noticeList(notices),
+    el("p", "tc-status tc-status--warning apps-notice", [CAUTION]),
+    el("p", "apps-muted", [KNOWN_LIMITS]),
     accessSection("It can read", "Nothing.", runtime.read),
     accessSection("It can change", "Nothing. This app can't change your data.", runtime.change),
   ]);
@@ -325,13 +330,99 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   return { header, body, footer };
 }
 
+
+// ---------------------------------------------------------------------------
+// Repair
+
+function repairFailureText(entry: CatalogEntry, error: RepairError): string {
+  switch (error.reason) {
+    case "cancelled": return "Sign-in cancelled. Nothing was changed.";
+    case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
+    case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
+    case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
+    case "tampered": return `${entry.name}'s files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
+    case "disabled": return "This app is temporarily unavailable. Nothing was changed.";
+    case "unavailable": return `Couldn't load ${entry.name}'s files. Nothing was changed. Try again.`;
+    case "write-failed": return `Not repaired yet: ${error.written.length} files were replaced. Your data was not touched; try again to finish.`;
+    default: return "We couldn't repair this app. Nothing was changed. Try again.";
+  }
+}
+
+function repairProgressText(entry: CatalogEntry, progress: RepairProgress): string {
+  switch (progress.phase) {
+    case "checking": return `Checking ${entry.name}'s files against the catalog…`;
+    case "signing-in": return "Opening OpenKey…";
+    case "approval": return `Approve in the OpenKey window to repair ${entry.name}`;
+    case "repairing": return `Repairing ${entry.name}… ${progress.done} of ${progress.total} files`;
+  }
+}
+
+/** The repair sheet: what Repair replaces, what it leaves alone, then Continue. One approval. */
+function repairContent(entry: CatalogEntry, ports: () => RepairPorts, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
+  const header = sheetHeader("Repair", `Repair ${entry.name}`, entry, close);
+  const availability = availabilityOf(entry);
+  const writes = repairWrites(entry);
+  const body = el("div", "apps-sheet__body", [
+    ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
+    el("section", "apps-section", [
+      el("h3", null, ["What repairing does"]),
+      el("ul", "apps-notes", [
+        el("li", null, [`Replaces the app's code files with the pinned version, under ${entry.app_id}/app/ (${writes.length} files, the manifest included).`]),
+        el("li", null, ["Removes any other file in that folder."]),
+        el("li", null, ["Your data is untouched: its databases, settings and notes are not read or changed."]),
+        el("li", null, ["One OpenKey approval, for 15 minutes, to put, delete and list in that one folder. Nothing stays signed in afterwards."]),
+      ]),
+      el("details", "apps-files", [el("summary", null, [`Files it writes (${writes.length})`]), el("ul", "apps-notes", writes.map((write) => el("li", null, [el("code", null, [write.key])])))]),
+    ]),
+  ]);
+  const status = el("div", "apps-install-status", [], { "aria-live": "polite" });
+  const actions = el("div", "apps-install-actions", []);
+  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [status, actions]);
+  let running = false;
+  const button = (label: string, className: string, onClick: () => void, disabled = false): HTMLButtonElement => {
+    const node = el("button", `${className} apps-button`, [label], { type: "button" });
+    node.disabled = disabled;
+    node.addEventListener("click", onClick);
+    return node;
+  };
+  const say = (message: string, tone: "info" | "success" | "danger"): void => { status.replaceChildren(el("p", `tc-status tc-status--${tone} apps-install-line`, [message], tone === "danger" ? { role: "alert" } : {})); };
+  const idle = (): void => { actions.replaceChildren(button("Continue", "tc-button tc-button--primary", begin, !availability.available), button("Not now", "tc-button", close)); };
+  function begin(): void {
+    if (running) return;
+    running = true;
+    actions.replaceChildren(button("Repairing…", "tc-button tc-button--primary", () => undefined, true), button("Close", "tc-button", close));
+    void runRepair(entry, ports(), (progress) => say(repairProgressText(entry, progress), "info")).then(
+      (outcome: RepairOutcome) => {
+        running = false;
+        say(`Repaired. ${outcome.written.length} ${outcome.written.length === 1 ? "file was" : "files were"} replaced${outcome.removed.length === 0 ? "" : ` and ${outcome.removed.length} other ${outcome.removed.length === 1 ? "file was" : "files were"} removed`}. Your data was not touched.`, "success");
+        actions.replaceChildren(openControl(entry), button("Done", "tc-button tc-button--primary", close));
+      },
+      (error: unknown) => {
+        running = false;
+        say(repairFailureText(entry, error instanceof RepairError ? error : new RepairError("failed", { cause: error })), "danger");
+        actions.replaceChildren(button("Try again", "tc-button tc-button--primary", begin), button("Close", "tc-button", close));
+      },
+    );
+  }
+  idle();
+  return { header, body, footer };
+}
+
 export interface MountOptions {
   /** The install flow's sign-in and node. Created when Install is clicked; the default loads OpenKey and the SDK then. */
   ports?: () => InstallPorts;
+  /** The repair flow's sign-in and node. Created when Repair's Continue is clicked. */
+  repairPorts?: () => RepairPorts;
 }
 
-export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): void {
+export interface MountedApps {
+  /** Opens the repair sheet for an app (`/apps/#repair=<app_id>`). Returns false when the catalog has no such app. */
+  openRepair(appId: string): boolean;
+}
+
+export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): MountedApps {
   const ports = options.ports ?? createInstallPorts;
+  const repairPorts = options.repairPorts ?? createRepairPorts;
   let opener: HTMLElement | null = null;
   let detach: (() => void) | undefined;
   const close = (): void => { sheet.close(); };
@@ -348,10 +439,13 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   // A click on the backdrop lands on the dialog element itself, outside its content.
   sheet.addEventListener("click", (event) => { if (event.target === sheet) close(); });
 
-  const show = (entry: CatalogEntry, mode: "details" | "install"): void => {
+  const show = (entry: CatalogEntry, mode: "details" | "install" | "repair"): void => {
     detach?.();
     detach = undefined;
-    if (mode === "install") {
+    if (mode === "repair") {
+      const content = repairContent(entry, repairPorts, close);
+      sheet.replaceChildren(content.header, content.body, content.footer);
+    } else if (mode === "install") {
       const content = installContent(entry, entries, ports, close);
       detach = content.detach;
       sheet.replaceChildren(content.header, content.body, content.footer);
@@ -362,9 +456,17 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     if (!sheet.open) sheet.showModal();
   };
 
+  const mounted: MountedApps = {
+    openRepair(appId): boolean {
+      const entry = entries.find((candidate) => candidate.app_id === appId);
+      if (entry === undefined) return false;
+      show(entry, "repair");
+      return true;
+    },
+  };
   if (entries.length === 0) {
     list.replaceWith(el("p", "apps-empty", ["No apps are listed yet."]));
-    return;
+    return mounted;
   }
   for (const entry of entries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
@@ -382,4 +484,5 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       el("div", "apps-card__actions", [details, install, el("a", "tc-button apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })]),
     ]));
   }
+  return mounted;
 }

@@ -437,3 +437,68 @@ describe("dataSize", () => {
     expect([...CAP_OPS]).toEqual(["kv.get", "kv.put", "kv.list", "kv.del", "sql.query", "sql.execute"]);
   });
 });
+
+describe("bridge: sql.execute never leaves the app's own databases, whatever the manifest grants", () => {
+  it("a manifest with a skipPrefix WRITE and SCHEMA grant on another app's database still cannot execute there", async () => {
+    const recipes = manifestOf(RECIPES);
+    const greedy: sdkCore.Manifest = { ...recipes, permissions: [...(recipes.permissions ?? []), { service: "tinycloud.sql", path: `${HEALTH}/healthlog`, actions: ["write", "schema"], skipPrefix: true }] };
+    const authorize = makeAuthorizer(greedy, sdk);
+    // The manifest check alone would allow it: this is what the rule in bridge.ts has to catch.
+    expect(authorize("tinycloud.sql", `${HEALTH}/healthlog`, "write", true)).toBe(true);
+    expect(authorize("tinycloud.sql", `${HEALTH}/healthlog`, "schema", true)).toBe(true);
+    const h = harness(RECIPES, {}, {}, greedy);
+    for (const text of ["DELETE FROM meal", "INSERT INTO meal (name) VALUES ('x')", "DROP TABLE meal", "CREATE TABLE sneaky (a)"]) {
+      const result = await h.call("sql.execute", { db: `/${HEALTH}/healthlog`, sql: text, params: [] });
+      expect(code(result), text).toBe("PERMISSION_DENIED");
+      expect(result.ok ? "" : result.error.message).toBe("An app can change only its own databases.");
+    }
+    expect(h.calls).toEqual([]);
+    // Reading there is what the manifest granted, and still works; its own database still takes writes.
+    expect(code(await h.call("sql.query", { db: `/${HEALTH}/healthlog`, sql: "SELECT 1", params: [] }))).toBe("ok");
+    expect(code(await h.call("sql.execute", { db: "recipes", sql: "DELETE FROM recipe", params: [] }))).toBe("ok");
+  });
+});
+
+describe("bridge: what the node says never reaches the frame", () => {
+  const OWNER = "0x1234567890abcdef1234567890ABCDEF12345678";
+  const nodeRefusal = `401 - Unauthorized Action: tinycloud:pkh:eip155:1:${OWNER}:applications/kv/${HEALTH}/prefs/x / tinycloud.kv/get`;
+  const ports = (message: string, sdkCode = "AUTH_UNAUTHORIZED"): Partial<AppData> => ({
+    kvGet: async () => ({ ok: false, error: { code: sdkCode, message } }),
+    kvPut: async () => ({ ok: false, error: { code: sdkCode, message } }),
+    sqlQuery: async () => ({ ok: false, error: { code: sdkCode, message } }),
+  });
+
+  it("a node refusal becomes a code and a fixed message: no account, no identifier, no path", async () => {
+    const h = harness(HEALTH, ports(nodeRefusal));
+    const result = await h.call("kv.get", { key: "prefs/goals.json" });
+    expect(result).toEqual({ ok: false, error: { code: "PERMISSION_DENIED", message: "This app's permissions don't allow that." } });
+    expect(JSON.stringify(result)).not.toMatch(/0x[0-9a-f]{40}|tinycloud:|did:|eip155/i);
+  });
+
+  it.each([
+    ["KV_NOT_FOUND", "NOT_FOUND", "Not found."],
+    ["KV_PRECONDITION_FAILED", "PRECONDITION_FAILED", "A precondition failed: the key already exists or changed."],
+    ["SESSION_EXPIRED", "NOT_CONNECTED", "Your session expired: open the app again."],
+    ["NETWORK_ERROR", "INTERNAL", "The request failed."],
+    ["WHATEVER", "INTERNAL", "The request failed."],
+  ])("%s -> %s with fixed text, whatever the node wrote", async (sdkCode, expectedCode, expectedMessage) => {
+    const h = harness(HEALTH, ports(`${nodeRefusal}\n    at fetch (https://node/x.js:1:1)`, sdkCode));
+    const result = await h.call("kv.get", { key: "prefs/goals.json" });
+    expect(result).toEqual({ ok: false, error: { code: expectedCode, message: expectedMessage } });
+  });
+
+  it("a SQL error keeps SQLite's own words (the app needs them) with any identifier, account or stack removed", async () => {
+    const h = harness(HEALTH, ports(`SQLite error: no such table: meal in ${nodeRefusal} did:pkh:eip155:1:${OWNER}\n    at run (x.js:1:1)`, "SQL_ERROR"));
+    const result = await h.call("sql.query", { db: "healthlog", sql: "SELECT * FROM meal", params: [] });
+    expect(code(result)).toBe("SQL_ERROR");
+    const message = result.ok ? "" : result.error.message;
+    expect(message).toContain("no such table: meal");
+    expect(message).not.toMatch(/0x[0-9a-f]{40}|tinycloud:pkh|did:|\n|\bat run\b/i);
+  });
+
+  it("a port that throws gives a fixed message, not the exception's text", async () => {
+    const h = harness(HEALTH, { kvGet: async () => { throw new Error(`socket closed for ${OWNER}`); } });
+    const result = await h.call("kv.get", { key: "prefs/goals.json" });
+    expect(result).toEqual({ ok: false, error: { code: "INTERNAL", message: "The call failed." } });
+  });
+});

@@ -15,8 +15,9 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
 1. **Start screen**: the app's name and description, what it can read and change (from the
    catalog's own manifest, shown before anything is signed), and a provenance line that stays
    on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle
-   `<digest>`). It runs in a sandbox with no network access and can use only what's listed
-   under "What this app can do"."
+   `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can
+   do"." Below it, always: "Some browser requests can't be blocked. Install apps you trust. Beta:
+   use sample data only."
 2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
    Share can read the app from the person's TinyCloud, (2 of 2) to start it with the
    permissions listed on the page. OpenKey connects once.
@@ -26,7 +27,8 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
    runner's document, outside the frame; the frame is an isolated, clipped box stacked below it.
 4. **Plain screens** when the app cannot open: "This app needs to be installed first" (with a
    link to `/apps/`), "This app asks for more than it did when you installed it", "Your saved copy
-   of this app can't be used", "This version of the app isn't in the catalog any more",
+   of this app can't be used", "This app's code doesn't match the pinned version" (with Repair),
+   "This app is temporarily unavailable" (the catalog's kill switch), "This version of the app isn't in the catalog any more",
    "Your session expired: open the app again", and the usual OpenKey outcomes (cancelled, no
    answer in time, another request waiting, wrong account).
 
@@ -45,12 +47,21 @@ cannot be dismissed, and keeps the sandbox's privacy limits one click away in th
 The saved manifest is the person's to edit (their agent may rewrite it), and it decides what the
 app is signed for, but never more than the catalog's manifest for the version they installed:
 
-1. Read `<app_id>/app/{install.json,manifest.json,app.jsx}` with a first sign-in that asks only
-   for `get` on `<app_id>/app/` (under share's own identity, so the person's apps list gains no
-   record named after the app). That session ends before the next sign-in.
+0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before any
+   sign-in: a disabled entry opens nothing.
+1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get` and `list`
+   on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
+   record named after the app). That session ends before the next sign-in. The read is bounded
+   (64 files, 8 MB); a listing that does not fit counts as a mismatch.
 2. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. None:
-   "isn't in the catalog any more", nothing signed. Fetch that entry's manifest from
-   `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).
+   "isn't in the catalog any more", nothing signed. **The pin**: on every open, before any runtime
+   session, bridge or frame, hash every code file under `app/` (everything the catalog lists for
+   that digest except `knowledge/` and `manifest.json`; `install.json` is the install record) and
+   compare with the catalog's sha256 for the installed digest. A differing, missing or extra file is
+   refused with "This app's code doesn't match the pinned version. Remove it and install again."
+   `knowledge/` stays the person's: it is never hashed. `manifest.json` is not pinned either: it is
+   the person's to narrow, and the cap below decides what it may ask for. Then fetch that entry's
+   manifest from `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).
 3. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own
    composed ReCap resources of both (`composeManifestRequest`, with the account registry grants the
    sign-in always adds). Every `(service, space, action, path)` of the saved manifest must be covered by
@@ -75,11 +86,23 @@ runs the real data adapter and bridge with the page's manifest check skipped, ov
 node-sdk client restored from the manifest-scoped session, against a real node, and asserts the
 node refuses every call the manifest does not cover.
 
-Residual: the sign-in helper always adds the account registry grants, so the session also carries
-`account`-space registry permissions (kv `applications/`, `spaces/`, `system/bootstrap/complete`,
-the account index database). The bridge cannot name the `account` space, but if the runner page's
-checks failed, the node would not refuse a call in those prefixes. A follow-up on the helper
-(an option to leave them out) removes this.
+Residual: the sign-in helper hard-codes `includeAccountRegistryPermissions: true`
+(`src/share/openkey-session.ts`), so the session also carries `account`-space registry permissions (kv
+`applications/`, `spaces/`, `system/bootstrap/complete`, the account index database). The runner
+cannot opt out without changing the helper, so it does not. The bridge cannot name the `account`
+space, but if the runner page's checks failed, the node would not refuse a call in those prefixes.
+
+### Repair
+
+The refusal screen offers "Repair" (`/apps/#repair=<app_id>`). It is the install sheet in repair
+mode: one approval (put, delete and list on `<app_id>/app/`, 15 minutes), and the sheet says it
+"replaces the app's code files; your data is untouched". It writes the catalog's files for the
+installed digest over the stored ones (`manifest.json` included, so a stray edit is undone too),
+deletes any other file under `app/`, and never touches `install.json`, `knowledge/` or the
+app's data. The bundle is fetched and verified against the catalog before OpenKey opens. A
+version that has left the catalog has nothing to repair from: the page says so and shows what to
+delete (`tinycloud kv list --space applications --prefix <app_id>/app/`, then
+`tinycloud kv delete --space applications <each key listed>`).
 
 ## The bridge
 
@@ -140,10 +163,42 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
 ## What an app can and cannot do
 
 As in the sandbox (see [JSX artifact sharing](jsx-artifact-sharing.md)): run JavaScript, draw, keep state in
-memory. No network (`connect-src 'none'`), no storage of the page's origin, no navigation, popups, forms,
-workers or downloads. Its data is what the bridge gives it, under the manifest the person signed.
+memory. The frame's CSP blocks every content and script request (`connect-src 'none'`, `default-src
+'none'`, images and media from `data:`/`blob:` only), and there is no storage of the page's origin,
+popups, forms, workers or downloads. Its data is what the bridge gives it, under the manifest the person signed.
+This is **not** "no network access": some browser requests can't be blocked (see the known limits), so the page
+tells people to install apps they trust and, in the beta, to use sample data only.
 
 The static scan in the kit's samples is defence in depth only: the sandbox is the boundary.
+
+### Frame hardening (best effort)
+
+Two layers on top of the CSP, in the frame's runtime (`src/artifact/jsx-runtime/url-guard.ts`):
+
+- an element-type and attribute allow-list: `<base>`, `<script>`, `<iframe>`, `<frame>`, `<object>`, `<embed>`, `<portal>`,
+  `<meta http-equiv>`/`url=`, and any `<link>`, `<img>`, `<source>`, `<video>`/`<audio>`/`<track>`, `<form action>`, `<input>`/`<button
+  formaction>`, `<a ping>`, SVG `href` or `style` whose URL is not `data:`, `blob:` or `#` are refused. React elements are
+  vetted when created (`createElement`, `jsx`, `jsxs`, `jsxDEV`: a refused element renders nothing);
+  the DOM insertion paths, `setAttribute`, the reflected URL properties and HTML-string setters are vetted before they apply;
+- a MutationObserver backstop that removes whatever still gets in.
+
+Same-realm code can get round it (an Attr node set with `setAttributeNode` is one path); the CSP is the
+layer that holds. `test/e2e-jsx.mjs` and the runner gate measure it with a loopback listener (HTTP, upgrade,
+UDP): 66 vectors (prerender, prefetch, preconnect, dns-prefetch, modulepreload, `<a ping>`, `<img>`, `<picture>`,
+`<video>`, `<audio>`, `<track>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<meta refresh>`, `<base>`, `<script>`, CSS
+`url()`/`@import`/`image-set`, fonts, fetch, XHR, WebSocket, EventSource, `sendBeacon`, `import()`, workers, WebRTC ...) reach
+the listener zero times.
+
+### Sandbox page headers (reviewed)
+
+`JSX_SANDBOX_HTTP_HEADERS` (`src/viewer/jsx-frame.ts`): the CSP above plus `frame-ancestors 'self'`,
+a Permissions-Policy that turns off the sensor, payment and capture features
+(`src/viewer/sandbox-permissions.ts`), `Referrer-Policy: no-referrer`, `X-Frame-Options: SAMEORIGIN`,
+`X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. Reviewed for this slice, no change needed:
+the policies that matter for leaks are already closed (`connect-src`, `form-action`, `frame-src`, `base-uri`,
+`worker-src`, `object-src`, `img-src`, `media-src`, `font-src`) and no prerender, prefetch or preconnect request
+was measured. `X-DNS-Prefetch-Control` was not added: a DNS lookup from a link hint is not made at all, and the
+header does not stop the lookup a navigation attempt makes.
 
 ## Deploying
 
@@ -160,14 +215,24 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
   (`apps-runner-frame`, `jsx-sandbox`, `jsx-form-events`), the page (`apps-runner-view`, `apps-runner-page`).
 - `TC500_NODE_WORKTREE=<tinycloud-node v1.21.0 tree> TC500_OPENCREDENTIALS_WORKTREE=<OpenCredentials 846c018 tree>
   npx tsx test/e2e-prod/runner-gate.mjs`: the native-stack gate described in its header (install both samples,
-  open them, log a meal and read the row, cross-app read, widened and narrowed manifests, a hostile app
-  `test/fixtures/apps/hostile-app.jsx`, the node refusing calls forced past the page, sign-out, expiry, every
-  state at 390/1440 px in light and dark with axe). `RUNNER_SHOT_DIR` saves the screenshots.
+  open them, log a meal and read the row, cross-app read, widened and narrowed manifests, the pin (an edited
+  `app.jsx` and an extra file are refused with one approval, Repair restores the catalog's files with one approval
+  and the app opens, a removed version gets guidance and no Repair), a hostile app that the gate adds as a catalog
+  entry (`test/fixtures/apps/hostile-app.jsx` + `leak-vectors.js`; a loopback listener must see no request,
+  connection or UDP packet), the node refusing calls forced past the page, sign-out, expiry, every state at
+  390/1440 px in light and dark with axe). `RUNNER_SHOT_DIR` saves the screenshots.
 
 ## Known limits
 
 - Opening needs two approvals: the saved copy cannot be read before signing in, and the app's own session
   must not exist until it has been checked. A persisted per-app session is a later slice.
-- An installed version that has left the catalog cannot be opened (its permissions can't be checked).
+- An installed version that has left the catalog cannot be opened or repaired (its code can't be checked); the page shows what to delete.
+- An app can still reveal that you opened it (your IP address and the time), and by trying to open another page it can
+  make your browser look up or connect to an address it picks, which can carry a little data. Measured: no request is
+  sent, one connection is made. The CSP cannot stop this from inside the frame.
+- The frame hardening is best effort: same-realm code can get round it, and only the CSP is a boundary.
+- Node error text is not shown to the app, except a SQL error's message, which is scrubbed of tokens, identifiers and stack lines.
+- The catalog's two sample bundles still say "no network" in a code comment and a knowledge file: they are pinned by digest and change with the next catalog release.
+- The pin covers the code, not `manifest.json` (capped by the grant check) or `knowledge/` (the person's).
 - The first screen shows the catalog's manifest; once the saved copy is read, the page shows the saved one.
 - A runtime busy loop in an app can freeze the tab until the sandbox moves to its own site (S9).

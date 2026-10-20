@@ -74,7 +74,7 @@ export type InstallProgress =
 
 const CONTENT_TYPES: Record<string, string> = { json: "application/json", md: "text/markdown; charset=utf-8", jsx: "text/plain; charset=utf-8", sql: "text/plain; charset=utf-8" };
 
-function contentTypeOf(path: string): string {
+export function contentTypeOf(path: string): string {
   const extension = path.slice(path.lastIndexOf(".") + 1);
   return Object.hasOwn(CONTENT_TYPES, extension) ? (CONTENT_TYPES[extension] ?? "application/octet-stream") : "application/octet-stream";
 }

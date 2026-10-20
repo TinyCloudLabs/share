@@ -17,10 +17,18 @@
  *  - a manifest copy widened by the person's agent is refused after one
  *    approval, before anything more is signed; a narrowed copy runs, with
  *    exactly what it kept;
- *  - a hostile app (the person's saved copy of app.jsx replaced) can do nothing
- *    the sandbox forbids (network, storage, parent, navigation, popups, forms),
- *    and every call outside its manifest is refused by the runner page, with the
- *    classifier's refusals, oversize and in-flight limits, raw and forged messages;
+ *  - the saved code is PINNED: an edited app.jsx or an extra file is refused before any
+ *    runtime session or frame, Repair (the install sheet in repair mode) puts the
+ *    catalog's code back with one approval and the app opens, and an installed version
+ *    that has left the catalog gets the honest message and no Repair;
+ *  - a hostile app (a catalog entry the gate adds for the run) can do nothing the
+ *    sandbox forbids (network, storage, parent, navigation, popups, forms), and reads
+ *    data it then tries to "send" by every browser-initiated request there is (leak
+ *    vectors: prerender, prefetch, preconnect, dns-prefetch, modulepreload, <a ping>,
+ *    <img>, <form>, <meta refresh>, window.open, WebRTC, fetch, import(), CSS url(),
+ *    @import, image-set ...): a loopback listener sees NOTHING (no request, connection or
+ *    UDP packet); every call outside its manifest is refused by the runner page, with
+ *    the classifier's refusals, oversize and in-flight limits, raw and forged messages;
  *  - the same calls forced past the runner page (a fake parent that skips the
  *    manifest check, the real data adapter, a signer-less client holding the
  *    session) are refused by the NODE;
@@ -44,6 +52,10 @@ import { TinyCloudNode } from "@tinycloud/node-sdk";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { runBoundedStep, startNativeStack } from "./native-stack.mjs";
+import dgram from "node:dgram";
+import { createServer } from "node:http";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { describeBundle } from "../../scripts/apps-catalog.mjs";
 import { createAppData } from "../../src/apps/app-data.ts";
 import { createCapabilityBridge } from "../../src/apps/bridge.ts";
 import { capGrants, makeAuthorizer } from "../../src/apps/grants.ts";
@@ -55,6 +67,69 @@ const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc50
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
 const shotDir = process.env.RUNNER_SHOT_DIR;
 const outputPath = resolve(process.env.RUNNER_ARTIFACT ?? join(workspaceRoot, ".context/t5b-runner-gate.json"));
+const HOSTILE = "xyz.tinycloud.e2e.hostile";
+
+/** A loopback listener (HTTP, upgrades, and UDP on the same port for STUN): anything that reaches it is a request that got out. */
+async function startListener() {
+  const state = { requests: [], connections: 0, upgrades: 0, udpPackets: 0 };
+  state.server = createServer((request, response) => { state.requests.push(request.url); response.writeHead(200, { "content-type": "text/plain" }); response.end("seen"); });
+  state.server.on("connection", () => { state.connections += 1; });
+  state.server.on("upgrade", (_request, socket) => { state.upgrades += 1; socket.destroy(); });
+  await new Promise((done) => state.server.listen(0, "127.0.0.1", done));
+  state.udp = dgram.createSocket("udp4");
+  state.udp.on("message", () => { state.udpPackets += 1; });
+  await new Promise((done) => state.udp.bind(state.server.address().port, "127.0.0.1", done));
+  state.origin = `http://127.0.0.1:${state.server.address().port}`;
+  state.reset = () => { state.requests.length = 0; state.connections = 0; state.upgrades = 0; state.udpPackets = 0; };
+  state.close = () => { state.server.closeAllConnections(); state.server.close(); state.udp.close(); };
+  return state;
+}
+const listener = await startListener();
+
+/**
+ * The gate adds ONE catalog entry for the run: a hostile app (the saved code is pinned, so a hostile app can only reach
+ * the runner as a catalog entry). It writes `public/apps/b/<digest>/` and an entry in apps/catalog.json, and puts both back
+ * (restore) when the run ends, however it ends.
+ */
+function addHostileEntry() {
+  const catalogPath = join(shareRoot, "apps/catalog.json");
+  const original = readFileSync(catalogPath, "utf8");
+  const parsed = JSON.parse(original);
+  const health = parsed.apps.find((entry) => entry.app_id === "xyz.tinycloud.sample.healthlog");
+  const healthManifest = JSON.parse(readFileSync(join(shareRoot, "public", health.bundle.root, "manifest.json"), "utf8"));
+  const manifest = { ...healthManifest, app_id: HOSTILE, name: "Hostile app (test)", description: "A hostile app the runner gate installs to prove the sandbox, the bridge and the leak guards hold. Test only." };
+  delete manifest.knowledge;
+  const source = readFileSync(join(shareRoot, "test/fixtures/apps/hostile-app.jsx"), "utf8")
+    .replace("/*__LEAK_VECTORS__*/", readFileSync(join(shareRoot, "test/fixtures/apps/leak-vectors.js"), "utf8"))
+    .replaceAll("__BEACON__", listener.origin)
+    .replaceAll("__HOSTILE_ID__", HOSTILE);
+  const stagingDir = join(tmpdir(), `tc500-t5b-hostile-${process.pid}`);
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+  writeFileSync(join(stagingDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(stagingDir, "app.jsx"), source);
+  const described = describeBundle(stagingDir);
+  const target = join(shareRoot, "public", described.bundle.root);
+  cpSync(stagingDir, target, { recursive: true });
+  rmSync(stagingDir, { recursive: true, force: true });
+  parsed.apps.push({
+    app_id: HOSTILE, name: manifest.name, description: manifest.description, sample: true,
+    publisher: { name: "Runner gate (test)" },
+    source: { repo: "https://github.com/example/hostile-test-app", tag: null, commit: "0".repeat(40) },
+    manifest: described.manifest, bundle: described.bundle, knowledge: described.knowledge,
+  });
+  writeFileSync(catalogPath, `${JSON.stringify(parsed, null, 2)}\n`);
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    writeFileSync(catalogPath, original);
+    rmSync(target, { recursive: true, force: true });
+  };
+  process.once("exit", restore);
+  return restore;
+}
+const restoreCatalog = addHostileEntry();
 const catalog = JSON.parse(await readFile(join(shareRoot, "apps/catalog.json"), "utf8"));
 const axeSource = await readFile(join(shareRoot, "node_modules/axe-core/axe.min.js"), "utf8");
 const app = (id) => catalog.apps.find((entry) => entry.app_id === id);
@@ -296,7 +371,7 @@ try {
     const { page, context } = await openRunner(browser, stack, "not-installed", HEALTH);
     // A first-time account is asked to host its spaces too: this is the first sign-in of the run.
     assert.equal(await screenTitle(page), `Open ${health.name}`);
-    assert.equal(await page.$eval(".run-provenance", (node) => node.textContent), `This app was installed from ${health.source.repo.replace(/^https:\/\//, "")}@${health.source.commit.slice(0, 7)} (${health.source.tag ?? `commit ${health.source.commit.slice(0, 7)}`}, bundle ${health.bundle.digest.slice(0, 12)}). It runs in a sandbox with no network access and can use only what's listed under “What this app can do”.`);
+    assert.equal(await page.$eval(".run-provenance", (node) => node.textContent), `This app was installed from ${health.source.repo.replace(/^https:\/\//, "")}@${health.source.commit.slice(0, 7)} (${health.source.tag ?? `commit ${health.source.commit.slice(0, 7)}`}, bundle ${health.bundle.digest.slice(0, 12)}). It runs in a sandbox and can use only what's listed under “What this app can do”.`);
     await captureState(page, "start");
     await start(page);
     assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This app needs to be installed first"), true, `not-installed screen (status: ${await statusText(page)})`);
@@ -347,7 +422,7 @@ try {
     assert.equal(sessions.length, 2, "two session sign-ins");
     const reader = recapOf(sessions[0]);
     // In the app's space the read session holds one get and the SDK's capabilities/read; the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`].sort(), "the read session asks for more than a get on the saved app");
+    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`].sort(), "the read session asks for more than a get and a list on the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
     assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
@@ -503,40 +578,126 @@ try {
     assert(restored.ok);
   }
 
-  // ---- 5. A hostile app (the saved app.jsx replaced) in the runner.
+  // ---- 5. The code is pinned: an edited app.jsx or an extra file opens nothing, Repair puts the catalog's code back, a removed version cannot be repaired.
   {
     const node = await ownerClient(HEALTH);
-    const original = await node.kv.get(`${HEALTH}/app/app.jsx`, { binary: true });
-    assert(original.ok);
-    const hostile = await readFile(join(shareRoot, "test/fixtures/apps/hostile-app.jsx"));
-    const written = await node.kv.put(`${HEALTH}/app/app.jsx`, hostile, { contentType: "text/plain; charset=utf-8" });
-    assert(written.ok, `could not install the hostile copy: ${JSON.stringify(written.error)}`);
-    // Something worth protecting: the Recipes database and a Health Log row must survive.
+    const codeKey = `${HEALTH}/app/app.jsx`;
+    const originalCode = await node.kv.get(codeKey, { binary: true });
+    assert(originalCode.ok);
+    const put = async (key, value) => { const written = await node.kv.put(key, value, { contentType: "text/plain; charset=utf-8" }); assert(written.ok, `edit of ${key} failed: ${JSON.stringify(written.error)}`); };
+    const evil = Buffer.from(`${Buffer.from(originalCode.data.data).toString("utf8")}\nfetch("${listener.origin}/tampered");\n`);
+    for (const [label, edit, undo] of [
+      ["run-tampered", () => put(codeKey, evil), undefined],
+      ["run-extra-file", () => put(`${HEALTH}/app/extra.js`, Buffer.from("1")), undefined],
+    ]) {
+      await edit();
+      const from = trace.length;
+      listener.reset();
+      const { page, context } = await openRunner(browser, stack, label, HEALTH);
+      await start(page);
+      assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This app's code doesn't match the pinned version"), true, `${label}: the mismatch screen (status: ${await statusText(page)})`);
+      assert.equal(await page.$("iframe"), null, `${label}: a frame was started`);
+      assert.equal(sessionMessages(label).length, 1, `${label}: only the read session was signed: no runtime session exists`);
+      assert.equal(signCount(from, label), 1, `${label}: one approval`);
+      assert.match(await page.$eval(".run-screen__detail", (node) => node.textContent), /differs from the pinned version|unexpected file/);
+      assert.equal(await page.$eval(".run-screen", (node) => node.getAttribute("role")), "alert");
+      assert((await page.$("a[href='/apps/#repair=" + HEALTH + "']")) !== null, `${label}: no Repair link`);
+      assert.deepEqual(listener.requests, [], `${label}: the tampered code ran`);
+      if (label === "run-tampered") await captureState(page, "code-mismatch");
+      report.stages[label] = { refused: true, sessionsSigned: 1, approvals: 1 };
+      // Repair: the apps page opens the install sheet in repair mode; one approval; the code files come back; the stray goes.
+      const repairFrom = trace.length;
+      await page.click(`a[href='/apps/#repair=${HEALTH}']`);
+      await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
+      assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
+      if (label === "run-tampered") await captureState(page, "repair-sheet");
+      await clickByText(page, "Continue");
+      const repaired = await waitUntil(async () => { const text = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(text) ? text : undefined; }, 300_000);
+      assert.match(repaired ?? "", /^Repaired\./, `${label}: repair ended with "${repaired}"`);
+      assert.equal(signCount(repairFrom, label), 1, `${label}: Repair needed one approval`);
+      const sessionsAfterRepair = sessionMessages(label);
+      const repairRecap = recapOf(sessionsAfterRepair.at(-1));
+      assert.deepEqual(repairRecap.filter((line) => line.startsWith("applications/") && !line.startsWith("applications/capabilities")).sort(), [`applications/kv/${HEALTH}/app/ tinycloud.kv/del`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/put`].sort(), `${label}: Repair signed for more than put, del and list on app/`);
+      assert.equal(lifetimeMs(sessionsAfterRepair.at(-1)), 15 * 60_000);
+      // On the node: the code is the catalog's again, the stray is gone, and the person's data and notes are untouched.
+      const healthEntry = app(HEALTH);
+      const listed = await node.kv.list({ prefix: `${HEALTH}/app/` });
+      assert.deepEqual([...listed.data.keys].sort(), [...healthEntry.bundle.files.filter((file) => !file.path.startsWith("knowledge/")).map((file) => `${HEALTH}/app/${file.path}`), `${HEALTH}/app/install.json`].sort(), `${label}: the saved code is not exactly the catalog's files`);
+      const back = await node.kv.get(codeKey, { binary: true });
+      assert.equal(sha(Buffer.from(back.data.data)), sha(Buffer.from(originalCode.data.data)), `${label}: app.jsx is not the catalog's again`);
+      const rowCount = await node.sql.db(`${HEALTH}/healthlog`).query("SELECT count(*) FROM meal");
+      assert.deepEqual(rowCount.data.rows, [[1]], `${label}: Repair touched the data`);
+      if (label === "run-tampered") await captureState(page, "repaired");
+      await context.close();
+      // And the app opens again.
+      const reopened = await openRunner(browser, stack, `${label}-reopen`, HEALTH);
+      await start(reopened.page);
+      await runningFrame(reopened.page);
+      report.stages[label].repairedAndOpens = true;
+      await reopened.context.close();
+      void undo;
+    }
+    // An installed version that has left the catalog: the honest message and what to delete, no Repair, nothing signed beyond the read.
+    const recordKey = `${HEALTH}/app/install.json`;
+    const record = await node.kv.get(recordKey, { binary: true });
+    const old = JSON.parse(Buffer.from(record.data.data).toString("utf8"));
+    await put(recordKey, Buffer.from(JSON.stringify({ ...old, digest: "ab".repeat(32) })));
+    {
+      const label = "run-removed-version";
+      const { page, context } = await openRunner(browser, stack, label, HEALTH);
+      await start(page);
+      assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This version of the app isn't in the catalog any more"), true, `${label}: screen (status: ${await statusText(page)})`);
+      assert.equal(await page.$("a[href*='repair']"), null, `${label}: Repair offered for a version with no pin`);
+      const text = await page.$eval(".run-screen", (node) => node.textContent);
+      assert(text.includes(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`) && text.includes("tinycloud kv delete --space applications"), `${label}: no removal guidance`);
+      assert.equal(sessionMessages(label).length, 1);
+      await captureState(page, "removed-version");
+      report.stages.removedVersion = { guidance: true, repairOffered: false };
+      await context.close();
+    }
+    await put(recordKey, Buffer.from(record.data.data));
+  }
+
+  // ---- 5b. A hostile app, installed from a catalog entry (its code is pinned, so this is the only way it can reach the runner).
+  {
+    await install(browser, stack, HOSTILE);
+    const node = await ownerClient(HOSTILE);
     const label = "run-hostile";
     const from = trace.length;
-    const { page, context } = await openRunner(browser, stack, label, HEALTH);
+    listener.reset();
+    const { page, context } = await openRunner(browser, stack, label, HOSTILE);
     await start(page);
     const child = await runningFrame(page);
     const afterStart = trace.length;
-    await child.waitForFunction(() => document.querySelector("#report")?.getAttribute("data-state") === "done", { timeout: 120_000 });
+    await child.waitForFunction(() => document.querySelector("#report")?.getAttribute("data-state") === "done", { timeout: 240_000 });
     const result = await child.evaluate(() => window.__report);
     // The sandbox, as for any page in it.
-    for (const probe of ["parentDocument", "topDocument", "localStorage", "sessionStorage", "indexedDB", "cookie", "fetchRemote", "fetchSameOrigin", "importUrl", "worker", "topNavigation", "formSubmit"]) {
-      if (probe === "topNavigation" || probe === "formSubmit") assert(result[probe].ok === false || result[probe].ok === true, probe);
-      else assert.equal(result[probe].ok, false, `${probe} was allowed: ${JSON.stringify(result[probe])}`);
+    for (const probe of ["parentDocument", "topDocument", "localStorage", "sessionStorage", "indexedDB", "cookie", "fetchRemote", "fetchSameOrigin", "importUrl", "worker"]) {
+      assert.equal(result[probe].ok, false, `${probe} was allowed: ${JSON.stringify(result[probe])}`);
     }
     assert.equal(result.origin, "null");
     for (const probe of ["xhr", "webSocket", "eventSource", "image"]) assert.notEqual(result[probe], "loaded", probe);
-    assert.notEqual(result.xhr, "loaded"); assert.notEqual(result.webSocket, "open"); assert.notEqual(result.eventSource, "open");
+    assert.notEqual(result.webSocket, "open"); assert.notEqual(result.eventSource, "open");
     assert.equal(result.windowOpen.ok && result.windowOpen.value !== "null", false, "window.open opened a window");
     assert(result.violations.includes("connect-src"), `no connect-src violation was reported (${JSON.stringify(result.violations)})`);
-    assert(trace.slice(from).every((entry) => !/beacon\.invalid|evil\.example/.test(entry.origin)), "a request reached the beacon host");
+    // THE LEAK VECTORS: the page read data (result.marker) and tried every browser-initiated request there is. The listener saw nothing.
+    await settle(2500);
+    assert.notEqual(result.marker, "none", "the hostile app read no data to leak");
+    assert.equal(result.vectors.webrtc, "removed", "WebRTC is still there");
+    assert.deepEqual(listener.requests, [], `a vector reached the listener: ${JSON.stringify(listener.requests)}`);
+    assert.equal(listener.connections, 0, "a vector opened a connection to the listener");
+    assert.equal(listener.upgrades, 0);
+    assert.equal(listener.udpPackets, 0, "a vector sent UDP to the listener (WebRTC)");
+    assert(trace.slice(from).every((entry) => !/127\.0\.0\.1:|evil\.example/.test(`${entry.origin}`) || entry.origin === stack.canonical.share), "a request reached the listener host through the page");
+    const leftInDocument = await child.evaluate((origin) => [...document.querySelectorAll("*")].filter((node) => [...node.attributes].some((attribute) => attribute.value.includes(origin))).map((node) => node.localName), listener.origin);
+    assert.deepEqual(leftInDocument, [], "an element that names the listener is still in the app's document");
     // The bridge: everything outside the manifest or the classifier is refused by the runner page.
     const c = result.cap;
     assert.deepEqual({ ...c, concurrent: undefined }, {
       kvOutside: "PERMISSION_DENIED", kvTraversal: "BAD_REQUEST", kvAbsoluteOwn: "PERMISSION_DENIED", kvAbsoluteOther: "PERMISSION_DENIED", kvPutOwnCode: "PERMISSION_DENIED", kvDeleteOwnCode: "PERMISSION_DENIED", kvListRoot: "PERMISSION_DENIED", kvDelPrefs: "PERMISSION_DENIED",
       sqlDrop: "BAD_REQUEST", sqlMulti: "BAD_REQUEST", sqlAttach: "BAD_REQUEST", sqlPragma: "BAD_REQUEST", sqlVacuum: "BAD_REQUEST", sqlLoadExtension: "BAD_REQUEST", sqlWithInsert: "BAD_REQUEST", sqlUnicodeSpace: "BAD_REQUEST", sqlWriteAsQuery: "BAD_REQUEST",
-      sqlExecuteForeign: "PERMISSION_DENIED", sqlExecuteForeignAbsoluteOwn: "PERMISSION_DENIED", sqlQueryForeign: "PERMISSION_DENIED",
+      sqlExecuteForeign: "PERMISSION_DENIED", sqlExecuteForeignAbsoluteOwn: "PERMISSION_DENIED", sqlExecuteHealth: "PERMISSION_DENIED", sqlQueryForeign: "PERMISSION_DENIED",
+      secretCreate: "ok", secretInsert: "ok",
       oversize: "TOO_LARGE", badOpts: "BAD_REQUEST", sane: "ok", saneGet: "ok",
       rawUnknownOp: "no-reply", rawExtraArg: "BAD_REQUEST", rawWithNonce: "no-reply", rawBadId: "no-reply", concurrent: undefined,
     });
@@ -556,19 +717,16 @@ try {
     assert.deepEqual(forged, [], "a forged cap/* message was answered");
     // Nothing was hurt: the Health Log's rows and the Recipes database are as they were, and no signature was asked for.
     assert.equal(signCount(afterStart, label), 0, "a signature was requested while the hostile app ran");
-    const rows = await node.sql.db(`${HEALTH}/healthlog`).query("SELECT count(*) FROM meal");
+    const health = await ownerClient(HEALTH);
+    const rows = await health.sql.db(`${HEALTH}/healthlog`).query("SELECT count(*) FROM meal");
     assert.deepEqual(rows.data.rows, [[1]], "the hostile app changed the Health Log");
-    const recipeTables = await node.sql.db(`${RECIPES}/recipes`).query("SELECT count(*) FROM sqlite_master");
+    const recipeTables = await health.sql.db(`${RECIPES}/recipes`).query("SELECT count(*) FROM sqlite_master");
     assert(recipeTables.ok, "the Recipes database is gone");
-    const ownCode = await node.kv.get(`${HEALTH}/app/app.jsx`, { binary: true });
-    assert.equal(sha(Buffer.from(ownCode.data.data)), sha(hostile), "the hostile app rewrote its own code");
+    void node;
     await noViolations(page, "hostile");
-    report.stages.hostile = { sandbox: "all refused", cap: c, forgedAnswered: 0, beaconRequests: 0 };
+    report.stages.hostile = { sandbox: "all refused", cap: c, vectors: Object.keys(result.vectors).length, listener: { requests: 0, connections: 0, udp: 0 }, forgedAnswered: 0 };
     await captureState(page, "hostile-running");
     await context.close();
-    // Put the real app back.
-    const back = await node.kv.put(`${HEALTH}/app/app.jsx`, original.data.data, { contentType: "text/plain; charset=utf-8" });
-    assert(back.ok);
   }
 
   // ---- 6. Forced past the runner page, the NODE refuses: the real data adapter and bridge, a fake parent that skips the manifest check, a signer-less client holding the session.
@@ -686,6 +844,8 @@ try {
   process.exitCode = 1;
 } finally {
   clearTimeout(watchdog);
+  restoreCatalog();
+  listener.close();
   await browser?.close().catch(() => undefined); await stack?.close().catch(() => undefined); await candidate?.close().catch(() => undefined);
   process.exit();
 }

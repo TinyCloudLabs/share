@@ -98,6 +98,15 @@ CSP blocks every content and script request the frame could make (img/CSS url/@i
 | `<link rel=dns-prefetch>` | DNS lookup (not observable on loopback) | notice |
 | WebRTC (ICE to a STUN server) | UDP packets to the server | notice. The CSP `webrtc` directive is not recognised by the Chromium used here, so it is not set. |
 
+The table is the CSP alone. The frame's runtime adds a best-effort guard (`src/artifact/jsx-runtime/url-guard.ts`): an element-type and
+attribute allow-list (React elements when created; DOM insertion, `setAttribute`, URL properties and HTML-string setters before they apply)
+and a MutationObserver backstop refuse `<link>`, `<meta http-equiv>`, `<a ping>`, `<img>`, `<source>`, `<video>`, `<audio>`, `<iframe>`, `<object>`,
+`<embed>`, `<form action>`, `<base>` and `<script>` with any URL that is not `data:`, `blob:` or `#`, and remove `RTCPeerConnection`. With it the
+same loopback measurement (66 vectors, `test/fixtures/apps/leak-vectors.js`, `npm run test:e2e:jsx`) sees zero requests, connections, upgrades and UDP
+packets for prerender, preconnect, dns-prefetch and WebRTC too. Same-realm code can get round the guard, so the CSP stays the boundary. Still
+leaking: a navigation attempt (`location`, a followed link: one DNS lookup and one TCP connection, no request, and the address can carry a
+little data), and the IP address and time of opening. The runner and the install sheet say so in one line (`src/apps/limits.ts`).
+
 The viewer says so above the frame: "This page runs the sender's code. The sender
 can tell that you opened it." It is rendered by the viewer, outside the frame,
 and is dismissed only by a click or key press on its own button (remembered per

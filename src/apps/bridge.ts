@@ -129,25 +129,34 @@ const KEYS: Record<CapOp, readonly string[]> = {
   "sql.execute": ["db", "sql", "params"],
 };
 
-/** Removes anything shaped like a bearer token from text that goes back to the frame. */
+/**
+ * Text that goes back to the frame never carries the owner, a token or a stack. Node errors are mapped to a code and a
+ * FIXED message (the node's own text names the account, e.g. "Unauthorized Action: tinycloud:pkh:eip155:1:0x…/…"); the
+ * one exception is a SQL error, whose SQLite text the app needs to fix its statement, and it is scrubbed: bearer-shaped
+ * tokens, `tinycloud:`/`did:` identifiers, account addresses and stack lines are removed, and it is cut short.
+ */
 function scrub(message: string): string {
-  return message.replace(/\b(?:tc1|eyJ)[A-Za-z0-9._~+/=-]{12,}/g, "[removed]").slice(0, CAP_MAX_ERROR_CHARS);
+  return message
+    .replace(/\b(?:tc1|eyJ)[A-Za-z0-9._~+/=-]{12,}/g, "[removed]")
+    .replace(/\b(?:tinycloud|did):[^\s'",;)]*/gi, "[removed]")
+    .replace(/\b0x[0-9a-fA-F]{40}\b/g, "[removed]")
+    .replace(/\n\s*at .*/g, "")
+    .slice(0, CAP_MAX_ERROR_CHARS);
 }
 
 function fail(code: CapErrorCode, message: string): CapError {
   return capError(code, scrub(message));
 }
 
-/** Maps the SDK's error code to the bridge's. */
+/** Maps the SDK's error code to the bridge's, with a fixed message (see `scrub`). */
 function mapError(error: { readonly code?: string | undefined; readonly message?: string | undefined }): CapError {
   const code = error.code ?? "";
-  const message = typeof error.message === "string" && error.message !== "" ? error.message : "The request failed.";
-  if (code === "KV_NOT_FOUND" || /NOT_FOUND/.test(code)) return fail("NOT_FOUND", message);
-  if (code === "KV_PRECONDITION_FAILED" || /PRECONDITION/.test(code)) return fail("PRECONDITION_FAILED", message);
+  if (code === "KV_NOT_FOUND" || /NOT_FOUND/.test(code)) return fail("NOT_FOUND", "Not found.");
+  if (code === "KV_PRECONDITION_FAILED" || /PRECONDITION/.test(code)) return fail("PRECONDITION_FAILED", "A precondition failed: the key already exists or changed.");
   if (/EXPIRED|SESSION/i.test(code)) return fail("NOT_CONNECTED", "Your session expired: open the app again.");
-  if (/UNAUTHORIZED|PERMISSION|FORBIDDEN|AUTH/i.test(code)) return fail("PERMISSION_DENIED", message);
-  if (code.startsWith("SQL_") || /SQL/.test(code)) return fail("SQL_ERROR", message);
-  return fail("INTERNAL", message);
+  if (/UNAUTHORIZED|PERMISSION|FORBIDDEN|AUTH/i.test(code)) return fail("PERMISSION_DENIED", "This app's permissions don't allow that.");
+  if (code.startsWith("SQL_") || /SQL/.test(code)) return fail("SQL_ERROR", typeof error.message === "string" && error.message !== "" ? error.message : "The statement failed.");
+  return fail("INTERNAL", "The request failed.");
 }
 
 const CONTROL = /[\u0000-\u001f\u007f\\]/;
@@ -278,7 +287,7 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
     const hard = setTimeout(() => { answer(fail("TIMEOUT", "No answer in time. The call may still have been applied: read it back before retrying a write.")); release(); }, limits.slotHoldMs);
     Promise.resolve().then(prepared.run).then(
       (result) => { answer(result); release(); },
-      (error: unknown) => { answer(fail("INTERNAL", `The call failed${error instanceof Error ? `: ${error.message}` : "."}`)); release(); },
+      () => { answer(fail("INTERNAL", "The call failed.")); release(); },
     );
   }
 
@@ -305,8 +314,8 @@ export function createCapabilityBridge(options: BridgeOptions): CapabilityBridge
         if (Object.keys(args).some((key) => !allowed.includes(key))) { safeReply(id, fail("BAD_REQUEST", `Unexpected argument for ${op}.`)); return; }
         const prepared = op.startsWith("kv.") ? prepareKv(op as Extract<CapOp, `kv.${string}`>, args) : prepareSql(op as "sql.query" | "sql.execute", args);
         if ("run" in prepared) start(id, prepared); else safeReply(id, prepared);
-      } catch (error) {
-        if (id !== undefined) safeReply(id, fail("INTERNAL", `The call failed${error instanceof Error ? `: ${error.message}` : "."}`));
+      } catch {
+        if (id !== undefined) safeReply(id, fail("INTERNAL", "The call failed."));
       }
     },
     inFlight: () => held.size,

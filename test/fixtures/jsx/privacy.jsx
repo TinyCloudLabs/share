@@ -20,46 +20,56 @@ function watch(element, events) {
   });
 }
 
+// The runtime guards setAttribute and the reflected properties (url-guard.ts); an Attr node set with setAttributeNode is a path it does not
+// patch (the observer takes the element out afterwards), so the CSP layer itself stays under test.
+function viaAttribute(element, name, value) {
+  const attribute = document.createAttribute(name);
+  attribute.value = value;
+  element.setAttributeNode(attribute);
+}
+
 const probes = {
   img: () => {
     const element = document.createElement("img");
-    element.src = `${BEACON}/img`;
+    viaAttribute(element, "src", `${BEACON}/img`);
     document.body.append(element);
     return watch(element, ["load", "error"]);
   },
   imageConstructor: () => {
     const element = new Image();
-    element.src = `${BEACON}/image-constructor`;
+    viaAttribute(element, "src", `${BEACON}/image-constructor`);
     return watch(element, ["load", "error"]);
   },
+  // The frame's runtime refuses elements that name a remote URL when they are inserted (url-guard.ts), so these probes
+  // reach the browser the other ways: an element that is never inserted, or style text set after insertion. They are
+  // what keeps the CSP layer itself under test.
   video: () => {
     const element = document.createElement("video");
     element.src = `${BEACON}/video`;
-    document.body.append(element);
+    element.load();
     return watch(element, ["loadedmetadata", "error"]);
   },
   audio: () => {
-    const element = document.createElement("audio");
-    element.src = `${BEACON}/audio`;
-    document.body.append(element);
+    const element = new Audio(`${BEACON}/audio`);
+    element.load();
     return watch(element, ["loadedmetadata", "error"]);
   },
   cssUrl: () => {
     const style = document.createElement("style");
-    style.textContent = `body { background-image: url(${BEACON}/css-url); }`;
     document.head.append(style);
+    style.textContent = `body { background-image: url(${BEACON}/css-url); }`;
     return new Promise((resolve) => setTimeout(() => resolve("styled"), 800));
   },
   cssImport: () => {
     const style = document.createElement("style");
-    style.textContent = `@import url(${BEACON}/css-import);`;
     document.head.append(style);
+    style.textContent = `@import url(${BEACON}/css-import);`;
     return new Promise((resolve) => setTimeout(() => resolve("styled"), 800));
   },
   fontFace: () => {
     const style = document.createElement("style");
-    style.textContent = `@font-face { font-family: Probe; src: url(${BEACON}/font); } body { font-family: Probe, sans-serif; }`;
     document.head.append(style);
+    style.textContent = `@font-face { font-family: Probe; src: url(${BEACON}/font); } body { font-family: Probe, sans-serif; }`;
     return document.fonts.load("16px Probe").then(
       () => "settled",
       () => "error",

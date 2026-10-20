@@ -3,39 +3,36 @@
  * sign in for exactly its grants, hand back what the page needs to run it.
  *
  * Order is the safety argument:
- *  1. The app must be in the catalog (the page's own copy of it). Nothing is
- *     signed for an id the catalog does not list.
- *  2. ONE read-only sign-in (`readStored`): `get` on `<app_id>/app/` and nothing
- *     else, to read manifest.json, app.jsx and install.json. The session ends
- *     before step 4; only OpenKey's own connection is kept, so the second
- *     approval is a signature, not a second connect.
- *  3. The saved copy is verified (stored-app.ts): the manifest is re-validated and
- *     capped against the catalog manifest of the digest the install recorded. A
- *     copy that widens is refused here, with nothing more signed.
+ *  1. The app must be in the catalog (the page's own copy of it) and not switched
+ *     off (`assertAvailable`). Nothing is signed for an id the catalog does not
+ *     list or has disabled.
+ *  2. ONE read-only sign-in (`readStored`): `get` and `list` on `<app_id>/app/` and
+ *     nothing else, to read every file there. The session ends before step 4; only
+ *     OpenKey's own connection is kept, so the second approval is a signature, not
+ *     a second connect.
+ *  3. The saved copy is verified (stored-app.ts): every code file is hashed and
+ *     compared with the catalog's pins for the installed digest (an edited, extra or
+ *     missing file refuses the open), and the manifest is re-validated and capped
+ *     against the catalog manifest. Nothing runs, and no runtime session exists,
+ *     until this has passed.
  *  4. The runtime sign-in (`openRuntime`): the person's manifest, one hour, nothing
  *     persisted, no signer left behind (run-session.ts).
  * The sign-in, the node, the SDK and the clock are ports so tests can drive each step.
  */
 import type { AppData } from "./bridge.ts";
-import { type CatalogEntry, catalog as bundledCatalog } from "./catalog.ts";
+import { type CatalogEntry, EntryDisabledError, assertAvailable, catalog as bundledCatalog } from "./catalog.ts";
 import type { ManifestSdk } from "./grants.ts";
 import { type ManifestResult, loadManifest } from "./manifest.ts";
-import { type RunnableApp, type StoredAppFailure, verifyStoredApp } from "./stored-app.ts";
+import { type RunnableApp, type StoredAppFailure, type StoredFiles, verifyStoredApp } from "./stored-app.ts";
 
 export interface RunHooks {
   /** `true` while an OpenKey approval is open. */
   approval(open: boolean): void;
 }
 
-export interface StoredBytes {
-  readonly manifest?: Uint8Array | undefined;
-  readonly install?: Uint8Array | undefined;
-  readonly source?: Uint8Array | undefined;
-}
-
 /** The read-only session of step 2. */
 export interface ReadSession {
-  readonly files: StoredBytes;
+  readonly files: StoredFiles;
   /** Ends the session. `keepOpenKey` leaves OpenKey connected so the next sign-in needs no second connect. */
   end(options: { keepOpenKey: boolean }): Promise<void>;
 }
@@ -62,8 +59,10 @@ export interface RunPorts {
 
 export type RunFailure =
   | "unknown-app"
+  | "unavailable"
   | "not-installed"
   | "damaged"
+  | "code-mismatch"
   | "not-listed"
   | "catalog-unavailable"
   | "widened"
@@ -109,6 +108,10 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   const entries = ports.catalog ?? bundledCatalog.apps;
   const entry = catalogEntryFor(appId, entries);
   if (entry === undefined) throw new RunError("unknown-app");
+  try { assertAvailable(entry); } catch (error) {
+    if (error instanceof EntryDisabledError) throw new RunError("unavailable", { detail: error.reason });
+    throw error;
+  }
   report({ phase: "checking" });
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
 
@@ -118,10 +121,10 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   });
   let app: RunnableApp;
   try {
-    const { manifest, install, source } = read.files;
-    if (manifest === undefined || install === undefined || source === undefined) throw new RunError("not-installed");
+    // Nothing under app/ at all: it was never installed. A partial set is damaged or a mismatch, decided below.
+    if (read.files.entries.size === 0) throw new RunError("not-installed");
     report({ phase: "verifying" });
-    const verified = await verifyStoredApp(appId, { manifest, install, source }, { catalog: entries, loadCatalogManifest: ports.loadCatalogManifest ?? loadManifest, sdk });
+    const verified = await verifyStoredApp(appId, read.files, { catalog: entries, loadCatalogManifest: ports.loadCatalogManifest ?? loadManifest, sdk });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });
     app = verified.app;
   } catch (error) {

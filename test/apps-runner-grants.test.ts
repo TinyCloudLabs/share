@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as sdkCore from "@tinycloud/sdk-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { type ManifestSdk, capGrants, makeAuthorizer, pathCovers, runtimeScope } from "../src/apps/grants.ts";
 import { ManifestRejectedError, MANIFEST_CHECK_ADDRESS, assertManifestInScope } from "../src/share/manifest-policy.ts";
 import type { ManifestResult } from "../src/apps/manifest.ts";
-import { type StoredFiles, parseInstallRecord, verifyStoredApp } from "../src/apps/stored-app.ts";
+import { codePins, parseInstallRecord, pinProblem, verifyStoredApp } from "../src/apps/stored-app.ts";
+import { type StoredOverrides, installRecordBytes, storedFiles } from "./stored-fixtures.ts";
 
 const sdk: ManifestSdk = sdkCore;
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -27,10 +28,10 @@ const permission = (manifest: TestManifest, path: string): TestPermission => {
   if (found === undefined) throw new Error(`no ${path} grant`);
   return found;
 };
-const installRecord = (entry: CatalogEntry, overrides: Record<string, unknown> = {}): Uint8Array => text({ source: { repo: entry.source.repo, tag: entry.source.tag, commit: entry.source.commit }, digest: entry.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z", ...overrides });
+const installRecord = installRecordBytes;
 const okCatalogManifest = async (entry: CatalogEntry): Promise<ManifestResult> => ({ ok: true, manifest: manifestOf(entry) });
 const deps = { catalog: catalog.apps, loadCatalogManifest: okCatalogManifest, sdk };
-const filesFor = (entry: CatalogEntry, manifest: unknown = manifestOf(entry), extra: Partial<StoredFiles> = {}): StoredFiles => ({ manifest: text(manifest), install: installRecord(entry), source: read(entry, "app.jsx"), ...extra });
+const filesFor = (entry: CatalogEntry, manifest: unknown = manifestOf(entry), over: Record<string, Uint8Array> = {}): ReturnType<typeof storedFiles> => storedFiles(entry, { files: { "manifest.json": text(manifest), ...over } });
 
 describe("the grant cap: the stored manifest can narrow what an app is signed for, never widen it", () => {
   const health = entryOf(HEALTH);
@@ -120,10 +121,10 @@ describe("the grant cap: the stored manifest can narrow what an app is signed fo
     const wide = manifestOf(health);
     wide.permissions.push({ service: "tinycloud.kv", path: "extra/", actions: ["get"] });
     // The install recorded a digest the catalog does not list (e.g. an older or invented one).
-    const unknown = await verifyStoredApp(HEALTH, { ...filesFor(health, wide), install: installRecord(health, { digest: "0".repeat(64) }) }, deps);
+    const unknown = await verifyStoredApp(HEALTH, filesFor(health, wide, { "install.json": installRecord(health, { digest: "0".repeat(64) }) }), deps);
     expect(unknown).toMatchObject({ ok: false, failure: { reason: "not-listed" } });
     // The recipes entry's digest does not authorise the Health Log either.
-    const swapped = await verifyStoredApp(HEALTH, { ...filesFor(health), install: installRecord(entryOf(RECIPES)) }, deps);
+    const swapped = await verifyStoredApp(HEALTH, filesFor(health, manifestOf(health), { "install.json": installRecord(entryOf(RECIPES)) }), deps);
     expect(swapped).toMatchObject({ ok: false, failure: { reason: "not-listed" } });
   });
 
@@ -135,15 +136,16 @@ describe("the grant cap: the stored manifest can narrow what an app is signed fo
   });
 
   it("refuses a damaged copy instead of guessing", async () => {
-    const broken = async (files: StoredFiles): Promise<string> => { const result = await verifyStoredApp(HEALTH, files, deps); return result.ok ? "ok" : result.failure.reason; };
-    const base = filesFor(health);
-    expect(await broken({ ...base, manifest: new TextEncoder().encode("{not json") })).toBe("damaged");
-    expect(await broken({ ...base, manifest: text({ app_id: HEALTH }) })).toBe("damaged");
-    expect(await broken({ ...base, manifest: new Uint8Array(0) })).toBe("damaged");
-    expect(await broken({ ...base, install: new TextEncoder().encode("{}") })).toBe("damaged");
-    expect(await broken({ ...base, install: text({ source: { repo: "r", tag: null, commit: "abc" }, digest: "xyz", installed_at: "x" }) })).toBe("damaged");
-    expect(await broken({ ...base, source: new Uint8Array(0) })).toBe("damaged");
-    expect(await broken({ ...base, manifest: new Uint8Array(70 * 1024).fill(32) })).toBe("damaged");
+    const broken = async (over: Record<string, Uint8Array>, remove: string[] = []): Promise<string> => { const result = await verifyStoredApp(HEALTH, storedFiles(health, { files: over, remove }), deps); return result.ok ? "ok" : result.failure.reason; };
+    expect(await broken({ "manifest.json": new TextEncoder().encode("{not json") })).toBe("damaged");
+    expect(await broken({ "manifest.json": text({ app_id: HEALTH }) })).toBe("damaged");
+    expect(await broken({ "manifest.json": new Uint8Array(0) })).toBe("damaged");
+    expect(await broken({ "install.json": new TextEncoder().encode("{}") })).toBe("damaged");
+    expect(await broken({ "install.json": text({ source: { repo: "r", tag: null, commit: "abc" }, digest: "xyz", installed_at: "x" }) })).toBe("damaged");
+    expect(await broken({}, ["manifest.json"])).toBe("damaged");
+    expect(await broken({}, ["install.json"])).toBe("damaged");
+    expect(await broken({}, ["app.jsx"])).toBe("damaged");
+    expect(await broken({ "manifest.json": new Uint8Array(70 * 1024).fill(32) })).toBe("damaged");
   });
 
   it("reads the install record the install writes, and nothing looser", () => {
@@ -232,5 +234,56 @@ describe("the sign-in helper's own scope check, derived from the catalog manifes
     expect(widen((m) => { m.permissions.push({ service: "tinycloud.duckdb", path: "x", actions: ["read"] }); })).toBe("service-not-allowed");
     expect(widen((m) => { m.permissions.push({ service: "tinycloud.kv", path: "x/", actions: ["get"], space: "secrets" }); })).toBe("space-not-allowed");
     expect(widen((m) => { m.defaults = "admin"; })).not.toBe("accepted");
+  });
+});
+
+describe("the code pin: every code file under app/ is the catalog's, byte for byte", () => {
+  const health = entryOf(HEALTH);
+  const run = async (over: StoredOverrides): Promise<string> => {
+    const result = await verifyStoredApp(HEALTH, storedFiles(health, over), deps);
+    return result.ok ? "ok" : `${result.failure.reason}: ${result.failure.detail}`;
+  };
+  const mutate = (bytes: Uint8Array): Uint8Array => { const copy = new Uint8Array(bytes); copy[copy.length - 1] = copy[copy.length - 1]! ^ 1; return copy; };
+
+  it("runs the installed copy as it is", async () => {
+    expect(await run({})).toBe("ok");
+    expect(codePins(health).map((pin) => pin.path)).toEqual(expect.arrayContaining(["app.jsx", "schema.sql"]));
+    expect(codePins(health).map((pin) => pin.path)).not.toContain("manifest.json");
+    expect(codePins(health).some((pin) => pin.path.startsWith("knowledge/"))).toBe(false);
+  });
+
+  it("refuses an edited app.jsx, by one bit or by an appended line", async () => {
+    expect(await run({ files: { "app.jsx": mutate(read(health, "app.jsx")) } })).toMatch(/^code-mismatch: app\.jsx differs/);
+    expect(await run({ files: { "app.jsx": new TextEncoder().encode(`${new TextDecoder().decode(read(health, "app.jsx"))}\nfetch("https://x.example");\n`) } })).toMatch(/^code-mismatch: app\.jsx differs/);
+  });
+
+  it("refuses any other edited code file, a missing one, and an extra one", async () => {
+    expect(await run({ files: { "schema.sql": mutate(read(health, "schema.sql")) } })).toMatch(/^code-mismatch: schema\.sql differs/);
+    expect(await run({ remove: ["schema.sql"] })).toMatch(/^code-mismatch: missing file schema\.sql/);
+    expect(await run({ files: { "extra.js": new TextEncoder().encode("1") } })).toMatch(/^code-mismatch: unexpected file extra\.js/);
+    expect(await run({ files: { "nested/dir/file.jsx": new TextEncoder().encode("1") } })).toMatch(/^code-mismatch: unexpected file nested\/dir\/file\.jsx/);
+  });
+
+  it("refuses a listing or a read that was cut short", async () => {
+    expect(await run({ incomplete: true })).toMatch(/^code-mismatch: the saved files could not all be read/);
+  });
+
+  it("the manifest is capped, not pinned (a narrowing edit still runs); install.json is the install's own record", async () => {
+    const narrowed = manifestOf(health);
+    narrowed.permissions = narrowed.permissions.filter((entry) => entry.path !== "knowledge/");
+    expect(await run({ files: { "manifest.json": text(narrowed) } })).toBe("ok");
+    expect(await run({ files: { "install.json": installRecord(health, { installed_at: "2027-01-01T00:00:00.000Z" }) } })).toBe("ok");
+  });
+
+  it("is checked before the catalog manifest is fetched or any grant is looked at", async () => {
+    const loader = vi.fn(okCatalogManifest);
+    const result = await verifyStoredApp(HEALTH, storedFiles(health, { files: { "app.jsx": mutate(read(health, "app.jsx")) } }), { ...deps, loadCatalogManifest: loader });
+    expect(result).toMatchObject({ ok: false, failure: { reason: "code-mismatch" } });
+    expect(loader).not.toHaveBeenCalled();
+  });
+
+  it("an entry that lists no app.jsx cannot be run", async () => {
+    const noSource: CatalogEntry = { ...health, bundle: { ...health.bundle, files: health.bundle.files.filter((file) => file.path !== "app.jsx") } };
+    expect(await pinProblem(noSource, storedFiles(health))).toMatch(/no app\.jsx/);
   });
 });

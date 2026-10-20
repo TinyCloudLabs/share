@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppData } from "../src/apps/bridge.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type ReadSession, type RunPorts, type RuntimeSession } from "../src/apps/run.ts";
+import { CAUTION } from "../src/apps/limits.ts";
 import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
-import { RUNNER_APP_ID, readerManifest, readerScope, storedKeys } from "../src/apps/run-session.ts";
+import { RUNNER_APP_ID, readerManifest, readerScope } from "../src/apps/run-session.ts";
+import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
 import type { JsxManifest } from "../src/artifact/jsx-runtime/files.ts";
@@ -19,7 +21,6 @@ const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES_ID = "xyz.tinycloud.sample.recipes";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH) as CatalogEntry;
 const bundleFile = (path: string): Uint8Array => new Uint8Array(readFileSync(join("public", entry.bundle.root, path)));
-const installRecord = (): Uint8Array => new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: entry.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" }));
 const nodeBuffer = (bytes: Uint8Array): ArrayBuffer => { const copy = Buffer.from(bytes); return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer; };
 
 const sha = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
@@ -39,7 +40,7 @@ interface Fake {
   release(): void;
 }
 
-function fakePorts(overrides: { files?: Partial<Record<"manifest" | "install" | "source", Uint8Array | undefined>>; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean } = {}): Fake {
+function fakePorts(overrides: { stored?: StoredOverrides | "empty"; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
   const fake: Fake = { reads: 0, runtimes: 0, ended: { read: [], runtime: 0 }, calls: [], release: () => undefined, ports: undefined as unknown as RunPorts };
   const data: AppData = {
     kvGet: async (path) => { fake.calls.push(`kv.get ${path}`); return { ok: true, data: { bytes: new TextEncoder().encode("hi"), contentType: "text/plain" } }; },
@@ -51,6 +52,7 @@ function fakePorts(overrides: { files?: Partial<Record<"manifest" | "install" | 
   };
   const gate = new Promise<void>((resolve) => { fake.release = resolve; });
   fake.ports = {
+    ...(overrides.catalog === undefined ? {} : { catalog: overrides.catalog }),
     sdk: async () => sdkCore,
     loadCatalogManifest: async (candidate) => ({ ok: true, manifest: JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown }),
     async readStored(_entry, hooks): Promise<ReadSession> {
@@ -59,7 +61,7 @@ function fakePorts(overrides: { files?: Partial<Record<"manifest" | "install" | 
       if (overrides.hold === true) await gate;
       hooks.approval(false);
       if (overrides.readError !== undefined) throw overrides.readError;
-      const files = { manifest: bundleFile("manifest.json"), install: installRecord(), source: bundleFile("app.jsx"), ...overrides.files };
+      const files = overrides.stored === "empty" ? { entries: new Map<string, Uint8Array>() } : storedFiles(entry, overrides.stored);
       return { files, end: async ({ keepOpenKey }) => { fake.ended.read.push(keepOpenKey); } };
     },
     async openRuntime(): Promise<RuntimeSession> {
@@ -104,7 +106,9 @@ describe("the runner page before anything is signed", () => {
     expect(provenance).toContain(`${entry.source.commit.slice(0, 7)}`);
     expect(provenance).toContain(entry.bundle.digest.slice(0, 12));
     expect(provenance).toContain("sandbox");
-    expect(provenance).toContain("no network access");
+    expect(provenance).toContain("It runs in a sandbox");
+    expect(provenance).not.toMatch(/no network/i);
+    expect(root.querySelector(".run-bar .run-caution")?.textContent).toBe(CAUTION);
     expect(root.querySelector("iframe")).toBeNull();
     expect(root.querySelector(".run-details")?.textContent).toContain("What this app can do");
     expect(root.textContent).toContain("It can change");
@@ -272,12 +276,12 @@ describe("opening an app", () => {
 });
 
 describe("opening an app that cannot run", () => {
-  const stored = (manifest: unknown, extra: Record<string, Uint8Array> = {}): Parameters<typeof fakePorts>[0] => ({ files: { manifest: new TextEncoder().encode(JSON.stringify(manifest)), ...extra } });
+  const stored = (manifest: unknown): Parameters<typeof fakePorts>[0] => ({ stored: { files: { "manifest.json": new TextEncoder().encode(JSON.stringify(manifest)) } } });
   interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[] }[]; [key: string]: unknown }
   const original = (): TestManifest => JSON.parse(new TextDecoder().decode(bundleFile("manifest.json"))) as TestManifest;
 
   it("says the app needs to be installed first, with a link to the apps page, when nothing is saved", async () => {
-    const fake = fakePorts({ files: { manifest: undefined, install: undefined, source: undefined } });
+    const fake = fakePorts({ stored: "empty" });
     await open(fake);
     button("Continue")!.click();
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app needs to be installed first"));
@@ -348,7 +352,7 @@ describe("copy and the sign-in manifests", () => {
     expect(progressText({ phase: "starting", approval: true }, "X")).toContain("(2 of 2)");
   });
 
-  it("the read sign-in asks for one get under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
+  it("the read sign-in asks for a get and a list under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
     const manifest = readerManifest(HEALTH, "Health Log");
     expect(manifest.app_id).toBe(RUNNER_APP_ID);
     expect(manifest.app_id).not.toBe("xyz.tinycloud.share");
@@ -361,8 +365,103 @@ describe("copy and the sign-in manifests", () => {
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     expect(composed.resources.filter((resource) => resource.service === "tinycloud.kv" && resource.space === "applications")).toEqual([
-      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get"] }),
+      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list"] }),
     ]);
-    expect(storedKeys(HEALTH)).toEqual({ manifest: `${HEALTH}/app/manifest.json`, install: `${HEALTH}/app/install.json`, source: `${HEALTH}/app/app.jsx` });
+  });
+});
+
+describe("the pin, the kill switch, Repair and pagehide", () => {
+  const tampered = (): Parameters<typeof fakePorts>[0] => ({ stored: { files: { "app.jsx": new TextEncoder().encode('fetch("https://x.example");') } } });
+
+  it("a saved app.jsx that is not the pinned file opens nothing: no runtime session, no frame, Repair offered", async () => {
+    const fake = fakePorts(tampered());
+    await open(fake);
+    button("Continue")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app's code doesn't match the pinned version"));
+    expect(root.querySelector(".run-screen")?.textContent).toContain("Remove it and install again.");
+    expect(root.querySelector(".run-screen")?.textContent).toContain("Your data is untouched.");
+    expect(root.querySelector(".run-screen")?.getAttribute("role")).toBe("alert");
+    expect(root.querySelector(".run-screen__detail")?.textContent).toBe("app.jsx differs from the pinned version");
+    expect(root.querySelector(`a[href='/apps/#repair=${HEALTH}']`)?.textContent).toBe("Repair");
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(fake.runtimes).toBe(0);
+    expect(fake.ended.read).toEqual([false]);
+  });
+
+  it("an extra or missing code file does the same", async () => {
+    for (const stored of [{ files: { "extra.js": new TextEncoder().encode("1") } }, { remove: ["schema.sql"] }] as const) {
+      const fake = fakePorts({ stored });
+      document.body.innerHTML = '<main><div id="runner"></div></main>';
+      root = document.querySelector<HTMLElement>("#runner") as HTMLElement;
+      await open(fake);
+      button("Continue")!.click();
+      await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app's code doesn't match the pinned version"));
+      expect(fake.runtimes).toBe(0);
+    }
+  });
+
+  it("an installed version that has left the catalog gets the honest message and what to delete, not a Repair", async () => {
+    const other = { ...entry, bundle: { ...entry.bundle, digest: "f".repeat(64) } };
+    const fake = fakePorts({ catalog: [entry] });
+    // The install recorded a digest the catalog no longer lists.
+    const original = fake.ports.readStored;
+    fake.ports.readStored = async (candidate, hooks) => {
+      const session = await original(candidate, hooks);
+      const files = { entries: new Map(session.files.entries) };
+      files.entries.set("install.json", new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: other.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" })));
+      return { files, end: session.end };
+    };
+    await open(fake);
+    button("Continue")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This version of the app isn't in the catalog any more"));
+    expect(root.querySelector("a[href*='repair']")).toBeNull();
+    const screen = root.querySelector(".run-screen")?.textContent ?? "";
+    expect(screen).toContain(`delete the files under ${HEALTH}/app/`);
+    expect(screen).toContain(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`);
+    expect(screen).toContain("tinycloud kv delete --space applications");
+    expect(fake.runtimes).toBe(0);
+  });
+
+  it("a disabled catalog entry opens nothing and calls nothing: the kill switch", async () => {
+    const off = { ...entry, disabled: true as const, disabledReason: "A problem was found in this app." };
+    const fake = fakePorts({ catalog: [off] });
+    mountRunner(root, { appId: HEALTH, ports: fake.ports });
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app is temporarily unavailable"));
+    expect(root.querySelector(".run-screen")?.textContent).toContain("A problem was found in this app.");
+    expect(button("Continue")).toBeUndefined();
+    expect(fake.reads).toBe(0);
+    expect(fake.runtimes).toBe(0);
+  });
+
+  it("a disabled entry is refused by the flow itself before the SDK loads or any sign-in", async () => {
+    const off = { ...entry, disabled: true as const, disabledReason: "Off." };
+    const fake = fakePorts({ catalog: [off] });
+    const sdk = vi.spyOn(fake.ports, "sdk");
+    const { openApp } = await import("../src/apps/run.ts");
+    await expect(openApp(HEALTH, fake.ports, () => undefined)).rejects.toMatchObject({ reason: "unavailable", detail: "Off." });
+    expect(sdk).not.toHaveBeenCalled();
+    expect(fake.reads).toBe(0);
+  });
+
+  it("pagehide ends the session, removes the frame, and a restored page says so", async () => {
+    const fake = fakePorts();
+    await open(fake);
+    button("Continue")!.click();
+    await vi.waitFor(() => expect(frame()).toBeTruthy());
+    fromFrame(frame(), { type: "bridge-ready" });
+    fromFrame(frame(), { type: "ready" });
+    await vi.waitFor(() => expect(status()).toContain("is running"));
+    window.dispatchEvent(new Event("pagehide"));
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(fake.ended.runtime).toBe(1);
+    expect(root.querySelector(".run-screen__title")?.textContent).toBe("Signed out of this app");
+  });
+
+  it("the page does not claim there is no network access, and says what to do", async () => {
+    const fake = fakePorts();
+    await open(fake);
+    expect(root.textContent).not.toMatch(/no network|can't send your data/i);
+    expect(root.textContent).toContain("Some browser requests can't be blocked. Install apps you trust. Beta: use sample data only.");
+    expect(root.textContent).toContain("Known limits:");
   });
 });

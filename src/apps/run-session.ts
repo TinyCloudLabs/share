@@ -33,14 +33,28 @@ import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn, OpenKeyShareSession, WalletApprovalFailure } from "../share/openkey-session.js";
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { createAppData } from "./app-data.ts";
+import { isBytes } from "./bridge.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
-import { INSTALL_RECORD_PATH } from "./bundle.ts";
+import { isSignInLabel } from "../share/sign-in-label.js";
 import { RunError, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
-const APP_NAME_MAX = 80;
+const APP_NAME_MAX_CHARS = 64;
+/** Files and bytes read from `<app_id>/app/` at most; more than that is refused as unverifiable. */
+export const MAX_STORED_FILES = 64;
+export const MAX_STORED_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The name OpenKey shows. DISPLAY ONLY (the app id and the grants never come from it): the catalog's name goes in only
+ * if the shared sign-in accepts it as a label, otherwise a fixed one stands in; the whole line is cut to 64 characters.
+ */
+export function runnerAppName(prefix: string, name: string): string {
+  const named = isSignInLabel(name) ? name : "Tiny app";
+  const cut = [...`${prefix}${named}`].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
+  return isSignInLabel(cut) ? cut : `${prefix}Tiny app`;
+}
 
 /**
  * Identity the read sign-in uses: the runner's own, so the person's apps list does not gain a record named after the
@@ -48,7 +62,7 @@ const APP_NAME_MAX = 80;
  */
 export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
-/** The read sign-in's manifest: `get` on `<app_id>/app/` in the applications space, and nothing else. */
+/** The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. */
 export function readerManifest(appId: string, appName: string): Manifest {
   return {
     manifest_version: 1,
@@ -60,21 +74,14 @@ export function readerManifest(appId: string, appName: string): Manifest {
     defaults: false,
     includePublicSpace: false,
     expiry: "15m",
-    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so it can be opened.` }],
+    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
   };
 }
 
-/** What the read sign-in may ask for: `get` on the one saved app, and nothing else. */
+/** What the read sign-in may ask for: `get` and `list` on the one saved app, and nothing else. */
 export function readerScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
 }
-
-/** The keys read in step 1, in `StoredBytes` order. */
-export const storedKeys = (appId: string): { manifest: string; install: string; source: string } => ({
-  manifest: `${appId}/app/manifest.json`,
-  install: `${appId}/app/${INSTALL_RECORD_PATH}`,
-  source: `${appId}/app/app.jsx`,
-});
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
 function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; observed(): RunFailure | undefined } {
@@ -94,6 +101,37 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
     lock: () => { locked = true; },
     observed: () => failure,
   };
+}
+
+/** The parts of the SDK's key-value service the reader uses. */
+interface ReaderKv {
+  list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
+  get(key: string, options: { binary: true }): Promise<{ ok: true; data: { data: unknown } } | { ok: false; error: { code?: string } }>;
+}
+
+/** Every file under `prefix`, keyed by path relative to it. A listing or total that is too large is `incomplete`, never silently cut. */
+export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<ReadSession["files"]> {
+  const listed = await kv.list({ prefix });
+  if (!listed.ok) throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}` });
+  const paths = listed.data.keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)).filter((path) => path !== "");
+  const entries = new Map<string, Uint8Array>();
+  let incomplete = listed.data.truncated === true || paths.length > MAX_STORED_FILES;
+  let total = 0;
+  for (const path of paths.slice(0, MAX_STORED_FILES)) {
+    const result = await kv.get(`${prefix}${path}`, { binary: true });
+    if (!result.ok) {
+      // Listed a moment ago and now gone or unreadable: the set cannot be vouched for.
+      if (/NOT_FOUND/.test(result.error.code ?? "")) { incomplete = true; continue; }
+      throw new RunError("failed", { detail: `read ${prefix}${path}: ${result.error.code ?? "error"}` });
+    }
+    const data: unknown = result.data.data;
+    const bytes = isBytes(data) ? data : typeof data === "string" ? new TextEncoder().encode(data) : undefined;
+    if (bytes === undefined) throw new RunError("failed", { detail: `read ${prefix}${path}: not bytes` });
+    total += bytes.byteLength;
+    if (total > MAX_STORED_BYTES) { incomplete = true; break; }
+    entries.set(path, bytes);
+  }
+  return { entries, incomplete };
 }
 
 /** The OpenKey connection a read session hands to the runtime sign-in, and how to end the whole sign-in. */
@@ -121,7 +159,7 @@ export function createRunPorts(): RunPorts {
           hostSpaces: [INSTALL_SPACE],
           guardApproval: approvals.guard,
           onClient: (created) => { client = created; },
-          appName: `TinyCloud Share: open ${entry.name}`.slice(0, APP_NAME_MAX),
+          appName: runnerAppName("TinyCloud Share: open ", entry.name),
           sessionPrefix: "tinycloud-share-runner-read",
           expiry: INSTALL_EXPIRY_MS,
         });
@@ -134,21 +172,9 @@ export function createRunPorts(): RunPorts {
       if (space === undefined) { await signedIn.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
       approvals.lock();
       const kv = tinycloud.kvForSpace(space);
-      const keys = storedKeys(entry.app_id);
-      const read = async (key: string): Promise<Uint8Array | undefined> => {
-        const result = await kv.get(key, { binary: true });
-        if (!result.ok) {
-          if (result.error.code === "KV_NOT_FOUND" || /NOT_FOUND/.test(result.error.code ?? "")) return undefined;
-          throw new RunError("failed", { detail: `read ${key}: ${result.error.code ?? "error"}` });
-        }
-        const data: unknown = result.data.data;
-        if (data instanceof Uint8Array) return data;
-        if (typeof data === "string") return new TextEncoder().encode(data);
-        throw new RunError("failed", { detail: `read ${key}: not bytes` });
-      };
       let files: ReadSession["files"];
       try {
-        files = { manifest: await read(keys.manifest), install: await read(keys.install), source: await read(keys.source) };
+        files = await readSavedFiles(kv, `${entry.app_id}/app/`);
       } catch (error) {
         await signedIn.dispose();
         throw error instanceof RunError ? error : new RunError("failed", { cause: error });
@@ -185,7 +211,7 @@ export function createRunPorts(): RunPorts {
           hostSpaces: [INSTALL_SPACE],
           guardApproval: approvals.guard,
           onClient: (created) => { client = created; },
-          appName: `TinyCloud Share: ${app.name}`.slice(0, APP_NAME_MAX),
+          appName: runnerAppName("TinyCloud Share: ", app.entry.name),
           sessionPrefix: "tinycloud-share-runner",
           expiry: RUNTIME_SESSION_MS,
           ...(carried === undefined ? {} : { session: carried.session }),
@@ -199,12 +225,14 @@ export function createRunPorts(): RunPorts {
       // From here the page signs nothing more: a call outside the session's ReCap is the node's to refuse.
       approvals.lock();
       const space = spaces[INSTALL_SPACE];
-      if (space === undefined) { await signedIn.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
+      if (space === undefined) { await signedIn.dispose(); await carried?.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
       const data = createAppData(tinycloud.kvForSpace(space), tinycloud.sqlForSpace(space));
+      let ending: Promise<void> | undefined;
       return {
         data,
         expiresAt: startedAt + RUNTIME_SESSION_MS - EXPIRY_MARGIN_MS,
-        end: () => signedIn.dispose(),
+        // The runtime sign-in was handed the reader's OpenKey connection, so the helper leaves it open: close it with the reader's.
+        end: () => (ending ??= (async () => { await signedIn.dispose(); await carried?.dispose(); })()),
       };
     },
   };
