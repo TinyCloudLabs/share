@@ -102,3 +102,42 @@ export function authFailureMessage(error: unknown): string {
   const kind = senderFailureKind(error);
   return SENDER_FAILURE[kind === "internal" ? "signIn" : kind];
 }
+
+/**
+ * HTTP status of a failed node call, or undefined. Reads only the numeric
+ * status the SDKs attach (`status`, or the `HTTP 403` / `: 403 - ` text they
+ * put in a message, also under `.error`); never returns any other text.
+ */
+export function httpStatusOf(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  if ("status" in error && typeof error.status === "number") return error.status;
+  if ("error" in error) { const nested = httpStatusOf(error.error); if (nested !== undefined) return nested; }
+  if ("message" in error && typeof error.message === "string") {
+    const match = /\bHTTP (\d{3})\b|: (\d{3}) - /.exec(error.message);
+    const code = match?.[1] ?? match?.[2];
+    if (code !== undefined) return Number(code);
+  }
+  return undefined;
+}
+
+/**
+ * TC-721. Why a Revoke failed, in plain words. Only a status code is ever
+ * quoted: raw error text can carry a response body, which never reaches the page.
+ */
+export function revokeFailureMessage(error: unknown): string {
+  const reason = ((): string => {
+    const status = httpStatusOf(error);
+    const text = error instanceof Error ? error.message : "";
+    if (text === "revoke-unbound-policy-root") return "This share was made with a different account or TinyCloud node than this session. Sign in with the account that created it.";
+    if (text === "share-not-found") return "This saved share is no longer in your library. Reload the page.";
+    if (text === "revoke-unsupported") return "This saved link has no revocation authority.";
+    if (status === 401 || status === 403) return `TinyCloud refused the request (HTTP ${status}). Sign in again with the account that created this share, then retry. The share is still active.`;
+    if (status === 404) return "TinyCloud could not find this share (HTTP 404). Reload your library to check its status.";
+    if (status === 409) return "TinyCloud reports a conflict (HTTP 409). Reload your library to check its status.";
+    if (status !== undefined && (status === 429 || status >= 500)) return `TinyCloud is having trouble right now (HTTP ${status}). The share is still active. Try again in a moment.`;
+    if (status !== undefined) return `TinyCloud rejected the request (HTTP ${status}). The share is still active.`;
+    if (senderFailureKind(error) === "offline") return SENDER_FAILURE.offline;
+    return "Something unexpected went wrong. The share is still active. Try again.";
+  })();
+  return `Could not revoke: ${reason}`;
+}
