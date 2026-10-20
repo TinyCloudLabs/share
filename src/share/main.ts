@@ -1,6 +1,8 @@
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { resetRevokeFlights } from "./revoke-flight.js";
+import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
 
@@ -17,7 +19,7 @@ interface SenderApp {
   readonly config: SharePublicConfig;
 }
 
-function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>): void {
+function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (session: OpenKeyShareSession, status: HTMLElement) => Promise<void>, notice?: string): void {
   root.removeAttribute("aria-busy");
   root.replaceChildren();
   const shell = document.createElement("main"); shell.className = "sender-shell auth-shell";
@@ -42,6 +44,7 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
+  if (notice !== undefined) status.textContent = notice;
   if (resumable) submit.focus();
   form.addEventListener("submit", (event) => {
     event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
@@ -71,6 +74,8 @@ view.className = "sender-view";
 let app: SenderApp | undefined;
 /** Guards against a slow view winning a race with a newer route. */
 let renderToken = 0;
+/** How each screen that was mounted this session lets go of what it listens to; run at sign-out. */
+const screenEnds = new Set<() => void>();
 
 function navigate(route: string): void {
   if (window.location.hash === route) { render(); return; }
@@ -78,15 +83,17 @@ function navigate(route: string): void {
 }
 
 function renderLibrary(current: SenderApp, token: number): void {
-  void import("./sender-home.js").then(({ mountSenderHome }) => {
+  void Promise.all([import("./sender-home.js"), import("./node-status.js")]).then(([{ mountSenderHome, endSenderLibrary }, { createNodeStatusReader }]) => {
     if (token !== renderToken) return;
-    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate });
+    screenEnds.add(endSenderLibrary);
+    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
   });
 }
 
 function renderComposer(current: SenderApp, token: number): void {
-  void import("./composer.js").then(({ mountShareComposer }) => {
+  void import("./composer.js").then(({ mountShareComposer, endShareComposer }) => {
     if (token !== renderToken) return;
+    screenEnds.add(endShareComposer);
     mountShareComposer(view, {
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
       openKeyAddress: current.session.address,
@@ -127,7 +134,23 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   const unlocked = await tinycloud.vault.unlock();
   if (!unlocked.ok) throw fail("storage", "TinyCloud could not unlock the sender share library");
   app = { session, tinycloud, history: new SenderHistoryRepository(tinycloud.vault), config };
-  (root as HTMLElement).replaceChildren(view);
+  const chromeScope = document.createElement("div");
+  (root as HTMLElement).replaceChildren(chromeScope, view);
+  void import("./sender-chrome.js").then(({ mountSenderChrome }) => {
+    mountSenderChrome(chromeScope, {
+      session, tinycloud,
+      onSignedOut: (notice) => {
+        // The session is gone: no screen may keep using it, and nothing in memory may start another request with it.
+        app = undefined; renderToken += 1; view.replaceChildren();
+        // Nor may anything it left running block the next sign-in: revokes in flight, the open wallet request, and the screens' listeners.
+        resetRevokeFlights(); resetWalletApproval();
+        for (const end of screenEnds) end();
+        screenEnds.clear();
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+        mountAuthentication(root as HTMLElement, false, bootstrap, notice);
+      },
+    });
+  });
   if (!window.location.hash.startsWith(COMPOSER_ROUTE) && window.location.hash !== LIBRARY_ROUTE) {
     // Keep the library the durable home without adding a history entry.
     window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${LIBRARY_ROUTE}`);

@@ -10,6 +10,7 @@ type PutResult = { ok: true } | { ok: false; error: { code: string } };
 
 const state = vi.hoisted(() => ({
   signIn: vi.fn(),
+  dispose: vi.fn(async () => undefined),
   taken: undefined as undefined | (() => string | undefined),
   putFails: undefined as undefined | { code: string },
 }));
@@ -17,7 +18,8 @@ const state = vi.hoisted(() => ({
 vi.mock("../src/share/openkey-session.js", () => ({
   FILES_FOR_YOU_SPACE: "files-for-you",
   FILES_FOR_YOU_PREFIX: "v1/",
-  saveCopyManifest: () => ({ app_id: "xyz.tinycloud.share", permissions: [{ service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"], skipPrefix: true }] }),
+  SAVE_COPY_MANIFEST_SCOPE: { allowedSpaces: ["files-for-you"], allowedServices: ["kv"], allowedActions: ["get", "put", "list"] },
+  saveCopyManifest: () => ({ app_id: "xyz.tinycloud.share.copies", permissions: [{ service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"], skipPrefix: true }] }),
   takeWalletApprovalFailure: () => state.taken?.(),
   signInWithManifest: (options: unknown) => state.signIn(options),
 }));
@@ -45,6 +47,7 @@ function fakeKv(taken: readonly string[] = []) {
 
 beforeEach(() => {
   state.signIn.mockReset();
+  state.dispose.mockClear();
   state.taken = undefined;
   state.putFails = undefined;
   resetRevokeFlights();
@@ -82,7 +85,7 @@ describe("writing the copy", () => {
   it("writes exactly the received bytes under files-for-you/v1/<name>, create-only, with the given media type", async () => {
     const kv = fakeKv();
     const saved = await writeSavedCopy(kv as never, COPY);
-    expect(saved).toEqual({ key: "v1/report.md", path: "files-for-you/v1/report.md" });
+    expect(saved).toEqual({ name: "report.md", key: "v1/report.md", path: "files-for-you/v1/report.md" });
     expect(kv.puts).toHaveLength(1);
     expect(sha256(kv.puts[0]!.value)).toBe(sha256(COPY.bytes));
     expect(kv.puts[0]!.value).toBe(COPY.bytes);
@@ -138,15 +141,21 @@ describe("Save a copy from the viewer", () => {
 
   it("signs in with the save manifest, hosts files-for-you, and writes the exact bytes the viewer holds", async () => {
     const kv = fakeKv();
-    state.signIn.mockResolvedValue({ tinycloud: { kvForSpace: (spaceId: string) => (spaceId === "space-of-files-for-you" ? kv : undefined) }, spaces: { account: "account", "files-for-you": "space-of-files-for-you" } });
+    state.signIn.mockResolvedValue({ dispose: state.dispose, tinycloud: { kvForSpace: (spaceId: string) => (spaceId === "space-of-files-for-you" ? kv : undefined) }, spaces: { account: "account", "files-for-you": "space-of-files-for-you" } });
 
     const result = await createSaveToTinyCloud(CONFIG)(COPY, { approval: () => undefined });
 
-    expect(result).toEqual({ path: "files-for-you/v1/report.md" });
+    expect(result).toEqual({ path: "files-for-you/v1/report.md", name: "report.md" });
     const [options] = state.signIn.mock.calls[0]!;
     expect(options.config).toBe(CONFIG);
     expect(options.hostSpaces).toEqual(["files-for-you"]);
+    // The manifest is checked against Save's own scope, so a broader one could never be signed here.
+    expect(options.allowedSpaces).toEqual(["files-for-you"]);
+    expect(options.allowedActions).toEqual(["get", "put", "list"]);
+    // The session is dropped as soon as the copy is written.
+    expect(state.dispose).toHaveBeenCalledTimes(1);
     // Only the private copies area is requested.
+    expect(options.manifest.app_id).toBe("xyz.tinycloud.share.copies");
     expect(options.manifest.permissions).toEqual([{ service: "tinycloud.kv", space: "files-for-you", path: "v1/", actions: ["get", "put", "list"], skipPrefix: true }]);
     expect(sha256(kv.puts[0]!.value)).toBe(sha256(COPY.bytes));
   });
@@ -160,7 +169,7 @@ describe("Save a copy from the viewer", () => {
         second = options.guardApproval(async () => "second").catch((error: unknown) => error);
         await second;
       });
-      return { tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } };
+      return { dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } };
     });
     await createSaveToTinyCloud(CONFIG)(COPY, { approval: (open) => seen.push(open) });
     expect(seen).toEqual([true, false]);
@@ -231,14 +240,23 @@ describe("Save a copy from the viewer", () => {
 
   it("a write that fails after sign-in is a plain failure too", async () => {
     state.putFails = { code: "KV_WRITE_FAILED" };
-    state.signIn.mockResolvedValue({ tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } });
+    state.signIn.mockResolvedValue({ dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } });
     const error = await createSaveToTinyCloud(CONFIG)(COPY, { approval: () => undefined }).catch((caught: unknown) => caught);
     expect((error as SaveCopyError).reason).toBe("failed");
+    // A failed write still drops the session and closes OpenKey.
+    expect(state.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the clash in the result: the second copy of a name comes back as 'name (2)'", async () => {
+    state.signIn.mockResolvedValue({ dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv(["v1/report.md"]) }, spaces: { "files-for-you": "space" } });
+    const result = await createSaveToTinyCloud(CONFIG)(COPY, { approval: () => undefined });
+    expect(result.name).toBe("report (2).md");
+    expect(result.path).toBe("files-for-you/v1/report%20(2).md");
   });
 
   it("writes no storage and logs nothing", async () => {
     const logs = [vi.spyOn(console, "log"), vi.spyOn(console, "debug"), vi.spyOn(console, "info"), vi.spyOn(console, "warn"), vi.spyOn(console, "error")].map((spy) => spy.mockImplementation(() => undefined));
-    state.signIn.mockResolvedValue({ tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } });
+    state.signIn.mockResolvedValue({ dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } });
     await createSaveToTinyCloud(CONFIG)(COPY, { approval: () => undefined });
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);

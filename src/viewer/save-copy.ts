@@ -3,13 +3,25 @@
  *
  * Opening a share is account-free. Nothing here runs, and OpenKey is not even
  * loaded, until the person clicks Save: this module only builds the function
- * the click calls. That function signs in with OpenKey (with the manifest for
- * `files-for-you/v1/` and nothing else), hosts the person's own space, and
- * writes the bytes the viewer already holds. The session stays in memory and is
- * dropped with the call; no key, token or session is stored or logged.
+ * the click calls. That function signs in with OpenKey, hosts the person's own
+ * space, and writes the bytes the viewer already holds.
+ *
+ * What the session holds: the Save manifest (get, put and list under
+ * `files-for-you/v1/`, checked against `SAVE_COPY_MANIFEST_SCOPE` before OpenKey
+ * opens) PLUS the account-registry permissions the SDK adds to every sign-in
+ * (get/put/list on `account/applications/` and `account/spaces/`, read/write/
+ * schema on the account database, delegation list). The SDK needs those to keep
+ * a new account's own space registry in sync; without them it makes unauthorized
+ * calls. Narrowing that waits on the SDK. Saving itself needs only `put`.
+ *
+ * The session stays in memory, is disposed (OpenKey flows closed, session
+ * cleared) when the call ends, and lasts at most an hour if it is not; no key,
+ * token or session is stored or logged. A first Save on a new account asks for
+ * four OpenKey approvals: the session itself, then hosting the `files-for-you`
+ * space, the `account` space, and `files-for-you` again.
  */
 import type { SharePublicConfig } from "../email-share/config.js";
-import type { ApprovalGuard, ShareTinyCloud, WalletApprovalFailure } from "../share/openkey-session.js";
+import type { ApprovalGuard, ManifestSignIn, ShareTinyCloud, WalletApprovalFailure } from "../share/openkey-session.js";
 import type { SavedCopyInput } from "../share/saved-copy.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 
@@ -22,8 +34,10 @@ export interface SaveProgress {
 }
 
 export interface SaveResult {
-  /** `files-for-you/v1/<name>`. */
+  /** `files-for-you/v1/<name>`, the name percent-encoded as stored. */
   readonly path: string;
+  /** The name the copy was saved under, as a person reads it (`report (2).md` after a clash). */
+  readonly name: string;
 }
 
 /** Called by the bar's Save click, never before. */
@@ -79,26 +93,32 @@ export function createSaveToTinyCloud(config: SharePublicConfig): SaveToTinyClou
         throw error;
       }
     };
+    let signedIn: ManifestSignIn | undefined;
     try {
       // Dynamic on purpose: the receiver must not load OpenKey or the account SDK (let alone call them) before the click, and the viewer bundle must not carry them.
       const session = await import("../share/openkey-session.js");
       const { writeSavedCopy } = await import("../share/saved-copy.js");
       takeFailure = session.takeWalletApprovalFailure;
-      const { tinycloud, spaces } = await session.signInWithManifest({
+      signedIn = await session.signInWithManifest({
         manifest: session.saveCopyManifest(),
+        ...session.SAVE_COPY_MANIFEST_SCOPE,
         config,
         hostSpaces: [session.FILES_FOR_YOU_SPACE],
         guardApproval,
         onClient: (created) => { client = created; },
       });
-      const spaceId = spaces[session.FILES_FOR_YOU_SPACE];
+      const spaceId = signedIn.spaces[session.FILES_FOR_YOU_SPACE];
       if (spaceId === undefined) throw new Error("save-copy-space-not-hosted");
-      return { path: (await writeSavedCopy(tinycloud.kvForSpace(spaceId), copy)).path };
+      const saved = await writeSavedCopy(signedIn.tinycloud.kvForSpace(spaceId), copy);
+      return { path: saved.path, name: saved.name };
     } catch (error) {
       if (error instanceof SaveCopyError) throw error;
       // The SDK folds a plain `{ code }` rejection from OpenKey into "[object Object]", so ask what the approval itself said.
       const reason = observed ?? (client === undefined ? undefined : takeFailure?.(client)) ?? "failed";
       throw new SaveCopyError(reason, { cause: error });
+    } finally {
+      // The copy is written (or not): close any OpenKey window and drop the session now rather than leave it in memory for its hour.
+      await signedIn?.dispose();
     }
   };
 }

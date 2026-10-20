@@ -99,9 +99,11 @@ a different OpenKey account (the stack serves a second fixture wallet for it)
 opens the link: before the click the trace holds no OpenKey request and no
 credential or policy ceremony. The click runs the OpenKey sign-in, hosts the
 recipient's `files-for-you` space and writes the file; the live region must say
-pending, the approval hint and "Saved. Open in TinyCloud" in that order, the
+pending, the approval hint and "Saved to your TinyCloud files as “<name>”." in that order
+(the second Save must name `<name> (2).md`), the
 node must receive one write whose SHA-256 is the original's, and no storage
-entry may hold key or session material. The copy is then read back through the
+entry (localStorage, sessionStorage, cookie, IndexedDB) may exist. The number of
+OpenKey approvals each Save asked for is recorded in the artifact. The copy is then read back through the
 product's own sign-in helper and must equal the original byte for byte. A second
 Save from a new browser context must keep both copies (`<name> (2).md`). Finally
 the owner revokes the original from a new sign-in: a new reader gets no Save and
