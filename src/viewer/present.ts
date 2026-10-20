@@ -193,14 +193,14 @@ export async function presentShare(
         mediaType: signedMediaType(result),
         filename: downloadName(result),
         byteLength: result.contentBytes.byteLength,
-      }, { ...options, ...(result.access === undefined ? {} : { linkAccess: result.access }) });
+      }, { ...options, ...(result.access === undefined ? {} : { linkAccess: result.access }), shareId: result.envelope.shareId });
     } else {
       await renderMarkdownInto(container, result.content as string, mode, options);
       renderedKind = mode === "source" ? "text" : "markdown";
     }
     // Documents and pages own the whole area under the bar; everything else
     // (text, images, download notes) sits in a padded, scrolling column.
-    container.classList.toggle("viewer-content--frame", renderedKind === "markdown" || renderedKind === "html");
+    container.classList.toggle("viewer-content--frame", renderedKind === "markdown" || renderedKind === "html" || renderedKind === "jsx");
     if (options.saveToTinyCloud !== undefined) {
       appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
     }

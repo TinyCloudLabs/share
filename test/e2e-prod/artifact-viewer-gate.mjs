@@ -17,13 +17,18 @@
  * Usage (same prerequisites as joined-gate.mjs):
  *   TC500_CLI_PACKAGE=<@tinycloud/cli root> ARTIFACT_GATE_SCREENSHOTS=<dir> \
  *     node test/e2e-prod/artifact-viewer-gate.mjs
+ * Environment: TC500_NODE_WORKTREE (default: worktrees/tinycloud-node/v1.21.0 found above this checkout),
+ * TC500_OPENCREDENTIALS_WORKTREE and TC500_REGISTRY_WORKTREE (clean trees at the pinned commits, built
+ * as joined-gate.mjs does), TC500_CLI_PACKAGE (an installed @tinycloud/cli), ARTIFACT_GATE_SCREENSHOTS
+ * (optional output directory).
  */
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
@@ -31,8 +36,16 @@ import { startCandidateServer } from "./candidate-server.mjs";
 import { runBoundedStep, startNativeStack } from "./native-stack.mjs";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
-const workspaceRoot = resolve(shareRoot, "../../../../");
-const nodeRoot = process.env.TC500_NODE_WORKTREE ?? join(workspaceRoot, "worktrees/tinycloud-node/v1.21.0");
+// The Node tree defaults to <workspace>/worktrees/tinycloud-node/v1.21.0, found by walking up from this
+// checkout (it may be repositories/share or worktrees/<name>); TC500_NODE_WORKTREE overrides it.
+function findNodeTree() {
+  for (let directory = shareRoot; dirname(directory) !== directory; directory = dirname(directory)) {
+    const candidate = join(directory, "worktrees/tinycloud-node/v1.21.0");
+    if (existsSync(candidate)) return candidate;
+  }
+  return join(shareRoot, "../worktrees/tinycloud-node/v1.21.0");
+}
+const nodeRoot = process.env.TC500_NODE_WORKTREE ?? findNodeTree();
 const credentialsRoot = process.env.TC500_OPENCREDENTIALS_WORKTREE ?? "/tmp/tc500-oc-846c018";
 const registryRoot = process.env.TC500_REGISTRY_WORKTREE ?? "/tmp/tc500-registry-74b2917";
 const cliPackage = resolve(process.env.TC500_CLI_PACKAGE ?? join(process.env.HOME ?? "", "scratch/artifacts/TC-1424/cli/node_modules/@tinycloud/cli"));

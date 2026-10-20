@@ -92,9 +92,16 @@ body.viewer-fullpage #viewer {
 /* Visible, announced feedback for Copy / Download. Always in the DOM (a live
    region must exist before its text changes); collapses to nothing when empty.
    No animation, so there is nothing to reduce. */
-.artifact-chrome-toast { position: fixed; z-index: var(--tc-z-toast); left: 50%; bottom: max(var(--tc-space-4), env(safe-area-inset-bottom)); max-width: min(calc(100vw - 2rem), 32rem); margin: 0; transform: translateX(-50%); color: var(--tc-color-text); background: var(--tc-color-surface); border-radius: var(--tc-radius-md); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); text-align: center; pointer-events: none; }
-.artifact-chrome-toast:not(:empty) { padding: var(--tc-space-2) var(--tc-space-4); border: 1px solid var(--tc-color-border); }
-.artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-color: var(--tc-color-status-danger); }
+.artifact-chrome-toast { position: fixed; z-index: var(--tc-z-toast); right: 0; bottom: 0; left: 0; margin: 0; color: var(--tc-color-text); background: var(--tc-color-surface); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); text-align: center; pointer-events: none; }
+/* A phone: a full-width strip at the bottom edge (safe-area aware), one or two lines. */
+.artifact-chrome-toast:not(:empty) { padding: var(--tc-space-3) max(var(--tc-space-4), env(safe-area-inset-right)) max(var(--tc-space-3), env(safe-area-inset-bottom)) max(var(--tc-space-4), env(safe-area-inset-left)); border-top: 1px solid var(--tc-color-border); }
+.artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-top-color: var(--tc-color-status-danger); }
+/* A wide screen: a compact pill, centred. */
+@media (min-width: 40.0625rem) {
+  .artifact-chrome-toast { right: auto; bottom: max(var(--tc-space-4), env(safe-area-inset-bottom)); left: 50%; width: max-content; max-width: 32rem; transform: translateX(-50%); border-radius: var(--tc-radius-md); }
+  .artifact-chrome-toast:not(:empty) { padding: var(--tc-space-2) var(--tc-space-4); border: 1px solid var(--tc-color-border); }
+  .artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-color: var(--tc-color-status-danger); }
+}
 @media (forced-colors: active) { .artifact-chrome-toast:not(:empty) { border-color: CanvasText; } }
 .artifact-chrome-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
@@ -136,14 +143,19 @@ body.viewer-fullpage #viewer {
   padding: var(--tc-space-6) max(var(--tc-space-4), calc((100% - var(--tc-prose-max)) / 2));
 }
 /* A document or page owns the whole area under the bar. */
-.viewer-content--frame { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.viewer-content--frame { display: flex; flex-direction: column; padding: 0; overflow: auto; }
 .viewer-content--frame > iframe { display: block; flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+/* The page's frame sits under the sender-code notice, which belongs to the viewer: under the bar,
+   edge to edge, and never part of (or covered by) the frame's own box. */
+.viewer-content--frame > .viewer-artifact-notice { flex: none; margin: 0; border-width: 0 0 1px; border-radius: 0; }
+.viewer-content--frame > .viewer-artifact-notice[data-state="collapsed"] { border-width: 0; padding-inline: var(--tc-space-3); }
+/* A JSX page: the stage (frame plus loading cover) takes the rest of the area, not a fixed 80svh. */
+.viewer-content--frame > .viewer-jsx-stage { display: flex; flex: 1 1 auto; min-height: 0; }
+.viewer-content--frame > .viewer-jsx-stage[data-state="loading"] { min-height: 0; }
+.viewer-jsx-stage > iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
 .viewer-preview-frame { background: var(--tc-color-page); }
 /* The sender's page paints on white like a normal browser tab, in either viewer theme. */
 .viewer-html-frame { background: var(--tc-palette-white); }
-.viewer-html-notice { flex: none; margin: 0; padding: var(--tc-space-1) var(--tc-space-3); color: var(--tc-color-text); background: var(--tc-color-surface); border-bottom: 1px solid var(--tc-color-border); font-size: var(--tc-text-xs); line-height: var(--tc-leading-ui); }
-.viewer-html-notice summary { min-height: 1.5rem; padding-block: var(--tc-space-1); cursor: pointer; }
-.viewer-html-notice p { max-width: 72ch; margin: var(--tc-space-1) 0 var(--tc-space-2); }
 .viewer-source { margin: 0; white-space: pre-wrap; font-family: var(--tc-font-mono); font-size: var(--tc-text-sm); }
 .viewer-safe-image { display: block; max-width: 100%; margin: 0 auto; }
 .viewer-render-error { margin: 0; padding: var(--tc-space-4); border: 1px solid var(--tc-color-status-danger); border-radius: var(--tc-radius-md); color: var(--tc-color-text); }

@@ -128,6 +128,12 @@ describe("safeDownloadName", () => {
     ["markdown", "📄 notes.md", "📄 notes.md"],
     ["markdown", "page.html", "page.html.md"],
     ["html", "page.htm", "page.htm"],
+    ["jsx", "a.jsx.exe", "a.jsx.exe.jsx"],
+    ["jsx", "Counter.jsx", "Counter.jsx"],
+    ["jsx", "Counter.tsx", "Counter.tsx"],
+    ["jsx", "Counter.js", "Counter.js.jsx"],
+    ["jsx", "", "artifact.jsx"],
+    ["markdown", "a.jsx", "a.jsx.md"],
     ["html", "page.md", "page.md.html"],
     ["text", "data.csv", "data.csv"],
     ["text", "data.md", "data.md.txt"],
@@ -142,7 +148,7 @@ describe("safeDownloadName", () => {
 
   it("never keeps a final extension that can run or install, in any case, for any kind", () => {
     for (const extension of ["exe", "bat", "cmd", "com", "scr", "msi", "ps1", "vbs", "js", "jar", "sh", "app", "dmg", "lnk", "hta", "apk", "EXE", "Js", "PS1"]) {
-      for (const kind of ["markdown", "html", "text", "image", "file", "download"] as const) {
+      for (const kind of ["markdown", "html", "jsx", "text", "image", "file", "download"] as const) {
         const saved = safeDownloadName(`a.${extension}`, kind);
         expect(saved.toLowerCase().endsWith(`.${extension.toLowerCase()}`), `${kind} ${extension} -> ${saved}`).toBe(false);
         expect(saved.startsWith(`a.${extension}.`)).toBe(true);
@@ -174,6 +180,6 @@ describe("safeDownloadName", () => {
   it("forces the Blob type from the kind, never from the sender", () => {
     expect(downloadMediaType("markdown")).toBe("text/markdown;charset=utf-8");
     expect(downloadMediaType("text")).toBe("text/plain;charset=utf-8");
-    for (const kind of ["html", "file", "download", "image"] as const) expect(downloadMediaType(kind)).toBe("application/octet-stream");
+    for (const kind of ["html", "jsx", "file", "download", "image"] as const) expect(downloadMediaType(kind)).toBe("application/octet-stream");
   });
 });

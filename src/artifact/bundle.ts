@@ -284,11 +284,6 @@ const CHILD_BOOTSTRAP = `(function(){
     event.preventDefault();
     window.parent.postMessage({type:"navigate",path:target.getAttribute("data-tc-artifact-path"),fragment:target.getAttribute("data-tc-artifact-fragment")||""},"*");
   },true);
-  window.addEventListener("keydown",function(event){
-    if(!(event.altKey&&event.shiftKey&&typeof event.key==="string"&&event.key.toLowerCase()==="c"))return;
-    event.preventDefault();
-    window.parent.postMessage({type:"artifact-restore-controls"},"*");
-  },true);
   window.addEventListener("message",function(event){
     if(event.source!==window.parent||event.origin!=="null"||!event.data||event.data.type!=="artifact-fragment"||typeof event.data.fragment!=="string")return;
     var fragment=event.data.fragment;

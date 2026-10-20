@@ -1,3 +1,5 @@
+import { hashedShareKey } from "./share-key-hash.js";
+
 const STORAGE_PREFIX = "tinycloud:artifact-chrome:v1:";
 const FEEDBACK_MS = 2_000;
 const TOAST_MS = 4_000;
@@ -42,10 +44,8 @@ export interface ArtifactChromeOptions {
   readonly storage?: Storage;
 }
 
-async function storageKey(shareId: string): Promise<string> {
-  const bytes = new TextEncoder().encode(shareId);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return `${STORAGE_PREFIX}${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+function storageKey(shareId: string): Promise<string> {
+  return hashedShareKey(STORAGE_PREFIX, shareId);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";

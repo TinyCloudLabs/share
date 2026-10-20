@@ -12,6 +12,7 @@ import { renderLinkNeeded, renderShareUnavailable } from "../../../src/viewer/ui
 import report from "./report.md?raw";
 import page from "./page.html?raw";
 import gaps from "./gaps.html?raw";
+import app from "./app.jsx?raw";
 
 const params = new URLSearchParams(location.search);
 const kind = params.get("kind") ?? "md";
@@ -31,8 +32,8 @@ try {
   } else if (state === "revoked" || state === "expired" || state === "unavailable") {
     renderShareUnavailable(root, state, state === "expired" ? "2026-10-12T00:00:00.000Z" : undefined, () => undefined);
   } else {
-    const filename = kind === "md" ? "q3-agent-report.md" : kind === "gaps" ? "gaps.html" : "q3-agent-report.html";
-    const source = (kind === "md" ? report : kind === "gaps" ? gaps : page).replaceAll("__PROBE__", probe);
+    const filename = kind === "md" ? "q3-agent-report.md" : kind === "gaps" ? "gaps.html" : kind === "jsx" ? "counter.jsx" : "q3-agent-report.html";
+    const source = (kind === "md" ? report : kind === "gaps" ? gaps : kind === "jsx" ? app : page).replaceAll("__PROBE__", probe);
     const path = `xyz.tinycloud.share/shares/viewer-page/${filename}`;
     await presentShare(root, {
       state: "ok",

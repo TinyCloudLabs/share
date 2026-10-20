@@ -18,6 +18,7 @@ const EXECUTABLE_EXTENSIONS: ReadonlySet<string> = new Set([
 const KIND_EXTENSIONS: Readonly<Record<SafeContentKind, { readonly allowed: readonly string[]; readonly canonical: string }>> = {
   markdown: { allowed: ["md", "markdown"], canonical: "md" },
   html: { allowed: ["html", "htm"], canonical: "html" },
+  jsx: { allowed: ["jsx", "tsx"], canonical: "jsx" },
   text: { allowed: ["txt", "csv", "log", "json", "yaml", "yml"], canonical: "txt" },
   image: { allowed: ["png", "jpg", "jpeg", "gif", "webp", "avif"], canonical: "png" },
   file: { allowed: ["bin", "pdf", "png", "jpg", "jpeg", "gif", "webp", "avif", "txt", "csv", "json", "md", "markdown", "html", "htm"], canonical: "bin" },

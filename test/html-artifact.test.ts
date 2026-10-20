@@ -19,6 +19,7 @@ import {
   ARTIFACT_SANDBOX_PATH,
   buildArtifactSandboxHtml,
 } from "../src/viewer/artifact-frame.js";
+import { SANDBOX_PERMISSIONS_POLICY } from "../src/viewer/sandbox-permissions.js";
 import { createArtifactSandbox } from "../src/viewer/artifact-sandbox.js";
 import { mountArtifactChrome } from "../src/viewer/artifact-chrome.js";
 
@@ -148,13 +149,17 @@ describe("artifact sandbox boundary", () => {
     expect(ARTIFACT_SANDBOX_CSP).toContain("frame-src 'none'");
     expect(ARTIFACT_SANDBOX_CSP).not.toContain("navigate-to");
     expect(buildArtifactSandboxHtml()).toContain(`content="${ARTIFACT_SANDBOX_CSP}"`);
-    expect(buildArtifactSandboxHtml()).toContain("artifact-restore-controls");
+    // Nothing in the viewer listens for a restore message, so the bridge no longer relays one.
+    expect(buildArtifactSandboxHtml()).not.toContain("artifact-restore-controls");
     // Dev/preview (Vite) and production (public/_headers) must serve the same
     // complete frame policy, with the site-wide policy detached first.
     expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", ARTIFACT_SANDBOX_HTTP_CSP]);
+    // Fullscreen and Picture-in-Picture stay off for the artifact frames, as for JSX.
+    expect(ARTIFACT_SANDBOX_HTTP_HEADERS).toContainEqual(["permissions-policy", SANDBOX_PERMISSIONS_POLICY]);
+    expect(SANDBOX_PERMISSIONS_POLICY).toMatch(/fullscreen=\(\).*picture-in-picture=\(\)/);
     const headers = readFileSync("public/_headers", "utf8");
     for (const route of ["/artifact-sandbox", ARTIFACT_SANDBOX_PATH]) {
-      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${ARTIFACT_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${ARTIFACT_SANDBOX_HTTP_CSP}\n  Permissions-Policy: ${SANDBOX_PERMISSIONS_POLICY}\n  X-Frame-Options: SAMEORIGIN\n`);
     }
   });
 
@@ -162,6 +167,8 @@ describe("artifact sandbox boundary", () => {
     const sandbox = createArtifactSandbox(document);
     expect(sandbox.iframe.getAttribute("sandbox")).toBe("allow-scripts");
     expect(sandbox.iframe.getAttribute("sandbox")).not.toContain("allow-same-origin");
+    // No permissions are delegated to the artifact frame (fullscreen, Picture-in-Picture, camera, ...).
+    expect(sandbox.iframe.getAttribute("allow")).toBe("");
     const nonce = new URL(sandbox.iframe.src).hash.slice(1);
     const post = vi.spyOn(sandbox.iframe.contentWindow!, "postMessage");
     const render = sandbox.render(await prepareHtmlArtifact([utf8("index.html", "<h1>Safe</h1>")]));

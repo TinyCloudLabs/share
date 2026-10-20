@@ -34,15 +34,16 @@ probe.on("connection", () => { probeConnections += 1; });
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const probeOrigin = `http://127.0.0.1:${probe.address().port}`;
 
+const viewerPagePort = Number(process.env.VIEWER_PAGE_PORT ?? 43187);
 const server = await createServer({
   configFile: "vite.config.ts",
   logLevel: "error",
-  server: { host: "127.0.0.1", port: 43187, strictPort: true, hmr: false },
+  server: { host: "127.0.0.1", port: viewerPagePort, strictPort: true, hmr: false },
 });
 await server.listen();
 const { ARTIFACT_SANDBOX_HTTP_CSP } = await server.ssrLoadModule("/src/viewer/artifact-frame.ts");
 const { PREVIEW_FRAME_CSP } = await server.ssrLoadModule("/src/viewer/preview-frame.ts");
-const origin = "http://127.0.0.1:43187";
+const origin = `http://127.0.0.1:${viewerPagePort}`;
 const harness = (query) => `${origin}/test/fixtures/viewer-page/harness.html?probe=${encodeURIComponent(probeOrigin)}&${query}`;
 
 const consoleOf = new WeakMap();
@@ -200,17 +201,51 @@ try {
     assert.equal(await inner.$eval("#status", (node) => node.textContent), "Script ran inside the frame.");
     const geometry = await page.evaluate(() => {
       const bar = document.querySelector(".artifact-chrome").getBoundingClientRect();
-      const notice = document.querySelector(".viewer-html-notice").getBoundingClientRect();
+      const notice = document.querySelector(".viewer-artifact-notice").getBoundingClientRect();
       const frame = document.querySelector("iframe.viewer-html-frame").getBoundingClientRect();
       return { noticeBottom: notice.bottom, barBottom: bar.bottom, frameTop: frame.top, frameBottom: frame.bottom, innerHeight };
     });
-    assert.ok(Math.abs(geometry.frameTop - geometry.noticeBottom) <= 1 && geometry.noticeBottom > geometry.barBottom, "frame sits under the bar and the one-line notice");
+    assert.ok(Math.abs(geometry.frameTop - geometry.noticeBottom) <= 1 && geometry.noticeBottom > geometry.barBottom, "frame sits under the bar and the notice");
     assert.ok(Math.abs(geometry.frameBottom - geometry.innerHeight) <= 1, "HTML frame fills the viewport");
     assert.equal(ARTIFACT_SANDBOX_HTTP_CSP.includes("connect-src 'none'") && ARTIFACT_SANDBOX_HTTP_CSP.includes("img-src data: blob:") && ARTIFACT_SANDBOX_HTTP_CSP.includes("font-src data: blob:") && ARTIFACT_SANDBOX_HTTP_CSP.includes("default-src 'none'"), true);
     assert.equal(/img-src[^;]*'self'|font-src[^;]*'self'|style-src[^;]*'self'/.test(ARTIFACT_SANDBOX_HTTP_CSP), false, "the HTML sandbox never allows 'self' fetches");
     await secretSurfaces(page, consoleOf.get(page), "html");
+    // The sender-code notice is the viewer's, under the bar and outside the frame, open on first view.
+    assert.equal(await page.$eval(".viewer-artifact-notice-text", (node) => node.textContent), "This page runs the sender's code. The sender can tell that you opened it.");
+    assert.equal(await page.$eval(".viewer-artifact-notice-detail", (node) => node.open && node.getBoundingClientRect().height > 0), true, "what the sender can learn is open on first view");
     assert.deepEqual(await axeViolations(page.mainFrame()), [], "viewer around an HTML artifact: axe AA");
     await page.close();
+  }
+
+  // ---- JSX: the stage fills the area under the bar and the notice; the notice is the viewer's ----
+  {
+    const page = await open(browser, "kind=jsx&nonce=jsx");
+    await page.waitForSelector(".viewer-artifact-notice", { timeout: 60_000 });
+    const outer = await (await page.waitForSelector("iframe.viewer-html-frame", { timeout: 60_000 })).contentFrame();
+    const inner = await (await outer.waitForSelector("iframe", { timeout: 60_000 })).contentFrame();
+    await inner.waitForSelector("#inc", { timeout: 60_000 });
+    await inner.click("#inc");
+    assert.equal(await inner.$eval("p", (node) => node.textContent), "Clicked 1 times");
+    assert.equal(await page.$eval(".artifact-chrome-title", (node) => node.textContent), "counter.jsx");
+    const geometry = await page.evaluate(() => {
+      const bar = document.querySelector(".artifact-chrome").getBoundingClientRect();
+      const notice = document.querySelector(".viewer-artifact-notice").getBoundingClientRect();
+      const frame = document.querySelector("iframe.viewer-html-frame").getBoundingClientRect();
+      const probe = document.elementFromPoint(notice.left + notice.width / 2, notice.top + 4);
+      return { barBottom: bar.bottom, noticeTop: notice.top, noticeBottom: notice.bottom, frameTop: frame.top, frameBottom: frame.bottom, innerHeight, noticeIsTopmost: probe?.closest(".viewer-artifact-notice") !== null };
+    });
+    assert.ok(Math.abs(geometry.noticeTop - geometry.barBottom) <= 1, "the notice sits right under the bar");
+    assert.ok(geometry.frameTop >= geometry.noticeBottom - 1, "the frame starts below the notice");
+    assert.ok(Math.abs(geometry.frameBottom - geometry.innerHeight) <= 1, "the JSX frame fills the rest of the viewport");
+    assert.equal(geometry.noticeIsTopmost, true, "the notice is what is under that point, not the artifact");
+    assert.deepEqual(await axeViolations(page.mainFrame()), [], "viewer around a JSX artifact: axe AA");
+    await shoot(page, "viewer-jsx-1440-light");
+    await page.close();
+    const phone = await open(browser, "kind=jsx&nonce=jsxphone", { width: 390, height: 844, scheme: "dark" });
+    await phone.waitForSelector("iframe.viewer-html-frame", { timeout: 60_000 });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await shoot(phone, "viewer-jsx-390-dark");
+    await phone.close();
   }
 
   // ---- privacy: the author's host saw nothing ------------------------------

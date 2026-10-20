@@ -1,0 +1,8 @@
+/*
+ * The TinyCloud tokens the artifact chrome (notice, loading state, error panels)
+ * is written in. The viewer document does not define `--tc-*` yet, so this brings
+ * them in; each chrome element sets `data-theme="system"` itself, which is what
+ * makes the dark values follow the OS. Plain custom properties on :root: nothing
+ * here styles an element.
+ */
+@import "@tinycloud/styles/tokens.css";

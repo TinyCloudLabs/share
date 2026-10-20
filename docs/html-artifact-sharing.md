@@ -115,10 +115,13 @@ instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
 larger or non-UTF-8 files stay download-only. The page fills the viewport under the
-viewer bar (below). The existing notice that the page comes from the sender
-(including the IP-address caveat) is shown under the bar as a disclosure that is
-open by default and can be collapsed; its text is unchanged. The bar's
-“Download” action is present whether or not the preview succeeds.
+viewer bar (below). Directly under the bar, outside the frame, the viewer shows
+a notice that is visible on first view: "This page runs the sender's code. The
+sender can tell that you opened it." with a "What the sender can learn" detail,
+open on first view, that says what CSP does and does not stop (see
+[JSX artifact sharing](jsx-artifact-sharing.md) for how the notice cannot be
+hidden, covered or dismissed by the page). The bar's “Download” action is
+present whether or not the preview succeeds.
 
 ## Mermaid diagrams in Markdown
 
