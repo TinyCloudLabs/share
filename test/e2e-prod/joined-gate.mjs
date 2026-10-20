@@ -348,19 +348,46 @@ function auditBrowserDiagnostics(stack) {
   };
 }
 
-async function recipientSigningMaterial(page) {
-  const record = await page.evaluate(() => {
-    const raw = sessionStorage.getItem("tinycloud.share.receiver-session.v1");
-    return raw === null ? undefined : JSON.parse(raw);
+/** Reads the page's stored receiver key handle: its DID and whether the private key can be exported. */
+async function recipientKeyHandle(page) {
+  return page.evaluate(async () => {
+    const database = await new Promise((resolve, reject) => {
+      const open = indexedDB.open("tinycloud.share.receiver-keys");
+      open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
+    });
+    const record = await new Promise((resolve, reject) => {
+      const read = database.transaction("keys").objectStore("keys").get(location.origin);
+      read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error);
+    });
+    database.close();
+    if (record === undefined) return undefined;
+    const exportRejected = await Promise.all(["pkcs8", "jwk"].map((format) => crypto.subtle.exportKey(format, record.privateKey).then(() => false, () => true)));
+    return { holderDid: record.holderDid, extractable: record.privateKey.extractable, exportRejected: exportRejected.every(Boolean) };
   });
-  assert.equal(record?.type, "TinyCloudShareReceiverSession", "recipient session key record is missing");
-  assert.equal(record?.version, 1, "recipient session key record version is invalid");
-  assert.match(record?.holderDid ?? "", /^did:key:z/, "recipient session holder DID is invalid");
-  assert.equal(record?.jwk?.kty, "OKP", "recipient session key is not Ed25519");
-  const privateKey = await crypto.subtle.importKey("jwk", record.jwk, { name: "Ed25519" }, false, ["sign"]);
+}
+
+/**
+ * The recipient key is a non-extractable handle in the page's IndexedDB. The
+ * gate signs through that handle inside the page and never holds the key.
+ */
+async function recipientSigningMaterial(page) {
+  const handle = await recipientKeyHandle(page);
+  assert.match(handle?.holderDid ?? "", /^did:key:z/, "recipient key handle is missing");
+  assert.equal(handle.extractable, false, "recipient key is extractable");
   return {
-    holderDid: record.holderDid,
-    sign: async (bytes) => new Uint8Array(await crypto.subtle.sign("Ed25519", privateKey, bytes)),
+    holderDid: handle.holderDid,
+    sign: async (bytes) => Uint8Array.from(await page.evaluate(async (data) => {
+      const database = await new Promise((resolve, reject) => {
+        const open = indexedDB.open("tinycloud.share.receiver-keys");
+        open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error);
+      });
+      const record = await new Promise((resolve, reject) => {
+        const read = database.transaction("keys").objectStore("keys").get(location.origin);
+        read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error);
+      });
+      database.close();
+      return [...new Uint8Array(await crypto.subtle.sign("Ed25519", record.privateKey, Uint8Array.from(data)))];
+    }, [...bytes])),
   };
 }
 
@@ -395,13 +422,6 @@ async function invokeFromBrowser(page, nodeOrigin, authorization, body) {
   }, { nodeOrigin, authorization, body });
 }
 
-// TODO(TC-1424): the recipient key now lives only in page memory, so the gate
-// cannot sign the negative invocations below. The key-custody PR (js-sdk #583
-// and the share dependency bump) signs through the IndexedDB key handle and
-// restores these checks. Node-side enforcement is unchanged; the checks were
-// last run on the build before this change (TC-1424 Linear comment).
-const NEGATIVE_CHECKS_SKIPPED_FOR_INTERIM = true;
-
 async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPhase = "recipient", prefix = "", revoke = true }) {
   const challenge = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/challenges" && successfulRequest(entry));
   const delegation = trace.find((entry) => entry.phase === recipientPhase && entry.method === "POST" && entry.path === "/policy/v3/delegations" && successfulRequest(entry));
@@ -413,13 +433,6 @@ async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPh
   assert.equal(typeof kvResource, "string", "policy session KV resource is missing");
   const nodeAudience = session.payload.iss.split("#", 1)[0];
   assert.match(nodeAudience ?? "", /^did:key:z/, "policy session node audience is invalid");
-  if (NEGATIVE_CHECKS_SKIPPED_FOR_INTERIM) {
-    const skipped = ["sibling", "write", "tamper", ...(revoke ? ["revoked"] : [])].map((name) => `${prefix}negative-${name}`);
-    console.log(`[tc500] !!! SKIPPED FOR INTERIM: ${skipped.join(", ")} (recipient key is page-memory only; TODO(TC-1424) restore with the key-custody PR) !!!`);
-    // The sender still revokes, so later journeys start from the same sender state.
-    if (revoke) await revokeFromLibrary(sender);
-    return { skippedForInterim: skipped };
-  }
   const material = await recipientSigningMaterial(recipient);
   assert.equal(material.holderDid, challenge.body.recipientDid, "negative checks did not use the admitted ephemeral recipient DID");
   const base = { authorization: imported.authorization, holderDid: material.holderDid, sign: material.sign, nodeAudience, policyCid: challenge.body.policyCid };
@@ -714,6 +727,7 @@ async function verifyCliSenderJourney({ browser, stack, temporary }) {
   phase = "cli-recipient";
   const context = await browser.createBrowserContext(); const reader = await context.newPage(); await installRouting(reader, stack);
   await reader.goto(link, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await (await waitUntil(async () => (await reader.$(".claim-request-code")) ?? undefined, 90_000)).click();
   const otpMail = await waitUntil(() => stack.mail.find((message) => isCredentialOtpMail(message, recipient)), 60_000);
   const code = credentialOtpFromMail(otpMail); assert.match(code ?? "", /^\d{8}$/);
   assert.equal(await credentialInputReady(reader, "otp"), true, "CLI recipient OTP input did not become stable");
@@ -828,30 +842,20 @@ try {
   const negativeGates = await verifyNegativeEnforcement({ sender, recipient, stack });
   traceAudit(stack);
   journeyStage = "recipient-storage";
-  // After a full claim, no receiver key or credential record sits in session
-  // storage, local storage, IndexedDB or cookies.
+  // After a full claim the key is a non-extractable IndexedDB handle, and no
+  // private key material sits in session storage, local storage or cookies.
+  const keyHandle = await recipientKeyHandle(recipient);
+  assert.equal(keyHandle?.extractable, false, "recipient key handle is missing or extractable");
+  assert.equal(keyHandle.exportRejected, true, "recipient private key could be exported");
   const stored = await recipient.evaluate(async () => ({
     entries: [...Object.entries(sessionStorage), ...Object.entries(localStorage), ...document.cookie.split(";").map((cookie) => cookie.trim().split("="))],
     databases: (await indexedDB.databases()).map((database) => database.name ?? ""),
   }));
   for (const [key = "", value = ""] of stored.entries) {
-    assert(!/receiver-session|receiver-credentials/.test(key), "a receiver record was left in browser storage");
+    assert(!/receiver-session/.test(key), "a legacy receiver session record was left in browser storage");
     assert(!/"d"\s*:|"jwk"|privateKey|pkcs8/i.test(value), "private key material was left in browser storage");
   }
-  assert.equal(stored.databases.filter((name) => /receiver|share/i.test(name)).length, 0, "a receiver record was left in IndexedDB");
-  // Opening the link again in the same tab starts a new mailbox proof: a new
-  // acquisition, and no policy admission from an earlier credential.
-  phase = "recipient-reopen";
-  await recipient.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
-  // The loading screen shares the title class; wait for the claim screen or an opened file.
-  const reopened = await waitUntil(() => recipient.evaluate(() => (document.querySelector("main.claim:not(.claim-loading) .claim-title") ?? document.querySelector(".viewer-download"))?.textContent ?? undefined).catch(() => undefined), 90_000);
-  assert.equal(reopened, "Verify your email to open this file", "a reopened link did not ask the recipient to verify again");
-  assert.equal(await recipient.evaluate(() => document.querySelector(".claim-reload-note") !== null), true, "the claim screen does not say verification ends with the page");
-  // Where the code waits for a click, ask for it.
-  await recipient.$eval(".claim-request-code", (button) => button.click()).catch(() => undefined);
-  const reacquired = await waitUntil(() => trace.some((entry) => entry.phase === "recipient-reopen" && entry.origin === stack.canonical.credentials && entry.method === "POST" && entry.path === "/v1/acquisitions"), 60_000);
-  assert.equal(reacquired, true, "a reopened link did not start a new mailbox proof");
-  assert.equal(trace.filter((entry) => entry.phase === "recipient-reopen" && entry.path.startsWith("/policy/v3/")).length, 0, "a reopened link reached policy admission without a new mailbox proof");
+  assert.deepEqual(stored.databases.filter((name) => /receiver|share/i.test(name)), ["tinycloud.share.receiver-keys"], "an unexpected receiver database is in IndexedDB");
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";

@@ -4,8 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   receive: vi.fn(),
   get: vi.fn(),
+  custody: "persistent" as "persistent" | "memory",
   options: undefined as undefined | { interaction: { mountTarget: HTMLElement }; onProgress?: (event: unknown) => void },
 }));
+
+function identity() {
+  return { kind: "receiver", holderDid: "did:key:z6MkReceiver", custody: state.custody, origin: "https://share.tinycloud.xyz" };
+}
 
 vi.mock("../src/share/receiver.js", () => ({
   createShareReceiverClient: async () => ({ share: { receive: (...args: unknown[]) => state.receive(...args) } }),
@@ -30,9 +35,10 @@ beforeEach(() => {
   state.get.mockReset();
   state.receive.mockReset();
   state.options = undefined;
+  state.custody = "persistent";
   state.receive.mockImplementation(async (_url: string, options: typeof state.options) => {
     state.options = options;
-    return { recipient: { kind: "exactEmail", email: "reader@example.com" }, get: (...args: unknown[]) => state.get(...args) };
+    return { identity: identity(), recipient: { kind: "exactEmail", email: "reader@example.com" }, get: (...args: unknown[]) => state.get(...args) };
   });
 });
 
@@ -143,10 +149,22 @@ describe("exact-email claim screen", () => {
     await expect(second.done).rejects.toThrow("share invocation rejected (403)");
   });
 
+  it("tells the recipient a reload means verifying again only when the key lives in page memory", async () => {
+    state.get.mockImplementation(() => new Promise(() => undefined));
+    const persistent = await start(undefined, { requestCode: false });
+    await vi.waitFor(() => expect(persistent.root.querySelector(".claim-request-code")).not.toBeNull());
+    expect(persistent.root.querySelector(".claim-reload-note")).toBeNull();
+
+    state.custody = "memory";
+    const memory = await start(undefined, { requestCode: false });
+    await vi.waitFor(() => expect(memory.root.querySelector(".claim-reload-note")).not.toBeNull());
+    expect(memory.root.querySelector(".claim-reload-note")?.textContent).toBe("This browser can keep your verification only while this page is open. If you reload or close it, open the link from your email and verify again.");
+  });
+
   it("presents a domain invitation's domain first and the credential-bound mailbox once verified", async () => {
     state.receive.mockImplementationOnce(async (_url: string, options: typeof state.options) => {
       state.options = options;
-      return { recipient: { kind: "emailDomain", domain: "tinycloud.xyz" }, get: (...args: unknown[]) => state.get(...args) };
+      return { identity: identity(), recipient: { kind: "emailDomain", domain: "tinycloud.xyz" }, get: (...args: unknown[]) => state.get(...args) };
     });
     let finish!: (value: unknown) => void;
     state.get.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));

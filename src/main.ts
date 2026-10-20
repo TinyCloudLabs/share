@@ -21,8 +21,7 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history);
-  // Receiver keys and credentials now live in page memory; drop any records an
-  // earlier build left in session storage before anything else can read them.
+  // Drop a receiver key record an earlier build left in this tab before anything else can read it.
   purgeLegacyReceiverStorage();
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
@@ -111,6 +110,14 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     if (error instanceof NativeBearerError && error.reason !== "unverified") {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
       renderShareUnavailable(root, error.reason, error.expiresAt);
+      return;
+    }
+    if (error instanceof Error && error.name === "ShareReceiverKeyUnavailableError") {
+      renderRecipientInvalid(root, "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari.");
+      return;
+    }
+    if (error instanceof Error && error.name === "ShareReceiverSessionEndedError") {
+      renderRecipientInvalid(root, "Your verification on this page has ended. Open the link from your email again and verify again.");
       return;
     }
     if (error instanceof Error && /unavailable|capability|config|binding/.test(error.message)) {

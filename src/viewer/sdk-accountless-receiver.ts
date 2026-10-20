@@ -65,7 +65,8 @@ export async function receiveWithSdk(input: {
   });
   // `receive` returns only after the invitation signature, the owner's Node
   // binding, and the recipient's policy commitment have been verified.
-  view = renderRecipientClaim(input.root, { recipient: received.recipient, ...input.invitation });
+  const memoryOnly = received.identity.kind === "receiver" && received.identity.custody === "memory";
+  view = renderRecipientClaim(input.root, { recipient: received.recipient, ...input.invitation, memoryOnly });
   const claim = view;
   const recipient = received.recipient;
   // An exact-email acquisition mails its code as soon as it starts, and link
