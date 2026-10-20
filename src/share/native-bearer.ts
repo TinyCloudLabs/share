@@ -1,4 +1,5 @@
 import { createNativeShare, type NativeSharingService, type SenderShareRecord } from "@tinycloud/share-sdk";
+import { failIfSpaceNotReady } from "./space-not-ready.js";
 
 export { createNativeShare, openNativeShare, parseNativeShareUrl, type NativeSharingService } from "@tinycloud/share-sdk";
 
@@ -17,6 +18,7 @@ export async function composeNativeBearer(
   const spaceId = owner.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw new Error("TinyCloud owner session has no resolved applications space");
   const written = await owner.kvForSpace(spaceId).put(input.path, input.bytes.slice(), input.contentType === undefined ? undefined : { contentType: input.contentType });
+  failIfSpaceNotReady(written);
   if (!written.ok) throw new Error(written.error?.message || "TinyCloud owner node rejected shared bytes");
   const share = await createNativeShare(owner.sharing, {
     path: input.path,
