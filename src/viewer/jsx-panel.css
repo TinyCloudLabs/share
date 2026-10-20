@@ -1,0 +1,41 @@
+/* Render-error panel for JSX artifacts. TinyCloud tokens, with the palette as fallback. */
+.viewer-jsx-panel {
+  display: grid;
+  gap: var(--tc-space-3, 0.75rem);
+  max-width: 44rem;
+  margin: var(--tc-space-5, 1.5rem) auto;
+  padding: var(--tc-space-5, 1.5rem);
+  border: 1px solid var(--tc-color-border, #e2e8f0);
+  border-radius: var(--tc-radius-md, 0.5rem);
+  background: var(--tc-color-surface, #fff);
+  color: var(--tc-color-text, #1a1c21);
+  font-family: var(--tc-font-sans, system-ui, sans-serif);
+}
+.viewer-jsx-panel-title { margin: 0; font-size: var(--tc-text-xl, 1.25rem); font-weight: var(--tc-weight-semibold, 600); letter-spacing: var(--tc-tracking-tight, -0.02em); }
+.viewer-jsx-panel-detail { margin: 0; color: var(--tc-color-text-muted, #64748b); line-height: var(--tc-leading-prose, 1.65); overflow-wrap: anywhere; }
+.viewer-jsx-panel-detail code { font-family: var(--tc-font-mono, ui-monospace, monospace); color: var(--tc-color-text, #1a1c21); }
+.viewer-jsx-panel-message {
+  margin: 0;
+  padding: var(--tc-space-3, 0.75rem) var(--tc-space-4, 1rem);
+  border-left: 3px solid var(--tc-color-status-danger, #b42318);
+  border-radius: var(--tc-radius-sm, 0.25rem);
+  background: var(--tc-color-surface-subtle, #f1f5f9);
+  font: var(--tc-text-sm, 0.875rem) / 1.5 var(--tc-font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.viewer-jsx-panel-line { margin: 0; color: var(--tc-color-text-muted, #64748b); font-size: var(--tc-text-sm, 0.875rem); }
+.viewer-jsx-panel-download {
+  justify-self: start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--tc-space-4, 1rem);
+  border: 1px solid var(--tc-color-border, #e2e8f0);
+  border-radius: var(--tc-radius-pill, 999px);
+  color: var(--tc-color-link, #1e42c8);
+  font-weight: var(--tc-weight-medium, 500);
+  text-decoration: none;
+}
+.viewer-jsx-panel-download:hover { border-color: var(--tc-color-accent, #2a56f6); }
+.viewer-jsx-panel-download:focus-visible { outline: 2px solid var(--tc-color-focus, #2a56f6); outline-offset: 3px; }

@@ -23,6 +23,7 @@
  * mermaid DoS answer the stage-3 TODO called out).
  */
 import { MERMAID_SANDBOX_PATH, type MermaidRenderRequest } from "./mermaid-frame.js";
+import { userContentUrl } from "./user-content-origin.js";
 
 export const MERMAID_SANDBOX_IFRAME_CLASS = "mermaid-sandbox";
 
@@ -64,7 +65,7 @@ export function createMermaidSandbox(doc: Document): MermaidSandbox {
   // ONLY allow-scripts: the frame's origin stays opaque. Never add
   // allow-same-origin here — that would collapse the entire boundary.
   iframe.setAttribute("sandbox", "allow-scripts");
-  iframe.setAttribute("src", `${MERMAID_SANDBOX_PATH}#${nonce}`);
+  iframe.setAttribute("src", userContentUrl(`${MERMAID_SANDBOX_PATH}#${nonce}`));
   iframe.className = MERMAID_SANDBOX_IFRAME_CLASS;
   iframe.setAttribute("aria-hidden", "true");
   iframe.setAttribute("tabindex", "-1");

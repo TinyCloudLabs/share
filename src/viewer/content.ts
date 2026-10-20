@@ -2,7 +2,7 @@ import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 
-export type SafeContentKind = "markdown" | "text" | "image" | "html" | "file" | "download";
+export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
 
 export const HTML_FRAME_CLASS = "viewer-html-frame";
 
@@ -50,6 +50,9 @@ export function classifyContent(descriptor: ContentDescriptor): SafeContentKind 
   // `.html`/`.htm` is a page. Whether it may run is decided by the link type
   // in renderSafeContent; it never reaches a viewer-origin sink.
   if (mediaType === "text/html" || (mediaType === "application/octet-stream" && /\.html?$/i.test(descriptor.filename))) return "html";
+  // A JSX/TSX component: signed `text/jsx|text/tsx`, or an unsigned bearer key
+  // ending `.jsx`/`.tsx`. Like HTML, only a bearer link may run it (renderSafeContent).
+  if (mediaType === "text/jsx" || mediaType === "text/tsx" || (mediaType === "application/octet-stream" && /\.(?:jsx|tsx)$/i.test(descriptor.filename))) return "jsx";
   if (mediaType === "image/svg+xml" || mediaType === "application/javascript") return "download";
   if (mediaType === "text/markdown" || /\.(?:md|markdown)$/i.test(descriptor.filename)) return "markdown";
   if (mediaType.startsWith("text/") || /\.(?:txt|csv|log|json|yaml|yml)$/i.test(descriptor.filename)) return "text";
@@ -88,6 +91,25 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
     }
     clearPreviousContent(container);
     await renderHtmlPage(container, source, actualDescriptor.filename);
+    return kind;
+  }
+  if (kind === "jsx") {
+    if (options.linkAccess !== "bearer") {
+      return renderDownloadContent(container, bytes, actualDescriptor, "download", "Preview isn't available for this link type yet. Download it to open it.");
+    }
+    const source = utf8(bytes);
+    if (source === undefined) {
+      return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
+    }
+    clearPreviousContent(container);
+    // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
+    const { renderJsxPage } = await import("./jsx-render.js");
+    await renderJsxPage(container, source, {
+      filename: actualDescriptor.filename,
+      bytes,
+      onCleanup: (cleanup) => { activeCleanup.set(container, cleanup); },
+      frameClassName: HTML_FRAME_CLASS,
+    });
     return kind;
   }
   return renderDownloadContent(container, bytes, actualDescriptor, kind);
