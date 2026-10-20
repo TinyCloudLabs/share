@@ -8,6 +8,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
+import { failIfSpaceNotReady } from "./space-not-ready.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
 /**
@@ -370,6 +371,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   if (!encrypted.ok) throw fail("upload", "owner file encryption was rejected");
   const storedBytes = new TextEncoder().encode(canonicalize(encrypted.data));
   const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, storedBytes, { contentType: "application/vnd.tinycloud.encrypted-envelope+json" });
+  failIfSpaceNotReady(storedContent);
   if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
   const unifiedSource = {
     shareId,
