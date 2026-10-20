@@ -11,6 +11,9 @@ async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/** A fetch result whose bytes come from node's realm: jsdom's ArrayBuffer is rejected by webcrypto on Node 20. */
+const reply = (text: string) => ({ ok: true, arrayBuffer: async () => Buffer.from(text) });
+
 async function entryFor(manifestText: string, overrides: Partial<CatalogEntry> = {}): Promise<CatalogEntry> {
   return {
     app_id: `t.app.${Math.random().toString(36).slice(2)}`,
@@ -47,11 +50,14 @@ describe("apps page rendering", () => {
       permissions: [{ service: "tinycloud.kv", path: "x/", actions: ["get", "put"], description: HOSTILE }],
       secrets: { [HOSTILE]: { description: HOSTILE } },
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(manifest)));
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
     mountApps(list, sheet, [await entryFor(manifest)]);
     list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
     await settle();
 
+    expect(sheet.querySelector("[role=alert]")).toBeNull(); // the manifest loaded, so the lists below are really its text
+    expect(sheet.querySelectorAll(".apps-access__text").length).toBeGreaterThan(2);
+    expect([...sheet.querySelectorAll(".apps-access code")].some((node) => node.textContent === HOSTILE)).toBe(true);
     expect(sheet.hasAttribute("open")).toBe(true);
     for (const root of [list, sheet]) {
       expect(root.querySelectorAll("img, script, iframe, svg")).toHaveLength(0);
@@ -66,7 +72,7 @@ describe("apps page rendering", () => {
   it("shows nothing of a manifest whose bytes differ from the catalog's sha256", async () => {
     const pinned = JSON.stringify({ app_id: "t.app", name: "T", permissions: [] });
     const served = JSON.stringify({ app_id: "t.app", name: "T", permissions: [{ service: "tinycloud.kv", path: "x", actions: ["put"], description: "Tampered grant." }] });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(served)));
+    vi.stubGlobal("fetch", vi.fn(async () => reply(served)));
     mountApps(list, sheet, [await entryFor(pinned, { name: "Plain", description: "Plain app." })]);
     list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
     await settle();
@@ -78,7 +84,7 @@ describe("apps page rendering", () => {
 
   it("refuses to fetch from a bundle root outside /apps/b/<digest>/", async () => {
     const manifest = JSON.stringify({ app_id: "t.app", name: "T" });
-    const fetchSpy = vi.fn(async () => new Response(manifest));
+    const fetchSpy = vi.fn(async () => reply(manifest));
     vi.stubGlobal("fetch", fetchSpy);
     const entry = await entryFor(manifest, { name: "Plain", description: "Plain app.", bundle: { root: "https://evil.example/", files: [], digest } });
     mountApps(list, sheet, [entry]);
@@ -91,7 +97,7 @@ describe("apps page rendering", () => {
 
   it("keeps Install disabled on the card and in the sheet", async () => {
     const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(manifest)));
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
     mountApps(list, sheet, [await entryFor(manifest, { name: "Plain", description: "Plain app." })]);
     const install = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
     expect(install(list).map((button) => button.disabled)).toEqual([true]);
