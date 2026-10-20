@@ -20,12 +20,12 @@ export const FILES_FOR_YOU_SPACE = "files-for-you";
 export const FILES_FOR_YOU_PREFIX = "v1/";
 export const MAX_SHARE_FILE_BYTES = 100 * 1024 * 1024;
 
-export async function authenticateWithOpenKey(onStatus: (message: string) => void, guardApproval: ApprovalGuard = (wait) => wait(), appName = "TinyCloud Share"): Promise<OpenKeyShareSession> {
+export async function authenticateWithOpenKey(onStatus: (message: string) => void, guardApproval: ApprovalGuard = (wait) => wait(), appName = DEFAULT_APP_NAME): Promise<OpenKeyShareSession> {
   const openkey = new OpenKey({ host: OPENKEY_ORIGIN, appName, mode: "iframe" });
   onStatus("Opening OpenKey…");
   let auth: AuthResult;
   try {
-    auth = await guardApproval(() => openkey.connect());
+    auth = await guardApproval(() => openkey.connect(), { kind: "connect" });
   } catch (error) {
     // A cancelled or given-up connect leaves no window behind.
     openkey.disconnect();
@@ -121,7 +121,7 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
 
   override async request(args: { method: string; params?: any[] }): Promise<any> {
     if (args.method !== "personal_sign") return super.request(args);
-    if (this.guard !== undefined) return this.guard(() => this.signObserved(args));
+    if (this.guard !== undefined) return this.guard(() => this.signObserved(args), { kind: "sign" });
     return this.signObserved(args);
   }
 
@@ -173,7 +173,17 @@ export function ownerEncryptionNetwork(address: string): string {
  * guard; the default runs the wait as is. A wait that ends in an error (a
  * cancel, a refusal, the guard giving up) closes the OpenKey flow it opened.
  */
-export type ApprovalGuard = <T>(wait: () => Promise<T>) => Promise<T>;
+export type ApprovalGuard = <T>(wait: () => Promise<T>, info?: ApprovalInfo) => Promise<T>;
+
+/**
+ * What a guarded wait is, for a caller that counts the person's approvals:
+ * opening OpenKey (`connect`, no signature) or one signature (`sign`, with the
+ * SDK's reason for it when it gives one). A guard that ignores it keeps working.
+ */
+export interface ApprovalInfo {
+  readonly kind: "connect" | "sign";
+  readonly purpose?: string | undefined;
+}
 
 /** A sign-in option outside what the helper allows (an expiry over an hour, a domain that is not a host name). */
 export class SignInOptionError extends Error {
@@ -266,12 +276,40 @@ async function settleAccountRegistrySync(tinycloud: ShareTinyCloud, timeoutMs: n
   }
 }
 
+/** Longest app name, session prefix or domain label the helper accepts. */
+const MAX_LABEL_CHARS = 64;
+/** Control characters, line and paragraph separators, and the bidirectional controls. */
+const HIDDEN_CHARS = /[\p{Cc}\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u061c\ufeff]/u;
+/** Text that reads as a link or an address: `https://…`, `www.…`, a user@host. */
+const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|\bwww\.|\S@\S/i;
+
+/** A name that goes into the sign-in statement or OpenKey's window: one short printable line, nothing that looks like a link. */
+function checkLabel(option: string, value: string): void {
+  if (value.trim().length === 0 || [...value].length > MAX_LABEL_CHARS) throw new SignInOptionError(option, `1 to ${MAX_LABEL_CHARS} characters`);
+  if (HIDDEN_CHARS.test(value)) throw new SignInOptionError(option, "one printable line, with no control or direction characters");
+  if (LINK_LIKE.test(value)) throw new SignInOptionError(option, "must not look like a link or an address");
+}
+
 function checkOptions(options: SignInWithManifestOptions): void {
-  const { expiry, domain } = options;
+  const { expiry, domain, appName, sessionPrefix } = options;
   if (expiry !== undefined && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
     throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds`);
   }
   if (domain !== undefined && !HOST_NAME.test(domain)) throw new SignInOptionError("domain", "the domain must be a host name");
+  if (appName !== undefined) checkLabel("appName", appName);
+  if (sessionPrefix !== undefined) {
+    checkLabel("sessionPrefix", sessionPrefix);
+    if (!/^[A-Za-z0-9._-]+$/.test(sessionPrefix)) throw new SignInOptionError("sessionPrefix", "letters, digits, dot, dash and underscore only");
+  }
+}
+
+/** Freezes `value` and everything inside it. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const inner of Object.values(value)) deepFreeze(inner);
+  }
+  return value;
 }
 
 function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, address: string): void {
@@ -309,16 +347,31 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   const { config, hostSpaces = [] } = options;
   const onStatus = options.onStatus ?? (() => undefined);
   checkOptions(options);
-  // The shape first, so a bad manifest never opens OpenKey; a function manifest needs the address, so it is checked again with the real one.
+  // The manifest that is checked is a frozen private copy, and that copy is what gets signed: nothing the caller holds can
+  // change it during the OpenKey waits in between. A manifest given as an object is checked before OpenKey opens.
   const given = options.manifest;
-  checkManifest(options, typeof given === "function" ? given(MANIFEST_CHECK_ADDRESS) : given, MANIFEST_CHECK_ADDRESS);
+  const freezeChecked = (candidate: Manifest, address: string): Manifest => {
+    const copy = deepFreeze(structuredClone(candidate));
+    checkManifest(options, copy, address);
+    return copy;
+  };
+  let manifest = typeof given === "function" ? undefined : freezeChecked(given, MANIFEST_CHECK_ADDRESS);
+  // A function manifest needs the address: its shape is checked first with a placeholder, then the real one is checked and used.
+  if (typeof given === "function") freezeChecked(given(MANIFEST_CHECK_ADDRESS), MANIFEST_CHECK_ADDRESS);
   const appName = options.appName ?? DEFAULT_APP_NAME;
+  const opened = options.session === undefined;
   const session = options.session ?? await authenticateWithOpenKey(onStatus, options.guardApproval, appName);
-  const manifest = typeof given === "function" ? given(session.address) : given;
-  if (typeof given === "function") checkManifest(options, manifest, session.address);
-  const guardApproval: ApprovalGuard = async (wait) => {
+  try {
+    if (typeof given === "function") manifest = freezeChecked(given(session.address), session.address);
+  } catch (error) {
+    // The helper opened this connection and nothing was signed: do not leave it open.
+    if (opened) closeOpenKeyFlows(session.openkey);
+    throw error;
+  }
+  if (manifest === undefined) throw new Error("sign-in-no-manifest");
+  const guardApproval: ApprovalGuard = async (wait, info) => {
     try {
-      return await (options.guardApproval ?? runUnguarded)(wait);
+      return await (options.guardApproval ?? runUnguarded)(wait, info);
     } catch (error) {
       // A cancel, a refusal or the guard giving up: do not leave a window open that nothing is waiting on.
       closeOpenKeyFlows(session.openkey);
@@ -329,7 +382,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardApproval);
   const tinycloud = new TinyCloudWeb({
     provider,
-    signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request)) },
+    signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request), { kind: "sign", purpose: request.purpose }) },
     ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
     // A new sender cannot resolve a signed location record before its first
     // session exists. Use the explicitly configured owner-node choice only
@@ -415,7 +468,7 @@ export const SHARE_MANIFEST_SCOPE: ManifestScope = {
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },
     { space: FILES_FOR_YOU_SPACE, prefix: FILES_FOR_YOU_PREFIX },
-    { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{address}:" },
+    { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{address}:default" },
   ],
 };
 

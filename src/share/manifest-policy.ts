@@ -17,6 +17,9 @@
  */
 import { resolveManifest, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
 
+/** The delegation namespace, however it is cased. */
+const DELEGATION = /^(?:tinycloud\.)?delegation$/i;
+
 export type ManifestRejection =
   | "invalid-manifest"
   | "public-space"
@@ -38,16 +41,26 @@ export class ManifestRejectedError extends Error {
   }
 }
 
-/** A path prefix a permission may sit under: in any space, or only in `space`. `{address}` stands for the signed-in account, lower-cased. */
+/**
+ * A path a permission may sit under, in any space or only in `space`. `{address}`
+ * stands for the signed-in account, lower-cased. A prefix is matched on path
+ * SEGMENTS: `v1` and `v1/` both accept `v1`, `v1/` and `v1/x`, never `v10/`. To
+ * name exactly one key (an encryption network), give its whole path: it then
+ * matches only that path.
+ */
 export type ScopedPrefix = string | { readonly space: string; readonly prefix: string };
 
 /** What one caller says its manifest may ask for. Everything not listed is refused. */
 export interface ManifestScope {
-  /** Spaces the manifest may name. Omitted: only the manifest's own `space`. */
+  /** Spaces the manifest may name. Omitted: only the manifest's own `space`. A space-wide `tinycloud.capabilities` read is allowed only in these too. */
   readonly allowedSpaces?: readonly string[];
-  /** Services (`tinycloud.kv`, or `kv`). Omitted: kv, sql and vault. `tinycloud.capabilities` read is always allowed (the SDK adds it to every space). */
+  /** Services (`tinycloud.kv`, or `kv`). Omitted: kv, sql and vault. `capabilities` (read) is allowed in `allowedSpaces` without being named; `delegation` only if named here AND by a qualified entry in `allowedActions`. */
   readonly allowedServices?: readonly string[];
-  /** Short action names. Omitted: get, put, list, metadata, head, read, write. `del`, `schema`, `admin`, `export` and the like must be named here. */
+  /**
+   * Action names. A bare name (`get`) applies to every service except `delegation` and `capabilities`; a qualified
+   * name (`tinycloud.kv/put`, `tinycloud.delegation/list`) applies to that service only. Omitted: get, put, list,
+   * metadata, head, read, write. `del`, `schema`, `admin`, `export` and the like must be named here.
+   */
   readonly allowedActions?: readonly string[];
   /** Paths the permissions must sit under. Omitted: the manifest's own non-empty `prefix` (default `app_id`). A manifest with an empty prefix must say. */
   readonly allowedPathPrefixes?: readonly ScopedPrefix[];
@@ -55,33 +68,55 @@ export interface ManifestScope {
 
 const DEFAULT_SERVICES: readonly string[] = ["kv", "sql", "vault"];
 const DEFAULT_ACTIONS: readonly string[] = ["get", "put", "list", "metadata", "head", "read", "write"];
-/** Never granted by a default, whatever else is named: delegation rights are how a grant is passed on. */
-const DELEGATION_SERVICE = /^(?:tinycloud\.)?delegation$/;
 /** The address to check a manifest against before OpenKey has said who is signing in. */
 export const MANIFEST_CHECK_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+/**
+ * The permissions the Web SDK adds to EVERY sign-in on top of the manifest, so it can keep a new account's own
+ * space registry in sync (`includeAccountRegistryPermissions`). They are not part of the manifest, so the check
+ * above never sees them; they are listed here as the one documented exception, and a test compares this list
+ * with what the SDK composes, so an SDK that adds more fails the build instead of widening a session unseen.
+ */
+export const SDK_ACCOUNT_REGISTRY_RESOURCES: readonly { readonly service: string; readonly space: string; readonly path: string; readonly actions: readonly string[] }[] = [
+  { service: "tinycloud.kv", space: "account", path: "applications/", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/list"] },
+  { service: "tinycloud.kv", space: "account", path: "spaces/", actions: ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/list"] },
+  { service: "tinycloud.kv", space: "account", path: "system/bootstrap/complete", actions: ["tinycloud.kv/get", "tinycloud.kv/put"] },
+  { service: "tinycloud.delegation", space: "account", path: "", actions: ["tinycloud.delegation/list"] },
+  { service: "tinycloud.sql", space: "account", path: "account", actions: ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"] },
+  { service: "tinycloud.capabilities", space: "account", path: "", actions: ["tinycloud.capabilities/read"] },
+];
 
 function shortName(value: string): string {
   return value.startsWith("tinycloud.") ? value.slice("tinycloud.".length) : value;
 }
 
-function actionName(action: string): string {
+/** `tinycloud.kv/get` is namespace `kv`, name `get`; a bare `get` has no namespace. */
+function splitAction(action: string): { readonly namespace: string | undefined; readonly name: string } {
   const slash = action.lastIndexOf("/");
-  return slash === -1 ? action : action.slice(slash + 1);
+  return slash === -1 ? { namespace: undefined, name: action } : { namespace: shortName(action.slice(0, slash)), name: action.slice(slash + 1) };
 }
 
-function normalizedPath(path: string): string {
-  return path.replace(/\/{2,}/g, "/");
+/** Collapses repeated slashes and drops trailing ones: `v1/`, `v1//` and `v1` are the same segment path. */
+function segments(path: string): string {
+  return path.replace(/\/{2,}/g, "/").replace(/\/+$/, "");
+}
+
+/** True when `path` is `prefix` or lies under it, on segment boundaries. */
+function underPrefix(path: string, prefix: string): boolean {
+  const p = segments(prefix);
+  const candidate = segments(path);
+  return candidate !== "" && p !== "" && (candidate === p || candidate.startsWith(`${p}/`));
 }
 
 function prefixesFor(scope: ManifestScope, manifest: Manifest, address: string): readonly { readonly space: string | undefined; readonly prefix: string }[] {
   if (scope.allowedPathPrefixes !== undefined) {
     return scope.allowedPathPrefixes.map((entry) => {
       const { space, prefix } = typeof entry === "string" ? { space: undefined, prefix: entry } : entry;
-      return { space, prefix: normalizedPath(prefix.replaceAll("{address}", address.toLowerCase())) };
+      return { space, prefix: prefix.replaceAll("{address}", address.toLowerCase()) };
     });
   }
   const own = manifest.prefix ?? manifest.app_id;
-  return own === "" || own === "/" ? [] : [{ space: undefined, prefix: normalizedPath(own.endsWith("/") ? own : `${own}/`) }];
+  return segments(own) === "" ? [] : [{ space: undefined, prefix: own }];
 }
 
 function describe(resource: ResourceCapability): string {
@@ -91,8 +126,8 @@ function describe(resource: ResourceCapability): string {
 /**
  * Refuses, with a `ManifestRejectedError`, a manifest whose resolved request is
  * outside `scope`. `address` is the signed-in account (for `{address}` in a
- * prefix); a caller that has not connected yet passes the zero address to check
- * the shape first.
+ * prefix); a caller that has not connected yet passes `MANIFEST_CHECK_ADDRESS`
+ * to check the shape first.
  */
 export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, address: string): void {
   let resolved: ReturnType<typeof resolveManifest>;
@@ -106,32 +141,45 @@ export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, 
 
   const spaces = scope.allowedSpaces ?? [resolved.space];
   const services = (scope.allowedServices ?? DEFAULT_SERVICES).map(shortName);
-  const actions = (scope.allowedActions ?? DEFAULT_ACTIONS).map(actionName);
+  const actions = (scope.allowedActions ?? DEFAULT_ACTIONS).map(splitAction);
   const prefixes = prefixesFor(scope, manifest, address);
 
   for (const resource of resolved.resources) {
     const service = shortName(resource.service);
     const at = describe(resource);
-    if (DELEGATION_SERVICE.test(resource.service) || resource.actions.some((action) => /(?:^|\/)delegat/i.test(action))) {
-      throw new ManifestRejectedError("delegation-ability", `delegation in ${at}`);
-    }
+    // Whatever the resource, an ability in the delegation namespace is how a grant is passed on or listed.
+    const delegating = DELEGATION.test(service) || resource.actions.some((action) => DELEGATION.test(splitAction(action).namespace ?? ""));
+    const delegationNamed = services.includes("delegation") && actions.some((entry) => entry.namespace === "delegation");
+    if (delegating && !(service === "delegation" && delegationNamed)) throw new ManifestRejectedError("delegation-ability", `delegation in ${at}`);
     if (resource.service.includes("*") || resource.actions.some((action) => action.includes("*"))) {
       // `*` is a wildcard over services or actions; a `*` only inside a path is a literal key name and is the path rule's business.
       throw new ManifestRejectedError("wildcard", `wildcard in ${at}`);
     }
-    // The SDK adds a read of the space's capability list to every space it sees; that is read-only and needs no scope.
+    // An ability belongs to its own service: `tinycloud.delegation/list` or `tinycloud.vault/put` on a kv resource is not a kv ability.
+    for (const action of resource.actions) {
+      const { namespace } = splitAction(action);
+      if (namespace !== undefined && namespace !== service) throw new ManifestRejectedError("action-not-allowed", `ability ${action} does not belong to ${at}`);
+    }
     if (service === "capabilities") {
-      if (resource.actions.some((action) => actionName(action) !== "read")) throw new ManifestRejectedError("action-not-allowed", `capabilities beyond read in ${at}`);
+      // The SDK adds a read of the capability list to every space the manifest names. It is metadata of that space's grants, so it follows the space rule like anything else.
+      if (resource.actions.some((action) => splitAction(action).name !== "read")) throw new ManifestRejectedError("action-not-allowed", `capabilities beyond read in ${at}`);
+      if (!spaces.includes(resource.space)) throw new ManifestRejectedError("space-not-allowed", `space not allowed: ${at}`);
+      if (segments(resource.path) !== "") throw new ManifestRejectedError("path-not-allowed", `a capabilities read names no path: ${at}`);
       continue;
     }
+    const qualifiedOnly = service === "delegation";
     if (!services.includes(service)) throw new ManifestRejectedError("service-not-allowed", `service not allowed: ${at}`);
     for (const action of resource.actions) {
-      if (!actions.includes(actionName(action))) throw new ManifestRejectedError("action-not-allowed", `action ${action} not allowed in ${at}`);
+      const { name } = splitAction(action);
+      if (!actions.some((entry) => entry.name === name && (entry.namespace === service || (entry.namespace === undefined && !qualifiedOnly)))) {
+        throw new ManifestRejectedError("action-not-allowed", `action ${action} not allowed in ${at}`);
+      }
     }
     // An encryption network is not in a space: the SDK reports the pseudo-space "encryption" for it.
     if (service !== "encryption" && !spaces.includes(resource.space)) throw new ManifestRejectedError("space-not-allowed", `space not allowed: ${at}`);
-    const path = normalizedPath(resource.path);
-    if (path === "" || path === "/" || !prefixes.some((entry) => (entry.space === undefined || entry.space === resource.space) && path.startsWith(entry.prefix))) {
+    // A delegation list names no path (it lists the space's grants); the space rule above is what scopes it.
+    const unpathed = service === "delegation" && segments(resource.path) === "";
+    if (!unpathed && !prefixes.some((entry) => (entry.space === undefined || entry.space === resource.space) && underPrefix(resource.path, entry.prefix))) {
       throw new ManifestRejectedError("path-not-allowed", `path outside the declared prefixes: ${at}`);
     }
   }

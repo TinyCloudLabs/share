@@ -144,9 +144,13 @@ describe("TC-1583 composer: the OpenKey approval hint", () => {
     // The wallet answered; the share is still being finished. The hint must not outlive the approval.
     gate.resolve(); await flush();
     expect(root.querySelector(".sender-approval")).toBeNull();
+    // The spoken region stops telling the sender to approve the moment the approval closes, and stays empty after "Your link is ready".
+    expect(root.querySelector(".sender-announce")?.textContent).toBe("");
     finish.resolve(READY); await flush();
     expect(root.querySelector(".composer-status")?.textContent).toContain("Your link is ready");
     expect(root.querySelector(".sender-approval")).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(root.querySelector(".sender-announce")?.textContent).toBe("");
   });
 
   it("leaves no hint behind when the approval is cancelled, and says nothing was created", async () => {
