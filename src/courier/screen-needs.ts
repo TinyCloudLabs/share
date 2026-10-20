@@ -93,10 +93,15 @@ export function renderNeeds(ctx: ViewContext, overview: Overview): HTMLElement {
     section.append(list);
   }
   if (settled.length > 0) {
-    const heading = el(doc, "h3", "cr-subtitle", "Recently decided or expired");
+    const heading = el(doc, "h3", "cr-subtitle", "Recent requests");
     const list = el(doc, "ul", "cr-list cr-settled");
     for (const card of settled.slice(0, 20)) {
       const item = el(doc, "li", "cr-settled-item");
+      if (card.standing === "unknown") {
+        item.append(status(doc, "info", "We could not confirm whether the decision was saved. Reload to check."));
+        list.append(item);
+        continue;
+      }
       const verdict = card.standing === "approved" ? "Approved" : card.standing === "denied" ? "Denied" : "Expired without an answer";
       item.append(el(doc, "span", `tc-badge cr-badge cr-state cr-state--${card.standing}`, verdict));
       item.append(doc.createTextNode(` ${isDecidable(card.request) ? `Request for ${card.request.peer}` : "A request"} · `));
@@ -192,7 +197,7 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
     const raw = await ctx.store.readJson(keys.approval(request.id)).catch(() => undefined);
     const earlier = parseApproval(request.id, raw);
     const matched = earlier !== undefined && isRecord(raw) && raw.requestHash === card.hash;
-    settle(matched ? `Already decided: ${earlier.decision}. Nothing was changed.` : "We could not confirm whether the decision was saved. Reload to check.", "info");
+    settle(matched ? `Decision on file: ${earlier.decision}.` : "We could not confirm whether the decision was saved. Reload to check.", "info");
   };
 
   const decide = async (decision: Decision): Promise<void> => {

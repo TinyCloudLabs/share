@@ -8,6 +8,7 @@ import {
   buildIndex,
   isDecidable,
   isOpenTask,
+  isRecord,
   keys,
   parseApproval,
   parseMessage,
@@ -46,7 +47,7 @@ export interface RequestCard {
   readonly request: RequestView;
   /** SHA-256 of the request exactly as read; the decision carries it. Empty when the request can't be hashed (then it isn't decidable). */
   readonly hash: string;
-  readonly standing: RequestStanding;
+  readonly standing: RequestStanding | "unknown";
   readonly approval: ApprovalView | undefined;
   /** The subject of the thread the request is about, when that thread is in the mailbox. */
   readonly subject: string | undefined;
@@ -66,7 +67,7 @@ export interface Overview {
 
 async function tryRead(store: CourierStore, key: string, failures: { count: number }): Promise<unknown> {
   try {
-    return await store.readJson(key);
+    return await store.readJson(key, { loadBudget: true });
   } catch (error) {
     // A mailbox that cannot be reached at all is the caller's problem; one file that will not load is a gap in the list.
     if (error instanceof StoreError && (error.code === "no-space" || error.code === "denied")) throw error;
@@ -100,7 +101,7 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
   const cards = await Promise.all(requestIds.map(async (id): Promise<RequestCard | "unreadable"> => {
     const request = parseRequest(id, await tryRead(store, keys.request(id), failures));
     if (request === undefined) return "unreadable";
-    const approval = approvalIds.has(id) ? parseApproval(id, await tryRead(store, keys.approval(id), failures)) : undefined;
+    const rawApproval = approvalIds.has(id) ? await tryRead(store, keys.approval(id), failures) : undefined;
     // One request that can't be hashed (a number that isn't finite, nesting too deep) is shown as unreviewable; the others are unaffected.
     let hash = "";
     let shown = request;
@@ -113,8 +114,9 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
     // (`courier request` writes it in the same command). A request naming another peer, or a task that isn't there, isn't decidable.
     const taskThere = index.threads.some((entry) => entry.peer === request.peer && entry.threadId === request.threadId && entry.tasks.some((task) => task.side === "me" && task.id === request.taskId));
     if (!taskThere) shown = { ...shown, problem: shown.problem ?? "task" };
-    // A decision file that does not parse is not a decision: the request stays open and the agent side refuses it too.
-    return { request: shown, hash, standing: requestStanding(request, approval, now), approval, subject: undefined, subjectSide: undefined };
+    const approval = hash !== "" && isRecord(rawApproval) && rawApproval.requestHash === hash ? parseApproval(id, rawApproval) : undefined;
+    const standing = approvalIds.has(id) && approval === undefined ? "unknown" : requestStanding(request, approval, now);
+    return { request: shown, hash, standing, approval, subject: undefined, subjectSide: undefined };
   }));
   const requests = cards.filter((card): card is RequestCard => card !== "unreadable");
 

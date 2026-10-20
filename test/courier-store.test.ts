@@ -62,6 +62,23 @@ describe("orders are compare-and-swap", () => {
 });
 
 describe("reads are bounded", () => {
+  it("keeps the load budget separate from user reads and writes", async () => {
+    let clock = 0;
+    const get = vi.fn(async () => ok({ data: "{}", headers }));
+    const put = vi.fn(async () => ok({ data: undefined, headers }));
+    const list = vi.fn(async () => ok({ keys: [], truncated: false }));
+    const store = createKvStore(kvWith({ get: get as unknown as Get, put: put as unknown as Put, list: list as unknown as List }), { now: () => clock });
+    await store.list();
+    clock = 31_000;
+    await expect(store.readJson("k", { loadBudget: true })).rejects.toMatchObject({ code: "timeout" });
+    expect(get).not.toHaveBeenCalled();
+    await expect(store.readJson("k")).resolves.toEqual({});
+    await expect(store.createApproval(file)).resolves.toBe("created");
+    await store.writeOrders("peer", "# Orders", undefined);
+    await expect(store.readJson("k", { loadBudget: true })).rejects.toMatchObject({ code: "timeout" });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(put).toHaveBeenCalledTimes(2);
+  });
   it("gives up on a call the node never answers", async () => {
     vi.useFakeTimers();
     try {

@@ -4,7 +4,7 @@ import { mountCourier } from "../src/courier/app.ts";
 import { requestHash } from "../src/courier/canonical.ts";
 import { EXT, keys, type ApprovalFile } from "../src/courier/model.ts";
 import type { CourierSession } from "../src/courier/session.ts";
-import { StoreError, type CourierStore } from "../src/courier/store.ts";
+import { createKvStore, StoreError, type CourierKv, type CourierStore } from "../src/courier/store.ts";
 
 const THREAD = "01J9ZC4K7T3QZ5W6M8R2N1B010";
 const TASK = "01J9ZC4K7T3QZ5W6M8R2N1B022";
@@ -77,6 +77,41 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("Needs you", () => {
+  for (const delay of [5_000, 31_000]) {
+    it(`approves through the real store after reading the card for ${delay / 1000} seconds`, async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+      const fake = fakeStore(baseFiles());
+      const get = vi.fn(async (key: string) => ({ ok: true, data: { data: fake.files.get(key), headers: {} } }));
+      const put = vi.fn(async () => ({ ok: true, data: { data: undefined, headers: {} } }));
+      fake.store = createKvStore({ get, put, list: async () => ({ ok: true, data: { keys: [...fake.files.keys()], truncated: false } }) } as unknown as CourierKv);
+      await open(fake);
+      tab("Needs you").click();
+      const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
+      await vi.waitFor(() => expect(approve.disabled).toBe(false));
+      get.mockClear();
+      clock.mockReturnValue(NOW + delay);
+      approve.click();
+      await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("Approved. Your agent will see it"));
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledWith(keys.request(REQ), expect.anything());
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    it(`reads orders through the real store after ${delay / 1000} seconds on the page`, async () => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+      const fake = fakeStore(baseFiles());
+      const get = vi.fn(async (key: string) => ({ ok: true, data: { data: key === keys.orders("hunter") ? "# Orders on file" : fake.files.get(key), headers: { etag: "e1" } } }));
+      fake.store = createKvStore({ get, put: vi.fn(), list: async () => ({ ok: true, data: { keys: [...fake.files.keys()], truncated: false } }) } as unknown as CourierKv);
+      await open(fake);
+      get.mockClear();
+      clock.mockReturnValue(NOW + delay);
+      tab("Orders").click();
+      await vi.waitFor(() => expect(root.querySelector<HTMLTextAreaElement>(".cr-orders-input")?.value).toBe("# Orders on file"));
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(get).toHaveBeenCalledWith(keys.orders("hunter"), expect.anything());
+    });
+  }
+
   it("shows the request's text as text inside labelled quote blocks, never as markup", async () => {
     const fake = fakeStore(baseFiles());
     await open(fake);
@@ -150,14 +185,33 @@ describe("Needs you", () => {
     const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
     await vi.waitFor(() => expect(approve.disabled).toBe(false));
     approve.click();
-    await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("Already decided: denied"));
+    await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("Decision on file: denied"));
   });
+
+  for (const [name, mismatch] of [
+    ["matching approval", {}], ["wrong hash", { requestHash: "0".repeat(64) }],
+    ["wrong id", { requestId: TASK }], ["invalid decision", { decision: "Approved" }],
+  ] as const) {
+    it(`checks the decision on file after reload: ${name}`, async () => {
+      const raw = request();
+      const fake = fakeStore({ ...baseFiles(raw), [keys.approval(REQ)]: { requestId: REQ, requestHash: await requestHash(raw), decision: "approved", note: "", ...mismatch } });
+      await open(fake);
+      tab("Needs you").click();
+      expect(root.querySelector(".cr-approve")).toBeNull();
+      if (name === "matching approval") {
+        expect(root.querySelector(".cr-state--approved")?.textContent).toBe("Approved");
+      } else {
+        expect(root.textContent).toContain("We could not confirm whether the decision was saved. Reload to check.");
+        expect(root.querySelector(".cr-state--approved, .cr-state--denied")).toBeNull();
+      }
+    });
+  }
 
   const unknownOutcome = "We could not confirm whether the decision was saved. Reload to check.";
   const writeFailures: { name: string; error: Error; saved?: boolean; mismatch?: Record<string, unknown>; readFails?: boolean; expected: string }[] = [
-    { name: "saved then timed out", error: new StoreError("timeout"), saved: true, expected: "Already decided: approved" },
+    { name: "saved then timed out", error: new StoreError("timeout"), saved: true, expected: "Decision on file: approved" },
     { name: "timed out without saving", error: new StoreError("timeout"), expected: unknownOutcome },
-    { name: "saved then became unreachable", error: new StoreError("unreachable"), saved: true, expected: "Already decided: approved" },
+    { name: "saved then became unreachable", error: new StoreError("unreachable"), saved: true, expected: "Decision on file: approved" },
     { name: "failed without saving", error: new StoreError("failed"), expected: unknownOutcome },
     { name: "connection rejected without saving", error: new Error("connection closed"), expected: unknownOutcome },
     { name: "different hash on file", error: new StoreError("timeout"), saved: true, mismatch: { requestHash: "0".repeat(64) }, expected: unknownOutcome },
@@ -184,7 +238,7 @@ describe("Needs you", () => {
       read.mockClear();
       approve.click();
       await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain(row.expected));
-      expect(root.textContent).not.toContain("Nothing was recorded");
+      expect(root.textContent).not.toMatch(/Nothing was (?:recorded|changed)/);
       if (row.error instanceof StoreError && row.error.code === "denied") {
         expect(read).not.toHaveBeenCalledWith(keys.approval(REQ));
       } else {

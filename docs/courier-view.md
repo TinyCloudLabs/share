@@ -50,7 +50,7 @@ The sentence is fixed wording around the verb from the closed set; target sits i
 
 A request whose hash can't be computed (a number that isn't finite, nesting deeper than 64 levels) is one unreviewable card; every other card still renders. The CLI refuses the same inputs.
 - Approve and Deny are explicit clicks, enabled only once the card has been painted, one decision at a time across all cards. Before writing, the page re-reads the request and refuses if its hash changed or it expired.
-- The decision file is created with `If-None-Match: *`. A second click, or another tab, gets a 412 and the page shows the decision already on file ("Already decided: approved"); it never overwrites. A request expires 24 hours after it was filed and then has no buttons.
+- The decision file is created with `If-None-Match: *`. On a 412 or a failed write, the page re-reads the decision file. It shows the decision on file only when its requestId, decision and requestHash match the card; otherwise it says, "We could not confirm whether the decision was saved. Reload to check." An explicitly denied write reports the session permission refusal. It never overwrites. Reloaded cards use the same requestId, decision and requestHash checks. A request expires 24 hours after it was filed and then has no buttons.
 
 ## Storage, logging, CSP
 

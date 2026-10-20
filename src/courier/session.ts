@@ -44,7 +44,7 @@ export class CourierSignInError extends Error {
 export function signInFailureMessage(error: unknown): { readonly message: string; readonly neutral: boolean } {
   const reason: SignInFailureReason = error instanceof CourierSignInError ? error.reason : "failed";
   switch (reason) {
-    case "cancelled": return { message: "Sign-in cancelled. Nothing was changed.", neutral: true };
+    case "cancelled": return { message: "Sign-in cancelled.", neutral: true };
     case "timeout": return { message: "OpenKey didn't answer in time. Try again.", neutral: true };
     case "busy": return { message: "Another OpenKey request is waiting. Finish or cancel it, then try again.", neutral: true };
     case "wrong-account": return { message: "That approval came from a different account than the one signed in. Try again.", neutral: false };
