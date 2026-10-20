@@ -1,4 +1,4 @@
-import type { PreparedArtifact } from "../artifact/bundle.js";
+import type { PreparedArtifact } from "@tinycloud/share-sdk/html-bundle";
 import { ARTIFACT_SANDBOX_PATH, type ArtifactRenderRequest } from "./artifact-frame.js";
 import { userContentUrl } from "./user-content-origin.js";
 

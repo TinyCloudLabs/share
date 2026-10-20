@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { canonicalArtifactPath } from "../src/artifact/bundle.js";
+import { canonicalArtifactPath } from "@tinycloud/share-sdk/html-bundle";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../src/filename-policy.js";
 import { validateComposerModel } from "../src/share/composer-model.js";
 import { renderSafeContent } from "../src/viewer/content.js";

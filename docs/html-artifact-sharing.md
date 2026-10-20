@@ -123,6 +123,19 @@ open on first view, that says what CSP does and does not stop (see
 hidden, covered or dismissed by the page). The bar's “Download” action is
 present whether or not the preview succeeds.
 
+### Publishing a folder as one page
+
+`tc share publish ./site/` (a folder with a root `index.html`, to an
+anyone-with-the-link target) inlines the folder at publish time into one
+self-contained `.html` file, then publishes that file like any other
+single-file page, so the 1 MB preview budget above applies to the inlined
+result (images become base64). The rewriter is the one this app's composer uses
+to recognise folders, `@tinycloud/share-sdk/html-bundle`, which is the source
+of truth for the rules: no external URLs, `<base>`, frames, forms,
+event-handler attributes, module scripts or links to other pages, plus size and
+reference caps. `manifest.json` and `knowledge/**` in the folder are passive:
+never inlined, and returned apart for a publisher that stores sidecar files.
+
 ## Mermaid diagrams in Markdown
 
 A ` ```mermaid ` block is rendered in the `/mermaid-sandbox` frame: an

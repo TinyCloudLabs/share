@@ -1,5 +1,5 @@
 import { armManualCopy, copyWithFallback, type ManualCopyHandle } from "./clipboard.js";
-import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
+import { canonicalArtifactPath, detectHtmlArtifact } from "@tinycloud/share-sdk/html-bundle";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
