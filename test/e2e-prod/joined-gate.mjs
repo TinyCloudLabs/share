@@ -469,8 +469,9 @@ async function revokeFromLibrary(sender) {
   phase = "sender-revocation";
   await sender.evaluate(() => { window.location.hash = "#/library"; });
   await sender.waitForSelector(".sender-revoke:not([disabled])", { timeout: 180_000 });
-  sender.once("dialog", (dialog) => void dialog.accept());
   await sender.click(".sender-revoke:not([disabled])");
+  await sender.waitForSelector(".sender-confirm-revoke", { timeout: 10_000 });
+  await sender.click(".sender-confirm-revoke");
   await sender.waitForFunction(() => document.body.textContent?.includes("Share revoked."), { timeout: 180_000 });
 }
 
