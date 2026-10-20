@@ -74,8 +74,8 @@ export function statementFor(source: AccessItem, kind: "read" | "change", appId:
     case "Capabilities":
       return null; // the SDK's own read of the space's permission list; the list says so
     case "Encryption":
-      // A network id, not a folder. `decrypt` reads; creating or revoking a network changes what can be decrypted.
-      return change ? `This app can create or revoke encryption networks (${item.target}).` : `This app can decrypt data stored for it (${item.target}).`;
+      // A network id, not a folder. The node checks only the network id (no conditions): decrypt reaches EVERYTHING encrypted to that network, whoever stored it.
+      return change ? `This app can create or revoke encryption networks (${item.target}).` : `This app can decrypt anything encrypted to your TinyCloud encryption network (${item.target}), including data it did not store.`;
     case "Delegation":
       return "This app can hand access to your data on to other keys.";
     case "Secret":

@@ -119,7 +119,7 @@ describe("apps catalog digests", () => {
     const { publicDir, catalog: copy, folder } = privateCopy();
     const file = join(folder, "manifest.json");
     const original = JSON.parse(readFileSync(file, "utf8"));
-    for (const [patch, message] of [[{ did: "did:key:zExample" }, "delegate DID"], [{ prefix: 5 }, "prefix must be text"], [{ prefix: null }, "prefix must be text"], [{ space: ["applications"] }, "space must be text"]] as const) {
+    for (const [patch, message] of [[{ did: "did:key:zExample" }, "delegate DID"], [{ prefix: 5 }, "prefix must be text"], [{ prefix: null }, "prefix must be text"], [{ space: ["applications"] }, "space must be text"], [{ space: "  " }, "space must be text"], [{ permissions: [{ service: "tinycloud.kv", path: "a/", actions: ["put"], space: " " }] }, "a permission's space must be text"], [{ permissions: [{ service: "tinycloud.capabilities", path: "", actions: ["read"], space: "account" }] }, "permission-list read"]] as const) {
       writeFileSync(file, JSON.stringify({ ...original, ...patch }));
       expect(verifyCatalog(copy, publicDir).some((error) => error.includes(message)), message).toBe(true);
     }

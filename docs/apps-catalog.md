@@ -171,21 +171,29 @@ path (`path` on each list item, as the SDK resolves it): its own folder, the who
 path), another app's folder, a root-level key or database that no folder holds (`skipPrefix` with a
 bare name), any space other than `applications`, the vault shorthand (`tinycloud.vault`, key-value
 under `vault/`), named secrets (`vault/secrets/<NAME>` in the `secrets` space), and encryption
-grants (a network id, not a folder: "This app can decrypt data stored for it", "...create or revoke
-encryption networks"). Text from a manifest that a sentence repeats is cut at 120 characters with a
-"…".
+grants. An encryption grant is a network id, not a folder, and the node checks only that id, so
+`decrypt` is not limited to what the app stored: the sheet says "This app can decrypt anything
+encrypted to your TinyCloud encryption network (...), including data it did not store." (and
+"...create or revoke encryption networks" for the other two actions). Text from a manifest that a
+sentence repeats is cut at 120 characters with a "…". An empty path is shown as "everything in the
+<space> space". Examples: "This app can change or delete any file in your applications space,
+including other apps' files.", "...every file in your default space.", "...the database healthlog,
+which is not inside its own folder."
 
-Three shapes are **refused**, not described, because the SDK resolves them in a way the lists do not
-mirror: a manifest `did` (it hands everything the app is granted to that key), and a `prefix` or
-`space` that is not text (the SDK uses them as they are). `unsupportedManifest` (`src/apps/access.ts`)
-refuses them before OpenKey opens (`bundle.ts`), the sheet says so and keeps Continue off, and
-`verifyCatalog` refuses a catalog manifest with one. No catalog app has any of them. A change or read outside the app's own folder always gets a sentence ("This app can
-change or delete any file in your applications space, including other apps' files.", "...every file in
-your default space.", "...the database healthlog, which is not inside its own folder."), and an empty
-path is shown as "everything in the <space> space". Own-folder key-value access is the only grant with
-none. `test/apps-consent.test.ts` checks each shape, that the lists equal what the SDK's
-`resolveManifest` resolves for every shape (nothing skipped), that every grant outside the own folder
-has a sentence, and that each refused shape is one the SDK really resolves differently.
+**Described, with no sentence of their own** (the lists already say them): key-value access in the
+app's own folder, reads of its own SQL or DuckDB databases, and the read of each space's permission list
+that the SDK adds itself (marked "added automatically"). Every other change or read gets a sentence.
+
+**Refused, not described**, because the SDK resolves them in a way the lists do not mirror:
+- a manifest `did` (it hands everything the app is granted to that key);
+- a `prefix` that is not text, or a `space` that is not text or is blank (the SDK uses them as written, where the page would read them as "not given"), in the manifest or in a permission;
+- an explicit `tinycloud.capabilities` permission (the SDK adds that read per space itself, so a hand-written one is a second row for the same thing).
+
+`unsupportedManifest` (`src/apps/access.ts`) refuses them before OpenKey opens (`bundle.ts`), the
+sheet says so and keeps Continue off, and `verifyCatalog` refuses a catalog manifest with one. No
+catalog app has any of them. `test/apps-consent.test.ts` checks each shape, that the lists equal what
+the SDK's `resolveManifest` resolves for every shape (nothing skipped), that every grant outside the
+own folder has a sentence, and that each refused shape is one the SDK really resolves differently.
 
 When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the kit's samples do),
 `vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256

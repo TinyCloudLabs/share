@@ -110,6 +110,12 @@ describe("what the install port asks of the shared sign-in", () => {
     const long = installAppName("Very long name ".repeat(20).trim());
     expect([...long].length).toBeLessThanOrEqual(64);
     expect(isSignInLabel(long)).toBe(true);
+    // A name over 64 characters is cut (display only) when the cut name is accepted; if even the cut is refused, the fixed name stands in.
+    const over = `${"Notes ".repeat(20)}end`;
+    expect(isSignInLabel(over)).toBe(false);
+    expect(installAppName(over)).toBe(`TinyCloud Share: install ${[...over].slice(0, 64).join("").trimEnd()}`.slice(0, 64).trimEnd());
+    expect(installAppName(over)).not.toContain("Tiny app");
+    expect(installAppName(`${"Node.js ".repeat(20)}`)).toBe(`TinyCloud Share: install ${APP_NAME_FALLBACK}`);
     // The catalog's name is used only if the helper would accept it as a name; otherwise a fixed one stands in.
     for (const bad of ["Node.js Notes", "Zero\u200bWidth", "see https://evil.example", "mail me@evil.example", "www.evil.example", "", "   ", "a\u202eb", "<b>x</b>\u200b"]) {
       const name = installAppName(bad);

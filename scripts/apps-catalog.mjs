@@ -253,7 +253,12 @@ export function verifyCatalog(catalog, publicDir) {
         // The same three shapes src/apps/access.ts `unsupportedManifest` refuses at install: the sheet cannot describe them.
         if (manifest.did !== undefined) fail(`${MANIFEST_PATH}: a delegate DID (did) hands the app's access to another identity`);
         if (manifest.prefix !== undefined && typeof manifest.prefix !== "string") fail(`${MANIFEST_PATH}: prefix must be text`);
-        if (manifest.space !== undefined && typeof manifest.space !== "string") fail(`${MANIFEST_PATH}: space must be text`);
+        if (manifest.space !== undefined && (typeof manifest.space !== "string" || manifest.space.trim() === "")) fail(`${MANIFEST_PATH}: space must be text`);
+        for (const permission of Array.isArray(manifest.permissions) ? manifest.permissions : []) {
+          if (!isObject(permission)) continue;
+          if (permission.space !== undefined && (typeof permission.space !== "string" || permission.space.trim() === "")) fail(`${MANIFEST_PATH}: a permission's space must be text`);
+          if (permission.service === "tinycloud.capabilities" || permission.service === "capabilities") fail(`${MANIFEST_PATH}: the permission-list read is added by the SDK; do not ask for it`);
+        }
         for (const [field, value] of [["app_id", entry.app_id], ["name", entry.name], ["description", entry.description]]) {
           if (manifest[field] !== value) fail(`${field} differs from ${MANIFEST_PATH}`);
         }
