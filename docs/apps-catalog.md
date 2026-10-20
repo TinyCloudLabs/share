@@ -71,8 +71,16 @@ files, fails it.
 The sheet fetches the entry's manifest from `bundle.root`, checks it against
 `manifest.sha256`, and shows nothing from it if the bytes differ. Items come
 from the manifest's own `description`s and are rendered with `textContent`.
-A manifest that does not set `defaults: false` also gets the SDK's default
-grant for its own folder, and the sheet lists that too.
+
+The lists mirror what the SDK's `resolveManifest` would sign, and only that
+(`src/apps/access.ts`):
+
+- `permissions[]`, with the app's path prefix applied unless `skipPrefix`, and each entry's `space`;
+- `secrets{}` (an object keyed by secret name), as vault grants in the `secrets` space;
+- the default tier: a manifest that does not set `defaults: false` also gets the SDK's standard grant for its own folder (`"admin"` adds SQL schema changes, `"all"` adds DuckDB);
+- additions the SDK makes itself: `capabilities/read` in each space used, and key-value access to the public space unless `includePublicSpace: false`.
+
+The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are not listed.
 
 `npm run test:e2e:apps-page` builds the site and checks the page in Chromium at 390 and
 1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and

@@ -242,7 +242,8 @@ body {
 }
 
 .apps-sheet::backdrop {
-  background: rgb(11 14 20 / 55%);
+  /* The night palette stop, in both themes: a scrim must darken a light page too. */
+  background: color-mix(in srgb, var(--tc-palette-night-950) 55%, transparent);
 }
 
 .apps-sheet__header {

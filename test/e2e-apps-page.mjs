@@ -114,7 +114,7 @@ try {
       await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
       assert.equal(await sheetOpen(page), true, `${label}: sheet opens`);
       const sheetText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["It can read", "It can change", "User-authored note documents.", "Optional provider key used for note summaries.", "Where it comes from", catalog.apps[0].bundle.digest, "Install isn't available yet."]) {
+      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "Your public space", "Where it comes from", catalog.apps[0].bundle.digest, "Install isn't available yet."]) {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
       assert.equal(await page.$eval("#apps-sheet footer button", (node) => node.disabled), true, `${label}: sheet Install is disabled`);

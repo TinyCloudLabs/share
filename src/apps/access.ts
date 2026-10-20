@@ -1,47 +1,55 @@
 /**
  * What an app's manifest lets it read and change, as plain data for the detail
- * sheet. Pure: no DOM, no network. The text of every item comes from the
- * manifest's own `description`s; the sheet renders it with textContent only.
+ * sheet. Pure: no DOM, no network. Descriptions come from the manifest's own
+ * `description`s; the sheet renders them with textContent only.
  *
- * Grants come from two places, mirroring the SDK's manifest resolution:
- *  - the explicit entries: `permissions[]`, and the kit's descriptive
- *    `resources.{kv,sql,duckdb}[]` blocks;
- *  - the default tier. A manifest that does not set `defaults: false` also
- *    gets the standard tier (read/write/delete of the app's whole folder);
- *    "admin" adds SQL schema changes and "all" adds DuckDB.
+ * This mirrors what the SDK signs for (sdk-core `resolveManifest`), and only
+ * that. Grants come from:
+ *  - `permissions[]` (path prefix applied unless `skipPrefix`; `space` per entry);
+ *  - `secrets{}` (vault entries in the `secrets` space);
+ *  - the default tier: a manifest that does not set `defaults: false` also gets
+ *    the standard tier (key-value and SQL read/write of the app's own folder);
+ *    "admin" adds SQL schema changes, "all" adds DuckDB;
+ *  - automatic additions: `capabilities/read` in every space used, and, unless
+ *    `includePublicSpace: false`, key-value access to the user's public space
+ *    for an app that has any key-value grant.
+ * Kit-style `resources.*` blocks are descriptive and grant nothing, so they are
+ * not listed.
  */
 
 export interface AccessItem {
-  /** The manifest's own description, or null when the app gave none. */
+  /** The manifest's own description, or null when none was given (or the SDK adds the grant itself). */
   description: string | null;
   /** Service label, e.g. "Key-value". */
   service: string;
-  /** Where it applies: a path, prefix or database name. */
+  /** The space it applies in, or null for the app's own default space ("applications"). */
+  space: string | null;
+  /** Where it applies: a path, prefix, secret name or database name. */
   target: string;
   /** Short action names, e.g. ["get", "list"]. */
   actions: string[];
 }
 
-export interface SecretItem {
-  name: string;
-  description: string | null;
-  required: boolean;
-}
-
 export interface AccessSummary {
   read: AccessItem[];
   change: AccessItem[];
-  secrets: SecretItem[];
 }
 
 /** Actions that only look at data. Everything else, including unknown names, counts as a change. */
-const READ_ACTIONS: Record<string, true> = { get: true, list: true, read: true, head: true, metadata: true, query: true, select: true };
+const READ_ACTIONS: Record<string, true> = { get: true, list: true, read: true, head: true, metadata: true, query: true, select: true, decrypt: true };
 
 const SERVICE_LABELS: Record<string, string> = {
   "tinycloud.kv": "Key-value",
   "tinycloud.sql": "SQL database",
   "tinycloud.duckdb": "DuckDB",
+  "tinycloud.vault": "Secret",
+  "tinycloud.encryption": "Encryption",
+  "tinycloud.capabilities": "Capabilities",
+  "tinycloud.delegation": "Delegation",
 };
+
+const DEFAULT_SPACE = "applications";
+const SECRETS_SPACE = "secrets";
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -86,19 +94,38 @@ function defaultItems(manifest: Json): { read: AccessItem[]; change: AccessItem[
   if (tier === "none") return { read: [], change: [] };
   const folder = folderFor(manifest);
   const target = folder === "" ? "everything in the app's space" : `${folder}*`;
-  const read: AccessItem[] = [
-    { description: "Everything the app has stored in its own folder (default grant).", service: serviceLabel("tinycloud.kv"), target, actions: ["get", "list", "metadata"] },
-    { description: "Everything in the app's own SQL databases (default grant).", service: serviceLabel("tinycloud.sql"), target, actions: ["read"] },
+  const item = (service: string, description: string, actions: string[]): AccessItem => ({ description, service: serviceLabel(service), space: null, target, actions });
+  const read = [
+    item("tinycloud.kv", "Everything the app has stored in its own folder (default grant).", ["get", "list", "metadata"]),
+    item("tinycloud.sql", "Everything in the app's own SQL databases (default grant).", ["read"]),
   ];
-  const change: AccessItem[] = [
-    { description: "Save, replace and delete anything in its own folder (default grant).", service: serviceLabel("tinycloud.kv"), target, actions: ["put", "del"] },
-    { description: tier === "standard" ? "Write to its own SQL databases (default grant)." : "Write to, and change the tables of, its own SQL databases (default grant).", service: serviceLabel("tinycloud.sql"), target, actions: tier === "standard" ? ["write"] : ["write", "schema"] },
+  const change = [
+    item("tinycloud.kv", "Save, replace and delete anything in its own folder (default grant).", ["put", "del"]),
+    item("tinycloud.sql", tier === "standard" ? "Write to its own SQL databases (default grant)." : "Write to, and change the tables of, its own SQL databases (default grant).", tier === "standard" ? ["write"] : ["write", "schema"]),
   ];
   if (tier === "all") {
-    read.push({ description: "Everything in the app's own DuckDB databases (default grant).", service: serviceLabel("tinycloud.duckdb"), target, actions: ["read"] });
-    change.push({ description: "Write to its own DuckDB databases (default grant).", service: serviceLabel("tinycloud.duckdb"), target, actions: ["write"] });
+    read.push(item("tinycloud.duckdb", "Everything in the app's own DuckDB databases (default grant).", ["read"]));
+    change.push(item("tinycloud.duckdb", "Write to its own DuckDB databases (default grant).", ["write"]));
   }
   return { read, change };
+}
+
+/** Vault actions as the SDK normalises them (read/write/delete are aliases). */
+function vaultActions(value: unknown): string[] {
+  const aliases: Record<string, string> = { read: "get", write: "put", delete: "del" };
+  return actionsOf(value).map((action) => (Object.hasOwn(aliases, action) ? (aliases[action] ?? action) : action));
+}
+
+/** The SDK reads a secret spec as `true`, an action string, an action array, or {name, scope, actions, description}. */
+function secretItem(key: string, spec: unknown): { item: Omit<AccessItem, "actions">; actions: string[] } {
+  const fields = isObject(spec) ? spec : {};
+  const name = text(fields.name) ?? key;
+  const scope = text(fields.scope);
+  const rawActions = isObject(spec) ? (spec.actions === undefined ? ["read"] : typeof spec.actions === "string" ? [spec.actions] : spec.actions) : typeof spec === "string" ? [spec] : Array.isArray(spec) ? spec : ["read"];
+  return {
+    item: { description: text(fields.description), service: serviceLabel("tinycloud.vault"), space: SECRETS_SPACE, target: scope === null ? name : `${scope}/${name}` },
+    actions: vaultActions(rawActions),
+  };
 }
 
 function place(summary: AccessSummary, item: Omit<AccessItem, "actions">, actions: string[]): void {
@@ -110,7 +137,7 @@ function place(summary: AccessSummary, item: Omit<AccessItem, "actions">, action
 
 /** Reads a manifest of unknown shape. Never throws; fields it cannot read are left out. */
 export function summarizeAccess(manifest: unknown): AccessSummary {
-  const summary: AccessSummary = { read: [], change: [], secrets: [] };
+  const summary: AccessSummary = { read: [], change: [] };
   if (!isObject(manifest)) return summary;
 
   const defaults = defaultItems(manifest);
@@ -118,28 +145,35 @@ export function summarizeAccess(manifest: unknown): AccessSummary {
   summary.change.push(...defaults.change);
 
   const folder = folderFor(manifest);
+  const manifestSpace = text(manifest.space) ?? DEFAULT_SPACE;
   for (const entry of list(manifest.permissions)) {
     if (!isObject(entry)) continue;
     const service = text(entry.service);
     const path = typeof entry.path === "string" ? entry.path : null;
     if (service === null || path === null) continue;
-    place(summary, { description: text(entry.description), service: serviceLabel(service), target: resolvePath(folder, path, entry.skipPrefix === true) }, actionsOf(entry.actions));
+    const space = text(entry.space) ?? manifestSpace;
+    place(summary, { description: text(entry.description), service: serviceLabel(service), space: space === DEFAULT_SPACE ? null : space, target: resolvePath(folder, path, entry.skipPrefix === true) }, actionsOf(entry.actions));
   }
 
-  const resources = isObject(manifest.resources) ? manifest.resources : {};
-  for (const [kind, service, targetKey] of [["kv", "tinycloud.kv", "prefix"], ["sql", "tinycloud.sql", "name"], ["duckdb", "tinycloud.duckdb", "name"]] as const) {
-    for (const entry of list(resources[kind])) {
-      if (!isObject(entry)) continue;
-      const target = text(entry[targetKey]) ?? text(entry.name);
-      if (target === null) continue;
-      place(summary, { description: text(entry.description), service: serviceLabel(service), target: kind === "kv" ? resolvePath(folder, target, false) : target }, actionsOf(entry.capabilities));
+  if (isObject(manifest.secrets)) {
+    for (const [key, spec] of Object.entries(manifest.secrets)) {
+      const { item, actions } = secretItem(key, spec);
+      place(summary, item, actions);
     }
   }
 
-  for (const entry of [...list(resources.secrets), ...list(manifest.secrets)]) {
-    // The SDK's `secrets` shorthand is a list of names; the kit's resources carry a description.
-    if (typeof entry === "string" && entry !== "") summary.secrets.push({ name: entry, description: null, required: false });
-    else if (isObject(entry) && text(entry.name) !== null) summary.secrets.push({ name: text(entry.name) ?? "", description: text(entry.description), required: entry.required === true });
+  // Additions the SDK makes itself. Nothing is added to a manifest that asks for nothing.
+  const all = [...summary.read, ...summary.change];
+  if (all.length > 0) {
+    const spaces = [...new Set(all.map((item) => item.space ?? DEFAULT_SPACE))];
+    for (const space of spaces) {
+      summary.read.push({ description: "See which permissions it has been given in this space (added automatically).", service: serviceLabel("tinycloud.capabilities"), space: space === DEFAULT_SPACE ? null : space, target: space, actions: ["read"] });
+    }
+    if (manifest.includePublicSpace !== false && all.some((item) => item.service === serviceLabel("tinycloud.kv") || item.service === serviceLabel("tinycloud.vault"))) {
+      const publicSpace = { description: "Your public space. Added automatically for apps with key-value access, unless the app opts out.", service: serviceLabel("tinycloud.kv"), space: "public", target: "everything in your public space" };
+      summary.read.push({ ...publicSpace, actions: ["get", "metadata"] });
+      summary.change.push({ ...publicSpace, actions: ["put"] });
+    }
   }
   return summary;
 }

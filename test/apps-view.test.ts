@@ -45,7 +45,7 @@ describe("apps page rendering", () => {
     const manifest = JSON.stringify({
       app_id: "t.app", name: "T", defaults: false,
       permissions: [{ service: "tinycloud.kv", path: "x/", actions: ["get", "put"], description: HOSTILE }],
-      resources: { secrets: [{ name: HOSTILE, description: HOSTILE }] },
+      secrets: { [HOSTILE]: { description: HOSTILE } },
     });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(manifest)));
     mountApps(list, sheet, [await entryFor(manifest)]);

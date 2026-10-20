@@ -3,7 +3,7 @@
  * is set with textContent (or a validated https href); there is no innerHTML,
  * so Trusted Types can stay required for scripts.
  */
-import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
+import { type AccessItem, summarizeAccess } from "./access.ts";
 import { type CatalogEntry, versionLabel } from "./catalog.ts";
 import { loadManifest } from "./manifest.ts";
 
@@ -41,6 +41,7 @@ function accessList(items: AccessItem[]): HTMLElement {
     el("p", item.description === null ? "apps-access__text apps-access__text--missing" : "apps-access__text", [item.description ?? "The app gave no description for this."]),
     el("p", "apps-access__meta", [
       el("span", "tc-badge", [item.service]),
+      ...(item.space === null ? [] : [el("span", "apps-access__actions", [`space: ${item.space}`])]),
       el("code", null, [item.target]),
       el("span", "apps-access__actions", [item.actions.join(", ")]),
     ]),
@@ -49,17 +50,6 @@ function accessList(items: AccessItem[]): HTMLElement {
 
 function accessSection(title: string, empty: string, items: AccessItem[]): HTMLElement {
   return el("section", "apps-section", [el("h3", null, [title]), items.length === 0 ? el("p", "apps-muted", [empty]) : accessList(items)]);
-}
-
-function secretsSection(secrets: AccessSummary["secrets"]): HTMLElement | null {
-  if (secrets.length === 0) return null;
-  return el("section", "apps-section", [
-    el("h3", null, ["Secrets it uses"]),
-    el("ul", "apps-access", secrets.map((secret) => el("li", "apps-access__item", [
-      el("p", secret.description === null ? "apps-access__text apps-access__text--missing" : "apps-access__text", [secret.description ?? "The app gave no description for this."]),
-      el("p", "apps-access__meta", [el("code", null, [secret.name]), el("span", "apps-access__actions", [secret.required ? "required" : "optional"])]),
-    ]))),
-  ]);
 }
 
 function skeleton(): HTMLElement {
@@ -86,11 +76,9 @@ async function renderAccess(entry: CatalogEntry, target: HTMLElement): Promise<v
     return;
   }
   const summary = summarizeAccess(result.manifest);
-  const secrets = secretsSection(summary.secrets);
   target.replaceChildren(
     accessSection("It can read", "Nothing.", summary.read),
     accessSection("It can change", "Nothing. This app can't change your data.", summary.change),
-    ...(secrets === null ? [] : [secrets]),
   );
 }
 

@@ -71,6 +71,7 @@ const { values, positionals } = parseArgs({
 });
 if (positionals.length !== 1) die("expected exactly one argument: <git-url>@<tag>");
 const { url, ref } = splitSpec(positionals[0]);
+if (!/^https:\/\/[^\s]+$/.test(url)) die("only https sources can be listed in the catalog");
 const subdir = values.path;
 if (subdir.startsWith("/") || subdir.split("/").some((segment) => segment === ".." || segment === "")) die("--path must be a relative folder without \"..\"");
 

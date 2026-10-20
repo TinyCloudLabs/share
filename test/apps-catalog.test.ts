@@ -144,15 +144,24 @@ describe("scripts/vendor-app.mjs", () => {
 });
 
 describe("what an app can read and change", () => {
-  it("lists the vendored example's grants by what they allow, descriptions verbatim", () => {
+  const own = <T extends { service: string }>(items: T[]): T[] => items.filter((item) => item.service !== "Capabilities");
+
+  it("lists the vendored example by what the SDK would grant, and not its descriptive resources block", () => {
     const entry = catalog.apps[0];
     if (entry === undefined) throw new Error("catalog is empty");
     const manifest = JSON.parse(readFileSync(join("public", entry.bundle.root, entry.manifest.path), "utf8"));
+    expect(manifest.resources).toBeDefined(); // the kit example documents SQL schema changes and a secret there; the SDK grants neither
     const summary = summarizeAccess(manifest);
-    const documents = summary.change.find((item) => item.target === "com.example.notes/documents/*");
-    expect(documents).toMatchObject({ description: "User-authored note documents.", service: "Key-value", actions: ["put"] });
-    expect(summary.read.find((item) => item.target === "com.example.notes/documents/*")?.actions).toEqual(["get", "list"]);
-    expect(summary.secrets).toEqual([{ name: "model-api-key", description: "Optional provider key used for note summaries.", required: false }]);
+    const targets = [...summary.read, ...summary.change].map((item) => `${item.service} ${item.actions.join(",")} ${item.target}`);
+    expect(targets).toEqual([
+      "Key-value get,list,metadata com.example.notes/*",
+      "SQL database read com.example.notes/*",
+      "Capabilities read applications",
+      "Key-value get,metadata everything in your public space",
+      "Key-value put,del com.example.notes/*",
+      "SQL database write com.example.notes/*",
+      "Key-value put everything in your public space",
+    ]);
   });
 
   it("treats a missing or unrecognised `defaults` as the standard grant, and only `false` as none", () => {
@@ -167,20 +176,48 @@ describe("what an app can read and change", () => {
 
   it("counts unknown actions as changes, honours skipPrefix, and shows a missing description as missing", () => {
     const summary = summarizeAccess({
-      app_id: "t.app", name: "T", defaults: false,
+      app_id: "t.app", name: "T", defaults: false, includePublicSpace: false,
       permissions: [
         { service: "tinycloud.kv", path: "other.app/photos/", skipPrefix: true, actions: ["get", "list"], description: "Show photos. Read only." },
         { service: "tinycloud.kv", path: "inbox/", actions: ["tinycloud.kv/put", "frobnicate"] },
       ],
     });
-    expect(summary.read).toEqual([{ description: "Show photos. Read only.", service: "Key-value", target: "other.app/photos/", actions: ["get", "list"] }]);
-    expect(summary.change).toEqual([{ description: null, service: "Key-value", target: "t.app/inbox/", actions: ["put", "frobnicate"] }]);
+    expect(own(summary.read)).toEqual([{ description: "Show photos. Read only.", service: "Key-value", space: null, target: "other.app/photos/", actions: ["get", "list"] }]);
+    expect(own(summary.change)).toEqual([{ description: null, service: "Key-value", space: null, target: "t.app/inbox/", actions: ["put", "frobnicate"] }]);
+  });
+
+  it("lists `secrets` (an object keyed by name) as vault grants in the secrets space", () => {
+    const summary = summarizeAccess({
+      app_id: "t.app", name: "T", defaults: false, includePublicSpace: false,
+      secrets: {
+        OPENAI_KEY: ["read", "write"],
+        TOKEN: true,
+        SESSION: { name: "session-key", scope: "chat", actions: "delete", description: "Signs the chat session." },
+      },
+    });
+    expect(own(summary.read).map((item) => `${item.target} ${item.actions}`)).toEqual(["OPENAI_KEY get", "TOKEN get"]);
+    expect(own(summary.change)).toEqual([
+      { description: null, service: "Secret", space: "secrets", target: "OPENAI_KEY", actions: ["put"] },
+      { description: "Signs the chat session.", service: "Secret", space: "secrets", target: "chat/session-key", actions: ["del"] },
+    ]);
+  });
+
+  it("shows an entry's own space, adds capabilities/read per space, and the public space unless opted out", () => {
+    const manifest = { app_id: "t.app", name: "T", defaults: false, permissions: [{ service: "tinycloud.kv", space: "account", path: "prefs/", actions: ["get"] }] };
+    const summary = summarizeAccess(manifest);
+    expect(summary.read.map((item) => `${item.service} ${item.space ?? "-"} ${item.target}`)).toEqual([
+      "Key-value account t.app/prefs/",
+      "Capabilities account account",
+      "Key-value public everything in your public space",
+    ]);
+    expect(summarizeAccess({ ...manifest, includePublicSpace: false }).read.some((item) => item.space === "public")).toBe(false);
+    // A manifest that asks for nothing is not given the additions.
+    expect(summarizeAccess({ app_id: "t.app", name: "T", defaults: false })).toEqual({ read: [], change: [] });
   });
 
   it("yields an empty summary for a manifest of the wrong shape", () => {
-    const empty = { read: [], change: [], secrets: [] };
-    for (const junk of [null, "x", 3, [], { defaults: false, permissions: "all", resources: { kv: 4, secrets: [7, {}] } }]) {
-      expect(summarizeAccess(junk)).toEqual(empty);
+    for (const junk of [null, "x", 3, [], { defaults: false, permissions: "all", secrets: 4 }]) {
+      expect(summarizeAccess(junk)).toEqual({ read: [], change: [] });
     }
   });
 });
