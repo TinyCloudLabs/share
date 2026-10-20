@@ -22,12 +22,19 @@
  *    `@import` or `image-set()` target that is not safe;
  *  - the React element functions (`guardedElementFunctions`, used by the frame's `react` module) return `null`
  *    for an element that fails, so the page never renders it;
- *  - `installDomGuard` patches the DOM insertion paths (appendChild, insertBefore, replaceChild, append, prepend,
- *    before, after, replaceWith, insertAdjacentElement/HTML, innerHTML/outerHTML setters, document.write,
- *    createContextualFragment) to remove failing elements first, and a MutationObserver removes any that still get
- *    in (including an attribute changed after insertion);
+ *  - `installDomGuard` patches every DOM path known to put a node into a tree or a value on an attribute: the node
+ *    insertion methods (`Node`, `ChildNode` on `Element`/`CharacterData`/`DocumentType`, `ParentNode` on
+ *    `Element`/`Document`/`DocumentFragment`, `insertAdjacentElement`, `Range.insertNode`/`surroundContents`), every HTML
+ *    string sink (innerHTML/outerHTML, `insertAdjacentHTML`, `setHTML`/`setHTMLUnsafe`, `Document.parseHTMLUnsafe`,
+ *    `createContextualFragment`, `execCommand('insertHTML')`; `document.write` is refused), and every attribute
+ *    sink (`setAttribute(NS)`, `setAttributeNode(NS)`, `NamedNodeMap.setNamedItem(NS)`, `Attr.value/nodeValue/textContent`,
+ *    the reflected URL properties). Elements are vetted before they land; a subtree is swept INCLUDING `<template>`
+ *    content and shadow roots, and a `<template shadowrootmode>` (declarative shadow DOM) is refused. A
+ *    MutationObserver removes whatever still gets in;
  *  - `RTCPeerConnection` is removed.
- * A page that restores a saved prototype method is not stopped by this; the doc lists what is measured to leak.
+ * Best effort: these paths are known closed, and code in the same realm may find others (a MutationObserver runs
+ * after the browser has already started a prerender or preconnect). The page says so; the measured leaks are in
+ * docs/tiny-app-runner.md.
  */
 
 const SAFE_URL = /^(?:#|data:|blob:)/i;
@@ -46,7 +53,7 @@ const HREF_FETCHED: ReadonlySet<string> = new Set(["link", "base", "image", "use
 const NEVER: ReadonlySet<string> = new Set(["base", "iframe", "frame", "frameset", "object", "embed", "portal", "applet", "script"]);
 
 /** Every attribute that vetElement reads, lower case: the MutationObserver watches exactly these. */
-export const WATCHED_ATTRIBUTES: readonly string[] = [...URL_ATTRIBUTES, ...SRCSET_ATTRIBUTES, "href", "rel", "http-equiv", "content", "style", "type"];
+export const WATCHED_ATTRIBUTES: readonly string[] = [...URL_ATTRIBUTES, ...SRCSET_ATTRIBUTES, "href", "rel", "http-equiv", "content", "style", "type", "shadowrootmode", "shadowroot"];
 
 /** The URLs of a srcset, as the HTML parser reads it: a URL is a run of non-space characters (a data: URL may hold commas). */
 function srcsetUrls(value: string): string[] {
@@ -96,6 +103,7 @@ export function vetElement(tag: string, attributes: AttributeList, text = ""): s
   if (NEVER.has(name)) return `<${name}> is not allowed`;
   const attrs = new Map<string, string>();
   for (const [key, value] of attributes) attrs.set(key.toLowerCase(), value);
+  if (name === "template" && (attrs.has("shadowrootmode") || attrs.has("shadowroot"))) return "<template shadowrootmode> is not allowed";
   if (name === "meta") {
     if (attrs.has("http-equiv")) return "<meta http-equiv> is not allowed";
     if (/url\s*=/i.test(attrs.get("content") ?? "")) return "<meta content=url=…> is not allowed";
@@ -167,12 +175,44 @@ function refusalFor(element: Element): string | undefined {
   return vetElement(element.localName, attributesOf(element), element.localName === "style" ? element.textContent ?? "" : "");
 }
 
-function firstRefusal(root: ParentNode): string | undefined {
+/** Shadow roots the page made with `attachShadow` (a closed root is not reachable through `element.shadowRoot`). */
+const MADE_ROOTS = new WeakMap<Element, ShadowRoot>();
+
+function shadowOf(element: Element): ShadowRoot | null {
+  return element.shadowRoot ?? MADE_ROOTS.get(element) ?? null;
+}
+
+function templateContent(element: Element): DocumentFragment | null {
+  if (element.localName !== "template") return null;
+  const content = (element as HTMLTemplateElement).content as DocumentFragment | undefined;
+  return content ?? null;
+}
+
+type Visit = (element: Element) => "removed" | "kept";
+
+/**
+ * Walks every element under `root`, INCLUDING the content of `<template>` elements and the shadow roots (open or made
+ * by the page) that `querySelectorAll` does not enter. `visit` decides each element; `onShadow` hears every shadow root met.
+ */
+function walk(root: ParentNode, visit: Visit, onShadow?: (shadow: ShadowRoot) => void): void {
   for (const element of Array.from(root.querySelectorAll("*"))) {
-    const refused = refusalFor(element);
-    if (refused !== undefined) return refused;
+    if (!root.contains(element)) continue; // an ancestor was removed on the way
+    if (visit(element) === "removed") continue;
+    const content = templateContent(element);
+    if (content !== null) walk(content, visit, onShadow);
+    const shadow = shadowOf(element);
+    if (shadow !== null) { onShadow?.(shadow); walk(shadow, visit, onShadow); }
   }
-  return undefined;
+}
+
+function firstRefusal(root: ParentNode): string | undefined {
+  let found: string | undefined;
+  walk(root, (element) => {
+    if (found !== undefined) return "kept";
+    found = refusalFor(element);
+    return "kept";
+  });
+  return found;
 }
 
 /** Wraps a React element-creating function so a refused host element becomes `null` (rendered as nothing). */
@@ -186,19 +226,24 @@ export function guardedElementFunction<T, A extends unknown[], R>(original: (typ
 
 // ---- DOM side
 
-/** Removes every refused element at or under `node`. Returns what was removed. */
-export function sanitizeNode(node: Node, removed: string[] = []): string[] {
+/** Removes every refused element at or under `node` (template content and shadow roots included). Returns what was removed. */
+export function sanitizeNode(node: Node, removed: string[] = [], onShadow?: (shadow: ShadowRoot) => void): string[] {
+  const visit: Visit = (element) => {
+    const refused = refusalFor(element);
+    if (refused === undefined) return "kept";
+    removed.push(refused);
+    element.remove();
+    return "removed";
+  };
   if (node.nodeType === 1) {
     const element = node as Element;
-    const refused = refusalFor(element);
-    if (refused !== undefined) { removed.push(refused); element.remove(); return removed; }
+    if (visit(element) === "removed") return removed;
+    const content = templateContent(element);
+    if (content !== null) walk(content, visit, onShadow);
+    const shadow = shadowOf(element);
+    if (shadow !== null) { onShadow?.(shadow); walk(shadow, visit, onShadow); }
   }
-  if (node.nodeType === 1 || node.nodeType === 11) {
-    for (const child of Array.from((node as ParentNode).querySelectorAll("*"))) {
-      const refused = refusalFor(child);
-      if (refused !== undefined) { removed.push(refused); child.remove(); }
-    }
-  }
+  if (node.nodeType === 1 || node.nodeType === 11) walk(node as ParentNode, visit, onShadow);
   return removed;
 }
 
@@ -234,6 +279,23 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
   Object.defineProperty(doc, marker, { value: true });
   const report = (reasons: string[]): void => { for (const reason of reasons) options.onRefused?.(reason); };
 
+  // Backstop: whatever still got in (an attribute set after insertion, a path not patched) is removed as soon as it is
+  // seen. It runs after the browser may already have started a prerender or preconnect, so it is NOT what closes the
+  // known paths: the patches below do. Created first because every sweep below points it at the shadow roots it meets.
+  const watch: MutationObserverInit = { childList: true, subtree: true, attributes: true, attributeFilter: [...WATCHED_ATTRIBUTES] };
+  const observer = new view.MutationObserver((records) => {
+    for (const record of records) {
+      // An attribute change vets that one element only (a style update on a large subtree must stay cheap).
+      if (record.type === "attributes" && record.target.nodeType === 1) {
+        const refused = refusalFor(record.target as Element);
+        if (refused !== undefined) { report([refused]); (record.target as Element).remove(); }
+      }
+      for (const added of Array.from(record.addedNodes)) report(sanitizeNode(added, [], observeShadow));
+    }
+  });
+  function observeShadow(root: ShadowRoot): void { observer.observe(root, watch); }
+  observer.observe(doc, watch);
+
   // Nodes inserted by the page. A refused element handed in directly is not inserted at all; a refused element
   // inside a subtree (or a fragment) is removed from it first.
   const keep = (arg: unknown): boolean => {
@@ -242,7 +304,7 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
       const refused = refusalFor(arg as Element);
       if (refused !== undefined) { report([refused]); return false; }
     }
-    report(sanitizeNode(arg));
+    report(sanitizeNode(arg, [], observeShadow));
     return true;
   };
   const Node_ = view.Node.prototype;
@@ -259,10 +321,13 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
     return keep(node) ? original.apply(this, args) : null;
   });
   // Several arguments: refused nodes are left out.
-  for (const name of ["append", "prepend", "before", "after", "replaceWith", "replaceChildren"]) {
-    for (const proto of [Element_, view.Document.prototype, view.DocumentFragment.prototype]) {
-      patchMethod(proto, name, (original) => function guarded(this: unknown, ...args: never[]) { return original.apply(this, (args as unknown[]).filter(keep) as never[]); });
-    }
+  // `before`/`after`/`replaceWith` are ChildNode: Element, but also Text and Comment (CharacterData) and DocumentType.
+  const multi = (original: (...args: never[]) => unknown) => function guarded(this: unknown, ...args: never[]) { return original.apply(this, (args as unknown[]).filter(keep) as never[]); };
+  for (const name of ["append", "prepend", "replaceChildren"]) {
+    for (const proto of [Element_, view.Document.prototype, view.DocumentFragment.prototype]) patchMethod(proto, name, multi);
+  }
+  for (const name of ["before", "after", "replaceWith"]) {
+    for (const proto of [Element_, view.CharacterData.prototype, view.DocumentType.prototype]) patchMethod(proto, name, multi);
   }
   // HTML text: parsed inertly first, and only the cleaned markup is handed on.
   patchMethod(Element_, "insertAdjacentHTML", (original) => function guarded(this: unknown, ...args: never[]) {
@@ -284,15 +349,17 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
       original.call(this, clean.html);
     });
   }
+  // `document.write` feeds ONE parser across calls, so a tag can start in one call and end in the next: a per-call sweep
+  // cannot see it. After load it also throws the whole document away (the app with it), so no page has a use for it: refused.
   for (const name of ["write", "writeln"]) {
-    patchMethod(view.Document.prototype, name, (original) => function guarded(this: unknown, ...args: never[]) {
-      const cleaned = (args as unknown as unknown[]).map((part) => { const clean = cleanHtml(String(part)); report(clean.removed); return clean.html; });
-      return original.apply(this, cleaned as never[]);
+    patchMethod(view.Document.prototype, name, () => function guarded(this: unknown) {
+      report(["document.write is not allowed"]);
+      return undefined;
     });
   }
   patchMethod(view.Range.prototype, "createContextualFragment", (original) => function guarded(this: unknown, ...args: never[]) {
     const fragment = original.apply(this, args) as DocumentFragment;
-    report(sanitizeNode(fragment));
+    report(sanitizeNode(fragment, [], observeShadow));
     return fragment;
   });
   patchMethod(view.Range.prototype, "insertNode", (original) => function guarded(this: unknown, ...args: never[]) {
@@ -301,15 +368,37 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
   patchMethod(view.Range.prototype, "surroundContents", (original) => function guarded(this: unknown, ...args: never[]) {
     return keep((args as unknown[])[0]) ? original.apply(this, args) : undefined;
   });
-  // The newer unsanitised-HTML setter, on elements and shadow roots.
+  // The newer HTML setters, on elements and shadow roots. `setHTMLUnsafe` and `Document.parseHTMLUnsafe` also parse
+  // declarative shadow DOM (`<template shadowrootmode>`), which cleanHtml refuses.
   for (const proto of [Element_, view.ShadowRoot?.prototype]) {
     if (proto === undefined) continue;
-    patchMethod(proto, "setHTMLUnsafe", (original) => function guarded(this: unknown, ...args: never[]) {
+    for (const name of ["setHTMLUnsafe", "setHTML"]) {
+      patchMethod(proto, name, (original) => function guarded(this: unknown, ...args: never[]) {
+        const clean = cleanHtml(String((args as unknown[])[0]));
+        report(clean.removed);
+        return original.apply(this, [clean.html, ...(args as unknown[]).slice(1)] as never[]);
+      });
+    }
+  }
+  for (const name of ["parseHTMLUnsafe", "parseHTML"]) {
+    patchMethod(view.Document, name, (original) => function guarded(this: unknown, ...args: never[]) {
       const clean = cleanHtml(String((args as unknown[])[0]));
       report(clean.removed);
       return original.apply(this, [clean.html, ...(args as unknown[]).slice(1)] as never[]);
     });
   }
+  // An editing command that inserts markup or an image URL.
+  patchMethod(view.Document.prototype, "execCommand", (original) => function guarded(this: unknown, ...args: never[]) {
+    const [command, showUi, value] = args as unknown as [string, boolean, unknown];
+    const lower = String(command).toLowerCase();
+    if (lower === "inserthtml") {
+      const clean = cleanHtml(String(value));
+      report(clean.removed);
+      return original.apply(this, [command, showUi, clean.html] as never[]);
+    }
+    if (lower === "insertimage" && !isSafeUrl(String(value))) { report(["insertImage names a URL that is not allowed"]); return false; }
+    return original.apply(this, args);
+  });
 
   // An attribute or property the page sets on an element is checked BEFORE it is applied (an element already in the
   // document starts its request the moment the attribute lands, so a check afterwards is too late). A refused value is
@@ -333,6 +422,40 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
     const [, qualified, value] = args as unknown as [string | null, string, string];
     return allowed(element, String(qualified), String(value)) ? original.apply(this, args) : undefined;
   });
+  // The same attribute written through an Attr node: `setAttributeNode(NS)`, `NamedNodeMap.setNamedItem(NS)` (the map
+  // does not name its element, so the `attributes` getter records it) and the Attr's own `value`/`nodeValue`/`textContent`.
+  const attrAllowed = (element: Element | null, attr: Attr, value?: string): boolean => element === null || allowed(element, attr.name, value ?? attr.value);
+  for (const name of ["setAttributeNode", "setAttributeNodeNS"]) {
+    patchMethod(Element_, name, (original) => function guarded(this: unknown, ...args: never[]) {
+      const attr = (args as unknown[])[0];
+      return !(attr instanceof view.Attr) || attrAllowed(this as Element, attr) ? original.apply(this, args) : null;
+    });
+  }
+  const OWNERS = new WeakMap<NamedNodeMap, Element>();
+  const attributesDescriptor = Object.getOwnPropertyDescriptor(Element_, "attributes");
+  if (attributesDescriptor?.get !== undefined) {
+    const getter = attributesDescriptor.get;
+    Object.defineProperty(Element_, "attributes", { ...attributesDescriptor, get(this: Element) { const map = getter.call(this) as NamedNodeMap; OWNERS.set(map, this); return map; } });
+  }
+  for (const name of ["setNamedItem", "setNamedItemNS"]) {
+    patchMethod(view.NamedNodeMap.prototype, name, (original) => function guarded(this: unknown, ...args: never[]) {
+      const attr = (args as unknown[])[0];
+      const owner = OWNERS.get(this as NamedNodeMap) ?? null;
+      return !(attr instanceof view.Attr) || attrAllowed(owner, attr) ? original.apply(this, args) : null;
+    });
+  }
+  patchSetter(view.Attr.prototype as object, "value", (original) => function guarded(this: unknown, value: string) {
+    const attr = this as unknown as Attr;
+    if (attrAllowed(attr.ownerElement, attr, String(value))) original.call(this as never, value);
+  });
+  // `nodeValue` and `textContent` are Node's accessors and also write an Attr's value.
+  for (const name of ["nodeValue", "textContent"]) {
+    patchSetter(Node_, name, (original) => function guarded(this: unknown, value: string) {
+      const node = this as Node;
+      if (node.nodeType === 2 && !attrAllowed((node as Attr).ownerElement, node as Attr, value === null ? "" : String(value))) return;
+      original.call(this as never, value);
+    });
+  }
   const reflected: ReadonlyArray<readonly [string, string, string]> = [
     ["HTMLLinkElement", "href", "href"], ["HTMLLinkElement", "imageSrcset", "imagesrcset"], ["HTMLAnchorElement", "ping", "ping"], ["HTMLAreaElement", "ping", "ping"],
     ["HTMLImageElement", "src", "src"], ["HTMLImageElement", "srcset", "srcset"], ["HTMLMediaElement", "src", "src"], ["HTMLVideoElement", "poster", "poster"],
@@ -349,23 +472,11 @@ export function installDomGuard(doc: Document, options: DomGuardOptions = {}): v
     });
   }
 
-  // Backstop: whatever still got in (an attribute set after insertion, a path not patched) is removed as soon as it is seen.
-  const observer = new view.MutationObserver((records) => {
-    for (const record of records) {
-      // An attribute change vets that one element only (a style update on a large subtree must stay cheap).
-      if (record.type === "attributes" && record.target.nodeType === 1) {
-        const refused = refusalFor(record.target as Element);
-        if (refused !== undefined) { report([refused]); (record.target as Element).remove(); }
-      }
-      for (const added of Array.from(record.addedNodes)) report(sanitizeNode(added));
-    }
-  });
-  const watch: MutationObserverInit = { childList: true, subtree: true, attributes: true, attributeFilter: [...WATCHED_ATTRIBUTES] };
-  observer.observe(doc, watch);
-  // A shadow root is its own tree: the observer is pointed at each one as it is made.
+  // A shadow root is its own tree: the page's roots are recorded (a closed root is not reachable otherwise) and watched.
   patchMethod(Element_, "attachShadow", (original) => function guarded(this: unknown, ...args: never[]) {
     const root = original.apply(this, args) as ShadowRoot;
-    observer.observe(root, watch);
+    MADE_ROOTS.set(this as Element, root);
+    observeShadow(root);
     return root;
   });
 

@@ -533,6 +533,19 @@ try {
     assert.equal(beacon.udpPackets, 0, "a vector sent UDP to the listener (WebRTC?)");
     await run.page.close();
   }
+  // Chromium caps the speculative loads (prerender, preconnect) it starts per page, so a few leaks in one page can hide the rest:
+  // the DOM-path vectors also run in groups, one fresh page and one fresh listener each, and every group must see nothing.
+  for (const group of ["x-cd,x-comment,x-doctype", "x-attr,x-set", "x-link,x-toggle,x-xhtml,x-createElementNS", "x-replace,x-insert,x-range,x-fragment,x-template,x-import,x-adopt,x-clone", "x-outer,x-inner,x-setHTML,x-create,x-exec", "x-shadow", "x-dsd,x-document,x-custom,x-move", "x-xslt,x-observer,x-spec,x-web,x-adopted"]) {
+    await freshBeacon();
+    const run = await open("leak-vectors.jsx", { query: `&probes=only:${group}` });
+    const frame = await childFrame(run.page);
+    await frame.waitForSelector("#report[data-done=yes]", { timeout: 60_000 }).catch((error) => { throw new Error(`leak vectors ${group}: the page stopped: ${error.message}`); });
+    await sleep(1200);
+    assert.deepEqual(beacon.requests, [], `vectors ${group}: reached the listener: ${JSON.stringify(beacon.requests)}`);
+    assert.equal(beacon.connections, 0, `vectors ${group}: opened a connection to the listener`);
+    assert.equal(beacon.upgrades + beacon.udpPackets, 0, `vectors ${group}: upgrade or UDP`);
+    await run.page.close();
+  }
   // The one class still measured to leak: the page tries to navigate itself.
   {
     await freshBeacon();

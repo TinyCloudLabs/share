@@ -20,25 +20,30 @@ function watch(element, events) {
   });
 }
 
-// The runtime guards setAttribute and the reflected properties (url-guard.ts); an Attr node set with setAttributeNode is a path it does not
-// patch (the observer takes the element out afterwards), so the CSP layer itself stays under test.
-function viaAttribute(element, name, value) {
-  const attribute = document.createAttribute(name);
-  attribute.value = value;
-  element.setAttributeNode(attribute);
-}
-
+// The frame's runtime refuses every element or attribute that names a remote URL on an image-like element (url-guard.ts: setAttribute, Attr
+// nodes, the reflected properties, every insertion path), so an <img> cannot reach the browser at all. CSS is the path that stays: the
+// element style set from script. These probes keep the CSP layer (img-src) itself under test.
 const probes = {
+  // CSS images from a constructable stylesheet: a path the guard does not vet (it vets <style> elements and style attributes),
+  // so the CSP's img-src is what refuses them.
   img: () => {
-    const element = document.createElement("img");
-    viaAttribute(element, "src", `${BEACON}/img`);
+    const element = document.createElement("div");
+    element.id = "css-img";
+    element.style.cssText = "width:10px;height:10px";
     document.body.append(element);
-    return watch(element, ["load", "error"]);
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`#css-img { background-image: url(${BEACON}/img); }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return new Promise((resolve) => setTimeout(() => resolve("styled"), 800));
   },
   imageConstructor: () => {
-    const element = new Image();
-    viaAttribute(element, "src", `${BEACON}/image-constructor`);
-    return watch(element, ["load", "error"]);
+    const element = document.createElement("li");
+    element.id = "css-li";
+    document.body.append(element);
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`#css-li { list-style-image: url(${BEACON}/image-constructor); border-image-source: url(${BEACON}/border-image); }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    return new Promise((resolve) => setTimeout(() => resolve("styled"), 800));
   },
   // The frame's runtime refuses elements that name a remote URL when they are inserted (url-guard.ts), so these probes
   // reach the browser the other ways: an element that is never inserted, or style text set after insertion. They are

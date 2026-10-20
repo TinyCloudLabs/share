@@ -62,7 +62,7 @@ export function runnerAppName(prefix: string, name: string): string {
  */
 export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
-/** The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. */
+/** The read sign-in's manifest: `get`, `list` and `metadata` (a file's size, read before the file is) on `<app_id>/app/` in the applications space, and nothing else. */
 export function readerManifest(appId: string, appName: string): Manifest {
   return {
     manifest_version: 1,
@@ -74,13 +74,13 @@ export function readerManifest(appId: string, appName: string): Manifest {
     defaults: false,
     includePublicSpace: false,
     expiry: "15m",
-    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
+    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list", "metadata"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
   };
 }
 
-/** What the read sign-in may ask for: `get` and `list` on the one saved app, and nothing else. */
+/** What the read sign-in may ask for: `get`, `list` and `metadata` on the one saved app, and nothing else. */
 export function readerScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list", "metadata"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
 }
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
@@ -107,9 +107,15 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
 interface ReaderKv {
   list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
   get(key: string, options: { binary: true }): Promise<{ ok: true; data: { data: unknown } } | { ok: false; error: { code?: string } }>;
+  /** Metadata without the value: the size is read here BEFORE a file is downloaded. */
+  head(key: string): Promise<{ ok: true; data: { headers?: { contentLength?: number | undefined } } } | { ok: false; error: { code?: string } }>;
 }
 
-/** Every file under `prefix`, keyed by path relative to it. A listing or total that is too large is `incomplete`, never silently cut. */
+/**
+ * Every file under `prefix`, keyed by path relative to it. A listing or total that is too large is `incomplete`, never silently cut.
+ * A file's size comes from its metadata BEFORE it is downloaded, so a file that would pass the cap (or whose size the node does not
+ * say) is never read: stopping after the download would already have put it in memory.
+ */
 export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<ReadSession["files"]> {
   const listed = await kv.list({ prefix });
   if (!listed.ok) throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}` });
@@ -118,6 +124,13 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<Read
   let incomplete = listed.data.truncated === true || paths.length > MAX_STORED_FILES;
   let total = 0;
   for (const path of paths.slice(0, MAX_STORED_FILES)) {
+    const head = await kv.head(`${prefix}${path}`);
+    if (!head.ok) {
+      if (/NOT_FOUND/.test(head.error.code ?? "")) { incomplete = true; continue; }
+      throw new RunError("failed", { detail: `read ${prefix}${path}: ${head.error.code ?? "error"}` });
+    }
+    const size = head.data.headers?.contentLength;
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0 || total + size > MAX_STORED_BYTES) { incomplete = true; break; }
     const result = await kv.get(`${prefix}${path}`, { binary: true });
     if (!result.ok) {
       // Listed a moment ago and now gone or unreadable: the set cannot be vouched for.
@@ -127,7 +140,7 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<Read
     const data: unknown = result.data.data;
     const bytes = isBytes(data) ? data : typeof data === "string" ? new TextEncoder().encode(data) : undefined;
     if (bytes === undefined) throw new RunError("failed", { detail: `read ${prefix}${path}: not bytes` });
-    total += bytes.byteLength;
+    total += Math.max(size, bytes.byteLength);
     if (total > MAX_STORED_BYTES) { incomplete = true; break; }
     entries.set(path, bytes);
   }

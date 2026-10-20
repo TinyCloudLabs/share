@@ -366,6 +366,16 @@ try {
   const healthManifest = await manifestOf(health);
   const recipesManifest = await manifestOf(recipes);
 
+  /** From a runner refusal screen: Repair -> the install sheet in repair mode -> Continue -> the sheet's last line. */
+  async function repairFromRunner(page, label) {
+    await page.click(`a[href='/apps/#repair=${HEALTH}']`);
+    await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
+    assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
+    await clickByText(page, "Continue");
+    const text = await waitUntil(async () => { const line = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(line) ? line : undefined; }, 300_000);
+    return text ?? "";
+  }
+
   // ---- 0. Nothing installed yet: the runner says so after one read approval and starts nothing.
   {
     const { page, context } = await openRunner(browser, stack, "not-installed", HEALTH);
@@ -422,7 +432,7 @@ try {
     assert.equal(sessions.length, 2, "two session sign-ins");
     const reader = recapOf(sessions[0]);
     // In the app's space the read session holds one get and the SDK's capabilities/read; the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`].sort(), "the read session asks for more than a get and a list on the saved app");
+    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/metadata`].sort(), "the read session asks for more than a get, a list and the metadata (size) of the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
     assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
@@ -548,6 +558,16 @@ try {
       await captureState(page, "widened");
       await noViolations(page, "widened");
       report.stages.widened = { refused: true, sessionsSigned: 1, firstDifference: (await page.$eval(".run-screen__detail", (node) => node.textContent)).slice(0, 80) };
+      // Repair is offered here too: it replaces manifest.json with the catalog's, with one approval, and the app opens again.
+      assert((await page.$(`a[href='/apps/#repair=${HEALTH}']`)) !== null, "the widened screen offers no Repair");
+      assert.match(await page.$eval(".run-screen", (node) => node.textContent), /Repair replaces the app's code files, manifest\.json included, with the catalog's\. Your data is untouched\./);
+      const repairFrom = trace.length;
+      const repaired = await repairFromRunner(page, label);
+      assert.match(repaired, /^Repaired\./, `repair of the widened copy ended with "${repaired}"`);
+      assert.equal(signCount(repairFrom, label), 1, "Repair of the widened copy needed one approval");
+      const restored = await node.kv.get(kvPath, { binary: true });
+      assert.equal(sha(Buffer.from(restored.data.data)), sha(Buffer.from(originalBytes)), "manifest.json is not the catalog's again");
+      report.stages.widened.repaired = true;
       await context.close();
     }
 

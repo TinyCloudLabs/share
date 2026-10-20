@@ -72,8 +72,8 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
     case "catalog-unavailable": return { title: "Couldn't check this app against the catalog", lines: ["Check your connection and try again. Nothing was started."], retry: "Try again" };
     case "widened": return {
       title: "This app asks for more than it did when you installed it",
-      lines: ["Your saved copy of its manifest asks for permissions the catalog version doesn't. Nothing was started and nothing more was signed.", "If you didn't change it yourself, don't use this copy. Restore manifest.json from the catalog, or ask your agent what changed."],
-      toApps: true, detail: detail === undefined ? undefined : `First difference: ${detail}`, tone: "danger",
+      lines: ["Your saved copy of its manifest asks for permissions the catalog version doesn't. Nothing was started and nothing more was signed.", "If you didn't change it yourself, don't use this copy. Repair replaces the app's code files, manifest.json included, with the catalog's. Your data is untouched."],
+      toApps: true, detail: detail === undefined ? undefined : `First difference: ${detail}`, tone: "danger", ...(appId === undefined ? {} : { repairHref: `${APPS_HREF}#repair=${encodeURIComponent(appId)}` }),
     };
     case "unsupported": return { title: "This app asks for something this page can't give it", lines: ["Nothing was started."], toApps: true, detail };
     case "cancelled": return { title: "Sign-in cancelled", lines: ["Nothing was started."], retry: OPEN_AGAIN(name) };
@@ -134,7 +134,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const status = el("div", "run-status-region", [], { role: "status" });
   const access = el("details", "apps-files run-details", [el("summary", null, ["What this app can do"])]);
   access.hidden = true;
-  const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["A page in the sandbox can't load content or run scripts outside its box, but it can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
+  const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["The sandbox blocks the requests a page makes itself, but some browser requests can't be blocked, so a page can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
   const bar = el("section", "run-bar tc-panel", [
     el("div", "run-bar__top", [title, el("div", "run-actions", [openAnother, signOut])]),
     provenance,

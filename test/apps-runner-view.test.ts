@@ -302,6 +302,11 @@ describe("opening an app that cannot run", () => {
     expect(root.querySelector(".run-screen__detail")?.textContent).toMatch(/^First difference: /);
     expect(fake.runtimes).toBe(0);
     expect(root.querySelector("iframe")).toBeNull();
+    // Repair restores manifest.json from the catalog, so it is offered here too: to the same address, as the first action.
+    const repair = [...root.querySelectorAll("a")].find((link) => link.textContent === "Repair");
+    expect(repair?.getAttribute("href")).toBe(`${APPS_HREF}#repair=${encodeURIComponent(HEALTH)}`);
+    expect(root.querySelector(".run-screen")?.textContent).toMatch(/Repair replaces the app's code files, manifest\.json included, with the catalog's\. Your data is untouched\./);
+    expect(root.querySelector(".run-screen")?.textContent).not.toMatch(/Restore manifest\.json from the catalog/);
   });
 
   it("shows a hostile name from the saved manifest as text only", async () => {
@@ -352,7 +357,7 @@ describe("copy and the sign-in manifests", () => {
     expect(progressText({ phase: "starting", approval: true }, "X")).toContain("(2 of 2)");
   });
 
-  it("the read sign-in asks for a get and a list under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
+  it("the read sign-in asks for a get, a list and the metadata (size) under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
     const manifest = readerManifest(HEALTH, "Health Log");
     expect(manifest.app_id).toBe(RUNNER_APP_ID);
     expect(manifest.app_id).not.toBe("xyz.tinycloud.share");
@@ -365,7 +370,7 @@ describe("copy and the sign-in manifests", () => {
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     expect(composed.resources.filter((resource) => resource.service === "tinycloud.kv" && resource.space === "applications")).toEqual([
-      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list"] }),
+      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"] }),
     ]);
   });
 });

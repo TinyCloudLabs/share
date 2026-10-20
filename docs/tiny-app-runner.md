@@ -49,10 +49,11 @@ app is signed for, but never more than the catalog's manifest for the version th
 
 0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before any
    sign-in: a disabled entry opens nothing.
-1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get` and `list`
-   on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
+1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get`, `list` and `metadata`
+   (a file's size) on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
    record named after the app). That session ends before the next sign-in. The read is bounded
-   (64 files, 8 MB); a listing that does not fit counts as a mismatch.
+   (64 files, 8 MB), and a file's size is read from its metadata BEFORE the file is downloaded: a file that would pass the cap, or whose
+   size the node does not say, is never read. A listing that does not fit counts as a mismatch.
 2. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. None:
    "isn't in the catalog any more", nothing signed. **The pin**: on every open, before any runtime
    session, bridge or frame, hash every code file under `app/` (everything the catalog lists for
@@ -173,21 +174,42 @@ The static scan in the kit's samples is defence in depth only: the sandbox is th
 
 ### Frame hardening (best effort)
 
-Two layers on top of the CSP, in the frame's runtime (`src/artifact/jsx-runtime/url-guard.ts`):
+The CSP stops every content and script request, but **no CSP directive governs a prerender** (a `<link rel=prerender>` sends a GET
+with whatever query the page chose), a preconnect, a DNS prefetch, `<a ping>` or WebRTC. That is why the frame's runtime also refuses the
+elements and attributes that start them (`src/artifact/jsx-runtime/url-guard.ts`). For an installed app this matters: a prerender can carry
+data the app read through the bridge to an address it picks.
+
+Two layers:
 
 - an element-type and attribute allow-list: `<base>`, `<script>`, `<iframe>`, `<frame>`, `<object>`, `<embed>`, `<portal>`,
-  `<meta http-equiv>`/`url=`, and any `<link>`, `<img>`, `<source>`, `<video>`/`<audio>`/`<track>`, `<form action>`, `<input>`/`<button
-  formaction>`, `<a ping>`, SVG `href` or `style` whose URL is not `data:`, `blob:` or `#` are refused. React elements are
-  vetted when created (`createElement`, `jsx`, `jsxs`, `jsxDEV`: a refused element renders nothing);
-  the DOM insertion paths, `setAttribute`, the reflected URL properties and HTML-string setters are vetted before they apply;
-- a MutationObserver backstop that removes whatever still gets in.
+  `<meta http-equiv>`/`url=`, `<template shadowrootmode>`, and any `<link>`, `<img>`, `<source>`, `<video>`/`<audio>`/`<track>`,
+  `<form action>`, `<input>`/`<button formaction>`, `<a ping>`, SVG `href` or `style` whose URL is not `data:`, `blob:` or `#` are
+  refused. React elements are vetted when created (`createElement`, `jsx`, `jsxs`, `jsxDEV`: a refused element renders nothing).
+  In the DOM, each path known to put a node or an attribute value somewhere is vetted BEFORE it applies:
+  - nodes: `appendChild`/`insertBefore`/`replaceChild`; `before`/`after`/`replaceWith` on `Element`, `Text`, `Comment` (`CharacterData`) and
+    `DocumentType`; `append`/`prepend`/`replaceChildren` on `Element`, `Document` and `DocumentFragment` (shadow roots included);
+    `insertAdjacentElement`; `Range.insertNode`/`surroundContents`. An inserted subtree is swept including `<template>` content and shadow
+    roots (open, or closed ones the page made with `attachShadow`);
+  - HTML strings: `innerHTML`/`outerHTML` (elements and shadow roots), `insertAdjacentHTML`, `setHTML`/`setHTMLUnsafe`, `Document.parseHTMLUnsafe`,
+    `createContextualFragment`, `execCommand('insertHTML')` are cleaned through an inert parse; declarative shadow DOM
+    (`<template shadowrootmode>`) is refused. `document.write` is refused whole (one parser spans calls, so a tag could be split; after load it
+    would also replace the document);
+  - attributes: `setAttribute(NS)`, `setAttributeNode(NS)`, `NamedNodeMap.setNamedItem(NS)`, an `Attr`'s `value`/`nodeValue`/`textContent` and the
+    reflected URL properties (`link.href`, `img.src`, `a.ping`, ...);
+- a MutationObserver backstop (child lists and the URL attributes, shadow roots included) that removes whatever still gets in. It runs
+  AFTER the browser may already have started a prerender or a preconnect, so it is not what closes the known paths: the patches are.
 
-Same-realm code can get round it (an Attr node set with `setAttributeNode` is one path); the CSP is the
-layer that holds. `test/e2e-jsx.mjs` and the runner gate measure it with a loopback listener (HTTP, upgrade,
-UDP): 66 vectors (prerender, prefetch, preconnect, dns-prefetch, modulepreload, `<a ping>`, `<img>`, `<picture>`,
-`<video>`, `<audio>`, `<track>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<meta refresh>`, `<base>`, `<script>`, CSS
-`url()`/`@import`/`image-set`, fonts, fetch, XHR, WebSocket, EventSource, `sendBeacon`, `import()`, workers, WebRTC ...) reach
-the listener zero times.
+**Best effort: these paths are known closed; same-realm code may find others.** The guard is not a boundary; the CSP is one for everything it
+governs, and it does not govern the requests above. Not patched: `Element.moveBefore` (it only moves a node already in the document); an
+HTML string sink that a newer browser adds. A follow-up could add a Trusted Types default policy (`require-trusted-types-for 'script'`), which closes
+the HTML-string sinks in the browser itself but not the node and attribute sinks, and needs the runtime's own `eval` moved onto a policy.
+
+`test/fixtures/apps/leak-vectors.js` is the PROBE: 147 vectors (every path above with each of prerender, prefetch, preconnect, dns-prefetch, preload and
+modulepreload links, `<a ping>`, `<img>`, `<picture>`, `<video>`, `<audio>`, `<track>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `<meta refresh>`, `<base>`,
+`<script>`, speculation rules, WebTransport, XSLT output, a custom element with a closed shadow root, declarative shadow DOM; CSS `url()`/`@import`/`image-set`, fonts;
+fetch, XHR, WebSocket, EventSource, `sendBeacon`, `import()`, workers, WebRTC). `test/e2e-jsx.mjs` (a shared page) and the runner gate (a hostile catalog
+app that has read a row through the bridge) run it against a loopback listener (HTTP, upgrade, UDP) and assert ZERO hits for every vector. The vectors that
+once leaked (`Text.after`, `Attr` edits, `setAttributeNode`, declarative shadow DOM, an XSLT fragment) are part of it.
 
 ### Sandbox page headers (reviewed)
 
@@ -196,9 +218,9 @@ a Permissions-Policy that turns off the sensor, payment and capture features
 (`src/viewer/sandbox-permissions.ts`), `Referrer-Policy: no-referrer`, `X-Frame-Options: SAMEORIGIN`,
 `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. Reviewed for this slice, no change needed:
 the policies that matter for leaks are already closed (`connect-src`, `form-action`, `frame-src`, `base-uri`,
-`worker-src`, `object-src`, `img-src`, `media-src`, `font-src`) and no prerender, prefetch or preconnect request
-was measured. `X-DNS-Prefetch-Control` was not added: a DNS lookup from a link hint is not made at all, and the
-header does not stop the lookup a navigation attempt makes.
+`worker-src`, `object-src`, `img-src`, `media-src`, `font-src`). None of them, and no header, governs a prerender, a preconnect, a DNS
+prefetch or `<a ping>`: the frame hardening above is what stops those. `X-DNS-Prefetch-Control` was not added: it does not stop
+the lookup a navigation attempt makes, and the hint is already refused.
 
 ## Deploying
 
@@ -227,10 +249,12 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
 - Opening needs two approvals: the saved copy cannot be read before signing in, and the app's own session
   must not exist until it has been checked. A persisted per-app session is a later slice.
 - An installed version that has left the catalog cannot be opened or repaired (its code can't be checked); the page shows what to delete.
-- An app can still reveal that you opened it (your IP address and the time), and by trying to open another page it can
-  make your browser look up or connect to an address it picks, which can carry a little data. Measured: no request is
-  sent, one connection is made. The CSP cannot stop this from inside the frame.
-- The frame hardening is best effort: same-realm code can get round it, and only the CSP is a boundary.
+- An app can still reveal that you opened it (your IP address and the time), and by trying to open another page (`location`, a followed
+  link) it can make your browser look up and connect to an address it picks, which can carry a little data. Measured: no HTTP request is
+  sent, one TCP connection is made. Nothing inside the frame can stop this.
+- Some other browser requests can still carry what the app reads to an address it picks: the CSP does not govern a prerender, a preconnect,
+  a DNS prefetch or `<a ping>`, and the guard that refuses them is best effort. These paths are known closed (the probe sees nothing); same-realm
+  code may find others. Install apps you trust; in the beta, use sample data only.
 - Node error text is not shown to the app, except a SQL error's message, which is scrubbed of tokens, identifiers and stack lines.
 - The catalog's two sample bundles still say "no network" in a code comment and a knowledge file: they are pinned by digest and change with the next catalog release.
 - The pin covers the code, not `manifest.json` (capped by the grant check) or `knowledge/` (the person's).
