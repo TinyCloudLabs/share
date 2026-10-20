@@ -9,6 +9,7 @@ import { verifyShareRootOnNode, type ShareRootKind } from "./owner-revoke.js";
 import { confirmDialog } from "./confirm-dialog.js";
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL } from "./artifact-kind.js";
+import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
@@ -66,10 +67,17 @@ export const REVOKE_APPROVAL_TIMEOUT_COPY = "OpenKey is still waiting for you. T
 export const FRESHNESS_CHECKING = "Checking each share with TinyCloud…";
 export const FRESHNESS_UNCONFIRMED = "Couldn't confirm every share with TinyCloud, so statuses may be out of date: a share revoked or expired elsewhere can still show as Ready.";
 export const FRESHNESS_TIMEOUT = "TinyCloud didn't answer in time, so statuses may be out of date: a share revoked or expired elsewhere can still show as Ready.";
+/** Some shares were confirmed and some were not: the confirmed ones are shown, and this small note says the rest were not. */
+export const FRESHNESS_PARTIAL = "Some statuses may be out of date.";
 export const CHECK_STATUS_LABEL = "Check status";
 export const CHECK_AGAIN_LABEL = "Check again";
-/** How long one status check waits for the node before the statuses are called unconfirmed. */
-export const STATUS_CHECK_TIMEOUT_MS = 4_000;
+/**
+ * How long one status check may take in all. The node answers in 1.5 to 3
+ * seconds per call and a check is several calls (TC-1494), each of which is
+ * bounded on its own (`STATUS_REQUEST_TIMEOUT_MS`). When this budget ends, what
+ * the check learned so far is shown and the rest stays unconfirmed.
+ */
+export const STATUS_CHECK_BUDGET_MS = 20_000;
 export function freshnessConfirmed(at: Date): string {
   return `Statuses confirmed with TinyCloud at ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
 }
@@ -103,6 +111,8 @@ interface RowHandle {
   readonly status: HTMLElement;
   readonly controls: HTMLElement;
   revoke?: HTMLButtonElement;
+  /** True once the node has said this share is over (revoked or expired): that never reverses, so a later check that cannot reach the node does not unconfirm it. */
+  ended?: boolean;
 }
 
 function safeName(record: Extract<SenderHistoryItem, { state: "ready" | "expired" | "revoked" }> ["record"]): string {
@@ -138,10 +148,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   libraryScope?.abort();
   const scope = new AbortController(); libraryScope = scope;
   const live = node(doc, "p", "sender-live"); live.setAttribute("role", "status"); live.setAttribute("aria-live", "polite");
-  // Spoken only: the row already shows the approval hint and the notes, so the visible live line must not repeat them.
-  const announce = node(doc, "p", "sr-only sender-announce"); announce.setAttribute("role", "status"); announce.setAttribute("aria-live", "polite");
-  /** A region is announced when its text changes after it exists, so clear it and set the text a moment later (also right after a mount). */
-  const say = (text: string): void => { announce.textContent = ""; window.setTimeout(() => { announce.textContent = text; }, 100); };
+  // Spoken only: the row already shows the approval hint and the notes, so the visible live line must not repeat them. Whatever it says is replaced or cleared when the approval ends.
+  const announcer = createAnnouncer(doc, "sender-announce");
+  const say = announcer.say;
+  scope.signal.addEventListener("abort", announcer.close, { once: true });
   const content = node(doc, "section", "sender-library"); content.setAttribute("aria-labelledby", "sender-library-title");
   const title = node(doc, "h2", "sender-library-title", "All shares");
   const table = node(doc, "table", "sender-history-table");
@@ -153,7 +163,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   const empty = node(doc, "div", "sender-empty-state"); empty.hidden = true;
   const more = node(doc, "button", "button button-secondary sender-load-more", "Load more") as HTMLButtonElement; more.type = "button"; more.hidden = true;
   const error = node(doc, "div", "sender-status"); error.hidden = true; error.setAttribute("role", "alert");
-  content.append(title, table, empty, more, error); shell.append(header, toolbar, freshness, live, announce, content); root.append(shell);
+  content.append(title, table, empty, more, error); shell.append(header, toolbar, freshness, live, announcer.element, content); root.append(shell);
   const rows = new Map<string, RowHandle>();
 
   const pageRows: HTMLElement[] = [];
@@ -161,6 +171,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   let loading = false;
   let initialLoadRetries = 0;
   const renderSkeleton = (): void => {
+    // The rows are about to be drawn again (a reload): whatever the spoken region said belonged to the old rows. A revoke still open repeats its own statement from the row that follows it.
+    announcer.clear();
     body.replaceChildren(); rows.clear();
     for (let index = 0; index < 4; index += 1) { const skeleton = node(doc, "tr", "sender-skeleton-row"); for (let column = 0; column < 6; column += 1) skeleton.append(node(doc, "td", "sender-skeleton-cell", "Loading")); body.append(skeleton); }
   };
@@ -207,6 +219,8 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         say(`${APPROVAL_HINT}.`);
       } else if (!flight.approval && hint !== undefined) {
         hint.dispose(); hint = undefined;
+        // The approval is over, so the spoken region may not keep telling the sender to approve; the outcome replaces it below.
+        announcer.clear();
       }
     };
     flight.subscribers.add(repaint); repaint();
@@ -216,6 +230,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         paintStatus(status, "revoked", prior.expiresAt);
         revoke.remove();
         live.textContent = "Share revoked.";
+        say("Share revoked.");
         return;
       }
       // Only a status code or a fixed reason is shown; the error text can carry a response body.
@@ -233,6 +248,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       const detail = node(doc, "p", "sender-row-error", message); detail.setAttribute("role", "alert");
       controls.append(detail);
       live.textContent = "";
+      say(message);
     });
   };
   /** The revoke itself: no DOM, so it can finish while the library is not on screen. */
@@ -380,6 +396,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const kind = handle.status.dataset.kind;
     // A revoke running here owns the row until it ends; a revoked row stays revoked.
     if (kind === "pending" || kind === "revoked" || activeFlight(flightKey(options.session.address, handle.item.record.shareId)) !== undefined) return;
+    if (status.state === "revoked" || status.state === "expired") handle.ended = true;
     if (status.state === "revoked") {
       paintStatus(handle.status, "revoked", handle.item.record.expiresAt);
       handle.revoke?.remove();
@@ -399,31 +416,39 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     freshness.hidden = false; freshness.textContent = FRESHNESS_CHECKING; recheck.disabled = true;
     let states: ReadonlyMap<string, NodeShareStatus> = new Map();
     let timedOut = false;
-    // One bounded ask: a node that does not answer in time leaves every share unconfirmed, and the sender can ask again. Signing out or leaving the library ends it too.
+    // One read at a time, bounded in all by the budget (each node call has its own, shorter limit inside the reader). When the budget ends the reader is told to stop and hands back what it had learned; a node that does not answer at all leaves every share unconfirmed, and the sender can ask again. Signing out or leaving the library ends it too.
     const request = new AbortController();
     const cancel = (): void => request.abort();
     scope.signal.addEventListener("abort", cancel, { once: true });
     let timer: number | undefined;
-    const deadline = new Promise<"timeout">((resolve) => { timer = window.setTimeout(() => resolve("timeout"), STATUS_CHECK_TIMEOUT_MS); });
+    let graceTimer: number | undefined;
+    // At the budget the reader is told to stop and gets one turn to return what it had read; one that does not is given up on, and an answer that comes later is not read.
+    const budget = new Promise<"gone">((resolve) => {
+      timer = window.setTimeout(() => { timedOut = true; request.abort(); graceTimer = window.setTimeout(() => resolve("gone"), 0); }, STATUS_CHECK_BUDGET_MS);
+    });
     try {
       const running = reader([...rows.values()].map((handle) => handle.item.record), request.signal);
-      // An answer that arrives after the deadline is not read; a rejection nobody waits for is not an error.
+      // A rejection nobody waits for is not an error.
       running.catch(() => undefined);
-      const answer = await Promise.race([running, deadline]);
-      if (answer === "timeout") timedOut = true; else states = answer;
+      const answer = await Promise.race([running, budget]);
+      if (answer !== "gone") states = answer;
     } catch { /* every share stays unconfirmed */ } finally {
-      window.clearTimeout(timer); request.abort(); scope.signal.removeEventListener("abort", cancel);
+      window.clearTimeout(timer); window.clearTimeout(graceTimer); request.abort(); scope.signal.removeEventListener("abort", cancel);
       checking = false;
     }
     // Signed out, or the library was mounted again: nothing here may change.
     if (scope.signal.aborted) return;
     let unconfirmed = 0;
+    let answered = 0;
     for (const [shareId, handle] of rows) {
       const status = states.get(shareId) ?? { state: "unknown" };
       applyNodeState(handle, status);
-      if (status.state === "unknown" && handle.status.dataset.kind !== "revoked") unconfirmed += 1;
+      const known = status.state !== "unknown" || handle.ended === true;
+      if (known) answered += 1;
+      if (!known && handle.status.dataset.kind !== "revoked") unconfirmed += 1;
     }
-    freshness.textContent = unconfirmed === 0 ? freshnessConfirmed(new Date()) : timedOut ? FRESHNESS_TIMEOUT : FRESHNESS_UNCONFIRMED;
+    // A status that was read is shown, and a banner never contradicts it: "out of date" is the whole message only when nothing could be read; otherwise a small note names that some rows were not reached.
+    freshness.textContent = unconfirmed === 0 ? freshnessConfirmed(new Date()) : answered > 0 ? FRESHNESS_PARTIAL : timedOut ? FRESHNESS_TIMEOUT : FRESHNESS_UNCONFIRMED;
     recheck.textContent = unconfirmed === 0 ? CHECK_STATUS_LABEL : CHECK_AGAIN_LABEL; recheck.disabled = false;
     // Rows added while the node was being asked (a page of "Load more") get their answer now.
     if (queued) { queued = false; void checkStatus(); }
