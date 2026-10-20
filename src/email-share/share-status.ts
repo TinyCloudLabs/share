@@ -42,25 +42,27 @@ export const EXPIRY_CLOCK_MARGIN_MS = 5 * 60_000;
 /** Reads at most `MAX_STATUS_BYTES` of the body; `undefined` when it is longer or unreadable. */
 async function readBoundedJson(response: Response): Promise<unknown> {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_STATUS_BYTES) return undefined;
   const reader = response.body?.getReader();
   if (reader === undefined) return undefined;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_STATUS_BYTES) {
-      await reader.cancel().catch(() => undefined);
-      return undefined;
+  try {
+    if (Number.isFinite(declared) && declared > MAX_STATUS_BYTES) return undefined;
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_STATUS_BYTES) return undefined;
+      chunks.push(value);
     }
-    chunks.push(value);
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } finally {
+    // Every exit (over the cap, malformed, done) releases the connection.
+    void reader.cancel().catch(() => undefined);
   }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -126,5 +128,7 @@ export async function checkShareAvailability(target: ShareAvailabilityTarget, op
     return "available";
   } finally {
     clearTimeout(timer);
+    // Whatever the outcome, no status request outlives the check.
+    controller.abort();
   }
 }

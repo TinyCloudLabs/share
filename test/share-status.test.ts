@@ -67,6 +67,73 @@ describe("share availability pre-check", () => {
     expect(pulled).toBeLessThan(20);
   });
 
+  it("accepts exactly 65,536 bytes and fails open on 65,537", async () => {
+    const base = { rootCid: "bafyPolicyRoot", state: "revoked", checkpoint: { state: "revoked", freshUntil: "2030-01-01T00:00:00Z", pad: "" } };
+    const sized = (bytes: number) => () => {
+      const body = JSON.stringify({ ...base, checkpoint: { ...base.checkpoint, pad: "x".repeat(bytes - JSON.stringify(base).length) } });
+      expect(new TextEncoder().encode(body).byteLength).toBe(bytes);
+      return new Response(body);
+    };
+    expect(await check(node({ bafyPolicyRoot: sized(65_536) }))).toBe("revoked");
+    expect(await check(node({ bafyPolicyRoot: sized(65_537) }))).toBe("available");
+  });
+
+  describe("closing the request", () => {
+    /** A fetch whose bodies record the request's signal and whether the body was cancelled. */
+    function tracked(respond: () => { readonly body: string; readonly headers?: Record<string, string> } | "endless") {
+      const seen: { signal: AbortSignal; cancelled: boolean }[] = [];
+      const fetchFn = vi.fn<typeof fetch>(async (_input, init) => {
+        const record = { signal: init!.signal!, cancelled: false };
+        seen.push(record);
+        const answer = respond();
+        const encoded = answer === "endless" ? undefined : new TextEncoder().encode(answer.body);
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (encoded === undefined) controller.enqueue(new Uint8Array(16 * 1024).fill(32));
+            else { controller.enqueue(encoded); controller.close(); }
+          },
+          cancel() { record.cancelled = true; },
+        });
+        return new Response(body, answer === "endless" || answer.headers === undefined ? {} : { headers: answer.headers });
+      });
+      return { fetchFn, seen };
+    }
+    const revoked = (cid: string) => JSON.stringify({ rootCid: cid, state: "revoked", checkpoint: { state: "revoked", freshUntil: "2030-01-01T00:00:00Z" } });
+
+    it("aborts the request after a successful answer", async () => {
+      const { fetchFn, seen } = tracked(() => ({ body: revoked("bafyPolicyRoot") }));
+      expect(await check(fetchFn)).toBe("revoked");
+      expect(seen).toHaveLength(2);
+      expect(seen.every((record) => record.signal.aborted)).toBe(true);
+    });
+
+    it("aborts and releases a body whose declared length is over the cap", async () => {
+      const { fetchFn, seen } = tracked(() => ({ body: revoked("bafyPolicyRoot"), headers: { "content-length": String(73 * 1024 * 1024) } }));
+      expect(await check(fetchFn)).toBe("available");
+      for (const record of seen) { expect(record.signal.aborted).toBe(true); expect(record.cancelled).toBe(true); }
+    });
+
+    it("aborts and releases a body that streams past the cap", async () => {
+      const { fetchFn, seen } = tracked(() => "endless");
+      expect(await check(fetchFn)).toBe("available");
+      for (const record of seen) { expect(record.signal.aborted).toBe(true); expect(record.cancelled).toBe(true); }
+    });
+
+    it("aborts the request when the body is not valid JSON", async () => {
+      const { fetchFn, seen } = tracked(() => ({ body: "<html>" }));
+      expect(await check(fetchFn)).toBe("available");
+      expect(seen.every((record) => record.signal.aborted)).toBe(true);
+    });
+
+    it("aborts the requests of a node that never answers", async () => {
+      const signals: AbortSignal[] = [];
+      const hang = (_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => { signals.push(init!.signal!); init!.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))); });
+      expect(await check(hang as typeof fetch, 25)).toBe("available");
+      expect(signals).toHaveLength(2);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    });
+  });
+
   it("treats an unknown root (404) as available", async () => {
     expect(await check(node({}))).toBe("available");
   });
