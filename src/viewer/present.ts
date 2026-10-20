@@ -14,6 +14,7 @@ import type { ResolveResult } from "./resolve.js";
 import { describeShare, renderViewerState, type ViewerStateOptions } from "./ui.js";
 import { classifyContent, FRAME_LAYOUT_CLASS, renderSafeContent, type SafeContentKind } from "./content.js";
 import { mountArtifactChrome, type ArtifactChrome, type ArtifactChromeAction } from "./artifact-chrome.js";
+import { saveApprovalMessage, saveFailureMessage, type SaveToTinyCloud } from "./save-copy.js";
 import { copyWithFallback } from "../share/clipboard.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 import { downloadMediaType, safeDownloadName } from "./download-name.js";
@@ -38,47 +39,40 @@ function decodeMarkdown(bytes: Uint8Array): string | undefined {
 }
 
 /**
- * Add the explicit post-render account import action. The callback is the only
- * place allowed to start OpenKey; callers therefore cannot accidentally put
- * account sign-in in front of the receiver ceremony.
+ * The bar's "Save a copy" action. `save` is the only thing that can start
+ * OpenKey, and only the click calls it, so the receive that produced these
+ * bytes stays account-free. The bytes are the ones that were received and
+ * rendered, untouched.
  */
-export function appendSaveToTinyCloudAction(
-  root: HTMLElement,
-  save: () => Promise<void>,
-): void {
-  const footer = root.querySelector<HTMLElement>(".viewer-footer");
-  const hint = footer?.querySelector<HTMLElement>(".viewer-agent-hint");
-  if (footer === null || footer === undefined || hint === null || hint === undefined
-    || footer.querySelector(".viewer-save-to-tinycloud") !== null) return;
-  const doc = root.ownerDocument;
-  const button = doc.createElement("button");
-  button.type = "button";
-  button.className = "viewer-save-to-tinycloud";
-  button.textContent = "Save a private copy";
-  const status = doc.createElement("span");
-  status.className = "viewer-save-status";
-  status.setAttribute("role", "status");
-  status.setAttribute("aria-live", "polite");
-  button.addEventListener("click", () => {
-    button.disabled = true;
-    status.setAttribute("role", "status");
-    status.textContent = "Opening OpenKey…";
-    void save().then(() => {
-      button.textContent = "Saved to Files for you";
-      status.textContent = "A private copy is now in your TinyCloud.";
-    }).catch(() => {
-      button.disabled = false;
-      status.setAttribute("role", "alert");
-      status.textContent = "We couldn't save a copy. Try again.";
-    });
-  });
-  footer.insertBefore(button, hint);
-  footer.insertBefore(status, hint);
+function saveAction(result: OkResult, kind: SafeContentKind, filename: string, save: SaveToTinyCloud): ArtifactChromeAction {
+  return {
+    label: "Save a copy",
+    icon: "save",
+    className: "viewer-save-to-tinycloud",
+    hint: "Saves a private copy in your TinyCloud",
+    job: {
+      pendingLabel: "Saving…",
+      pendingMessage: "Saving a copy to your TinyCloud…",
+      approvalMessage: saveApprovalMessage,
+      doneLabel: "Saved",
+      failure: saveFailureMessage,
+      start: async (progress) => {
+        const bytes = result.contentBytes ?? new TextEncoder().encode(result.content ?? "");
+        // Markdown is stored as markdown. A page or a component is stored as the source text it is: a node that
+        // serves the object back must never present a stranger's HTML as a page, so the type says "text" and
+        // the filename keeps `.html` / `.jsx`.
+        const mediaType = kind === "markdown" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8";
+        const saved = await save({ bytes, filename, mediaType }, progress);
+        // The name the copy really got (a clash becomes "name (2).md"), as text. There is no link: the library lists shares, not saved copies.
+        return { doneMessage: `Saved to your TinyCloud files as “${saved.name}”.` };
+      },
+    },
+  };
 }
 
 export interface PresentShareOptions extends RenderMarkdownOptions, ViewerStateOptions {
-  /** Offered only after verified bytes have rendered successfully. */
-  readonly saveToTinyCloud?: () => Promise<void>;
+  /** Adds "Save a copy" to the bar for markdown, HTML and JSX. Called only by that click. */
+  readonly saveToTinyCloud?: SaveToTinyCloud;
 }
 
 type OkResult = Extract<ResolveResult, { readonly state: "ok" }>;
@@ -86,7 +80,7 @@ type OkResult = Extract<ResolveResult, { readonly state: "ok" }>;
 const activeChrome = new WeakMap<HTMLElement, ArtifactChrome>();
 
 /** The bar's actions. Copy link needs the in-memory launch URL; Download needs verified bytes. */
-function barActions(result: OkResult, shareUrl: string | undefined, markdown: () => string | undefined, kind: SafeContentKind): ArtifactChromeAction[] {
+function barActions(result: OkResult, shareUrl: string | undefined, markdown: () => string | undefined, kind: SafeContentKind, save: SaveToTinyCloud | undefined): ArtifactChromeAction[] {
   const actions: ArtifactChromeAction[] = [];
   if (shareUrl !== undefined) {
     actions.push({
@@ -136,6 +130,9 @@ function barActions(result: OkResult, shareUrl: string | undefined, markdown: ()
           URL.revokeObjectURL(href);
         },
       });
+      // Save a copy sits next to Download: same verified bytes, same safe name.
+      // Documents and pages are the kinds a person keeps as a file of their own.
+      if (save !== undefined && (kind === "markdown" || kind === "html" || kind === "jsx")) actions.push(saveAction(result, kind, name, save));
     }
   }
   actions.push({ label: "Share on", icon: "share", disabledReason: "The owner hasn't allowed passing this on yet" });
@@ -181,7 +178,7 @@ export async function presentShare(
     title: described.title,
     provenance: described.provenance,
     expiry: described.expiry,
-    actions: barActions(result, options.shareUrl, markdownText, kind ?? "file"),
+    actions: barActions(result, options.shareUrl, markdownText, kind ?? "file", options.saveToTinyCloud),
     mount: root,
   }));
   if (!hasContent) return container;
@@ -201,9 +198,6 @@ export async function presentShare(
     // Documents and pages own the whole area under the bar; everything else
     // (text, images, download notes) sits in a padded, scrolling column.
     container.classList.toggle(FRAME_LAYOUT_CLASS, renderedKind === "markdown" || renderedKind === "html" || renderedKind === "jsx");
-    if (options.saveToTinyCloud !== undefined) {
-      appendSaveToTinyCloudAction(root, options.saveToTinyCloud);
-    }
   } catch (error) {
     // renderMarkdownInto throws before touching the DOM (oversize source,
     // node-count breach); leave a message, never partial content. Fail closed.

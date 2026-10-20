@@ -1,3 +1,4 @@
+import type { ShareReceivedContent } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import {
   renderRecipientClaim,
@@ -48,7 +49,8 @@ export async function receiveWithSdk(input: {
   readonly shareUrl: string;
   readonly config: SharePublicConfig;
   readonly invitation?: AccountlessInvitationSummary;
-  readonly onComplete: (content: { readonly bytes: Uint8Array }) => Promise<void>;
+  /** The received bytes and their descriptor (name, media type, digest), as the SDK verified them. */
+  readonly onComplete: (content: ShareReceivedContent) => Promise<void>;
   /** Where to ask whether the share can still open. Omitted: no pre-check. */
   readonly availability?: ShareAvailabilityTarget | undefined;
 }): Promise<void> {

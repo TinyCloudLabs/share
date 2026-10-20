@@ -92,17 +92,24 @@ body.viewer-fullpage #viewer {
 /* Visible, announced feedback for Copy / Download. Always in the DOM (a live
    region must exist before its text changes); collapses to nothing when empty.
    No animation, so there is nothing to reduce. */
-.artifact-chrome-toast { position: fixed; z-index: var(--tc-z-toast); right: 0; bottom: 0; left: 0; margin: 0; color: var(--tc-color-text); background: var(--tc-color-surface); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); text-align: center; pointer-events: none; }
+/* One fixed strip holds the messages: the fading Copy/Download result, and (below it) a job's lasting message (Save), each its own live region. */
+.artifact-chrome-toasts { position: fixed; z-index: var(--tc-z-toast); right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; align-items: stretch; pointer-events: none; }
+.artifact-chrome-toast { margin: 0; color: var(--tc-color-text); background: var(--tc-color-surface); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); text-align: center; overflow-wrap: anywhere; }
 /* A phone: a full-width strip at the bottom edge (safe-area aware), one or two lines. */
-.artifact-chrome-toast:not(:empty) { padding: var(--tc-space-3) max(var(--tc-space-4), env(safe-area-inset-right)) max(var(--tc-space-3), env(safe-area-inset-bottom)) max(var(--tc-space-4), env(safe-area-inset-left)); border-top: 1px solid var(--tc-color-border); }
+.artifact-chrome-toast:not(:empty) { padding: var(--tc-space-3) max(var(--tc-space-4), env(safe-area-inset-right)) var(--tc-space-3) max(var(--tc-space-4), env(safe-area-inset-left)); border-top: 1px solid var(--tc-color-border); }
+.artifact-chrome-toast--job:not(:empty), .artifact-chrome-toast:not(:empty):has(+ .artifact-chrome-toast:empty) { padding-bottom: max(var(--tc-space-3), env(safe-area-inset-bottom)); }
 .artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-top-color: var(--tc-color-status-danger); }
-/* A wide screen: a compact pill, centred. */
+/* A wide screen: compact pills, centred, stacked. */
 @media (min-width: 40.0625rem) {
-  .artifact-chrome-toast { right: auto; bottom: max(var(--tc-space-4), env(safe-area-inset-bottom)); left: 50%; width: max-content; max-width: 32rem; transform: translateX(-50%); border-radius: var(--tc-radius-md); }
+  .artifact-chrome-toasts { right: auto; bottom: max(var(--tc-space-4), env(safe-area-inset-bottom)); left: 50%; width: max-content; max-width: 32rem; transform: translateX(-50%); align-items: center; gap: var(--tc-space-2); }
+  .artifact-chrome-toast { border-radius: var(--tc-radius-md); }
   .artifact-chrome-toast:not(:empty) { padding: var(--tc-space-2) var(--tc-space-4); border: 1px solid var(--tc-color-border); }
   .artifact-chrome-toast[data-tone="danger"]:not(:empty) { border-color: var(--tc-color-status-danger); }
 }
 @media (forced-colors: active) { .artifact-chrome-toast:not(:empty) { border-color: CanvasText; } }
+/* Save is working or done: still focusable (aria-disabled), but it does not look pressable. */
+.artifact-chrome-button[aria-busy] { cursor: progress; }
+.artifact-chrome-button[aria-disabled="true"] { cursor: default; }
 .artifact-chrome-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* The recall pill: always there once the bar is hidden. */
@@ -176,12 +183,8 @@ body.viewer-fullpage .viewer-jsx-stage > iframe { flex: 1 1 auto; height: auto; 
 .viewer-placeholder-title { margin: 0 0 var(--tc-space-2); font-size: var(--tc-text-xl); font-weight: var(--tc-weight-semibold); letter-spacing: var(--tc-tracking-tight); }
 .viewer-placeholder-detail { max-width: 65ch; margin: var(--tc-space-2) 0; color: var(--tc-color-text-muted); overflow-wrap: anywhere; }
 
-/* Footer controls added by the (later) save-a-copy action. */
+/* Footer controls. */
 .viewer-footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--tc-space-3); }
-.viewer-save-to-tinycloud { min-height: 44px; margin: 0 18px; padding: 8px 14px; border: 1px solid var(--tc-color-border); border-radius: var(--tc-radius-md); background: var(--tc-color-text); color: var(--tc-color-page); font: inherit; cursor: pointer; }
-.viewer-save-to-tinycloud:hover { opacity: 0.88; }
-.viewer-save-to-tinycloud:disabled { cursor: wait; opacity: 0.65; }
-.viewer-save-status { margin: 0 18px; }
 .viewer-forget-key, .viewer-footer > .recipient-secondary-action { margin: 0 0 0 18px; align-self: center; }
 
 /* Folder browsing. The folder navigation and the opened file are siblings:

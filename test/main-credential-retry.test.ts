@@ -13,12 +13,16 @@ const state = vi.hoisted(() => ({
   resolved: undefined as unknown,
   invalid: vi.fn(),
   events: [] as string[],
+  kind: "addressed" as "addressed" | "bearer",
+  receiveBearer: vi.fn(),
+  signInWithManifest: vi.fn(),
+  puts: [] as Array<{ key: string; value: Uint8Array }>,
 }));
 
 vi.mock("../src/email-share/url.js", () => ({
   captureAndScrubLaunch: () => {
     state.events.push("scrub");
-    return { shareHref: "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: "addressed" };
+    return { shareHref: state.kind === "bearer" ? "https://share.tinycloud.xyz/viewer#tc1=test" : "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: state.kind };
   },
 }));
 
@@ -40,7 +44,7 @@ vi.mock("../src/email-share/config.js", () => ({
 
 vi.mock("../src/viewer/resolve.js", () => ({
   createBrowserAddressedAuthorization: () => undefined,
-  presentationEnvelope: (metadata: unknown, content: { readonly filename: string; readonly mediaType: string }) => ({ version: 1, display: { filename: content.filename }, metadata: { filename: content.filename, mediaType: content.mediaType }, target: { resource: { path: content.filename } }, expiry: (metadata as { expiresAt: string }).expiresAt }),
+  presentationEnvelope: (metadata: { readonly expiresAt: string }, content: { readonly filename: string; readonly mediaType: string } = { filename: "notes.md", mediaType: "text/markdown" }) => ({ version: 1, display: { filename: content.filename }, metadata: { filename: content.filename, mediaType: content.mediaType }, target: { resource: { path: content.filename } }, expiry: metadata.expiresAt }),
   resolveShare: (...args: unknown[]) => state.resolve(...args),
 }));
 
@@ -65,7 +69,34 @@ vi.mock("@tinycloud/share-sdk", () => ({ createRegisteredPolicyAuthority: () => 
 vi.mock("../src/share/openkey-session.js", () => ({
   authenticateWithOpenKey: (...args: unknown[]) => state.authenticate(...args),
   createTinyCloudClient: (...args: unknown[]) => state.createAccountClient(...args),
+  signInWithManifest: (...args: unknown[]) => state.signInWithManifest(...args),
+  saveCopyManifest: () => ({}),
+  SAVE_COPY_MANIFEST_SCOPE: {},
+  takeWalletApprovalFailure: () => undefined,
+  FILES_FOR_YOU_SPACE: "files-for-you",
+  FILES_FOR_YOU_PREFIX: "v1/",
 }));
+
+vi.mock("../src/viewer/native-bearer.js", () => ({
+  NativeBearerError: class extends Error { reason = "unverified"; },
+  receiveNativeBearerAccess: (...args: unknown[]) => state.receiveBearer(...args),
+}));
+
+type SaveFunction = (copy: { bytes: Uint8Array; filename: string; mediaType: string }, progress: { approval(open: boolean): void }) => Promise<{ path: string }>;
+
+/** The function main handed to `present` for the Save action. Cast: the options bag is untyped in this mock, and the check above it proves it is a function. */
+function presentedSave(): SaveFunction {
+  const save = state.presented[0]?.options.saveToTinyCloud;
+  if (typeof save !== "function") throw new Error("no Save action was offered");
+  return save as SaveFunction;
+}
+
+function presentedText(): string {
+  const result = state.presented[0]?.result;
+  // ArrayBuffer.isView, not instanceof: jsdom's Uint8Array is another realm's.
+  if (typeof result === "object" && result !== null && "contentBytes" in result && ArrayBuffer.isView(result.contentBytes)) return new TextDecoder().decode(result.contentBytes);
+  throw new Error("nothing was presented");
+}
 
 beforeEach(() => {
   vi.resetModules();
@@ -81,6 +112,15 @@ beforeEach(() => {
   state.invalid.mockReset();
   state.events.length = 0;
   state.presented.length = 0;
+  state.puts.length = 0;
+  state.kind = "addressed";
+  state.receiveBearer.mockReset();
+  state.signInWithManifest.mockReset();
+  state.signInWithManifest.mockResolvedValue({
+    tinycloud: { kvForSpace: () => ({ put: async (key: string, value: Uint8Array) => { state.puts.push({ key, value }); return { ok: true }; } }) },
+    spaces: { "files-for-you": "space-of-files-for-you" },
+    dispose: async () => undefined,
+  });
   const envelope = {
     version: 3,
     recipientMatcher: { kind: "exactEmail", value: "reader@example.com" },
@@ -148,9 +188,40 @@ describe("first-class accountless receiver", () => {
     expect(state.receive).not.toHaveBeenCalled();
     expect(state.authenticate).not.toHaveBeenCalled();
     expect(state.resolve).toHaveBeenCalledTimes(1);
-    expect(new TextDecoder().decode((state.presented[0]!.result as { contentBytes: Uint8Array }).contentBytes)).toBe("opened");
+    expect(presentedText()).toBe("opened");
 
     expect(state.createAccountClient).not.toHaveBeenCalled();
+  });
+
+  it("offers Save a copy without starting OpenKey, and starts it only when the click calls it", async () => {
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.presented).toHaveLength(1));
+    const save = presentedSave();
+
+    // Everything the receiver did before the click: no OpenKey, no account client, no sign-in.
+    expect(state.authenticate).not.toHaveBeenCalled();
+    expect(state.createAccountClient).not.toHaveBeenCalled();
+    expect(state.signInWithManifest).not.toHaveBeenCalled();
+
+    const bytes = new Uint8Array([1, 2, 3, 0xff]);
+    await expect(save({ bytes, filename: "report.md", mediaType: "text/markdown;charset=utf-8" }, { approval: () => undefined })).resolves.toEqual({ path: "files-for-you/v1/report.md", name: "report.md" });
+    expect(state.signInWithManifest).toHaveBeenCalledTimes(1);
+    expect(state.puts).toEqual([{ key: "v1/report.md", value: bytes }]);
+    // The library's own sign-in was never involved.
+    expect(state.authenticate).not.toHaveBeenCalled();
+    expect(state.createAccountClient).not.toHaveBeenCalled();
+  });
+
+  it("offers Save a copy for a bearer link too, with the same rule: nothing starts before the click", async () => {
+    state.kind = "bearer";
+    state.receiveBearer.mockResolvedValue({ path: "applications/share/notes.md", spaceId: "space", ownerNodeOrigin: "https://node.example", expiresAt: "2030-01-01T00:00:00.000Z", bytes: new TextEncoder().encode("# notes") });
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.presented).toHaveLength(1));
+    expect(presentedSave()).toBeTypeOf("function");
+    expect(state.receiveWithSdk).not.toHaveBeenCalled();
+    expect(state.authenticate).not.toHaveBeenCalled();
+    expect(state.signInWithManifest).not.toHaveBeenCalled();
+    expect(presentedText()).toBe("# notes");
   });
 
   it("hands the invitation's node origin and both policy roots to the receiver for the availability pre-check", async () => {
