@@ -527,6 +527,7 @@ describe("a mailbox that isn't there", () => {
     const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store, dispose: async () => undefined, signOut: async () => true };
     mountCourier(root, { signIn: async () => session, renderBody: () => undefined, now: () => NOW });
     root.querySelector<HTMLButtonElement>(".auth-button")!.click();
-    await vi.waitFor(() => expect(root.querySelector(".tc-status--danger")?.textContent).toContain("mailbox isn't set up yet"));
+    await vi.waitFor(() => expect(root.querySelector(".tc-status--danger")?.textContent).toBe("No Courier space yet."));
+    expect(root.querySelector(".cr-panel")?.textContent).toContain("Run tc courier init once on your machine, then reload this page.");
   });
 });

@@ -1,15 +1,11 @@
 /**
  * The page's sign-in: one adapter over Share's reusable `signInWithManifest`.
  *
- * The session is the courier manifest (see scope.ts) plus what the SDK adds to
- * every sign-in for the account's own space registry (`signInWithManifest`
- * documents it). It lives in memory only, for at most an hour, and `dispose()`
- * closes any OpenKey window and clears it. Nothing here is written to storage,
- * logged or put in the address bar.
- *
- * This page never asks to host a space (`hostSpaces` is empty), but the helper signs in with `autoCreateSpace`, so the SDK may
- * create the `agents` space itself on a fresh account. A mailbox that still isn't there reads as `no-space`, and the page says
- * how to set it up.
+ * The session is only the courier manifest (see scope.ts) plus the SDK's
+ * capabilities/read entry for agents. Account registry grants, space creation
+ * and account hosting are disabled. The session lives in memory for at most
+ * an hour; dispose() closes OpenKey and clears it. An absent agents space is
+ * shown as no-space, with setup left to `tc courier init` on the user's machine.
  */
 import type { SharePublicConfig } from "../email-share/config.js";
 import { endSenderSession } from "../share/sender-chrome.js";
@@ -92,6 +88,8 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
       sessionPrefix: "tinycloud-courier",
       expiry: COURIER_SESSION_MS,
       hostSpaces: [],
+      includeAccountRegistryPermissions: false,
+      autoCreateSpace: false,
       guardApproval,
       onStatus: progress.status,
       onClient: (created) => { client = created; },

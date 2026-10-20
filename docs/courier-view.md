@@ -16,11 +16,9 @@ No `del`, no `metadata`, no delegation, no other space, no wildcard. The page re
 
 Two checks keep it that way. `signInWithManifest` applies `COURIER_MANIFEST_SCOPE` before OpenKey opens. That scope can't say "put only under two prefixes", so `assertCourierPermissions` (`src/courier/scope.ts`) states it on the resolved manifest as an exact allow-list; `test/courier-scope.test.ts` fails if a put under `me/`, under `me/approvals` without the slash, under `me/approvals/../x`, a `del`, `metadata`, a delegation ability, another space or a missing grant gets through.
 
-The SDK adds the account-registry permissions to every sign-in (`signInWithManifest` lists them): get/put/list on `account/applications/` and `account/spaces/`, the bootstrap flag, read/write/schema on the account database and the delegation list. They are not removable. The live smoke decodes the signed request and asserts the `agents` part is exactly the table above and that nothing else on the account can be written beyond those SDK entries.
+The SDK always adds `agents/capabilities` read. That is the only extra entry: the **entire** signed grant has exactly five entries. There is no account-registry KV, SQL, bootstrap, spaces or delegation authority. The unit test in `test/openkey-session.test.ts` runs Courier's real caller through the helper, composes its SDK grant and compares the complete set; the live smoke decodes and compares the entire signed ReCap for both fresh and existing-space sign-ins.
 
-The page never asks to host a space (`hostSpaces` is empty). The sign-in helper does pass `autoCreateSpace`, so the SDK may create the `agents` space on a fresh account; the live smoke saw it exist after sign-in. If it is still absent the page says so and how to set it up.
-
-So "no other put, no other space" holds for the `agents` space only: the session also carries the SDK's account-registry abilities listed above, on the signed-in account's own `account` space. The sign-in screen says so in plain words.
+Courier passes `includeAccountRegistryPermissions: false`, `autoCreateSpace: false` and `hostSpaces: []`. The shared helper now accepts the first two as optional settings, defaulting to true for its other callers. Disabling account-registry permissions also skips its automatic account-space hosting. The view therefore asks for no hosting signature and creates no space. A fresh account with no `agents` space sees **No Courier space yet.** and **Run tc courier init once on your machine, then reload this page.** Setup stays in the CLI.
 
 ## Screens
 
@@ -64,4 +62,4 @@ The page's policy is the viewer's, narrowed: `script-src 'self' 'wasm-unsafe-eva
 
 - `test/courier-scope.test.ts`, `-model`, `-store`, `-screens`, `-route`: `npm test`.
 - `node test/e2e-courier-layout.mjs`: the screens in a real browser at 390 and 1440 px, light and dark, axe, no sideways scroll, approval flow against a fake mailbox (`COURIER_LAYOUT_SCREENSHOT_DIR` keeps screenshots).
-- `node test/e2e-prod/courier-live-smoke.mjs`: opt-in; a new throwaway OpenKey account (Mailinator) against production OpenKey and the owner node: the decoded session request, a seeded mailbox (`test/fixtures/courier-seed`, built only by that script), approve, read-back, orders.
+- `node test/e2e-prod/courier-live-smoke.mjs`: opt-in; a new throwaway OpenKey account (Mailinator) against production OpenKey and the owner node: both exact decoded session grants, the fresh-account CLI setup state without hosting, a separately seeded existing mailbox (`test/fixtures/courier-seed`, built only by that script), approve, read-back, orders.

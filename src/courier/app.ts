@@ -30,8 +30,8 @@ const TABS: readonly { id: Screen; label: string }[] = [
   { id: "orders", label: "Orders" },
 ];
 
-export const NO_SPACE_COPY = "Your agent mailbox isn't set up yet. Set it up in Share or with the TinyCloud command line, then come back.";
-export const NO_SPACE_HINT = "From the command line: tc space host agents";
+export const NO_SPACE_COPY = "No Courier space yet.";
+export const NO_SPACE_HINT = "Run tc courier init once on your machine, then reload this page.";
 const SIGNED_OUT_NOTICE = "Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.";
 const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Courier, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device.";
 const REFRESH_AFTER_HIDDEN_MS = 30_000;
@@ -63,7 +63,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
     form.setAttribute("aria-label", "Sign in");
     const mark = el(doc, "div", "openkey-mark", "OK"); mark.setAttribute("aria-hidden", "true");
     form.append(mark, el(doc, "h2", undefined, "Sign in to read and decide"));
-    form.append(el(doc, "p", "auth-copy", "Sign in with OpenKey. This page can read your agent mailbox. In it, it writes only two things, and only when you click: your approval decisions and your standing orders. It never reads a peer's space. Like every Share sign-in, it also lets Share keep your account's own list of apps and spaces up to date."));
+    form.append(el(doc, "p", "auth-copy", "Sign in with OpenKey. This page can read your agent mailbox. In it, it writes only two things, and only when you click: your approval decisions and your standing orders. It never reads a peer's space."));
     const button = el(doc, "button", "button button-primary auth-button", "Continue with OpenKey"); button.type = "button";
     const line = el(doc, "p", "auth-status"); line.setAttribute("role", "status"); line.setAttribute("aria-live", "polite");
     if (notice !== undefined) line.textContent = notice;

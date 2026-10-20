@@ -155,6 +155,7 @@ try {
       await go("nospace");
       await signIn();
       await waitFor(page, ".tc-status--danger");
+      assert.ok(await page.evaluate(() => document.querySelector(".cr-panel")?.textContent.includes("Run tc courier init once on your machine, then reload this page.")), "missing space shows the exact setup command");
       await check(page, "no-mailbox", scheme, width);
       await page.close();
     }

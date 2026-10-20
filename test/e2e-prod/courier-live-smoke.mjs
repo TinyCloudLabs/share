@@ -13,9 +13,10 @@
  *     signed SIWE message's ReCap: the exact courier grant (get+list on the
  *     courier prefix, put only on me/approvals/ and me/orders/, all in the
  *     `agents` space) and no other put, delete, metadata or delegation on it.
- *     The account-registry permissions the SDK adds to every sign-in are listed
- *     separately.
- *  2. A fresh account's mailbox: what the page says before anything is seeded.
+ *     The whole decoded grant equals the four Courier KV abilities plus the
+ *     SDK's capabilities/read on agents; no account-registry grants.
+ *  2. A fresh account sees no Courier space and tc courier init; no hosting signature.
+ *     A second throwaway account is seeded, then a new view signs in to its existing space.
  *  3. With a seeded thread (test/fixtures/courier-seed, built only here): the
  *     thread list, the merged thread, the "needs you" card.
  *  4. Approve writes me/approvals/<id>.json {requestId, requestHash, decision,
@@ -43,7 +44,8 @@ const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
 const shotDir = process.env.COURIER_SMOKE_SHOT_DIR;
 const AGENTS = "agents";
 const PREFIX = "xyz.tinycloud.courier/";
-const inbox = `tc-courier-smoke-${randomBytes(8).toString("hex")}`;
+const newInbox = () => `tc-courier-smoke-${randomBytes(8).toString("hex")}`;
+let inbox = newInbox();
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -54,7 +56,14 @@ const scrub = (value) => String(value)
   .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
   .replace(/\b\d{6,8}\b/g, "<digits>");
 
-const report = { type: "tinycloud.share/courier-live-smoke/v1", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, timingsMs: {} };
+const EXPECTED_VIEW_GRANT = [
+  "agents/capabilities tinycloud.capabilities/read",
+  "agents/kv/xyz.tinycloud.courier/ tinycloud.kv/get",
+  "agents/kv/xyz.tinycloud.courier/ tinycloud.kv/list",
+  "agents/kv/xyz.tinycloud.courier/me/approvals/ tinycloud.kv/put",
+  "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
+].sort();
+const report = { type: "tinycloud.share/courier-live-smoke/v2", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, approvalClicks: {}, approvalCountUnit: "OpenKey Approve-button clicks; no passkey ceremony measured", timingsMs: {} };
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
@@ -153,9 +162,19 @@ async function drive(page, done, counter, timeout = 240_000) {
     }
     const sign = frameAt(page, "/widget/embed/sign");
     if (sign !== undefined) {
-      for (const message of await sign.evaluate(() => window.__tcSigned ?? []).catch(() => [])) if (!signedMessages.includes(message)) signedMessages.push(message);
+      const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
+      for (const message of messages) if (!signedMessages.includes(message)) signedMessages.push(message);
       if (await clickButton(sign, "Approve").catch(() => false)) {
         report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
+        const message = messages.at(-1) ?? "";
+        let kind;
+        if (counter !== "seedSignIn") {
+          assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
+          kind = "courier-session";
+        } else {
+          kind = /Sign in to Courier seed/.test(message) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
+        }
+        (report.approvalClicks[counter] ??= []).push(kind);
         await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
@@ -191,48 +210,56 @@ try {
     userDataDir: join(temporary, "profile"),
   });
 
+  let context = await browser.createBrowserContext();
   const open = async (path, width = 1280) => {
-    const page = await browser.newPage();
+    const page = await context.newPage();
     await page.setViewport({ width, height: 900 });
     await installSignCapture(page);
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
-    page.on("response", (response) => { if (response.status() >= 400 && /tinycloud|openkey/.test(new URL(response.url()).origin)) (report.failedResponses ??= []).push(`${response.status()} ${new URL(response.url()).origin}${scrub(new URL(response.url()).pathname).slice(0, 60)}`); });
+    page.on("response", (response) => {
+      const url = new URL(response.url());
+      if (response.status() >= 400 && /tinycloud|openkey/.test(url.origin)) {
+        const path = url.pathname.startsWith("/v1/locations/") ? "/v1/locations/<owner-did>" : scrub(url.pathname).slice(0, 100);
+        (report.failedResponses ??= []).push({ method: response.request().method(), host: url.host, path, status: response.status() });
+      }
+    });
     await page.goto(`${SHARE}${path}`, { waitUntil: "domcontentloaded", timeout: 90_000 });
     return page;
   };
 
-  // 1+2: a fresh account opens the view.
+  const signInView = async (counter) => {
+    const start = signedMessages.length;
+    const page = await open("/courier/");
+    await page.waitForSelector("button.auth-button:not([disabled])", { timeout: 60_000 });
+    await page.click("button.auth-button");
+    await drive(page, () => document.querySelector(".cr-tabs") !== null || document.querySelector(".auth-status .tc-status") !== null, counter);
+    await page.waitForFunction(() => document.querySelector(".cr-panel")?.getAttribute("aria-busy") === "false", { timeout: 60_000 });
+    const messages = signedMessages.slice(start);
+    assert.equal(messages.length, 1, "the view asks for one session signature and no hosting signature");
+    const grant = recapList(messages[0]);
+    assert.deepEqual(grant, EXPECTED_VIEW_GRANT, "the ENTIRE signed session grant is exactly Courier + agents capabilities/read");
+    assert.deepEqual(report.approvalClicks[counter], ["courier-session"]);
+    return { page, grant };
+  };
+
+  // Fresh identity: signing in reads an absent space, and must not create it.
   setStage("view-fresh");
-  const fresh = await open("/courier/");
-  await fresh.waitForSelector("button.auth-button:not([disabled])", { timeout: 60_000 });
-  await fresh.click("button.auth-button");
   const freshStart = Date.now();
-  await drive(fresh, () => document.querySelector(".cr-tabs") !== null || document.querySelector(".auth-status .tc-status") !== null, "viewSignIn");
+  const { page: fresh, grant: freshGrant } = await signInView("freshViewSignIn");
   report.timingsMs.firstSignIn = since(freshStart);
-  await fresh.waitForFunction(() => document.querySelector(".cr-panel")?.getAttribute("aria-busy") === "false", { timeout: 60_000 }).catch(() => undefined);
+  report.recap = freshGrant;
   report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null) };
+  assert.equal(report.fresh.signInFailure, null);
+  assert.match(report.fresh.panel, /No Courier space yet\./);
+  assert.ok(report.fresh.panel.includes("Run tc courier init once on your machine, then reload this page."));
   await shot(fresh, "01-fresh-account");
-  const sessionMessage = signedMessages.map((message) => ({ message, list: recapList(message) })).find((entry) => entry.list !== undefined);
-  assert.ok(sessionMessage !== undefined, "OpenKey was asked to sign a session message with a ReCap");
-  report.recap = sessionMessage.list;
-  // The courier grant, exactly.
-  const inAgents = sessionMessage.list.filter((entry) => entry.startsWith(`${AGENTS}/`));
-  // The SDK's own read of the space's capability list is the only non-kv entry the SDK adds to a space.
-  assert.deepEqual(inAgents.filter((entry) => /capabilities/.test(entry)).map((entry) => entry.replace(/^.* /, "")), ["tinycloud.capabilities/read"]);
-  const courier = inAgents.filter((entry) => !/capabilities/.test(entry));
-  assert.deepEqual(courier, [
-    `${AGENTS}/kv/${PREFIX} tinycloud.kv/get`,
-    `${AGENTS}/kv/${PREFIX} tinycloud.kv/list`,
-    `${AGENTS}/kv/${PREFIX}me/approvals/ tinycloud.kv/put`,
-    `${AGENTS}/kv/${PREFIX}me/orders/ tinycloud.kv/put`,
-  ].sort(), "the agents-space grant is exactly the courier manifest");
-  for (const entry of sessionMessage.list) {
-    // Outside `agents`, only what the SDK adds to every sign-in for the account's own space registry may be written.
-    if (/ tinycloud\.kv\/put$/.test(entry)) assert.match(entry, /^(?:agents\/kv\/xyz\.tinycloud\.courier\/me\/(?:approvals|orders)\/|account\/kv\/(?:applications\/|spaces\/|system\/bootstrap\/complete ))/, `unexpected put: ${entry}`);
-    if (entry.startsWith(`${AGENTS}/`)) assert.doesNotMatch(entry, /kv\/(?:del|metadata)|delegat/i, `unexpected ability: ${entry}`);
-  }
-  report.recapAgentsOnly = courier;
+  await context.close();
+
+  // Separate identity/context: test tooling creates an existing mailbox before the view signs in.
+  inbox = newInbox();
+  usedMail.clear();
+  context = await browser.createBrowserContext();
 
   // 3: seed a throwaway mailbox (test tooling), then read it in a new view session.
   setStage("seed");
@@ -244,10 +271,9 @@ try {
   assert.equal(seeded, "Seeded.", seeded);
   await seed.close();
 
-  // The view's own session is still open in the first tab: Refresh reads the node again, no second sign-in.
-  setStage("view-seeded");
-  const view = fresh;
-  await view.bringToFront();
+  setStage("view-existing");
+  const { page: view, grant: existingGrant } = await signInView("existingViewSignIn");
+  report.recapExisting = existingGrant;
   const refresh = async () => {
     await view.evaluate(() => [...document.querySelectorAll("[role=tab]")].find((tab) => tab.textContent.startsWith("Threads")).click());
     await view.evaluate(() => [...document.querySelectorAll(".cr-screen-head button")].find((button) => button.textContent === "Refresh").click());
