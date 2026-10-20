@@ -4,7 +4,8 @@ import * as sdkCore from "@tinycloud/sdk-core";
 import { describe, expect, it } from "vitest";
 
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
-import { type ManifestSdk, capGrants, makeAuthorizer, pathCovers } from "../src/apps/grants.ts";
+import { type ManifestSdk, capGrants, makeAuthorizer, pathCovers, runtimeScope } from "../src/apps/grants.ts";
+import { ManifestRejectedError, MANIFEST_CHECK_ADDRESS, assertManifestInScope } from "../src/share/manifest-policy.ts";
 import type { ManifestResult } from "../src/apps/manifest.ts";
 import { type StoredFiles, parseInstallRecord, verifyStoredApp } from "../src/apps/stored-app.ts";
 
@@ -204,5 +205,32 @@ describe("the authorizer built from the resolved manifest", () => {
     // Absolute paths need a skipPrefix grant to cover them; the app's own folder has none.
     expect(authorize("tinycloud.kv", `${RECIPES}/prefs/settings.json`, "get", true)).toBe(false);
     expect(authorize("tinycloud.sql", `${RECIPES}/recipes`, "read", true)).toBe(false);
+  });
+});
+
+describe("the sign-in helper's own scope check, derived from the catalog manifest", () => {
+  const scopeCheck = (manifest: unknown, scope: ReturnType<typeof runtimeScope>): string => {
+    try { assertManifestInScope(sdkCore.validateManifest(manifest), scope, MANIFEST_CHECK_ADDRESS); return "accepted"; } catch (error) { return error instanceof ManifestRejectedError ? error.code : String(error); }
+  };
+
+  it.each([HEALTH, RECIPES])("accepts %s's own manifest, including its cross-app read and its schema action", (appId) => {
+    const entry = entryOf(appId);
+    const catalogManifest = sdkCore.validateManifest(manifestOf(entry));
+    const scope = runtimeScope(catalogManifest, sdk);
+    expect(scope.allowedSpaces).toEqual(["applications"]);
+    expect(scope.allowedServices).toEqual(["kv", "sql"]);
+    expect(scopeCheck({ ...manifestOf(entry), expiry: "1h", includePublicSpace: false }, scope)).toBe("accepted");
+  });
+
+  it("refuses what the catalog manifest did not name, before OpenKey would open", () => {
+    const entry = entryOf(HEALTH);
+    const scope = runtimeScope(sdkCore.validateManifest(manifestOf(entry)), sdk);
+    const widen = (change: (manifest: TestManifest) => void): string => { const manifest = manifestOf(entry); change(manifest); return scopeCheck({ ...manifest, expiry: "1h", includePublicSpace: false }, scope); };
+    expect(widen((m) => { m.permissions.push({ service: "tinycloud.kv", path: "photos/", actions: ["get"] }); })).toBe("path-not-allowed");
+    expect(widen((m) => { m.permissions.push({ service: "tinycloud.sql", path: `${RECIPES}/recipes`, actions: ["read"], skipPrefix: true }); })).toBe("path-not-allowed");
+    expect(widen((m) => { m.permissions.push({ service: "tinycloud.kv", path: "prefs/", actions: ["del"] }); })).toBe("action-not-allowed");
+    expect(widen((m) => { m.permissions.push({ service: "tinycloud.duckdb", path: "x", actions: ["read"] }); })).toBe("service-not-allowed");
+    expect(widen((m) => { m.permissions.push({ service: "tinycloud.kv", path: "x/", actions: ["get"], space: "secrets" }); })).toBe("space-not-allowed");
+    expect(widen((m) => { m.defaults = "admin"; })).not.toBe("accepted");
   });
 });

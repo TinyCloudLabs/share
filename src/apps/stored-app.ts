@@ -16,7 +16,8 @@
 import type { Manifest } from "@tinycloud/sdk-core";
 
 import type { CatalogEntry } from "./catalog.ts";
-import { type Authorizer, type GrantRefusal, type ManifestSdk, capGrants, makeAuthorizer } from "./grants.ts";
+import type { ManifestScope } from "../share/manifest-policy.js";
+import { type Authorizer, type GrantRefusal, type ManifestSdk, capGrants, makeAuthorizer, runtimeScope } from "./grants.ts";
 import type { ManifestResult } from "./manifest.ts";
 
 export const MAX_MANIFEST_BYTES = 64 * 1024;
@@ -52,6 +53,8 @@ export interface RunnableApp {
   readonly install: InstallRecord;
   /** What the runner signs in with (grants.ts). */
   readonly signing: Manifest;
+  /** What the sign-in helper may let `signing` ask for: derived from the catalog manifest, not the stored one. */
+  readonly scope: ManifestScope;
   readonly authorize: Authorizer;
   /** The person's copy of app.jsx, as stored. */
   readonly source: Uint8Array;
@@ -125,6 +128,7 @@ export async function verifyStoredApp(appId: string, files: StoredFiles, deps: V
       entry,
       install,
       signing: capped.value.signing,
+      scope: runtimeScope(catalogManifest, deps.sdk),
       authorize: makeAuthorizer(capped.value.signing, deps.sdk),
       source: files.source,
     },

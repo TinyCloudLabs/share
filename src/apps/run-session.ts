@@ -6,12 +6,15 @@
  * itself loads no SDK and makes no request beyond this origin's own files.
  *
  * Two sign-ins, both the shared `signInWithManifest` (src/share/openkey-session.ts),
- * which this module does not change:
- *   1. READ: the share app's own identity and one `get` grant on `<app_id>/app/`
+ * which this module does not change, each stating its own scope so the helper
+ * refuses a manifest outside it before OpenKey opens:
+ *   1. READ: the runner's own identity and one `get` grant on `<app_id>/app/`
  *      (skipPrefix), to read the saved manifest, code and install record. It is
  *      ended before the next sign-in; OpenKey stays connected.
  *   2. RUN: exactly the manifest `verifyStoredApp` returned (the person's copy,
- *      capped against the catalog), one hour, nothing persisted.
+ *      capped against the catalog), one hour, nothing persisted. Its scope is
+ *      derived from the CATALOG's manifest (stored-app.ts), so the helper checks
+ *      the resolved request against the catalog independently of the cap check.
  *
  * NO SIGNER ESCALATION. A wallet-mode client can sign for more than its session
  * covers: asked for something outside its ReCap it can ask its signer. The web client
@@ -28,34 +31,42 @@ import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { loadSharePublicConfig, type SharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn, OpenKeyShareSession, WalletApprovalFailure } from "../share/openkey-session.js";
+import type { ManifestScope } from "../share/manifest-policy.js";
 import { createAppData } from "./app-data.ts";
-import { INSTALL_SPACE } from "./install-plan.ts";
+import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import { RunError, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
-/** How long Sign out waits for OpenKey to confirm before it closes the window itself. */
-const OPENKEY_SIGN_OUT_WAIT_MS = 4_000;
+const APP_NAME_MAX = 80;
 
-/** Identity the read sign-in uses: share's own, so the person's apps list does not gain a record named after the app being opened. */
-const SHARE_APP_ID = "xyz.tinycloud.share";
+/**
+ * Identity the read sign-in uses: the runner's own, so the person's apps list does not gain a record named after the
+ * app being opened and the record Share's library keeps under `xyz.tinycloud.share` is never overwritten.
+ */
+export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
 /** The read sign-in's manifest: `get` on `<app_id>/app/` in the applications space, and nothing else. */
 export function readerManifest(appId: string, appName: string): Manifest {
   return {
     manifest_version: 1,
-    app_id: SHARE_APP_ID,
+    app_id: RUNNER_APP_ID,
     name: "TinyCloud Share",
     description: `Open ${appName}.`,
     space: INSTALL_SPACE,
     prefix: "",
     defaults: false,
     includePublicSpace: false,
-    expiry: "1h",
+    expiry: "15m",
     permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so it can be opened.` }],
   };
+}
+
+/** What the read sign-in may ask for: `get` on the one saved app, and nothing else. */
+export function readerScope(appId: string): ManifestScope {
+  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
 }
 
 /** The keys read in step 1, in `StoredBytes` order. */
@@ -85,16 +96,8 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
   };
 }
 
-/** Ends this tab's session: the client's session key first, then OpenKey's own sign-in (see endSenderSession). */
-async function endSession(tinycloud: TinyCloudWeb, session: OpenKeyShareSession | undefined, closeOpenKey: boolean): Promise<void> {
-  try { await tinycloud.signOut(); } catch { /* the key lives only in this tab; the page drops it next */ }
-  if (!closeOpenKey || session === undefined) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const silent = new Promise<void>((resolve) => { timer = setTimeout(() => { session.openkey.disconnect(); resolve(); }, OPENKEY_SIGN_OUT_WAIT_MS); });
-  try { await Promise.race([session.openkey.signOut().then(() => undefined), silent]); } catch { /* signed out locally either way */ } finally { clearTimeout(timer); }
-}
-
-const OPENKEY_SESSIONS = new WeakMap<ReadSession, { session: OpenKeyShareSession; tinycloud: TinyCloudWeb }>();
+/** The OpenKey connection a read session hands to the runtime sign-in, and how to end the whole sign-in. */
+const OPENKEY_SESSIONS = new WeakMap<ReadSession, ManifestSignIn>();
 
 export function createRunPorts(): RunPorts {
   return {
@@ -111,14 +114,24 @@ export function createRunPorts(): RunPorts {
       let client: TinyCloudWeb | undefined;
       let signedIn: ManifestSignIn;
       try {
-        signedIn = await openkey.signInWithManifest({ manifest: readerManifest(entry.app_id, entry.name), config, hostSpaces: [INSTALL_SPACE], guardApproval: approvals.guard, onClient: (created) => { client = created; } });
+        signedIn = await openkey.signInWithManifest({
+          manifest: readerManifest(entry.app_id, entry.name),
+          ...readerScope(entry.app_id),
+          config,
+          hostSpaces: [INSTALL_SPACE],
+          guardApproval: approvals.guard,
+          onClient: (created) => { client = created; },
+          appName: `TinyCloud Share: open ${entry.name}`.slice(0, APP_NAME_MAX),
+          sessionPrefix: "tinycloud-share-runner-read",
+          expiry: INSTALL_EXPIRY_MS,
+        });
       } catch (error) {
         const reason: WalletApprovalFailure | RunFailure | undefined = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
         throw new RunError(reason ?? "failed", { cause: error });
       }
-      const { tinycloud, session, spaces } = signedIn;
+      const { tinycloud, spaces } = signedIn;
       const space = spaces[INSTALL_SPACE];
-      if (space === undefined) { await endSession(tinycloud, session, true); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
+      if (space === undefined) { await signedIn.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
       approvals.lock();
       const kv = tinycloud.kvForSpace(space);
       const keys = storedKeys(entry.app_id);
@@ -137,7 +150,7 @@ export function createRunPorts(): RunPorts {
       try {
         files = { manifest: await read(keys.manifest), install: await read(keys.install), source: await read(keys.source) };
       } catch (error) {
-        await endSession(tinycloud, session, true);
+        await signedIn.dispose();
         throw error instanceof RunError ? error : new RunError("failed", { cause: error });
       }
       let ended = false;
@@ -146,10 +159,11 @@ export function createRunPorts(): RunPorts {
         end: async ({ keepOpenKey }) => {
           if (ended) return;
           ended = true;
-          await endSession(tinycloud, session, !keepOpenKey);
+          // The client's session key goes either way; closing OpenKey's own windows only when nothing follows.
+          if (keepOpenKey) { try { await tinycloud.signOut(); } catch { /* it lives only in this tab */ } } else await signedIn.dispose();
         },
       };
-      OPENKEY_SESSIONS.set(readSession, { session, tinycloud });
+      OPENKEY_SESSIONS.set(readSession, signedIn);
       return readSession;
     },
 
@@ -164,23 +178,33 @@ export function createRunPorts(): RunPorts {
       let client: TinyCloudWeb | undefined;
       let signedIn: ManifestSignIn;
       try {
-        signedIn = await openkey.signInWithManifest({ manifest: app.signing, config, hostSpaces: [INSTALL_SPACE], guardApproval: approvals.guard, onClient: (created) => { client = created; }, ...(carried === undefined ? {} : { session: carried.session }) });
+        signedIn = await openkey.signInWithManifest({
+          manifest: app.signing,
+          ...app.scope,
+          config,
+          hostSpaces: [INSTALL_SPACE],
+          guardApproval: approvals.guard,
+          onClient: (created) => { client = created; },
+          appName: `TinyCloud Share: ${app.name}`.slice(0, APP_NAME_MAX),
+          sessionPrefix: "tinycloud-share-runner",
+          expiry: RUNTIME_SESSION_MS,
+          ...(carried === undefined ? {} : { session: carried.session }),
+        });
       } catch (error) {
         const reason: WalletApprovalFailure | RunFailure | undefined = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
-        if (carried !== undefined) await endSession(carried.tinycloud, carried.session, true);
+        await carried?.dispose();
         throw new RunError(reason ?? "failed", { cause: error });
       }
-      const { tinycloud, session, spaces } = signedIn;
+      const { tinycloud, spaces } = signedIn;
       // From here the page signs nothing more: a call outside the session's ReCap is the node's to refuse.
       approvals.lock();
       const space = spaces[INSTALL_SPACE];
-      if (space === undefined) { await endSession(tinycloud, session, true); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
+      if (space === undefined) { await signedIn.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
       const data = createAppData(tinycloud.kvForSpace(space), tinycloud.sqlForSpace(space));
-      let ended: Promise<void> | undefined;
       return {
         data,
         expiresAt: startedAt + RUNTIME_SESSION_MS - EXPIRY_MARGIN_MS,
-        end: () => (ended ??= endSession(tinycloud, session, true)),
+        end: () => signedIn.dispose(),
       };
     },
   };

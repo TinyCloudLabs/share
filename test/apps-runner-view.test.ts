@@ -8,13 +8,15 @@ import type { AppData } from "../src/apps/bridge.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type ReadSession, type RunPorts, type RuntimeSession } from "../src/apps/run.ts";
 import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
-import { readerManifest, storedKeys } from "../src/apps/run-session.ts";
+import { RUNNER_APP_ID, readerManifest, readerScope, storedKeys } from "../src/apps/run-session.ts";
+import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
 import type { JsxManifest } from "../src/artifact/jsx-runtime/files.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
+const RECIPES_ID = "xyz.tinycloud.sample.recipes";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH) as CatalogEntry;
 const bundleFile = (path: string): Uint8Array => new Uint8Array(readFileSync(join("public", entry.bundle.root, path)));
 const installRecord = (): Uint8Array => new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: entry.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" }));
@@ -346,9 +348,16 @@ describe("copy and the sign-in manifests", () => {
     expect(progressText({ phase: "starting", approval: true }, "X")).toContain("(2 of 2)");
   });
 
-  it("the read sign-in asks for one get under <app_id>/app/ in the applications space, under share's own identity", () => {
+  it("the read sign-in asks for one get under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
     const manifest = readerManifest(HEALTH, "Health Log");
-    expect(manifest.app_id).toBe("xyz.tinycloud.share");
+    expect(manifest.app_id).toBe(RUNNER_APP_ID);
+    expect(manifest.app_id).not.toBe("xyz.tinycloud.share");
+    expect(() => assertManifestInScope(sdkCore.validateManifest(manifest), readerScope(HEALTH), MANIFEST_CHECK_ADDRESS)).not.toThrow();
+    // The helper would refuse the same manifest widened: another app's folder, a write, the default tier.
+    const widen = (change: Partial<sdkCore.Manifest>): unknown => { try { assertManifestInScope({ ...sdkCore.validateManifest(manifest), ...change }, readerScope(HEALTH), MANIFEST_CHECK_ADDRESS); return "accepted"; } catch (error) { return error instanceof ManifestRejectedError ? error.code : error; } };
+    expect(widen({ permissions: [{ service: "tinycloud.kv", path: `${RECIPES_ID}/app/`, actions: ["get"], skipPrefix: true }] })).toBe("path-not-allowed");
+    expect(widen({ permissions: [{ service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["get", "put"], skipPrefix: true }] })).toBe("action-not-allowed");
+    expect(widen({ defaults: true })).not.toBe("accepted");
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     expect(composed.resources.filter((resource) => resource.service === "tinycloud.kv" && resource.space === "applications")).toEqual([

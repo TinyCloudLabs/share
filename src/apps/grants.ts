@@ -23,6 +23,7 @@
  */
 import type { ComposedManifestRequest, Manifest, ResolvedCapabilities, ResourceCapability } from "@tinycloud/sdk-core";
 
+import type { ManifestScope } from "../share/manifest-policy.js";
 import { REGISTRY_RESOURCES } from "./install-plan.ts";
 
 /** The SDK functions the rule needs. `import("@tinycloud/sdk-core")` satisfies it. */
@@ -109,6 +110,19 @@ export function capGrants(stored: Manifest, catalog: Manifest, sdk: ManifestSdk)
   } catch (error) {
     return refuse("invalid", error instanceof Error ? error.message.slice(0, 200) : "the manifest could not be read");
   }
+}
+
+/**
+ * What the sign-in helper may let the runtime manifest ask for, derived from the CATALOG's manifest for the installed
+ * version: kv and sql in the applications space, the actions that manifest names, and the paths it names. The helper
+ * resolves the stored manifest the way the SDK will and refuses it before OpenKey opens if it falls outside, so the
+ * cap is checked twice, by two different pieces of code, against the same verified catalog manifest.
+ */
+export function runtimeScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveManifest">): ManifestScope {
+  const own = sdk.resolveManifest(catalog).resources.filter((grant) => grant.space === APP_SPACE && (grant.service === "tinycloud.kv" || grant.service === "tinycloud.sql"));
+  const actions = [...new Set(own.flatMap((grant) => grant.actions.map((action) => action.slice(action.lastIndexOf("/") + 1))))];
+  const prefixes = [...new Set(own.map((grant) => grant.path))].filter((path) => path !== "");
+  return { allowedSpaces: [APP_SPACE], allowedServices: ["kv", "sql"], allowedActions: actions, allowedPathPrefixes: prefixes.map((prefix) => ({ space: APP_SPACE, prefix })) };
 }
 
 export type BridgeService = "tinycloud.kv" | "tinycloud.sql";
