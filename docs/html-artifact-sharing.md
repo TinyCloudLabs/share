@@ -213,6 +213,19 @@ frame (use the pill there), and a page cannot hide or show the bar. The
 private URL stays in a JavaScript closure and is never rendered into the
 document.
 
+**Download** saves the verified bytes under a safe name. A share filename with a
+path separator, control or bidi character is refused outright (no download).
+Otherwise the final extension must be one the viewer knows for that kind of
+content (`md`/`markdown` for Markdown, `html`/`htm` for HTML, `txt`, `csv`,
+`json` and similar for text, and so on); anything else, and always an
+executable or script-capable one (`exe`, `bat`, `cmd`, `com`, `scr`, `msi`,
+`ps1`, `vbs`, `js`, `jar`, `sh`, `app`, `dmg`, `lnk`, `hta`, `apk`), gets the
+kind's extension appended, so `report.md.exe` is saved as `report.md.exe.md`.
+Leading and trailing dots and runs of dots are removed, names are cut to 120
+characters keeping the extension, and a missing name becomes `artifact.<ext>`.
+The saved copy's type is forced from the kind (never a sender-chosen type, and
+never `text/html`).
+
 Copy and Download results appear in a visible toast at the bottom of the screen
 and are also announced to screen readers (a refusal is an alert and stays
 longer). The toast has no animation. Copy link carries a one-line hint (tooltip

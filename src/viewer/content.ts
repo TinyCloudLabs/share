@@ -1,6 +1,7 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
 import { canonicalShareFilename } from "../filename-policy.js";
+import { downloadMediaType, safeDownloadName } from "./download-name.js";
 
 export type SafeContentKind = "markdown" | "text" | "image" | "html" | "file" | "download";
 
@@ -137,7 +138,7 @@ async function renderHtmlPage(container: HTMLElement, source: string, filename: 
 function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, kind: SafeContentKind = "file", detailText = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."): SafeContentKind {
   clearPreviousContent(container);
   const doc = container.ownerDocument;
-  const blob = new Blob([new Uint8Array(bytes).buffer], { type: descriptor.mediaType });
+  const blob = new Blob([new Uint8Array(bytes).buffer], { type: kind === "image" ? descriptor.mediaType : downloadMediaType(kind) });
   const href = URL.createObjectURL(blob);
   let revoked = false;
   const revoke = (): void => { if (!revoked) { revoked = true; URL.revokeObjectURL(href); activeCleanup.delete(container); } };
@@ -145,5 +146,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = safeDownloadName(descriptor.filename, kind, descriptor.mediaType); link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

@@ -16,6 +16,7 @@ import { classifyContent, renderSafeContent, type SafeContentKind } from "./cont
 import { mountArtifactChrome, type ArtifactChrome, type ArtifactChromeAction } from "./artifact-chrome.js";
 import { copyWithFallback } from "../share/clipboard.js";
 import { canonicalShareFilename } from "../filename-policy.js";
+import { downloadMediaType, safeDownloadName } from "./download-name.js";
 
 function downloadName(result: Extract<ResolveResult, { readonly state: "ok" }>): string {
   const metadata = (result.envelope as unknown as { readonly metadata?: { readonly filename?: unknown } }).metadata;
@@ -85,7 +86,7 @@ type OkResult = Extract<ResolveResult, { readonly state: "ok" }>;
 const activeChrome = new WeakMap<HTMLElement, ArtifactChrome>();
 
 /** The bar's actions. Copy link needs the in-memory launch URL; Download needs verified bytes. */
-function barActions(result: OkResult, shareUrl: string | undefined, markdown: () => string | undefined): ArtifactChromeAction[] {
+function barActions(result: OkResult, shareUrl: string | undefined, markdown: () => string | undefined, kind: SafeContentKind): ArtifactChromeAction[] {
   const actions: ArtifactChromeAction[] = [];
   if (shareUrl !== undefined) {
     actions.push({
@@ -110,9 +111,10 @@ function barActions(result: OkResult, shareUrl: string | undefined, markdown: ()
     });
   }
   if (result.content !== undefined || result.contentBytes !== undefined) {
-    // An unsafe signed filename gets no download control (filename policy).
+    // An unsafe signed filename gets no download control (filename policy). A safe
+    // one is saved under an extension the viewer knows for this kind of content.
     let filename: string | undefined;
-    try { filename = downloadName(result); } catch { filename = undefined; }
+    try { filename = safeDownloadName(downloadName(result), kind, signedMediaType(result)); } catch { filename = undefined; }
     if (filename !== undefined) {
       const name = filename;
       actions.push({
@@ -122,7 +124,7 @@ function barActions(result: OkResult, shareUrl: string | undefined, markdown: ()
         failMessage: "Couldn't start the download.",
         run: () => {
           const blobBytes = result.contentBytes ?? new TextEncoder().encode(result.content ?? "");
-          const blob = new Blob([new Uint8Array(blobBytes).buffer as ArrayBuffer], { type: signedMediaType(result) });
+          const blob = new Blob([new Uint8Array(blobBytes).buffer as ArrayBuffer], { type: downloadMediaType(kind) });
           const href = URL.createObjectURL(blob);
           const link = document.createElement("a");
           link.href = href;
@@ -179,7 +181,7 @@ export async function presentShare(
     title: described.title,
     provenance: described.provenance,
     expiry: described.expiry,
-    actions: barActions(result, options.shareUrl, markdownText),
+    actions: barActions(result, options.shareUrl, markdownText, kind ?? "file"),
     mount: root,
   }));
   if (!hasContent) return container;
