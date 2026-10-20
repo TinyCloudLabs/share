@@ -30,6 +30,38 @@ export interface ShareAvailabilityOptions {
 
 /** Upper bound the recipient waits for the node before the normal flow runs. */
 export const AVAILABILITY_TIMEOUT_MS = 4_000;
+/** A status answer larger than this is not read: the check fails open. */
+export const MAX_STATUS_BYTES = 64 * 1024;
+/**
+ * The visitor's clock decides "expired", and a wrong clock must not close a
+ * live share, so a root counts as expired only this far past its expiry. In
+ * between, the normal flow runs and the node refuses an expired root itself.
+ */
+export const EXPIRY_CLOCK_MARGIN_MS = 5 * 60_000;
+
+/** Reads at most `MAX_STATUS_BYTES` of the body; `undefined` when it is longer or unreadable. */
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_STATUS_BYTES) return undefined;
+  const reader = response.body?.getReader();
+  if (reader === undefined) return undefined;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_STATUS_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -66,14 +98,14 @@ async function rootAvailability(nodeOrigin: string, rootCid: string, options: Re
       signal,
     });
     if (!response.ok) return "available";
-    const body: unknown = await response.json();
+    const body = await readBoundedJson(response);
     if (typeof body !== "object" || body === null) return "available";
     const { rootCid: echoed, state, checkpoint } = body as { rootCid?: unknown; state?: unknown; checkpoint?: { freshUntil?: unknown } };
     if (echoed !== rootCid) return "available";
     if (state === "revoked") return "revoked";
     // For an active root the checkpoint's `freshUntil` is the root's own expiry.
     const expiresAt = typeof checkpoint?.freshUntil === "string" ? Date.parse(checkpoint.freshUntil) : Number.NaN;
-    return state === "active" && Number.isFinite(expiresAt) && expiresAt <= options.now() ? "expired" : "available";
+    return state === "active" && Number.isFinite(expiresAt) && options.now() - expiresAt > EXPIRY_CLOCK_MARGIN_MS ? "expired" : "available";
   } catch {
     return "available";
   }

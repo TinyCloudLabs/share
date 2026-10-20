@@ -59,7 +59,7 @@ export function renderRecipientUnavailable(root: HTMLElement, reason: "revoked" 
   main.append(
     element(doc, "h1", "recipient-title", reason === "expired" ? "This share has expired" : "This share is no longer available"),
     element(doc, "p", "recipient-detail", reason === "expired" ? "The sender chose a time after which it stops working." : "The sender may have revoked it, or it has expired."),
-    element(doc, "p", "recipient-detail", "Nothing was opened and no code was sent. If you still need the file, ask the sender for a new link."),
+    element(doc, "p", "recipient-detail", "Nothing was opened and no new code was sent. If you still need the file, ask the sender for a new link."),
   );
   root.append(main);
   focusViewerRoot(root);

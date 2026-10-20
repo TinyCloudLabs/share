@@ -42,10 +42,29 @@ describe("share availability pre-check", () => {
     expect(await check(node({ bafyPolicyRoot: generic }))).toBe("revoked");
   });
 
-  it("reports expired when an active root's own expiry has passed, and revoked wins over expired", async () => {
-    const expired = (cid: string) => () => status(cid, "active", "2026-10-20T11:59:59Z");
+  it("reports expired when an active root is more than the clock margin past its own expiry, and revoked wins over expired", async () => {
+    const expired = (cid: string) => () => status(cid, "active", "2026-10-20T11:54:00Z");
     expect(await check(node({ bafyPolicyRoot: expired("bafyPolicyRoot"), bafyEnforcementRoot: expired("bafyEnforcementRoot") }))).toBe("expired");
     expect(await check(node({ bafyPolicyRoot: expired("bafyPolicyRoot"), bafyEnforcementRoot: () => status("bafyEnforcementRoot", "revoked") }))).toBe("revoked");
+  });
+
+  it("leaves a root up to five minutes past its expiry alone, because the visitor's clock may be wrong", async () => {
+    const pastBy = (minutes: number) => () => status("bafyPolicyRoot", "active", new Date(NOW - minutes * 60_000).toISOString());
+    expect(await check(node({ bafyPolicyRoot: pastBy(4) }))).toBe("available");
+    expect(await check(node({ bafyPolicyRoot: pastBy(5) }))).toBe("available");
+    expect(await check(node({ bafyPolicyRoot: pastBy(6) }))).toBe("expired");
+  });
+
+  it("reads a status answer up to 64 KB and fails open on a larger one, declared or streamed", async () => {
+    const padded = (padding: number) => () => Response.json({ rootCid: "bafyPolicyRoot", state: "revoked", checkpoint: { state: "revoked", freshUntil: "2030-01-01T00:00:00Z", pad: "x".repeat(padding) } });
+    expect(await check(node({ bafyPolicyRoot: padded(60 * 1024) }))).toBe("revoked");
+    expect(await check(node({ bafyPolicyRoot: padded(64 * 1024) }))).toBe("available");
+    const declared = () => new Response(JSON.stringify({ rootCid: "bafyPolicyRoot", state: "revoked" }), { headers: { "content-length": String(10 * 1024 * 1024) } });
+    expect(await check(node({ bafyPolicyRoot: declared }))).toBe("available");
+    let pulled = 0;
+    const endless = () => new Response(new ReadableStream<Uint8Array>({ pull(controller) { pulled += 1; controller.enqueue(new Uint8Array(16 * 1024).fill(32)); } }));
+    expect(await check(node({ bafyPolicyRoot: endless }))).toBe("available");
+    expect(pulled).toBeLessThan(20);
   });
 
   it("treats an unknown root (404) as available", async () => {
