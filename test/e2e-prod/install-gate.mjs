@@ -295,7 +295,7 @@ try {
     const before = trace.length;
     await page.click("#apps-sheet footer button");
     await controls.sign.arrived;
-    assert.match(await statusText(page), /^Approval \d of up to 4: approve in the OpenKey window to install Health Log \(sample\)/);
+    assert.match(await statusText(page), /^Approve in the OpenKey window to install Health Log \(sample\)\. A new account may ask a few times\.$/);
     // The OpenKey window is up (its signature request is held): nothing modal may be above it, and a click at its centre must reach it.
     const layer = await page.evaluate(() => {
       const dialog = document.querySelector("#apps-sheet");
@@ -315,9 +315,13 @@ try {
     const outcome = await finished(page);
     assert.equal(outcome, "Installed.", "a fresh install says Installed.");
     const announced = await page.evaluate(() => window.__announced);
-    for (const expected of ["Checking Health Log (sample)'s files against the catalog…", "Opening OpenKey…", "Approval 1 of up to 4: approve in the OpenKey window to install Health Log (sample)", "Installing Health Log (sample)… 0 of 15 files", "Adding Health Log (sample) to your apps…", "Installed."]) {
+    for (const expected of ["Checking Health Log (sample)'s files against the catalog…", "Opening OpenKey…", "Approve in the OpenKey window to install Health Log (sample). A new account may ask a few times.", "Installing Health Log (sample)… 0 of 15 files", "Adding Health Log (sample) to your apps…", "Installed."]) {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
+    // The hint carries no number (the SDK's approval steps are not a contract, so a count can be wrong); the signatures are counted separately below.
+    assert(!announced.some((text) => /\bApproval \d|of up to/i.test(text)), `a count appeared in the live region (${JSON.stringify(announced.map((text) => text.slice(0, 60)))})`);
+    const approvalHints = announced.filter((text) => text.startsWith("Approve in the OpenKey window")).length;
+    assert(approvalHints >= 1, "the approval hint was never shown");
     assert((await page.$eval(".apps-install-panel .apps-install-status", (node) => node.getAttribute("aria-live"))) === "polite");
     assert.equal(await page.$eval(".apps-install-panel .apps-install-actions a", (node) => node.getAttribute("href")), `/apps/run#${HEALTH}`, "Open links to the runner");
     await captureState(page, "installed");
@@ -362,7 +366,7 @@ try {
     report.sessionMinutes = minutes;
     // OpenKey signatures this install needed (connect is separate): a brand-new account also hosts its spaces.
     const signs = during.filter((entry) => entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;
-    report.stages.freshInstall = { openKeySignatures: signs, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length } };
+    report.stages.freshInstall = { openKeySignatures: signs, approvalHintsShown: approvalHints, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length } };
     // Nothing is kept by the page.
     const storage = await page.evaluate(async () => ({ entries: [...Object.entries(localStorage), ...Object.entries(sessionStorage), ...document.cookie.split(";").map((cookie) => cookie.trim()).filter(Boolean)], databases: (await indexedDB.databases()).map((database) => database.name ?? "") }));
     assert.deepEqual(storage, { entries: [], databases: [] }, "the page stored something while installing");

@@ -182,7 +182,7 @@ describe("the states of an install", () => {
     // Nothing modal is left on the page: the dialog is closed before the sign-in is even asked for.
     expect(sheet.hasAttribute("open")).toBe(false);
     continueButton.click();
-    await vi.waitFor(() => expect(status()).toContain("Approval 1 of up to 4: approve in the OpenKey window to install Health Log (sample)"));
+    await vi.waitFor(() => expect(status()).toBe("Approve in the OpenKey window to install Health Log (sample). A new account may ask a few times."));
     expect(node.sessions).toHaveLength(1);
     expect(node.modalAtSignIn).toEqual([false]);
     expect(portsFactory).toHaveBeenCalledTimes(1); // the second click joined the running flight
@@ -212,7 +212,7 @@ describe("the states of an install", () => {
     cardInstall(HEALTH).click();
     await loaded();
     buttons(sheet, "Continue")[0]?.click();
-    await vi.waitFor(() => expect(status()).toContain("Approval 1 of up to 4"));
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
     panelButtons("Cancel")[0]?.click();
     expect(status()).toBe("Install cancelled. Nothing was installed. If an OpenKey window is still open, close it.");
     expect(panel()?.querySelector("[role=alert]")).toBeNull();
@@ -245,7 +245,7 @@ describe("the states of an install", () => {
     cardInstall(HEALTH).click();
     await loaded();
     buttons(sheet, "Continue")[0]?.click();
-    await vi.waitFor(() => expect(status()).toContain("Approval 1 of up to 4"));
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
     panel()?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(status()).toContain("Install cancelled");
     // Once it has ended Escape does nothing more.
@@ -261,7 +261,7 @@ describe("the states of an install", () => {
     cardInstall(HEALTH).click();
     await loaded();
     buttons(sheet, "Continue")[0]?.click();
-    await vi.waitFor(() => expect(status()).toContain("Approval 1 of up to 4"));
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
     cardInstall(HEALTH).click();
     expect(sheet.hasAttribute("open")).toBe(false);
     expect(document.activeElement).toBe(panel());

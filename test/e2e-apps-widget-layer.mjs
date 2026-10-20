@@ -187,7 +187,7 @@ try {
       };
     }, cardIndex);
     assert.ok(panel.underCard, "the progress panel is under the app card");
-    assert.match(panel.text, /^(Checking|Opening OpenKey|Approval \d of up to 4)/, `the panel shows progress ("${panel.text}")`);
+    assert.match(panel.text, /^(Checking|Opening OpenKey|Approve in the OpenKey window to install Health Log \(sample\)\. A new account may ask a few times\.)$/, `the panel shows progress ("${panel.text}")`);
     assert.ok(["status", "polite"].includes(panel.role), `the panel is a status live region (${panel.role})`);
     assert.ok(panel.cancelVisible, "a visible Cancel");
     assert.equal(panel.inert, false, "the page behind is not inert");

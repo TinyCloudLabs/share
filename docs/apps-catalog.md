@@ -111,7 +111,7 @@ OpenKey load only then.
 `document.body` (fixed, z-index 999999). A modal `<dialog>` is in the browser's top layer, above any
 z-index, so a sheet left open would cover the window. Continue therefore closes the sheet first, and the
 progress is shown in an inline panel under the app's card (`src/apps/inline-panel.ts`): a `role=status`
-live region that takes focus, "Approval n of up to 4" while OpenKey asks, a visible Cancel (Escape also
+live region that takes focus, "Approve in the OpenKey window... A new account may ask a few times." while OpenKey asks (no number: the SDK's approval steps are not a contract, so a count could be wrong), a visible Cancel (Escape also
 cancels), then the result (Installed, Already installed, a refusal, an error with Try again). The page
 behind is not inert while the window is up. Cancel says so at once, opens no window if none was open yet,
 and if a window is approved afterwards the session is closed and nothing is written. Repair works the same

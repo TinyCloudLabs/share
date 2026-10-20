@@ -223,9 +223,6 @@ function failureText(entry: CatalogEntry, error: InstallError): StatusText {
   }
 }
 
-/** A new account is asked for up to this many approvals (sign-in, then hosting its spaces); an existing one for one. */
-const MAX_APPROVALS = 4;
-
 /** What the panel says after the person pressed Cancel: whether anything may already be saved, and what to do about an OpenKey window left open. */
 function cancelledText(entry: CatalogEntry, flight: InstallFlight): string {
   const saving = flight.cancelledIn === "installing" || flight.cancelledIn === "registering";
@@ -240,7 +237,8 @@ function statusFor(entry: CatalogEntry, flight: InstallFlight): StatusText {
   switch (state.phase) {
     case "checking": return { message: `Checking ${entry.name}'s files against the catalog…`, tone: "progress" };
     case "signing-in": return { message: "Opening OpenKey…", tone: "progress" };
-    case "approval": return { message: `Approval ${Math.max(1, flight.approvals)} of up to ${MAX_APPROVALS}: approve in the OpenKey window to install ${entry.name}`, tone: "progress" };
+    // No number: the SDK's approval steps are not a contract (connect, signing in, hosting spaces), so a count can be wrong. This line is always true.
+    case "approval": return { message: `Approve in the OpenKey window to install ${entry.name}. A new account may ask a few times.`, tone: "progress" };
     case "installing": return { message: `Installing ${entry.name}… ${state.done} of ${state.total} files`, tone: "progress" };
     case "registering": return { message: `Adding ${entry.name} to your apps…`, tone: "progress" };
     case "failed": return failureText(entry, state.error);

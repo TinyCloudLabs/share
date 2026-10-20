@@ -23,8 +23,6 @@ export type InstallState =
 
 export class InstallFlight {
   state: InstallState = { phase: "checking" };
-  /** How many OpenKey approvals this install has asked for so far (a new account is asked up to 4 times). */
-  approvals = 0;
   /** True once the person cancelled: the flight shows "cancelled" at once, and nothing it does afterwards is shown or written. */
   cancelled = false;
   /** The phase the install was in when it was cancelled, so the message can say whether files may already be saved. */
@@ -47,7 +45,6 @@ export class InstallFlight {
   set(state: InstallState): void {
     // After a cancel the underlying run may still report (an OpenKey window left open, a write in flight): it no longer changes what is shown.
     if (this.cancelled) return;
-    if (state.phase === "approval" && this.state.phase !== "approval") this.approvals += 1;
     this.state = state;
     for (const repaint of [...this.subscribers]) repaint();
   }
