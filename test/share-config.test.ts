@@ -40,7 +40,8 @@ describe("Share public routing config", () => {
   });
 
   it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
-    const headers = readFileSync("public/_headers", "utf8");
+    // /courier is the one page with an exact host list (test/courier-route.test.ts): its rules are not part of this invariant.
+    const headers = readFileSync("public/_headers", "utf8").split(/\n\n+/).filter((section) => !section.startsWith("/courier")).join("\n\n");
     const documents = ["share/index.html", "viewer/index.html"].map((path) => readFileSync(path, "utf8"));
     for (const policy of [headers, ...documents]) {
       expect(policy).toContain("connect-src 'self' https:;");

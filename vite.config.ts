@@ -33,6 +33,7 @@ function shareRouteRewrite(): Plugin {
     if (path === "/share") return "/share/index.html";
     if (path === "/viewer") return "/viewer/index.html";
     if (path === "/apps") return "/apps/index.html";
+    if (path === "/courier") return "/courier/index.html";
     if (path.startsWith("/s/")) return "/viewer/index.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
@@ -223,6 +224,7 @@ export default defineConfig(({ mode }) => {
           share: fileURLToPath(new URL("share/index.html", import.meta.url)),
           viewer: fileURLToPath(new URL("viewer/index.html", import.meta.url)),
           apps: fileURLToPath(new URL("apps/index.html", import.meta.url)),
+          courier: fileURLToPath(new URL("courier/index.html", import.meta.url)),
         },
       },
     },
