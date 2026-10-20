@@ -437,7 +437,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
   // The node compares paths as literal strings. `a//b/x` is not under `a/b/` there, so it is refused here instead of being collapsed into a match.
   it.each([
     ["an empty segment in the middle", "a//b/x"], ["an empty segment before the prefix", "a//b/"], ["two trailing slashes", "a/b//"], ["a leading slash", "/a/b/x"],
-    ["a dot segment", "a/./b/x"], ["a dot-dot segment", "a/b/../b/x"], ["a trailing dot-dot", "a/b/x/.."], ["a backslash", "a/b\\x"],
+    ["a dot segment", "a/./b/x"], ["a dot-dot segment", "a/b/../b/x"], ["a trailing dot-dot", "a/b/x/.."], ["a backslash", "a/b/x\\y"],
     ["a NUL", "a/b/x\u0000y"], ["a control character", "a/b/x\u001fy"], ["a delete character", "a/b/x\u007fy"],
     ["an encoded dot", "a/b/%2e%2e/x"], ["an encoded dot, upper case", "a/b/%2E/x"], ["an encoded slash", "a/b%2fx"], ["an encoded slash, upper case", "a/b/x%2Fy"],
     ["an encoded backslash", "a/b/x%5cy"], ["an encoded NUL", "a/b/x%00"],
