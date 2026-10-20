@@ -21,8 +21,7 @@ if (viewerRoot !== null) {
   // fragment is captured and the current history entry is scrubbed before
   // any dynamic import, hydration, configuration load, or network request.
   const captured = captureAndScrubLaunch(window.location, window.history);
-  // Receiver keys and credentials now live in page memory; drop any records an
-  // earlier build left in session storage before anything else can read them.
+  // Drop a receiver key record an earlier build left in this tab before anything else can read it.
   purgeLegacyReceiverStorage();
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
@@ -105,9 +104,13 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed");
-    const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-      ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
-      : "This invitation could not be verified. Ask the sender for a fresh invitation.";
+    const detail = error instanceof Error && error.name === "ShareReceiverKeyUnavailableError"
+      ? "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari."
+      : error instanceof Error && error.name === "ShareReceiverSessionEndedError"
+        ? "Your verification on this page has ended. Open the link from your email again and verify again."
+        : error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
+          ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
+          : "This invitation could not be verified. Ask the sender for a fresh invitation.";
     renderRecipientInvalid(root, detail);
   }
 }
