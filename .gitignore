@@ -12,4 +12,3 @@ dist
 !.env.example
 !.env.*.example
 dist-usercontent
-.context
