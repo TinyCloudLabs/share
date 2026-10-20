@@ -51,6 +51,10 @@
  *     document keeps the sandbox flags (still no script, still opaque).
  *     Hostile content can no longer navigate the privileged document at all.
  */
+import tokensCss from "@tinycloud/styles/tokens.css?raw";
+import baseCss from "@tinycloud/styles/base.css?raw";
+import patternsCss from "@tinycloud/styles/patterns.css?raw";
+
 import { toTrustedHtml } from "./trusted-html.js";
 
 export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
@@ -59,52 +63,33 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
  * The srcdoc document's own CSP (additive to the inherited viewer CSP —
  * see module doc). Deliberately NO script-src directive: it falls back to
  * default-src 'none'. Script inertness itself comes from sandbox="", not
- * from this policy.
+ * from this policy. VIEWER PRIVACY: nothing in a shared document may cause a
+ * request to any host, so the author cannot learn who opened it or when —
+ * images, fonts and media are data:/blob: only, there is no `connect-src`,
+ * `frame-src` or `script-src`, and styles are inline (tokens and fonts come
+ * from the strings inlined below; fonts are the system stack, never fetched).
  */
 export const PREVIEW_FRAME_CSP =
-  "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'";
+  "default-src 'none'; img-src data: blob:; font-src data: blob:; style-src 'unsafe-inline'";
 
 /**
- * Base stylesheet inlined into the frame document (the parent's viewer.css
- * cannot reach across the frame boundary). Mirrors the .viewer-content
- * typography. Fixed content — must never interpolate untrusted input.
+ * Stylesheet inlined into the frame document (the parent's viewer.css cannot
+ * reach across the frame boundary): the shared TinyCloud tokens, base and
+ * patterns (which carry `.tc-prose`) as raw strings, then the layout and the
+ * few viewer-only rules. Fixed content — must never interpolate untrusted input.
  */
-const PREVIEW_STYLES = `
-:root {
-  color-scheme: light dark;
-  --preview-bg: #ffffff;
-  --preview-ink: #1a1c21;
-  --preview-line: #dce4ef;
-  --preview-code: #f3f5f8;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --preview-bg: #12151e;
-    --preview-ink: #e2e8f0;
-    --preview-line: #30384a;
-    --preview-code: #1b2130;
-  }
-}
-body {
-  margin: 0;
-  padding: 1.25rem;
-  color: var(--preview-ink);
-  background: var(--preview-bg);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 16px;
-  line-height: 1.55;
-}
-pre {
-  background: var(--preview-code);
-  border: 1px solid var(--preview-line);
-  border-radius: 0;
-  padding: 1rem;
-  overflow-x: auto;
-}
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.86em; }
-table { border-collapse: collapse; }
-th, td { border: 1px solid var(--preview-line); padding: 0.45rem 0.65rem; }
-img { max-width: 100%; }
+const PREVIEW_STYLES = `${tokensCss}
+${baseCss}
+${patternsCss}
+body { margin: 0; }
+.viewer-doc { box-sizing: border-box; max-width: calc(var(--tc-prose-max) + 2 * var(--tc-space-6)); margin: 0 auto; padding: var(--tc-space-6) var(--tc-space-6) var(--tc-space-7); }
+@media (max-width: 40rem) { .viewer-doc { padding: var(--tc-space-5) var(--tc-space-4) var(--tc-space-6); } }
+.tc-prose { font-size: var(--tc-text-md); max-width: none; }
+@media (min-width: 48rem) { .tc-prose { font-size: var(--tc-text-lg); } }
+/* An image the viewer refused to fetch: the reader sees what was blocked and
+   why, and the URL as plain text (never a link, never loaded). */
+.viewer-blocked-image { display: inline-flex; flex-direction: column; gap: var(--tc-space-1); max-width: 100%; margin-block: var(--tc-space-1); padding: var(--tc-space-2) var(--tc-space-3); color: var(--tc-color-text); background: var(--tc-color-surface-subtle); border: 1px dotted var(--tc-color-text-muted); border-radius: var(--tc-radius-md); font-size: var(--tc-text-sm); line-height: var(--tc-leading-ui); }
+.viewer-blocked-image code { padding: 0; background: none; border: 0; overflow-wrap: anywhere; }
 /* Diagrams use Mermaid's light "neutral" theme, whose edges and free-standing
    labels are dark grey: keep them on a light card in both colour schemes.
    The card wraps the SVG so its padding never eats into the diagram's own
@@ -114,11 +99,12 @@ img { max-width: 100%; }
   box-sizing: border-box;
   width: fit-content;
   max-width: 100%;
-  margin: 1rem 0;
-  padding: 0.75rem;
+  margin: var(--tc-space-4) 0;
+  padding: var(--tc-space-3);
   overflow-x: auto;
-  background: #ffffff;
-  border: 1px solid var(--preview-line);
+  background: var(--tc-palette-white);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
 }
 .viewer-mermaid svg { display: block; max-width: 100%; height: auto; }
 /* Print shows only this frame's viewport: the frame has no script, so it
@@ -149,14 +135,16 @@ img { max-width: 100%; }
 export function buildPreviewDocument(sanitizedHtml: string, diagramCount: number): string {
   const count = Math.max(1, Math.trunc(diagramCount));
   return `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${PREVIEW_FRAME_CSP}">
 <meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared document</title>
 <style>${PREVIEW_STYLES}:root { --mermaid-diagram-count: ${count}; }</style>
 </head>
-<body>${sanitizedHtml}</body>
+<body><main class="viewer-doc"><article class="tc-prose">${sanitizedHtml}</article></main></body>
 </html>
 `;
 }

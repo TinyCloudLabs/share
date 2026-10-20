@@ -189,6 +189,11 @@ describe("artifact sandbox boundary", () => {
 });
 
 describe("TinyCloud artifact chrome", () => {
+  const base = {
+    title: "report.md",
+    provenance: "Sender unverified",
+    expiry: { text: "Jan 1, 2030", datetime: "2030-01-01T00:00:00.000Z" },
+  };
   beforeEach(() => {
     document.body.replaceChildren();
     localStorage.clear();
@@ -196,50 +201,70 @@ describe("TinyCloud artifact chrome", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("collapses, reopens, permanently hides, and restores accessibly without rendering the URL", async () => {
-    const url = "https://share.tinycloud.xyz/viewer#tc1=private-capability";
+  it("hides to a recall pill, restores by pill, chord and the frame's bridge only, and remembers per share", async () => {
     const sandbox = createArtifactSandbox(document);
-    await mountArtifactChrome(document, { shareId: "share-a", shareUrl: url, frame: sandbox.iframe });
-    const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
-    const panel = root.querySelector<HTMLElement>(".artifact-chrome-panel")!;
-    const cloud = root.querySelector<HTMLButtonElement>(".artifact-chrome-cloud")!;
-    expect(root.textContent).toContain("Shared with TinyCloud");
-    expect(root.textContent).not.toContain(url);
-    expect(cloud.getAttribute("aria-label")).toBe("Open TinyCloud sharing controls");
+    const chrome = await mountArtifactChrome(document, { ...base, shareId: "share-a", actions: [], frame: sandbox.iframe });
+    const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
+    const pill = document.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!;
+    expect(bar.textContent).toContain("report.md");
+    expect(bar.textContent).toContain("Expires Jan 1, 2030");
+    expect(bar.textContent).not.toContain("Hide permanently");
+    expect(pill.hidden).toBe(true);
 
-    root.querySelector<HTMLButtonElement>(".artifact-chrome-button")!.click();
-    expect(panel.hidden).toBe(true);
-    expect(cloud.hidden).toBe(false);
-    cloud.click();
-    expect(panel.hidden).toBe(false);
+    bar.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
+    expect(bar.hidden).toBe(true);
+    expect(pill.hidden).toBe(false);
+    expect(document.activeElement).toBe(pill);
 
-    root.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
-    expect(root.hidden).toBe(true);
-    // Only the artifact frame's bridge may restore the controls.
+    // Only the artifact frame's bridge may restore the controls from a message.
     window.dispatchEvent(new MessageEvent("message", { source: window, origin: "null", data: { type: "artifact-restore-controls" } }));
-    expect(root.hidden).toBe(true);
-    window.dispatchEvent(new MessageEvent("message", {
-      source: sandbox.iframe.contentWindow,
-      origin: "null",
-      data: { type: "artifact-restore-controls" },
-    }));
-    expect(root.hidden).toBe(false);
-    expect(panel.hidden).toBe(false);
-    expect(document.activeElement).toBe(root.querySelector<HTMLButtonElement>(".artifact-chrome-button"));
+    expect(bar.hidden).toBe(true);
+    window.dispatchEvent(new MessageEvent("message", { source: sandbox.iframe.contentWindow, origin: "null", data: { type: "artifact-restore-controls" } }));
+    expect(bar.hidden).toBe(false);
+    expect(pill.hidden).toBe(true);
+    // ...and the frame can never hide them.
+    window.dispatchEvent(new MessageEvent("message", { source: sandbox.iframe.contentWindow, origin: "null", data: { type: "artifact-restore-controls" } }));
+    expect(bar.hidden).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "C", altKey: true, shiftKey: true }));
+    expect(bar.hidden).toBe(true);
+    chrome.destroy();
+    // Hidden state survives a reload of the same share, not of another one.
+    await mountArtifactChrome(document, { ...base, shareId: "share-a", actions: [] });
+    expect(document.querySelector<HTMLElement>(".artifact-chrome")!.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>(".artifact-chrome-pill")!.hidden).toBe(false);
+    document.querySelector<HTMLButtonElement>(".artifact-chrome-pill")!.click();
+    expect(document.querySelector<HTMLElement>(".artifact-chrome")!.hidden).toBe(false);
+    expect(localStorage.length).toBe(0);
     sandbox.destroy();
   });
 
-  it("prefers Web Share and keeps status announcements outside the collapsible panel", async () => {
-    const share = vi.fn().mockResolvedValue(undefined);
+  it("runs actions, announces success or failure, and explains a disabled action", async () => {
+    const copy = vi.fn().mockResolvedValue(undefined);
+    const fail = vi.fn().mockRejectedValue(new Error("denied"));
     await mountArtifactChrome(document, {
+      ...base,
       shareId: "share-b",
-      shareUrl: "https://share.tinycloud.xyz/viewer#tc1=secret",
-      navigator: { clipboard: navigator.clipboard, share },
+      actions: [
+        { label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied.", run: copy },
+        { label: "Copy text", icon: "copy", run: fail },
+        { label: "Share on", icon: "share", disabledReason: "The owner hasn't allowed passing this on yet" },
+      ],
     });
-    const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
-    root.querySelectorAll<HTMLButtonElement>(".artifact-chrome-button")[1]!.click();
-    await vi.waitFor(() => expect(share).toHaveBeenCalledOnce());
-    expect(root.querySelector(".artifact-chrome-status")?.parentElement).toBe(root);
+    const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
+    const status = document.querySelector<HTMLElement>(".artifact-chrome-status")!;
+    const [copyLink, copyText, shareOn] = Array.from(bar.querySelectorAll<HTMLButtonElement>(".artifact-chrome-button"));
+    copyLink!.click();
+    await vi.waitFor(() => expect(status.textContent).toBe("Link copied."));
+    expect(copyLink!.textContent).toContain("Copied");
+    expect(status.getAttribute("role")).toBe("status");
+    copyText!.click();
+    await vi.waitFor(() => expect(status.getAttribute("role")).toBe("alert"));
+    expect(status.textContent).toContain("failed");
+    expect(shareOn!.disabled).toBe(true);
+    expect(document.getElementById(shareOn!.getAttribute("aria-describedby")!)?.textContent).toBe("The owner hasn't allowed passing this on yet");
+    // The live region outlives the hidden bar so the hide itself is announced.
+    expect(bar.contains(status)).toBe(false);
   });
 
   it("keeps the controls usable when browser storage is unavailable", async () => {
@@ -251,11 +276,11 @@ describe("TinyCloud artifact chrome", () => {
       removeItem() { throw new DOMException("denied", "SecurityError"); },
       setItem() { throw new DOMException("denied", "SecurityError"); },
     } as unknown as Storage;
-    await expect(mountArtifactChrome(document, { shareId: "share-c", storage: unavailable })).resolves.toBeDefined();
-    const root = document.querySelector<HTMLElement>(".artifact-chrome")!;
-    root.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
-    expect(root.hidden).toBe(true);
+    await expect(mountArtifactChrome(document, { ...base, shareId: "share-c", actions: [], storage: unavailable })).resolves.toBeDefined();
+    const bar = document.querySelector<HTMLElement>(".artifact-chrome")!;
+    bar.querySelector<HTMLButtonElement>(".artifact-chrome-hide")!.click();
+    expect(bar.hidden).toBe(true);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", altKey: true, shiftKey: true }));
-    expect(root.hidden).toBe(false);
+    expect(bar.hidden).toBe(false);
   });
 });

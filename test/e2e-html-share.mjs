@@ -90,7 +90,7 @@ function assertNoProbeLeft(requests, label) {
 
 async function assertPreviewClosedWithDownload(page, label) {
   await page.waitForFunction(() => document.querySelector("iframe") === null && document.querySelector(".viewer-render-error") !== null, { timeout: 10_000 });
-  assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original", `${label}: download stays available`);
+  assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download", `${label}: download stays available`);
   return page.$eval(".viewer-render-error", (node) => node.textContent);
 }
 
@@ -103,9 +103,9 @@ try {
   // Acceptance 1: a bearer report with CSS and a script renders styled and runs.
   {
     const { page, inner } = await openFixture(browser, "fixture=report");
-    assert.equal(await page.$eval(".viewer-filename", (node) => node.textContent), "report.html");
+    assert.equal(await page.$eval(".artifact-chrome-title", (node) => node.textContent), "report.html");
     assert.match(await page.$eval(".viewer-html-notice", (node) => node.textContent), /comes from the sender.*WebRTC/);
-    assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original");
+    assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download");
     assert.equal(await inner.$eval("#status", (node) => node.textContent), "Script ran inside the frame.");
     assert.equal(await inner.$eval("h1", (node) => getComputedStyle(node).color), "rgb(42, 86, 246)");
     assert.equal(await inner.$$eval("#metrics tbody tr", (rows) => rows.length), 3);
@@ -124,7 +124,7 @@ try {
     const { page } = await loadHarness(browser, "fixture=report&access=addressed");
     assert.equal(await page.$("iframe"), null, "addressed HTML creates no frame");
     assert.match(await page.$eval(".viewer-file-note", (node) => node.textContent), /Preview isn't available for this link type yet/);
-    assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original");
+    assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download");
     await page.close();
   }
 
@@ -160,7 +160,7 @@ try {
   assert.equal(JSON.stringify(results).includes("secret"), false, "no viewer secret is observable");
   assert.equal(page.url(), topUrl, "top window did not navigate");
   assert.match(page.url(), /#tc1=fragment-secret-8c1$/);
-  assert.equal(await page.$eval(".viewer-filename", (node) => node.textContent), "hostile.html");
+  assert.equal(await page.$eval(".artifact-chrome-title", (node) => node.textContent), "hostile.html");
   assert.equal(targets.length, pagesBefore + 1, "only the harness page was created; no popup window");
   assertNoProbeLeft(requests, "hostile");
   console.log(JSON.stringify(results));
@@ -190,7 +190,7 @@ try {
   {
     const { page: early, requests: earlyRequests } = await loadHarness(browser, "fixture=navigate-early");
     await new Promise((resolve) => setTimeout(resolve, 1_000));
-    assert.equal(await early.$eval(".viewer-download", (node) => node.textContent), "Download original", "navigate-early: download stays available");
+    assert.equal(await early.$eval(".viewer-download", (node) => node.textContent), "Download", "navigate-early: download stays available");
     assertNoProbeLeft(earlyRequests, "navigate-early");
     console.log(`navigate-early: frame present=${await early.$("iframe.viewer-html-frame") !== null}`);
     await early.close();

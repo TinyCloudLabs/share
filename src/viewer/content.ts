@@ -101,9 +101,15 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
  */
 async function renderHtmlPage(container: HTMLElement, source: string, filename: string): Promise<void> {
   const doc = container.ownerDocument;
-  const notice = doc.createElement("p");
+  // A one-line disclosure under the bar keeps the full-page frame as tall as
+  // possible; the complete statement is one click (or keypress) away.
+  const notice = doc.createElement("details");
   notice.className = "viewer-html-notice";
-  notice.textContent = "This page comes from the sender and runs in an isolated frame. It can't read this link or your session, or make signed-in requests to this site. It can still reveal your IP address to the sender, for example through WebRTC.";
+  const summary = doc.createElement("summary");
+  summary.textContent = "Page from the sender, shown in an isolated frame";
+  const detail = doc.createElement("p");
+  detail.textContent = "This page comes from the sender and runs in an isolated frame. It can't read this link or your session, or make signed-in requests to this site. It can still reveal your IP address to the sender, for example through WebRTC.";
+  notice.append(summary, detail);
   container.append(notice);
   const sandbox = createArtifactSandbox(doc, {
     mount: container,

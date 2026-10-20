@@ -105,9 +105,19 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed");
-    const detail = error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-      ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
-      : "This invitation could not be verified. Ask the sender for a fresh invitation.";
-    renderRecipientInvalid(root, detail);
+    // Bearer links fail with a typed reason; revoked, expired and unavailable
+    // each get their own screen, and nothing from the share is ever shown.
+    const { NativeBearerError } = await import("./viewer/native-bearer.js");
+    if (error instanceof NativeBearerError && error.reason !== "unverified") {
+      const { renderShareUnavailable } = await import("./viewer/ui.js");
+      renderShareUnavailable(root, error.reason, error.expiresAt);
+      return;
+    }
+    if (error instanceof Error && /unavailable|capability|config|binding/.test(error.message)) {
+      const { renderShareUnavailable } = await import("./viewer/ui.js");
+      renderShareUnavailable(root, "unavailable");
+      return;
+    }
+    renderRecipientInvalid(root, "This invitation could not be verified. Ask the sender for a fresh invitation.");
   }
 }

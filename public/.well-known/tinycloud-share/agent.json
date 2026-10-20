@@ -2,7 +2,7 @@
   "version": 1,
   "cli": "npx -y @tinycloud/cli@latest",
   "minimumCliVersion": "0.8.3",
-  "supportedLinks": ["compact-v1", "inline-v2"],
+  "supportedLinks": ["tc1", "inline-v2"],
   "input": "stdin",
   "inspectArgs": ["share", "inspect", "-", "--json"],
   "receiveArgs": ["share", "receive", "-", "--output", "."],

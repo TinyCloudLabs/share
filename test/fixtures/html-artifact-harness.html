@@ -30,14 +30,24 @@
           mediaType,
         }));
         const artifact = await prepareHtmlArtifact(files);
-        const sandbox = createArtifactSandbox(document);
+        const stage = document.createElement("div");
+        stage.id = "viewer";
+        const main = document.createElement("main");
+        main.className = "viewer-content viewer-content--frame";
+        stage.append(main);
+        document.body.append(stage);
+        const sandbox = createArtifactSandbox(document, { mount: main });
         await sandbox.render(artifact);
         sandbox.iframe.hidden = false;
-        document.body.classList.add("artifact-active");
+        document.body.classList.add("viewer-fullpage");
         document.getElementById("harness-status").remove();
         await mountArtifactChrome(document, {
           shareId: "browser-artifact-example",
-          shareUrl: `${location.origin}/viewer#tc1=browser-secret`,
+          title: "index.html",
+          provenance: "Sender unverified",
+          expiry: { text: "Jan 1, 2030", datetime: "2030-01-01T00:00:00.000Z" },
+          actions: [{ label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied.", run: () => undefined }],
+          mount: stage,
           frame: sandbox.iframe,
         });
         document.documentElement.dataset.ready = "yes";

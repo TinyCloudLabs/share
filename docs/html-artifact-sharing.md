@@ -114,10 +114,11 @@ by `frame-src 'none'`, so the frame shows the browser's blocked-content page
 instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
-larger or non-UTF-8 files stay download-only. The viewer keeps its filename
-bar, a notice that the page comes from the sender (including the IP-address
-caveat), and the footer “Download original” action, which is present whether
-or not the preview succeeds.
+larger or non-UTF-8 files stay download-only. The page fills the viewport under the
+viewer bar (below). A one-line disclosure under the bar, opened with a click or
+keypress, says that the page comes from the sender (including the IP-address
+caveat). The bar's “Download” action is present whether or not the preview
+succeeds.
 
 ## Mermaid diagrams in Markdown
 
@@ -193,17 +194,50 @@ extensionless paths) therefore detach the site-wide policy
 `frame-ancestors 'none'` and `script-src 'self'` would also apply and the
 sandbox could neither be framed nor run its bridge.
 
-## TinyCloud controls
+## Viewer bar
 
-The small overlay begins expanded. Collapse it to a 44-pixel cloud control or
-choose “Hide permanently” to store a per-share preference in local browser
-storage. No URL or recipient data is stored.
+A verified share opens full page: a slim bar under the browser chrome and the
+document or page below it, filling the rest of the viewport. The bar shows the
+file name, who vouches for it (“Sender unverified” for bearer links), an expiry
+badge, and the actions **Copy link**, **Copy text** (Markdown only),
+**Download**, and a disabled **Share on** (“The owner hasn't allowed passing
+this on yet”). On narrow or touch screens the actions are icon-only with 44px
+targets.
 
-To restore hidden controls, press **Alt+Shift+C**. The keyboard shortcut also
-toggles expanded and collapsed states, and it still works when focus is inside
-the sandboxed artifact frame. “Share” uses the operating-system share sheet
-when available and otherwise uses TinyCloud’s clipboard fallback; the private
-URL remains in a JavaScript closure and is never rendered into the document.
+**Hide** collapses the bar to a persistent 44px “TinyCloud” pill in the corner;
+the pill, or **Alt+Shift+C**, brings it back. Whether the bar is hidden is
+remembered per share in local browser storage, keyed by a SHA-256 of the share
+id; no URL or recipient data is stored. Alt+Shift+C works while focus is in the
+page, not inside the sandboxed frames: a scriptless Markdown frame cannot
+forward keys, and single-file HTML pages are rendered exactly as sent, so use
+the pill from there. The bundle bridge's `artifact-restore-controls` message can
+only restore the bar, never hide it, and is accepted only from the artifact
+frame's own window. The private URL stays in a JavaScript closure and is never
+rendered into the document.
+
+## Viewer privacy
+
+A shared artifact must not be able to tell its author who opened it or when.
+Both frames' policies refuse every outbound load:
+
+- **Markdown** renders in a scriptless `sandbox=""` frame whose CSP is
+  `default-src 'none'; img-src data: blob:; font-src data: blob:;
+  style-src 'unsafe-inline'`. Remote and relative images never load: the
+  renderer replaces them with the text “Image not loaded: external images are
+  blocked to protect your privacy” and the URL as plain text (not a link and
+  not an image). Raw HTML, remote CSS, and fonts never reach the document, and
+  the tokens and prose styles are inlined into the frame; fonts are the system
+  stack.
+- **Single-file HTML** keeps the sandbox CSP above (`connect-src 'none'`,
+  `img-src`/`font-src`/`media-src` `data: blob:` only, no `'self'` fetches).
+- The viewer chrome itself loads no webfont, CDN, or third-party resource.
+
+`test/e2e-viewer-page.mjs` points a loopback server at both kinds of artifact
+(img, srcset, picture, video, audio, object, embed, script, CSS, `@import`,
+fonts, prefetch, preload, modulepreload, dns-prefetch, fetch, XHR, WebSocket,
+EventSource, beacon, form, worker) and requires zero HTTP requests. The browser
+actions CSP cannot govern (WebRTC, `rel=prerender`, `rel=preconnect`, see
+Isolation) are recorded there and in `test/e2e-html-share.mjs`, not hidden.
 
 The example bundle in [`examples/html-artifact/`](../examples/html-artifact/)
 contains separate HTML, CSS, classic JavaScript, and nested SVG files.
