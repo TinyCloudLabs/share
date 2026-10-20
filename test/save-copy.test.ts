@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
-import { savedCopyName, writeSavedCopy } from "../src/share/saved-copy.js";
+import { savedCopyKey, savedCopyName, writeSavedCopy } from "../src/share/saved-copy.js";
 import { createSaveToTinyCloud, SaveCopyError, type SaveProgress } from "../src/viewer/save-copy.js";
 
 type PutResult = { ok: true } | { ok: false; error: { code: string } };
@@ -61,6 +61,21 @@ describe("saved copy names", () => {
   ])("%s attempt %i is %s", (name, attempt, expected) => {
     expect(savedCopyName(name, attempt)).toBe(expected);
   });
+
+  // The node answers 401 to a key holding a space or a non-ASCII character (found against a real node), so keys carry only URI-safe characters.
+  it.each([
+    ["report.md", "v1/report.md"],
+    ["report (2).md", "v1/report%20(2).md"],
+    ["日本語.md", "v1/%E6%97%A5%E6%9C%AC%E8%AA%9E.md"],
+    ["100%.md", "v1/100%25.md"],
+    ["a!b'c*d.md", "v1/a%21b%27c%2Ad.md"],
+    ["a+b&c=d#e?f.md", "v1/a%2Bb%26c%3Dd%23e%3Ff.md"],
+    ["semi;colon,comma:colon@at$.md", "v1/semi%3Bcolon%2Ccomma%3Acolon%40at%24.md"],
+  ])("%s is stored as %s, and reads back to the same name", (name, key) => {
+    expect(savedCopyKey(name)).toBe(key);
+    expect(decodeURIComponent(key.slice("v1/".length))).toBe(name);
+    expect(key).toMatch(/^v1\/[A-Za-z0-9._~()%-]+$/);
+  });
 });
 
 describe("writing the copy", () => {
@@ -75,18 +90,25 @@ describe("writing the copy", () => {
   });
 
   it("never replaces an earlier copy: a taken name gets the next free suffix", async () => {
-    const kv = fakeKv(["v1/report.md", "v1/report (2).md"]);
+    const kv = fakeKv(["v1/report.md", "v1/report%20(2).md"]);
     const saved = await writeSavedCopy(kv as never, COPY);
-    expect(saved.path).toBe("files-for-you/v1/report (3).md");
-    expect(kv.puts.map((put) => put.key)).toEqual(["v1/report.md", "v1/report (2).md", "v1/report (3).md"]);
+    expect(saved.path).toBe("files-for-you/v1/report%20(3).md");
+    expect(kv.puts.map((put) => put.key)).toEqual(["v1/report.md", "v1/report%20(2).md", "v1/report%20(3).md"]);
     // The earlier copies are untouched: only the free key was ever written.
-    expect([...kv.existing].sort()).toEqual(["v1/report (2).md", "v1/report (3).md", "v1/report.md"]);
+    expect([...kv.existing].sort()).toEqual(["v1/report%20(2).md", "v1/report%20(3).md", "v1/report.md"]);
   });
 
   it("saving twice makes two copies", async () => {
     const kv = fakeKv();
     expect((await writeSavedCopy(kv as never, COPY)).key).toBe("v1/report.md");
-    expect((await writeSavedCopy(kv as never, COPY)).key).toBe("v1/report (2).md");
+    expect((await writeSavedCopy(kv as never, COPY)).key).toBe("v1/report%20(2).md");
+  });
+
+  it("writes a name with spaces or non-ASCII characters under a key the node accepts", async () => {
+    const kv = fakeKv();
+    const saved = await writeSavedCopy(kv as never, { ...COPY, filename: "q3 report (final) é.md" });
+    expect(saved.key).toBe("v1/q3%20report%20(final)%20%C3%A9.md");
+    expect(decodeURIComponent(saved.key.slice("v1/".length))).toBe("q3 report (final) é.md");
   });
 
   it("stops on a write that failed for another reason, without retrying under a new name", async () => {

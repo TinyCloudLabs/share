@@ -37,3 +37,16 @@ Revoke is in the library ("Shared by me"). The share stays active until the owne
 While the page that created an email, domain or DID share is still signed in, revoking needs no approval. In a later sign-in (a reload, a new day, another device) Share first asks the owner's node whether the share is one of this account's own, then asks for one approval in the OpenKey window and revokes only that share's delegation. Once revoked, the node refuses the recipient's later reads and anything delegated from that share, and leaves the sender's other shares and own access alone. Link-only shares ask for the same one approval.
 
 The approval is good for 60 seconds; if it is not completed in that time Share stops waiting. If the approval times out, the share may still have been revoked: check the status after a moment; trying again will confirm it without a new approval if it was.
+
+## Saving a copy
+
+For a markdown, HTML or JSX file the viewer bar offers "Save a copy". Opening a share stays account-free: nothing in the receive path loads or calls OpenKey, and the button is the only thing that can start it.
+
+On the click, Share signs the recipient in with OpenKey (`signInWithManifest` in `src/share/openkey-session.ts`, the same sign-in the library uses). The session holds a manifest that asks only for read, write and list under `files-for-you/v1/`, plus the account-registry permissions the SDK needs for a new account. Share hosts their own `files-for-you` space if it is new and writes the bytes the viewer already holds. A page or component is stored as its source text, never as a page, and keeps its `.html` / `.jsx` name.
+
+- The copy is `files-for-you/v1/<name>`. The name is stored percent-encoded (`q3 report.md` is `q3%20report.md`) because the node refuses a key with a space or a non-ASCII character. Each write is create-only (`If-None-Match: *`); a taken name becomes `<name> (2)`, `<name> (3)`, and so on. An earlier copy is never replaced.
+- Only the bytes, name and media type are stored. Nothing about the share (link, id, sender, expiry) is, so the copy outlives the share without naming it: revoking the original does not touch it.
+- The session lives in memory for the one call. No key, token or session is written to storage or the console.
+- An OpenKey approval is asked for one at a time, for up to 60 seconds. While it is open the bar says "Approve in the OpenKey window to save a copy"; a cancel, a timeout or another failure is a plain message and the viewer stays usable. When it is done the bar says "Saved." with a link to "Open in TinyCloud", and announces it.
+
+`signInWithManifest({ manifest, config, session?, onStatus?, hostSpaces?, guardApproval?, onClient? })` takes any manifest (or a function of the signed-in address) and returns `{ tinycloud, session, spaces }`; the library, Save a copy and an app-install flow differ only in the manifest they pass.

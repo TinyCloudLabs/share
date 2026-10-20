@@ -82,6 +82,20 @@ link-only share is revoked from another new sign-in and must fail closed.
 `TC500_SKIP_CLI_SENDER=1` runs every browser stage without the `tc` CLI leg; the
 artifact then reports `partial-passed`, never `passed`.
 
+After the link-only revoke, the `save-copy` stage runs. The sender shares a
+markdown file (multi-byte text, a table) as a link-only share. A recipient with
+a different OpenKey account (the stack serves a second fixture wallet for it)
+opens the link: before the click the trace holds no OpenKey request and no
+credential or policy ceremony. The click runs the OpenKey sign-in, hosts the
+recipient's `files-for-you` space and writes the file; the live region must say
+pending, the approval hint and "Saved. Open in TinyCloud" in that order, the
+node must receive one write whose SHA-256 is the original's, and no storage
+entry may hold key or session material. The copy is then read back through the
+product's own sign-in helper and must equal the original byte for byte. A second
+Save from a new browser context must keep both copies (`<name> (2).md`). Finally
+the owner revokes the original from a new sign-in: a new reader gets no Save and
+no content, and the recipient's copies are unchanged.
+
 No CI workflow runs this gate; it is a manual release check.
 
 The gate refuses dirty or non-reviewed dependency trees. Defaults are the

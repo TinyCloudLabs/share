@@ -195,8 +195,9 @@ export interface ManifestSignIn {
 }
 
 /**
- * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds exactly
- * `manifest`, then the owned spaces hosted. The session lives in memory only
+ * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds `manifest`
+ * (plus the account-registry permissions the SDK needs for a new account's own
+ * space registry), then the owned spaces hosted. The session lives in memory only
  * (`persistSession: false`); nothing is written to storage. Share's own
  * library and the viewer's "Save a copy" both sign in here, each with its own
  * manifest, and an app-install flow can do the same with an app's manifest.
@@ -224,6 +225,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     autoDiscoverLocalNode: false,
     autoCreateSpace: true,
     autoBootstrapAccount: false,
+    // The SDK keeps a new account's own space registry in sync during sign-in; without these it makes unauthorized calls (401) and logs them.
     includeAccountRegistryPermissions: true,
     domain: new URL(config.shareOrigin).hostname,
     spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
