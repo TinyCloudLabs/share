@@ -17,6 +17,14 @@ export interface FlightOutcome {
 const flights = new Map<string, RevokeFlight>();
 /** Only one OpenKey approval is open at a time, so a cancel always belongs to the revoke that asked. */
 let walletRequestOpen = false;
+/**
+ * Counts sign-outs. A revoke started before one belongs to a session that no
+ * longer exists: it may not ask the wallet for anything, and its late settle
+ * must not release a guard that now belongs to the next account.
+ */
+let session = 0;
+/** Gives up the wallet requests that are open, so their waiters end now instead of at the 60 s window. */
+const openRequests = new Set<() => void>();
 
 export function flightKey(address: string, shareId: string): string {
   return `${address.toLowerCase()}/${shareId}`;
@@ -32,13 +40,15 @@ export class RevokeFlight {
   /** Rows showing this flight repaint when `approval` changes. */
   readonly subscribers = new Set<() => void>();
   readonly done: Promise<FlightOutcome>;
+  /** The sign-in this revoke belongs to. */
+  readonly session = session;
 
   constructor(key: string, run: (flight: RevokeFlight) => Promise<void>) {
     flights.set(key, this);
     this.done = run(this).then(
       (): FlightOutcome => ({ revoked: true }),
       (failure: unknown): FlightOutcome => ({ revoked: false, failure }),
-    ).finally(() => { flights.delete(key); });
+    ).finally(() => { if (flights.get(key) === this) flights.delete(key); });
   }
 
   setApproval(open: boolean): void {
@@ -65,14 +75,20 @@ export const APPROVAL_WINDOW_MS = 60_000;
  * no new approval.
  */
 export async function withWalletApproval<T>(flight: RevokeFlight, task: (current: () => boolean) => Promise<T>): Promise<T> {
+  // A revoke that outlived its sign-in never reaches the wallet.
+  if (flight.session !== session) throw new Error("revoke-session-ended");
   if (walletRequestOpen) throw new Error("revoke-another-approval");
   walletRequestOpen = true;
   flight.setApproval(true);
   let abandoned = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let abandon: () => void = () => undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, APPROVAL_WINDOW_MS);
+    abandon = () => { abandoned = true; reject(new Error("revoke-session-ended")); };
   });
+  openRequests.add(abandon);
+  const mine = session;
   try {
     const running = task(() => !abandoned);
     // A request abandoned here may still reject later; nobody is waiting for it.
@@ -80,13 +96,22 @@ export async function withWalletApproval<T>(flight: RevokeFlight, task: (current
     return await Promise.race([running, expiry]);
   } finally {
     clearTimeout(timer);
-    walletRequestOpen = false;
+    openRequests.delete(abandon);
+    // After a sign-out the lock may already belong to the next account's request.
+    if (mine === session) walletRequestOpen = false;
     flight.setApproval(false);
   }
 }
 
-/** Test seam: forgets every flight, as a fresh page load would. */
+/**
+ * Sign-out, and a fresh page load in tests: forgets every flight, frees the
+ * wallet lock and abandons the wallet request that is open. A request that
+ * answers late is told it is no longer current and changes nothing.
+ */
 export function resetRevokeFlights(): void {
+  session += 1;
   flights.clear();
   walletRequestOpen = false;
+  for (const abandon of [...openRequests]) abandon();
+  openRequests.clear();
 }
