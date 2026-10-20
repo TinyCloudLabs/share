@@ -84,6 +84,8 @@ body.viewer-fullpage #viewer {
   border: 1px solid var(--tc-color-border);
 }
 .artifact-chrome-actions { display: flex; flex: none; align-items: center; gap: var(--tc-space-2); }
+/* recipient.css resets `button { font: inherit }` unlayered, which would beat the layered .tc-button size */
+.artifact-chrome-button, .artifact-chrome-pill { font-size: var(--tc-text-sm); font-weight: var(--tc-weight-medium); }
 .artifact-chrome-button { min-height: 2rem; white-space: nowrap; }
 .artifact-chrome-button .artifact-chrome-icon { flex: none; }
 .artifact-chrome-reason { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -111,10 +113,10 @@ body.viewer-fullpage #viewer {
   .artifact-chrome-button { min-width: 2.75rem; min-height: 2.75rem; padding-inline: var(--tc-space-3); }
 }
 @media (max-width: 40rem) {
-  .artifact-chrome { flex-wrap: wrap; row-gap: 0; }
-  .artifact-chrome-identity { flex: 1 1 0; }
-  .artifact-chrome-meta { order: 3; flex: 1 0 100%; padding-bottom: var(--tc-space-1); font-size: var(--tc-text-xs); }
-  .artifact-chrome-actions { gap: var(--tc-space-1); }
+  .artifact-chrome { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "identity actions" "meta meta"; align-items: center; column-gap: var(--tc-space-2); row-gap: 0; }
+  .artifact-chrome-identity { grid-area: identity; }
+  .artifact-chrome-actions { grid-area: actions; gap: var(--tc-space-1); }
+  .artifact-chrome-meta { grid-area: meta; flex-wrap: wrap; gap: var(--tc-space-1) var(--tc-space-3); padding-bottom: var(--tc-space-2); font-size: var(--tc-text-xs); white-space: normal; }
   .artifact-chrome-button:not(.artifact-chrome-hide) .artifact-chrome-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .artifact-chrome-button[disabled] { display: none; }
 }

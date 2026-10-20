@@ -37,12 +37,12 @@ const probeOrigin = `http://127.0.0.1:${probe.address().port}`;
 const server = await createServer({
   configFile: "vite.config.ts",
   logLevel: "error",
-  server: { host: "127.0.0.1", port: 43183, strictPort: true, hmr: false },
+  server: { host: "127.0.0.1", port: 43187, strictPort: true, hmr: false },
 });
 await server.listen();
 const { ARTIFACT_SANDBOX_HTTP_CSP } = await server.ssrLoadModule("/src/viewer/artifact-frame.ts");
 const { PREVIEW_FRAME_CSP } = await server.ssrLoadModule("/src/viewer/preview-frame.ts");
-const origin = "http://127.0.0.1:43183";
+const origin = "http://127.0.0.1:43187";
 const harness = (query) => `${origin}/test/fixtures/viewer-page/harness.html?probe=${encodeURIComponent(probeOrigin)}&${query}`;
 
 async function open(browser, query, { width = 1440, height = 900, scheme = "light" } = {}) {

@@ -97,8 +97,13 @@ body { margin: 0; }
    the half-size min-width the sandbox sets — past that the card scrolls. */
 .viewer-mermaid {
   box-sizing: border-box;
-  width: fit-content;
-  max-width: 100%;
+  /* A diagram may be wider than the reading column (centred on it) so wide
+     ones stay legible; past the viewport or 72rem the card scrolls. */
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(calc(100vw - 2 * var(--tc-space-4)), 72rem);
   margin: var(--tc-space-4) 0;
   padding: var(--tc-space-3);
   overflow-x: auto;

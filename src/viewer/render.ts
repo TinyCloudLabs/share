@@ -50,7 +50,7 @@
  * inside that frame.
  */
 import DOMPurifyFactory, { type DOMPurify as DOMPurifyInstance } from "dompurify";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from "rehype-sanitize";
 import rehypeStringify from "rehype-stringify";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
@@ -235,7 +235,7 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
  * defaultSchema keeps `className` values matching /^language-./ on <code>,
  * which is how mermaid blocks are found later.
  */
-const sanitizeSchema = {
+const sanitizeSchema: SanitizeOptions = {
   ...defaultSchema,
   protocols: {
     ...defaultSchema.protocols,

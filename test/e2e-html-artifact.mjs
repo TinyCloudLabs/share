@@ -65,13 +65,12 @@ try {
     }
   }), true);
 
-  assert.equal(await page.$eval(".artifact-chrome-panel", (node) => node.hidden), false);
+  assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), false);
   assert.equal(await page.content().then((html) => html.includes("browser-secret")), false);
-  await page.click(".artifact-chrome-button");
-  assert.equal(await page.$eval(".artifact-chrome-cloud", (node) => node.hidden), false);
-  await page.click(".artifact-chrome-cloud");
   await page.click(".artifact-chrome-hide");
   assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), true);
+  assert.equal(await page.$eval(".artifact-chrome-pill", (node) => node.hidden), false, "the recall pill replaces the bar");
+  // The bundle bridge relays the in-frame chord; it can only restore the bar.
   await inner.click("#count");
   await inner.evaluate(() => {
     window.dispatchEvent(new KeyboardEvent("keydown", {
@@ -83,7 +82,7 @@ try {
     }));
   });
   await page.waitForFunction(() => document.querySelector(".artifact-chrome")?.hidden === false);
-  assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), false);
+  assert.equal(await page.$eval(".artifact-chrome-pill", (node) => node.hidden), true);
 
   await mkdir(screenshotDir, { recursive: true });
   await page.screenshot({ path: `${screenshotDir}/html-artifact-desktop.png`, fullPage: true });
