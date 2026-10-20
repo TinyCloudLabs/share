@@ -11,7 +11,8 @@
  */
 import { JSX_RUNTIME_URL_PREFIX } from "../jsx-runtime/files.js";
 import { ARTIFACT_SANDBOX_CSP, ARTIFACT_SANDBOX_PATH } from "../../viewer/artifact-frame.js";
-import { JSX_SANDBOX_CSP, JSX_SANDBOX_PATH, JSX_SANDBOX_PERMISSIONS_POLICY } from "../../viewer/jsx-frame.js";
+import { JSX_SANDBOX_CSP, JSX_SANDBOX_PATH } from "../../viewer/jsx-frame.js";
+import { SANDBOX_PERMISSIONS_POLICY } from "../../viewer/sandbox-permissions.js";
 import { MERMAID_SANDBOX_CSP, MERMAID_SANDBOX_PATH } from "../../viewer/mermaid-frame.js";
 
 export const DEFAULT_VIEWER_ORIGIN = "https://share.tinycloud.xyz";
@@ -26,8 +27,8 @@ export interface SandboxDocument {
 }
 
 export const SANDBOX_DOCUMENTS: readonly SandboxDocument[] = [
-  { path: JSX_SANDBOX_PATH, csp: JSX_SANDBOX_CSP, permissionsPolicy: JSX_SANDBOX_PERMISSIONS_POLICY },
-  { path: ARTIFACT_SANDBOX_PATH, csp: ARTIFACT_SANDBOX_CSP },
+  { path: JSX_SANDBOX_PATH, csp: JSX_SANDBOX_CSP, permissionsPolicy: SANDBOX_PERMISSIONS_POLICY },
+  { path: ARTIFACT_SANDBOX_PATH, csp: ARTIFACT_SANDBOX_CSP, permissionsPolicy: SANDBOX_PERMISSIONS_POLICY },
   { path: MERMAID_SANDBOX_PATH, csp: MERMAID_SANDBOX_CSP },
 ];
 

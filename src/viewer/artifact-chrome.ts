@@ -1,4 +1,5 @@
 import { copyWithFallback } from "../share/clipboard.js";
+import { hashedShareKey } from "./share-key-hash.js";
 
 const STORAGE_PREFIX = "tinycloud:artifact-chrome:v1:";
 
@@ -19,10 +20,8 @@ export interface ArtifactChromeOptions {
   readonly frame?: HTMLIFrameElement;
 }
 
-async function storageKey(shareId: string): Promise<string> {
-  const bytes = new TextEncoder().encode(shareId);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return `${STORAGE_PREFIX}${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+function storageKey(shareId: string): Promise<string> {
+  return hashedShareKey(STORAGE_PREFIX, shareId);
 }
 
 function button(doc: Document, className: string, text: string, label?: string): HTMLButtonElement {

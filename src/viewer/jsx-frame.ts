@@ -22,18 +22,21 @@
  * keys, the sender's identity, or storage handles.
  *
  * WHAT THE ARTIFACT CAN DO: run JS, draw DOM/SVG/canvas, use data:/blob:
- * media, keep in-memory state. It cannot make any request (CSP `connect-src
- * 'none'`, `default-src 'none'` for images, fonts, media, frames, objects),
- * read any viewer storage, navigate the top window, open popups, submit forms
- * or start workers. Because it can load nothing remote, it also cannot tell its
- * author who opened it or when.
+ * media, keep in-memory state. It cannot make any content or script request (CSP
+ * `connect-src 'none'`, `default-src 'none'` for images, fonts, media, frames,
+ * objects), read any viewer storage, navigate the top window, open popups,
+ * submit forms or start workers.
  *
- * KNOWN LEAKS, as for HTML artifacts and not closed by CSP: WebRTC (ICE
- * gathering sends STUN/TURN traffic to a server the page chooses and reveals
- * the viewer's IP) and `<link rel="prerender">` (NoStatePrefetch ignores
- * `default-src 'none'`). A runtime busy loop can freeze the viewer tab. S9, a
- * separate user-content origin, is the fix for all three. See
- * docs/jsx-artifact-sharing.md.
+ * KNOWN LEAKS, not closed by CSP: preconnect, navigation attempts (one TCP connect
+ * before the `frame-src` block), prerender (NoStatePrefetch ignores
+ * `default-src 'none'` and sends an HTTP GET with author-chosen query data),
+ * dns-prefetch and WebRTC (ICE sends STUN/TURN traffic to a server the page
+ * chooses; the CSP `webrtc` directive is not recognised in Chromium 142 and is
+ * not set). A hostile author can learn the viewer's IP, the time, and that the
+ * page was opened. Mitigation is the viewer's notice above the frame
+ * (artifact-notice.ts). A runtime busy loop can freeze the viewer tab. A separate
+ * registrable domain for user content limits what a sandbox escape reaches; it
+ * does not change any of these network signals. See docs/jsx-artifact-sharing.md.
  *
  * Message authority comes from `event.source`/`event.origin` identity checks on
  * both hops, a per-frame nonce, the protocol version and a type allowlist; any
@@ -41,6 +44,8 @@
  * srcdoc child can read it through `document.baseURI`). The reserved `cap/*`
  * namespace (later viewer capabilities) is rejected by the allowlist.
  */
+
+import { SANDBOX_PERMISSIONS_POLICY } from "./sandbox-permissions.js";
 
 /** App-origin path of the bridge document (dev + build). */
 export const JSX_SANDBOX_PATH = "/jsx-sandbox.html";
@@ -75,19 +80,9 @@ export const JSX_SANDBOX_CSP = [
  */
 export const JSX_SANDBOX_HTTP_CSP = `${JSX_SANDBOX_CSP}; frame-ancestors 'self'`;
 
-/**
- * Sent with the bridge document, so it covers the child too. The artifact cannot
- * go fullscreen or open Picture-in-Picture over the viewer's chrome, and gets no
- * powerful feature (the sandbox adds no prompts to the opaque frame either way).
- */
-export const JSX_SANDBOX_PERMISSIONS_POLICY = [
-  "fullscreen=()", "picture-in-picture=()", "camera=()", "microphone=()", "geolocation=()", "payment=()",
-  "usb=()", "display-capture=()", "screen-wake-lock=()", "web-share=()", "publickey-credentials-get=()",
-].join(", ");
-
 export const JSX_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["content-security-policy", JSX_SANDBOX_HTTP_CSP],
-  ["permissions-policy", JSX_SANDBOX_PERMISSIONS_POLICY],
+  ["permissions-policy", SANDBOX_PERMISSIONS_POLICY],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
@@ -99,10 +94,13 @@ export const JSX_THEMES = ["system", "light", "dark"] as const;
 export type JsxTheme = (typeof JSX_THEMES)[number];
 
 /** Limits. The viewer enforces the same ones before sending; the bridge enforces them again. */
-export const JSX_MAX_SOURCE_CHARS = 1024 * 1024;
+/** Checked by the viewer BEFORE the import scan (which is linear in the source), then by the sandbox and the bridge. */
+export const JSX_MAX_SOURCE_CHARS = 512 * 1024;
 export const JSX_MAX_MODULES_CHARS = 16 * 1024 * 1024;
 export const JSX_MAX_ERROR_CHARS = 2048;
 export const JSX_START_TIMEOUT_MS = 15_000;
+/** The frame may ask the viewer to reveal its chrome at most this often (bridge and viewer both enforce it). */
+export const JSX_RESTORE_CONTROLS_INTERVAL_MS = 1000;
 
 export interface JsxRenderRequest {
   readonly v: 1;
@@ -264,6 +262,9 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   // SELF-DEFENSE: only an opaque-origin, sandboxed document may operate.
   var nonce = decodeURIComponent(window.location.hash.slice(1));
   if (self.origin !== "null" || !/^[0-9a-f]{32}$/.test(nonce)) return;
+  // The nonce is not a secret (identity checks are what authorise a message), but the child
+  // reads this URL through document.baseURI: drop the fragment so it is not handed over.
+  try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch (error) {}
   var VERSION = ${JSX_SANDBOX_PROTOCOL_VERSION};
   var THEMES = ${JSON.stringify(JSX_THEMES)};
   var MAX_SOURCE = ${JSX_MAX_SOURCE_CHARS};
@@ -280,6 +281,8 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   var seenInitialLoad = false;
   var childReady = false;
   var errorsSent = 0;
+  var lastRestore = 0;
+  var RESTORE_INTERVAL = ${JSX_RESTORE_CONTROLS_INTERVAL_MS};
   function post(message) {
     window.parent.postMessage(Object.assign({ v: VERSION, nonce: nonce }, message), "*");
   }
@@ -343,7 +346,15 @@ export const JSX_BRIDGE_SCRIPT = `(function () {
   function fromChild(data) {
     if (!isPlain(data) || data.v !== VERSION) return;
     if (data.type === "ready" && !childReady) { childReady = true; post({ type: "ready" }); return; }
-    if (data.type === "restore-controls") { post({ type: "restore-controls" }); return; }
+    // A frame may ask for the chrome once a second, and only after its page has started.
+    // It carries no gesture, so the viewer treats it as a request, never as a user action.
+    if (data.type === "restore-controls") {
+      var now = Date.now();
+      if (!childReady || now - lastRestore < RESTORE_INTERVAL) return;
+      lastRestore = now;
+      post({ type: "restore-controls" });
+      return;
+    }
     if (data.type !== "error" || errorsSent >= 5) return;
     if (data.phase !== "compile" && data.phase !== "import" && data.phase !== "runtime") return;
     if (typeof data.message !== "string") return;

@@ -115,8 +115,10 @@ instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
 larger or non-UTF-8 files stay download-only. The viewer keeps its filename
-bar, a notice that the page comes from the sender (including the IP-address
-caveat), and the footer “Download original” action, which is present whether
+bar, a notice above the frame ("This page runs the sender's code. The sender
+can tell that you opened it."; it is rendered by the viewer, outside the frame,
+and described in [JSX artifact sharing](jsx-artifact-sharing.md)), and the footer
+“Download original” action, which is present whether
 or not the preview succeeds.
 
 ## Mermaid diagrams in Markdown

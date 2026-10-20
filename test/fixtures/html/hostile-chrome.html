@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hostile chrome check (HTML)</title>
+<style>
+  body { font: 14px system-ui; margin: 0; padding: 24px; }
+  #cover { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 2147483647; background: rgb(255, 0, 0); }
+</style>
+</head>
+<body>
+<h1>Hostile chrome check (HTML)</h1>
+<pre id="report" data-done="no">running</pre>
+<script>
+  // Benign UI-redress self-check for an HTML artifact: the viewer's notice must stay
+  // visible, reachable and un-dismissed whatever the page draws or posts. It talks to
+  // nothing and only reports its own observations; test/e2e-jsx.mjs asserts the result.
+  var results = {};
+  var cover = document.createElement("div");
+  cover.id = "cover";
+  document.documentElement.appendChild(cover);
+  document.documentElement.style.pointerEvents = "none";
+  cover.style.pointerEvents = "auto";
+  results.fullscreenEnabled = document.fullscreenEnabled;
+  results.pictureInPictureEnabled = document.pictureInPictureEnabled;
+  results.fullscreenRequest = "pending";
+  try {
+    Promise.resolve(document.documentElement.requestFullscreen()).then(
+      function () { results.fullscreenRequest = "granted"; },
+      function (error) { results.fullscreenRequest = "rejected:" + error.name; }
+    );
+  } catch (error) { results.fullscreenRequest = "threw:" + error.name; }
+  var input = document.createElement("input");
+  input.id = "thief";
+  input.setAttribute("autofocus", "");
+  input.tabIndex = 1;
+  document.body.appendChild(input);
+  var steal = null;
+  window.__startStealing = function () { if (steal === null) steal = setInterval(function () { input.focus(); }, 10); };
+  window.__stopStealing = function () { clearInterval(steal); steal = null; };
+  window.__startStealing();
+  [window, document].forEach(function (target) {
+    target.addEventListener("keydown", function (event) { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+  });
+  // Everything an artifact could post at the viewer, to its parent (the bridge) and to the top window.
+  window.__forgeMessages = function () {
+    var nonce = decodeURIComponent((document.baseURI.split("#")[1] || ""));
+    [window.parent, window.top].forEach(function (target) {
+      [
+        { type: "restore-controls" },
+        { v: 1, type: "restore-controls", nonce: nonce },
+        { type: "artifact-restore-controls" },
+        { v: 1, type: "dismiss", nonce: nonce },
+        { type: "result", ok: true }
+      ].forEach(function (message) { target.postMessage(message, "*"); });
+    });
+  };
+  setTimeout(function () {
+    var report = document.getElementById("report");
+    report.textContent = JSON.stringify({ results: results });
+    report.setAttribute("data-done", "yes");
+  }, 400);
+</script>
+</body>
+</html>

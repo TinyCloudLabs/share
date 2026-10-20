@@ -56,6 +56,8 @@ export interface BundledPackage {
   readonly provenance: string;
   /** Module files this package is bundled into. */
   readonly files: readonly string[];
+  /** Set when the code is pre-bundled inside another package's dist rather than installed. */
+  readonly embeddedIn?: string;
 }
 
 export interface BuiltJsxFile extends JsxManifestFile {
@@ -185,7 +187,48 @@ function detectLicence(text: string | undefined): string | undefined {
 
 function licenceTextOf(dir: string): string | undefined {
   const file = readdirSync(dir).find((entry) => /^(licen[cs]e|copying)(\.|$)/i.test(entry));
-  return file === undefined ? undefined : readFileSync(join(dir, file), "utf8").trim();
+  if (file !== undefined) return readFileSync(join(dir, file), "utf8").trim();
+  return readmeLicenceSection(dir);
+}
+
+/** Packages that ship no licence file but print the full licence text in their README (fastdom). */
+function readmeLicenceSection(dir: string): string | undefined {
+  const readme = readdirSync(dir).find((entry) => /^readme(\.md)?$/i.test(entry));
+  if (readme === undefined) return undefined;
+  const text = readFileSync(join(dir, readme), "utf8");
+  const heading = /^#+[ \t]*licen[cs]es?[ \t]*$/im.exec(text);
+  if (heading === null) return undefined;
+  const rest = text.slice(heading.index + heading[0].length);
+  const next = /^#+[ \t]/m.exec(rest);
+  const section = (next === null ? rest : rest.slice(0, next.index)).trim();
+  return /Permission is hereby granted/i.test(section)
+    ? `(From the "License" section of the package README; the package ships no licence file.)\n\n${section}`
+    : undefined;
+}
+
+/**
+ * Packages whose own licence text is incomplete: a committed copy of the upstream
+ * licence, and/or the licence files of copies vendored inside the package.
+ */
+const SUPPLEMENTAL_LICENCES: Readonly<Record<string, { readonly file?: string; readonly vendoredDir?: string }>> = {
+  "victory-vendor": { file: "licences/victory-vendor.txt", vendoredDir: "lib-vendor" },
+};
+
+function supplementalLicenceText(name: string, dir: string): string | undefined {
+  const entry = SUPPLEMENTAL_LICENCES[name];
+  if (entry === undefined) return undefined;
+  const parts: string[] = [];
+  if (entry.file !== undefined) parts.push(readFileSync(join(ROOT, "src/artifact/jsx-runtime", entry.file), "utf8").trim());
+  if (entry.vendoredDir !== undefined) {
+    const base = join(dir, entry.vendoredDir);
+    const heading = `Licence files shipped in ${name}/${entry.vendoredDir}/ (vendored copies; the bundle uses the installed d3 packages listed above):`;
+    const vendored = readdirSync(base).sort().flatMap((child) => {
+      const text = existsSync(join(base, child)) ? licenceTextOf(join(base, child)) : undefined;
+      return text === undefined ? [] : [`--- ${child} ---\n${text}`];
+    });
+    if (vendored.length > 0) parts.push([heading, ...vendored].join("\n\n"));
+  }
+  return parts.length === 0 ? undefined : parts.join("\n\n");
 }
 
 function declaredLicence(manifest: Record<string, unknown>): string | undefined {
@@ -225,7 +268,7 @@ function collectPackages(perFile: ReadonlyMap<string, readonly string[]>): Bundl
   const packages: BundledPackage[] = [];
   const rejected: string[] = [];
   for (const [dir, { location, files }] of byDir) {
-    const licenceText = licenceTextOf(dir);
+    const ownText = licenceTextOf(dir);
     const ownManifest = join(dir, "package.json");
     const manifestPath = existsSync(ownManifest) ? ownManifest : join(location.vendoredIn ?? dir, "package.json");
     const parsed: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -235,6 +278,8 @@ function collectPackages(perFile: ReadonlyMap<string, readonly string[]>): Bundl
     const hostVersion = typeof record["version"] === "string" ? record["version"] : "0.0.0";
     const name = location.vendoredIn === undefined ? hostName : `${dir.split("/").at(-1)} (vendored in ${hostName})`;
     const version = hostVersion;
+    const supplemental = location.vendoredIn === undefined ? supplementalLicenceText(hostName, dir) : undefined;
+    const licenceText = supplemental === undefined ? ownText : [ownText, supplemental].filter((part): part is string => part !== undefined).join("\n\n");
     const undeclared = UNDECLARED_LICENCE[hostName];
     const licence = location.vendoredIn !== undefined
       ? detectLicence(licenceText)
@@ -254,6 +299,45 @@ function collectPackages(perFile: ReadonlyMap<string, readonly string[]>): Bundl
   }
   if (rejected.length > 0) throw new Error(`bundled packages outside the permissive-licence policy: ${rejected.join(", ")}`);
   return packages.sort((x, y) => x.name.localeCompare(y.name) || x.version.localeCompare(y.version));
+}
+
+interface EmbeddedLicence {
+  readonly name: string;
+  readonly version: string;
+  readonly licence: string;
+  readonly text: string;
+}
+
+/**
+ * Code a dependency pre-bundled into its own dist (`@mermaid-js/parser` inlines
+ * langium, chevrotain and the vscode protocol packages). Esbuild sees one file, so
+ * the metafile names only the host. The embedded packages are read from the host's
+ * source maps, and each must have a committed licence text (licences/embedded.json):
+ * a new one fails the build until its licence is added and checked.
+ */
+function collectEmbedded(inputs: readonly string[], installed: readonly BundledPackage[]): BundledPackage[] {
+  const known: { readonly packages: readonly EmbeddedLicence[] } = JSON.parse(readFileSync(join(ROOT, "src/artifact/jsx-runtime/licences/embedded.json"), "utf8"));
+  const found = new Map<string, string>();
+  for (const input of inputs) {
+    if (!/node_modules\/@mermaid-js\/parser\/dist\//.test(input) || !existsSync(join(ROOT, `${input}.map`))) continue;
+    const map: { sources?: unknown } = JSON.parse(readFileSync(join(ROOT, `${input}.map`), "utf8"));
+    for (const source of Array.isArray(map.sources) ? map.sources : []) {
+      const match = typeof source === "string" ? /node_modules\/\.pnpm\/((?:@[^+/]+\+)?[^@/]+)@([^/_]+)/.exec(source) : null;
+      if (match?.[1] !== undefined && match[2] !== undefined) found.set(`${match[1].replace("+", "/")}@${match[2]}`, "@mermaid-js/parser");
+    }
+  }
+  const have = new Set(installed.map((pkg) => `${pkg.name}@${pkg.version}`));
+  const result: BundledPackage[] = [];
+  const missing: string[] = [];
+  for (const [key, host] of found) {
+    if (have.has(key)) continue;
+    const entry = known.packages.find((candidate) => `${candidate.name}@${candidate.version}` === key);
+    const effective = entry === undefined ? undefined : effectiveLicence(entry.licence);
+    if (entry === undefined || effective === undefined) { missing.push(key); continue; }
+    result.push({ name: entry.name, version: entry.version, licence: entry.licence, effectiveLicence: effective, licenceText: entry.text, provenance: "", files: ["mermaid"], embeddedIn: host });
+  }
+  if (missing.length > 0) throw new Error(`embedded packages without an allowed, committed licence (licences/embedded.json): ${missing.join(", ")}`);
+  return result;
 }
 
 function assertInlineSafe(id: string, text: string): void {
@@ -286,7 +370,10 @@ export async function buildJsxRuntime(): Promise<JsxRuntimeBuild> {
     version: 1,
     files: Object.fromEntries(files.map(({ id, url, sha256, bytes, provides }) => [id, { id, url, sha256, bytes, provides }])),
   };
-  return { files, manifest, packages: collectPackages(inputsByFile) };
+  const installed = collectPackages(inputsByFile);
+  const embedded = collectEmbedded([...inputsByFile.values()].flat(), installed);
+  const packages = [...installed, ...embedded].sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+  return { files, manifest, packages };
 }
 
 /** NOTICE text: every bundled package with its licence, verbatim where the package ships one. */
@@ -300,18 +387,24 @@ export function renderNotice(packages: readonly BundledPackage[]): string {
     "metafile of the build; do not edit by hand. Licence policy: MIT, ISC,",
     "Apache-2.0, BSD-2-Clause, BSD-3-Clause and 0BSD only.",
     "",
-    "d3 is bundled without d3-delaunay (its dependency robust-predicates is",
-    "Unlicense, outside that policy).",
+    "The d3 library file is built without d3-delaunay (its dependency",
+    "robust-predicates is Unlicense, outside that policy). d3-delaunay (ISC) is",
+    "listed below because mermaid's own bundle includes it; no robust-predicates",
+    "code is in any shipped file (the build test checks).",
+    "",
+    "@tailwindcss/browser's global build embeds the tailwindcss core, which carries",
+    "the same MIT licence and copyright holder as the package listed below.",
     "",
     `Packages (${packages.length}):`,
     "",
   ];
   for (const pkg of packages) {
     const note = pkg.effectiveLicence === pkg.licence ? "" : `, used under ${pkg.effectiveLicence}`;
-    lines.push(`  ${pkg.name}@${pkg.version}  ${pkg.licence}${note}`);
+    const where = pkg.embeddedIn === undefined ? "" : `  (inlined in ${pkg.embeddedIn}'s dist)`;
+    lines.push(`  ${pkg.name}@${pkg.version}  ${pkg.licence}${note}${where}`);
   }
   for (const pkg of packages) {
-    lines.push("", "=".repeat(78), `${pkg.name}@${pkg.version}  (${pkg.licence}${pkg.effectiveLicence === pkg.licence ? "" : `, used under ${pkg.effectiveLicence}`})`, "=".repeat(78), "");
+    lines.push("", "=".repeat(78), `${pkg.name}@${pkg.version}  (${pkg.licence}${pkg.effectiveLicence === pkg.licence ? "" : `, used under ${pkg.effectiveLicence}`}${pkg.embeddedIn === undefined ? "" : `; inlined in ${pkg.embeddedIn}'s dist`})`, "=".repeat(78), "");
     lines.push(pkg.licenceText ?? `This package ships no licence file; it declares ${pkg.licence} in its package.json.${pkg.provenance === "" ? "" : `\n${pkg.provenance}`}`);
   }
   return `${lines.join("\n")}\n`;

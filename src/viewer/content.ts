@@ -1,6 +1,6 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
-import { createArtifactNotice, type ArtifactNotice } from "./artifact-notice.js";
+import { createArtifactNotice } from "./artifact-notice.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 
 export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
@@ -24,8 +24,6 @@ export interface SafeContentOptions extends RenderMarkdownOptions {
   readonly linkAccess?: "bearer" | "policy";
   /** Lets the first-view notice remember its dismissal per share. */
   readonly shareId?: string;
-  /** Called with the notice of a rendered HTML/JSX artifact so the viewer chrome can reveal it again. */
-  readonly onNotice?: (notice: ArtifactNotice) => void;
 }
 
 /** The browser must never decode or render bytes above the preview budget. */
@@ -107,8 +105,7 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
     }
     clearPreviousContent(container);
     const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
-    options.onNotice?.(notice);
-    // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
+      // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
     const { renderJsxPage } = await import("./jsx-render.js");
     await renderJsxPage(container, bytes, {
       filename: actualDescriptor.filename,
@@ -132,7 +129,6 @@ async function renderHtmlPage(container: HTMLElement, source: string, filename: 
   const doc = container.ownerDocument;
   const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
   container.append(notice.element);
-  options.onNotice?.(notice);
   const sandbox = createArtifactSandbox(doc, {
     mount: container,
     className: HTML_FRAME_CLASS,

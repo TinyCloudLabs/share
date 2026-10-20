@@ -1,3 +1,5 @@
+import { SANDBOX_PERMISSIONS_POLICY } from "./sandbox-permissions.js";
+
 export const ARTIFACT_SANDBOX_PATH = "/artifact-sandbox.html";
 
 /**
@@ -39,6 +41,7 @@ export const ARTIFACT_SANDBOX_HTTP_CSP = `${ARTIFACT_SANDBOX_CSP}; frame-ancesto
 
 export const ARTIFACT_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["content-security-policy", ARTIFACT_SANDBOX_HTTP_CSP],
+  ["permissions-policy", SANDBOX_PERMISSIONS_POLICY],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
@@ -87,6 +90,7 @@ export const ARTIFACT_BRIDGE_SCRIPT = `(function(){
     activeFragment=typeof fragment==="string"&&/^#[^\\u0000-\\u001f\\u007f]{1,1024}$/.test(fragment)?fragment:"";
     child=document.createElement("iframe");
     child.setAttribute("sandbox","allow-scripts");
+    child.setAttribute("allow","");
     child.setAttribute("title","Shared HTML artifact");
     child.setAttribute("referrerpolicy","no-referrer");
     child.className="artifact-document";

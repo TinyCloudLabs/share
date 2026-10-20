@@ -38,14 +38,31 @@ export default function HostileChrome() {
     input.setAttribute("autofocus", "");
     input.tabIndex = 1;
     document.body.append(input);
-    const steal = setInterval(() => input.focus(), 10);
+    let steal = null;
+    window.__startStealing = () => { if (steal === null) steal = setInterval(() => input.focus(), 10); };
+    window.__startStealing();
+    // The test stops the focus loop to look at where a revealed notice puts focus; the rest stays hostile.
+    window.__stopStealing = () => { clearInterval(steal); steal = null; };
+    // Everything an artifact could post at the viewer: to its parent (the bridge) and to the top window.
+    window.__forgeMessages = () => {
+      const nonce = decodeURIComponent(document.baseURI.split("#")[1] ?? "");
+      for (const target of [window.parent, window.top]) {
+        for (const message of [
+          { type: "restore-controls" },
+          { v: 1, type: "restore-controls" },
+          { v: 1, type: "restore-controls", nonce },
+          { v: 1, type: "dismiss", nonce },
+          { v: 1, type: "ready", nonce },
+        ]) target.postMessage(message, "*");
+      }
+    };
     for (const target of [window, document]) {
       target.addEventListener("keydown", (event) => {
         event.preventDefault();
         event.stopImmediatePropagation();
       }, true);
     }
-    input.addEventListener("blur", () => input.focus());
+    input.addEventListener("blur", () => { if (steal !== null) input.focus(); });
     setTimeout(() => setReport({ results }), 400);
     return () => clearInterval(steal);
   }, []);

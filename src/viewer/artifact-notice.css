@@ -5,30 +5,32 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--tc-space-2, 0.5rem) var(--tc-space-3, 0.75rem);
-  margin: 0 0 var(--tc-space-3, 0.75rem);
-  padding: var(--tc-space-2, 0.5rem) var(--tc-space-3, 0.75rem);
-  border: 1px solid var(--tc-color-border, #e2e8f0);
-  border-radius: var(--tc-radius-md, 0.5rem);
-  background: var(--tc-color-surface-subtle, #f1f5f9);
-  color: var(--tc-color-text, #1a1c21);
-  font: var(--tc-text-sm, 0.875rem) / var(--tc-leading-ui, 1.5) var(--tc-font-sans, system-ui, sans-serif);
+  gap: var(--tc-space-2) var(--tc-space-3);
+  margin: 0 0 var(--tc-space-3);
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+  background: var(--tc-color-surface-subtle);
+  color: var(--tc-color-text);
+  font: var(--tc-text-sm) / var(--tc-leading-ui) var(--tc-font-sans);
 }
-.viewer-artifact-notice-text { margin: 0; flex: 1 1 18rem; max-width: none; }
+/* A basis small enough that the button stays on the first line at phone widths. */
+.viewer-artifact-notice-text { margin: 0; flex: 1 1 10rem; max-width: none; }
 .viewer-artifact-notice[data-state="collapsed"] { background: transparent; border-color: transparent; padding-inline: 0; }
 .viewer-artifact-notice button {
+  flex: none;
   min-height: 44px;
-  padding: 0 var(--tc-space-4, 1rem);
-  border: 1px solid var(--tc-color-border, #e2e8f0);
-  border-radius: var(--tc-radius-pill, 999px);
-  background: var(--tc-color-surface, #fff);
-  color: var(--tc-color-link, #1e42c8);
+  padding: 0 var(--tc-space-4);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-pill);
+  background: var(--tc-color-surface);
+  color: var(--tc-color-link);
   font: inherit;
-  font-weight: var(--tc-weight-medium, 500);
+  font-weight: var(--tc-weight-medium);
   cursor: pointer;
 }
-.viewer-artifact-notice button:hover { border-color: var(--tc-color-accent, #2a56f6); }
-.viewer-artifact-notice button:focus-visible { outline: 2px solid var(--tc-color-focus, #2a56f6); outline-offset: 3px; }
+.viewer-artifact-notice button:hover { border-color: var(--tc-color-accent); }
+.viewer-artifact-notice button:focus-visible { outline: 2px solid var(--tc-color-focus); outline-offset: 3px; }
 .viewer-artifact-notice [hidden] { display: none; }
 
 /* The artifact's own box: whatever it draws or positions stays inside it and below the chrome. */

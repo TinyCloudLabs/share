@@ -1,5 +1,5 @@
-// Benign viewer-privacy check. A shared artifact must not be able to tell its
-// author who opened it or when, so every remote load below must be refused.
+// Benign viewer-privacy check. A shared artifact must not be able to make any
+// content or script request, so every remote load below must be refused.
 // The e2e test points BEACON at a loopback server and asserts it saw nothing.
 import { useEffect, useState } from "react";
 
@@ -96,7 +96,7 @@ const probes = {
   linkPrerender: () => {
     const element = document.createElement("link");
     element.rel = "prerender";
-    element.href = `${BEACON}/link-prerender`;
+    element.href = `${BEACON}/link-prerender?data=author-chosen-value`;
     document.head.append(element);
     return new Promise((resolve) => setTimeout(() => resolve("inserted"), 800));
   },

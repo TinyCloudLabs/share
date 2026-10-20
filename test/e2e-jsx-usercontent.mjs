@@ -174,7 +174,7 @@ try {
   // Error panels are unchanged.
   {
     const run = await open("unknown-import.jsx");
-    assert.match(await run.page.$eval(".viewer-jsx-panel", (node) => node.textContent), /canvas-confetti isn't available/);
+    assert.match(await run.page.$eval(".viewer-jsx-panel", (node) => node.textContent), /needs a library that isn't available[\s\S]*Import from the file: canvas-confetti/);
     await run.page.close();
   }
 

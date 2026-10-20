@@ -35,7 +35,7 @@ export default function Counter() {
   `rounded-tc-md`, `font-tc-sans`, and so on. Light and dark follow the system.
 - Anything else (`import x from "left-pad"`) shows "x isn't available" with the
   list above. Bundle the code into the file or publish a self-contained HTML page.
-- Source is limited to 1 MB; the frame has 15 seconds to start.
+- Source is limited to 512 KB (checked before the viewer scans it for imports); the frame has 15 seconds to start.
 - Examples: `examples/jsx-artifact/`.
 
 ## How it is isolated
@@ -73,43 +73,61 @@ viewer ─ <iframe sandbox="allow-scripts" allow="" referrerpolicy="no-referrer"
 It can run JavaScript, draw DOM/SVG/canvas, play `data:`/`blob:` media and keep
 in-memory state. It cannot make a content or script request (measured in
 Chromium with a loopback server: img, CSS `url()`/`@import`/`@font-face`,
-video/audio, `<link>` stylesheet/prefetch, XHR, fetch, WebSocket, EventSource,
+video/audio, `<link>` stylesheet and prefetch, XHR, fetch, WebSocket, EventSource,
 `sendBeacon`, `<object>`, `<embed>`: zero requests and zero connections). It
 cannot read viewer storage or cookies, navigate the top window, open popups, submit
 forms, start workers or go fullscreen.
 
 ### Privacy: what is and is not blocked
 
-The frame cannot make ANY content or script request (img/CSS url/@import/@font-face/video/audio/link/XHR/fetch/WebSocket/EventSource/sendBeacon/object/embed: measured: zero requests and zero connections). It can still cause connection-level signals that CSP cannot block: preconnect / navigation attempts (one TCP connect before the frame-src block) / prerender / dns-prefetch / WebRTC: a hostile author can learn the viewer's IP and the time of opening. Mitigation is product-level notice; the separate registrable domain (S9) does not change this (it is network egress, not isolation).
+CSP blocks every content and script request the frame could make (img/CSS url/@import/@font-face/video/audio/link stylesheet and prefetch/XHR/fetch/WebSocket/EventSource/sendBeacon/object/embed: measured: zero requests and zero connections). Prerender, preconnect, navigation attempts, dns-prefetch and WebRTC can still reach out: a prerender can send an HTTP GET with author-chosen query data (and whatever cookies the target site would send on such a request, see [HTML artifact sharing](html-artifact-sharing.md)), a navigation attempt opens one TCP connection before the `frame-src` block, and WebRTC sends STUN packets. A hostile author can learn the viewer's IP, the time, and that the page was opened. Mitigation is product-level: the notice above the frame. A separate registrable domain for user content does not change this (it is network egress, not isolation).
 
 | Class | Observed (Chromium 142, loopback server) | Mitigation |
 |---|---|---|
 | Content/script requests | none: zero requests, zero connections | CSP, asserted by `npm run test:e2e:jsx` |
 | `<link rel=preconnect>` | one TCP connection, no HTTP request | notice |
 | iframe `src`, meta refresh, `location` assignment | one TCP connection before the `frame-src` block; no HTTP request | notice |
-| `<link rel=prerender>` | one GET and one connection | notice |
+| `<link rel=prerender>` | one HTTP GET to the author's address carrying author-chosen query data (`/link-prerender?data=author-chosen-value` in the test), plus a connection | notice |
 | `<link rel=dns-prefetch>` | DNS lookup (not observable on loopback) | notice |
 | WebRTC (ICE to a STUN server) | UDP packets to the server | notice. The CSP `webrtc` directive is not recognised by the Chromium used here, so it is not set. |
 
 The viewer says so above the frame: "This page runs the sender's code. The sender
 can tell that you opened it." It is rendered by the viewer, outside the frame,
-and is dismissed only by a click on its own button (remembered per share and
-reachable afterwards). Nothing in the frame can hide, cover or dismiss it: the
-frame is an isolated, clipped box stacked below it; `position: fixed`, z-index and
-`pointer-events` inside the frame only affect the frame; the frame gets no
-fullscreen or Picture-in-Picture; the recall shortcut (Alt+Shift+C) is captured
-before any artifact listener and only reveals the notice and moves focus to it.
-`npm run test:e2e:jsx` runs a hostile fixture against all of this.
+and is dismissed only by a click or key press on its own button (remembered per
+share under a hashed key, and reachable afterwards). Nothing in the frame can hide,
+cover or dismiss it:
+
+- the frame is an isolated, clipped box stacked below it; `position: fixed`, z-index
+  and `pointer-events` inside the frame only affect the frame; the frame gets no
+  fullscreen or Picture-in-Picture (`allow=""` and a Permissions-Policy on the
+  sandbox documents);
+- no frame message dismisses it. A frame can ask for the chrome to be revealed
+  (`restore-controls`, which a user's Alt+Shift+C also sends), at most once a second
+  and only after the page started; the viewer then shows the notice and, only if
+  focus was in the frame, focuses the notice itself, never a button. Pressing Space
+  or Enter right after therefore does nothing; "Got it" always takes the person's
+  own Tab or click.
+
+`npm run test:e2e:jsx` runs a hostile fixture against all of this, including a
+`restore-controls` posted from inside the frame followed by Space and Enter.
 
 A runtime busy loop can freeze the viewer tab: the frame shares the viewer's
 process on browsers that do not isolate opaque-origin frames.
 
-## Errors
+## Loading and errors
 
-A panel in the viewer, never partial output: compile errors show the message and
-line; an unknown import lists the library set; a runtime error comes from the
-frame's ErrorBoundary; a failed library digest (a deploy in progress) says "This
-artifact viewer is updating. Try again in a minute." Each has "Download source".
+Until the page reports its first render the viewer covers the frame with a
+skeleton and a status line ("Loading the page…", `role="status"`, still under
+`prefers-reduced-motion`). After 15 seconds it says "This page is taking a long
+time to start" with Try again (it keeps waiting); if the frame still has not
+started, that becomes the panel.
+
+Errors are a panel in the viewer, never partial output, written for the person
+opening the link: compile errors show the message and line; an unknown import
+lists the library set; a runtime error comes from the frame's ErrorBoundary; a
+failed library digest (a deploy in progress) says "This artifact viewer is
+updating. Try again in a minute." The notice stays above every panel. Each panel
+has "Download source".
 
 ## Licences
 

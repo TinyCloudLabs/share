@@ -31,6 +31,19 @@ describe("JSX runtime build", () => {
     }
   });
 
+  it("ships no robust-predicates code (Unlicense) in any library file", () => {
+    for (const file of built.files) expect(file.text, file.id).not.toMatch(/orient2d|robust-predicates/);
+  });
+
+  it("itemises the packages pre-bundled inside @mermaid-js/parser's dist, with licence texts", () => {
+    const embedded = built.packages.filter((pkg) => pkg.embeddedIn === "@mermaid-js/parser");
+    const names = embedded.map((pkg) => pkg.name);
+    for (const required of ["langium", "chevrotain", "@chevrotain/gast", "@chevrotain/utils", "vscode-jsonrpc", "vscode-languageserver-protocol", "vscode-languageserver-types"]) expect(names).toContain(required);
+    for (const pkg of embedded) expect(pkg.licenceText?.length ?? 0, pkg.name).toBeGreaterThan(200);
+    // Packages whose own files carry no licence text still get one in NOTICE.
+    for (const name of ["fastdom", "victory-vendor"]) expect(built.packages.find((pkg) => pkg.name === name)?.licenceText?.includes("Permission is hereby granted"), name).toBe(true);
+  });
+
   it("never bundles code from a network location", () => {
     // Library files carry no CDN, font or source-map URLs to fetch at run time.
     for (const file of built.files) {

@@ -11,6 +11,7 @@
  * caller shows it with `textContent`.
  */
 import {
+  JSX_RESTORE_CONTROLS_INTERVAL_MS,
   JSX_SANDBOX_PATH,
   JSX_START_TIMEOUT_MS,
   JSX_MAX_SOURCE_CHARS,
@@ -93,6 +94,8 @@ export function createJsxSandbox(doc: Document, options: JsxSandboxOptions = {})
   let settled = false;
   let pending: { resolve: () => void; reject: (error: Error) => void; timeout: ReturnType<typeof setTimeout> } | undefined;
   let queued: JsxRenderRequest | undefined;
+  let started = false;
+  let lastRestore = 0;
 
   const post = (request: JsxRenderRequest): void => iframe.contentWindow?.postMessage(request, "*");
   const settle = (error?: JsxRenderError): void => {
@@ -117,11 +120,18 @@ export function createJsxSandbox(doc: Document, options: JsxSandboxOptions = {})
         if (queued !== undefined) { post(queued); queued = undefined; }
         return;
       case "ready":
+        started = true;
         settle();
         return;
-      case "restore-controls":
+      case "restore-controls": {
+        // A request from the frame, not a user action: at most one a second, and only once
+        // its page has started. The handler decides what revealing means (artifact-notice.ts).
+        const now = Date.now();
+        if (!started || now - lastRestore < JSX_RESTORE_CONTROLS_INTERVAL_MS) return;
+        lastRestore = now;
         options.onRestoreControls?.();
         return;
+      }
       case "error": {
         const error = new JsxRenderError(message.phase, message.message, message.line, message.module);
         if (pending !== undefined) settle(error);

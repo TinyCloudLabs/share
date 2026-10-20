@@ -54,4 +54,6 @@ user-content origin, which is the same site as `share.tinycloud.xyz`, so
 exposure. A separate registrable domain, planned for live/public content, removes it.
 
 Moving the origin does not change the network claim: a separate origin is
-isolation, not egress control (see "Privacy" in `jsx-artifact-sharing.md`).
+isolation, not egress control: prerender, preconnect, navigation attempts,
+dns-prefetch and WebRTC can still reach out from a frame on any origin (see
+"Privacy" in `jsx-artifact-sharing.md`).

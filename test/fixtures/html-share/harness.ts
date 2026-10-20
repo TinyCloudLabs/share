@@ -14,6 +14,7 @@ import navigateEarly from "./navigate-early.html?raw";
 import navigateLate from "./navigate-late.html?raw";
 import headAttributes from "./head-attributes.html?raw";
 import leadingComments from "./leading-comments.html?raw";
+import jsxCounter from "../../../examples/jsx-artifact/counter.jsx?raw";
 
 const FIXTURES: Readonly<Record<string, string>> = {
   report,
@@ -22,13 +23,14 @@ const FIXTURES: Readonly<Record<string, string>> = {
   "navigate-late": navigateLate,
   "head-attributes": headAttributes,
   "leading-comments": leadingComments,
+  "jsx-counter": jsxCounter,
 };
 const params = new URLSearchParams(location.search);
 const name = params.get("fixture") ?? "report";
 const fixture = (FIXTURES[name] ?? report)
   .replaceAll("__VIEWER_ORIGIN__", location.origin)
   .replaceAll("__STUN_PORT__", params.get("stun") ?? "3478");
-const filename = `${name}.html`;
+const filename = name.startsWith("jsx-") ? `${name}.jsx` : `${name}.html`;
 const addressed = params.get("access") === "addressed";
 
 sessionStorage.setItem("tc-viewer-secret", "session-secret-8c1");

@@ -117,6 +117,8 @@ try {
     assert.ok(outer, "bridge frame exists");
     await frame.waitForSelector("[data-testid=count]");
     assert.equal(await frame.$eval("[data-testid=count]", (node) => node.textContent), "0");
+    // The bridge drops the nonce from its own URL, so the child cannot read it through baseURI.
+    assert.equal(await frame.evaluate(() => document.baseURI.includes("#")), false, "the child's baseURI carries no fragment");
     await frame.click("[data-testid=increment]");
     await frame.click("[data-testid=increment]");
     assert.equal(await frame.$eval("[data-testid=count]", (node) => node.textContent), "2");
@@ -213,7 +215,7 @@ try {
   {
     const run = await open("unknown-import.jsx");
     const panel = await run.page.$eval(".viewer-jsx-panel", (node) => node.textContent);
-    assert.match(panel, /canvas-confetti isn't available/);
+    assert.match(panel, /needs a library that isn't available[\s\S]*Import from the file: canvas-confetti/);
     assert.match(panel, /Available: react, react-dom, react-dom\/client, react\/jsx-runtime, lucide-react, recharts, d3, mermaid/);
     assert.equal(await run.page.$("iframe"), null, "no frame left after an import error");
     await shot(run.page, "jsx-unknown-import");
@@ -224,9 +226,100 @@ try {
     assert.match(text, /syntax error/);
     assert.match(text, /Line 5/);
     assert.equal(await syntax.page.$("iframe"), null);
-    assert.equal(await syntax.page.$eval(".viewer-jsx-panel-download", (node) => node.getAttribute("download")), "syntax-error.jsx");
+    assert.equal(await syntax.page.$eval(".viewer-jsx-panel a[download]", (node) => node.getAttribute("download")), "syntax-error.jsx");
     await shot(syntax.page, "jsx-syntax-error-dark");
     await syntax.page.close();
+  }
+
+  // --- Loading state: never a blank area while libraries load or the page starts ---
+  {
+    await freshBeacon();
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1100, height: 720 });
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      // Hold the largest library back, as a slow connection would.
+      if (/\/assets\/jsx-runtime\/|\/\.vite\/|mermaid/.test(request.url()) && /mermaid/.test(request.url()) && request.resourceType() === "fetch") {
+        setTimeout(() => request.continue().catch(() => undefined), 3000);
+      } else {
+        request.continue().catch(() => undefined);
+      }
+    });
+    await page.goto(`${origin}/test/fixtures/jsx-harness.html?f=diagram.jsx&beacon=${encodeURIComponent(beaconOrigin)}`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".viewer-jsx-loading", { timeout: 20_000 });
+    await sleep(600);
+    const cover = await page.evaluate(() => {
+      const node = document.querySelector(".viewer-jsx-loading");
+      const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      const bar = node.querySelector(".viewer-jsx-skeleton-bar");
+      return {
+        role: node.getAttribute("role"),
+        text: node.textContent,
+        height: box.height,
+        width: box.width,
+        background: style.backgroundColor,
+        stageState: node.parentElement.dataset.state,
+        animation: getComputedStyle(bar, "::after").animationName,
+        hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) !== null && node.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)),
+      };
+    });
+    assert.equal(cover.role, "status");
+    assert.match(cover.text, /Loading the page…/);
+    assert.ok(cover.height >= 400, `the cover fills the area (height ${cover.height})`);
+    assert.notEqual(cover.background, "rgba(0, 0, 0, 0)");
+    assert.equal(cover.stageState, "loading");
+    assert.equal(cover.animation, "viewer-jsx-skeleton");
+    assert.ok(cover.hit, "the cover is the topmost element over the area");
+    await shot(page, "jsx-loading-light");
+    await page.waitForFunction(() => document.documentElement.dataset.ready, { timeout: 40_000 });
+    await childFrame(page);
+    assert.equal(await page.$(".viewer-jsx-loading"), null, "the cover is gone once the page is ready");
+    await page.close();
+
+    // Reduced motion: the skeleton does not animate.
+    const calm = await browser.newPage();
+    await calm.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }, { name: "prefers-color-scheme", value: "dark" }]);
+    await calm.setViewport({ width: 390, height: 844 });
+    await calm.setRequestInterception(true);
+    calm.on("request", (request) => {
+      if (/mermaid/.test(request.url()) && request.resourceType() === "fetch") setTimeout(() => request.continue().catch(() => undefined), 3000);
+      else request.continue().catch(() => undefined);
+    });
+    await calm.goto(`${origin}/test/fixtures/jsx-harness.html?f=diagram.jsx&beacon=${encodeURIComponent(beaconOrigin)}`, { waitUntil: "domcontentloaded" });
+    await calm.waitForSelector(".viewer-jsx-loading", { timeout: 20_000 });
+    await sleep(400);
+    assert.equal(await calm.evaluate(() => getComputedStyle(document.querySelector(".viewer-jsx-skeleton-bar"), "::after").animationName), "none");
+    // Dark: the cover is dark, not a light card.
+    const dark = await calm.evaluate(() => getComputedStyle(document.querySelector(".viewer-jsx-loading")).backgroundColor);
+    assert.equal(dark, "rgb(11, 14, 20)", "dark cover uses the dark page token");
+    await shot(calm, "jsx-loading-dark-390");
+    await calm.close();
+  }
+
+  // --- Chrome follows the OS theme at phone and desktop widths ---
+  for (const [scheme, width] of [["light", 1440], ["dark", 1440], ["light", 390], ["dark", 390]]) {
+    const run = await open("syntax-error.jsx", { scheme, width, height: width === 390 ? 844 : 900 });
+    const colors = await run.page.evaluate(() => {
+      const notice = document.querySelector(".viewer-artifact-notice");
+      const panel = document.querySelector(".viewer-jsx-panel");
+      return {
+        notice: getComputedStyle(notice).backgroundColor,
+        noticeText: getComputedStyle(notice).color,
+        noticeHeight: notice.getBoundingClientRect().height,
+        panel: getComputedStyle(panel).backgroundColor,
+        panelText: getComputedStyle(panel).color,
+        overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    const dark = scheme === "dark";
+    assert.equal(colors.panel, dark ? "rgb(18, 21, 30)" : "rgb(255, 255, 255)", `${scheme} ${width}: panel surface`);
+    assert.equal(colors.notice, dark ? "rgb(22, 25, 34)" : "rgb(241, 245, 249)", `${scheme} ${width}: notice surface`);
+    assert.equal(colors.panelText, dark ? "rgb(226, 232, 240)" : "rgb(26, 28, 33)", `${scheme} ${width}: panel text`);
+    assert.ok(colors.overflowX <= 0, `${scheme} ${width}: no horizontal scroll`);
+    if (width === 390) assert.ok(colors.noticeHeight <= 72, `390px notice height ${colors.noticeHeight}`);
+    await shot(run.page, `jsx-chrome-${scheme}-${width}`);
+    await run.page.close();
   }
 
   // --- Addressed links get a download, never a frame -----------------------
@@ -265,16 +358,18 @@ try {
   }
 
   // --- The viewer chrome cannot be hidden, covered, trapped or dismissed by the artifact ---
-  {
-    const run = await open("hostile-chrome.jsx");
+  // The same hostile page, as a JSX app and as a single-file HTML artifact.
+  for (const kind of ["jsx", "html"]) {
+    const run = await open(kind === "jsx" ? "hostile-chrome.jsx" : "hostile-chrome.html");
     const frame = await childFrame(run.page);
     await frame.waitForSelector("#report[data-done=yes]", { timeout: 20_000 });
     await sleep(600);
     const { results } = JSON.parse(await frame.$eval("#report", (node) => node.textContent));
+    const label = (text) => `${kind}: ${text}`;
     // No fullscreen, no Picture-in-Picture: the sandbox documents' Permissions-Policy forbids both.
-    assert.equal(results.fullscreenEnabled, false, "fullscreen must be unavailable inside the frame");
-    assert.equal(results.pictureInPictureEnabled, false, "Picture-in-Picture must be unavailable inside the frame");
-    assert.ok(/^(?:rejected|threw)/.test(results.fullscreenRequest) || results.fullscreenRequest === "pending", `fullscreen request: ${results.fullscreenRequest}`);
+    assert.equal(results.fullscreenEnabled, false, label("fullscreen must be unavailable inside the frame"));
+    assert.equal(results.pictureInPictureEnabled, false, label("Picture-in-Picture must be unavailable inside the frame"));
+    assert.ok(/^(?:rejected|threw)/.test(results.fullscreenRequest) || results.fullscreenRequest === "pending", label(`fullscreen request: ${results.fullscreenRequest}`));
     assert.equal(await run.page.evaluate(() => document.fullscreenElement), null);
 
     // The notice is where the viewer put it, above the frame, and nothing draws over it.
@@ -299,54 +394,86 @@ try {
         sandbox: frameElement.getAttribute("sandbox"),
       };
     });
-    assert.ok(geometry.noticeVisible, "the notice is visible");
-    assert.ok(geometry.noticeHit, "elementFromPoint at the notice text returns the notice");
-    assert.ok(geometry.dismissHit, "elementFromPoint at the dismiss button returns the button");
-    assert.ok(geometry.frameHit, "the frame is still the topmost thing over its own box");
-    assert.ok(geometry.noticeRect.y + geometry.noticeRect.h <= geometry.frameRect.y + 0.5, "the notice and the frame do not overlap");
-    assert.ok(["hidden", "clip"].includes(geometry.frameStyle.overflow), `frame overflow ${geometry.frameStyle.overflow}`);
+    assert.ok(geometry.noticeVisible, label("the notice is visible"));
+    assert.ok(geometry.noticeHit, label("elementFromPoint at the notice text returns the notice"));
+    assert.ok(geometry.dismissHit, label("elementFromPoint at the dismiss button returns the button"));
+    assert.ok(geometry.frameHit, label("the frame is still the topmost thing over its own box"));
+    assert.ok(geometry.noticeRect.y + geometry.noticeRect.h <= geometry.frameRect.y + 0.5, label("the notice and the frame do not overlap"));
+    assert.ok(["hidden", "clip"].includes(geometry.frameStyle.overflow), label(`frame overflow ${geometry.frameStyle.overflow}`));
     assert.equal(geometry.frameStyle.isolation, "isolate");
-    assert.ok(Number(geometry.noticeZ) > Number(geometry.frameStyle.zIndex), "the notice stacks above the frame");
-    assert.equal(geometry.allowAttr, "");
+    assert.ok(Number(geometry.noticeZ) > Number(geometry.frameStyle.zIndex), label("the notice stacks above the frame"));
+    assert.equal(geometry.allowAttr, "", label("no permissions delegated to the frame"));
     assert.equal(geometry.allowFullscreenAttr, false);
     assert.equal(geometry.sandbox, "allow-scripts");
     assert.match(await run.page.$eval(".viewer-artifact-notice-text", (node) => node.textContent), /^This page runs the sender's code\. The sender can tell that you opened it\.$/);
 
-    // Keyboard: the notice is the first thing Tab reaches, before the frame.
+    const state = () => run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state);
+    const activeClass = () => run.page.evaluate(() => document.activeElement?.className ?? "");
+
+    // Keyboard: the notice's own button is the first thing Tab reaches, before the frame.
+    await frame.evaluate(() => window.__stopStealing());
     await run.page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
     await run.page.keyboard.press("Tab");
-    assert.equal(await run.page.evaluate(() => document.activeElement.className), "viewer-artifact-notice-dismiss");
+    assert.equal(await activeClass(), "viewer-artifact-notice-dismiss", label("Tab reaches the notice first"));
 
-    // A frame that swallows Tab and steals focus cannot keep the user from the chrome:
-    // the recall shortcut is captured first and only reveals the notice and focuses it.
-    await frame.click("#thief").catch(() => undefined);
-    await frame.evaluate(() => document.getElementById("thief").focus());
+    // KNOWN LIMIT, recorded: a page that loops focus() and swallows Tab can keep keyboard focus
+    // inside its own frame (any iframe can). The person can still click the chrome, and for JSX the
+    // recall shortcut below brings focus to the notice. What the page cannot do is dismiss it.
+    await frame.evaluate(() => { window.__startStealing(); document.getElementById("thief").focus(); });
     for (let press = 0; press < 3; press += 1) await run.page.keyboard.press("Tab");
-    assert.notEqual(await run.page.evaluate(() => document.activeElement?.className), "viewer-artifact-notice-dismiss", "the frame trapped Tab (the test's premise)");
-    await run.page.keyboard.down("Alt");
-    await run.page.keyboard.down("Shift");
-    await run.page.keyboard.press("KeyC");
-    await run.page.keyboard.up("Shift");
-    await run.page.keyboard.up("Alt");
-    await run.page.waitForFunction(() => document.activeElement?.className === "viewer-artifact-notice-dismiss", { timeout: 5_000 });
+    console.log(`KNOWN-LIMIT (${kind}): keyboard focus held by a focus-looping frame: active=${await activeClass()}`);
 
-    // Only a user's click dismisses it; messages from the frame cannot.
-    await frame.evaluate(() => {
-      for (const data of [{ v: 1, type: "dismiss" }, { v: 1, type: "restore-controls", nonce: "0".repeat(32) }, { type: "restore-controls" }]) window.top.postMessage(data, "*");
-    });
-    await run.page.mouse.click(geometry.noticeRect.x + 5, geometry.noticeRect.y + geometry.noticeRect.h / 2);
-    await run.page.click(".viewer-artifact-notice-dismiss");
-    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "collapsed");
-    await frame.evaluate(() => {
-      for (const data of [{ v: 1, type: "restore-controls", nonce: "0".repeat(32) }, { type: "restore-controls" }, { v: 1, type: "bridge-ready" }]) window.top.postMessage(data, "*");
-    });
+    // Forged messages from INSIDE the frame, through the bridge and straight at the top window,
+    // then the keys a person might press next. Nothing may dismiss the notice.
+    await frame.evaluate(() => window.__stopStealing());
+    await frame.evaluate(() => window.__forgeMessages());
+    await sleep(400);
+    assert.equal(await state(), "open", label("a message from the frame must not dismiss the notice"));
+    if (kind === "jsx") {
+      // The bridge passes a bare restore-controls on; the viewer moves focus to the notice itself, never a button.
+      assert.equal(await activeClass(), "viewer-artifact-notice", label("a frame-triggered reveal focuses the notice, not a button"));
+    }
+    assert.notEqual(await run.page.evaluate(() => document.activeElement?.tagName), "BUTTON", label("focus is not on a button after a frame message"));
+    for (const key of ["Space", "Enter", "Space"]) {
+      await run.page.keyboard.press(key);
+      await sleep(100);
+    }
+    assert.equal(await state(), "open", label("Space/Enter after a forged frame message must not dismiss the notice"));
+    // A burst is limited to one reveal a second and never dismisses.
+    for (let burst = 0; burst < 5; burst += 1) await frame.evaluate(() => window.__forgeMessages());
     await sleep(300);
-    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "collapsed", "a forged message from the frame must not touch the notice");
-    // Still reachable after dismissal.
-    assert.ok(await run.page.$eval(".viewer-artifact-notice-recall", (node) => node.getBoundingClientRect().height >= 44 && !node.hidden));
-    await run.page.click(".viewer-artifact-notice-recall");
-    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "open");
-    await shot(run.page, "jsx-hostile-chrome");
+    for (const key of ["Space", "Enter"]) await run.page.keyboard.press(key);
+    assert.equal(await state(), "open", label("a burst of forged messages must not dismiss the notice"));
+
+    // The person's own Tab then Space is what dismisses it. (An HTML page has no reveal path, so
+    // focus is still in its frame: the person clicks out of it first.)
+    if (kind === "html") await run.page.click(".viewer-artifact-notice-text");
+    await run.page.keyboard.press("Tab");
+    assert.equal(await activeClass(), "viewer-artifact-notice-dismiss", label("Tab from the notice reaches the button"));
+    await run.page.keyboard.press("Space");
+    assert.equal(await state(), "collapsed", label("a deliberate key press on the button dismisses it"));
+    assert.ok(await run.page.$eval(".viewer-artifact-notice-recall", (node) => node.getBoundingClientRect().height >= 44 && !node.hidden), label("still reachable after dismissal"));
+    await sleep(1100);
+    await frame.evaluate(() => window.__forgeMessages());
+    await sleep(300);
+    assert.notEqual(await run.page.evaluate(() => document.activeElement?.className), "viewer-artifact-notice-dismiss", label("no frame path focuses the dismiss button"));
+
+    if (kind === "jsx") {
+      // The recall shortcut, typed with focus in the frame, is captured before any artifact
+      // listener and brings the person to the notice (not to a button).
+      await run.page.keyboard.press("Tab");
+      await frame.evaluate(() => document.getElementById("thief").focus());
+      await sleep(1100);
+      await run.page.keyboard.down("Alt");
+      await run.page.keyboard.down("Shift");
+      await run.page.keyboard.press("KeyC");
+      await run.page.keyboard.up("Shift");
+      await run.page.keyboard.up("Alt");
+      await run.page.waitForFunction(() => document.activeElement?.className === "viewer-artifact-notice", { timeout: 5_000 });
+      assert.equal(await state(), "open");
+    }
+    await run.page.click(".viewer-artifact-notice-recall").catch(() => undefined);
+    await shot(run.page, `${kind}-hostile-chrome`);
     await run.page.close();
   }
 
@@ -397,8 +524,10 @@ try {
   for (const probe of ["iframe", "metaRefresh", "locationAssign", "linkPreconnect", "linkDnsPrefetch", "linkPrerender", "webrtc"]) {
     const run = await open("privacy.jsx", { query: `&probes=${probe}` });
     await sleep(3500);
-    console.log(`KNOWN-LEAK (observed, not blocked by CSP) ${probe}: http requests=${JSON.stringify(beacon.requests)} tcp connections=${beacon.connections} udp packets=${beacon.udpPackets}`);
+    console.log(`KNOWN-LEAK (observed; CSP does not stop it) ${probe}: http requests=${JSON.stringify(beacon.requests)} tcp connections=${beacon.connections} udp packets=${beacon.udpPackets}`);
     if (probe !== "linkPrerender") assert.deepEqual(beacon.requests, [], `${probe}: an HTTP request reached the beacon`);
+    // A prerender can send an HTTP GET to the author's address with author-chosen data; nothing else may.
+    else assert.ok(beacon.requests.every((url) => url === "/link-prerender?data=author-chosen-value"), `prerender: unexpected requests ${JSON.stringify(beacon.requests)}`);
     assert.equal(new URL(run.page.url()).pathname, "/test/fixtures/jsx-harness.html");
     await run.page.close();
   }

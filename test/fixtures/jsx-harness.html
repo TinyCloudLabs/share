@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>JSX artifact browser harness</title>
+    <title>JSX and HTML artifact browser harness</title>
     <link rel="stylesheet" href="/src/viewer/viewer.css">
   </head>
   <body>
@@ -14,6 +14,7 @@
       const fixtures = {
         ...import.meta.glob("/examples/jsx-artifact/*.jsx", { query: "?raw", import: "default", eager: true }),
         ...import.meta.glob("/test/fixtures/jsx/*.jsx", { query: "?raw", import: "default", eager: true }),
+        ...import.meta.glob("/test/fixtures/html/*.html", { query: "?raw", import: "default", eager: true }),
       };
       const params = new URLSearchParams(location.search);
       const name = params.get("f") ?? "counter.jsx";

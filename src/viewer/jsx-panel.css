@@ -1,41 +1,102 @@
-/* Render-error panel for JSX artifacts. TinyCloud tokens, with the palette as fallback. */
+/* Loading state and render-error panels for JSX artifacts, in the TinyCloud tokens (artifact-tokens.css). */
+
+/* The frame and its loading cover share one box: the cover sits above the frame until it reports ready. */
+.viewer-jsx-stage { position: relative; }
+/* Before the frame exists the stage still has the frame's height, so the page does not jump when it appears. */
+.viewer-jsx-stage[data-state="loading"] { min-height: max(420px, 80svh); }
+
+.viewer-jsx-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: var(--tc-space-4);
+  padding: var(--tc-space-5);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+  background: var(--tc-color-page);
+  color: var(--tc-color-text-muted);
+  font: var(--tc-text-md) / var(--tc-leading-ui) var(--tc-font-sans);
+  text-align: center;
+}
+.viewer-jsx-skeleton {
+  display: grid;
+  gap: var(--tc-space-2);
+  width: min(100%, 28rem);
+}
+.viewer-jsx-skeleton-bar {
+  height: 0.875rem;
+  overflow: hidden;
+  background: var(--tc-color-surface-subtle);
+  border-radius: var(--tc-radius-sm);
+}
+.viewer-jsx-skeleton-bar:nth-child(1) { width: 40%; }
+.viewer-jsx-skeleton-bar:nth-child(3) { width: 70%; }
+.viewer-jsx-skeleton-bar::after {
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: var(--tc-color-selection);
+  content: "";
+  animation: viewer-jsx-skeleton 1.4s var(--tc-ease-out) infinite;
+}
+@keyframes viewer-jsx-skeleton {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .viewer-jsx-skeleton-bar::after { animation: none; opacity: 0.45; }
+}
+.viewer-jsx-loading-text { margin: 0; }
+.viewer-jsx-loading[data-state="slow"] .viewer-jsx-loading-text { color: var(--tc-color-text); font-weight: var(--tc-weight-medium); }
+.viewer-jsx-loading-detail { margin: 0; max-width: 32rem; }
+
 .viewer-jsx-panel {
   display: grid;
-  gap: var(--tc-space-3, 0.75rem);
+  gap: var(--tc-space-3);
   max-width: 44rem;
-  margin: var(--tc-space-5, 1.5rem) auto;
-  padding: var(--tc-space-5, 1.5rem);
-  border: 1px solid var(--tc-color-border, #e2e8f0);
-  border-radius: var(--tc-radius-md, 0.5rem);
-  background: var(--tc-color-surface, #fff);
-  color: var(--tc-color-text, #1a1c21);
-  font-family: var(--tc-font-sans, system-ui, sans-serif);
+  margin: var(--tc-space-5) auto;
+  padding: var(--tc-space-5);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+  background: var(--tc-color-surface);
+  color: var(--tc-color-text);
+  font-family: var(--tc-font-sans);
 }
-.viewer-jsx-panel-title { margin: 0; font-size: var(--tc-text-xl, 1.25rem); font-weight: var(--tc-weight-semibold, 600); letter-spacing: var(--tc-tracking-tight, -0.02em); }
-.viewer-jsx-panel-detail { margin: 0; color: var(--tc-color-text-muted, #64748b); line-height: var(--tc-leading-prose, 1.65); overflow-wrap: anywhere; }
-.viewer-jsx-panel-detail code { font-family: var(--tc-font-mono, ui-monospace, monospace); color: var(--tc-color-text, #1a1c21); }
+.viewer-jsx-panel-title { margin: 0; font-size: var(--tc-text-xl); font-weight: var(--tc-weight-semibold); letter-spacing: var(--tc-tracking-tight); }
+.viewer-jsx-panel-detail { margin: 0; color: var(--tc-color-text-muted); line-height: var(--tc-leading-prose); overflow-wrap: anywhere; }
 .viewer-jsx-panel-message {
   margin: 0;
-  padding: var(--tc-space-3, 0.75rem) var(--tc-space-4, 1rem);
-  border-left: 3px solid var(--tc-color-status-danger, #b42318);
-  border-radius: var(--tc-radius-sm, 0.25rem);
-  background: var(--tc-color-surface-subtle, #f1f5f9);
-  font: var(--tc-text-sm, 0.875rem) / 1.5 var(--tc-font-mono, ui-monospace, monospace);
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border-left: 3px solid var(--tc-color-status-danger);
+  border-radius: var(--tc-radius-sm);
+  background: var(--tc-color-surface-subtle);
+  color: var(--tc-color-text);
+  font: var(--tc-text-sm) / 1.5 var(--tc-font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.viewer-jsx-panel-line { margin: 0; color: var(--tc-color-text-muted, #64748b); font-size: var(--tc-text-sm, 0.875rem); }
-.viewer-jsx-panel-download {
-  justify-self: start;
+.viewer-jsx-panel-line { margin: 0; color: var(--tc-color-text-muted); font-size: var(--tc-text-sm); }
+.viewer-jsx-panel-actions { display: flex; flex-wrap: wrap; gap: var(--tc-space-3); }
+
+/* One button look for every action in the loading cover and the panels. */
+.viewer-jsx-action {
   min-height: 44px;
   display: inline-flex;
   align-items: center;
-  padding: 0 var(--tc-space-4, 1rem);
-  border: 1px solid var(--tc-color-border, #e2e8f0);
-  border-radius: var(--tc-radius-pill, 999px);
-  color: var(--tc-color-link, #1e42c8);
-  font-weight: var(--tc-weight-medium, 500);
+  padding: 0 var(--tc-space-4);
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-pill);
+  background: var(--tc-color-surface);
+  color: var(--tc-color-link);
+  font: inherit;
+  font-weight: var(--tc-weight-medium);
   text-decoration: none;
+  cursor: pointer;
 }
-.viewer-jsx-panel-download:hover { border-color: var(--tc-color-accent, #2a56f6); }
-.viewer-jsx-panel-download:focus-visible { outline: 2px solid var(--tc-color-focus, #2a56f6); outline-offset: 3px; }
+.viewer-jsx-action:hover { border-color: var(--tc-color-accent); }
+.viewer-jsx-action:focus-visible { outline: 2px solid var(--tc-color-focus); outline-offset: 3px; }
+.viewer-jsx-action--primary { border-color: transparent; background: var(--tc-color-accent); color: var(--tc-color-on-accent); }
+.viewer-jsx-action--primary:hover { background: var(--tc-color-accent-hover); border-color: transparent; }

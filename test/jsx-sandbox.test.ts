@@ -11,12 +11,12 @@ import {
   JSX_SANDBOX_CSP,
   JSX_SANDBOX_HTTP_CSP,
   JSX_SANDBOX_HTTP_HEADERS,
-  JSX_SANDBOX_PERMISSIONS_POLICY,
   JSX_SANDBOX_PATH,
   buildJsxSandboxHtml,
   buildRenderRequest,
   parseFrameMessage,
 } from "../src/viewer/jsx-frame.js";
+import { SANDBOX_PERMISSIONS_POLICY } from "../src/viewer/sandbox-permissions.js";
 import { JsxModuleIntegrityError, loadJsxModules, requiredFileIds, scanImportSpecifiers } from "../src/viewer/jsx-modules.js";
 import { JsxRenderError, createJsxSandbox } from "../src/viewer/jsx-sandbox.js";
 import { renderJsxPage } from "../src/viewer/jsx-render.js";
@@ -36,9 +36,9 @@ describe("JSX sandbox frame policy", () => {
     expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", JSX_SANDBOX_HTTP_CSP]);
     expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["x-frame-options", "SAMEORIGIN"]);
     // No fullscreen or Picture-in-Picture over the viewer's chrome, for the bridge and its child.
-    expect(JSX_SANDBOX_PERMISSIONS_POLICY).toContain("fullscreen=()");
-    expect(JSX_SANDBOX_PERMISSIONS_POLICY).toContain("picture-in-picture=()");
-    expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["permissions-policy", JSX_SANDBOX_PERMISSIONS_POLICY]);
+    expect(SANDBOX_PERMISSIONS_POLICY).toContain("fullscreen=()");
+    expect(SANDBOX_PERMISSIONS_POLICY).toContain("picture-in-picture=()");
+    expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["permissions-policy", SANDBOX_PERMISSIONS_POLICY]);
     expect(JSX_SANDBOX_CSP).toBe([
       "default-src 'none'",
       "script-src 'unsafe-inline' 'unsafe-eval'",
@@ -60,7 +60,7 @@ describe("JSX sandbox frame policy", () => {
   it("serves the same complete policy from public/_headers on both routes, detaching the site-wide one", () => {
     const headers = readFileSync("public/_headers", "utf8");
     for (const route of ["/jsx-sandbox", JSX_SANDBOX_PATH]) {
-      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${JSX_SANDBOX_HTTP_CSP}\n  Permissions-Policy: ${JSX_SANDBOX_PERMISSIONS_POLICY}\n  X-Frame-Options: SAMEORIGIN\n`);
+      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${JSX_SANDBOX_HTTP_CSP}\n  Permissions-Policy: ${SANDBOX_PERMISSIONS_POLICY}\n  X-Frame-Options: SAMEORIGIN\n`);
     }
   });
 
@@ -208,13 +208,28 @@ describe("parent sandbox controller", () => {
     second.destroy();
   });
 
-  it("forwards the recall shortcut only from its own frame", () => {
+  it("passes the recall request on only from its own frame, after the page started, at most once a second", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:10Z"));
     const onRestoreControls = vi.fn();
     const sandbox = createJsxSandbox(document, { onRestoreControls });
-    frameMessage(sandbox, { v: 1, type: "restore-controls", nonce: nonceOf(sandbox) }, { source: window });
+    const nonce = nonceOf(sandbox);
+    const restore = { v: 1, type: "restore-controls", nonce };
+    frameMessage(sandbox, restore, { source: window });
+    // Before the page started a frame has no business asking for the chrome.
+    frameMessage(sandbox, restore);
     expect(onRestoreControls).not.toHaveBeenCalled();
-    frameMessage(sandbox, { v: 1, type: "restore-controls", nonce: nonceOf(sandbox) });
+    const rendered = sandbox.render("x", { runtime: "r" });
+    frameMessage(sandbox, { v: 1, type: "ready", nonce });
+    await rendered;
+    frameMessage(sandbox, restore, { source: window });
+    expect(onRestoreControls).not.toHaveBeenCalled();
+    frameMessage(sandbox, restore);
+    for (let burst = 0; burst < 20; burst += 1) frameMessage(sandbox, restore);
     expect(onRestoreControls).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(new Date("2030-01-01T00:00:11.100Z"));
+    frameMessage(sandbox, restore);
+    expect(onRestoreControls).toHaveBeenCalledTimes(2);
     sandbox.destroy();
   });
 
@@ -228,9 +243,20 @@ describe("parent sandbox controller", () => {
     sandbox.destroy();
   });
 
+  it("renderJsxPage refuses an oversize source before scanning or fetching anything", async () => {
+    stubObjectUrls();
+    const fetchSpy = vi.fn();
+    const root = document.createElement("main");
+    document.body.append(root);
+    await renderJsxPage(root, `import "x";\n${"a".repeat(512 * 1024)}`, { filename: "big.jsx", onCleanup: () => undefined, fetch: fetchSpy as unknown as typeof fetch, manifest: { version: 1, files: {} } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(root.querySelector(".viewer-jsx-panel")?.textContent).toContain("too large");
+  });
+
   it("refuses an oversize source before anything is sent", async () => {
     const sandbox = createJsxSandbox(document);
-    await expect(sandbox.render("x".repeat(1024 * 1024 + 1), { runtime: "r" })).rejects.toBeInstanceOf(JsxRenderError);
+    await expect(sandbox.render("x".repeat(512 * 1024 + 1), { runtime: "r" })).rejects.toBeInstanceOf(JsxRenderError);
     sandbox.destroy();
   });
 
@@ -394,7 +420,7 @@ describe("viewer integration", () => {
 
     for (const [data, expected] of [
       [{ phase: "compile", message: "<img src=x onerror=alert(1)> Unexpected token", line: 9 }, ["Line 9", "<img src=x onerror=alert(1)>"]],
-      [{ phase: "import", message: "Cannot find module", module: "canvas-confetti" }, ["canvas-confetti isn't available", "Available: react"]],
+      [{ phase: "import", message: "Cannot find module", module: "canvas-confetti" }, ["needs a library that isn't available", "Import from the file: canvas-confetti", "Available: react"]],
     ] as const) {
       document.body.replaceChildren();
       const root = document.createElement("main");
@@ -412,6 +438,103 @@ describe("viewer integration", () => {
   });
 });
 
+describe("loading state and retry", () => {
+  beforeEach(() => { document.body.replaceChildren(); stubObjectUrls(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const text = (id: string): string => `__TC_DEFINE__(["${id}"],function(){});`;
+  const sha = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+  const files = ["react", "react-dom", "runtime", "tailwind"];
+  const manifest: JsxManifest = { version: 1, files: Object.fromEntries(files.map((id) => [id, { id, url: `/assets/jsx-runtime/${id}.js`, sha256: sha(text(id)), bytes: text(id).length, provides: [id] }])) };
+  const okFetch = (async (url: string) => new Response(text(/jsx-runtime\/(.+)\.js$/.exec(url)![1]!), { status: 200 })) as unknown as typeof fetch;
+
+  it("covers the area with a polite status from the first moment, and removes it when the page reports ready", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowFetch = (async (url: string) => { await gate; return okFetch(url); }) as unknown as typeof fetch;
+    const root = document.createElement("main");
+    document.body.append(root);
+    const done = renderJsxPage(root, "export default () => null", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: slowFetch });
+    // Libraries still loading: no frame yet, but the cover is already there.
+    const cover = root.querySelector<HTMLElement>(".viewer-jsx-loading")!;
+    expect(cover.getAttribute("role")).toBe("status");
+    expect(cover.textContent).toContain("Loading the page…");
+    expect(root.querySelector("iframe")).toBeNull();
+    release();
+    const iframe = await vi.waitFor(() => { const found = root.querySelector("iframe"); if (found === null) throw new Error("wait"); return found; });
+    expect(root.querySelector(".viewer-jsx-loading")).not.toBeNull();
+    const nonce = new URL(iframe.src).hash.slice(1);
+    window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "bridge-ready", nonce } }));
+    window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "ready", nonce } }));
+    await done;
+    expect(root.querySelector(".viewer-jsx-loading")).toBeNull();
+    expect(root.querySelector("iframe")).toBe(iframe);
+  });
+
+  it("says so after the slow threshold, keeps waiting, and Try again starts over", async () => {
+    vi.useFakeTimers();
+    const root = document.createElement("main");
+    document.body.append(root);
+    void renderJsxPage(root, "export default () => null", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: okFetch, slowAfterMs: 5_000 });
+    await vi.waitFor(() => { if (root.querySelector("iframe") === null) throw new Error("wait"); });
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(root.querySelector(".viewer-jsx-loading")!.getAttribute("data-state")).toBe("loading");
+    await vi.advanceTimersByTimeAsync(1_500);
+    const cover = root.querySelector<HTMLElement>(".viewer-jsx-loading")!;
+    expect(cover.getAttribute("data-state")).toBe("slow");
+    expect(cover.textContent).toContain("This page is taking a long time to start");
+    const firstFrame = root.querySelector("iframe")!;
+    cover.querySelector<HTMLButtonElement>("button")!.click();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(firstFrame.isConnected).toBe(false);
+    expect(root.querySelector("iframe")).not.toBe(firstFrame);
+    expect(root.querySelector(".viewer-jsx-loading")!.getAttribute("data-state")).toBe("loading");
+  });
+
+  it("turns the sandbox's own start timeout into a recipient-facing panel with Try again and the source", async () => {
+    vi.useFakeTimers();
+    const root = document.createElement("main");
+    document.body.append(root);
+    void renderJsxPage(root, "export default () => null", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: okFetch });
+    // Digest checking is real async work; wait for the frame, then let the 15 s start timeout pass.
+    await vi.waitFor(() => { if (root.querySelector("iframe") === null) throw new Error("wait"); });
+    await vi.advanceTimersByTimeAsync(16_000);
+    const panel = root.querySelector(".viewer-jsx-panel")!;
+    expect(panel.textContent).toContain("This page is taking a long time to start");
+    expect(panel.textContent).toContain("Try again");
+    expect(panel.querySelector("a[download]")?.getAttribute("download")).toBe("app.jsx");
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(root.querySelector(".viewer-jsx-loading")).toBeNull();
+  });
+
+  it("ends a render that is still loading when its container's content is replaced", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowFetch = (async (url: string) => { await gate; return okFetch(url); }) as unknown as typeof fetch;
+    const root = document.createElement("main");
+    document.body.append(root);
+    const cleanups: Array<() => void> = [];
+    const done = renderJsxPage(root, "export default () => null", { filename: "app.jsx", onCleanup: (cleanup) => cleanups.push(cleanup), manifest, fetch: slowFetch });
+    cleanups.forEach((cleanup) => cleanup());
+    release();
+    await done;
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+
+  it("uses recipient-appropriate copy, never telling the reader to publish", async () => {
+    const root = document.createElement("main");
+    document.body.append(root);
+    const done = renderJsxPage(root, "x", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: okFetch });
+    const iframe = await vi.waitFor(() => { const found = root.querySelector("iframe"); if (found === null) throw new Error("wait"); return found; });
+    const nonce = new URL(iframe.src).hash.slice(1);
+    window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "error", nonce, phase: "compile", message: "Unexpected token", line: 2 } }));
+    await done;
+    const copy = root.querySelector(".viewer-jsx-panel")!.textContent!;
+    expect(copy).toContain("Ask the sender to share it again");
+    expect(copy).not.toMatch(/publish|Nothing was run/i);
+  });
+});
+
 describe("extension points", () => {
   beforeEach(() => { document.body.replaceChildren(); stubObjectUrls(); });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -421,12 +544,20 @@ describe("extension points", () => {
   };
   const nonceOf = (sandbox: ReturnType<typeof createJsxSandbox>): string => new URL(sandbox.iframe.src).hash.slice(1);
 
-  it("drops every cap/* message by default, and a registered handler sees only identity-valid ones", () => {
-    const quiet = createJsxSandbox(document);
+  it("drops every cap/* message by default, and a registered handler sees only identity-valid ones", async () => {
+    const onFailure = vi.fn();
+    const onRestoreControls = vi.fn();
+    const quiet = createJsxSandbox(document, { onFailure, onRestoreControls });
     const settled = vi.fn();
     void quiet.render("x", { runtime: "r" }).then(settled, settled);
-    expect(() => send(quiet, { v: 1, type: "cap/kv.get", nonce: nonceOf(quiet), body: { path: "a" } })).not.toThrow();
+    // Whatever they are named, cap/* messages trigger nothing: not a result, a failure or a reveal.
+    for (const type of ["cap/kv.get", "cap/ready", "cap/error", "cap/restore-controls"]) {
+      expect(() => send(quiet, { v: 1, type, nonce: nonceOf(quiet), body: { path: "a" } })).not.toThrow();
+    }
+    await Promise.resolve();
     expect(settled).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(onRestoreControls).not.toHaveBeenCalled();
     quiet.destroy();
 
     const handler = vi.fn();
@@ -486,11 +617,13 @@ describe("bridge document script", () => {
   function startBridge(options: { origin?: string; hash?: string } = {}): {
     send(data: unknown, source?: "parent" | "child" | "other", origin?: string): void;
     posted: Array<Record<string, unknown>>;
+    replaced: unknown[][];
     child(): FakeChild | null;
     fireChildLoad(): void;
     listening: boolean;
   } {
     const posted: Array<Record<string, unknown>> = [];
+    const replaced: unknown[][] = [];
     let handler: ((event: { source: unknown; origin: string; data: unknown }) => void) | undefined;
     const parent = { postMessage: (message: Record<string, unknown>, target: string) => { expect(target).toBe("*"); posted.push(message); } };
     let child: FakeChild | null = null;
@@ -510,13 +643,15 @@ describe("bridge document script", () => {
       body: { replaceChildren: (node: FakeChild) => { child = node; } },
     };
     const windowMock = {
-      location: { hash: options.hash ?? `#${NONCE}` },
+      location: { hash: options.hash ?? `#${NONCE}`, pathname: "/jsx-sandbox.html", search: "" },
+      history: { replaceState: (...args: unknown[]) => { replaced.push(args); } },
       parent,
       addEventListener: (type: string, listener: typeof handler) => { if (type === "message") handler = listener; },
     };
     new Function("window", "self", "document", JSX_BRIDGE_RUNTIME_SCRIPT)(windowMock, { origin: options.origin ?? "null" }, documentMock);
     return {
       posted,
+      replaced,
       listening: handler !== undefined,
       child: () => child,
       fireChildLoad: () => child?.listeners["load"]?.(),
@@ -535,6 +670,13 @@ describe("bridge document script", () => {
     expect(startBridge({ hash: "#short" }).listening).toBe(false);
     expect(startBridge({ hash: "" }).listening).toBe(false);
     expect(startBridge({ hash: `#${"G".repeat(32)}` }).listening).toBe(false);
+  });
+
+  it("drops the nonce from its own URL before the child can read it through baseURI", () => {
+    const bridge = startBridge();
+    expect(bridge.replaced).toEqual([[null, "", "/jsx-sandbox.html"]]);
+    // A refusing environment (or a missing history) must not stop the bridge from working.
+    expect(() => startBridge({ hash: `#${NONCE}` })).not.toThrow();
   });
 
   it("announces itself, then accepts one valid render from its parent only", () => {
@@ -564,7 +706,7 @@ describe("bridge document script", () => {
     ["unknown theme", { theme: "neon" }],
     ["extra key", { extra: true }],
     ["source not a string", { source: 5 }],
-    ["source too large", { source: "x".repeat(1024 * 1024 + 1) }],
+    ["source too large", { source: "x".repeat(512 * 1024 + 1) }],
     ["no runtime module", { modules: { react: "/*x*/" } }],
     ["modules not an object", { modules: ["runtime"] }],
     ["module name with a path", { modules: { runtime: "/*r*/", "../evil": "/*x*/" } }],
@@ -616,8 +758,28 @@ describe("bridge document script", () => {
     expect((error["message"] as string).length).toBe(2048);
     bridge.send({ v: 1, type: "error", phase: "network", message: "x" }, "child");
     expect(bridge.posted.at(-1)).toBe(error);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:10Z"));
     bridge.send({ v: 1, type: "restore-controls" }, "child");
     expect(bridge.posted.at(-1)).toEqual({ v: 1, nonce: NONCE, type: "restore-controls" });
+    vi.useRealTimers();
+  });
+
+  it("forwards restore-controls only after the child's page started, and at most once a second", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:10Z"));
+    const bridge = startBridge();
+    bridge.send(render());
+    const count = (): number => bridge.posted.filter((message) => message["type"] === "restore-controls").length;
+    bridge.send({ v: 1, type: "restore-controls" }, "child");
+    expect(count()).toBe(0);
+    bridge.send({ v: 1, type: "ready" }, "child");
+    for (let burst = 0; burst < 20; burst += 1) bridge.send({ v: 1, type: "restore-controls" }, "child");
+    expect(count()).toBe(1);
+    vi.setSystemTime(new Date("2030-01-01T00:00:11.100Z"));
+    bridge.send({ v: 1, type: "restore-controls" }, "child");
+    expect(count()).toBe(2);
+    vi.useRealTimers();
   });
 
   it("limits how many errors one frame may send", () => {
