@@ -8,8 +8,8 @@
 <meta name="theme-color" content="#f8f9fb" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0b0e14" media="(prefers-color-scheme: dark)">
 <meta name="description" content="Browse TinyCloud apps and see what each one can read and change before you install it.">
-<!-- This page has no SDK, no sign-in and no network beyond this origin's own static files. This in-document CSP and public/_headers are both enforced. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'">
+<!-- Until a person clicks Install this page loads no SDK and makes no request beyond this origin's own static files. The Install click loads OpenKey (frame-src; its SDK injects an inline style, so style-src allows it, as on the sender page) and the SDK, which talks to the person's own node and the location registry (connect-src https:). This in-document CSP and public/_headers are both enforced. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: blob:; font-src 'self'; frame-src https://openkey.so; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%232a56f6'%3E%3Ccircle cx='4' cy='4' r='2'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3Ccircle cx='20' cy='20' r='2'/%3E%3C/g%3E%3Cg fill='none' stroke='%23647187'%3E%3Ccircle cx='12' cy='4' r='1.5'/%3E%3Ccircle cx='20' cy='4' r='1.5'/%3E%3Ccircle cx='4' cy='12' r='1.5'/%3E%3Ccircle cx='20' cy='12' r='1.5'/%3E%3Ccircle cx='4' cy='20' r='1.5'/%3E%3Ccircle cx='12' cy='20' r='1.5'/%3E%3C/g%3E%3C/svg%3E">
 <title>Apps · TinyCloud Sharing</title>
 <script type="module" src="/src/apps/main.ts"></script>
@@ -36,7 +36,7 @@
     <p class="apps-kicker">TinyCloud apps</p>
     <h1 id="apps-title">Apps for your TinyCloud</h1>
     <p>Every listing shows what the app can read and change, and pins the exact files it ships by checksum.</p>
-    <p class="tc-status tc-status--info" id="install-note">Install isn't available yet. You can look at what each app asks for now.</p>
+    <p class="tc-status tc-status--info" id="install-note">Install saves an app's files to your TinyCloud. You see what it asks for first, and nothing is saved until you approve it in OpenKey. Opening an installed app is coming next.</p>
   </section>
   <ul class="apps-grid" id="apps-list" aria-label="Apps"></ul>
   <noscript><p class="apps-empty">This page needs JavaScript to list apps.</p></noscript>

@@ -95,14 +95,18 @@ describe("apps page rendering", () => {
     expect(sheet.querySelector("[role=alert]")?.textContent).toContain("Couldn't load");
   });
 
-  it("keeps Install disabled on the card and in the sheet", async () => {
+  it("offers Install on the card and in the details sheet, and starts nothing until Continue", async () => {
     const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
     vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
-    mountApps(list, sheet, [await entryFor(manifest, { name: "Plain", description: "Plain app." })]);
+    const ports = vi.fn(() => { throw new Error("the install ports must not be created before Continue"); });
+    mountApps(list, sheet, [await entryFor(manifest, { name: "Plain", description: "Plain app." })], { ports });
     const install = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
-    expect(install(list).map((button) => button.disabled)).toEqual([true]);
+    expect(install(list).map((button) => button.disabled)).toEqual([false]);
     list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
     await settle();
-    expect(install(sheet).map((button) => button.disabled)).toEqual([true]);
+    expect(install(sheet).map((button) => button.disabled)).toEqual([false]);
+    install(sheet)[0]?.click();
+    expect(sheet.querySelector("h2")?.textContent).toBe("Install Plain to your TinyCloud");
+    expect(ports).not.toHaveBeenCalled();
   });
 });
