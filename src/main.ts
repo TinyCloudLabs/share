@@ -35,10 +35,14 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   renderRecipientLoading(root);
   if (launch === undefined) {
-    renderRecipientInvalid(root, "Part of this link is missing. Copy the complete link from the message you received and paste it into a new tab.");
+    const { renderLinkNeeded } = await import("./viewer/ui.js");
+    renderLinkNeeded(root);
     return;
   }
 
+  // The launch URL is scrubbed from the address bar and kept in memory only, so
+  // "Try again" must re-run the receive from this copy rather than reload the page.
+  let retryHref: string | undefined;
   try {
     const [config, { presentShare }] = await Promise.all([
       import("./email-share/config.js"),
@@ -46,6 +50,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     ]);
     const shareHref = launch.shareHref;
     launch.shareHref = "";
+    retryHref = shareHref;
     const shareConfig = await config.loadSharePublicConfig();
     if (launch.kind === "bearer") {
       const { receiveNativeBearerAccess } = await import("./viewer/native-bearer.js");
@@ -104,13 +109,29 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     await presentShare(root, resolved, { shareUrl: shareHref });
   } catch (error) {
     console.debug("tinycloud share: recipient request failed");
-    const detail = error instanceof Error && error.name === "ShareReceiverKeyUnavailableError"
-      ? "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari."
-      : error instanceof Error && error.name === "ShareReceiverSessionEndedError"
-        ? "Your verification on this page has ended. Open the link from your email again and verify again."
-        : error instanceof Error && /unavailable|capability|config|binding/.test(error.message)
-          ? "TinyCloud is temporarily unavailable. Nothing was opened — try again shortly."
-          : "This invitation could not be verified. Ask the sender for a fresh invitation.";
-    renderRecipientInvalid(root, detail);
+    // Bearer links fail with a typed reason; revoked, expired and unavailable
+    // each get their own screen, and nothing from the share is ever shown.
+    const href = retryHref;
+    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }); };
+    const { NativeBearerError } = await import("./viewer/native-bearer.js");
+    if (error instanceof NativeBearerError && error.reason !== "unverified") {
+      const { renderShareUnavailable } = await import("./viewer/ui.js");
+      renderShareUnavailable(root, error.reason, error.expiresAt, retry);
+      return;
+    }
+    if (error instanceof Error && error.name === "ShareReceiverKeyUnavailableError") {
+      renderRecipientInvalid(root, "This browser can’t create the private key needed to open this file. Nothing was opened. Open the link in a current version of Chrome, Edge, Firefox or Safari.");
+      return;
+    }
+    if (error instanceof Error && error.name === "ShareReceiverSessionEndedError") {
+      renderRecipientInvalid(root, "Your verification on this page has ended. Open the link from your email again and verify again.");
+      return;
+    }
+    if (error instanceof Error && /unavailable|capability|config|binding/.test(error.message)) {
+      const { renderShareUnavailable } = await import("./viewer/ui.js");
+      renderShareUnavailable(root, "unavailable", undefined, retry);
+      return;
+    }
+    renderRecipientInvalid(root, "This invitation could not be verified. Ask the sender for a fresh invitation.");
   }
 }

@@ -317,7 +317,8 @@ try {
     assert.equal(colors.notice, dark ? "rgb(22, 25, 34)" : "rgb(241, 245, 249)", `${scheme} ${width}: notice surface`);
     assert.equal(colors.panelText, dark ? "rgb(226, 232, 240)" : "rgb(26, 28, 33)", `${scheme} ${width}: panel text`);
     assert.ok(colors.overflowX <= 0, `${scheme} ${width}: no horizontal scroll`);
-    if (width === 390) assert.ok(colors.noticeHeight <= 72, `390px notice height ${colors.noticeHeight}`);
+    // The notice plus its one-line "What the sender can learn" row (the detail itself starts closed on a phone).
+    if (width === 390) assert.ok(colors.noticeHeight <= 104, `390px notice height ${colors.noticeHeight}`);
     await shot(run.page, `jsx-chrome-${scheme}-${width}`);
     await run.page.close();
   }

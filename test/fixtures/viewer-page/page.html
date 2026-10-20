@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Q3 agent report</title>
+<style>
+@font-face { font-family: "Probe Font"; src: url("__PROBE__/html-font.woff2") format("woff2"); }
+@import url("__PROBE__/html-import.css");
+:root { font-family: "Probe Font", system-ui, sans-serif; }
+body { margin: 0; padding: 2.5rem 1.5rem; color: #14213d; background: #fff url("__PROBE__/html-css-background.png"); line-height: 1.55; }
+main { max-width: 46rem; margin: 0 auto; }
+h1 { margin: 0 0 .5rem; color: #2a56f6; font-size: 2rem; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+.card { padding: 1rem; border: 1px solid #dce4ef; border-radius: 10px; }
+.card b { display: block; font-size: 1.6rem; }
+button { padding: .5rem 1rem; border: 1px solid #14213d; border-radius: 999px; background: #fff; font: inherit; cursor: pointer; }
+</style>
+<link rel="stylesheet" href="__PROBE__/html-link.css">
+<link rel="preload" href="__PROBE__/html-preload.js" as="script">
+<link rel="prefetch" href="__PROBE__/html-prefetch">
+<link rel="dns-prefetch" href="__PROBE__">
+<link rel="modulepreload" href="__PROBE__/html-modulepreload.js">
+<link rel="icon" href="__PROBE__/html-icon.png">
+<script src="__PROBE__/html-script.js"></script>
+</head>
+<body>
+<main>
+  <h1>Q3 agent report</h1>
+  <p id="status">Script has not run.</p>
+  <div class="cards">
+    <div class="card"><b>1,284</b>shares opened</div>
+    <div class="card"><b>42</b>pages published</div>
+    <div class="card"><b>310 ms</b>median load</div>
+  </div>
+  <p><img alt="inline pixel" width="16" height="16" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"> data: images work.</p>
+  <img alt="remote" src="__PROBE__/html-img.png">
+  <img alt="remote srcset" srcset="__PROBE__/html-srcset.png 1x" src="">
+  <picture><source srcset="__PROBE__/html-picture.png"><img alt="picture" src="__PROBE__/html-picture-fallback.png"></picture>
+  <video poster="__PROBE__/html-poster.png" src="__PROBE__/html-video.mp4" preload="auto"></video>
+  <audio src="__PROBE__/html-audio.mp3" preload="auto"></audio>
+  <object data="__PROBE__/html-object.png"></object>
+  <embed src="__PROBE__/html-embed.png">
+  <input type="image" alt="probe" src="__PROBE__/html-input-image.png">
+  <a href="__PROBE__/html-ping-target" ping="__PROBE__/html-ping">ping link</a>
+  <p><button id="add" type="button">Add row</button></p>
+</main>
+<script>
+document.getElementById("status").textContent = "Script ran inside the frame.";
+const probe = "__PROBE__";
+const attempts = [
+  () => fetch(probe + "/html-fetch"),
+  () => { const x = new XMLHttpRequest(); x.open("GET", probe + "/html-xhr"); x.send(); },
+  () => new WebSocket(probe.replace("http", "ws") + "/html-ws"),
+  () => new EventSource(probe + "/html-eventsource"),
+  () => navigator.sendBeacon(probe + "/html-beacon", "x"),
+  () => { new Image().src = probe + "/html-new-image"; },
+  () => { const l = document.createElement("link"); l.rel = "prefetch"; l.href = probe + "/html-dynamic-prefetch"; document.head.append(l); },
+  () => { const l = document.createElement("link"); l.rel = "preload"; l.as = "image"; l.href = probe + "/html-dynamic-preload"; document.head.append(l); },
+  () => { const l = document.createElement("link"); l.rel = "preconnect"; l.href = probe; document.head.append(l); },
+  () => { const f = document.createElement("form"); f.action = probe + "/html-form"; f.method = "post"; document.body.append(f); f.submit(); },
+  () => new Worker(probe + "/html-worker.js"),
+  () => { new FontFace("Dyn", "url(" + probe + "/html-dynamic-font.woff2)").load(); },
+];
+for (const attempt of attempts) { try { attempt(); } catch {} }
+</script>
+</body>
+</html>

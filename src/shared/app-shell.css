@@ -1,51 +1,32 @@
+@import "@tinycloud/styles/tokens.css";
+
 :root {
-  color: #1a1c21;
-  background: #f8f9fb;
-  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--tc-color-text);
+  background: var(--tc-color-page);
+  font-family: var(--tc-font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --bg: #f8f9fb;
-  --bg-raised: #fff;
-  --ink: #1a1c21;
-  --ink-soft: #536176;
-  --ink-faint: #647187;
-  --line: #dce4ef;
-  --line-soft: #edf1f6;
-  --accent: #2a56f6;
-  --accent-hover: #1e42c8;
-  --accent-soft: rgb(42 86 246 / 5.5%);
-  --accent-line: rgb(42 86 246 / 24%);
-  --button-ink: #fff;
-  --grid-dot: rgb(42 86 246 / 12%);
-  --danger: #9f1d2d;
-  --danger-bg: #fff3f4;
-  --warning-bg: #fff8e8;
-  --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  --ease: cubic-bezier(0.16, 1, 0.3, 1);
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #e2e8f0;
-    background: #0b0e14;
-    --bg: #0b0e14;
-    --bg-raised: #12151e;
-    --ink: #e2e8f0;
-    --ink-soft: #a4afbf;
-    --ink-faint: #96a3b5;
-    --line: #242b3a;
-    --line-soft: #1b2130;
-    --accent: #6a91ff;
-    --accent-hover: #83a2ff;
-    --accent-soft: rgb(75 123 255 / 9%);
-    --accent-line: rgb(106 145 255 / 42%);
-    --button-ink: #081021;
-    --grid-dot: rgb(106 145 255 / 14%);
-    --danger: #ff9da8;
-    --danger-bg: rgb(159 29 45 / 16%);
-    --warning-bg: rgb(186 127 26 / 15%);
-  }
+  /* One-way aliases onto @tinycloud/styles for the stylesheets that have not
+     moved to --tc-* yet (sender.css, recipient.css). Delete each alias with
+     its last caller; never define a colour here that tokens.css owns. */
+  --bg: var(--tc-color-page);
+  --bg-raised: var(--tc-color-surface);
+  --ink: var(--tc-color-text);
+  --ink-soft: var(--tc-color-text-muted);
+  --ink-faint: var(--tc-color-text-muted);
+  --line: var(--tc-color-border);
+  --line-soft: var(--tc-color-hairline);
+  --accent: var(--tc-color-accent);
+  --accent-hover: var(--tc-color-accent-hover);
+  --accent-soft: var(--tc-color-surface-active);
+  --accent-line: var(--tc-color-accent);
+  --button-ink: var(--tc-color-on-accent);
+  --grid-dot: var(--tc-color-field-dot);
+  --danger: var(--tc-color-status-danger);
+  --danger-bg: color-mix(in srgb, var(--tc-color-status-danger) 8%, var(--tc-color-surface));
+  --warning-bg: color-mix(in srgb, var(--tc-color-status-warning) 10%, var(--tc-color-surface));
+  --mono: var(--tc-font-mono);
+  --ease: var(--tc-ease-out);
 }
 
 *,

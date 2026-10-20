@@ -2,10 +2,13 @@ import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
 import { createArtifactNotice } from "./artifact-notice.js";
 import { canonicalShareFilename } from "../filename-policy.js";
+import { downloadMediaType, safeDownloadName } from "./download-name.js";
 
 export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
 
 export const HTML_FRAME_CLASS = "viewer-html-frame";
+/** A page, document or component owns the whole area under the bar: set as soon as its frame is created, so loading and ready share one layout. */
+export const FRAME_LAYOUT_CLASS = "viewer-content--frame";
 
 export interface ContentDescriptor {
   readonly mediaType: string;
@@ -93,6 +96,7 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
+    container.classList.add(FRAME_LAYOUT_CLASS);
     await renderHtmlPage(container, source, actualDescriptor.filename, options);
     return kind;
   }
@@ -104,6 +108,7 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
+    container.classList.add(FRAME_LAYOUT_CLASS);
     const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
       // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
     const { renderJsxPage } = await import("./jsx-render.js");
@@ -154,7 +159,10 @@ async function renderHtmlPage(container: HTMLElement, source: string, filename: 
 function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, kind: SafeContentKind = "file", detailText = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."): SafeContentKind {
   clearPreviousContent(container);
   const doc = container.ownerDocument;
-  const blob = new Blob([new Uint8Array(bytes).buffer], { type: descriptor.mediaType });
+  // The saved copy is named and typed from what the bytes ARE (the same classification the bar's
+  // Download uses), not from why they are being offered for download instead of previewed.
+  const savedKind = classifyContent(descriptor);
+  const blob = new Blob([new Uint8Array(bytes).buffer], { type: kind === "image" ? descriptor.mediaType : downloadMediaType(savedKind) });
   const href = URL.createObjectURL(blob);
   let revoked = false;
   const revoke = (): void => { if (!revoked) { revoked = true; URL.revokeObjectURL(href); activeCleanup.delete(container); } };
@@ -162,5 +170,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = safeDownloadName(descriptor.filename, savedKind, descriptor.mediaType); link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

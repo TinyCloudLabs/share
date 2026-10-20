@@ -27,6 +27,8 @@ import { hashedShareKey } from "./share-key-hash.js";
 
 export const ARTIFACT_NOTICE_TEXT = "This page runs the sender's code. The sender can tell that you opened it.";
 export const ARTIFACT_NOTICE_CLASS = "viewer-artifact-notice";
+/** The detail under the headline: what CSP stops, and what a page can still do. Open on first view. */
+export const ARTIFACT_NOTICE_DETAIL = "The page can't load content or run scripts outside its box. It can still reveal that you opened it: your IP address and the time, and a prerender can even send a request carrying data the sender chose.";
 
 const STORAGE_PREFIX = "tc.artifact-notice.v1:";
 
@@ -74,11 +76,25 @@ export function createArtifactNotice(doc: Document, options: ArtifactNoticeOptio
   recall.className = "viewer-artifact-notice-recall";
   recall.textContent = "About this page";
   recall.setAttribute("aria-expanded", "false");
-  element.append(text, dismiss, recall);
+  // The headline stays short; this is the plain account behind it, open on first view and
+  // one click away afterwards. It sits in the viewer document, beside the headline.
+  const more = doc.createElement("details");
+  more.className = "viewer-artifact-notice-detail";
+  // Open on first view on a screen with room for it. On a phone it is one tap away under the
+  // headline, which already says the sender can tell the page was opened: the open detail alone
+  // would be a third of the screen.
+  more.open = doc.defaultView?.matchMedia?.("(min-width: 40.0625rem)").matches ?? true;
+  const moreSummary = doc.createElement("summary");
+  moreSummary.textContent = "What the sender can learn";
+  const moreText = doc.createElement("p");
+  moreText.textContent = ARTIFACT_NOTICE_DETAIL;
+  more.append(moreSummary, moreText);
+  element.append(text, dismiss, more, recall);
 
   const show = (open: boolean): void => {
     text.hidden = !open;
     dismiss.hidden = !open;
+    more.hidden = !open;
     recall.hidden = open;
     recall.setAttribute("aria-expanded", String(open));
     element.dataset["state"] = open ? "open" : "collapsed";

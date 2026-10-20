@@ -18,7 +18,6 @@ import type { ShareEnvelope, ShareEnvelopeV2, ShareEnvelopeV3 } from "@tinycloud
 
 import type { ResolveResult, UnsupportedReason } from "./resolve.js";
 import { focusViewerRoot } from "./focus.js";
-import { copyWithFallback } from "../share/clipboard.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -52,23 +51,73 @@ function formatExpiry(iso: string): string {
   });
 }
 
+interface StateCopy {
+  /** Short state label shown in the chip above the title. */
+  readonly label?: string;
+  readonly tone?: "danger" | "warning" | "info";
+}
+
 /**
  * Every error state is a whole-page swap, so it must announce itself and take
  * focus: `role="alert"` makes assistive tech read it without waiting for
- * focus, and focusViewerRoot gives the keyboard user somewhere to be.
- * viewer.css already styles `.viewer-state[role="alert"]`.
+ * focus, and focusViewerRoot gives the keyboard user somewhere to be. The
+ * card carries its state as text (the chip), never colour alone.
  */
-function renderErrorState(root: HTMLElement, title: string, detail: string): void {
+function renderErrorState(root: HTMLElement, title: string, detail: string, copy: StateCopy = {}): HTMLElement {
   root.replaceChildren();
   const doc = root.ownerDocument;
-  const box = el(doc, "div", "viewer-state viewer-error");
+  const box = el(doc, "div", "viewer-state tc-panel");
   box.setAttribute("role", "alert");
+  const tone = copy.tone ?? "danger";
+  box.dataset["tone"] = tone;
+  if (copy.label !== undefined) box.append(el(doc, "p", `tc-status tc-status--${tone} viewer-state-chip`, copy.label));
   box.append(
     el(doc, "h1", "viewer-state-title", title),
     el(doc, "p", "viewer-state-detail", detail),
   );
   root.append(box);
   focusViewerRoot(root);
+  return box;
+}
+
+/**
+ * `/viewer` opened without the private part of a link: a reload, a bookmark, or
+ * a link that lost its tail. The fragment is scrubbed from the address bar on
+ * arrival and deliberately never stored, so there is nothing to re-read.
+ */
+export function renderLinkNeeded(root: HTMLElement): void {
+  root.ownerDocument.body.classList.remove("viewer-fullpage");
+  renderErrorState(
+    root,
+    "Open the original link again",
+    "This page can't reopen a shared file by itself. The private part of the link is removed from the address bar as soon as the file opens, and it is never stored. Open the original link again: use the link the sender gave you.",
+    { label: "Link needed", tone: "info" },
+  );
+}
+
+export type ShareUnavailableReason = "revoked" | "expired" | "unavailable";
+
+/**
+ * A bearer link that did not open. These are the only reasons that get their
+ * own screen; each is honest about what happened and none of them leaves any
+ * content in the DOM (there is no content sink outside renderOk).
+ */
+export function renderShareUnavailable(root: HTMLElement, reason: ShareUnavailableReason, expiresAt?: string, retry?: () => void): void {
+  root.ownerDocument.body.classList.remove("viewer-fullpage");
+  if (reason === "revoked") {
+    renderErrorState(root, "This share was revoked by its sender", "The link no longer opens anything. If you still need the file, ask the sender for a new link.", { label: "Revoked", tone: "danger" });
+    return;
+  }
+  if (reason === "expired") {
+    renderErrorState(root, expiresAt === undefined ? "This share has expired" : `This share expired on ${formatExpiry(expiresAt)}`, "Shares stop working at the time the sender chose. Ask the sender for a fresh link.", { label: "Expired", tone: "warning" });
+    return;
+  }
+  const box = renderErrorState(root, "TinyCloud is temporarily unavailable", "Nothing was opened. This is usually brief. Try again in a moment.", { label: "Unavailable", tone: "info" });
+  if (retry === undefined) return;
+  const button = el(root.ownerDocument, "button", "tc-button tc-button--primary viewer-state-action", "Try again");
+  button.type = "button";
+  button.addEventListener("click", retry);
+  box.append(button);
 }
 
 const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: string }> = {
@@ -89,51 +138,16 @@ const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: strin
  * container so the caller (present.ts) can feed the decrypted file text
  * through render.ts's sanitization pipeline.
  */
-function renderOk(
-  root: HTMLElement,
-  envelope: PresentableEnvelope,
-  hasContent: boolean,
-  access: "bearer" | "policy",
-  senderVerified = false,
-  shareUrl?: string,
-): HTMLElement {
+function renderOk(root: HTMLElement, hasContent: boolean): HTMLElement {
   root.replaceChildren();
   const doc = root.ownerDocument;
-
-  // Compact provenance: filename, sender trust, and access mode. This stays
-  // visually subordinate to the document the recipient came here to read.
-  const bar = el(doc, "header", "viewer-bar");
-  bar.append(el(doc, "span", "viewer-filename", filenameOf(envelope)));
-  const sender = envelope.display.senderName;
-  bar.append(
-    el(
-      doc,
-      "span",
-      "viewer-sender",
-      sender !== undefined && sender.length > 0
-        ? `${sender} · ${senderVerified ? "verified sender" : "sender unverified"}`
-        : senderVerified ? "Verified sender" : "Sender unverified",
-    ),
-  );
-  bar.append(el(doc, "span", "viewer-mode", "Read-only"));
-  root.append(bar);
-
-  // Bearer honesty note (§2.1: bearer shares are self-asserted; trust is
-  // possession of the link, not sender identity — so no checkmark, ever).
-  root.append(
-    el(
-      doc,
-      "p",
-      access === "policy" ? "viewer-addressed-note" : "viewer-bearer-note",
-      access === "policy" ? "Access checked for the approved recipient." : "Anyone with the link can open it.",
-    ),
-  );
 
   // Content area. When the resolve step recovered file text (stage 4:
   // verified, CID-checked, decrypted `content`), the container starts EMPTY
   // and the caller (present.ts) streams the text through render.ts's
   // sanitization pipeline. For pointer-less envelopes there are no bytes to
   // show — render an honest placeholder from the signed display metadata.
+  // The bar (title, provenance, expiry, actions) is mounted by present.ts.
   //
   // HONESTY CONTRACT for this copy: this build verified, client-side, that
   // the envelope is signed and intact and that its embedded delegation is
@@ -143,7 +157,7 @@ function renderOk(
   // The recipient is not told the sender's internal path or node origin.
   const content = el(doc, "main", "viewer-content");
   if (!hasContent) {
-    const placeholder = el(doc, "div", "viewer-placeholder");
+    const placeholder = el(doc, "div", "viewer-placeholder tc-panel");
     placeholder.append(
       el(doc, "h2", "viewer-placeholder-title", "Link verified"),
       el(
@@ -162,48 +176,22 @@ function renderOk(
     content.append(placeholder);
   }
   root.append(content);
-
-  // Footer: expiry + the agent-path bridge hint (blueprint §5
-  // "Wireframe — viewer").
-  const footer = el(doc, "footer", "viewer-footer");
-  footer.append(
-    el(doc, "span", "viewer-expiry", `Expires ${formatExpiry(envelope.expiry)}`),
-  );
-  // The opened view keeps a visible Copy link (user amendment 2026-07-24).
-  // The complete URL lives only in this closure: never as text, an href, or
-  // any other DOM attribute. Compact bearer keys are retained separately in
-  // tab-scoped storage so a reload survives the address-bar scrub.
-  if (shareUrl !== undefined) {
-    const copyStatus = el(doc, "span", "viewer-copy-status", "");
-    copyStatus.id = "viewer-copy-status";
-    copyStatus.setAttribute("role", "status");
-    copyStatus.setAttribute("aria-live", "polite");
-    const hint = el(doc, "span", "viewer-copy-hint", "This tab can reload safely. Copy the full link to open it somewhere else.");
-    hint.id = "viewer-copy-hint";
-    const copy = el(doc, "button", "viewer-copy-link", "Copy link");
-    copy.type = "button";
-    copy.setAttribute("aria-describedby", `${hint.id} ${copyStatus.id}`);
-    copy.addEventListener("click", () => {
-      void copyWithFallback(shareUrl)
-        .then(() => { copyStatus.removeAttribute("role"); copyStatus.textContent = "Link copied."; })
-        .catch(() => { copyStatus.setAttribute("role", "alert"); copyStatus.textContent = "Copy failed. Allow clipboard access and try again."; });
-    });
-    footer.append(copy, hint, copyStatus);
-  }
-  const hint = el(doc, "div", "viewer-agent-hint");
-  hint.append(
-    el(
-      doc,
-      "p",
-      "viewer-agent-hint-text",
-      "\u{1F4A1} Want your agent to work with this doc? Paste the link into your agent — it'll know what to do.",
-    ),
-  );
-  footer.append(hint);
-  root.append(footer);
   focusViewerRoot(root);
-
   return content;
+}
+
+/** What the bar shows about a verified share: name, who vouches for it, and when it ends. */
+export function describeShare(envelope: PresentableEnvelope, senderVerified: boolean): { readonly title: string; readonly provenance: string; readonly expiry: { readonly text: string; readonly datetime: string } } {
+  const sender = envelope.display.senderName;
+  const provenance = sender !== undefined && sender.length > 0
+    ? `${sender} · ${senderVerified ? "verified sender" : "sender unverified"}`
+    : senderVerified ? "Verified sender" : "Sender unverified";
+  const expiry = Date.parse(envelope.expiry);
+  return {
+    title: filenameOf(envelope),
+    provenance,
+    expiry: { text: formatExpiry(envelope.expiry), datetime: Number.isNaN(expiry) ? envelope.expiry : new Date(expiry).toISOString() },
+  };
 }
 
 /**
@@ -224,9 +212,10 @@ export function renderViewerState(
   result: ResolveResult,
   options: ViewerStateOptions = {},
 ): HTMLElement | null {
+  root.ownerDocument.body.classList.toggle("viewer-fullpage", result.state === "ok");
   switch (result.state) {
     case "ok":
-      return renderOk(root, result.envelope, result.content !== undefined, result.access ?? "bearer", result.senderVerified, options.shareUrl);
+      return renderOk(root, result.content !== undefined);
     case "policy-authorization-required":
       renderErrorState(root, "Confirm your identity to open this", "The sender shared this with you. Confirming takes about 30 seconds.");
       return null;

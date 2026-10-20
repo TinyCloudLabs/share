@@ -114,12 +114,14 @@ by `frame-src 'none'`, so the frame shows the browser's blocked-content page
 instead of the page; the download stays available.
 
 Pages use the 1 MB preview budget shared with Markdown, text, and images;
-larger or non-UTF-8 files stay download-only. The viewer keeps its filename
-bar, a notice above the frame ("This page runs the sender's code. The sender
-can tell that you opened it."; it is rendered by the viewer, outside the frame,
-and described in [JSX artifact sharing](jsx-artifact-sharing.md)), and the footer
-“Download original” action, which is present whether
-or not the preview succeeds.
+larger or non-UTF-8 files stay download-only. The page fills the viewport under the
+viewer bar (below). Directly under the bar, outside the frame, the viewer shows
+a notice that is visible on first view: "This page runs the sender's code. The
+sender can tell that you opened it." with a "What the sender can learn" detail,
+open on first view, that says what CSP does and does not stop (see
+[JSX artifact sharing](jsx-artifact-sharing.md) for how the notice cannot be
+hidden, covered or dismissed by the page). The bar's “Download” action is
+present whether or not the preview succeeds.
 
 ## Mermaid diagrams in Markdown
 
@@ -160,7 +162,7 @@ to a few diagrams whole on paper.
 **Print limit:** a document taller than the printed frame is still cut off at
 the frame's bottom edge, and the rest does not continue on the next page. This
 applies to long text and to many diagrams alike, and predates diagram
-support. **Download original** is the full-fidelity way to print or keep such
+support. **Download** is the full-fidelity way to print or keep such
 a document.
 
 Dev and preview serve the sandbox on both `/mermaid-sandbox` and
@@ -195,17 +197,95 @@ extensionless paths) therefore detach the site-wide policy
 `frame-ancestors 'none'` and `script-src 'self'` would also apply and the
 sandbox could neither be framed nor run its bridge.
 
-## TinyCloud controls
+## Viewer bar
 
-The small overlay begins expanded. Collapse it to a 44-pixel cloud control or
-choose “Hide permanently” to store a per-share preference in local browser
-storage. No URL or recipient data is stored.
+A verified share opens full page: a slim bar under the browser chrome and the
+document or page below it, filling the rest of the viewport. The bar shows the
+file name, who vouches for it (“Sender unverified” for bearer links), an expiry
+badge, and the actions **Copy link**, **Copy text** (Markdown only),
+**Download**, and a disabled **Share on** (“The owner hasn't allowed passing
+this on yet”). On narrow or touch screens the actions are icon-only with 44px
+targets.
 
-To restore hidden controls, press **Alt+Shift+C**. The keyboard shortcut also
-toggles expanded and collapsed states, and it still works when focus is inside
-the sandboxed artifact frame. “Share” uses the operating-system share sheet
-when available and otherwise uses TinyCloud’s clipboard fallback; the private
-URL remains in a JavaScript closure and is never rendered into the document.
+**Hide** collapses the bar to a persistent 44px “TinyCloud” pill in the corner;
+the pill, or **Alt+Shift+C** on the page, brings it back. Hiding the bar never
+hides the sender-code notice (it belongs to the viewer, not to the bar), and the
+notice keeps the pill's corner free, so the pill never covers its headline or its
+buttons at any width; on a phone the pill is the TinyCloud mark alone, with the
+same accessible name. The pill comes first in Tab order, where the bar was. Whether the bar is
+hidden is remembered per share in local browser storage, keyed by a SHA-256 of
+the share id; no URL or recipient data is stored. The artifact frames have no
+channel to the bar: Alt+Shift+C does not work while focus is inside a sandboxed
+frame (use the pill there), and a page cannot hide or show the bar. The
+private URL stays in a JavaScript closure and is never rendered into the
+document.
+
+**Download** saves the verified bytes under a safe name. A share filename with a
+path separator, control or bidi character is refused outright (no download).
+Otherwise the final extension must be one the viewer knows for that kind of
+content (`md`/`markdown` for Markdown, `html`/`htm` for HTML, `txt`, `csv`,
+`json` and similar for text, and so on); anything else, and always an
+executable or script-capable one (`exe`, `bat`, `cmd`, `com`, `scr`, `msi`,
+`ps1`, `vbs`, `js`, `jar`, `sh`, `app`, `dmg`, `lnk`, `hta`, `apk`), gets the
+kind's extension appended, so `report.md.exe` is saved as `report.md.exe.md`.
+Leading and trailing dots and runs of dots are removed, names are cut to 120
+characters keeping the extension, and a missing name becomes `artifact.<ext>`.
+The saved copy's type is forced from the kind (never a sender-chosen type, and
+never `text/html`).
+
+Copy and Download results appear in a visible toast at the bottom of the screen
+and are also announced to screen readers (a refusal is an alert and stays
+longer). The toast has no animation. Copy link carries a one-line hint (tooltip
+and accessible description): keep the link, because the page cannot reopen the
+file by itself.
+
+**Contrast.** `@tinycloud/styles` pins muted text on `--tc-color-surface-subtle`,
+which is 4.34:1 in the light theme (below WCAG AA) for `.tc-badge`,
+`.tc-trace__step` and `.tc-status--info`. The viewer handles this locally, in
+`src/viewer/viewer.css`: the bar (`.artifact-chrome`) sits on
+`--tc-color-surface`, and the expiry badge (`.artifact-chrome-expiry`) uses the
+regular text token with a border. Remove both overrides when the styles fix
+lands (TC-1560).
+
+## Viewer privacy
+
+Markdown artifacts make zero requests and zero connections. HTML artifacts
+cannot fetch or load content (CSP blocks content and script requests), but a
+hostile page can still reach out, as described under Isolation above:
+`<link rel="prerender">` sends an HTTP GET to an author-chosen URL (with
+author-chosen query data and that site's SameSite=Lax cookies), and preconnect,
+navigation attempts, dns-prefetch and WebRTC open connections. The author can
+learn the viewer's IP, the time of opening, and that the page was opened. The
+viewer does not claim more than that.
+
+- **Markdown** renders in a scriptless `sandbox=""` frame whose CSP is
+  `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'`. Remote
+  and relative images never load: the renderer replaces them with the text
+  “Image not loaded: external images are blocked to protect your privacy” and
+  the URL as plain text (not a link and not an image). Raw HTML, remote CSS, and fonts never reach the document, and
+  the tokens and prose styles are inlined into the frame; fonts are the system
+  stack.
+- **Single-file HTML** keeps the sandbox CSP above (`connect-src 'none'`,
+  `img-src`/`font-src`/`media-src` `data: blob:` only, no `'self'` fetches).
+- The viewer chrome itself loads no webfont, CDN, or third-party resource.
+
+`test/e2e-viewer-page.mjs` points a loopback server at both kinds of artifact
+(img, srcset, picture, video, audio, object, embed, script, CSS, `@import`,
+fonts, prefetch, preload, modulepreload, dns-prefetch, fetch, XHR, WebSocket,
+EventSource, beacon, form, worker) and requires zero HTTP requests, and for
+Markdown zero connections. The behaviours CSP cannot govern are recorded in
+that output and in `test/e2e-html-share.mjs`, not hidden.
+
+## Opening a link again
+
+The private part of a link (`#tc1=…` for bearer links, `#v=2&p=…` for addressed
+links) is removed from the address bar the moment the viewer opens, and the
+viewer does not store it. Reloading a share, or opening `/viewer` without the
+fragment, therefore cannot re-read it: the page asks the recipient to open the
+original link again: use the link the sender gave you. While a file is open,
+**Copy link** in the bar gives the complete link (its hint says to keep it). A
+temporary outage offers **Try again**, which re-runs the read from the copy held
+in page memory instead of reloading.
 
 The example bundle in [`examples/html-artifact/`](../examples/html-artifact/)
 contains separate HTML, CSS, classic JavaScript, and nested SVG files.

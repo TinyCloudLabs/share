@@ -23,6 +23,35 @@ describe("artifact notice", () => {
     expect(notice.element.querySelector<HTMLElement>(".viewer-artifact-notice-text")!.hidden).toBe(false);
   });
 
+  it("keeps the plain account of what the sender can learn open on first view, and gone while dismissed", () => {
+    const notice = createArtifactNotice(document, { storage: new MemoryStorage() });
+    document.body.append(notice.element);
+    const detail = notice.element.querySelector<HTMLDetailsElement>(".viewer-artifact-notice-detail")!;
+    expect(detail.open).toBe(true);
+    expect(detail.hidden).toBe(false);
+    expect(detail.querySelector("summary")?.textContent).toBe("What the sender can learn");
+    const text = detail.querySelector("p")?.textContent ?? "";
+    // Accurate and no stronger than the facts: ordinary loads and scripts are contained, but the
+    // page can still reveal that it was opened, and a prerender can carry author-chosen data.
+    expect(text).toBe("The page can't load content or run scripts outside its box. It can still reveal that you opened it: your IP address and the time, and a prerender can even send a request carrying data the sender chose.");
+    expect(text).not.toMatch(/stops this page from loading anything/);
+    click(notice.element.querySelector(".viewer-artifact-notice-dismiss")!);
+    expect(detail.hidden).toBe(true);
+    click(notice.element.querySelector(".viewer-artifact-notice-recall")!);
+    expect(detail.hidden).toBe(false);
+  });
+
+  it("starts the detail one tap away on a phone-width screen", () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({ matches: false, media: query })) as typeof window.matchMedia;
+    try {
+      const notice = createArtifactNotice(document, { storage: new MemoryStorage() });
+      document.body.append(notice.element);
+      expect(notice.element.querySelector<HTMLDetailsElement>(".viewer-artifact-notice-detail")!.open).toBe(false);
+      expect(notice.element.querySelector<HTMLElement>(".viewer-artifact-notice-text")!.hidden).toBe(false);
+    } finally { window.matchMedia = original; }
+  });
+
   it("is dismissed only by a click on its button, stays reachable, and is remembered per share", async () => {
     const storage = new MemoryStorage();
     const notice = createArtifactNotice(document, { shareId: "share-a", storage });

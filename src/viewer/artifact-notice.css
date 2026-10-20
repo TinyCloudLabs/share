@@ -31,6 +31,10 @@
 }
 .viewer-artifact-notice button:hover { border-color: var(--tc-color-accent); }
 .viewer-artifact-notice button:focus-visible { outline: 2px solid var(--tc-color-focus); outline-offset: 3px; }
+.viewer-artifact-notice-detail { flex: 1 0 100%; font-size: var(--tc-text-sm); }
+.viewer-artifact-notice-detail summary { min-height: 1.75rem; padding-block: var(--tc-space-1); cursor: pointer; }
+.viewer-artifact-notice-detail p { margin: var(--tc-space-1) 0 var(--tc-space-1); max-width: 110ch; }
+.viewer-artifact-notice-detail summary:focus-visible { outline: 2px solid var(--tc-color-focus); outline-offset: 3px; }
 .viewer-artifact-notice [hidden] { display: none; }
 
 /* The artifact's own box: whatever it draws or positions stays inside it and below the chrome. */

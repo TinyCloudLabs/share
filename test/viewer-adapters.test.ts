@@ -132,15 +132,19 @@ describe("adaptive viewer adapters", () => {
     const root = document.createElement("div");
     document.body.append(root);
     const presented = presentShare(root, htmlShare("bearer"));
-    await Promise.resolve();
-    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download original");
-    const iframe = await vi.waitFor(() => root.querySelector<HTMLIFrameElement>(`iframe.${HTML_FRAME_CLASS}`)!);
+    const iframe = await vi.waitFor(() => {
+      const found = root.querySelector<HTMLIFrameElement>(`iframe.${HTML_FRAME_CLASS}`);
+      if (found === null) throw new Error("frame not mounted yet");
+      return found;
+    });
+    // The bar, and with it the verified-bytes download, is up before the preview loads.
+    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download");
     const { nonce, posted } = handshake(iframe);
     frameMessage(iframe, { type: "result", nonce, id: posted[0]!.id, ok: false, error: "navigation" });
     await presented;
     expect(root.querySelector("iframe")).toBeNull();
     expect(root.querySelector(".viewer-render-error")?.textContent).toContain("Download it to open it");
-    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download original");
+    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download");
     root.remove();
   });
 
@@ -151,7 +155,7 @@ describe("adaptive viewer adapters", () => {
     await presentShare(root, htmlShare("policy", "text/html"));
     expect(document.querySelector("iframe")).toBeNull();
     expect(root.querySelector(".viewer-file-note")?.textContent).toContain(PREVIEW_UNAVAILABLE);
-    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download original");
+    expect(root.querySelector(".viewer-download")?.textContent).toBe("Download");
     root.remove();
   });
 

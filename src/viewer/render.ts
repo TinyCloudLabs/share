@@ -50,7 +50,7 @@
  * inside that frame.
  */
 import DOMPurifyFactory, { type DOMPurify as DOMPurifyInstance } from "dompurify";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from "rehype-sanitize";
 import rehypeStringify from "rehype-stringify";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
@@ -235,13 +235,85 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
  * defaultSchema keeps `className` values matching /^language-./ on <code>,
  * which is how mermaid blocks are found later.
  */
-const sanitizeSchema = {
+const sanitizeSchema: SanitizeOptions = {
   ...defaultSchema,
   protocols: {
     ...defaultSchema.protocols,
     src: ["data"],
   },
+  attributes: {
+    ...defaultSchema.attributes,
+    // Only rehypeBlockExternalImages (below, run BEFORE sanitize) creates this class
+    // marker; authors cannot, because raw HTML never reaches the tree.
+    span: [...(defaultSchema.attributes?.["span"] ?? []), ["className", "viewer-blocked-image"]],
+  },
 };
+
+/** The few hast fields the two small plugins below read and write. */
+interface HastNode {
+  type: string;
+  tagName?: string;
+  value?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+export const BLOCKED_IMAGE_NOTICE = "Image not loaded: external images are blocked to protect your privacy";
+const MAX_BLOCKED_URL_CHARS = 300;
+
+function walkHast(node: HastNode, visit: (child: HastNode, index: number, parent: HastNode) => void): void {
+  const children = node.children;
+  if (children === undefined) return;
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index] as HastNode;
+    visit(child, index, node);
+    walkHast(child, visit);
+  }
+}
+
+/**
+ * VIEWER PRIVACY (runs BEFORE rehype-sanitize, while the URL is still known):
+ * every image that is not an inline `data:image/` URI is replaced by a text
+ * placeholder that shows the URL as plain text. The viewer never fetches it,
+ * so the author cannot learn who read the document or when. The frame's CSP
+ * (`img-src data: blob:`) is the independent backstop.
+ */
+function rehypeBlockExternalImages() {
+  return (tree: HastNode): void => {
+    walkHast(tree, (child, index, parent) => {
+      if (child.type !== "element" || child.tagName !== "img") return;
+      const src = typeof child.properties?.["src"] === "string" ? child.properties["src"] : "";
+      if (/^data:image\//i.test(src.replace(/[\u0000-\u0020]/g, ""))) return;
+      const shown = src.length > MAX_BLOCKED_URL_CHARS ? `${src.slice(0, MAX_BLOCKED_URL_CHARS)}…` : src;
+      (parent.children as HastNode[])[index] = {
+        type: "element",
+        tagName: "span",
+        properties: { className: ["viewer-blocked-image"] },
+        children: [
+          { type: "text", value: BLOCKED_IMAGE_NOTICE },
+          ...(shown.length === 0 ? [] : [{ type: "element", tagName: "code", properties: {}, children: [{ type: "text", value: shown }] }]),
+        ],
+      };
+    });
+  };
+}
+
+/**
+ * Runs AFTER rehype-sanitize. Accessibility only (WCAG 2.2): a scrollable
+ * `pre` or table must be reachable by keyboard, and the disabled GFM
+ * task-list checkbox needs a name. Nothing here adds a URL or any content.
+ */
+function rehypeReadingAffordances() {
+  return (tree: HastNode): void => {
+    walkHast(tree, (child) => {
+      if (child.type !== "element" || child.properties === undefined) return;
+      if (child.tagName === "pre" || child.tagName === "table") child.properties["tabIndex"] = 0;
+      if (child.tagName === "input" && child.properties["type"] === "checkbox") {
+        child.properties["ariaLabel"] = child.properties["checked"] === true ? "Completed task" : "Incomplete task";
+      }
+    });
+  };
+}
 
 /**
  * The markdown processor. `remarkRehype` keeps its default
@@ -253,7 +325,9 @@ const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
   .use(remarkRehype)
+  .use(rehypeBlockExternalImages)
   .use(rehypeSanitize, sanitizeSchema)
+  .use(rehypeReadingAffordances)
   .use(rehypeStringify);
 
 /** Markdown → sanitized HTML string (sanitizer + DOMPurify, both applied). */
@@ -430,6 +504,11 @@ async function upgradeMermaidBlocks(
         // only if the sanitized markup is within budget.
         const host = container.ownerDocument.createElement("div");
         host.className = "viewer-mermaid";
+        // A wide diagram scrolls sideways inside its card, so the card must be
+        // reachable and named for keyboard and screen-reader users (WCAG 2.1.1, 4.1.2).
+        host.setAttribute("tabindex", "0");
+        host.setAttribute("role", "group");
+        host.setAttribute("aria-label", "Diagram");
         setSanitizedInnerHtml(host, clean);
         if (host.querySelectorAll("*").length > MAX_SVG_NODES) continue;
         code.parentElement?.replaceWith(host);
