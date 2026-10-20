@@ -1,0 +1,439 @@
+@import "@tinycloud/styles/tokens.css";
+@import "@tinycloud/styles/base.css";
+@import "@tinycloud/styles/patterns.css";
+
+/* Page shell. Only --tc-* tokens: this page owns no colours. */
+body {
+  overflow-x: hidden;
+}
+
+.apps-skip {
+  position: fixed;
+  top: var(--tc-space-3);
+  left: var(--tc-space-3);
+  z-index: var(--tc-z-toast);
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  color: var(--tc-color-on-accent);
+  background: var(--tc-color-accent);
+  font-weight: var(--tc-weight-semibold);
+  transform: translateY(-200%);
+}
+
+.apps-skip:focus {
+  transform: translateY(0);
+}
+
+.apps-header,
+.apps-main {
+  width: min(100% - 3rem, 70rem);
+  margin-inline: auto;
+}
+
+.apps-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 4.75rem;
+  border-bottom: 1px dotted var(--tc-color-border);
+}
+
+.apps-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  min-height: 2.75rem;
+  color: var(--tc-color-text);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: var(--tc-tracking-tight);
+  text-decoration: none;
+}
+
+.apps-wordmark b {
+  font-weight: inherit;
+}
+
+.apps-mark {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 auto;
+  grid-template: repeat(3, 1fr) / repeat(3, 1fr);
+  gap: 2px;
+}
+
+.apps-mark span {
+  border: 1px solid var(--tc-color-accent);
+  border-radius: 50%;
+}
+
+.apps-mark span:nth-child(1),
+.apps-mark span:nth-child(5),
+.apps-mark span:nth-child(9) {
+  background: var(--tc-color-accent);
+}
+
+.apps-mark span:nth-child(3),
+.apps-mark span:nth-child(7) {
+  background: var(--tc-color-text-muted);
+  border-color: var(--tc-color-text-muted);
+  opacity: 0.62;
+}
+
+.apps-mark span:nth-child(6),
+.apps-mark span:nth-child(8) {
+  border-style: dotted;
+}
+
+.apps-nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.75rem, 2.5vw, 2.25rem);
+  font-family: var(--tc-font-mono);
+  font-size: var(--tc-text-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.025em;
+}
+
+.apps-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  color: var(--tc-color-text-muted);
+  text-decoration: none;
+  transition: color var(--tc-duration-fast) var(--tc-ease-out);
+}
+
+.apps-nav a:hover,
+.apps-nav a[aria-current="page"] {
+  color: var(--tc-color-link);
+}
+
+.apps-nav a[aria-current="page"] {
+  text-decoration: underline;
+  text-decoration-color: var(--tc-color-accent);
+  text-underline-offset: 0.5em;
+}
+
+.apps-main {
+  padding-block: var(--tc-space-7) calc(var(--tc-space-7) * 1.5);
+}
+
+.apps-main:focus {
+  outline: none;
+}
+
+.apps-intro {
+  display: grid;
+  gap: var(--tc-space-3);
+  justify-items: start;
+  margin-bottom: var(--tc-space-6);
+}
+
+.apps-intro h1,
+.apps-intro p {
+  margin: 0;
+}
+
+.apps-intro h1 {
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+}
+
+/* The status pattern is a one-line pill; this notice can wrap on a phone. */
+.apps-intro .tc-status {
+  align-items: flex-start;
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border-radius: var(--tc-radius-md);
+  font-size: var(--tc-text-sm);
+  line-height: var(--tc-leading-ui);
+}
+
+.apps-intro .tc-status::before {
+  flex: 0 0 auto;
+  margin-top: 0.45em;
+}
+
+.apps-kicker {
+  margin: 0;
+  color: var(--tc-color-text-muted);
+  font-family: var(--tc-font-mono);
+  font-size: var(--tc-text-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: var(--tc-tracking-label);
+  text-transform: uppercase;
+}
+
+.apps-muted {
+  margin: 0;
+  color: var(--tc-color-text-muted);
+}
+
+.apps-empty {
+  color: var(--tc-color-text-muted);
+}
+
+/* Cards: one surface each, border only. */
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 26rem));
+  gap: var(--tc-space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.apps-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-5);
+}
+
+.apps-card > * {
+  margin: 0;
+}
+
+.apps-card__name {
+  font-size: var(--tc-text-xl);
+}
+
+.apps-card__meta {
+  color: var(--tc-color-text-muted);
+  font-family: var(--tc-font-mono);
+  font-size: var(--tc-text-sm);
+}
+
+.apps-card__description {
+  flex: 1;
+}
+
+.apps-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-3);
+  padding-top: var(--tc-space-2);
+}
+
+/* 44px touch targets over the patterns' compact defaults. */
+.apps-button {
+  min-height: 2.75rem;
+}
+
+/* Detail sheet: a right-hand panel on wide screens, a bottom sheet on phones. */
+.apps-sheet {
+  inset: 0 0 0 auto;
+  width: min(100vw, 34rem);
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  color: var(--tc-color-text);
+  background: var(--tc-color-surface);
+  border: 0;
+  border-left: 1px solid var(--tc-color-border);
+}
+
+.apps-sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.apps-sheet::backdrop {
+  /* The night palette stop, in both themes: a scrim must darken a light page too. */
+  background: color-mix(in srgb, var(--tc-palette-night-950) 55%, transparent);
+}
+
+.apps-sheet__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--tc-space-4);
+  padding: var(--tc-space-5);
+  border-bottom: 1px dotted var(--tc-color-border);
+}
+
+.apps-sheet__heading {
+  min-width: 0;
+}
+
+.apps-sheet__heading h2 {
+  margin: var(--tc-space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.apps-sheet__body {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  gap: var(--tc-space-5);
+  padding: var(--tc-space-5);
+  overflow-y: auto;
+}
+
+.apps-sheet__lede {
+  margin: 0;
+}
+
+.apps-sheet__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4) var(--tc-space-5);
+  border-top: 1px dotted var(--tc-color-border);
+}
+
+.apps-section {
+  display: grid;
+  gap: var(--tc-space-3);
+}
+
+.apps-section h3 {
+  margin: 0;
+  font-size: var(--tc-text-lg);
+}
+
+.apps-access-region {
+  display: grid;
+  gap: var(--tc-space-5);
+}
+
+.apps-access {
+  display: grid;
+  gap: var(--tc-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.apps-access__item {
+  display: grid;
+  gap: var(--tc-space-2);
+  padding-block: var(--tc-space-3);
+  border-top: 1px dotted var(--tc-color-border);
+}
+
+.apps-access__item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.apps-access__item p {
+  margin: 0;
+}
+
+.apps-access__text--missing {
+  color: var(--tc-color-text-muted);
+  font-style: italic;
+}
+
+.apps-access__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2) var(--tc-space-3);
+  color: var(--tc-color-text-muted);
+  font-size: var(--tc-text-sm);
+}
+
+/* The pattern's muted badge text misses 4.5:1 on its subtle fill in light mode. */
+.apps-access__meta .tc-badge {
+  color: var(--tc-color-text);
+}
+
+.apps-access__meta code {
+  overflow-wrap: anywhere;
+}
+
+.apps-rows {
+  margin: 0;
+  border: 1px solid var(--tc-color-border);
+  border-radius: var(--tc-radius-md);
+}
+
+.apps-rows dd {
+  margin: 0;
+}
+
+.apps-rows .tc-data-row {
+  grid-template-columns: minmax(6rem, 0.6fr) minmax(0, 1.4fr);
+}
+
+.apps-rows .tc-data-row__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.apps-value a {
+  color: var(--tc-color-link);
+}
+
+.apps-files summary {
+  display: list-item;
+  padding-block: var(--tc-space-3);
+  list-style: disclosure-closed inside;
+  cursor: pointer;
+  font-weight: var(--tc-weight-medium);
+}
+
+.apps-files[open] summary {
+  margin-bottom: var(--tc-space-2);
+  list-style-type: disclosure-open;
+}
+
+.apps-skeleton {
+  display: grid;
+  gap: var(--tc-space-3);
+}
+
+.apps-skeleton__line {
+  height: 1rem;
+  border-radius: var(--tc-radius-sm);
+}
+
+.apps-skeleton__line--short {
+  width: 45%;
+}
+
+@media (max-width: 760px) {
+  .apps-header,
+  .apps-main {
+    width: min(100% - 2rem, 70rem);
+  }
+
+  .apps-header {
+    min-height: 4.25rem;
+  }
+
+  .apps-main {
+    padding-block: var(--tc-space-6) var(--tc-space-7);
+  }
+
+  .apps-sheet {
+    inset: auto 0 0;
+    width: 100%;
+    height: auto;
+    max-height: 90dvh;
+    border: 0;
+    border-top: 1px solid var(--tc-color-border);
+    border-radius: var(--tc-radius-lg) var(--tc-radius-lg) 0 0;
+  }
+
+  .apps-rows .tc-data-row {
+    grid-template-columns: 1fr;
+    gap: var(--tc-space-1);
+  }
+}
+
+@media (max-width: 420px) {
+  .apps-wordmark b {
+    display: none;
+  }
+
+  .apps-nav {
+    gap: var(--tc-space-3);
+  }
+}

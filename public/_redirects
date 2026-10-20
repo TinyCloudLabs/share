@@ -1,3 +1,4 @@
 /viewer /viewer/ 200
 /s/* /viewer/ 200
 /share /share/ 200
+/apps /apps/ 200
