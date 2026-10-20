@@ -10,21 +10,34 @@
 import "./jsx-panel.css";
 import { JSX_LIBRARY_SET } from "../artifact/jsx-runtime/files.js";
 import { JsxModuleIntegrityError, loadJsxModules } from "./jsx-modules.js";
+import type { ArtifactNotice } from "./artifact-notice.js";
+import type { JsxTheme } from "./jsx-frame.js";
 import { JsxRenderError, createJsxSandbox, type JsxSandbox } from "./jsx-sandbox.js";
 import type { JsxManifest } from "../artifact/jsx-runtime/files.js";
 
-export const JSX_NOTICE =
-  "This app comes from the sender and runs in an isolated frame. It can't read this link or your session, load anything from the internet, or make requests. It can still reveal your IP address to the sender, for example through WebRTC.";
-
+/**
+ * The runner entry: source text or UTF-8 bytes plus options. Callers adapt
+ * whatever they hold (a share descriptor, a file from the user's space) to
+ * this; nothing here knows about shares.
+ */
 export interface RenderJsxOptions {
+  /** Names the artifact in the frame title and the panel's "Download source" link. */
   readonly filename: string;
-  /** The verified source bytes, for the panel's "Download source" link. */
-  readonly bytes: Uint8Array;
+  readonly theme?: JsxTheme;
+  /** Replaces the default frame title. */
+  readonly title?: string;
+  /**
+   * Library file texts already loaded AND verified by the caller (loadJsxModules).
+   * When absent they are loaded and verified here.
+   */
+  readonly modules?: Readonly<Record<string, string>>;
   /** Registers the teardown to run when the container's content is replaced. */
   readonly onCleanup: (cleanup: () => void) => void;
   /** Defaults to the build's manifest; tests inject one. */
   readonly manifest?: JsxManifest;
   readonly fetch?: typeof fetch;
+  /** The viewer-chrome notice (artifact-notice.ts), kept above the frame or panel. */
+  readonly notice?: ArtifactNotice;
   readonly onRestoreControls?: () => void;
   readonly frameClassName?: string;
 }
@@ -40,9 +53,15 @@ function libraryList(): string {
   return JSX_LIBRARY_SET.join(", ");
 }
 
+class JsxSourceError extends Error {}
+
 function copyFor(error: unknown): PanelCopy {
   if (error instanceof JsxModuleIntegrityError) {
-    return { title: "This app wasn't started", detail: ["A library it needs couldn't be verified, so nothing was run. Download the file to open it elsewhere."] };
+    // Fails closed: the library files and the viewer disagree, which is what a deploy in progress looks like.
+    return { title: "This artifact viewer is updating", detail: ["Try again in a minute. Nothing was run."] };
+  }
+  if (error instanceof JsxSourceError) {
+    return { title: "This file isn't text", detail: ["It isn't valid UTF-8, so it can't be run. Download it to open it elsewhere."] };
   }
   if (error instanceof JsxRenderError) {
     switch (error.phase) {
@@ -63,7 +82,7 @@ function copyFor(error: unknown): PanelCopy {
   return { title: "This app wasn't started", detail: ["We couldn't run it here. Download the file to open it elsewhere."] };
 }
 
-function buildPanel(doc: Document, copy: PanelCopy, options: RenderJsxOptions): { panel: HTMLElement; revoke: () => void } {
+function buildPanel(doc: Document, copy: PanelCopy, options: RenderJsxOptions, bytes: Uint8Array): { panel: HTMLElement; revoke: () => void } {
   const panel = doc.createElement("section");
   panel.className = "viewer-jsx-panel";
   panel.setAttribute("role", "alert");
@@ -89,7 +108,7 @@ function buildPanel(doc: Document, copy: PanelCopy, options: RenderJsxOptions): 
     message.textContent = copy.message;
     panel.append(message);
   }
-  const href = URL.createObjectURL(new Blob([new Uint8Array(options.bytes).buffer as ArrayBuffer], { type: "text/plain;charset=utf-8" }));
+  const href = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer as ArrayBuffer], { type: "text/plain;charset=utf-8" }));
   const download = doc.createElement("a");
   download.className = "viewer-jsx-panel-download";
   download.href = href;
@@ -104,12 +123,11 @@ function buildPanel(doc: Document, copy: PanelCopy, options: RenderJsxOptions): 
  * a panel (the container keeps no frame), so the caller's footer download and
  * the panel's link remain the fallback.
  */
-export async function renderJsxPage(container: HTMLElement, source: string, options: RenderJsxOptions): Promise<void> {
+export async function renderJsxPage(container: HTMLElement, input: string | Uint8Array, options: RenderJsxOptions): Promise<void> {
   const doc = container.ownerDocument;
-  const notice = doc.createElement("p");
-  notice.className = "viewer-html-notice";
-  notice.textContent = JSX_NOTICE;
-  container.append(notice);
+  const { notice } = options;
+  if (notice !== undefined) container.append(notice.element);
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
 
   let revokePanel: (() => void) | undefined;
   let sandbox: JsxSandbox | undefined;
@@ -120,25 +138,29 @@ export async function renderJsxPage(container: HTMLElement, source: string, opti
   const showPanel = (error: unknown): void => {
     sandbox?.destroy();
     sandbox = undefined;
-    const { panel, revoke } = buildPanel(doc, copyFor(error), options);
+    const { panel, revoke } = buildPanel(doc, copyFor(error), options, bytes);
     revokePanel?.();
     revokePanel = revoke;
-    container.replaceChildren(notice, panel);
+    container.replaceChildren(...(notice === undefined ? [panel] : [notice.element, panel]));
   };
 
   try {
+    let source: string;
+    if (typeof input === "string") source = input;
+    else {
+      try { source = new TextDecoder("utf-8", { fatal: true }).decode(input); } catch { throw new JsxSourceError("not UTF-8"); }
+    }
     // Dynamic: the manifest module is a build-time virtual module that tests replace.
-    const manifest = options.manifest ?? (await import("./jsx-manifest.js")).manifest;
-    const modules = await loadJsxModules(manifest, source, options.fetch === undefined ? {} : { fetch: options.fetch });
+    const modules = options.modules ?? await loadJsxModules(options.manifest ?? (await import("./jsx-manifest.js")).manifest, source, options.fetch === undefined ? {} : { fetch: options.fetch });
     sandbox = createJsxSandbox(doc, {
       mount: container,
       ...(options.frameClassName === undefined ? {} : { className: options.frameClassName }),
-      title: `Shared app: ${options.filename}`,
+      title: options.title ?? `Shared app: ${options.filename}`,
       onFailure: showPanel,
       ...(options.onRestoreControls === undefined ? {} : { onRestoreControls: options.onRestoreControls }),
     });
     sandbox.iframe.hidden = false;
-    await sandbox.render(source, modules);
+    await sandbox.render(source, modules, options.theme);
   } catch (error) {
     showPanel(error);
   }

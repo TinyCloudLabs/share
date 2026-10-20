@@ -80,7 +80,12 @@ export async function loadJsxModules(manifest: JsxManifest, source: string, opti
     if (!file.url.startsWith(JSX_RUNTIME_URL_PREFIX) || file.url.includes("..")) throw new JsxModuleIntegrityError(id, "unexpected location");
     // CORS, no credentials, no referrer: a cross-origin host sees an anonymous GET and
     // answers only the viewer origin. The digest below, not the host, is the trust anchor.
-    const response = await fetchImpl(userContentUrl(file.url, origin), { mode: "cors", credentials: "omit", referrerPolicy: "no-referrer" });
+    let response: Response;
+    try {
+      response = await fetchImpl(userContentUrl(file.url, origin), { mode: "cors", credentials: "omit", referrerPolicy: "no-referrer" });
+    } catch {
+      throw new JsxModuleIntegrityError(id, "unreachable");
+    }
     if (!response.ok) throw new JsxModuleIntegrityError(id, `HTTP ${response.status}`);
     const bytes = await response.arrayBuffer();
     if (bytes.byteLength !== file.bytes) throw new JsxModuleIntegrityError(id, "size differs from the manifest");

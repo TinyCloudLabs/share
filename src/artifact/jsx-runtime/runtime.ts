@@ -87,11 +87,13 @@ export function boot(input: BootInput, host: BootHost): void {
   window.addEventListener("unhandledrejection", (event) => {
     if (!started) fail("runtime", event.reason);
   });
-  // Keyboard focus inside the frame never reaches the viewer, so the recall
-  // shortcut is forwarded as a bare signal.
+  // Keyboard focus inside the frame never reaches the viewer, so the recall shortcut is
+  // forwarded as a bare signal that only reveals the chrome and moves focus to it. The
+  // listener is registered first and in the capture phase, so no later listener the
+  // artifact adds on window can run before it or stop the event first.
   window.addEventListener("keydown", (event) => {
     if (event.altKey && event.shiftKey && event.key.toLowerCase() === "c") host.post({ type: "restore-controls" });
-  });
+  }, true);
 
   // Tailwind's browser runtime watches the document and builds CSS for the
   // classes the artifact uses. It is always present; a missing file is not fatal.

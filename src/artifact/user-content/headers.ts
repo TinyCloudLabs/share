@@ -11,7 +11,7 @@
  */
 import { JSX_RUNTIME_URL_PREFIX } from "../jsx-runtime/files.js";
 import { ARTIFACT_SANDBOX_CSP, ARTIFACT_SANDBOX_PATH } from "../../viewer/artifact-frame.js";
-import { JSX_SANDBOX_CSP, JSX_SANDBOX_PATH } from "../../viewer/jsx-frame.js";
+import { JSX_SANDBOX_CSP, JSX_SANDBOX_PATH, JSX_SANDBOX_PERMISSIONS_POLICY } from "../../viewer/jsx-frame.js";
 import { MERMAID_SANDBOX_CSP, MERMAID_SANDBOX_PATH } from "../../viewer/mermaid-frame.js";
 
 export const DEFAULT_VIEWER_ORIGIN = "https://share.tinycloud.xyz";
@@ -21,10 +21,12 @@ export interface SandboxDocument {
   readonly path: string;
   /** The meta-tag policy; the HTTP policy is this plus a frame-ancestors directive. */
   readonly csp: string;
+  /** Replaces the site-wide Permissions-Policy for this document when set. */
+  readonly permissionsPolicy?: string;
 }
 
 export const SANDBOX_DOCUMENTS: readonly SandboxDocument[] = [
-  { path: JSX_SANDBOX_PATH, csp: JSX_SANDBOX_CSP },
+  { path: JSX_SANDBOX_PATH, csp: JSX_SANDBOX_CSP, permissionsPolicy: JSX_SANDBOX_PERMISSIONS_POLICY },
   { path: ARTIFACT_SANDBOX_PATH, csp: ARTIFACT_SANDBOX_CSP },
   { path: MERMAID_SANDBOX_PATH, csp: MERMAID_SANDBOX_CSP },
 ];
@@ -93,7 +95,13 @@ export function renderUserContentHeaders(viewerOrigin: string): string {
   for (const route of sandboxRoutes()) {
     const doc = SANDBOX_DOCUMENTS.find((candidate) => route === candidate.path || route === extensionless(candidate.path));
     if (doc === undefined) throw new Error(`no sandbox document for ${route}`);
-    sections.push([route, "  ! Content-Security-Policy", `  Content-Security-Policy: ${doc.csp}; ${frameAncestors}`].join("\n"));
+    sections.push([
+      route,
+      "  ! Content-Security-Policy",
+      ...(doc.permissionsPolicy === undefined ? [] : ["  ! Permissions-Policy"]),
+      `  Content-Security-Policy: ${doc.csp}; ${frameAncestors}`,
+      ...(doc.permissionsPolicy === undefined ? [] : [`  Permissions-Policy: ${doc.permissionsPolicy}`]),
+    ].join("\n"));
   }
   sections.push([
     `${JSX_RUNTIME_URL_PREFIX}*`,

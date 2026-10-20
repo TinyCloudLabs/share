@@ -1,5 +1,6 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
+import { createArtifactNotice, type ArtifactNotice } from "./artifact-notice.js";
 import { canonicalShareFilename } from "../filename-policy.js";
 
 export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
@@ -21,6 +22,10 @@ export interface SafeContentOptions extends RenderMarkdownOptions {
    * could target through side channels. Absent means no HTML execution.
    */
   readonly linkAccess?: "bearer" | "policy";
+  /** Lets the first-view notice remember its dismissal per share. */
+  readonly shareId?: string;
+  /** Called with the notice of a rendered HTML/JSX artifact so the viewer chrome can reveal it again. */
+  readonly onNotice?: (notice: ArtifactNotice) => void;
 }
 
 /** The browser must never decode or render bytes above the preview budget. */
@@ -90,25 +95,27 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
-    await renderHtmlPage(container, source, actualDescriptor.filename);
+    await renderHtmlPage(container, source, actualDescriptor.filename, options);
     return kind;
   }
   if (kind === "jsx") {
     if (options.linkAccess !== "bearer") {
       return renderDownloadContent(container, bytes, actualDescriptor, "download", "Preview isn't available for this link type yet. Download it to open it.");
     }
-    const source = utf8(bytes);
-    if (source === undefined) {
+    if (utf8(bytes) === undefined) {
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
+    const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
+    options.onNotice?.(notice);
     // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
     const { renderJsxPage } = await import("./jsx-render.js");
-    await renderJsxPage(container, source, {
+    await renderJsxPage(container, bytes, {
       filename: actualDescriptor.filename,
-      bytes,
       onCleanup: (cleanup) => { activeCleanup.set(container, cleanup); },
       frameClassName: HTML_FRAME_CLASS,
+      notice,
+      onRestoreControls: () => notice.reveal(),
     });
     return kind;
   }
@@ -121,12 +128,11 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
  * leaves no frame behind) when the page does not load, so the caller's
  * fail-closed notice and the footer download remain the fallback.
  */
-async function renderHtmlPage(container: HTMLElement, source: string, filename: string): Promise<void> {
+async function renderHtmlPage(container: HTMLElement, source: string, filename: string, options: SafeContentOptions): Promise<void> {
   const doc = container.ownerDocument;
-  const notice = doc.createElement("p");
-  notice.className = "viewer-html-notice";
-  notice.textContent = "This page comes from the sender and runs in an isolated frame. It can't read this link or your session, or make signed-in requests to this site. It can still reveal your IP address to the sender, for example through WebRTC.";
-  container.append(notice);
+  const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
+  container.append(notice.element);
+  options.onNotice?.(notice);
   const sandbox = createArtifactSandbox(doc, {
     mount: container,
     className: HTML_FRAME_CLASS,

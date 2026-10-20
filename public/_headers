@@ -33,9 +33,11 @@
 /jsx-sandbox
   ! Content-Security-Policy
   Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  Permissions-Policy: fullscreen=(), picture-in-picture=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=(), screen-wake-lock=(), web-share=(), publickey-credentials-get=()
   X-Frame-Options: SAMEORIGIN
 
 /jsx-sandbox.html
   ! Content-Security-Policy
   Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  Permissions-Policy: fullscreen=(), picture-in-picture=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), display-capture=(), screen-wake-lock=(), web-share=(), publickey-credentials-get=()
   X-Frame-Options: SAMEORIGIN

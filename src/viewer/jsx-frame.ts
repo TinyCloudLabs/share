@@ -75,8 +75,19 @@ export const JSX_SANDBOX_CSP = [
  */
 export const JSX_SANDBOX_HTTP_CSP = `${JSX_SANDBOX_CSP}; frame-ancestors 'self'`;
 
+/**
+ * Sent with the bridge document, so it covers the child too. The artifact cannot
+ * go fullscreen or open Picture-in-Picture over the viewer's chrome, and gets no
+ * powerful feature (the sandbox adds no prompts to the opaque frame either way).
+ */
+export const JSX_SANDBOX_PERMISSIONS_POLICY = [
+  "fullscreen=()", "picture-in-picture=()", "camera=()", "microphone=()", "geolocation=()", "payment=()",
+  "usb=()", "display-capture=()", "screen-wake-lock=()", "web-share=()", "publickey-credentials-get=()",
+].join(", ");
+
 export const JSX_SANDBOX_HTTP_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["content-security-policy", JSX_SANDBOX_HTTP_CSP],
+  ["permissions-policy", JSX_SANDBOX_PERMISSIONS_POLICY],
   ["x-frame-options", "SAMEORIGIN"],
   ["cache-control", "no-store"],
   ["referrer-policy", "no-referrer"],
@@ -151,6 +162,26 @@ export function parseFrameMessage(data: unknown, nonce: string): JsxFrameMessage
     default:
       return undefined;
   }
+}
+
+/** A reserved capability request (`cap/*`) from the frame. v1 ships no handler: they are dropped. */
+export interface JsxCapabilityMessage {
+  readonly type: `cap/${string}`;
+  readonly body: unknown;
+}
+
+/**
+ * Viewer-side recognition of the reserved `cap/*` namespace: v:1, nonce-bound,
+ * a bounded type, and no keys beyond `{v,type,nonce,body}`. The caller has
+ * already checked source and origin. Whether anything is done with it is the
+ * caller's registered handler (jsx-sandbox.ts); by default nothing is.
+ */
+export function parseCapabilityMessage(data: unknown, nonce: string): JsxCapabilityMessage | undefined {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  if (!("v" in data) || data.v !== JSX_SANDBOX_PROTOCOL_VERSION || !("nonce" in data) || data.nonce !== nonce) return undefined;
+  if (!("type" in data) || typeof data.type !== "string" || !/^cap\/[a-z0-9._-]{1,64}$/.test(data.type)) return undefined;
+  if (!Object.keys(data).every((key) => key === "v" || key === "type" || key === "nonce" || key === "body")) return undefined;
+  return { type: data.type as JsxCapabilityMessage["type"], body: "body" in data ? data.body : undefined };
 }
 
 /**

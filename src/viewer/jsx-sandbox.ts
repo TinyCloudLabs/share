@@ -15,7 +15,9 @@ import {
   JSX_START_TIMEOUT_MS,
   JSX_MAX_SOURCE_CHARS,
   buildRenderRequest,
+  parseCapabilityMessage,
   parseFrameMessage,
+  type JsxCapabilityMessage,
   type JsxFramePhase,
   type JsxRenderRequest,
   type JsxTheme,
@@ -45,7 +47,16 @@ export interface JsxSandbox {
   destroy(): void;
 }
 
+/**
+ * Extension point for viewer capabilities (a later slice): receives a `cap/*`
+ * request from this sandbox's own frame after source, origin, version and nonce
+ * checks. Without a handler (the default) every `cap/*` message is dropped
+ * silently, exactly like any other unknown message.
+ */
+export type JsxCapabilityHandler = (request: JsxCapabilityMessage) => void;
+
 export interface JsxSandboxOptions {
+  readonly onCapability?: JsxCapabilityHandler;
   /** A failure after the first render settled (a runtime error, or navigation). */
   readonly onFailure?: (error: JsxRenderError) => void;
   /** The frame forwarded the Alt+Shift+C recall shortcut. */
@@ -95,6 +106,9 @@ export function createJsxSandbox(doc: Document, options: JsxSandboxOptions = {})
 
   const onMessage = (event: MessageEvent): void => {
     if (destroyed || event.source !== iframe.contentWindow || event.origin !== "null") return;
+    // The one place the reserved capability namespace is decided.
+    const capability = parseCapabilityMessage(event.data, nonce);
+    if (capability !== undefined) { options.onCapability?.(capability); return; }
     const message = parseFrameMessage(event.data, nonce);
     if (message === undefined) return;
     switch (message.type) {
