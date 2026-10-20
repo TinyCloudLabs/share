@@ -26,7 +26,7 @@ import {
   type ThreadRef,
   type ThreadSide,
 } from "./model.js";
-import { StoreError, type CourierStore } from "./store.js";
+import { startOperation, StoreError, type CourierStore, type OperationBudget } from "./store.js";
 
 /** Newest first; older threads and requests are not read. The page says so. */
 export const MAX_THREADS = 200;
@@ -65,9 +65,9 @@ export interface Overview {
   readonly partial: boolean;
 }
 
-async function tryRead(store: CourierStore, key: string, failures: { count: number }): Promise<unknown> {
+async function tryRead(store: CourierStore, key: string, failures: { count: number }, operation: OperationBudget): Promise<unknown> {
   try {
-    return await store.readJson(key, { loadBudget: true });
+    return await store.readJson(key, operation);
   } catch (error) {
     // A mailbox that cannot be reached at all is the caller's problem; one file that will not load is a gap in the list.
     if (error instanceof StoreError && (error.code === "no-space" || error.code === "denied")) throw error;
@@ -90,7 +90,8 @@ function lastMessageTime(entry: ThreadIndexEntry): number | undefined {
 }
 
 export async function loadOverview(store: CourierStore, now: number): Promise<Overview> {
-  const listing = await store.list();
+  const operation = startOperation();
+  const listing = await store.list(operation);
   const index = buildIndex(listing.keys, listing.truncated);
   const failures = { count: 0 };
 
@@ -99,9 +100,9 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
   const approvalIds = new Set(index.approvalIds);
 
   const cards = await Promise.all(requestIds.map(async (id): Promise<RequestCard | "unreadable"> => {
-    const request = parseRequest(id, await tryRead(store, keys.request(id), failures));
+    const request = parseRequest(id, await tryRead(store, keys.request(id), failures, operation));
     if (request === undefined) return "unreadable";
-    const rawApproval = approvalIds.has(id) ? await tryRead(store, keys.approval(id), failures) : undefined;
+    const rawApproval = approvalIds.has(id) ? await tryRead(store, keys.approval(id), failures, operation) : undefined;
     // One request that can't be hashed (a number that isn't finite, nesting too deep) is shown as unreviewable; the others are unaffected.
     let hash = "";
     let shown = request;
@@ -123,11 +124,11 @@ export async function loadOverview(store: CourierStore, now: number): Promise<Ov
   const summaries = await Promise.all(entries.map(async (entry): Promise<ThreadSummary> => {
     const metaSide: ThreadSide = entry.meta.me !== undefined ? "me" : "peer";
     const metaKey = entry.meta[metaSide];
-    const meta = metaKey === undefined ? undefined : parseMeta(metaSide, await tryRead(store, metaKey, failures));
+    const meta = metaKey === undefined ? undefined : parseMeta(metaSide, await tryRead(store, metaKey, failures, operation));
     let lastActivity = lastMessageTime(entry);
     let openTasks = 0;
     await Promise.all(newestFirst(entry.tasks, (task) => task.id, MAX_THREAD_ITEMS).map(async (task) => {
-      const view = parseTask(task.side, task.id, await tryRead(store, keys.thread(task.side, entry.peer, entry.threadId, "task", task.id), failures));
+      const view = parseTask(task.side, task.id, await tryRead(store, keys.thread(task.side, entry.peer, entry.threadId, "task", task.id), failures, operation));
       if (view === undefined) return;
       if (isOpenTask(view.state)) openTasks += 1;
       if (view.timestamp !== undefined && (lastActivity === undefined || view.timestamp > lastActivity)) lastActivity = view.timestamp;
@@ -163,14 +164,15 @@ export interface ThreadDetail {
 
 /** The thread as both sides' files taken together, ordered by ULID. Own files win a duplicate id. */
 export async function loadThread(store: CourierStore, ref: ThreadRef): Promise<ThreadDetail> {
-  const listing = await store.list();
+  const operation = startOperation();
+  const listing = await store.list(operation);
   const index = buildIndex(listing.keys, listing.truncated);
   const entry = index.threads.find((candidate) => candidate.peer === ref.peer && candidate.threadId === ref.threadId);
   if (entry === undefined) return { ...ref, subject: "(no subject)", timeline: [], partial: index.truncated };
   const failures = { count: 0 };
   const metaSide: ThreadSide = entry.meta.me !== undefined ? "me" : "peer";
   const metaKey = entry.meta[metaSide];
-  const meta = metaKey === undefined ? undefined : parseMeta(metaSide, await tryRead(store, metaKey, failures));
+  const meta = metaKey === undefined ? undefined : parseMeta(metaSide, await tryRead(store, metaKey, failures, operation));
 
   const messageIds = new Map<string, ThreadSide>();
   for (const message of entry.messages) if (!messageIds.has(message.id) || message.side === "me") messageIds.set(message.id, message.side);
@@ -182,12 +184,12 @@ export async function loadThread(store: CourierStore, ref: ThreadRef): Promise<T
   const timeline: TimelineItem[] = [];
   await Promise.all([
     ...wantedMessages.map(async ([id, side]) => {
-      const message = parseMessage(side, id, await tryRead(store, keys.thread(side, ref.peer, ref.threadId, "msg", id), failures));
+      const message = parseMessage(side, id, await tryRead(store, keys.thread(side, ref.peer, ref.threadId, "msg", id), failures, operation));
       if (message !== undefined) timeline.push({ kind: "message", id, message });
       else failures.count += 1;
     }),
     ...wantedTasks.map(async ([id, side]) => {
-      const task = parseTask(side, id, await tryRead(store, keys.thread(side, ref.peer, ref.threadId, "task", id), failures));
+      const task = parseTask(side, id, await tryRead(store, keys.thread(side, ref.peer, ref.threadId, "task", id), failures, operation));
       if (task !== undefined) timeline.push({ kind: "task", id, task });
       else failures.count += 1;
     }),

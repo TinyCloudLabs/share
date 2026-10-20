@@ -240,9 +240,9 @@ describe("Needs you", () => {
       await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain(row.expected));
       expect(root.textContent).not.toMatch(/Nothing was (?:recorded|changed)/);
       if (row.error instanceof StoreError && row.error.code === "denied") {
-        expect(read).not.toHaveBeenCalledWith(keys.approval(REQ));
+        expect(read).not.toHaveBeenCalledWith(keys.approval(REQ), expect.anything());
       } else {
-        expect(read).toHaveBeenCalledWith(keys.approval(REQ));
+        expect(read).toHaveBeenCalledWith(keys.approval(REQ), expect.anything());
         expect(root.querySelector<HTMLElement>(".cr-actions")!.hidden).toBe(true);
       }
     });

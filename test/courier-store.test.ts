@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { loadThread } from "../src/courier/service.ts";
 import { keys } from "../src/courier/model.ts";
-import { MAX_CONCURRENT_READS, StoreError, createKvStore, type CourierKv } from "../src/courier/store.ts";
+import { MAX_CONCURRENT_READS, startOperation, StoreError, createKvStore, type CourierKv } from "../src/courier/store.ts";
 
 const REQ = "01J9ZC4K7T3QZ5W6M8R2N1B030";
 const file = { requestId: REQ, requestHash: "a".repeat(64), decision: "approved", note: "", decidedAt: "2026-10-20T12:00:00.000Z" } as const;
@@ -62,20 +63,57 @@ describe("orders are compare-and-swap", () => {
 });
 
 describe("reads are bounded", () => {
+  it("keeps overlapping mailbox loads on their own original deadlines", async () => {
+    let clock = 0;
+    const date = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const thread = "01J9ZC4K7T3QZ5W6M8R2N1B010";
+    const task = "01J9ZC4K7T3QZ5W6M8R2N1B022";
+    const releases = new Map<string, () => void>();
+    const get = vi.fn((key: string) => {
+      const peer = key.includes("/alpha/") ? "alpha" : "bravo";
+      if (key.endsWith("/meta.json")) return new Promise((resolve) => {
+        releases.set(peer, () => resolve(ok({ data: { subject: peer }, headers })));
+      });
+      return Promise.resolve(ok({ data: { id: task, contextId: thread, status: { state: "TASK_STATE_WORKING" } }, headers }));
+    });
+    const list = vi.fn(async () => ok({ keys: ["alpha", "bravo"].flatMap((peer) => [keys.thread("me", peer, thread, "meta", thread), keys.thread("me", peer, thread, "task", task)]), truncated: false }));
+    const store = createKvStore(kvWith({ get: get as unknown as Get, list: list as unknown as List }), { now: () => clock });
+    try {
+      const first = loadThread(store, { peer: "alpha", threadId: thread });
+      await vi.waitFor(() => expect(releases.has("alpha")).toBe(true));
+      clock = 29_000;
+      const second = loadThread(store, { peer: "bravo", threadId: thread });
+      await vi.waitFor(() => expect(releases.has("bravo")).toBe(true));
+      clock = 31_000;
+      releases.get("alpha")!();
+      expect((await first).partial).toBe(true);
+      expect(get.mock.calls.map(([key]) => key)).not.toContain(keys.thread("me", "alpha", thread, "task", task));
+      clock = 58_999;
+      releases.get("bravo")!();
+      const result = await second;
+      expect(result.partial).toBe(false);
+      expect(result.timeline).toHaveLength(1);
+      expect(get.mock.calls.map(([key]) => key)).toContain(keys.thread("me", "bravo", thread, "task", task));
+    } finally {
+      releases.get("alpha")?.(); releases.get("bravo")?.();
+      date.mockRestore();
+    }
+  });
   it("keeps the load budget separate from user reads and writes", async () => {
     let clock = 0;
     const get = vi.fn(async () => ok({ data: "{}", headers }));
     const put = vi.fn(async () => ok({ data: undefined, headers }));
     const list = vi.fn(async () => ok({ keys: [], truncated: false }));
     const store = createKvStore(kvWith({ get: get as unknown as Get, put: put as unknown as Put, list: list as unknown as List }), { now: () => clock });
-    await store.list();
+    const operation = startOperation(() => clock);
+    await store.list(operation);
     clock = 31_000;
-    await expect(store.readJson("k", { loadBudget: true })).rejects.toMatchObject({ code: "timeout" });
+    await expect(store.readJson("k", operation)).rejects.toMatchObject({ code: "timeout" });
     expect(get).not.toHaveBeenCalled();
     await expect(store.readJson("k")).resolves.toEqual({});
     await expect(store.createApproval(file)).resolves.toBe("created");
     await store.writeOrders("peer", "# Orders", undefined);
-    await expect(store.readJson("k", { loadBudget: true })).rejects.toMatchObject({ code: "timeout" });
+    await expect(store.readJson("k", operation)).rejects.toMatchObject({ code: "timeout" });
     expect(get).toHaveBeenCalledTimes(1);
     expect(put).toHaveBeenCalledTimes(2);
   });

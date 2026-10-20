@@ -34,15 +34,22 @@ export interface OrdersFile {
   readonly etag: string | undefined;
 }
 
+/** An immutable start shared only by calls belonging to this user operation. */
+export interface OperationBudget {
+  readonly startedAt: number;
+}
+
+export const startOperation = (now: () => number = Date.now): OperationBudget => Object.freeze({ startedAt: now() });
+
 export interface CourierStore {
-  list(): Promise<Listing>;
-  /** The parsed JSON at `key`; undefined when there is none. Load fan-out shares the listing budget; user reads have their own. */
-  readJson(key: string, options?: { readonly loadBudget: true }): Promise<unknown>;
-  readOrders(peer: string): Promise<OrdersFile | undefined>;
+  list(operation?: OperationBudget): Promise<Listing>;
+  /** The parsed JSON at `key`; undefined when there is none. Calls in one operation share its budget. */
+  readJson(key: string, operation?: OperationBudget): Promise<unknown>;
+  readOrders(peer: string, operation?: OperationBudget): Promise<OrdersFile | undefined>;
   /** Create-only: "exists" when a decision for this request was already written. */
-  createApproval(file: ApprovalFile): Promise<"created" | "exists">;
+  createApproval(file: ApprovalFile, operation?: OperationBudget): Promise<"created" | "exists">;
   /** `etag` is the version read (undefined = there was no file). "changed" when the file moved on since. */
-  writeOrders(peer: string, text: string, etag: string | undefined): Promise<void>;
+  writeOrders(peer: string, text: string, etag: string | undefined, operation?: OperationBudget): Promise<void>;
 }
 
 export type CourierKv = Pick<IKVService, "get" | "put" | "list">;
@@ -89,15 +96,14 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
   const callTimeout = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
   const budget = options.budgetMs ?? LOAD_BUDGET_MS;
   const now = options.now ?? Date.now;
-  let budgetStart = now();
   let active = 0;
   const waiting: (() => void)[] = [];
 
   /** Runs `call` with a per-call deadline that also respects what is left of the overall budget; a hung call is abandoned, not awaited. */
-  async function bounded<T>(call: (signal: AbortSignal) => Promise<T>, startedAt = now()): Promise<T> {
+  async function bounded<T>(call: (signal: AbortSignal) => Promise<T>, operation = startOperation(now)): Promise<T> {
     while (active >= MAX_CONCURRENT_READS) await new Promise<void>((resume) => waiting.push(resume));
     active += 1;
-    const left = budget - (now() - startedAt);
+    const left = budget - (now() - operation.startedAt);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -120,13 +126,12 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
   const common = (signal: AbortSignal) => ({ prefix: "", timeout: callTimeout, signal });
 
   return {
-    async list() {
-      budgetStart = now();
+    async list(operation = startOperation(now)) {
       const found = new Set<string>();
       let truncated = false;
       let cursor: string | undefined;
       for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-        const result = await bounded((signal) => kv.list({ ...common(signal), prefix: COURIER_ROOT, limit: LIST_PAGE, ...(cursor === undefined ? {} : { cursor }) }), budgetStart);
+        const result = await bounded((signal) => kv.list({ ...common(signal), prefix: COURIER_ROOT, limit: LIST_PAGE, ...(cursor === undefined ? {} : { cursor }) }), operation);
         if (!result.ok) {
           // An absent space reads as a node error, not an empty list.
           throw new StoreError(failureOf(result.error));
@@ -141,8 +146,8 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
       return { keys: [...found].slice(0, MAX_KEYS), truncated: truncated || found.size > MAX_KEYS };
     },
 
-    async readJson(key, readOptions) {
-      const result = await bounded((signal) => kv.get<unknown>(key, { ...common(signal), maxResponseBytes: MAX_JSON_BYTES }), readOptions?.loadBudget === true ? budgetStart : now());
+    async readJson(key, operation) {
+      const result = await bounded((signal) => kv.get<unknown>(key, { ...common(signal), maxResponseBytes: MAX_JSON_BYTES }), operation);
       if (!result.ok) {
         if (isNotFound(result.error)) return undefined;
         throw new StoreError(failureOf(result.error));
@@ -152,8 +157,8 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
       try { return JSON.parse(value) as unknown; } catch { return undefined; }
     },
 
-    async readOrders(peer) {
-      const result = await bounded((signal) => kv.get<unknown>(keys.orders(peer), { ...common(signal), maxResponseBytes: MAX_ORDERS_BYTES }));
+    async readOrders(peer, operation) {
+      const result = await bounded((signal) => kv.get<unknown>(keys.orders(peer), { ...common(signal), maxResponseBytes: MAX_ORDERS_BYTES }), operation);
       if (!result.ok) {
         if (isNotFound(result.error)) return undefined;
         throw new StoreError(failureOf(result.error));
@@ -165,21 +170,21 @@ export function createKvStore(kv: CourierKv, options: KvStoreOptions = {}): Cour
       return { text, etag: typeof etag === "string" ? etag : undefined };
     },
 
-    async createApproval(file) {
+    async createApproval(file, operation) {
       const key = keys.approval(file.requestId);
       if (!key.startsWith(APPROVALS_PREFIX)) throw new StoreError("failed");
-      const result = await bounded((signal) => kv.put(key, JSON.stringify(file), { ...common(signal), contentType: "application/json", ifNoneMatch: "*" }));
+      const result = await bounded((signal) => kv.put(key, JSON.stringify(file), { ...common(signal), contentType: "application/json", ifNoneMatch: "*" }), operation);
       if (result.ok) return "created";
       if (isPreconditionFailed(result.error)) return "exists";
       throw new StoreError(failureOf(result.error));
     },
 
-    async writeOrders(peer, text, etag) {
+    async writeOrders(peer, text, etag, operation) {
       const key = keys.orders(peer);
       if (!key.startsWith(ORDERS_PREFIX)) throw new StoreError("failed");
       if (new TextEncoder().encode(text).byteLength > MAX_ORDERS_BYTES) throw new StoreError("too-large");
       const condition = etag === undefined ? { ifNoneMatch: "*" as const } : { ifMatch: etag };
-      const result = await bounded((signal) => kv.put(key, text, { ...common(signal), contentType: "text/markdown; charset=utf-8", ...condition }));
+      const result = await bounded((signal) => kv.put(key, text, { ...common(signal), contentType: "text/markdown; charset=utf-8", ...condition }), operation);
       if (result.ok) return;
       if (isPreconditionFailed(result.error)) throw new StoreError("changed");
       throw new StoreError(failureOf(result.error));

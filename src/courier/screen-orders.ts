@@ -7,7 +7,7 @@
 import { el, status, uid, type ViewContext } from "./dom.js";
 import { MAX_ORDERS_BYTES } from "./model.js";
 import type { Overview } from "./service.js";
-import { StoreError, type OrdersFile } from "./store.js";
+import { startOperation, StoreError, type OrdersFile } from "./store.js";
 
 function failure(error: unknown): string {
   const code = error instanceof StoreError ? error.code : "failed";
@@ -52,13 +52,13 @@ export function renderOrders(ctx: ViewContext, overview: Overview): HTMLElement 
   let busy = false;
   let generation = 0;
 
-  const load = async (): Promise<void> => {
+  const load = async (operation = startOperation()): Promise<void> => {
     const mine = ++generation;
     const peer = select.value;
     save.disabled = true; reload.disabled = true; text.disabled = true;
     result.replaceChildren(el(doc, "p", "cr-muted", "Loading…"));
     try {
-      const file = await ctx.store.readOrders(peer);
+      const file = await ctx.store.readOrders(peer, operation);
       if (mine !== generation) return;
       loaded = file; hadFile = file !== undefined;
       text.value = file?.text ?? "";
@@ -77,13 +77,14 @@ export function renderOrders(ctx: ViewContext, overview: Overview): HTMLElement 
     const value = text.value;
     if (value.trim() === "") { result.replaceChildren(status(doc, "warning", "Write some orders first. An empty file would leave your agent without any.")); return; }
     if (new TextEncoder().encode(value).byteLength > MAX_ORDERS_BYTES) { result.replaceChildren(status(doc, "warning", failure(new StoreError("too-large")))); return; }
+    const operation = startOperation();
     busy = true; save.disabled = true; reload.disabled = true;
     result.replaceChildren(el(doc, "p", "cr-muted", "Saving…"));
     try {
-      await ctx.store.writeOrders(select.value, value, loaded?.etag);
+      await ctx.store.writeOrders(select.value, value, loaded?.etag, operation);
       ctx.announcer.say("Orders saved.");
       busy = false;
-      await load();
+      await load(operation);
       result.replaceChildren(status(doc, "success", "Saved. Your agent will use these orders from now on."));
     } catch (error) {
       result.replaceChildren(status(doc, "danger", failure(error)));

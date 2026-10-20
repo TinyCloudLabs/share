@@ -24,7 +24,7 @@ import { requestHash } from "./canonical.js";
 import { absoluteTime, el, status, timeElement, uid, type ViewContext } from "./dom.js";
 import { approvalFile, isDecidable, isRecord, keys, MAX_NOTE, noteFitsToSave, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
 import type { Overview, RequestCard } from "./service.js";
-import { StoreError } from "./store.js";
+import { startOperation, StoreError, type OperationBudget } from "./store.js";
 
 /** Fixed wording for the verb, which comes from a closed set. */
 const VERB_WORDS: Readonly<Record<Verb, string>> = { merge: "merge", deploy: "deploy", publish: "publish", spend: "spend", other: "do something outside the usual kinds (other) with" };
@@ -193,8 +193,8 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
     ctx.announcer.say(text);
   };
 
-  const decisionOnFile = async (): Promise<void> => {
-    const raw = await ctx.store.readJson(keys.approval(request.id)).catch(() => undefined);
+  const decisionOnFile = async (operation: OperationBudget): Promise<void> => {
+    const raw = await ctx.store.readJson(keys.approval(request.id), operation).catch(() => undefined);
     const earlier = parseApproval(request.id, raw);
     const matched = earlier !== undefined && isRecord(raw) && raw.requestHash === card.hash;
     settle(matched ? `Decision on file: ${earlier.decision}.` : "We could not confirm whether the decision was saved. Reload to check.", "info");
@@ -202,13 +202,14 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
 
   const decide = async (decision: Decision): Promise<void> => {
     if (deciding) return;
+    const operation = startOperation();
     deciding = true;
     lock(true);
     result.replaceChildren(el(doc, "p", "cr-muted", "Recording your decision…"));
     let writeAttempted = false;
     try {
       // Re-read the request: what is approved is what is on file now, not what was on screen.
-      const fresh = parseRequest(request.id, await ctx.store.readJson(keys.request(request.id)));
+      const fresh = parseRequest(request.id, await ctx.store.readJson(keys.request(request.id), operation));
       if (fresh === undefined || !isDecidable(fresh) || await requestHash(fresh.raw) !== card.hash) {
         settle("This request changed after it was shown. Refresh to see it again.", "warning");
         return;
@@ -228,16 +229,16 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
         return;
       }
       writeAttempted = true;
-      const written = await ctx.store.createApproval(approvalFile(fresh, card.hash, decision, note.value, ctx.now()));
+      const written = await ctx.store.createApproval(approvalFile(fresh, card.hash, decision, note.value, ctx.now()), operation);
       if (written === "created") {
         settle(decision === "approved" ? "Approved. Your agent will see it and carry out the action once." : "Denied. Your agent will see it and won't carry out the action.");
         return;
       }
       // Another tab or an earlier click got there first: show what was decided, and never overwrite it.
-      await decisionOnFile();
+      await decisionOnFile(operation);
     } catch (error) {
       if (writeAttempted && !(error instanceof StoreError && error.code === "denied")) {
-        await decisionOnFile();
+        await decisionOnFile(operation);
       } else {
         result.replaceChildren(status(doc, "danger", decisionFailure(error)));
         ctx.announcer.say("We couldn't record your decision.");
