@@ -35,8 +35,10 @@ import type { ManifestScope } from "../share/manifest-policy.js";
 import { createAppData } from "./app-data.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
-import { RunError, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
+import { RunError, type InstalledHints, type PreparedApp, type PutResult, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
+import { BundleRefusal, fetchVerifiedBundle, type VerifiedBundle } from "./bundle.ts";
+import { loadManifest } from "./manifest.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -61,8 +63,20 @@ export function runnerAppName(prefix: string, name: string): string {
  */
 export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
-/** The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. */
-export function readerManifest(appId: string, appName: string): Manifest {
+/** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */
+function kvPermission(path: string, actions: Array<"get" | "list" | "put">, description: string): NonNullable<Manifest["permissions"]>[number] {
+  return { service: "tinycloud.kv", path, actions, skipPrefix: true, description };
+}
+
+/**
+ * The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. With `install`
+ * (the saved copy is not yet verified on this device), also create-only `put` on `<app_id>/app/` and `<app_id>/knowledge/`, so
+ * missing files are saved within this same approval.
+ */
+export function readerManifest(appId: string, appName: string, install = false): Manifest {
+  const read = install
+    ? kvPermission(`${appId}/app/`, ["get", "list", "put"], `Read and save ${appName}'s files (its code, manifest and install record) so they can be checked before it is opened.`)
+    : kvPermission(`${appId}/app/`, ["get", "list"], `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.`);
   return {
     manifest_version: 1,
     app_id: RUNNER_APP_ID,
@@ -73,13 +87,17 @@ export function readerManifest(appId: string, appName: string): Manifest {
     defaults: false,
     includePublicSpace: false,
     expiry: "15m",
-    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
+    permissions: install ? [read, kvPermission(`${appId}/knowledge/`, ["put"], `Save ${appName}'s notes folder if it is missing.`)] : [read],
   };
 }
 
-/** What the read sign-in may ask for: `get` and `list` on the one saved app, and nothing else. */
-export function readerScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+/**
+ * What the read sign-in may ask for: `get` and `list` on the one saved app, and with `install` create-only `put` on its folder and
+ * notes. Nothing else.
+ */
+export function readerScope(appId: string, install = false): ManifestScope {
+  const prefixes = [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }, ...(install ? [{ space: INSTALL_SPACE, prefix: `${appId}/knowledge/` }] : [])];
+  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: install ? ["get", "list", "put"] : ["get", "list"], allowedPathPrefixes: prefixes };
 }
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
@@ -107,6 +125,19 @@ interface ReaderKv {
   list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
   /** A short-lived URL for one object (a `get` invocation): fetched below as a STREAM, so the read can stop at the cap. */
   createSignedReadUrl(key: string, options: { expiresInSeconds: number }): Promise<{ ok: true; data: { url: string } } | { ok: false; error: { code?: string } }>;
+}
+
+/** The part of the SDK's key-value service the install write uses. */
+interface WriterKv {
+  put(key: string, value: Uint8Array, options: { contentType: string; ifNoneMatch: "*" }): Promise<{ ok: true } | { ok: false; error: { code?: string } }>;
+}
+
+/** Create-only write: created, or already there and left as it is. Any other failure is a failed open, never a silent skip. */
+export async function putCreateOnly(kv: WriterKv, key: string, bytes: Uint8Array, contentType: string): Promise<PutResult> {
+  const written = await kv.put(key, bytes, { contentType, ifNoneMatch: "*" });
+  if (written.ok) return "created";
+  if (written.error.code === "KV_PRECONDITION_FAILED") return "exists";
+  throw new RunError("failed", { detail: `save ${key}: ${written.error.code ?? "error"}` });
 }
 
 /** The part of `fetch` the reader uses (the page's own `fetch`, or a fake in tests). */
@@ -169,14 +200,40 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: Read
 /** The OpenKey connection a read session hands to the runtime sign-in, and how to end the whole sign-in. */
 const OPENKEY_SESSIONS = new WeakMap<ReadSession, ManifestSignIn>();
 
+/** Device-local record of the digest last verified per app. It only chooses the read's grants; it is never proof that files are present. */
+const HINT_PREFIX = "tinycloud-share.app-installed:";
+function localHints(): InstalledHints {
+  // localStorage can be missing or blocked (private modes, node tests): every open then takes the write-capable read, which is safe.
+  const storage = (): Storage | undefined => { try { return globalThis.localStorage; } catch { return undefined; } };
+  return {
+    get: (appId) => { try { return storage()?.getItem(HINT_PREFIX + appId) ?? undefined; } catch { return undefined; } },
+    set: (appId, digest) => { try { storage()?.setItem(HINT_PREFIX + appId, digest); } catch { /* not recorded: the next open checks again */ } },
+    clear: (appId) => { try { storage()?.removeItem(HINT_PREFIX + appId); } catch { /* as above */ } },
+  };
+}
+
 export function createRunPorts(): RunPorts {
   return {
+    async prepare(entry): Promise<PreparedApp> {
+      // Before any approval: every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
+      const bundle = await fetchVerifiedBundle(entry).catch((error: unknown) => {
+        if (error instanceof BundleRefusal && error.reason !== "unavailable") throw new RunError("catalog-unavailable", { cause: error, detail: "The catalog copy of this app did not match the catalog." });
+        throw new RunError("failed", { cause: error, detail: "The app's files could not be downloaded. Check the connection and try again." });
+      });
+      const manifest = await loadManifest(entry);
+      if (!manifest.ok && manifest.reason === "mismatch") throw new RunError("catalog-unavailable", { detail: "The catalog copy of this app's manifest did not match the catalog." });
+      if (!manifest.ok) throw new RunError("failed", { detail: "The app's manifest could not be downloaded. Check the connection and try again." });
+      return { bundle, manifest };
+    },
+
+    hints: localHints(),
+
     async sdk(): Promise<ManifestSdk> {
       // Lazy so the page itself loads no SDK until the person asks to open an app.
       return import("@tinycloud/sdk-core");
     },
 
-    async readStored(entry, hooks): Promise<ReadSession> {
+    async readStored(entry, hooks, options): Promise<ReadSession> {
       // Dynamic on purpose: the SDK, OpenKey and the shared sign-in load only on the click.
       const openkey = await import("../share/openkey-session.js");
       const config = await loadSharePublicConfig();
@@ -185,8 +242,8 @@ export function createRunPorts(): RunPorts {
       let signedIn: ManifestSignIn;
       try {
         signedIn = await openkey.signInWithManifest({
-          manifest: readerManifest(entry.app_id, entry.name),
-          ...readerScope(entry.app_id),
+          manifest: readerManifest(entry.app_id, entry.name, options.install),
+          ...readerScope(entry.app_id, options.install),
           config,
           hostSpaces: [INSTALL_SPACE],
           guardApproval: approvals.guard,
@@ -214,6 +271,7 @@ export function createRunPorts(): RunPorts {
       let ended = false;
       const readSession: ReadSession = {
         files,
+        ...(options.install ? { put: (key: string, bytes: Uint8Array, contentType: string) => putCreateOnly(kv, key, bytes, contentType) } : {}),
         end: async ({ keepOpenKey }) => {
           if (ended) return;
           ended = true;

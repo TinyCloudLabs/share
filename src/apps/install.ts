@@ -16,7 +16,7 @@
  */
 import { type BundleFetch, BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
 import { type CatalogEntry, availabilityOf } from "./catalog.ts";
-import { installKey, installRecord, installRecordKey, installerManifest } from "./install-plan.ts";
+import { installKey, installOrder, installRecord, installRecordKey, installerManifest } from "./install-plan.ts";
 import type { Manifest } from "@tinycloud/web-sdk";
 
 export type PutResult = "created" | "exists";
@@ -94,7 +94,7 @@ export async function runInstall(entry: CatalogEntry, ports: InstallPorts, repor
   const manifest = installerManifest({ app_id: entry.app_id, name: entry.name, description: entry.description });
 
   // The files in a fixed order; the record is last and is never part of the bundle.
-  const writes = [...bundle.files].sort((a, b) => (a.path < b.path ? -1 : 1)).map((file) => ({ key: installKey(entry.app_id, file.path), bytes: file.bytes, contentType: contentTypeOf(file.path) }));
+  const writes = installOrder(bundle.files).map((file) => ({ key: installKey(entry.app_id, file.path), bytes: file.bytes, contentType: contentTypeOf(file.path) }));
   const recordWrite = { key: installRecordKey(entry.app_id), bytes: installRecord(entry, (ports.now ?? (() => new Date()))()), contentType: contentTypeOf("install.json") };
   const total = writes.length + 1;
 

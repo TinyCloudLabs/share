@@ -84,6 +84,17 @@ export function installRecordKey(appId: string): string {
   return `${appId}/app/${INSTALL_RECORD_PATH}`;
 }
 
+/**
+ * The order an install's files are written in: the app's files, then its notes, both sorted by path. `install.json` is
+ * written after this list by every caller, so a folder that has it is complete (the commit point). Nothing writes it earlier.
+ */
+export function installOrder<T extends { path: string }>(files: readonly T[]): T[] {
+  const byPath = (a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const app = files.filter((file) => !file.path.startsWith("knowledge/")).sort(byPath);
+  const knowledge = files.filter((file) => file.path.startsWith("knowledge/")).sort(byPath);
+  return [...app, ...knowledge];
+}
+
 /** The manifest the install signs in with. `app` is the verified catalog manifest; only its identity is read. */
 export function installerManifest(app: { app_id: string; name: string; description?: string; appVersion?: string }): Manifest {
   return {

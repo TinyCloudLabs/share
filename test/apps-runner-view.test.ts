@@ -54,7 +54,11 @@ function fakePorts(overrides: { stored?: StoredOverrides | "empty"; readError?: 
   fake.ports = {
     ...(overrides.catalog === undefined ? {} : { catalog: overrides.catalog }),
     sdk: async () => sdkCore,
-    loadCatalogManifest: async (candidate) => ({ ok: true, manifest: JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown }),
+    prepare: async (candidate) => {
+      const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
+      return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
+    },
+    hints: { get: () => undefined, set: () => undefined, clear: () => undefined },
     async readStored(_entry, hooks): Promise<ReadSession> {
       fake.reads += 1;
       hooks.approval(true);
@@ -410,8 +414,8 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     const fake = fakePorts({ catalog: [entry] });
     // The install recorded a digest the catalog no longer lists.
     const original = fake.ports.readStored;
-    fake.ports.readStored = async (candidate, hooks) => {
-      const session = await original(candidate, hooks);
+    fake.ports.readStored = async (candidate, hooks, options) => {
+      const session = await original(candidate, hooks, options);
       const files = { entries: new Map(session.files.entries) };
       files.entries.set("install.json", new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: other.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" })));
       return { files, end: session.end };

@@ -89,7 +89,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("reading the saved app (sign-in 1)", () => {
   it("asks the shared sign-in for a get and a list on the one app's folder, under the runner's identity, 15 minutes, with a label that is allowed", async () => {
-    const read = await createRunPorts().readStored(entry, hooks);
+    const read = await createRunPorts().readStored(entry, hooks, { install: false });
     expect(calls).toHaveLength(1);
     const { options } = calls[0]!;
     expect(options["manifest"]).toEqual(readerManifest(HEALTH, entry.name));
@@ -104,7 +104,7 @@ describe("reading the saved app (sign-in 1)", () => {
   });
 
   it("signs nothing more once it has signed in: a later signature request is refused", async () => {
-    await createRunPorts().readStored(entry, hooks);
+    await createRunPorts().readStored(entry, hooks, { install: false });
     const wait = vi.fn(async () => "signed");
     await expect(calls[0]!.guard(wait)).rejects.toThrow("runner-signing-closed");
     expect(wait).not.toHaveBeenCalled();
@@ -113,35 +113,35 @@ describe("reading the saved app (sign-in 1)", () => {
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
     let inside: Promise<unknown> | undefined;
     signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
-    await createRunPorts().readStored(entry, hooks);
+    await createRunPorts().readStored(entry, hooks, { install: false });
     await expect(inside).resolves.toBe("signed");
   });
 
   it("disposes the sign-in when the files cannot be read, and says it failed", async () => {
     kvListResult = { ok: false, error: { code: "KV_ERROR" } };
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
+    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
     seedSaved();
     fetchStatus = 500;
     calls.length = 0;
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toBeInstanceOf(RunError);
+    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toBeInstanceOf(RunError);
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("disposes the sign-in when the applications space is not hosted", async () => {
     spaces = {};
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
+    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("ending the read session keeps OpenKey connected for the next sign-in, or closes everything", async () => {
-    const keep = await createRunPorts().readStored(entry, hooks);
+    const keep = await createRunPorts().readStored(entry, hooks, { install: false });
     await keep.end({ keepOpenKey: true });
     await keep.end({ keepOpenKey: true });
     expect(calls[0]!.fake.tinycloud.signOut).toHaveBeenCalledTimes(1);
     expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
     calls.length = 0;
-    const close = await createRunPorts().readStored(entry, hooks);
+    const close = await createRunPorts().readStored(entry, hooks, { install: false });
     await close.end({ keepOpenKey: false });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
@@ -245,7 +245,7 @@ describe("starting the app (sign-in 2)", () => {
   async function started(): Promise<{ app: RunnableApp; read: ReadSession; runtime: Awaited<ReturnType<ReturnType<typeof createRunPorts>["openRuntime"]>> }> {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
+    const read = await ports.readStored(entry, hooks, { install: false });
     const runtime = await ports.openRuntime(app, read, hooks);
     return { app, read, runtime };
   }
@@ -285,7 +285,7 @@ describe("starting the app (sign-in 2)", () => {
   it("a failed runtime sign-in disposes the reader's OpenKey connection and reports the failure", async () => {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
+    const read = await ports.readStored(entry, hooks, { install: false });
     signInBehaviour = (call) => { if (call === 2) throw new Error("approval closed"); };
     await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
@@ -294,7 +294,7 @@ describe("starting the app (sign-in 2)", () => {
   it("a missing applications space disposes both sign-ins", async () => {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
+    const read = await ports.readStored(entry, hooks, { install: false });
     spaces = {};
     await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[1]!.fake.dispose).toHaveBeenCalledTimes(1);
