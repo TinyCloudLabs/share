@@ -1,0 +1,47 @@
+{
+  "manifest_version": 1,
+  "app_id": "com.example.notes",
+  "name": "Notes",
+  "description": "Notes with KV documents and SQLite search metadata.",
+  "knowledge": "knowledge/index.md",
+  "resources": {
+    "kv": [
+      {
+        "name": "documents",
+        "prefix": "documents/*",
+        "description": "User-authored note documents.",
+        "capabilities": ["tinycloud.kv/get", "tinycloud.kv/put", "tinycloud.kv/list"],
+        "sensitivity": "user-data"
+      }
+    ],
+    "sql": [
+      {
+        "name": "main",
+        "engine": "sqlite",
+        "schema": "schema.sql",
+        "description": "Search and indexing metadata.",
+        "capabilities": ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"],
+        "migrations": [
+          {
+            "id": "001_initial_note_index",
+            "description": "Create the rebuildable note search index.",
+            "sql": [
+              "CREATE TABLE IF NOT EXISTS note_index (id TEXT PRIMARY KEY, title TEXT NOT NULL, updated_at TEXT NOT NULL, summary TEXT)",
+              "CREATE INDEX IF NOT EXISTS idx_note_index_updated_at ON note_index(updated_at)"
+            ]
+          }
+        ],
+        "sensitivity": "derived"
+      }
+    ],
+    "secrets": [
+      {
+        "name": "model-api-key",
+        "required": false,
+        "description": "Optional provider key used for note summaries.",
+        "consumers": ["agent.summarizer"],
+        "rotation": "user-managed"
+      }
+    ]
+  }
+}

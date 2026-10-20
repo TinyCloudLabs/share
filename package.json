@@ -17,6 +17,7 @@
     "test:e2e:native-joined": "node test/e2e-prod/joined-gate.mjs",
     "test:e2e:production-origin-contract": "node --test test/e2e-prod/production-headers.test.mjs test/e2e-prod/recipient-output.test.mjs test/e2e-prod/recipient-trace.test.mjs test/e2e-prod/cli-transport.test.mjs test/e2e-prod/native-stack.test.mjs",
     "test:e2e:sender-signin": "node test/e2e-prod/sender-signin-smoke.mjs",
+    "test:e2e:apps-page": "node test/e2e-apps-page.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@tinycloud/sdk-services": "3.3.0-beta.11",
     "@tinycloud/share-envelope": "1.1.0",
     "@tinycloud/share-sdk": "1.2.0-beta.0",
+    "@tinycloud/styles": "git+https://github.com/TinyCloudLabs/styles.git#767b808c01967eec77f9bd31f201defdb1be2bc4",
     "@tinycloud/web-sdk": "3.3.0-beta.12",
     "@tinycloud/web-sdk-wasm": "1.7.6",
     "dompurify": "3.4.15",
@@ -43,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.0",
+    "axe-core": "4.14.0",
     "jsdom": "^26.1.0",
     "puppeteer": "24.31.0",
     "typescript": "^5.8.3",
