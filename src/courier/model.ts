@@ -25,7 +25,7 @@ export { VERBS, type Verb };
 export const EXT = "https://tinycloud.xyz/ext/courier/v0";
 export const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 /** A peer handle as it appears in a key: a local nickname chosen at pairing. */
-export const HANDLE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+export const HANDLE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const MAX_SUBJECT = 200;
 export const MAX_LABEL = 120;
@@ -329,8 +329,8 @@ export function parseMeta(side: ThreadSide, raw: unknown): ThreadMetaView | unde
 export const MAX_TARGET = 200;
 export const MAX_SUMMARY = 200;
 
-/** Double-quote characters: the summary is drawn between quotes, so one inside it could end the quote early. Refused, as the CLI refuses them. */
-const QUOTES = /["\u201C-\u201F\u00AB\u00BB\u2039\u203A\uFF02\u275D\u275E\u301D-\u301F]/u;
+/** Quotation marks and their look-alikes (the CLI's DOUBLE_QUOTES), except the plain apostrophe U+0027 and U+2019: the summary is drawn between quotes, so one inside it could end the quote early. Refused, as the CLI refuses them. */
+const QUOTES = /(?!['\u2019])[\p{Quotation_Mark}"\uFF02\u275D\u275E\u2760\u2E42\u{1F676}-\u{1F678}\u2033\u2036\u02BA\u05F4\u3003]/u;
 
 /** WHAT approving would allow, from structured fields inside the hashed request. Still the agent's words: shown as plain text, never as markup. */
 export interface RequestWhat {
@@ -416,7 +416,7 @@ export interface RequestView {
 }
 
 export function parseRequest(id: string, raw: unknown): RequestView | undefined {
-  if (!isRecord(raw) || raw.id !== id) return undefined;
+  if (!isRecord(raw) || raw.id !== id || !ULID.test(id)) return undefined;
   const { peer, threadId, taskId } = raw;
   if (typeof peer !== "string" || !HANDLE.test(peer)) return undefined;
   if (typeof threadId !== "string" || !ULID.test(threadId)) return undefined;
