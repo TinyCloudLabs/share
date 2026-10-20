@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import type { CallbackStrategy } from "@tinycloud/sdk-core";
+import { composeManifestRequest, type CallbackStrategy } from "@tinycloud/sdk-core";
 import type { Manifest, PermissionEntry } from "@tinycloud/web-sdk";
 import {
   authenticateWithOpenKey,
@@ -19,7 +19,7 @@ import {
   signInWithManifest,
   type ApprovalGuard,
 } from "../src/share/openkey-session.js";
-import { ManifestRejectedError, type ManifestScope } from "../src/share/manifest-policy.js";
+import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
 
 const state = vi.hoisted(() => ({
@@ -28,6 +28,7 @@ const state = vi.hoisted(() => ({
   // OpenKey instances made, their app names, how many times each flow was closed, and whether connect fails.
   openKeys: [] as Array<{ appName: unknown; disconnects: number }>,
   connectError: undefined as unknown,
+  onConnect: undefined as undefined | (() => void),
   hangSign: false,
   signInError: undefined as unknown,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
@@ -51,7 +52,7 @@ vi.mock("@openkey/sdk", () => ({
     private readonly record: { appName: unknown; disconnects: number };
     constructor(config?: { appName?: unknown }) { this.record = { appName: config?.appName, disconnects: 0 }; state.openKeys.push(this.record); }
     disconnect() { this.record.disconnects += 1; }
-    async connect() { if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
+    async connect() { state.onConnect?.(); if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
     getSessionToken() { return null; }
     tinycloudSigningOptions() { return { endpoint: "https://api.openkey.so/api/delegate/sign", token: null }; }
     async signMessage(request: { message: string; keyId?: string }) {
@@ -137,6 +138,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.clients.length = 0;
     state.openKeys.length = 0;
     state.connectError = undefined;
+    state.onConnect = undefined;
     state.signInError = undefined;
     state.registrySync = undefined;
     state.signed = [];
@@ -169,7 +171,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     // The viewer's manifest asks for the private copies area and nothing else.
     expect(manifestOf(1).permissions).toEqual(filesForYouPermissions());
     expect(manifestOf(1).permissions!.map((entry) => entry.service)).toEqual(["tinycloud.kv"]);
-    expect(manifestOf(2)).toBe(APP_MANIFEST);
+    expect(manifestOf(2)).toEqual(APP_MANIFEST);
     expect(new Set([library.tinycloud, save.tinycloud, app.tinycloud]).size).toBe(3);
     for (const signedIn of [library, save, app]) expect(signedIn.session.address).toBe(SENDER.address);
   });
@@ -221,15 +223,16 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(state.openKeys).toHaveLength(before);
   });
 
-  it("makes every OpenKey wait go through the guard: connect, and each signature", async () => {
-    const waits: string[] = [];
-    const guardApproval: ApprovalGuard = async (wait) => { waits.push("wait"); return wait(); };
+  it("makes every OpenKey wait go through the guard, saying what it is: connect, and each signature with its purpose", async () => {
+    const waits: Array<[string, string | undefined]> = [];
+    const guardApproval: ApprovalGuard = async (wait, info) => { waits.push([info?.kind ?? "none", info?.purpose]); return wait(); };
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, guardApproval });
-    expect(waits).toEqual(["wait"]);
+    expect(waits).toEqual([["connect", undefined]]);
     const strategy = state.config?.signStrategy as CallbackStrategy;
     await strategy.handler({ address: SENDER.address, chainId: 1, message: "siwe:sign-in", type: "siwe", purpose: "sign-in" });
-    expect(waits).toEqual(["wait", "wait"]);
+    expect(waits).toEqual([["connect", undefined], ["sign", "sign-in"]]);
   });
+
 
   it("closes the OpenKey flow when a wait ends in an error: a cancel, a refusal, the guard giving up", async () => {
     const session = await authenticateWithOpenKey(() => undefined);
@@ -286,6 +289,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     state.clients.length = 0;
     state.openKeys.length = 0;
     state.connectError = undefined;
+    state.onConnect = undefined;
     state.signInError = undefined;
   });
 
@@ -350,6 +354,147 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest, config: CONFIG })).rejects.toMatchObject({ code: "path-not-allowed" });
     expect(state.openKeys).toHaveLength(1);
     expect(state.clients).toEqual([]);
+    // The connection this call opened is closed again; nothing is left open behind a refusal.
+    expect(state.openKeys[0]!.disconnects).toBe(1);
+  });
+
+  it("a function manifest that throws, or a refusal on a connection the CALLER opened, leaves the caller's connection alone", async () => {
+    const broad = (address: string): Manifest => app(address === "0x0000000000000000000000000000000000000000" ? [kv(inside, ["get"])] : [kv("/", ["get"])]);
+    const session = await authenticateWithOpenKey(() => undefined);
+    await expect(signInWithManifest({ manifest: broad, config: CONFIG, session })).rejects.toMatchObject({ code: "path-not-allowed" });
+    expect(state.openKeys[0]!.disconnects).toBe(0);
+    state.openKeys.length = 0;
+    const exploding = (address: string): Manifest => { if (address !== "0x0000000000000000000000000000000000000000") throw new Error("catalog failed"); return app([kv(inside, ["get"])]); };
+    await expect(signInWithManifest({ manifest: exploding, config: CONFIG })).rejects.toThrow("catalog failed");
+    expect(state.openKeys[0]!.disconnects).toBe(1);
+    expect(state.clients).toEqual([]);
+  });
+
+  // N1: the SDK adds a capability-list read for every space a manifest names; a manifest must not add one for a space it may not use.
+  it.each([
+    ["default", "default"], ["secrets", "secrets"], ["the public space", "public"], ["a space named by URI", `tinycloud:pkh:eip155:1:${SENDER.address}:default`],
+  ])("refuses a capabilities read on %s", async (_label, space) => {
+    await refused(app([{ service: "tinycloud.capabilities", space, path: "", actions: ["read"] }]), "space-not-allowed");
+  });
+
+  it("refuses a delegation list on any space, and a capabilities entry that is more than a bare read", async () => {
+    for (const space of ["applications", "default", "secrets"]) {
+      await refused(app([{ service: "tinycloud.delegation", space, path: "", actions: ["list"] }]), "delegation-ability");
+    }
+    await refused(app([{ service: "tinycloud.capabilities", space: "applications", path: "", actions: ["write"] }]), "action-not-allowed");
+    await refused(app([{ service: "tinycloud.capabilities", space: "applications", path: "some/key", actions: ["read"] }]), "path-not-allowed");
+  });
+
+  it("a delegation list is allowed only when the scope names it, and then only in the spaces the scope names", async () => {
+    const scope = { allowedServices: ["kv", "delegation"], allowedActions: ["get", "tinycloud.delegation/list"], allowedSpaces: ["applications"] };
+    const listing = (space: string): Manifest => app([kv(inside, ["get"]), { service: "tinycloud.delegation", space, path: "", actions: ["list"] }]);
+    await expect(signInWithManifest({ manifest: listing("applications"), config: CONFIG, ...scope })).resolves.toBeDefined();
+    await refused(listing("default"), "space-not-allowed", scope);
+    // Naming the service alone, or a bare action, is not enough.
+    await refused(listing("applications"), "delegation-ability", { allowedServices: ["kv", "delegation"], allowedActions: ["get", "list"] });
+    await refused(listing("applications"), "delegation-ability", { allowedActions: ["get", "tinycloud.delegation/list"] });
+  });
+
+  // N2: an ability belongs to its own service, whatever resource carries it.
+  it.each([
+    ["a delegation ability on a kv resource", kv(inside, ["tinycloud.delegation/list"]), "delegation-ability"],
+    ["a delegation ability, cased differently", kv(inside, ["Tinycloud.Delegation/list"]), "delegation-ability"],
+    ["a delegation ability on a capabilities resource", { service: "tinycloud.capabilities", space: "applications", path: "", actions: ["tinycloud.delegation/read"] }, "delegation-ability"],
+    ["a capabilities ability on a kv resource", kv(inside, ["tinycloud.capabilities/read"]), "action-not-allowed"],
+    ["another service's ability on a kv resource", kv(inside, ["tinycloud.vault/put"]), "action-not-allowed"],
+    ["an sql ability on a kv resource", kv(inside, ["tinycloud.sql/write"]), "action-not-allowed"],
+  ])("refuses %s", async (_label, entry, code) => {
+    await refused(app([entry as PermissionEntry]), code);
+  });
+
+  it("accepts an ability written with its own service's namespace", async () => {
+    await expect(signInWithManifest({ manifest: app([kv(inside, ["tinycloud.kv/get", "tinycloud.kv/put"])]), config: CONFIG })).resolves.toBeDefined();
+  });
+
+  // N3: prefixes match on path segments.
+  it.each([
+    ["v10/", "v1"], ["v10/", "v1/"], ["v1evil/x", "v1/"], ["v1-x", "v1"], ["v1/../v2/", "v2/x"], ["", "v1"],
+  ])("a scope prefix does not accept a sibling that only starts the same: path %j under scope %j", async (path, prefix) => {
+    const manifest = app([{ service: "tinycloud.kv", space: "applications", path: path === "" ? "/" : path, actions: ["get"], skipPrefix: true }]);
+    await refused(manifest, "path-not-allowed", { allowedPathPrefixes: [prefix] });
+  });
+
+  it.each([["v1", "v1"], ["v1/", "v1"], ["v1", "v1/"], ["v1//", "v1/"], ["v1/x/y", "v1"], ["v1/x/", "v1/"]])("a scope prefix accepts the path and what is under it: path %j under scope %j", async (path, prefix) => {
+    const manifest = app([{ service: "tinycloud.kv", space: "applications", path, actions: ["get"], skipPrefix: true }]);
+    await expect(signInWithManifest({ manifest, config: CONFIG, allowedPathPrefixes: [prefix] })).resolves.toBeDefined();
+  });
+
+  it("the manifest's own prefix, with or without its slash, never reaches a sibling", async () => {
+    for (const prefix of ["xyz.example.notes", "xyz.example.notes/"]) {
+      for (const path of ["xyz.example.notes-evil/", "xyz.example.notesevil/", "xyz.example.notes2/data/"]) {
+        await refused(app([kv(path, ["get"])], { prefix }), "path-not-allowed");
+      }
+      await expect(signInWithManifest({ manifest: app([kv("xyz.example.notes/data/", ["get"])], { prefix }), config: CONFIG })).resolves.toBeDefined();
+    }
+  });
+
+  // N4: what is checked is what is signed.
+  it("a manifest changed while OpenKey is connecting is not what gets signed: the checked copy is, frozen", async () => {
+    const original = app([kv(inside, ["get"])]);
+    const grabbed = original.permissions!;
+    state.onConnect = () => { grabbed.push(kv("/", ["get", "put", "del"], { space: "default" })); (original as { name: string }).name = "Changed"; };
+    await signInWithManifest({ manifest: original, config: CONFIG });
+    const signed = state.clients[0]!.config.manifest as Manifest;
+    expect(signed).not.toBe(original);
+    expect(signed.permissions).toHaveLength(1);
+    expect(signed.name).toBe("Notes");
+    // The copy cannot be changed after it was checked, deeply.
+    expect(Object.isFrozen(signed)).toBe(true);
+    expect(Object.isFrozen(signed.permissions)).toBe(true);
+    expect(Object.isFrozen(signed.permissions![0])).toBe(true);
+    expect(Object.isFrozen(signed.permissions![0]!.actions)).toBe(true);
+    expect(() => { (signed.permissions as PermissionEntry[]).push(kv("/", ["get"])); }).toThrow();
+  });
+
+  it("a function manifest's result is copied and frozen too, and the original it handed out cannot change the grant", async () => {
+    const handedOut: Manifest[] = [];
+    const manifest = (): Manifest => { const made = app([kv(inside, ["get"])]); handedOut.push(made); return made; };
+    state.onConnect = () => { for (const made of handedOut) made.permissions!.push(kv("/", ["get"], { space: "default" })); };
+    await signInWithManifest({ manifest, config: CONFIG });
+    const signed = state.clients[0]!.config.manifest as Manifest;
+    expect(signed.permissions).toHaveLength(1);
+    expect(Object.isFrozen(signed)).toBe(true);
+  });
+
+  // N6: names that reach the sign-in statement and OpenKey's window.
+  it.each([
+    ["a newline and a forged field", "Evil\nURI: https://evil.example"],
+    ["a carriage return", "Evil\rApp"], ["a tab", "Evil\tApp"], ["a NUL", "Evil\u0000App"],
+    ["a right-to-left override", "Evil\u202eApp"], ["a bidi isolate", "Evil\u2066App"], ["a line separator", "Evil\u2028App"], ["a zero-width no-break space", "\ufeffEvil"],
+    ["a URL", "Visit https://evil.example now"], ["a bare scheme URL", "ftp://x"], ["a www address", "go to www.evil.example"], ["an email address", "me@evil.example"],
+    ["more than 64 characters", "x".repeat(65)], ["nothing", ""], ["leading space", " Notes"], ["trailing space", "Notes "],
+  ])("refuses an appName with %s, before OpenKey opens", async (_label, raw) => {
+    const appName = raw;
+    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName })).rejects.toBeInstanceOf(SignInOptionError);
+    expect(state.openKeys).toEqual([]);
+    expect(state.clients).toEqual([]);
+  });
+
+  it.each(["a/b", "a b", "../x", "x".repeat(65), "", "a\nb", "https://x", "a:b"])("refuses a sessionPrefix of %j", async (sessionPrefix) => {
+    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, sessionPrefix })).rejects.toBeInstanceOf(SignInOptionError);
+    expect(state.openKeys).toEqual([]);
+  });
+
+  it.each(["TinyCloud Share: install Tiny Notes", "Notes 📓", "Café ünïcode", "a".repeat(64), "TinyCloud Share"])("accepts the app name %j", async (appName) => {
+    await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
+    expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
+  });
+
+  // The SDK's own additions are the one documented exception; an SDK that adds more must fail here, not widen a session unseen.
+  it("the permissions the SDK adds on top of a manifest are exactly the documented exception", () => {
+    const withExtras = composeManifestRequest([saveCopyManifest()], { includeAccountRegistryPermissions: true }).resources;
+    const without = composeManifestRequest([saveCopyManifest()], { includeAccountRegistryPermissions: false }).resources;
+    const key = (entry: { service: string; space: string; path: string; actions: readonly string[] }): string => JSON.stringify([entry.service, entry.space, entry.path, [...entry.actions]]);
+    const known = new Set(without.map(key));
+    const added = withExtras.filter((entry) => !known.has(key(entry))).map(key).sort();
+    expect(added).toEqual(SDK_ACCOUNT_REGISTRY_RESOURCES.map(key).sort());
+    // And they are all in the one account space.
+    expect(new Set(SDK_ACCOUNT_REGISTRY_RESOURCES.map((entry) => entry.space))).toEqual(new Set(["account"]));
   });
 
   it("the library's and Save's own manifests are inside their scopes", async () => {
@@ -361,12 +506,12 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest: () => foreign, ...SHARE_MANIFEST_SCOPE, config: CONFIG })).rejects.toMatchObject({ code: "path-not-allowed" });
   });
 
-  it("only the explicitly named opt-in skips the check, and then the manifest goes through unchanged", async () => {
+  it("only the explicitly named opt-in skips the check, and then the manifest goes through unchanged (as a frozen copy)", async () => {
     const delegation: PermissionEntry = { service: "tinycloud.delegation", space: "default", path: "/", actions: ["*"], skipPrefix: true };
     const broad = app([delegation], { defaults: true });
     const { tinycloud } = await signInWithManifest({ manifest: broad, config: CONFIG, unsafeAllowBroadManifest: true });
     expect(tinycloud).toBeDefined();
-    expect(state.clients[state.clients.length - 1]!.config.manifest).toBe(broad);
+    expect(state.clients[state.clients.length - 1]!.config.manifest).toEqual(broad);
     // Anything but `true` is not the opt-in.
     await refused(app([delegation]), "delegation-ability", { unsafeAllowBroadManifest: false });
   });
@@ -377,6 +522,7 @@ describe("signInWithManifest options for an app-install flow", () => {
     state.clients.length = 0;
     state.openKeys.length = 0;
     state.connectError = undefined;
+    state.onConnect = undefined;
     state.signInError = undefined;
     state.registrySync = undefined;
   });
