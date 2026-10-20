@@ -115,6 +115,8 @@ interface HarnessOptions {
   readonly record?: SenderShareRecord;
   readonly rows?: readonly Row[];
   readonly queryOk?: boolean;
+  /** Holds each node listing (numbered from 1, in the order the page asks) until the test lets it answer. */
+  readonly beforeQuery?: (call: number) => Promise<void> | undefined;
   /** More saved shares of the same account. */
   readonly extra?: readonly SenderShareRecord[];
   readonly address?: string;
@@ -134,6 +136,7 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
   for (const more of options.extra ?? []) await history.save(more);
   const rows = options.rows ?? [policyRootRow()];
   const pageSize = options.pageSize ?? 100;
+  let queries = 0;
   const tinycloud = {
     revokeDelegation: vi.fn(async (cid: string) => options.revokeDelegation === undefined ? { ok: true, data: { revoked: true, cid } } : options.revokeDelegation(cid)),
     credentialHolderDid: K2,
@@ -141,6 +144,8 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
     signSessionBytes: async () => new Uint8Array(64),
     delegations: {
       query: vi.fn(async (query: { cursor?: string; space?: string } = {}) => {
+        queries += 1;
+        await options.beforeQuery?.(queries);
         if (options.queryOk === false) return { ok: false, error: { code: "NETWORK_ERROR", message: "Network error during delegation query" } };
         const start = query.cursor === undefined ? 0 : Number(query.cursor);
         const items = rows.slice(start, start + pageSize);
@@ -674,5 +679,79 @@ describe("the provider reads the answer of the approval that is current", () => 
     settle[1]!({ reject: { code: "TIMEOUT" } });
     await newer;
     expect(provider.takeFailure()).toBe("timeout");
+  });
+});
+
+describe("each wallet request carries the CID of the row that was clicked, whatever order the node checks answer in", () => {
+  const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
+  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
+  const pressRevoke = (root: HTMLElement, name: string) => { rowOf(root, name).querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root); };
+  const A = "policy-root";
+  const B = "policy-root-2";
+
+  /** Share A (qa.txt) is clicked first, then share B (second.txt), each node check held until released. */
+  async function bothChecksPending(revokeDelegation: (cid: string) => Promise<unknown> | unknown) {
+    const checks = [deferred<void>(), deferred<void>()];
+    const harness = await mountAs({ extra: [second()], rows: [policyRootRow(), secondRow()], beforeQuery: (call) => checks[call - 1]?.promise, revokeDelegation });
+    pressRevoke(harness.root, "qa.txt");
+    await vi.waitFor(() => expect(harness.tinycloud.delegations.query).toHaveBeenCalledTimes(1));
+    pressRevoke(harness.root, "second.txt");
+    await vi.waitFor(() => expect(harness.tinycloud.delegations.query).toHaveBeenCalledTimes(2));
+    expect(harness.tinycloud.revokeDelegation).not.toHaveBeenCalled();
+    return { ...harness, releaseA: () => checks[0]!.resolve(), releaseB: () => checks[1]!.resolve() };
+  }
+  const cidsAsked = (tinycloud: Harness["tinycloud"]) => tinycloud.revokeDelegation.mock.calls.map(([cid]) => cid);
+
+  it("B's node check answers first, then A's", async () => {
+    const { root, tinycloud, releaseA, releaseB } = await bothChecksPending((cid) => ({ ok: true, data: { revoked: true, cid } }));
+    releaseB(); await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    releaseA();
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-status-text.revoked")).toHaveLength(2));
+    expect(cidsAsked(tinycloud)).toEqual([B, A]);
+  });
+
+  it("A's node check answers first, then B's", async () => {
+    const { root, tinycloud, releaseA, releaseB } = await bothChecksPending((cid) => ({ ok: true, data: { revoked: true, cid } }));
+    releaseA(); await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    releaseB();
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-status-text.revoked")).toHaveLength(2));
+    expect(cidsAsked(tinycloud)).toEqual([A, B]);
+  });
+
+  it.each([["B then A", "B"], ["A then B", "A"]])("both node checks answer in the same moment, %s", async (_order, firstReleased) => {
+    const { root, tinycloud, releaseA, releaseB } = await bothChecksPending((cid) => ({ ok: true, data: { revoked: true, cid } }));
+    if (firstReleased === "B") { releaseB(); releaseA(); } else { releaseA(); releaseB(); }
+    await vi.waitFor(() => expect(root.querySelectorAll(".sender-status-text.revoked").length + root.querySelectorAll(".sender-row-note").length).toBeGreaterThan(0));
+    // Whatever was asked, each request names the row's own CID; a refused row asked nothing.
+    for (const cid of cidsAsked(tinycloud)) expect([A, B]).toContain(cid);
+    expect(new Set(cidsAsked(tinycloud)).size).toBe(cidsAsked(tinycloud).length);
+    for (const [name, cid] of [["qa.txt", A], ["second.txt", B]] as const) {
+      const revoked = rowOf(root, name).querySelector(".sender-status-text.revoked") !== null;
+      expect(cidsAsked(tinycloud).includes(cid)).toBe(revoked);
+    }
+  });
+
+  it.each([["B", "A"], ["A", "B"]] as const)("serialised: %s holds the wallet while the other's check answers; the other is told to wait and its retry asks for its own CID", async (holder, other) => {
+    const walletGate = deferred<void>();
+    let held = false;
+    const { root, tinycloud, releaseA, releaseB } = await bothChecksPending(async (cid) => {
+      if (!held) { held = true; await walletGate.promise; }
+      return { ok: true, data: { revoked: true, cid } };
+    });
+    const cidOf = (who: string) => who === "A" ? A : B;
+    const nameOf = (who: string) => who === "A" ? "qa.txt" : "second.txt";
+    (holder === "A" ? releaseA : releaseB)();
+    await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
+    expect(cidsAsked(tinycloud)).toEqual([cidOf(holder)]);
+    (other === "A" ? releaseA : releaseB)();
+    await vi.waitFor(() => expect(rowOf(root, nameOf(other)).querySelector(".sender-row-note")?.textContent).toContain("Another approval is waiting"));
+    // The wait never sent the other row's CID, nor a second request.
+    expect(cidsAsked(tinycloud)).toEqual([cidOf(holder)]);
+    walletGate.resolve();
+    await vi.waitFor(() => expect(rowOf(root, nameOf(holder)).querySelector(".sender-status-text.revoked")).not.toBeNull());
+    pressRevoke(root, nameOf(other));
+    await vi.waitFor(() => expect(rowOf(root, nameOf(other)).querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(cidsAsked(tinycloud)).toEqual([cidOf(holder), cidOf(other)]);
   });
 });

@@ -32,6 +32,8 @@ The exact signed delivery receipt necessarily carries the complete invitation to
 
 ## Revoking a share
 
-Revoke is in the library ("Shared by me"). The share stays active until the owner's node confirms the revocation: the row says "Revoked" only after that, and any failure, cancel or timeout leaves the share active with Revoke available again.
+Revoke is in the library ("Shared by me"). The share stays active until the owner's node confirms the revocation: the row says "Revoked" only after that, and a failure or a cancel leaves the share active with Revoke available again.
 
-While the page that created an email, domain or DID share is still signed in, revoking needs no approval. In a later sign-in (a reload, a new day, another device) Share first asks the owner's node whether the share is one of this account's own, then asks for one approval in the OpenKey window and revokes only that share's delegation. The approval is good for 60 seconds; if it is not completed in that time Share stops waiting and the share stays active. The node then refuses the recipient's later reads and anything delegated from that share, and leaves the sender's other shares and own access alone. Link-only shares ask for the same one approval.
+While the page that created an email, domain or DID share is still signed in, revoking needs no approval. In a later sign-in (a reload, a new day, another device) Share first asks the owner's node whether the share is one of this account's own, then asks for one approval in the OpenKey window and revokes only that share's delegation. Once revoked, the node refuses the recipient's later reads and anything delegated from that share, and leaves the sender's other shares and own access alone. Link-only shares ask for the same one approval.
+
+The approval is good for 60 seconds; if it is not completed in that time Share stops waiting. If the approval times out, the share may still have been revoked: check the status after a moment; trying again will confirm it without a new approval if it was.
