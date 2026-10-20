@@ -162,6 +162,14 @@ function hold() {
   const arrived = new Promise((resolveArrived) => { reached = resolveArrived; });
   return { gate, release, reached, arrived };
 }
+/** A held signature that never arrives is a failure with the page's own explanation, not a hang. */
+async function arrivedOrExplain(page, held, what) {
+  const timeout = new Promise((resolveTimeout) => setTimeout(() => resolveTimeout("timeout"), 120_000));
+  if ((await Promise.race([held.arrived.then(() => "arrived"), timeout])) === "arrived") return;
+  const title = await page.$eval(".run-screen__title", (node) => node.textContent).catch(() => "(no screen)");
+  const detail = await page.$eval(".run-screen", (node) => node.textContent).catch(() => "");
+  throw new Error(`${what} was never asked for. Status: "${await statusText(page)}". Screen: "${title}" ${detail.slice(0, 300)}`);
+}
 /** `sign`: a held OpenKey signature. */
 const controls = { sign: undefined };
 
@@ -377,6 +385,7 @@ try {
   }
 
   // ---- 0. Nothing installed yet: the runner says so after one read approval and starts nothing.
+  phase = "0. Nothing installed yet: the runner says so after one read "; console.error(`[t5b] ${phase}`);
   {
     const { page, context } = await openRunner(browser, stack, "not-installed", HEALTH);
     // A first-time account is asked to host its spaces too: this is the first sign-in of the run.
@@ -394,6 +403,7 @@ try {
   }
 
   // ---- 1. Unknown or malformed addresses open nothing and call nothing.
+  phase = "1. Unknown or malformed addresses open nothing and call noth"; console.error(`[t5b] ${phase}`);
   for (const [label, id] of [["unknown-app", "com.example.nothing"], ["traversal", "..%2Fx"], ["no-id", ""]]) {
     const before = trace.length;
     const { page, context } = await newPage(browser, stack, label, id === "" ? `${stack.canonical.share}/apps/run` : RUN_URL(stack, id));
@@ -405,6 +415,7 @@ try {
   }
 
   // ---- 2. Install both samples through the apps page, then open the Health Log.
+  phase = "2. Install both samples through the apps page, then open the"; console.error(`[t5b] ${phase}`);
   await install(browser, stack, HEALTH);
   await install(browser, stack, RECIPES);
 
@@ -415,12 +426,12 @@ try {
     await start(page);
     // Hold the first approval to show the status, then the second.
     controls.sign = hold();
-    await controls.sign.arrived;
+    await arrivedOrExplain(page, controls.sign, "the first approval");
     assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\) so Share can read Health Log \(sample\) from your TinyCloud/);
     await captureState(page, "approval-1-of-2");
     controls.sign.release();
     controls.sign = hold();
-    await controls.sign.arrived;
+    await arrivedOrExplain(page, controls.sign, "the second approval");
     assert.match(await statusText(page), /^Approve in the OpenKey window \(2 of 2\) to start Health Log \(sample\)/);
     await captureState(page, "approval-2-of-2");
     controls.sign.release(); controls.sign = undefined;
@@ -432,7 +443,7 @@ try {
     assert.equal(sessions.length, 2, "two session sign-ins");
     const reader = recapOf(sessions[0]);
     // In the app's space the read session holds one get and the SDK's capabilities/read; the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/metadata`].sort(), "the read session asks for more than a get, a list and the metadata (size) of the saved app");
+    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`].sort(), "the read session asks for more than a get and a list on the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
     assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
@@ -496,6 +507,7 @@ try {
   }
 
   // ---- 3. The Recipes sample reads the Health Log's database through its whole-database grant, and only reads.
+  phase = "3. The Recipes sample reads the Health Log's database throug"; console.error(`[t5b] ${phase}`);
   {
     const label = "run-recipes";
     const { page, context } = await openRunner(browser, stack, label, RECIPES);
@@ -533,6 +545,7 @@ try {
   }
 
   // ---- 4. A manifest copy widened by the person's agent is refused after one approval; a narrowed one runs with what it kept.
+  phase = "4. A manifest copy widened by the person's agent is refused "; console.error(`[t5b] ${phase}`);
   {
     const node = await ownerClient(HEALTH);
     const kvPath = `${HEALTH}/app/manifest.json`;
@@ -599,6 +612,7 @@ try {
   }
 
   // ---- 5. The code is pinned: an edited app.jsx or an extra file opens nothing, Repair puts the catalog's code back, a removed version cannot be repaired.
+  phase = "5. The code is pinned: an edited app.jsx or an extra file op"; console.error(`[t5b] ${phase}`);
   {
     const node = await ownerClient(HEALTH);
     const codeKey = `${HEALTH}/app/app.jsx`;
@@ -679,6 +693,7 @@ try {
   }
 
   // ---- 5b. A hostile app, installed from a catalog entry (its code is pinned, so this is the only way it can reach the runner).
+  phase = "5b. A hostile app, installed from a catalog entry (its code "; console.error(`[t5b] ${phase}`);
   {
     await install(browser, stack, HOSTILE);
     const node = await ownerClient(HOSTILE);
@@ -750,6 +765,7 @@ try {
   }
 
   // ---- 6. Forced past the runner page, the NODE refuses: the real data adapter and bridge, a fake parent that skips the manifest check, a signer-less client holding the session.
+  phase = "6. Forced past the runner page, the NODE refuses: the real d"; console.error(`[t5b] ${phase}`);
   {
     phase = "node-boundary";
     const sdk = sdkCore;
@@ -817,6 +833,7 @@ try {
   }
 
   // ---- 7. The session expires at its time: the page's one-hour timer (shortened to 4 s here) tears the frame down and says so.
+  phase = "7. The session expires at its time: the page's one-hour time"; console.error(`[t5b] ${phase}`);
   {
     const label = "run-expiry";
     const shortenExpiry = () => { const real = window.setTimeout.bind(window); window.setTimeout = (callback, ms, ...rest) => real(callback, typeof ms === "number" && ms > 3_000_000 && ms < 3_700_000 ? 4000 : ms, ...rest); };

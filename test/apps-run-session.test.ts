@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as sdkCore from "@tinycloud/sdk-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalog } from "../src/apps/catalog.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS } from "../src/apps/grants.ts";
 import { RunError, type ReadSession, type RunHooks } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, createRunPorts, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
 import { type RunnableApp, verifyStoredApp } from "../src/apps/stored-app.ts";
 import { storedFiles } from "./stored-fixtures.ts";
 
@@ -36,8 +36,7 @@ vi.mock("../src/share/openkey-session.js", () => ({
       tinycloud: {
         kvForSpace: () => ({
           list: async () => kvListResult,
-          head: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { headers: { contentLength: sizeOf(kvFiles.get(key)) } } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
-          get: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { data: kvFiles.get(key) } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
+          createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
         }),
         sqlForSpace: () => ({ db: () => ({}) }),
         signOut: vi.fn(async () => undefined),
@@ -76,8 +75,17 @@ beforeEach(() => {
   seedSaved();
 });
 
-/** What a node's metadata says for a stored value (a value that is not bytes still has a length). */
-const sizeOf = (value: unknown): number => (value instanceof Uint8Array ? value.byteLength : String(value).length);
+/** The node's signed read URLs, served from `kvFiles` (a test sets `fetchStatus` to make the node answer something else). */
+let fetchStatus: number;
+beforeEach(() => {
+  fetchStatus = 200;
+  vi.stubGlobal("fetch", async (url: string) => {
+    const key = decodeURIComponent(String(url).slice("https://node.example/signed/".length));
+    const value = kvFiles.get(key);
+    return value === undefined || fetchStatus !== 200 ? new Response("no", { status: fetchStatus === 200 ? 404 : fetchStatus }) : new Response(value.slice().buffer);
+  });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("reading the saved app (sign-in 1)", () => {
   it("asks the shared sign-in for a get and a list on the one app's folder, under the runner's identity, 15 minutes, with a label that is allowed", async () => {
@@ -114,9 +122,7 @@ describe("reading the saved app (sign-in 1)", () => {
     await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
     seedSaved();
-    kvFiles.set(`${HEALTH}/app/app.jsx`, "not bytes" as unknown as Uint8Array);
-    // A string is read as UTF-8 text; a value that is neither is refused.
-    kvFiles.set(`${HEALTH}/app/schema.sql`, 5 as unknown as Uint8Array);
+    fetchStatus = 500;
     calls.length = 0;
     await expect(createRunPorts().readStored(entry, hooks)).rejects.toBeInstanceOf(RunError);
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
@@ -142,64 +148,91 @@ describe("reading the saved app (sign-in 1)", () => {
 });
 
 describe("readSavedFiles: bounded, never silently cut", () => {
-  /** A node holding `values`; every call is recorded, so what was downloaded is what the test asserts on. */
-  const kvOver = (keys: string[], values: Record<string, Uint8Array>, options: { truncated?: boolean; sizes?: Record<string, number | undefined> } = {}): { kv: Parameters<typeof readSavedFiles>[0]; gets: string[]; heads: string[] } => {
-    const gets: string[] = [];
-    const heads: string[] = [];
+  const prefix = "a/app/";
+  /** A node holding `values`; `streams` makes a value arrive as many chunks (never held whole), and every fetch and cancel is recorded. */
+  function node(keys: string[], values: Record<string, Uint8Array | { chunks: number; chunkBytes: number }>, options: { truncated?: boolean; declared?: Record<string, string> } = {}): { kv: Parameters<typeof readSavedFiles>[0]; fetcher: ReaderFetch; fetched: string[]; pulled: Record<string, number>; cancelled: string[] } {
+    const fetched: string[] = [];
+    const cancelled: string[] = [];
+    const pulled: Record<string, number> = {};
     return {
-      gets,
-      heads,
+      fetched,
+      cancelled,
+      pulled,
       kv: {
         list: async () => ({ ok: true, data: { keys, truncated: options.truncated === true } }),
-        head: async (key) => {
-          heads.push(key);
-          if (values[key] === undefined && options.sizes?.[key] === undefined) return { ok: false, error: { code: "KV_NOT_FOUND" } };
-          return { ok: true, data: { headers: key in (options.sizes ?? {}) ? { contentLength: options.sizes?.[key] } : { contentLength: values[key]?.byteLength ?? 0 } } };
-        },
-        get: async (key) => { gets.push(key); return values[key] === undefined ? { ok: false, error: { code: "KV_NOT_FOUND" } } : { ok: true, data: { data: values[key] } }; },
+        createSignedReadUrl: async (key) => (key in values ? { ok: true, data: { url: key } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
+      },
+      fetcher: async (url) => {
+        fetched.push(url);
+        const value = values[url];
+        if (value === undefined) return new Response("no", { status: 404 });
+        if (value instanceof Uint8Array) return new Response(value.slice().buffer);
+        let index = 0;
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) { if (index >= value.chunks) { controller.close(); return; } index += 1; pulled[url] = index; controller.enqueue(new Uint8Array(value.chunkBytes)); },
+          cancel() { cancelled.push(url); },
+        });
+        return new Response(stream, { headers: options.declared?.[url] === undefined ? {} : { "content-length": options.declared[url]! } });
       },
     };
-  };
-  const prefix = "a/app/";
+  }
 
   it("keys files by their path under the prefix and ignores keys outside it", async () => {
-    const node = kvOver([`${prefix}x.jsx`, `${prefix}sub/y.sql`, "other/z", prefix], { [`${prefix}x.jsx`]: new Uint8Array([1]), [`${prefix}sub/y.sql`]: new Uint8Array([2]) });
-    const result = await readSavedFiles(node.kv, prefix);
-    expect([...result.entries.keys()]).toEqual(["x.jsx", "sub/y.sql"]);
+    const fake = node([`${prefix}x.jsx`, `${prefix}sub/y.sql`, "other/z", prefix], { [`${prefix}x.jsx`]: new Uint8Array([1]), [`${prefix}sub/y.sql`]: new Uint8Array([2, 3]) });
+    const result = await readSavedFiles(fake.kv, prefix, fake.fetcher);
+    expect([...result.entries.entries()].map(([path, bytes]) => [path, [...bytes]])).toEqual([["x.jsx", [1]], ["sub/y.sql", [2, 3]]]);
     expect(result.incomplete).toBe(false);
-    expect(node.gets).toEqual([`${prefix}x.jsx`, `${prefix}sub/y.sql`]);
+    expect(fake.fetched).toEqual([`${prefix}x.jsx`, `${prefix}sub/y.sql`]);
   });
 
   it("is incomplete when the listing is truncated, has too many files, or a listed file vanished", async () => {
-    expect((await readSavedFiles(kvOver([`${prefix}x`], { [`${prefix}x`]: new Uint8Array(1) }, { truncated: true }).kv, prefix)).incomplete).toBe(true);
+    const one = node([`${prefix}x`], { [`${prefix}x`]: new Uint8Array(1) }, { truncated: true });
+    expect((await readSavedFiles(one.kv, prefix, one.fetcher)).incomplete).toBe(true);
     const many = Array.from({ length: MAX_STORED_FILES + 1 }, (_, index) => `${prefix}f${index}`);
-    expect((await readSavedFiles(kvOver(many, Object.fromEntries(many.map((key) => [key, new Uint8Array(1)]))).kv, prefix)).incomplete).toBe(true);
-    expect((await readSavedFiles(kvOver([`${prefix}gone`], {}).kv, prefix)).incomplete).toBe(true);
+    const lots = node(many, Object.fromEntries(many.map((key) => [key, new Uint8Array(1)])));
+    expect((await readSavedFiles(lots.kv, prefix, lots.fetcher)).incomplete).toBe(true);
+    const gone = node([`${prefix}gone`], {});
+    expect((await readSavedFiles(gone.kv, prefix, gone.fetcher)).incomplete).toBe(true);
+    const goneAfterUrl = node([`${prefix}late`], { [`${prefix}late`]: new Uint8Array(1) });
+    goneAfterUrl.fetcher = async () => new Response("no", { status: 404 });
+    expect((await readSavedFiles(goneAfterUrl.kv, prefix, goneAfterUrl.fetcher)).incomplete).toBe(true);
   });
 
-  it("never downloads a file whose size would pass the cap: it is refused from its metadata, without a get", async () => {
-    // 1 GB reported; the value is a stand-in that must never be asked for.
-    const node = kvOver([`${prefix}a.jsx`, `${prefix}huge`, `${prefix}z.js`], { [`${prefix}a.jsx`]: new Uint8Array([1]), [`${prefix}huge`]: new Uint8Array(1), [`${prefix}z.js`]: new Uint8Array([3]) }, { sizes: { [`${prefix}huge`]: 1_073_741_824 } });
-    const result = await readSavedFiles(node.kv, prefix);
+  it("stops reading a huge file at the cap: the stream is cancelled after a few chunks, the rest of a 1 GB file is never pulled", async () => {
+    const chunkBytes = 1024 * 1024;
+    const gigabyte = { chunks: 1024, chunkBytes };
+    const fake = node([`${prefix}a.jsx`, `${prefix}huge`, `${prefix}z.js`], { [`${prefix}a.jsx`]: new Uint8Array([1]), [`${prefix}huge`]: gigabyte, [`${prefix}z.js`]: new Uint8Array([3]) });
+    const result = await readSavedFiles(fake.kv, prefix, fake.fetcher);
     expect(result.incomplete).toBe(true);
-    expect(node.gets).toEqual([`${prefix}a.jsx`]);
-    // Several files that fit one by one but not together stop at the file that crosses the cap.
-    const each = Math.floor(MAX_STORED_BYTES / 2) + 1;
-    const pair = kvOver([`${prefix}p`, `${prefix}q`], { [`${prefix}p`]: new Uint8Array(1), [`${prefix}q`]: new Uint8Array(1) }, { sizes: { [`${prefix}p`]: each, [`${prefix}q`]: each } });
-    expect((await readSavedFiles(pair.kv, prefix)).incomplete).toBe(true);
-    expect(pair.gets).toEqual([`${prefix}p`]);
+    expect(fake.cancelled).toEqual([`${prefix}huge`]);
+    // The cap is 8 MB of 1 MB chunks: the stream was pulled a handful of times, nowhere near its 1024 chunks, and the next file was not fetched.
+    expect(fake.pulled[`${prefix}huge`]!).toBeLessThanOrEqual(Math.ceil(MAX_STORED_BYTES / chunkBytes) + 2);
+    expect(fake.fetched).toEqual([`${prefix}a.jsx`, `${prefix}huge`]);
   });
 
-  it("a node that does not say a file's size is not trusted: nothing is downloaded, the set is incomplete", async () => {
-    const node = kvOver([`${prefix}x`], { [`${prefix}x`]: new Uint8Array(1) }, { sizes: { [`${prefix}x`]: undefined } });
-    const result = await readSavedFiles(node.kv, prefix);
+  it("refuses a file whose declared length would pass the cap without reading any of it", async () => {
+    const fake = node([`${prefix}big`], { [`${prefix}big`]: { chunks: 4, chunkBytes: 4 } }, { declared: { [`${prefix}big`]: String(MAX_STORED_BYTES + 1) } });
+    const result = await readSavedFiles(fake.kv, prefix, fake.fetcher);
     expect(result.incomplete).toBe(true);
-    expect(node.gets).toEqual([]);
+    // A stream starts with one eager pull; a declared length over the cap is refused before anything is read from it.
+    expect(fake.pulled[`${prefix}big`] ?? 0).toBeLessThanOrEqual(1);
   });
 
-  it("still counts the bytes it receives, whatever the metadata said", async () => {
-    const node = kvOver([`${prefix}big`], { [`${prefix}big`]: new Uint8Array(MAX_STORED_BYTES + 1) }, { sizes: { [`${prefix}big`]: 10 } });
-    expect((await readSavedFiles(node.kv, prefix)).incomplete).toBe(true);
+  it("files that fit one by one but not together stop at the file that crosses the cap, and the bytes counted are the bytes received", async () => {
+    const half = Math.floor(MAX_STORED_BYTES / 2) + 1;
+    const fake = node([`${prefix}p`, `${prefix}q`, `${prefix}r`], { [`${prefix}p`]: new Uint8Array(half), [`${prefix}q`]: new Uint8Array(half), [`${prefix}r`]: new Uint8Array(1) });
+    const result = await readSavedFiles(fake.kv, prefix, fake.fetcher);
+    expect(result.incomplete).toBe(true);
+    expect([...result.entries.keys()]).toEqual(["p"]);
+    expect(fake.fetched).toEqual([`${prefix}p`, `${prefix}q`]);
+  });
+
+  it("a download that fails or answers an error is a failure, not a smaller set", async () => {
+    const failing = node([`${prefix}x`], { [`${prefix}x`]: new Uint8Array(1) });
+    await expect(readSavedFiles(failing.kv, prefix, async () => { throw new TypeError("network down"); })).rejects.toMatchObject({ reason: "failed" });
+    await expect(readSavedFiles(failing.kv, prefix, async () => new Response("boom", { status: 500 }))).rejects.toMatchObject({ reason: "failed" });
+    const listFails: Parameters<typeof readSavedFiles>[0] = { list: async () => ({ ok: false, error: { code: "KV_ERROR" } }), createSignedReadUrl: async () => ({ ok: false, error: { code: "x" } }) };
+    await expect(readSavedFiles(listFails, prefix, failing.fetcher)).rejects.toMatchObject({ reason: "failed" });
   });
 });
 

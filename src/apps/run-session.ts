@@ -33,7 +33,6 @@ import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn, OpenKeyShareSession, WalletApprovalFailure } from "../share/openkey-session.js";
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { createAppData } from "./app-data.ts";
-import { isBytes } from "./bridge.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
 import { RunError, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
@@ -62,7 +61,7 @@ export function runnerAppName(prefix: string, name: string): string {
  */
 export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
-/** The read sign-in's manifest: `get`, `list` and `metadata` (a file's size, read before the file is) on `<app_id>/app/` in the applications space, and nothing else. */
+/** The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. */
 export function readerManifest(appId: string, appName: string): Manifest {
   return {
     manifest_version: 1,
@@ -74,13 +73,13 @@ export function readerManifest(appId: string, appName: string): Manifest {
     defaults: false,
     includePublicSpace: false,
     expiry: "15m",
-    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list", "metadata"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
+    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
   };
 }
 
-/** What the read sign-in may ask for: `get`, `list` and `metadata` on the one saved app, and nothing else. */
+/** What the read sign-in may ask for: `get` and `list` on the one saved app, and nothing else. */
 export function readerScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list", "metadata"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
 }
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
@@ -106,17 +105,20 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
 /** The parts of the SDK's key-value service the reader uses. */
 interface ReaderKv {
   list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
-  get(key: string, options: { binary: true }): Promise<{ ok: true; data: { data: unknown } } | { ok: false; error: { code?: string } }>;
-  /** Metadata without the value: the size is read here BEFORE a file is downloaded. */
-  head(key: string): Promise<{ ok: true; data: { headers?: { contentLength?: number | undefined } } } | { ok: false; error: { code?: string } }>;
+  /** A short-lived URL for one object (a `get` invocation): fetched below as a STREAM, so the read can stop at the cap. */
+  createSignedReadUrl(key: string, options: { expiresInSeconds: number }): Promise<{ ok: true; data: { url: string } } | { ok: false; error: { code?: string } }>;
 }
+
+/** The part of `fetch` the reader uses (the page's own `fetch`, or a fake in tests). */
+export type ReaderFetch = (url: string, init: { signal: AbortSignal; credentials: "omit"; redirect: "error" }) => Promise<Response>;
 
 /**
  * Every file under `prefix`, keyed by path relative to it. A listing or total that is too large is `incomplete`, never silently cut.
- * A file's size comes from its metadata BEFORE it is downloaded, so a file that would pass the cap (or whose size the node does not
- * say) is never read: stopping after the download would already have put it in memory.
+ * The node's metadata does not give a file's size (a HEAD answers 0 length, and a browser may not see the header at all), and
+ * `kv.get` buffers the whole value, so a 1 GB file could not be refused after the fact: each file is fetched as a STREAM from a signed
+ * read URL and the read stops (the stream is cancelled) at the first byte past the cap.
  */
-export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<ReadSession["files"]> {
+export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: ReaderFetch = (url, init) => fetch(url, init)): Promise<ReadSession["files"]> {
   const listed = await kv.list({ prefix });
   if (!listed.ok) throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}` });
   const paths = listed.data.keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)).filter((path) => path !== "");
@@ -124,24 +126,41 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string): Promise<Read
   let incomplete = listed.data.truncated === true || paths.length > MAX_STORED_FILES;
   let total = 0;
   for (const path of paths.slice(0, MAX_STORED_FILES)) {
-    const head = await kv.head(`${prefix}${path}`);
-    if (!head.ok) {
-      if (/NOT_FOUND/.test(head.error.code ?? "")) { incomplete = true; continue; }
-      throw new RunError("failed", { detail: `read ${prefix}${path}: ${head.error.code ?? "error"}` });
+    const signed = await kv.createSignedReadUrl(`${prefix}${path}`, { expiresInSeconds: 60 });
+    if (!signed.ok) {
+      // Listed a moment ago and now gone: the set cannot be vouched for.
+      if (/NOT_FOUND/.test(signed.error.code ?? "")) { incomplete = true; continue; }
+      throw new RunError("failed", { detail: `read ${prefix}${path}: ${signed.error.code ?? "error"}` });
     }
-    const size = head.data.headers?.contentLength;
-    if (typeof size !== "number" || !Number.isFinite(size) || size < 0 || total + size > MAX_STORED_BYTES) { incomplete = true; break; }
-    const result = await kv.get(`${prefix}${path}`, { binary: true });
-    if (!result.ok) {
-      // Listed a moment ago and now gone or unreadable: the set cannot be vouched for.
-      if (/NOT_FOUND/.test(result.error.code ?? "")) { incomplete = true; continue; }
-      throw new RunError("failed", { detail: `read ${prefix}${path}: ${result.error.code ?? "error"}` });
+    const controller = new AbortController();
+    let response: Response;
+    try {
+      response = await fetcher(signed.data.url, { signal: controller.signal, credentials: "omit", redirect: "error" });
+    } catch (cause) {
+      throw new RunError("failed", { cause, detail: `read ${prefix}${path}: the download failed` });
     }
-    const data: unknown = result.data.data;
-    const bytes = isBytes(data) ? data : typeof data === "string" ? new TextEncoder().encode(data) : undefined;
-    if (bytes === undefined) throw new RunError("failed", { detail: `read ${prefix}${path}: not bytes` });
-    total += Math.max(size, bytes.byteLength);
-    if (total > MAX_STORED_BYTES) { incomplete = true; break; }
+    if (response.status === 404) { incomplete = true; continue; }
+    if (!response.ok) throw new RunError("failed", { detail: `read ${prefix}${path}: ${response.status}` });
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > MAX_STORED_BYTES - total) { controller.abort(); incomplete = true; break; }
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new RunError("failed", { detail: `read ${prefix}${path}: no stream` });
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    let over = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      received += value.byteLength;
+      if (total + received > MAX_STORED_BYTES) { over = true; await reader.cancel().catch(() => undefined); controller.abort(); break; }
+      chunks.push(value);
+    }
+    if (over) { incomplete = true; break; }
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    total += received;
     entries.set(path, bytes);
   }
   return { entries, incomplete };

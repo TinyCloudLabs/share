@@ -357,7 +357,7 @@ describe("copy and the sign-in manifests", () => {
     expect(progressText({ phase: "starting", approval: true }, "X")).toContain("(2 of 2)");
   });
 
-  it("the read sign-in asks for a get, a list and the metadata (size) under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
+  it("the read sign-in asks for a get and a list under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
     const manifest = readerManifest(HEALTH, "Health Log");
     expect(manifest.app_id).toBe(RUNNER_APP_ID);
     expect(manifest.app_id).not.toBe("xyz.tinycloud.share");
@@ -370,7 +370,7 @@ describe("copy and the sign-in manifests", () => {
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     expect(composed.resources.filter((resource) => resource.service === "tinycloud.kv" && resource.space === "applications")).toEqual([
-      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata"] }),
+      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list"] }),
     ]);
   });
 });

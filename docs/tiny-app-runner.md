@@ -49,11 +49,12 @@ app is signed for, but never more than the catalog's manifest for the version th
 
 0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before any
    sign-in: a disabled entry opens nothing.
-1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get`, `list` and `metadata`
-   (a file's size) on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
+1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get` and `list`
+   on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
    record named after the app). That session ends before the next sign-in. The read is bounded
-   (64 files, 8 MB), and a file's size is read from its metadata BEFORE the file is downloaded: a file that would pass the cap, or whose
-   size the node does not say, is never read. A listing that does not fit counts as a mismatch.
+   (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a
+   stream from a short-lived signed read URL (a `get`) and the read stops, cancelling the stream, at the first byte past the cap: a 1 GB
+   `app/x` is refused after a few chunks, not downloaded. A listing that does not fit counts as a mismatch.
 2. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. None:
    "isn't in the catalog any more", nothing signed. **The pin**: on every open, before any runtime
    session, bridge or frame, hash every code file under `app/` (everything the catalog lists for
