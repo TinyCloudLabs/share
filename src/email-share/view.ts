@@ -45,6 +45,26 @@ export function renderRecipientInvalid(root: HTMLElement, message: string): void
   focusViewerRoot(root);
 }
 
+/**
+ * The node says this share can no longer open, so no code is offered or sent.
+ * Same shell as the other recipient end states, in the neutral tone: nothing
+ * is wrong with the recipient's browser or link.
+ */
+export function renderRecipientUnavailable(root: HTMLElement, reason: "revoked" | "expired"): void {
+  root.replaceChildren();
+  const doc = root.ownerDocument;
+  const main = element(doc, "main", "recipient-shell recipient-message recipient-unavailable");
+  main.setAttribute("role", "alert");
+  main.dataset.reason = reason;
+  main.append(
+    element(doc, "h1", "recipient-title", reason === "expired" ? "This share has expired" : "This share is no longer available"),
+    element(doc, "p", "recipient-detail", reason === "expired" ? "The sender chose a time after which it stops working." : "The sender may have revoked it, or it has expired."),
+    element(doc, "p", "recipient-detail", "Nothing was opened and no new code was sent. If you still need the file, ask the sender for a new link."),
+  );
+  root.append(main);
+  focusViewerRoot(root);
+}
+
 /** Facts from the owner-signed invitation, shown before any credential is requested. */
 export interface RecipientClaimInvitation {
   /** The recipient the SDK bound to the signed policy commitment. */
