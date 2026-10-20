@@ -190,7 +190,7 @@ function repairContent(entry: CatalogEntry, onContinue: () => void, close: () =>
     ]),
   ]);
   const actions = el("div", "apps-install-actions", []);
-  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [actions]);
+  const footer = el("footer", "apps-sheet__footer", [actions]);
   const button = (label: string, className: string, onClick: () => void, disabled = false): HTMLButtonElement => {
     const node = el("button", `${className} apps-button`, [label], { type: "button" });
     node.disabled = disabled;

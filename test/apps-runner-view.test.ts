@@ -387,7 +387,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     await open(fake);
     button("Continue")!.click();
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app's code doesn't match the pinned version"));
-    expect(root.querySelector(".run-screen")?.textContent).toContain("Remove it and install again.");
+    expect(root.querySelector(".run-screen")?.textContent).toContain("Repair replaces the app's code files with the pinned version.");
     expect(root.querySelector(".run-screen")?.textContent).toContain("Your data is untouched.");
     expect(root.querySelector(".run-screen")?.getAttribute("role")).toBe("alert");
     expect(root.querySelector(".run-screen__detail")?.textContent).toBe("app.jsx differs from the pinned version");

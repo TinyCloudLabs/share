@@ -219,6 +219,7 @@ body {
 /* 44px touch targets over the patterns' compact defaults. */
 .apps-button {
   min-height: 2.75rem;
+  text-decoration: none;
 }
 
 /* Detail sheet: a right-hand panel on wide screens, a bottom sheet on phones. */

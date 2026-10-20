@@ -1,6 +1,6 @@
 /**
- * Why a manifest cannot be described by the install sheet (and so cannot be installed), or null. The ONE function the
- * installer, the sheet and scripts/apps-catalog.mjs (`verifyCatalog`) all use.
+ * Why a manifest cannot be described by the Details sheet (and so cannot be saved), or null. The ONE function the
+ * saver, the sheet and scripts/apps-catalog.mjs (`verifyCatalog`) all use.
  *
  * These are the shapes the SDK resolves in a way the sheet's lists and sentences do not mirror, and that matter:
  *  - a `did`: it hands everything the app is granted to another key;

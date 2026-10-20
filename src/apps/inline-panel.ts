@@ -1,5 +1,5 @@
 /**
- * The inline panel an install or a repair reports in, under the app's card.
+ * The inline panel a save or a repair reports in, under the app's card.
  *
  * Why it is not the sheet: the OpenKey window is an overlay the SDK appends to `document.body` (fixed, z-index
  * 999999). A modal `<dialog>` is in the browser's top layer, which no z-index rises above, so a sheet that stays modal

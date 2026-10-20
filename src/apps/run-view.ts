@@ -58,14 +58,14 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
     case "damaged": return { title: "Your saved copy of this app can't be used", lines: ["Its files in your TinyCloud are incomplete, or were edited into something this page can't read. Nothing was started."], toApps: true, detail };
     case "code-mismatch": return {
       title: "This app's code doesn't match the pinned version",
-      lines: ["Remove it and install again.", "Repair replaces the app's code files with the pinned version. Your data is untouched. Nothing was started."],
+      lines: ["Repair replaces the app's code files with the pinned version. Your data is untouched. Nothing was started."],
       toApps: true, detail, tone: "danger", ...(appId === undefined ? {} : { repairHref: `${APPS_HREF}#repair=${encodeURIComponent(appId)}` }),
     };
     case "not-listed": return {
       title: "This version of the app isn't in the catalog any more",
       lines: [
         "You installed a version that has since been replaced or removed, so what it asks for can't be checked and it can't be repaired from here. Nothing was started.",
-        `To remove it, delete the files under ${appId ?? "<app id>"}/app/ in your TinyCloud (your data in the other folders stays), then install the listed version. With the CLI:`,
+        `To remove it, delete the files under ${appId ?? "<app id>"}/app/ in your TinyCloud (your data in the other folders stays), then open the listed version again. With the CLI:`,
       ],
       toApps: true,
       commands: [`tinycloud kv list --space applications --prefix ${appId ?? "<app id>"}/app/`, "tinycloud kv delete --space applications <each key listed>"],

@@ -1,5 +1,5 @@
 /**
- * What the page says, in plain words, about what the sandbox does not stop. One place, so the runner, the install
+ * What the page says, in plain words, about what the sandbox does not stop. One place, so the runner, the Details
  * sheet, the apps page and the docs say the same thing.
  *
  * The sandbox's CSP stops every content and script request but does NOT govern a prerender, a preconnect, a DNS prefetch,
