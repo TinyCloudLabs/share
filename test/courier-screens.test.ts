@@ -213,12 +213,12 @@ describe("Needs you", () => {
   });
 
   it("renders verb, target and summary as inert text: no markup, no link, no markdown", async () => {
-    const fake = fakeStore(baseFiles(request({ verb: "other", target: "https://evil.example/<img src=x onerror=window.__pwned=1>", summary: "**bold** [click](javascript:alert(1)) <script>window.__pwned=1</script>" })));
+    const fake = fakeStore(baseFiles(request({ verb: "other", target: "https://evil.example/<img src=x onerror=window.__pwned=1>", summary: "README.md / javascript:alert(1)" })));
     await open(fake);
     tab("Needs you").click();
     const line = root.querySelector(".cr-consequence")!;
     expect(line.querySelector(".cr-sentence")?.textContent).toBe("Approving lets your agent do something outside the usual kinds (other) with https://evil.example/<img src=x onerror=window.__pwned=1> for hunter:");
-    expect(line.querySelector(".cr-summary")?.textContent).toBe("\u201C**bold** [click](javascript:alert(1)) <script>window.__pwned=1</script>\u201D");
+    expect(line.querySelector(".cr-summary")?.textContent).toBe("\u201CREADME.md / javascript:alert(1)\u201D");
     expect(line.querySelector("a, img, script, em")).toBeNull();
     expect(Reflect.get(window, "__pwned")).toBeUndefined();
     // `other` is never presented as an ordinary action
@@ -269,6 +269,7 @@ describe("Needs you", () => {
     ["a merge PR number over 9 digits", { target: "tinycloudlabs/eliza#1234567890" }],
     ["a secrets target with a double space", { verb: "other", target: "secrets:A  bB" }],
     ["a workflow target with an upper-case repo", { verb: "other", target: "workflow:O/R:ci.yml" }],
+    ["a summary holding markup punctuation", { summary: "**bold** [click](javascript:alert(1)) <script>window.__pwned=1</script>" }],
     // quotes could end the summary's quotation early (Opus N3)
     ["a summary with a straight double quote", { summary: 'docs fix" and also "nothing' }],
     ["a summary with curly quotes", { summary: "docs fix\u201D and also \u201Cnothing" }],

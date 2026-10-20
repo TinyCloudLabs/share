@@ -45,7 +45,7 @@ describe("canonical JSON and the request hash (shared vector with packages/couri
 
 describe("text an approval depends on is checked, never repaired", () => {
   it("accepts plain text exactly as written and nothing else", () => {
-    expect(strictText("Docs-only README change", 200, { trimmed: true })).toBe("Docs-only README change");
+    expect(strictText("Docs-only README change", 200)).toBe("Docs-only README change");
     expect(strictText("\u05D1\u05D3\u05D9\u05E7\u05D4", 200)).toBe("\u05D1\u05D3\u05D9\u05E7\u05D4"); // Hebrew letters are visible text
     expect(strictText("line one\nline two", 200, { lines: true })).toBe("line one\nline two");
     expect(strictText("line one\nline two", 200)).toBeUndefined(); // a one-line field has no line breaks
@@ -63,7 +63,7 @@ describe("text an approval depends on is checked, never repaired", () => {
       ["a Braille blank", "a\u2800"], ["an object replacement character", "a\uFFFC"], ["a musical null notehead", `a${String.fromCodePoint(0x1d159)}`], ["a no-break space", "a\u00A0b"], ["a NUL", "a\u0000"], ["a tab", "a\tb"], ["decomposed text (not NFC)", "e\u0301"], ["four stacked combining marks", "a\u0301\u0302\u0303\u0304"],
     ];
     for (const [name, value] of refused) expect(strictText(value, 200, { lines: true }), name).toBeUndefined();
-    expect(strictText("a\u0301\u0302\u0303", 200)).toBeUndefined(); // a + 3 marks is not NFC; the mark-run rule is for already-composed text
+    expect(strictText("a\u0301\u0302\u0303", 200)).toBeUndefined(); // all marks are refused by the frozen category allow-list
   });
   it("makes the same characters visible, not gone, when it only shows them", () => {
     expect(oneLine(`x${String.fromCodePoint(0xe0061)}y\u200D\uFE0Fz`, 50)).toBe("x⟦U+E0061⟧y⟦U+200D⟧⟦U+FE0F⟧z");

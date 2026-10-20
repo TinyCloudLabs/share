@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { MAX_DEPTH, canonicalJson, requestHash } from "../src/courier/canonical.ts";
-import { parseRequest, strictText, MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY, MAX_TARGET } from "../src/courier/model.ts";
+import { parseRequest, MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY, MAX_TARGET } from "../src/courier/model.ts";
 
 /**
  * The contract shared with js-sdk packages/courier (test/vectors/request-fields.json, copied byte for byte): the CLI
@@ -19,7 +19,7 @@ const base = { id: "01J9ZC4K7T3QZ5W6M8R2N1B030", peer: "hunter", threadId: THREA
 
 describe("the shared request-field vectors", () => {
   it("use the limits this view uses", () => {
-    expect(vectors.limits).toMatchObject({ summary: MAX_SUMMARY, target: MAX_TARGET, action: MAX_ACTION, reason: MAX_REASON, risk: MAX_RISK, combiningRun: 3 });
+    expect(vectors.limits).toMatchObject({ summary: MAX_SUMMARY, target: MAX_TARGET, action: MAX_ACTION, reason: MAX_REASON, risk: MAX_RISK, combiningRun: 0 });
     expect(canonicalVectors.limits).toMatchObject({ depth: MAX_DEPTH });
   });
   for (const row of vectors.ids) {
@@ -39,14 +39,6 @@ describe("the shared request-field vectors", () => {
       expect(parsed?.problem).toBe(row.valid ? undefined : "fields");
     });
   }
-  it("the free-text rule is the summary rule plus newlines (and the same caps)", () => {
-    for (const row of vectors.fields.filter((candidate) => candidate.field === "summary" && typeof candidate.value === "string" && !/^\s|\s$/.test(candidate.value))) {
-      const value = row.value as string;
-      // Free text has a longer cap, may hold a newline and may hold quotes (only a summary is drawn between quotes): those rows are the only differences.
-      const expected = row.name.startsWith("201 chars") || row.name === "newline" || /["\p{Quotation_Mark}\uFF02\u275D\u275E\u2760\u2E42\u{1F676}-\u{1F678}\u2033\u2036\u02BA\u05F4\u3003]/u.test(value) ? true : row.valid;
-      expect(strictText(value, MAX_ACTION, { lines: true }) !== undefined, row.name).toBe(expected);
-    }
-  });
   for (const row of canonicalVectors.vectors) {
     it(`canonical JSON: ${row.name}`, async () => {
       if (row.canonical === null) {

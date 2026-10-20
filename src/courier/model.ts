@@ -19,8 +19,10 @@
  */
 
 import { VERBS, targetIsCanonical, type Verb } from "./target.js";
+import { hiddenTextProblem, plainLineProblem, plainTextProblem, textVerdict, MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY, MAX_TARGET } from "./text.js";
 
 export { VERBS, type Verb };
+export { MAX_ACTION, MAX_REASON, MAX_RISK, MAX_SUMMARY, MAX_TARGET };
 
 export const EXT = "https://tinycloud.xyz/ext/courier/v0";
 export const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -29,10 +31,6 @@ export const HANDLE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const MAX_SUBJECT = 200;
 export const MAX_LABEL = 120;
-/** Caps for what an approval depends on. Over a cap the request is unreviewable: it is never shortened. */
-export const MAX_ACTION = 2000;
-export const MAX_REASON = 2000;
-export const MAX_RISK = 2000;
 /** The note is echoed to the agent, so the CLI refuses one that is over this or holds hidden text; the view refuses it before writing instead of repairing it. */
 export const MAX_NOTE = 2000;
 export const MAX_BODY = 256 * 1024;
@@ -41,17 +39,15 @@ export const MAX_ORDERS_BYTES = 64 * 1024;
 // ------------------------------------------------------------------ text
 
 /**
- * Characters a person cannot see or that change how neighbouring text is drawn:
+ * Display-only escaping (never used to accept an approval): characters a person cannot see or that change how neighbouring text is drawn:
  * control, format (zero-width, bidi, tag characters), private-use, unassigned,
  * lone surrogates, line and paragraph separators, every default-ignorable
  * (variation selectors, U+034F, Hangul and Khmer fillers), and any space other
  * than a plain one (no-break, em, ideographic: look-alikes for it), plus four
  * symbols that draw as a blank or nothing: U+2800, U+FFFC, U+1D159 and U+16FE4.
  */
-const UNSAFE_CHAR = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}\u{16FE4}]|(?! )\p{Zs}/u;
 const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC\u{1D159}\u{16FE4}]|(?! )\p{Zs}/gu;
 /** A long run of combining marks draws over the line above and below. */
-const MARK_RUN = /\p{M}{4,}/u;
 const MARK_RUNS = /\p{M}{4,}/gu;
 
 function escapeHidden(text: string, keep: string = ""): string {
@@ -74,17 +70,10 @@ export function multiLine(value: unknown, max: number): string {
   return kept.length > max ? `${kept.slice(0, max - 1)}…` : kept;
 }
 
-/**
- * `value` exactly as written when it is fit to approve, else undefined. Not repaired, not shortened: 1 to `max`
- * UTF-16 units, NFC, none of `UNSAFE_CHAR` (a `\n` is allowed only when `lines`), no long run of combining marks.
- * `trimmed` also refuses leading or trailing space.
- */
-export function strictText(value: unknown, max: number, options: { readonly lines?: boolean; readonly trimmed?: boolean } = {}): string | undefined {
-  if (typeof value !== "string" || value.length === 0 || value.length > max) return undefined;
-  if (options.trimmed === true && value !== value.trim()) return undefined;
-  if (UNSAFE_CHAR.test(options.lines === true ? value.replaceAll("\n", "") : value)) return undefined;
-  if (MARK_RUN.test(value) || value !== value.normalize("NFC")) return undefined;
-  return value;
+/** Generic schema/free text, checked by the CLI's frozen-table API, never repaired or shortened. */
+export function strictText(value: unknown, max: number, options: { readonly lines?: boolean } = {}): string | undefined {
+  const problem = options.lines === true ? plainTextProblem(value, max) : plainLineProblem(value, max);
+  return problem === undefined ? value as string : undefined;
 }
 
 /** Message and artifact text for the markdown renderer: only length-capped (the sanitiser owns the rest). */
@@ -325,13 +314,6 @@ export function parseMeta(side: ThreadSide, raw: unknown): ThreadMetaView | unde
 
 // ------------------------------------------------------------------ requests and approvals
 
-/** Caps on the structured fields `courier request` writes (js-sdk packages/courier). A longer value is not shortened: the request is unreviewable. */
-export const MAX_TARGET = 200;
-export const MAX_SUMMARY = 200;
-
-/** Quotation marks and their look-alikes (the CLI's DOUBLE_QUOTES), except the plain apostrophe U+0027 and U+2019: the summary is drawn between quotes, so one inside it could end the quote early. Refused, as the CLI refuses them. */
-const QUOTES = /(?!['\u2019])[\p{Quotation_Mark}"\uFF02\u275D\u275E\u2760\u2E42\u{1F676}-\u{1F678}\u2033\u2036\u02BA\u05F4\u3003]/u;
-
 /** WHAT approving would allow, from structured fields inside the hashed request. Still the agent's words: shown as plain text, never as markup. */
 export interface RequestWhat {
   readonly verb: Verb;
@@ -341,16 +323,16 @@ export interface RequestWhat {
 
 export function parseWhat(raw: Record<string, unknown>): RequestWhat | undefined {
   const verb = VERBS.find((candidate) => candidate === raw.verb);
-  const target = strictText(raw.target, MAX_TARGET, { trimmed: true });
-  const summary = strictText(raw.summary, MAX_SUMMARY, { trimmed: true });
-  if (verb === undefined || target === undefined || summary === undefined) return undefined;
-  if (QUOTES.test(summary) || !/^[\x20-\x7E]+$/.test(target) || !targetIsCanonical(verb, target)) return undefined;
+  const target = raw.target;
+  const summary = raw.summary;
+  if (verb === undefined || typeof target !== "string" || typeof summary !== "string") return undefined;
+  if (!textVerdict(target, "target").allowed || !textVerdict(summary, "summary").allowed || !targetIsCanonical(verb, target)) return undefined;
   return { verb, target, summary };
 }
 
 /** Every string and key in `value` is fit to show (a single \n allowed): the CLI's approval sweeps the whole request, so the view does too. Nesting past the hash limit counts as not fit. */
 export function sweepsClean(value: unknown, depth = 0): boolean {
-  if (typeof value === "string") return !UNSAFE_CHAR.test(value.replaceAll("\n", "")) && !MARK_RUN.test(value) && value === value.normalize("NFC");
+  if (typeof value === "string") return hiddenTextProblem(value, true) === undefined;
   if (value === null || typeof value !== "object") return true;
   if (depth >= 64) return false;
   const entries = Array.isArray(value) ? value.map((item): [string, unknown] => ["", item]) : Object.entries(value as Record<string, unknown>);
@@ -380,8 +362,8 @@ function keysAreRequestKeys(value: Record<string, unknown>): boolean {
 /** Who filed the request: exactly `{owner, agent}`, both plain one-line text. */
 function requestedByOf(value: unknown): { readonly owner: string; readonly agent: string } | undefined {
   if (!isRecord(value) || !sameKeys(value, REQUESTED_BY_KEYS)) return undefined;
-  const owner = strictText(value.owner, MAX_DID, { trimmed: true });
-  const agent = strictText(value.agent, MAX_DID, { trimmed: true });
+  const owner = strictText(value.owner, MAX_DID);
+  const agent = strictText(value.agent, MAX_DID);
   return owner === undefined || agent === undefined ? undefined : { owner, agent };
 }
 
