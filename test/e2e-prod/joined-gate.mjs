@@ -857,6 +857,76 @@ function traceAudit(stack) {
   return { ownerDidSha256: createHash("sha256").update(ownerDid).digest("hex"), receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: positiveInvokes.length };
 }
 
+/**
+ * TC-1582. The first email share was revoked by the negative-enforcement stage.
+ * Its invitation link must now show the "no longer available" screen without
+ * offering or requesting a code: no OpenCredentials request, no node challenge,
+ * no mail. Also probes the real node (not the gate's rewriting proxy) for the
+ * CORS headers the browser needs on the public status route.
+ */
+async function verifyRevokedEmailShare({ browser, stack, invitation, recipientEmail }) {
+  const mailBefore = stack.mail.length;
+  const codesBefore = stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length;
+  phase = "revoked-email-recipient";
+  const from = trace.length;
+  const context = await browser.createBrowserContext(); const page = await context.newPage(); await installRouting(page, stack);
+  await page.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await page.waitForSelector(".recipient-unavailable", { timeout: 90_000 });
+  const screen = await page.evaluate(() => ({
+    title: document.querySelector("h1")?.textContent,
+    detail: document.querySelector(".recipient-detail")?.textContent,
+    role: document.querySelector(".recipient-unavailable")?.getAttribute("role"),
+    requestButtons: document.querySelectorAll(".claim-request-code").length,
+    mentionsVerify: /Verify your email|Email me a code/.test(document.body.textContent ?? ""),
+    focused: document.activeElement?.id,
+  }));
+  assert.equal(screen.title, "This share is no longer available");
+  assert.equal(screen.detail, "The sender may have revoked it, or it has expired.");
+  assert.equal(screen.role, "alert");
+  assert.equal(screen.requestButtons, 0, "a revoked share still offered a code request");
+  assert.equal(screen.mentionsVerify, false, "a revoked share still asked the recipient to verify an email");
+  assert.equal(screen.focused, "viewer", "focus did not move to the unavailable screen");
+  // Give any late request a moment to show up before reading the trace.
+  await new Promise((done) => setTimeout(done, 2_000));
+  const mine = trace.slice(from).filter((entry) => entry.phase === phase);
+  const statusReads = mine.filter((entry) => entry.origin === stack.canonical.node && entry.method === "GET" && entry.path.startsWith("/policy/v3/status/"));
+  assert(statusReads.length >= 1 && statusReads.some((entry) => entry.status === 200 && entry.response?.state === "revoked"), "the page did not read a revoked status from the node");
+  assert.equal(mine.filter((entry) => entry.origin === stack.canonical.credentials).length, 0, "a revoked share contacted OpenCredentials");
+  assert.equal(mine.filter((entry) => entry.origin === stack.canonical.node && entry.method === "POST").length, 0, "a revoked share made a node POST (challenge, delegation or invoke)");
+  assert.equal(mine.filter((entry) => /openkey/i.test(entry.origin)).length, 0, "a revoked share contacted OpenKey");
+  assert.equal(stack.mail.length, mailBefore, "mail was sent for a revoked share");
+  assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, codesBefore, "a code was emailed for a revoked share");
+  const stored = await page.evaluate(async () => ({ session: Object.keys(sessionStorage).length, local: Object.keys(localStorage).length, databases: (await indexedDB.databases()).map((database) => database.name ?? "") }));
+  assert.deepEqual(stored, { session: 0, local: 0, databases: [] }, "a revoked share left receiver state in the browser");
+  const revokedRoot = statusReads.find((entry) => entry.response?.state === "revoked");
+  const direct = await fetch(new URL(revokedRoot.path, stack.services.nodeOrigin), { headers: { origin: stack.canonical.share, accept: "application/json" } });
+  assert.equal(direct.status, 200);
+  assert.equal(direct.headers.get("access-control-allow-origin"), stack.canonical.share, "the node does not allow the Share origin to read policy status");
+  const directBody = await direct.json();
+  assert.equal(directBody.state, "revoked");
+  assert.equal(directBody.rootCid, decodeURIComponent(revokedRoot.path.split("/").at(-1)));
+  // A root the node has never seen is a plain 404, which the page reads as "not revoked".
+  const unknown = await fetch(new URL("/policy/v3/status/bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stack.services.nodeOrigin), { headers: { origin: stack.canonical.share } });
+  assert.equal(unknown.status, 404);
+  const shots = process.env.TC1582_SHOT_DIR;
+  const axeSource = await readFile(join(shareRoot, "node_modules/axe-core/axe.min.js"), "utf8");
+  const axe = {};
+  for (const [width, height] of [[390, 844], [1440, 900]]) for (const scheme of ["light", "dark"]) {
+    await page.setViewport({ width, height }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+    // The theme switch transitions colours; axe must read the settled values.
+    await new Promise((done) => setTimeout(done, 800));
+    await page.evaluate(axeSource);
+    const result = await page.evaluate(() => globalThis.axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
+    axe[`${width}-${scheme}`] = result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => `${node.target.join(" ")} ${JSON.stringify(node.any[0]?.data ?? {})}`).join("; ")}`);
+    assert.deepEqual(axe[`${width}-${scheme}`], [], `${width}px ${scheme}: axe AA on the unavailable screen`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert(overflow <= 0, `${width}px ${scheme}: the unavailable screen scrolls sideways`);
+    if (shots !== undefined) await page.screenshot({ path: join(shots, `unavailable-${width}-${scheme}.png`) });
+  }
+  await context.close();
+  return { screenShown: true, codeRequests: 0, mailSent: 0, statusReads: statusReads.length, corsAllowsShareOrigin: true, unknownRootStatus: unknown.status, axe };
+}
+
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
 const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixturePath, fixture, { flag: "wx", mode: 0o600 });
 let stack; let candidate; let browser; let recipientEmail; let selectedOtp; let watchdog;
@@ -909,6 +979,9 @@ try {
   // Opening the link (as a mail scanner would) must not reach OpenCredentials or send a code.
   assert.equal(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.credentials && entry.method === "POST").length, 0, "the invitation page contacted OpenCredentials before a click");
   assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, 0, "a code was emailed before a click");
+  // Both policy roots are checked before the button is offered; a live share's status reads all answer 200.
+  const liveStatusReads = trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.method === "GET" && entry.path.startsWith("/policy/v3/status/"));
+  assert(liveStatusReads.length >= 2 && liveStatusReads.every((entry) => entry.status === 200 && entry.response?.state === "active"), "the page did not read an active status for each root of a live share");
   // A double click sends one code.
   await recipient.$eval(".claim-request-code", (button) => { button.click(); button.click(); });
   journeyStage = "recipient-otp-delivery";
@@ -941,6 +1014,8 @@ try {
     assert(!/"d"\s*:|"jwk"|privateKey|pkcs8/i.test(value), "private key material was left in browser storage");
   }
   assert.deepEqual(stored.databases.filter((name) => /receiver|share/i.test(name)), ["tinycloud.share.receiver-keys"], "an unexpected receiver database is in IndexedDB");
+  journeyStage = "revoked-email-share";
+  const revokedEmailShare = await verifyRevokedEmailShare({ browser, stack, invitation, recipientEmail });
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";
@@ -959,6 +1034,7 @@ try {
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
   const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: cliSkipped ? "partial-passed" : gateResult(stack.provenance), fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, otherShare, bearerRevoke, cliSender, revokeRequests: trace.filter((entry) => entry.path === "/revoke").map((entry) => ({ sequence: entry.sequence, phase: entry.phase, origin: entry.origin === stack.canonical.node ? "node" : "other", status: entry.status, jsonBody: entry.body !== undefined, authorizationHeader: typeof entry.authorization === "string" && entry.authorization.length > 0, receiptCidReturned: typeof entry.response?.cid === "string" })), browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  artifact.revokedEmailShare = revokedEmailShare;
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -996,7 +1072,7 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery", "other-share-survives", "bearer-revoke-after-relogin", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    journeyDiagnostic: ["revoked-email-share", "bearer-regression", "domain-journey", "domain-delivery", "other-share-survives", "bearer-revoke-after-relogin", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
     cliDiagnostic: journeyStage === "cli-sender" ? cliDiagnostic : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,
