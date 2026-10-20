@@ -19,6 +19,7 @@ import {
   signInWithManifest,
   type ApprovalGuard,
 } from "../src/share/openkey-session.js";
+import { isSignInLabel } from "../src/share/sign-in-label.js";
 import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
 
@@ -541,6 +542,12 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
     expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
     expect(state.openKeys.at(-1)!.appName).toBe(appName);
+  });
+
+  it("isSignInLabel says, without opening anything, what the helper would accept as an appName", () => {
+    for (const ok of ["TinyCloud Share: install Tiny Notes", "Install v1.2", "Notes 📓"]) expect(isSignInLabel(ok), ok).toBe(true);
+    for (const bad of ["Node.js Notes", "Notes\u200b", "evil.com", "Notes ", "x".repeat(65), ""]) expect(isSignInLabel(bad), bad).toBe(false);
+    expect(state.openKeys).toEqual([]);
   });
 
   it.each(["a/b", "a b", "../x", "x".repeat(65), "", "a\nb", "https://x", "a:b", "ünï", "a\u200bb", "a.b.com", " a", "a "])("refuses a sessionPrefix of %j", async (sessionPrefix) => {
