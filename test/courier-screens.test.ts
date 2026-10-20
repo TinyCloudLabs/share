@@ -168,6 +168,24 @@ describe("Needs you", () => {
     expect(fake.approvals).toHaveLength(0);
   });
 
+  it("won't save a note the agent side would refuse, and doesn't change it either", async () => {
+    const fake = fakeStore(baseFiles());
+    await open(fake);
+    tab("Needs you").click();
+    const approve = root.querySelector<HTMLButtonElement>(".cr-approve")!;
+    await vi.waitFor(() => expect(approve.disabled).toBe(false));
+    const note = root.querySelector<HTMLTextAreaElement>(".cr-note-input")!;
+    note.value = "ok\u200Bgo";
+    approve.click();
+    await vi.waitFor(() => expect(root.querySelector(".cr-result")?.textContent).toContain("can't be saved"));
+    expect(fake.approvals).toHaveLength(0);
+    await vi.waitFor(() => expect(approve.disabled).toBe(false));
+    note.value = "ok\ngo, caf\u00E9";
+    approve.click();
+    await vi.waitFor(() => expect(fake.approvals).toHaveLength(1));
+    expect(fake.approvals[0]!.note).toBe("ok\ngo, caf\u00E9"); // exactly as typed
+  });
+
   it("gives an expired request no buttons", async () => {
     const fake = fakeStore(baseFiles(request({ expiresAt: "2026-10-20T11:00:00Z" })));
     await open(fake);

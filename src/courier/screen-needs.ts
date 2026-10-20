@@ -22,7 +22,7 @@
  */
 import { requestHash } from "./canonical.js";
 import { absoluteTime, el, shortId, status, timeElement, uid, type ViewContext } from "./dom.js";
-import { approvalFile, isDecidable, keys, MAX_NOTE, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
+import { approvalFile, isDecidable, keys, MAX_NOTE, noteFitsToSave, parseApproval, parseRequest, requestStanding, type Decision, type Verb } from "./model.js";
 import type { Overview, RequestCard } from "./service.js";
 import { StoreError } from "./store.js";
 
@@ -182,6 +182,11 @@ function requestCard(ctx: ViewContext, card: RequestCard): HTMLElement {
       // The agent only accepts a decision stamped inside the request's own window, so a clock that is behind it can't decide.
       if (ctx.now() < fresh.createdAt) {
         result.replaceChildren(status(doc, "warning", "This device's clock is earlier than the time this request was made. Nothing was recorded. Check the date and time on this device, then try again."));
+        return;
+      }
+      // The note is echoed to the agent: text it would refuse is refused here, not silently changed.
+      if (!noteFitsToSave(note.value)) {
+        result.replaceChildren(status(doc, "warning", "Your note has characters that can't be saved (hidden or look-alike characters, or it is too long). Nothing was recorded. Remove them and try again."));
         return;
       }
       const written = await ctx.store.createApproval(approvalFile(fresh, card.hash, decision, note.value, ctx.now()));

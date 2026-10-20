@@ -29,7 +29,8 @@ export const MAX_LABEL = 120;
 export const MAX_ACTION = 2000;
 export const MAX_REASON = 2000;
 export const MAX_RISK = 2000;
-export const MAX_NOTE = 1000;
+/** The note is echoed to the agent, so the CLI refuses one that is over this or holds hidden text; the view refuses it before writing instead of repairing it. */
+export const MAX_NOTE = 2000;
 export const MAX_BODY = 256 * 1024;
 export const MAX_ORDERS_BYTES = 64 * 1024;
 
@@ -450,8 +451,14 @@ export interface ApprovalFile {
   readonly decidedAt: string;
 }
 
+/** True when `note` can be saved as typed: empty, or text the CLI accepts (same rules as the request's free text). */
+export function noteFitsToSave(note: string): boolean {
+  return note === "" || strictText(note, MAX_NOTE, { lines: true }) !== undefined;
+}
+
+/** `note` is written exactly as typed; the caller has checked `noteFitsToSave` first. */
 export function approvalFile(request: RequestView, requestHash: string, decision: Decision, note: string, now: number): ApprovalFile {
-  return { requestId: request.id, requestHash, decision, note: multiLine(note, MAX_NOTE), decidedAt: new Date(now).toISOString() };
+  return { requestId: request.id, requestHash, decision, note, decidedAt: new Date(now).toISOString() };
 }
 
 export type RequestStanding = "pending" | "expired" | "approved" | "denied";
