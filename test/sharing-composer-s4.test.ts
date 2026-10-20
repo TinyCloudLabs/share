@@ -65,8 +65,8 @@ describe("TC-1423 composer: expiry says what it does", () => {
     expect(inputs.map((input) => input.value)).toEqual(["24h", "7d", "30d"]);
     expect(inputs.find((input) => input.checked)?.value).toBe("7d");
     const help = root.querySelector(".expiry-help")!;
-    expect(help.textContent).toMatch(/^After .+ the link stops working\./);
-    expect(help.textContent).toContain("Revoking it ends access sooner");
+    expect(help.textContent).toMatch(/^After .+ the link stops working; your stored copy stays in your TinyCloud\./);
+    expect(help.textContent).toContain("Revoking the link ends access sooner");
     expect(help.textContent).toContain("keeps their copy");
     const before = help.textContent;
     const day = root.querySelector<HTMLInputElement>("input[name=expiry][value='24h']")!;

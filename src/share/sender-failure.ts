@@ -128,7 +128,7 @@ export function httpStatusOf(error: unknown): number | undefined {
 
 /** A cancelled or unanswered approval, or another approval still open: the share is untouched and nothing went wrong. */
 export function revokeOutcomeIsNeutral(error: unknown): boolean {
-  return error instanceof Error && (error.message === "revoke-approval-cancelled" || error.message === "revoke-approval-abandoned" || error.message === "revoke-another-approval");
+  return error instanceof Error && (error.message === "revoke-approval-cancelled" || error.message === "revoke-approval-abandoned" || error.message === "revoke-another-approval" || error.message === "revoke-session-ended");
 }
 
 /**
@@ -141,6 +141,7 @@ export function revokeFailureMessage(error: unknown): string {
   if (text === "revoke-approval-cancelled") return "Revoke cancelled. The share is still active.";
   if (text === "revoke-approval-abandoned") return "The approval wasn't completed. The share is still active. Try again.";
   if (text === "revoke-another-approval") return "Another approval is waiting. Finish or cancel it in the OpenKey window, then try again. The share is still active.";
+  if (text === "revoke-session-ended") return "You signed out before this finished. Sign in again and check the share's status.";
   const reason = ((): string => {
     const status = httpStatusOf(error);
     if (text === "revoke-unbound-policy-root") return "This share was made with a different account or TinyCloud node than this session. Sign in with the account that created it.";

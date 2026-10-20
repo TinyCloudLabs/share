@@ -5,6 +5,8 @@
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { endSenderSession, OPENKEY_SIGN_OUT_WAIT_MS, SIGNED_OUT_NOTICE, SIGNED_OUT_PARTIAL_NOTICE, SIGN_OUT_BODY } from "../src/share/sender-chrome.js";
+import { activeFlight, RevokeFlight, withWalletApproval } from "../src/share/revoke-flight.js";
+import { trackWalletApproval, walletApprovalOpen } from "../src/share/wallet-approval.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 
 const calls = vi.hoisted(() => ({
@@ -12,6 +14,8 @@ const calls = vi.hoisted(() => ({
   openkeySignOut: vi.fn(async (): Promise<{ requestId: string; revoked: boolean }> => ({ requestId: "r", revoked: true })),
   disconnect: vi.fn(),
   libraryMounts: 0,
+  endLibrary: vi.fn(),
+  endComposer: vi.fn(),
 }));
 
 vi.mock("../src/share/openkey-session.js", () => ({
@@ -29,8 +33,9 @@ vi.mock("../src/email-share/config.js", async (importOriginal) => ({
 vi.mock("../src/share/sender-history.js", () => ({ SenderHistoryRepository: class { constructor(_vault: unknown) {} } }));
 vi.mock("../src/share/sender-home.js", () => ({
   mountSenderHome: (root: HTMLElement) => { calls.libraryMounts += 1; const marker = document.createElement("div"); marker.className = "sender-home"; root.replaceChildren(marker); },
+  endSenderLibrary: calls.endLibrary,
 }));
-vi.mock("../src/share/composer.js", () => ({ mountShareComposer: () => undefined }));
+vi.mock("../src/share/composer.js", () => ({ mountShareComposer: () => undefined, endShareComposer: calls.endComposer }));
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -47,9 +52,13 @@ describe("sender sign-out (booting the real app)", () => {
     await vi.waitFor(() => { expect(document.querySelector(".sender-signout")).not.toBeNull(); expect(document.querySelector(".sender-home")).not.toBeNull(); });
   });
 
-  it("puts a Sign out control and the signed-in account in the bar above every screen", () => {
+  it("puts a Sign out control and the signed-in account in the bar above every screen, inside a named landmark", () => {
     expect(document.querySelector(".sender-signout")?.textContent).toBe("Sign out");
     expect(document.querySelector(".sender-chrome .sender-account")?.textContent).toBe("0x1234…5678");
+    const bar = document.querySelector(".sender-chrome")!;
+    expect(bar.tagName).toBe("NAV");
+    expect(bar.getAttribute("aria-label")).toBe("Account");
+    expect(bar.contains(document.querySelector(".sender-signout"))).toBe(true);
     expect(document.querySelector(".sender-home")).not.toBeNull();
   });
 
@@ -66,6 +75,10 @@ describe("sender sign-out (booting the real app)", () => {
   });
 
   it("clears the TinyCloud session and OpenKey's sign-in, drops every screen, and returns to the sign-in wall with a notice", async () => {
+    // A revoke holding the wallet and a bare approval, both left open by this sign-in.
+    const open = new RevokeFlight("0xabc/held", (flight) => withWalletApproval(flight, () => new Promise<never>(() => undefined)));
+    void trackWalletApproval(() => new Promise<never>(() => undefined));
+    expect(walletApprovalOpen()).toBe(true);
     document.querySelector<HTMLButtonElement>(".sender-signout")!.click();
     document.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
     await vi.waitFor(() => expect(document.querySelector(".auth-shell")).not.toBeNull());
@@ -75,6 +88,14 @@ describe("sender sign-out (booting the real app)", () => {
     expect(document.querySelector(".sender-home")).toBeNull();
     expect(document.querySelector(".sender-chrome")).toBeNull();
     expect(window.location.hash).toBe("");
+    // Nothing the signed-out session left running may block the next sign-in.
+    expect(activeFlight("0xabc/held")).toBeUndefined();
+    expect(walletApprovalOpen()).toBe(false);
+    expect((await open.done).failure).toEqual(new Error("revoke-session-ended"));
+    const next = new RevokeFlight("0xdef/next", (flight) => withWalletApproval(flight, async () => undefined));
+    expect((await next.done).revoked).toBe(true);
+    expect(calls.endLibrary).toHaveBeenCalledTimes(1);
+    expect(calls.endComposer).not.toHaveBeenCalled();
     // A hash change after sign-out must not mount a screen with the dead session.
     const mountsBefore = calls.libraryMounts;
     window.location.hash = "#/library";

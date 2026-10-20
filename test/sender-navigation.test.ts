@@ -64,6 +64,7 @@ vi.mock("../src/share/sender-home.js", () => ({
     marker.className = "sender-home";
     root.append(marker);
   },
+  endSenderLibrary: () => undefined,
 }));
 
 vi.mock("../src/share/composer.js", () => ({
@@ -75,6 +76,7 @@ vi.mock("../src/share/composer.js", () => ({
     marker.className = "composer-form";
     root.append(marker);
   },
+  endShareComposer: () => undefined,
   copySelectedSource: async () => undefined,
   emailDomainOf: (value: string) => value,
 }));

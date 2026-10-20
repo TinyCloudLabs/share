@@ -212,7 +212,8 @@ describe("TC-657 revoke retry after a lost response", () => {
 });
 
 describe("TC-721 revoke is confirmed, shown and never silent", () => {
-  const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]');
+  // By class, not name: while a revoke is pending the button's name is "Revoking retry-me.md".
+  const revokeButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>(".sender-revoke");
   const dialog = (root: HTMLElement) => root.querySelector<HTMLElement>(".sender-confirm-dialog");
 
   it("opens an in-page confirmation even when native dialogs are suppressed, and revokes nothing until it is confirmed", async () => {

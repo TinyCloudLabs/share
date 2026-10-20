@@ -9,7 +9,7 @@ import { verifyShareRootOnNode, type ShareRootKind } from "./owner-revoke.js";
 import { confirmDialog } from "./confirm-dialog.js";
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL } from "./artifact-kind.js";
-import type { NodeShareState, NodeStatusReader } from "./node-status.js";
+import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
@@ -27,6 +27,12 @@ export interface SenderHomeOptions {
 const FOCUS_RECHECK_MS = 15_000;
 /** The focus and visibility listeners of the mounted library; mounting again ends the earlier ones. */
 let libraryScope: AbortController | undefined;
+
+/** Sign-out: the mounted library stops listening and an open status check is abandoned. */
+export function endSenderLibrary(): void {
+  libraryScope?.abort();
+  libraryScope = undefined;
+}
 
 /**
  * TC-601. sdk-core 3.0.0-beta.19 stamps a policy root revocation with
@@ -58,7 +64,12 @@ export const REVOKE_CONFIRM_CAVEAT = "Anyone holding a share link can also revok
 export const REVOKE_APPROVAL_TIMEOUT_COPY = "OpenKey is still waiting for you. The share is still active. Cancel and try again.";
 
 export const FRESHNESS_CHECKING = "Checking each share with TinyCloud…";
-export const FRESHNESS_UNCONFIRMED = "Couldn't confirm every share with TinyCloud, so one revoked or expired elsewhere may still show as Ready.";
+export const FRESHNESS_UNCONFIRMED = "Couldn't confirm every share with TinyCloud, so statuses may be out of date: a share revoked or expired elsewhere can still show as Ready.";
+export const FRESHNESS_TIMEOUT = "TinyCloud didn't answer in time, so statuses may be out of date: a share revoked or expired elsewhere can still show as Ready.";
+export const CHECK_STATUS_LABEL = "Check status";
+export const CHECK_AGAIN_LABEL = "Check again";
+/** How long one status check waits for the node before the statuses are called unconfirmed. */
+export const STATUS_CHECK_TIMEOUT_MS = 4_000;
 export function freshnessConfirmed(at: Date): string {
   return `Statuses confirmed with TinyCloud at ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`;
 }
@@ -68,13 +79,23 @@ const TONE: Record<RowKind, string> = { ready: "success", pending: "info", expir
 const KIND_LABEL: Record<RowKind, string> = { ready: "Ready", pending: "Revoking…", expired: "Expired", revoked: "Revoked" };
 
 /** One place that decides how a row's status reads: the label, its tone, and the line under it. */
-function paintStatus(status: HTMLElement, kind: RowKind, expiresAt: string): void {
+function paintStatus(status: HTMLElement, kind: RowKind, expiresAt: string, endedOn?: string | null): void {
   status.classList.remove("ready", "pending", "expired", "revoked"); status.classList.add(kind);
   status.dataset.kind = kind; status.dataset.expiresAt = expiresAt;
+  // `endedOn` is only for a share the node reports expired: undefined = the saved expiry, null = the node gave no date, so none is shown.
+  if (endedOn !== undefined) status.dataset.endedOn = endedOn === null ? "none" : endedOn;
   const label = status.querySelector(".status-label"); const detail = status.querySelector(".status-expiry");
   if (label !== null) { label.className = `status-label tc-status tc-status--${TONE[kind]}`; label.textContent = KIND_LABEL[kind]; }
-  const date = new Date(expiresAt).toLocaleDateString();
-  if (detail !== null) detail.textContent = kind === "revoked" ? "Access ended" : kind === "expired" ? `Expired ${date}` : `Expires ${date}`;
+  const ended = status.dataset.endedOn;
+  const expiredText = ended === "none" ? "Expired" : `Expired ${new Date(ended ?? expiresAt).toLocaleDateString()}`;
+  if (detail !== null) detail.textContent = kind === "revoked" ? "Access ended" : kind === "expired" ? expiredText : `Expires ${new Date(expiresAt).toLocaleDateString()}`;
+}
+
+/** The earlier of what the node says and what was saved; no date at all when the node said none (a later saved expiry would read as a wrong end). */
+function earlierEnd(nodeEnd: string | undefined, saved: string): string | null {
+  if (nodeEnd === undefined) return null;
+  const node = Date.parse(nodeEnd); const recorded = Date.parse(saved);
+  return Number.isFinite(recorded) && recorded < node ? saved : nodeEnd;
 }
 
 interface RowHandle {
@@ -111,7 +132,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   header.append(node(doc, "p", "sender-kicker", "Signed in"), node(doc, "h1", "sender-title", "Shared by me."), node(doc, "p", "sender-lede", "Everything you've shared. Links stay private until you copy them."));
   const toolbar = node(doc, "div", "sender-home-toolbar");
   const newShare = node(doc, "button", "button button-primary tc-button tc-button--primary", "New share") as HTMLButtonElement; newShare.type = "button";
-  const recheck = node(doc, "button", "button button-secondary tc-button tc-button--compact sender-recheck", "Check status") as HTMLButtonElement; recheck.type = "button"; recheck.hidden = options.statusReader === undefined;
+  const recheck = node(doc, "button", "button button-secondary tc-button tc-button--compact sender-recheck", CHECK_STATUS_LABEL) as HTMLButtonElement; recheck.type = "button"; recheck.hidden = options.statusReader === undefined;
   toolbar.append(newShare, recheck);
   const freshness = node(doc, "p", "sender-freshness tc-help"); freshness.hidden = true; freshness.setAttribute("role", "status"); freshness.setAttribute("aria-live", "polite");
   libraryScope?.abort();
@@ -171,7 +192,10 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
    */
   const followFlight = (flight: RevokeFlight, revoke: HTMLButtonElement, status: HTMLElement, controls: HTMLElement): void => {
     const prior = { kind: (status.dataset.kind ?? "ready") as RowKind, expiresAt: status.dataset.expiresAt ?? "" };
+    // The visible text changes to "Revoking…", so the accessible name does too (it must contain the visible text).
+    const idleLabel = revoke.getAttribute("aria-label");
     revoke.disabled = true; revoke.textContent = "Revoking…"; revoke.setAttribute("aria-busy", "true");
+    if (idleLabel !== null) revoke.setAttribute("aria-label", idleLabel.replace(/^Revoke /, "Revoking "));
     paintStatus(status, "pending", prior.expiresAt);
     live.textContent = "Revoking…";
     let hint: ApprovalHint | undefined;
@@ -197,6 +221,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       // Only a status code or a fixed reason is shown; the error text can carry a response body.
       paintStatus(status, prior.kind, prior.expiresAt);
       revoke.disabled = false; revoke.textContent = "Revoke"; revoke.removeAttribute("aria-busy");
+      if (idleLabel !== null) revoke.setAttribute("aria-label", idleLabel);
       const message = revokeFailureMessage(outcome.failure);
       // A cancel, or another approval still open, is not an error: a quiet note, not an alert.
       if (revokeOutcomeIsNeutral(outcome.failure)) {
@@ -351,15 +376,15 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     row.append(itemCell, recipient, access, status, created, controls); body.append(row); pageRows.push(row);
   };
   /** What the node says overrides a saved "Ready": a share revoked or expired elsewhere is shown as such. */
-  const applyNodeState = (handle: RowHandle, state: NodeShareState): void => {
+  const applyNodeState = (handle: RowHandle, status: NodeShareStatus): void => {
     const kind = handle.status.dataset.kind;
     // A revoke running here owns the row until it ends; a revoked row stays revoked.
     if (kind === "pending" || kind === "revoked" || activeFlight(flightKey(options.session.address, handle.item.record.shareId)) !== undefined) return;
-    if (state === "revoked") {
+    if (status.state === "revoked") {
       paintStatus(handle.status, "revoked", handle.item.record.expiresAt);
       handle.revoke?.remove();
-    } else if (state === "expired" && kind === "ready") {
-      paintStatus(handle.status, "expired", handle.item.record.expiresAt);
+    } else if (status.state === "expired" && kind === "ready") {
+      paintStatus(handle.status, "expired", handle.item.record.expiresAt, earlierEnd(status.expiredAt, handle.item.record.expiresAt));
     }
   };
   let checking = false;
@@ -368,20 +393,38 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   /** TC-1584. Asks the owner's node for each share's state. A share it cannot confirm is not shown as confirmed. */
   const checkStatus = async (): Promise<void> => {
     const reader = options.statusReader;
-    if (reader === undefined || rows.size === 0) return;
+    if (reader === undefined || rows.size === 0 || scope.signal.aborted) return;
     if (checking) { queued = true; return; }
     checking = true; lastCheck = Date.now();
     freshness.hidden = false; freshness.textContent = FRESHNESS_CHECKING; recheck.disabled = true;
-    let states: ReadonlyMap<string, NodeShareState> = new Map();
-    try { states = await reader([...rows.values()].map((handle) => handle.item.record)); } catch { /* every share stays unconfirmed */ }
+    let states: ReadonlyMap<string, NodeShareStatus> = new Map();
+    let timedOut = false;
+    // One bounded ask: a node that does not answer in time leaves every share unconfirmed, and the sender can ask again. Signing out or leaving the library ends it too.
+    const request = new AbortController();
+    const cancel = (): void => request.abort();
+    scope.signal.addEventListener("abort", cancel, { once: true });
+    let timer: number | undefined;
+    const deadline = new Promise<"timeout">((resolve) => { timer = window.setTimeout(() => resolve("timeout"), STATUS_CHECK_TIMEOUT_MS); });
+    try {
+      const running = reader([...rows.values()].map((handle) => handle.item.record), request.signal);
+      // An answer that arrives after the deadline is not read; a rejection nobody waits for is not an error.
+      running.catch(() => undefined);
+      const answer = await Promise.race([running, deadline]);
+      if (answer === "timeout") timedOut = true; else states = answer;
+    } catch { /* every share stays unconfirmed */ } finally {
+      window.clearTimeout(timer); request.abort(); scope.signal.removeEventListener("abort", cancel);
+      checking = false;
+    }
+    // Signed out, or the library was mounted again: nothing here may change.
+    if (scope.signal.aborted) return;
     let unconfirmed = 0;
     for (const [shareId, handle] of rows) {
-      const state = states.get(shareId) ?? "unknown";
-      applyNodeState(handle, state);
-      if (state === "unknown" && handle.status.dataset.kind !== "revoked") unconfirmed += 1;
+      const status = states.get(shareId) ?? { state: "unknown" };
+      applyNodeState(handle, status);
+      if (status.state === "unknown" && handle.status.dataset.kind !== "revoked") unconfirmed += 1;
     }
-    freshness.textContent = unconfirmed === 0 ? freshnessConfirmed(new Date()) : FRESHNESS_UNCONFIRMED;
-    recheck.disabled = false; checking = false;
+    freshness.textContent = unconfirmed === 0 ? freshnessConfirmed(new Date()) : timedOut ? FRESHNESS_TIMEOUT : FRESHNESS_UNCONFIRMED;
+    recheck.textContent = unconfirmed === 0 ? CHECK_STATUS_LABEL : CHECK_AGAIN_LABEL; recheck.disabled = false;
     // Rows added while the node was being asked (a page of "Load more") get their answer now.
     if (queued) { queued = false; void checkStatus(); }
   };
@@ -414,7 +457,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
   more.addEventListener("click", () => { const firstNew = pageRows.length; void load(true).then(() => pageRows[firstNew]?.focus?.()); });
   recheck.addEventListener("click", () => { void checkStatus(); });
   // A revoke made on the account site or the CLI while this tab was in the background shows up when the sender comes back.
-  const onReturn = (): void => { if (root.isConnected && doc.visibilityState !== "hidden" && Date.now() - lastCheck > FOCUS_RECHECK_MS) void checkStatus(); };
+  const onReturn = (): void => { if (shell.isConnected && doc.visibilityState !== "hidden" && Date.now() - lastCheck > FOCUS_RECHECK_MS) void checkStatus(); };
   window.addEventListener("focus", onReturn, { signal: scope.signal });
   doc.addEventListener("visibilitychange", onReturn, { signal: scope.signal });
   void load(false);

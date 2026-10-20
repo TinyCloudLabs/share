@@ -9,6 +9,7 @@ import { historyRecordForPublishedShare, prepareAddressedShare, publishAddressed
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { failIfSpaceNotReady } from "./space-not-ready.js";
+import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
@@ -287,7 +288,8 @@ async function defaultCreate(files: readonly File[], model: ShareComposerModel, 
   // The bearer slice uses the owner's authenticated applications space as its
   // only persistence and SharingService as its only authority protocol.  The
   // random object key makes the delegation an exact, single-object grant.
-  const nativePath = `${SHARE_APPLICATION_PREFIX}shares/${crypto.randomUUID()}/${selectedFilePath(file)}`;
+  // The key holds the URI-safe stored name (TC-1610); the saved record below keeps the file's own name for display.
+  const nativePath = `${SHARE_APPLICATION_PREFIX}shares/${crypto.randomUUID()}/${uniqueStoragePaths([selectedFilePath(file)])[0]!}`;
   const nativeShare = await composeNativeBearer(options.tinycloud, {
     path: nativePath,
     bytes,
@@ -329,7 +331,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const resourceKind = model.resource.kind;
   if (resourceKind !== "exact") throw fail("rejected", "v3 prefix shares require a shared wrapped content key");
   const sharePrefix = `${SHARE_APPLICATION_PREFIX}shares/`;
-  const resourcePath = model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${filename}`;
+  // The key is the URI-safe stored name (TC-1610); `filename` stays the display name in the signed metadata.
+  const resourcePath = model.resource.path.startsWith(sharePrefix) && selectedSource === undefined ? model.resource.path : `${sharePrefix}${shareId}/${storageFilenameFor(filename)}`;
   if (resourcePath.length === 0 || (resourceKind === "exact" && resourcePath.endsWith("/"))) throw fail("filename", "owner share resource filename is invalid");
   const policyActionOrder = ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/put"] as const;
   const policyActions = [...new Set(model.permissions.flatMap((action) => action === "read" ? ["tinycloud.kv/get", "tinycloud.kv/metadata"] : action === "list" ? ["tinycloud.kv/list"] : ["tinycloud.kv/put"]))].sort((left, right) => policyActionOrder.indexOf(left as typeof policyActionOrder[number]) - policyActionOrder.indexOf(right as typeof policyActionOrder[number])) as ("tinycloud.kv/get" | "tinycloud.kv/list" | "tinycloud.kv/metadata" | "tinycloud.kv/put")[];
@@ -482,10 +485,12 @@ export async function uploadSelectedFiles(
   if (resourceKind === "exact" && files.length !== 1) throw fail("content", "exact upload requires one file");
   if (resourceKind === "prefix" && files.length < 2) throw fail("content", "prefix upload requires multiple files");
   const kv = tinycloud.kvForSpace(spaceId);
-  for (const file of files) {
+  // Stored under URI-safe names (TC-1610); the display name stays the file's own.
+  const storedPaths = resourceKind === "prefix" ? uniqueStoragePaths(files.map(selectedFilePath)) : [];
+  for (const [index, file] of files.entries()) {
     const content = new Uint8Array(await file.arrayBuffer());
     if (content.byteLength !== file.size || content.byteLength > MAX_SHARE_FILE_BYTES) throw fail("fileTooLarge", "uploaded document bytes exceed 100 MB");
-    const childPath = resourceKind === "prefix" ? `${resourcePath}/${selectedFilePath(file)}` : resourcePath;
+    const childPath = resourceKind === "prefix" ? `${resourcePath}/${storedPaths[index]!}` : resourcePath;
     const result = await kv.put(childPath, content, { contentType: file.type.trim() || "application/octet-stream" });
     failIfSpaceNotReady(result);
     if (!result.ok) throw fail("upload", "owner file upload was rejected");
@@ -549,6 +554,12 @@ function recipientModel(kind: RecipientKind, value: string): ShareComposerModel[
 
 /** Only one mounted composer owns the document-level paste fallback. */
 let composerPasteScope: AbortController | undefined;
+
+/** Sign-out: the composer that was mounted stops listening for pastes. */
+export function endShareComposer(): void {
+  composerPasteScope?.abort();
+  composerPasteScope = undefined;
+}
 
 function formatBytes(size: number): string {
   return size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
@@ -738,7 +749,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const refreshNote = (): void => {
     const kind = selectedKind();
     const typed = recipientInput.value.trim();
-    expiryHelp.textContent = `After ${shortDate(expiryIso())} the link stops working. Revoking it ends access sooner. Anyone who already saved or copied the file keeps their copy.`;
+    expiryHelp.textContent = `After ${shortDate(expiryIso())} the link stops working; your stored copy stays in your TinyCloud. Revoking the link ends access sooner. Anyone who already saved or copied the file keeps their copy.`;
     note.textContent = kind === "bearer"
       ? `Anyone who gets this link can open it until ${shortDate(expiryIso())}. You can revoke it earlier from All shares.`
       : kind === "emailDomain"

@@ -15,6 +15,8 @@
 type Listener = (open: boolean) => void;
 
 let open = 0;
+/** Counts sign-outs: an approval that settles after one is not counted against the next account's. */
+let session = 0;
 const listeners = new Set<Listener>();
 
 function notify(): void {
@@ -34,18 +36,28 @@ export function subscribeWalletApproval(listener: Listener): () => void {
 
 /** Runs `request` (a wallet signature) and reports it as open until it settles, either way. */
 export async function trackWalletApproval<T>(request: () => Promise<T>): Promise<T> {
+  const mine = session;
   open += 1;
   if (open === 1) notify();
   try {
     return await request();
   } finally {
-    open -= 1;
-    if (open === 0) notify();
+    if (mine === session) {
+      open -= 1;
+      if (open === 0) notify();
+    }
   }
 }
 
-/** Test seam: forgets every open approval and listener, as a fresh page load would. */
+/**
+ * Sign-out, and a fresh page load in tests: forgets every open approval and
+ * listener. Screens showing the hint are told it closed first. An approval
+ * that settles later changes nothing.
+ */
 export function resetWalletApproval(): void {
+  const wasOpen = open > 0;
+  session += 1;
   open = 0;
+  if (wasOpen) notify();
   listeners.clear();
 }

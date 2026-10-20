@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="system">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>TinyCloud Share</title>
+</head>
+<body>
+<!-- The page shell of share/index.html around the sender screens; the screens themselves are the real ones (harness.ts). -->
+<a class="skip-link" href="#share-app">Skip to sharing form</a>
+<div class="site-shell">
+  <header class="site-header">
+    <a class="wordmark" href="/" aria-label="TinyCloud Sharing home"><span>TinyCloud <b>Sharing</b></span></a>
+    <nav class="primary-nav micro" aria-label="Primary navigation">
+      <a href="/">overview</a>
+      <a href="/how-it-works">how it works</a>
+    </nav>
+  </header>
+</div>
+<div id="share-app" tabindex="-1"></div>
+<footer class="site-shell app-site-footer micro">
+  <span class="footer-brand">© 2026 TinyCloud</span>
+  <a href="/how-it-works">how sharing works →</a>
+</footer>
+<script type="module" src="./harness.ts"></script>
+</body>
+</html>

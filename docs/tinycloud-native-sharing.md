@@ -46,3 +46,7 @@ Revoking stops access; it does not delete anything. The encrypted copy stays in 
 The library shows what the owner's node says about each share, not only what this browser saved: a share revoked or expired elsewhere (the account site, the CLI) is shown as Revoked or Expired when the library loads, when "Check status" is pressed and when the tab is focused again. Share never shows a status as confirmed when the node could not be asked; it says statuses may be out of date.
 
 "Sign out" in the bar above every screen ends the OpenKey sign-in on this device and clears Share's session in the tab. Shares stay active; nothing is revoked or deleted.
+
+The status check waits at most 4 seconds for the node; after that the statuses are shown as unconfirmed ("may be out of date") and "Check again" asks once more. Signing out also clears anything still in flight (an open approval, a revoke under way), so the next sign-in starts clean.
+
+A file name with a space or a non-ASCII character (`q3 report.md`, `über.md`) is stored under a readable URI-safe name (`q3-report.md`, `uber.md`), by the same rule as `tc share publish`, because the node refuses other keys. The library and an addressed share's download show the name you chose; a link page shows the stored name. A name that cannot be shared at all (`..`, a slash, a control or bidi character) is refused with "rename it".

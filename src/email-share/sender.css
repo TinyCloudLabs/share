@@ -363,9 +363,11 @@ div.sender-empty-state {
   .sender-history-table td:first-child { border-top: 0; }
   .sender-history-table td::before { color: var(--tc-color-text-muted); content: attr(data-label); font: 650 .72rem/1.3 var(--tc-font-mono); }
   .sender-history-table td.sender-empty-state, .sender-history-table td.sender-history-attention { display: block; }
-  .sender-row-actions { display: flex !important; }
+  .sender-row-actions { display: flex !important; flex-wrap: wrap; gap: 6px; }
   .sender-row-actions::before { align-self: center; }
   .sender-row-actions > .button { flex: 1; margin: 0; }
+  /* The approval hint and the row's note or error sit under the buttons, never squeezed beside them. */
+  .sender-row-actions > .sender-approval, .sender-row-actions > .sender-row-hint, .sender-row-actions > .sender-row-error, .sender-row-actions > .sender-row-note { flex: 1 1 100%; min-width: 0; margin: 0; overflow-wrap: anywhere; }
   .sender-history-table td > * { grid-column: 2; }
   .sender-history-table td > .sender-row-hint, .sender-history-table td > .sender-approval, .sender-history-table td > .sender-row-error, .sender-history-table td > .sender-row-note { grid-column: 1 / -1; }
 }
@@ -432,7 +434,7 @@ div.sender-empty-state {
 .sender-approval { display: flex; flex-wrap: wrap; align-items: center; gap: var(--tc-space-2) var(--tc-space-3); flex-basis: 100%; margin-top: var(--tc-space-3); padding: var(--tc-space-3) var(--tc-space-4); border-radius: var(--tc-radius-md); background: var(--tc-color-surface-subtle); color: var(--tc-color-text); }
 .sender-approval-line, .sender-row-hint { margin: 0; font-size: var(--tc-text-md); }
 .sender-approval .sender-row-hint { flex: 1 1 14rem; color: var(--tc-color-text); }
-.sender-approval-more { flex-basis: 100%; margin: 0; color: var(--tc-color-text-muted); font-size: var(--tc-text-sm); }
+.sender-approval-more { flex-basis: 100%; margin: 0; color: var(--tc-color-text); font-size: var(--tc-text-sm); }
 .sender-approval-more[hidden] { display: none; }
 .sender-approval .button { min-height: 36px; margin: 0; }
 .composer-approval:empty { display: none; }
@@ -457,7 +459,7 @@ div.sender-empty-state {
 .reshare-badge { margin-left: var(--tc-space-2); }
 .reshare-help { margin: 0 0 0 29px; }
 .expiry-help { max-width: 62ch; margin: var(--tc-space-3) 0 0; }
-.result-expiry { color: var(--tc-color-text-muted); }
+.result-expiry { color: var(--tc-color-text); }
 .sender-status[data-state="error-approval"] { padding: 18px; border: 1px solid var(--tc-color-status-warning); border-radius: 8px; background: var(--sender-warning-bg); color: var(--tc-color-text); }
 
 /* --tc-color-text-muted on --tc-color-surface-subtle is 4.34:1 in the light theme (AA needs 4.5). Text on those tinted surfaces uses the body colour. */

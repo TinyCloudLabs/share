@@ -47,7 +47,8 @@ export async function endSenderSession(options: Pick<SenderChromeOptions, "sessi
 
 export function mountSenderChrome(parent: HTMLElement, options: SenderChromeOptions): HTMLElement {
   const doc = parent.ownerDocument;
-  const bar = doc.createElement("div"); bar.className = "sender-chrome tc-toolbar";
+  // A named landmark, so the account and Sign out are reachable from the landmark list and are not content outside every region.
+  const bar = doc.createElement("nav"); bar.className = "sender-chrome tc-toolbar"; bar.setAttribute("aria-label", "Account");
   const address = options.session.address;
   const account = doc.createElement("span"); account.className = "sender-account tc-badge tc-badge--mono";
   account.textContent = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address;
