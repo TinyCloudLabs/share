@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
   openKeys: [] as Array<{ appName: unknown; disconnects: number }>,
   connectError: undefined as unknown,
   onConnect: undefined as undefined | (() => void),
+  constructorError: undefined as unknown,
+  hostError: undefined as unknown,
   hangSign: false,
   signInError: undefined as unknown,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
@@ -70,13 +72,14 @@ vi.mock("@tinycloud/web-sdk", () => ({
     private readonly record: { config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number };
     get pendingAccountRegistrySync() { return state.registrySync; }
     constructor(config: Record<string, unknown>) {
+      if (state.constructorError !== undefined) throw state.constructorError;
       state.config = config;
       this.record = { config, hosted: [], order: [], signedOut: 0 };
       state.clients.push(this.record);
     }
     async signIn(): Promise<void> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; }
     async signOut(): Promise<void> { this.record.signedOut += 1; }
-    async ensureOwnedSpaceHosted(name: string): Promise<string> { this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
+    async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
 }));
 
@@ -139,6 +142,8 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.openKeys.length = 0;
     state.connectError = undefined;
     state.onConnect = undefined;
+    state.constructorError = undefined;
+    state.hostError = undefined;
     state.signInError = undefined;
     state.registrySync = undefined;
     state.signed = [];
@@ -290,6 +295,8 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     state.openKeys.length = 0;
     state.connectError = undefined;
     state.onConnect = undefined;
+    state.constructorError = undefined;
+    state.hostError = undefined;
     state.signInError = undefined;
   });
 
@@ -387,7 +394,7 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
 
   it("a delegation list is allowed only when the scope names it, and then only in the spaces the scope names", async () => {
     const scope = { allowedServices: ["kv", "delegation"], allowedActions: ["get", "tinycloud.delegation/list"], allowedSpaces: ["applications"] };
-    const listing = (space: string): Manifest => app([kv(inside, ["get"]), { service: "tinycloud.delegation", space, path: "", actions: ["list"] }]);
+    const listing = (space: string): Manifest => app([kv(inside, ["get"]), { service: "tinycloud.delegation", space, path: "", actions: ["list"], skipPrefix: true }]);
     await expect(signInWithManifest({ manifest: listing("applications"), config: CONFIG, ...scope })).resolves.toBeDefined();
     await refused(listing("default"), "space-not-allowed", scope);
     // Naming the service alone, or a bare action, is not enough.
@@ -411,17 +418,43 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest: app([kv(inside, ["tinycloud.kv/get", "tinycloud.kv/put"])]), config: CONFIG })).resolves.toBeDefined();
   });
 
-  // N3: prefixes match on path segments.
+  // N3 / L4: prefixes match on exact path segments, and paths are compared literally, never normalised.
   it.each([
     ["v10/", "v1"], ["v10/", "v1/"], ["v1evil/x", "v1/"], ["v1-x", "v1"], ["v1/../v2/", "v2/x"], ["", "v1"],
+    // A trailing-slash mismatch: an entry with a slash covers what is under it, not the bare name.
+    ["v1", "v1/"],
   ])("a scope prefix does not accept a sibling that only starts the same: path %j under scope %j", async (path, prefix) => {
     const manifest = app([{ service: "tinycloud.kv", space: "applications", path: path === "" ? "/" : path, actions: ["get"], skipPrefix: true }]);
     await refused(manifest, "path-not-allowed", { allowedPathPrefixes: [prefix] });
   });
 
-  it.each([["v1", "v1"], ["v1/", "v1"], ["v1", "v1/"], ["v1//", "v1/"], ["v1/x/y", "v1"], ["v1/x/", "v1/"]])("a scope prefix accepts the path and what is under it: path %j under scope %j", async (path, prefix) => {
+  it.each([["v1", "v1"], ["v1/", "v1"], ["v1/", "v1/"], ["v1/x/y", "v1"], ["v1/x/", "v1/"], ["v1/x", "v1/"]])("a scope prefix accepts the path and what is under it: path %j under scope %j", async (path, prefix) => {
     const manifest = app([{ service: "tinycloud.kv", space: "applications", path, actions: ["get"], skipPrefix: true }]);
     await expect(signInWithManifest({ manifest, config: CONFIG, allowedPathPrefixes: [prefix] })).resolves.toBeDefined();
+  });
+
+  // The node compares paths as literal strings. `a//b/x` is not under `a/b/` there, so it is refused here instead of being collapsed into a match.
+  it.each([
+    ["an empty segment in the middle", "a//b/x"], ["an empty segment before the prefix", "a//b/"], ["two trailing slashes", "a/b//"], ["a leading slash", "/a/b/x"],
+    ["a dot segment", "a/./b/x"], ["a dot-dot segment", "a/b/../b/x"], ["a trailing dot-dot", "a/b/x/.."], ["a backslash", "a/b\\x"],
+    ["a NUL", "a/b/x\u0000y"], ["a control character", "a/b/x\u001fy"], ["a delete character", "a/b/x\u007fy"],
+    ["an encoded dot", "a/b/%2e%2e/x"], ["an encoded dot, upper case", "a/b/%2E/x"], ["an encoded slash", "a/b%2fx"], ["an encoded slash, upper case", "a/b/x%2Fy"],
+    ["an encoded backslash", "a/b/x%5cy"], ["an encoded NUL", "a/b/x%00"],
+  ])("refuses a path with %s even though it starts like the permitted one", async (_label, path) => {
+    await refused(app([{ service: "tinycloud.kv", space: "applications", path, actions: ["get"], skipPrefix: true }]), "path-not-allowed", { allowedPathPrefixes: ["a/b/"] });
+  });
+
+  it("refuses the doubled slash the SDK makes of a prefix that ends in a slash with a path joined to it", async () => {
+    // prefix "xyz.example.notes/" + path "data/" resolves to "xyz.example.notes//data/": what the node would hold is not what was meant.
+    await refused(app([{ service: "tinycloud.kv", space: "applications", path: "data/", actions: ["get"] }]), "path-not-allowed");
+    // Without the trailing slash on the prefix the join is one slash, and it is accepted.
+    await expect(signInWithManifest({ manifest: app([{ service: "tinycloud.kv", space: "applications", path: "data/", actions: ["get"] }], { prefix: "xyz.example.notes" }), config: CONFIG })).resolves.toBeDefined();
+  });
+
+  it("still accepts the library's, Save's and an app's real paths, written the one way the node reads them", async () => {
+    await expect(signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
+    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
+    await expect(signInWithManifest({ manifest: app([kv("xyz.example.notes/app/", ["put"]), kv("xyz.example.notes/knowledge/", ["put"])]), config: CONFIG, allowedActions: ["put"], allowedPathPrefixes: ["xyz.example.notes/app/", "xyz.example.notes/knowledge/"] })).resolves.toBeDefined();
   });
 
   it("the manifest's own prefix, with or without its slash, never reaches a sibling", async () => {
@@ -461,28 +494,117 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     expect(Object.isFrozen(signed)).toBe(true);
   });
 
-  // N6: names that reach the sign-in statement and OpenKey's window.
+  // N6 / L2 / L3: names that reach the sign-in statement and OpenKey's window.
+  const refusedName = async (appName: string): Promise<void> => {
+    state.openKeys.length = 0;
+    state.clients.length = 0;
+    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName }), JSON.stringify(appName)).rejects.toBeInstanceOf(SignInOptionError);
+    expect(state.openKeys, "OpenKey must not open").toEqual([]);
+    expect(state.clients).toEqual([]);
+  };
+
   it.each([
     ["a newline and a forged field", "Evil\nURI: https://evil.example"],
-    ["a carriage return", "Evil\rApp"], ["a tab", "Evil\tApp"], ["a NUL", "Evil\u0000App"],
-    ["a right-to-left override", "Evil\u202eApp"], ["a bidi isolate", "Evil\u2066App"], ["a line separator", "Evil\u2028App"], ["a zero-width no-break space", "\ufeffEvil"],
-    ["a URL", "Visit https://evil.example now"], ["a bare scheme URL", "ftp://x"], ["a www address", "go to www.evil.example"], ["an email address", "me@evil.example"],
+    ["a carriage return", "Evil\rApp"], ["a tab", "Evil\tApp"], ["a NUL", "Evil\u0000App"], ["a delete", "Evil\u007fApp"],
+    ["a right-to-left override", "Evil\u202eApp"], ["a bidi isolate", "Evil\u2066App"], ["a left-to-right mark", "Evil\u200eApp"], ["an Arabic letter mark", "Evil\u061cApp"],
+    ["a line separator", "Evil\u2028App"], ["a paragraph separator", "Evil\u2029App"], ["a zero-width no-break space", "\ufeffEvil"],
+    ["a zero-width space", "Evil\u200bApp"], ["a zero-width non-joiner", "Evil\u200cApp"], ["a zero-width joiner", "Evil\u200dApp"], ["a word joiner", "Evil\u2060App"],
+    ["a soft hyphen", "Evil\u00adApp"], ["a Hangul filler", "Evil\u3164App"], ["a halfwidth Hangul filler", "Evil\uffa0App"], ["a Hangul choseong filler", "Evil\u115fApp"], ["a Hangul jungseong filler", "Evil\u1160App"],
+    ["a Khmer inherent vowel", "Evil\u17b4App"], ["a Khmer inherent vowel aa", "Evil\u17b5App"], ["a Mongolian vowel separator", "Evil\u180eApp"], ["a combining grapheme joiner", "Evil\u034fApp"],
+    ["a variation selector", "Evil\ufe0fApp"], ["a variation selector supplement", "Evil\u{e0100}App"], ["a tag character", "Evil\u{e0041}App"], ["the tag terminator", "Evil\u{e007f}App"],
+    ["a private-use character", "Evil\ue000App"], ["an unassigned code point", "Evil\u0378App"], ["a lone surrogate", "Evil\ud800App"],
+    ["a no-break space", "Evil\u00a0App"], ["an en space", "Evil\u2002App"], ["an ideographic space", "Evil\u3000App"], ["a narrow no-break space", "Evil\u202fApp"], ["a thin space", "Evil\u2009App"],
+  ])("refuses an appName with %s", async (_label, name) => refusedName(name));
+
+  it.each([
     ["more than 64 characters", "x".repeat(65)], ["more than 64 characters counted as characters, not bytes", "é".repeat(65)], ["nothing", ""], ["only spaces", "   "],
-  ])("refuses an appName with %s, before OpenKey opens", async (_label, raw) => {
-    const appName = raw;
-    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName })).rejects.toBeInstanceOf(SignInOptionError);
-    expect(state.openKeys).toEqual([]);
-    expect(state.clients).toEqual([]);
+    ["a leading space", " Notes"], ["a trailing space", "Notes "], ["a double space", "Tiny  Notes"], ["text not in NFC form (e + combining acute)", "Cafe\u0301"],
+  ])("refuses an appName with %s", async (_label, name) => refusedName(name));
+
+  it.each([
+    ["a bare host name", "evil.com"], ["a host name in a sentence", "Visit evil.com now"], ["a dotted host with a path", "a.b.c/x"], ["a host with a path", "evil.example/login"],
+    ["a subdomain host", "login.evil.example"], ["a host with a hyphen", "my-evil.co"], ["a non-ASCII host", "bücher.de"],
+    ["a URL", "Visit https://evil.example now"], ["a bare scheme URL", "ftp://x"], ["a www address", "go to www.evil.example"], ["an email address", "me@evil.example"], ["an at sign", "Notes @ home"],
+    ["a division slash for the slashes", "https\u2215\u2215evil.example"], ["a fraction slash for the slashes", "https\u2044\u2044evil.example"], ["a full-width colon", "https\uff1a//evil.example"],
+    ["a full-width solidus", "https:\uff0f\uff0fevil.example"], ["full-width dots", "evil\uff0ecom"], ["an ideographic full stop", "evil\u3002com"], ["a half-width ideographic full stop", "evil\uff61com"],
+    ["a one-dot leader", "evil\u2024com"], ["a modifier-letter colon", "javascript\ua789alert(1)"],
+    ["javascript:", "javascript:alert(1)"], ["javascript: with a space", "javascript: alert(1)"], ["mailto:", "mailto:a"], ["data:", "data:text/html,x"], ["tel:", "tel:+15555550100"], ["a scheme with no slashes", "http:evil"],
+    ["vbscript:", "vbscript:x"], ["file:", "file:x"], ["blob:", "blob:x"], ["a scheme after a word", "Open javascript:x"],
+    ["an IPv4 literal", "10.0.0.1"], ["an IPv4 in a sentence", "Notes at 192.168.1.1"], ["a bracketed IPv6 literal", "[::1]"], ["an IPv6 literal", "2001:db8::1"], ["a double colon", "Notes::Pro"],
+    ["a backslash", "a\\b"], ["a UNC-like path", "\\\\evil\\share"],
+  ])("refuses an appName with %s (a link or an address)", async (_label, name) => refusedName(name));
+
+  it.each([
+    "TinyCloud Share: install Tiny Notes", "TinyCloud Share", "Share (saved copies)", "Install v1.2", "Install v2.0.1", "Notes 📓", "Café ünïcode", "日本語のノート", "Tasks & Notes",
+    "Install: v1", "Q3 report", "Notes - Work", "My App 2", "e.g. notes", "a".repeat(64), "é".repeat(64),
+  ])("accepts the app name %j", async (appName) => {
+    await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
+    expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
+    expect(state.openKeys.at(-1)!.appName).toBe(appName);
   });
 
-  it.each(["a/b", "a b", "../x", "x".repeat(65), "", "a\nb", "https://x", "a:b"])("refuses a sessionPrefix of %j", async (sessionPrefix) => {
+  it.each(["a/b", "a b", "../x", "x".repeat(65), "", "a\nb", "https://x", "a:b", "ünï", "a\u200bb", "a.b.com", " a", "a "])("refuses a sessionPrefix of %j", async (sessionPrefix) => {
+    state.openKeys.length = 0;
     await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, sessionPrefix })).rejects.toBeInstanceOf(SignInOptionError);
     expect(state.openKeys).toEqual([]);
   });
 
-  it.each(["TinyCloud Share: install Tiny Notes", "Notes ", " Notes", "é".repeat(64), "Notes 📓", "Café ünïcode", "a".repeat(64), "TinyCloud Share"])("accepts the app name %j", async (appName) => {
-    await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, appName });
-    expect(state.clients.at(-1)!.config.siweConfig).toEqual({ statement: `Sign in to ${appName}.` });
+  it.each(["tinycloud-share-install", "tinycloud_apps", "apps-1"])("accepts the sessionPrefix %j", async (sessionPrefix) => {
+    await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, sessionPrefix });
+    expect(state.clients.at(-1)!.config.sessionStorageKeyPrefix).toBe(sessionPrefix);
+  });
+
+  it.each(["apps.tinycloud.xyz\u200b", "аpps.tinycloud.xyz", "apps.tinycloud.xyz\u3002", "a".repeat(254), "apps tinycloud.xyz"])("refuses a domain of %j: ASCII host names only", async (domain) => {
+    state.openKeys.length = 0;
+    await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, domain })).rejects.toBeInstanceOf(SignInOptionError);
+    expect(state.openKeys).toEqual([]);
+  });
+
+  // L1: the connection this call opened is closed on ANY throw after OpenKey connects, and a connection the caller opened never is.
+  describe("a connection the helper opened is closed on any throw after OpenKey connects", () => {
+    const base = () => ({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG });
+    const throwPoints: ReadonlyArray<readonly [string, () => Record<string, unknown>, () => void]> = [
+      ["an onClient that throws", () => ({ onClient: () => { throw new Error("onClient failed"); } }), () => undefined],
+      ["a shareOrigin that is not a URL", () => ({ config: { ...(CONFIG as object), shareOrigin: "not a url" } }), () => undefined],
+      ["the SDK constructor throwing", () => ({}), () => { state.constructorError = new Error("constructor failed"); }],
+      ["the sign-in throwing", () => ({}), () => { state.signInError = new Error("sign-in failed"); }],
+      ["hosting a space throwing", () => ({ hostSpaces: ["files-for-you"] }), () => { state.hostError = new Error("host failed"); }],
+      ["a function manifest that throws for the real account", () => ({ manifest: (address: string): Manifest => { if (address !== "0x0000000000000000000000000000000000000000") throw new Error("manifest failed"); return saveCopyManifest(); } }), () => undefined],
+      ["a function manifest outside the scope for the real account", () => ({ manifest: (address: string): Manifest => address === "0x0000000000000000000000000000000000000000" ? saveCopyManifest() : app([kv("/", ["get"])]) }), () => undefined],
+    ];
+
+    it.each(throwPoints)("%s", async (_label, options, arrange) => {
+      arrange();
+      await expect(signInWithManifest({ ...base(), ...options() } as never)).rejects.toBeDefined();
+      expect(state.openKeys).toHaveLength(1);
+      expect(state.openKeys[0]!.disconnects, "the connection this call opened must be closed").toBeGreaterThanOrEqual(1);
+    });
+
+    it.each(throwPoints)("%s: a connection the caller opened is left open", async (_label, options, arrange) => {
+      const session = await authenticateWithOpenKey(() => undefined);
+      state.openKeys[0]!.disconnects = 0;
+      arrange();
+      await expect(signInWithManifest({ ...base(), ...options(), session } as never)).rejects.toBeDefined();
+      expect(state.openKeys).toHaveLength(1);
+      expect(state.openKeys[0]!.disconnects, "the caller's connection is not this call's to close").toBe(0);
+    });
+
+    it("an SDK client that was made is signed out when a later step throws", async () => {
+      await expect(signInWithManifest({ ...base(), onClient: () => { throw new Error("onClient failed"); } })).rejects.toThrow("onClient failed");
+      expect(state.clients[0]!.signedOut).toBe(1);
+    });
+
+    it("dispose closes a connection the helper opened, and leaves one the caller opened", async () => {
+      const own = await signInWithManifest(base());
+      await own.dispose();
+      expect(state.openKeys[0]!.disconnects).toBe(1);
+      const session = await authenticateWithOpenKey(() => undefined);
+      const before = state.openKeys[1]!.disconnects;
+      const given = await signInWithManifest({ ...base(), session });
+      await given.dispose();
+      expect(state.openKeys[1]!.disconnects).toBe(before);
+      expect(state.clients[1]!.signedOut).toBe(1);
+    });
   });
 
   // The SDK's own additions are the one documented exception; an SDK that adds more must fail here, not widen a session unseen.
@@ -523,6 +645,8 @@ describe("signInWithManifest options for an app-install flow", () => {
     state.openKeys.length = 0;
     state.connectError = undefined;
     state.onConnect = undefined;
+    state.constructorError = undefined;
+    state.hostError = undefined;
     state.signInError = undefined;
     state.registrySync = undefined;
   });
