@@ -1,8 +1,8 @@
 # Apps catalog
 
-`/apps/` lists TinyCloud apps and shows, for each, what it can read and change.
-The page is static: it has no SDK, no sign-in, and requests only this origin's
-own files. Install is not available yet; the button is disabled.
+`/apps/` lists TinyCloud apps and shows, for each, what it can read and change, and installs an app's
+files into the person's own TinyCloud. Until a person clicks Install the page has no SDK, no sign-in,
+and requests only this origin's own files.
 
 ## Files
 
@@ -35,7 +35,8 @@ own files. Install is not available yet; the button is disabled.
 
 - `source.tag` is `null` when the entry pins a bare commit (the source repo has no tag).
 - `knowledge` is `null` when the bundle has no `knowledge/` folder.
-- `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree.
+- `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and the installer refuses a bundle whose manifest differs.
+- `sample` is `true` for sample apps and absent otherwise; `release` is present when the bundle ships a `release.json` (see "Sample apps").
 
 ## Digest
 
@@ -53,7 +54,7 @@ bytes it fetched before it writes anything.
 ## Adding or updating an app
 
 ```sh
-node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] [--publisher-did <did>]
+node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--sample] [--publisher <name>] [--publisher-did <did>]
 ```
 
 - `<tag>` is a tag name or a full 40-hex commit id. Branches are refused because they move.
@@ -82,13 +83,82 @@ The lists mirror what the SDK's `resolveManifest` would sign, and only that
 
 The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are not listed.
 
-`npm run test:e2e:apps-page` builds the site and checks the page in Chromium at 390 and
-1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and
+`npm run test:e2e:apps-page` builds the site and checks the page and the install sheets in Chromium
+at 390 and 1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and
 screenshots (`APPS_SCREENSHOT_DIR`).
+
+## Install
+
+"Install" on a card or in the details sheet opens a pre-consent sheet, then runs the install in
+`src/apps/install*.ts`. Nothing is signed or written until the person clicks Continue; the SDK and
+OpenKey load only then.
+
+1. **Verify, before OpenKey.** Every file of the bundle is fetched from the entry's own
+   `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size. The
+   entry's own file list must hash to its digest, and its paths must pass the install rule
+   (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`):
+   relative, ASCII `[A-Za-z0-9._-]` segments with no leading dot, at most 8 folders and 128
+   characters, and never `install.json`. One bad file refuses the whole install: nothing is
+   written and OpenKey is not opened.
+2. **One sign-in** (`signInWithManifest`; a brand-new account is also asked to host its spaces, which the gate measured as 4 OpenKey signatures, and an existing account as 1) with the *installer manifest* (`src/apps/install-plan.ts`).
+   It takes the app's id, name and description from the verified manifest and nothing else:
+   `defaults: false`, no `secrets`, no `did`, no public space, and exactly two grants in the
+   `applications` space: `put` on `<app_id>/app/` and `put` on `<app_id>/knowledge/`. The SDK adds the
+   account registry's permissions (`includeAccountRegistryPermissions`) and `capabilities/read`. The
+   app's own runtime grants (its SQL, key-value prefixes, reads of another app) are **not** part of
+   this sign-in: the app asks for them with its own sign-in when it is opened. Just before OpenKey
+   opens, the SDK's `composeManifestRequest` of the installer manifest is compared with the list the
+   sheet shows, and the install stops on any difference or any delegation target.
+3. **Create-only writes** into `<app_id>/app/<path>` (and `<app_id>/knowledge/<path>` for
+   `knowledge/**`), with `If-None-Match: *`. A file that already exists (a `412`) is the person's
+   copy and is kept, so a hand-edited `knowledge/app.md` survives a re-install.
+4. **`<app_id>/app/install.json`** (`{ source, digest, installed_at }`) is written last, create-only.
+   "Installed" is only ever said about a bundle that is entirely in place. If a write fails, what
+   was saved stays, the sheet lists it, and Try again resumes: it keeps those files and writes the
+   rest. A re-install of a finished install writes nothing and says "Already installed: your copy
+   is kept."
+5. **Apps list.** The SDK records the app in the account's apps list in the background right after
+   sign-in; the install waits for it to show (and registers it itself once if it does not). The
+   record is the installer's: the app id and a manifest hash (the web SDK stores `manifests: []`),
+   never the app's own grants. Because the SDK does that at sign-in, the apps
+   list can show an app whose install did not finish: `install.json` is the marker of a complete
+   install.
+
+No standing delegation is created: the session is in memory for one hour and is dropped; opening an
+app later asks for a fresh sign-in. Opening an installed app (`/apps/run#<app_id>`) is the next slice;
+until it lands the sheet says so and offers no link.
+
+One install runs at a time per app (`src/apps/install-flight.ts`): a second click joins the running
+install and starts no second sign-in. A catalog update between a failed install and its retry would
+fill the missing files from the newer bundle while `install.json` records the newer digest; updates
+are a separate feature.
+
+`test/apps-install*.test.ts` cover verification, create-only handling, resume, the double click and
+the sheet. `node test/e2e-prod/install-gate.mjs` installs the Health Log sample on the hermetic
+native stack in a real browser (see that file's header).
+
+## Sample apps
+
+An entry marked `"sample": true` is a sample: its install sheet says "Sample app: use throwaway data
+only." and its card shows a Sample badge. Any app that writes SQL (the default grant included) also
+says "This app can change or delete its own tables.", and a grant on another app's database is listed
+as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
+`summarizeAccess` the lists use.)
+
+When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the kit's samples do),
+`vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256
+the release declares and the release's own digest, and records `release: { version, digest }` in the
+entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha256>` lines joined by
+`\n`); the catalog digest above is the one an installer verifies, and the test checks both.
+`--sample` sets the flag and later updates keep it.
 
 ## Provenance
 
-The only vendored app is `examples/sqlite-app` from `TinyCloudLabs/tinycloud-app-kit`
-at commit `5059c5b`. That repository is public and has no LICENSE file. Other apps
-(for example the TinyHealth and TinyRecipes forks) are not vendored until their
-licensing allows it.
+| App | Source | Pinned at |
+| --- | --- | --- |
+| `com.example.notes` | `TinyCloudLabs/tinycloud-app-kit` `examples/sqlite-app` | commit `5059c5b` |
+| `xyz.tinycloud.sample.healthlog` (sample) | same repository, `examples/sample-healthlog` | commit `d8739346a833d0ac5941fcfc51e378ba0281ccb3` (the repository has no tags) |
+| `xyz.tinycloud.sample.recipes` (sample) | same repository, `examples/sample-recipes` | commit `d8739346a833d0ac5941fcfc51e378ba0281ccb3` |
+
+That repository is public and has no LICENSE file. Other apps (for example the TinyHealth and
+TinyRecipes forks) are not vendored until their licensing allows it.

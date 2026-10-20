@@ -21,7 +21,7 @@ function stubBundleFetch(tampered: string[] = []): ReturnType<typeof vi.fn> {
   const stub = vi.fn(async (url: string) => {
     const bytes = readFileSync(join("public", url));
     const served = tampered.some((path) => url.endsWith(path)) ? Buffer.concat([bytes, Buffer.from("\n")]) : bytes;
-    return { ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => nodeArrayBuffer(served) };
+    return { ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(served) };
   });
   vi.stubGlobal("fetch", stub);
   return stub;
@@ -39,7 +39,7 @@ function controlledPorts(options: { existing?: Set<string>; failAt?: number } = 
   const puts: string[] = [];
   const gate: { approval?: (open: boolean) => void; release?: () => void } = {};
   const ports: InstallPorts = {
-    fetch: async (url) => ({ ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => nodeArrayBuffer(readFileSync(join("public", url))) }),
+    fetch: async (url) => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(readFileSync(join("public", url))) }),
     openSession: async (_manifest, hooks) => {
       sessions.push(1);
       gate.approval = hooks.approval;
@@ -202,7 +202,7 @@ describe("the states of an install", () => {
     stubBundleFetch();
     const node = controlledPorts();
     // The manifest is untouched, so the sheet loads; the other file differs from the catalog.
-    mountApps(list, sheet, catalog.apps, { ports: () => ({ ...node.ports, fetch: async (url) => ({ ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => nodeArrayBuffer(Buffer.concat([readFileSync(join("public", url)), url.endsWith("knowledge/app.md") ? Buffer.from("x") : Buffer.alloc(0)])) }) }) });
+    mountApps(list, sheet, catalog.apps, { ports: () => ({ ...node.ports, fetch: async (url) => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(Buffer.concat([readFileSync(join("public", url)), url.endsWith("knowledge/app.md") ? Buffer.from("x") : Buffer.alloc(0)])) }) }) });
     cardInstall(HEALTH).click();
     await loaded();
     buttons(sheet, "Continue")[0]?.click();

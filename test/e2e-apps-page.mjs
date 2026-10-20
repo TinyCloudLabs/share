@@ -95,7 +95,7 @@ try {
 
       const cards = await page.$$eval(".apps-card", (nodes) => nodes.map((node) => ({ name: node.querySelector("h2").textContent, install: node.querySelector("button[aria-describedby='install-note']").disabled })));
       assert.deepEqual(cards.map((card) => card.name), catalog.apps.map((app) => app.name), `${label}: one card per catalog entry`);
-      assert.ok(cards.every((card) => card.install), `${label}: Install is disabled`);
+      assert.ok(cards.every((card) => !card.install), `${label}: Install is enabled`);
       assert.equal(await page.$eval("html", (node) => getComputedStyle(node).colorScheme), scheme, `${label}: follows the OS scheme`);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
       const small = await page.$$eval(".apps-nav a, .apps-wordmark, .apps-button", (nodes) => nodes.filter((node) => node.getBoundingClientRect().height < 43.5).map((node) => node.textContent));
@@ -114,10 +114,10 @@ try {
       await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
       assert.equal(await sheetOpen(page), true, `${label}: sheet opens`);
       const sheetText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest, "Install isn't available yet."]) {
+      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest, "You'll see what it asks for before anything is saved."]) {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
-      assert.equal(await page.$eval("#apps-sheet footer button", (node) => node.disabled), true, `${label}: sheet Install is disabled`);
+      assert.equal(await page.$eval("#apps-sheet footer button", (node) => node.disabled), false, `${label}: sheet Install is enabled`);
       assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label}: sheet has no horizontal scroll`);
       assert.deepEqual(await axeViolations(page), [], `${label}: sheet axe AA`);
       await shoot(page, `apps-sheet-${width}-${scheme}`);
@@ -135,6 +135,36 @@ try {
       await page.keyboard.press("Escape");
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
+
+      // Install: the pre-consent sheet for a plain app, a sample that writes SQL, and a sample that reads another app. Nothing is signed or loaded from the SDK by opening it.
+      const installCases = [
+        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["This app can change or delete its own tables.", "What this sign-in allows", "com.example.notes/app/", "com.example.notes/knowledge/", "None of this is granted now.", "Opening installed apps is coming next."], absent: ["Sample app: use throwaway data only."] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["Sample app: use throwaway data only.", "This app can change or delete its own tables."], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["Sample app: use throwaway data only.", "This app can read Health Log (sample)'s database (whole database)."], absent: [] },
+      ];
+      for (const { app, tag, expect: wanted, absent } of installCases) {
+        const index = catalog.apps.indexOf(app);
+        await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelectorAll("button")[1].click(), index);
+        await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue" && !button.disabled)).catch(async (error) => {
+          throw new Error(`${label} ${tag}: the install sheet never became ready: ${(await page.$eval("#apps-sheet", (node) => node.innerText).catch(() => "no sheet")).slice(0, 300)} | errors ${JSON.stringify(page.report.errors)} | violations ${JSON.stringify(await page.evaluate(() => globalThis.__violations))}`, { cause: error });
+        });
+        const installText = await page.$eval("#apps-sheet", (node) => node.innerText);
+        assert.ok(installText.includes(`Install ${app.name} to your TinyCloud`), `${label} ${tag}: titled`);
+        for (const expected of wanted) assert.ok(installText.includes(expected), `${label} ${tag}: shows "${expected}"`);
+        for (const unexpected of absent) assert.ok(!installText.includes(unexpected), `${label} ${tag}: does not show "${unexpected}"`);
+        assert.deepEqual(await page.$$eval("#apps-sheet footer button", (nodes) => nodes.map((node) => node.textContent)), ["Continue", "Not now"], `${label} ${tag}: Continue and Not now`);
+        assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label} ${tag}: no horizontal scroll`);
+        assert.deepEqual(await axeViolations(page), [], `${label} ${tag}: install sheet axe AA`);
+        await shoot(page, `install-sheet-${tag}-${width}-${scheme}`);
+        await page.click("#apps-sheet .apps-files summary");
+        await page.$eval(".apps-sheet__body", (node) => { node.scrollTop = node.scrollHeight; });
+        assert.deepEqual(await axeViolations(page), [], `${label} ${tag}: install sheet (account list expanded) axe AA`);
+        await shoot(page, `install-sheet-${tag}-bottom-${width}-${scheme}`);
+        await page.evaluate(() => document.querySelector("#apps-sheet footer button:last-child").click()); // Not now
+        assert.equal(await sheetOpen(page), false, `${label} ${tag}: Not now closes the sheet`);
+      }
+      assert.ok(page.report.requests.every((url) => new URL(url).origin === origin), `${label}: still same origin only after the install sheets`);
+      assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: opening the install sheet loads no SDK or wasm chunk`);
 
       assert.deepEqual(await page.evaluate(() => globalThis.__violations), [], `${label}: no CSP or Trusted Types violation`);
       assert.deepEqual(page.report.errors, [], `${label}: no console or page errors`);

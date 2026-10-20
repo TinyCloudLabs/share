@@ -37,7 +37,7 @@ function bundleServer(entry: CatalogEntry, overrides: Record<string, Uint8Array>
       urls.push(url);
       const path = url.slice(entry.bundle.root.length);
       const bytes = overrides[path] ?? readFileSync(join("public", url));
-      return { ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => nodeArrayBuffer(bytes) };
+      return { ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(bytes) };
     },
   };
 }
@@ -181,7 +181,7 @@ describe("verification before any write", () => {
   it("an unavailable file is a refusal too, with zero writes", async () => {
     const entry = entryOf(HEALTH);
     const node = fakeNode();
-    const missing: NonNullable<InstallPorts["fetch"]> = async () => ({ ok: false, status: 404, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) });
+    const missing: NonNullable<InstallPorts["fetch"]> = async () => ({ ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) });
     await expect(runInstall(entry, node.ports({ fetch: missing }), () => undefined)).rejects.toMatchObject({ reason: "unavailable" });
     expect(node.sessions).toEqual([]);
   });
@@ -199,7 +199,7 @@ describe("verification before any write", () => {
     forged.manifest.sha256 = file.sha256;
     forged.bundle.digest = await bundleDigest(forged.bundle.files);
     forged.bundle.root = `/apps/b/${forged.bundle.digest}/`;
-    const server = { fetch: async (url: string): Promise<FetchResult> => ({ ok: true, status: 200, headers: new Headers(), arrayBuffer: async () => nodeArrayBuffer(url.endsWith("manifest.json") ? other : readFileSync(join("public", entry.bundle.root, url.slice(forged.bundle.root.length)))) }) };
+    const server = { fetch: async (url: string): Promise<FetchResult> => ({ ok: true, status: 200, arrayBuffer: async () => nodeArrayBuffer(url.endsWith("manifest.json") ? other : readFileSync(join("public", entry.bundle.root, url.slice(forged.bundle.root.length)))) }) };
     await expect(fetchVerifiedBundle(forged, server.fetch)).rejects.toMatchObject({ reason: "catalog" });
   });
 });

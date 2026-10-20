@@ -109,7 +109,7 @@ export async function declaredFiles(entry: CatalogEntry): Promise<readonly Bundl
 }
 
 /** The slice of `Response` the installer reads. */
-export type BundleResponse = Pick<Response, "ok" | "status" | "headers" | "arrayBuffer">;
+export type BundleResponse = Pick<Response, "ok" | "status" | "arrayBuffer">;
 /** `fetch`, as the installer calls it: a same-origin path and fixed options. */
 export type BundleFetch = (input: string, init?: RequestInit) => Promise<BundleResponse>;
 
@@ -117,8 +117,7 @@ async function fetchOne(entry: CatalogEntry, file: BundleFile, fetchFn: BundleFe
   // The path alphabet has nothing to escape, and the root is `/apps/b/<64 hex>/`: this can only be a same-origin path.
   const response = await fetchFn(`${entry.bundle.root}${file.path}`, { credentials: "omit", referrerPolicy: "no-referrer", redirect: "error", cache: "no-store" });
   if (!response.ok) throw new BundleRefusal("unavailable", `${file.path}: ${response.status}`);
-  const length = response.headers.get("content-length");
-  if (length !== null && length !== String(file.size)) throw new BundleRefusal("tampered", `${file.path}: size differs from the catalog`);
+  // Only the decoded bytes are judged: an edge that compresses the response reports the encoded length in content-length.
   const buffer = await response.arrayBuffer();
   if (buffer.byteLength !== file.size) throw new BundleRefusal("tampered", `${file.path}: size differs from the catalog`);
   if (await sha256Hex(buffer) !== file.sha256) throw new BundleRefusal("tampered", `${file.path}: sha256 differs from the catalog`);
