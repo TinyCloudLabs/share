@@ -39,6 +39,9 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     return;
   }
 
+  // The launch URL is scrubbed from the address bar and kept in memory only, so
+  // "Try again" must re-run the receive from this copy rather than reload the page.
+  let retryHref: string | undefined;
   try {
     const [config, { presentShare }] = await Promise.all([
       import("./email-share/config.js"),
@@ -46,6 +49,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     ]);
     const shareHref = launch.shareHref;
     launch.shareHref = "";
+    retryHref = shareHref;
     const shareConfig = await config.loadSharePublicConfig();
     if (launch.kind === "bearer") {
       const { receiveNativeBearerAccess } = await import("./viewer/native-bearer.js");
@@ -106,10 +110,12 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     console.debug("tinycloud share: recipient request failed");
     // Bearer links fail with a typed reason; revoked, expired and unavailable
     // each get their own screen, and nothing from the share is ever shown.
+    const href = retryHref;
+    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }); };
     const { NativeBearerError } = await import("./viewer/native-bearer.js");
     if (error instanceof NativeBearerError && error.reason !== "unverified") {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
-      renderShareUnavailable(root, error.reason, error.expiresAt);
+      renderShareUnavailable(root, error.reason, error.expiresAt, retry);
       return;
     }
     if (error instanceof Error && error.name === "ShareReceiverKeyUnavailableError") {
@@ -122,7 +128,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     }
     if (error instanceof Error && /unavailable|capability|config|binding/.test(error.message)) {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
-      renderShareUnavailable(root, "unavailable");
+      renderShareUnavailable(root, "unavailable", undefined, retry);
       return;
     }
     renderRecipientInvalid(root, "This invitation could not be verified. Ask the sender for a fresh invitation.");

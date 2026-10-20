@@ -22,7 +22,7 @@ document.documentElement.classList.remove("viewer-first-paint");
 try {
   const state = params.get("state");
   if (state === "revoked" || state === "expired" || state === "unavailable") {
-    renderShareUnavailable(root, state, state === "expired" ? "2026-10-12T00:00:00.000Z" : undefined);
+    renderShareUnavailable(root, state, state === "expired" ? "2026-10-12T00:00:00.000Z" : undefined, () => undefined);
   } else {
     const filename = kind === "md" ? "q3-agent-report.md" : kind === "gaps" ? "gaps.html" : "q3-agent-report.html";
     const source = (kind === "md" ? report : kind === "gaps" ? gaps : page).replaceAll("__PROBE__", probe);

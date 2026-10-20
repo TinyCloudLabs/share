@@ -87,7 +87,7 @@ export type ShareUnavailableReason = "revoked" | "expired" | "unavailable";
  * own screen; each is honest about what happened and none of them leaves any
  * content in the DOM (there is no content sink outside renderOk).
  */
-export function renderShareUnavailable(root: HTMLElement, reason: ShareUnavailableReason, expiresAt?: string): void {
+export function renderShareUnavailable(root: HTMLElement, reason: ShareUnavailableReason, expiresAt?: string, retry?: () => void): void {
   root.ownerDocument.body.classList.remove("viewer-fullpage");
   if (reason === "revoked") {
     renderErrorState(root, "This share was revoked by its sender", "The link no longer opens anything. If you still need the file, ask the sender for a new link.", { label: "Revoked", tone: "danger" });
@@ -98,10 +98,11 @@ export function renderShareUnavailable(root: HTMLElement, reason: ShareUnavailab
     return;
   }
   const box = renderErrorState(root, "TinyCloud is temporarily unavailable", "Nothing was opened. This is usually brief. Try again in a moment.", { label: "Unavailable", tone: "info" });
-  const retry = el(root.ownerDocument, "button", "tc-button tc-button--primary viewer-state-action", "Try again");
-  retry.type = "button";
-  retry.addEventListener("click", () => root.ownerDocument.defaultView?.location.reload());
-  box.append(retry);
+  if (retry === undefined) return;
+  const button = el(root.ownerDocument, "button", "tc-button tc-button--primary viewer-state-action", "Try again");
+  button.type = "button";
+  button.addEventListener("click", retry);
+  box.append(button);
 }
 
 const UNSUPPORTED_COPY: Record<UnsupportedReason, { title: string; detail: string }> = {

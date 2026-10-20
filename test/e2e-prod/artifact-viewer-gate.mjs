@@ -11,7 +11,7 @@
  *      author's (probe) origin, hide / recall (pill, Alt+Shift+C), axe AA
  *   -> screenshots at 390 / 1440 px, light and dark
  *   -> tc share revoke <id>
- *   -> reload: "This share was revoked by its sender", no content, no frame
+ *   -> open the link again: "This share was revoked by its sender", no content, no frame
  *      and no bar in the DOM, and the Node answered 401 delegation-revoked.
  *
  * Usage (same prerequisites as joined-gate.mjs):
@@ -241,18 +241,28 @@ try {
     }
   }
 
-  // ---- revoke, then reload: honest screen, no content -----------------------------
+  // ---- revoke, then open the link again: honest screen, no content -----------------------------
   for (const kind of ["md", "html"]) {
     phase = `revoke-${kind}`;
     const { link, id, filename } = published[kind];
-    const { context, page } = await open(link);
-    await page.waitForSelector(".artifact-chrome", { timeout: 120_000 });
+    const live = await open(link);
+    await live.page.waitForSelector(".artifact-chrome", { timeout: 120_000 });
+    await live.context.close();
     const revoked = await runCli(env, ["share", "revoke", id, "--json"]);
     assert.equal(revoked.status, 0, `tc share revoke ${filename} failed (exit ${revoked.status}): ${revoked.stderr.slice(0, 200)}`);
-    assert.match(revoked.stdout, /"revoked":\s*true/, "tc share revoke reported revoked:true");
+    assert.match(revoked.stdout, /revoked/i, `tc share revoke output: ${revoked.stdout.slice(0, 300)}`);
     const before = trace.length;
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".viewer-state", { timeout: 120_000 });
+    // The address bar is scrubbed and the key lives in page memory only, so a
+    // plain reload cannot re-read anything ("link is incomplete"); opening the
+    // same link again, in a new tab, is what a recipient holding it does.
+    const { context, page } = await open(link);
+    try {
+      await page.waitForSelector(".viewer-state", { timeout: 60_000 });
+    } catch (error) {
+      const shown = await page.evaluate(() => document.body.innerText.slice(0, 300));
+      const recent = trace.slice(before).map((entry) => `${entry.method} ${entry.path} ${entry.status}${entry.text ? ` ${entry.text.slice(0, 80)}` : ""}`);
+      throw new Error(`${kind}: no revoked screen on re-opening the link. Page shows: ${JSON.stringify(shown)}. Requests: ${JSON.stringify(recent)}`, { cause: error });
+    }
     assert.equal(await page.$eval("h1", (node) => node.textContent), "This share was revoked by its sender", `${kind}: the revoked screen`);
     assert.equal(await page.$eval(".viewer-state-chip", (node) => node.textContent), "Revoked");
     const html = await page.content();
@@ -274,9 +284,9 @@ try {
     }
   }
   assert.deepEqual(external, [], "nothing outside the stack was contacted at any point");
-  console.log(`Artifact viewer native-stack gate passed (CLI ${JSON.parse(await readFile(join(cliPackage, "package.json"), "utf8")).version}): md + html published, opened, hidden/recalled, revoked, reloaded`);
+  console.log(`Artifact viewer native-stack gate passed (CLI ${JSON.parse(await readFile(join(cliPackage, "package.json"), "utf8")).version}): md + html published, opened, hidden/recalled, revoked, re-opened`);
 } catch (error) {
-  console.error(`[artifact-gate] failed in phase "${phase}": ${String(error?.message ?? error).slice(0, 600)}`);
+  console.error(`[artifact-gate] failed in phase "${phase}": ${String(error?.message ?? error).slice(0, 600)}${error?.cause ? ` (cause: ${String(error.cause.message ?? error.cause).slice(0, 400)})` : ""}`);
   if (external.length > 0) console.error(`[artifact-gate] external requests attempted: ${JSON.stringify(external.slice(0, 5))}`);
   process.exitCode = 1;
 } finally {

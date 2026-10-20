@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ARTIFACT_SANDBOX_HTTP_CSP } from "../src/viewer/artifact-frame.js";
 import { NativeBearerError, classifyBearerFailure, receiveNativeBearer } from "../src/viewer/native-bearer.js";
@@ -62,12 +62,16 @@ describe("revoked, expired and unavailable screens", () => {
     expect(root.querySelector("h1")?.textContent).toBe("This share has expired");
   });
 
-  it("offers a retry only for a temporary outage", () => {
+  it("offers a retry only for a temporary outage, and runs the caller's retry (the page is never reloaded)", () => {
     const root = open();
-    renderShareUnavailable(root, "unavailable");
+    const retry = vi.fn();
+    renderShareUnavailable(root, "unavailable", undefined, retry);
     expect(root.querySelector("h1")?.textContent).toBe("TinyCloud is temporarily unavailable");
-    expect(root.querySelector("button.viewer-state-action")?.textContent).toBe("Try again");
-    renderShareUnavailable(root, "revoked");
+    root.querySelector<HTMLButtonElement>("button.viewer-state-action")!.click();
+    expect(retry).toHaveBeenCalledOnce();
+    renderShareUnavailable(root, "unavailable");
+    expect(root.querySelector("button")).toBeNull();
+    renderShareUnavailable(root, "revoked", undefined, retry);
     expect(root.querySelector("button")).toBeNull();
   });
 });
