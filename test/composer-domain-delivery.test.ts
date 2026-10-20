@@ -128,6 +128,15 @@ describe("TC-530 owner delivery", () => {
     expect(state.published).toHaveLength(0);
   });
 
+  it("tells the sender the space isn't ready when the encrypted upload gets 404 Space not found, and publishes nothing", async () => {
+    const { root, put } = owner();
+    put.mockResolvedValueOnce({ ok: false, error: { message: "Failed to put key: 404 - Space not found", meta: { status: 404 } } } as never);
+    await create(root, "exactEmail", "reader@example.com", undefined, true);
+    expect(root.querySelector<HTMLElement>(".composer-status")?.textContent).toContain("contact support with code SPACE_NOT_READY");
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(state.published).toHaveLength(0);
+  });
+
   it("uses the existing composer error path when SDK preflight throws", async () => {
     vi.mocked(prepareAddressedShare).mockImplementationOnce(() => { throw new Error("preflight refused"); });
     const { root, encryptToNetwork, put } = owner();
