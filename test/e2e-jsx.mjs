@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import dgram from "node:dgram";
 import { createServer } from "node:http";
 
 import puppeteer from "puppeteer";
@@ -28,7 +29,8 @@ let beaconOrigin;
 async function freshBeacon() {
   beacon?.server.closeAllConnections();
   beacon?.server.close();
-  const state = { requests: [], connections: 0, upgrades: 0 };
+  beacon?.udp.close();
+  const state = { requests: [], connections: 0, upgrades: 0, udpPackets: 0 };
   state.server = createServer((request, response) => {
     state.requests.push(request.url);
     response.writeHead(200, { "content-type": "text/plain" });
@@ -37,6 +39,10 @@ async function freshBeacon() {
   state.server.on("connection", () => { state.connections += 1; });
   state.server.on("upgrade", (_request, socket) => { state.upgrades += 1; socket.destroy(); });
   await new Promise((resolve) => state.server.listen(0, "127.0.0.1", resolve));
+  // A STUN server on the same port number, to see what WebRTC ICE gathering sends.
+  state.udp = dgram.createSocket("udp4");
+  state.udp.on("message", () => { state.udpPackets += 1; });
+  await new Promise((resolve) => state.udp.bind(state.server.address().port, "127.0.0.1", resolve));
   beacon = state;
   beaconOrigin = `http://127.0.0.1:${state.server.address().port}`;
 }
@@ -91,6 +97,7 @@ function assertNoRemoteLoads(label, { requests }) {
   assert.deepEqual(beacon.requests, [], `${label}: loopback beacon saw requests`);
   assert.equal(beacon.connections, 0, `${label}: loopback beacon saw connections`);
   assert.equal(beacon.upgrades, 0, `${label}: loopback beacon saw upgrades`);
+  assert.equal(beacon.udpPackets, 0, `${label}: loopback beacon saw UDP packets`);
 }
 
 async function shot(page, name) {
@@ -257,6 +264,92 @@ try {
     await run.page.close();
   }
 
+  // --- The viewer chrome cannot be hidden, covered, trapped or dismissed by the artifact ---
+  {
+    const run = await open("hostile-chrome.jsx");
+    const frame = await childFrame(run.page);
+    await frame.waitForSelector("#report[data-done=yes]", { timeout: 20_000 });
+    await sleep(600);
+    const { results } = JSON.parse(await frame.$eval("#report", (node) => node.textContent));
+    // No fullscreen, no Picture-in-Picture: the sandbox documents' Permissions-Policy forbids both.
+    assert.equal(results.fullscreenEnabled, false, "fullscreen must be unavailable inside the frame");
+    assert.equal(results.pictureInPictureEnabled, false, "Picture-in-Picture must be unavailable inside the frame");
+    assert.ok(/^(?:rejected|threw)/.test(results.fullscreenRequest) || results.fullscreenRequest === "pending", `fullscreen request: ${results.fullscreenRequest}`);
+    assert.equal(await run.page.evaluate(() => document.fullscreenElement), null);
+
+    // The notice is where the viewer put it, above the frame, and nothing draws over it.
+    const geometry = await run.page.evaluate(() => {
+      const notice = document.querySelector(".viewer-artifact-notice");
+      const frameElement = document.querySelector("iframe.viewer-html-frame");
+      const rect = (element) => { const box = element.getBoundingClientRect(); return { x: box.x, y: box.y, w: box.width, h: box.height }; };
+      const center = (element) => { const box = element.getBoundingClientRect(); return [box.x + box.width / 2, box.y + box.height / 2]; };
+      const hit = (element) => { const [x, y] = center(element); const found = document.elementFromPoint(x, y); return found === element || element.contains(found); };
+      const dismiss = notice.querySelector(".viewer-artifact-notice-dismiss");
+      return {
+        noticeVisible: notice.getBoundingClientRect().height > 0 && getComputedStyle(notice).visibility === "visible",
+        noticeRect: rect(notice),
+        frameRect: rect(frameElement),
+        noticeHit: hit(notice.querySelector(".viewer-artifact-notice-text")),
+        dismissHit: hit(dismiss),
+        frameHit: (() => { const [x, y] = center(frameElement); return document.elementFromPoint(x, y) === frameElement; })(),
+        frameStyle: (() => { const style = getComputedStyle(frameElement); return { overflow: style.overflow, isolation: style.isolation, contain: style.contain, zIndex: style.zIndex }; })(),
+        noticeZ: getComputedStyle(notice).zIndex,
+        allowAttr: frameElement.getAttribute("allow"),
+        allowFullscreenAttr: frameElement.hasAttribute("allowfullscreen"),
+        sandbox: frameElement.getAttribute("sandbox"),
+      };
+    });
+    assert.ok(geometry.noticeVisible, "the notice is visible");
+    assert.ok(geometry.noticeHit, "elementFromPoint at the notice text returns the notice");
+    assert.ok(geometry.dismissHit, "elementFromPoint at the dismiss button returns the button");
+    assert.ok(geometry.frameHit, "the frame is still the topmost thing over its own box");
+    assert.ok(geometry.noticeRect.y + geometry.noticeRect.h <= geometry.frameRect.y + 0.5, "the notice and the frame do not overlap");
+    assert.ok(["hidden", "clip"].includes(geometry.frameStyle.overflow), `frame overflow ${geometry.frameStyle.overflow}`);
+    assert.equal(geometry.frameStyle.isolation, "isolate");
+    assert.ok(Number(geometry.noticeZ) > Number(geometry.frameStyle.zIndex), "the notice stacks above the frame");
+    assert.equal(geometry.allowAttr, "");
+    assert.equal(geometry.allowFullscreenAttr, false);
+    assert.equal(geometry.sandbox, "allow-scripts");
+    assert.match(await run.page.$eval(".viewer-artifact-notice-text", (node) => node.textContent), /^This page runs the sender's code\. The sender can tell that you opened it\.$/);
+
+    // Keyboard: the notice is the first thing Tab reaches, before the frame.
+    await run.page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+    await run.page.keyboard.press("Tab");
+    assert.equal(await run.page.evaluate(() => document.activeElement.className), "viewer-artifact-notice-dismiss");
+
+    // A frame that swallows Tab and steals focus cannot keep the user from the chrome:
+    // the recall shortcut is captured first and only reveals the notice and focuses it.
+    await frame.click("#thief").catch(() => undefined);
+    await frame.evaluate(() => document.getElementById("thief").focus());
+    for (let press = 0; press < 3; press += 1) await run.page.keyboard.press("Tab");
+    assert.notEqual(await run.page.evaluate(() => document.activeElement?.className), "viewer-artifact-notice-dismiss", "the frame trapped Tab (the test's premise)");
+    await run.page.keyboard.down("Alt");
+    await run.page.keyboard.down("Shift");
+    await run.page.keyboard.press("KeyC");
+    await run.page.keyboard.up("Shift");
+    await run.page.keyboard.up("Alt");
+    await run.page.waitForFunction(() => document.activeElement?.className === "viewer-artifact-notice-dismiss", { timeout: 5_000 });
+
+    // Only a user's click dismisses it; messages from the frame cannot.
+    await frame.evaluate(() => {
+      for (const data of [{ v: 1, type: "dismiss" }, { v: 1, type: "restore-controls", nonce: "0".repeat(32) }, { type: "restore-controls" }]) window.top.postMessage(data, "*");
+    });
+    await run.page.mouse.click(geometry.noticeRect.x + 5, geometry.noticeRect.y + geometry.noticeRect.h / 2);
+    await run.page.click(".viewer-artifact-notice-dismiss");
+    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "collapsed");
+    await frame.evaluate(() => {
+      for (const data of [{ v: 1, type: "restore-controls", nonce: "0".repeat(32) }, { type: "restore-controls" }, { v: 1, type: "bridge-ready" }]) window.top.postMessage(data, "*");
+    });
+    await sleep(300);
+    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "collapsed", "a forged message from the frame must not touch the notice");
+    // Still reachable after dismissal.
+    assert.ok(await run.page.$eval(".viewer-artifact-notice-recall", (node) => node.getBoundingClientRect().height >= 44 && !node.hidden));
+    await run.page.click(".viewer-artifact-notice-recall");
+    assert.equal(await run.page.$eval(".viewer-artifact-notice", (node) => node.dataset.state), "open");
+    await shot(run.page, "jsx-hostile-chrome");
+    await run.page.close();
+  }
+
   // --- Viewer privacy: nothing remote may load -----------------------------
   const staying = ["img", "imageConstructor", "video", "audio", "cssUrl", "cssImport", "fontFace", "linkStylesheet", "linkPrefetch", "sendBeacon", "xhr", "webSocket", "eventSource"];
   {
@@ -280,6 +373,7 @@ try {
     assert.deepEqual(beacon.requests, [], "a remote load reached the loopback beacon");
     assert.equal(beacon.connections, 0, "a connection reached the loopback beacon (preconnect?)");
     assert.equal(beacon.upgrades, 0);
+    assert.equal(beacon.udpPackets, 0);
     await run.page.close();
   }
 
@@ -300,10 +394,10 @@ try {
   // observed and printed, not asserted, so a browser change in either
   // direction does not break the suite. What IS asserted: no HTTP request
   // reaches the beacon, except the prerender hint's GET (NoStatePrefetch).
-  for (const probe of ["iframe", "metaRefresh", "locationAssign", "linkPreconnect", "linkDnsPrefetch", "linkPrerender"]) {
+  for (const probe of ["iframe", "metaRefresh", "locationAssign", "linkPreconnect", "linkDnsPrefetch", "linkPrerender", "webrtc"]) {
     const run = await open("privacy.jsx", { query: `&probes=${probe}` });
     await sleep(3500);
-    console.log(`known-leak observation ${probe}: requests=${JSON.stringify(beacon.requests)} connections=${beacon.connections}`);
+    console.log(`KNOWN-LEAK (observed, not blocked by CSP) ${probe}: http requests=${JSON.stringify(beacon.requests)} tcp connections=${beacon.connections} udp packets=${beacon.udpPackets}`);
     if (probe !== "linkPrerender") assert.deepEqual(beacon.requests, [], `${probe}: an HTTP request reached the beacon`);
     assert.equal(new URL(run.page.url()).pathname, "/test/fixtures/jsx-harness.html");
     await run.page.close();
@@ -315,4 +409,5 @@ try {
   server.kill("SIGTERM");
   beacon.server.closeAllConnections();
   beacon.server.close();
+  beacon.udp.close();
 }

@@ -131,6 +131,21 @@ const probes = {
       source.onopen = () => resolve("open");
       setTimeout(() => resolve("silent"), 1200);
     }),
+  // WebRTC: ICE gathering contacts the STUN server named here.
+  webrtc: () =>
+    new Promise((resolve) => {
+      try {
+        const peer = new RTCPeerConnection({ iceServers: [{ urls: `stun:${new URL(BEACON).host}` }] });
+        peer.createDataChannel("probe");
+        peer.onicecandidate = (event) => {
+          if (event.candidate === null) resolve("gathered");
+        };
+        peer.createOffer().then((offer) => peer.setLocalDescription(offer)).catch((error) => resolve(error.name));
+        setTimeout(() => resolve("silent"), 3500);
+      } catch (error) {
+        resolve(error.name);
+      }
+    }),
   // Navigating probes: the frame is closed by the bridge's watchdog or the
   // navigation is refused. Each runs alone (see test/e2e-jsx.mjs).
   iframe: () => {

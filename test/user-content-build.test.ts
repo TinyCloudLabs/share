@@ -57,7 +57,10 @@ describe("user-content build target", () => {
       const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(html);
       expect(meta?.[1], doc.path).toBe(doc.csp);
       for (const route of [doc.path, doc.path.replace(/\.html$/, "")]) {
-        expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${doc.csp}; frame-ancestors ${VIEWER}\n`);
+        const section = headers.split(/\n{2,}/).find((candidate) => candidate.startsWith(`${route}\n`))!;
+        expect(section).toContain(`\n  ! Content-Security-Policy\n`);
+        expect(section).toContain(`\n  Content-Security-Policy: ${doc.csp}; frame-ancestors ${VIEWER}`);
+        expect(section.includes("Permissions-Policy: fullscreen=(), picture-in-picture=()"), route).toBe(doc.permissionsPolicy !== undefined);
       }
     }
   });

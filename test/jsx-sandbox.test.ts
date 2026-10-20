@@ -11,6 +11,7 @@ import {
   JSX_SANDBOX_CSP,
   JSX_SANDBOX_HTTP_CSP,
   JSX_SANDBOX_HTTP_HEADERS,
+  JSX_SANDBOX_PERMISSIONS_POLICY,
   JSX_SANDBOX_PATH,
   buildJsxSandboxHtml,
   buildRenderRequest,
@@ -34,6 +35,10 @@ describe("JSX sandbox frame policy", () => {
     expect(JSX_SANDBOX_HTTP_CSP).toBe(`${JSX_SANDBOX_CSP}; frame-ancestors 'self'`);
     expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["content-security-policy", JSX_SANDBOX_HTTP_CSP]);
     expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["x-frame-options", "SAMEORIGIN"]);
+    // No fullscreen or Picture-in-Picture over the viewer's chrome, for the bridge and its child.
+    expect(JSX_SANDBOX_PERMISSIONS_POLICY).toContain("fullscreen=()");
+    expect(JSX_SANDBOX_PERMISSIONS_POLICY).toContain("picture-in-picture=()");
+    expect(JSX_SANDBOX_HTTP_HEADERS).toContainEqual(["permissions-policy", JSX_SANDBOX_PERMISSIONS_POLICY]);
     expect(JSX_SANDBOX_CSP).toBe([
       "default-src 'none'",
       "script-src 'unsafe-inline' 'unsafe-eval'",
@@ -55,7 +60,7 @@ describe("JSX sandbox frame policy", () => {
   it("serves the same complete policy from public/_headers on both routes, detaching the site-wide one", () => {
     const headers = readFileSync("public/_headers", "utf8");
     for (const route of ["/jsx-sandbox", JSX_SANDBOX_PATH]) {
-      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${JSX_SANDBOX_HTTP_CSP}\n  X-Frame-Options: SAMEORIGIN\n`);
+      expect(headers).toContain(`\n${route}\n  ! Content-Security-Policy\n  Content-Security-Policy: ${JSX_SANDBOX_HTTP_CSP}\n  Permissions-Policy: ${JSX_SANDBOX_PERMISSIONS_POLICY}\n  X-Frame-Options: SAMEORIGIN\n`);
     }
   });
 
@@ -350,7 +355,7 @@ describe("viewer integration", () => {
     const root = document.createElement("main");
     document.body.append(root);
     const cleanups: Array<() => void> = [];
-    const done = renderJsxPage(root, SOURCE, { filename: "app.jsx", bytes, onCleanup: (cleanup) => cleanups.push(cleanup), manifest, fetch: fetchImpl });
+    const done = renderJsxPage(root, bytes, { filename: "app.jsx", onCleanup: (cleanup) => cleanups.push(cleanup), manifest, fetch: fetchImpl });
     const iframe = await vi.waitFor(() => { const found = root.querySelector("iframe"); if (found === null) throw new Error("no frame yet"); return found; });
     expect(iframe.getAttribute("sandbox")).toBe("allow-scripts");
     const post = vi.spyOn(iframe.contentWindow!, "postMessage");
@@ -367,7 +372,7 @@ describe("viewer integration", () => {
     cleanups.forEach((cleanup) => cleanup());
   });
 
-  it("shows a panel (and never a frame) when a library file fails its digest, using textContent only", async () => {
+  it("shows an honest \"updating\" panel (and never a frame) when a library file fails its digest or cannot be fetched", async () => {
     const manifest: JsxManifest = {
       version: 1,
       files: Object.fromEntries(["react", "react-dom", "runtime", "tailwind"].map((id) => [id, { id, url: `/assets/jsx-runtime/${id}.js`, sha256: "0".repeat(64), bytes: 1, provides: [id] }])),
@@ -375,9 +380,10 @@ describe("viewer integration", () => {
     const fetchImpl = (async () => new Response("x", { status: 200 })) as unknown as typeof fetch;
     const root = document.createElement("main");
     document.body.append(root);
-    await renderJsxPage(root, "export default () => null", { filename: "app.jsx", bytes: new Uint8Array(), onCleanup: () => undefined, manifest, fetch: fetchImpl });
+    await renderJsxPage(root, "export default () => null", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: fetchImpl });
     expect(root.querySelector("iframe")).toBeNull();
-    expect(root.querySelector(".viewer-jsx-panel")?.textContent).toContain("couldn't be verified");
+    expect(root.querySelector(".viewer-jsx-panel")?.textContent).toContain("This artifact viewer is updating");
+    expect(root.querySelector(".viewer-jsx-panel")?.textContent).toContain("Try again in a minute");
   });
 
   it("shows frame error text as text, with the line, and the library list for an unknown import", async () => {
@@ -393,7 +399,7 @@ describe("viewer integration", () => {
       document.body.replaceChildren();
       const root = document.createElement("main");
       document.body.append(root);
-      const done = renderJsxPage(root, "x", { filename: "app.jsx", bytes: new Uint8Array([120]), onCleanup: () => undefined, manifest, fetch: fetchImpl });
+      const done = renderJsxPage(root, "x", { filename: "app.jsx", onCleanup: () => undefined, manifest, fetch: fetchImpl });
       const iframe = await vi.waitFor(() => { const found = root.querySelector("iframe"); if (found === null) throw new Error("wait"); return found; });
       const nonce = new URL(iframe.src).hash.slice(1);
       window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "error", nonce, ...data } }));
@@ -403,6 +409,66 @@ describe("viewer integration", () => {
       expect(panel.querySelector("img")).toBeNull();
       expect(root.querySelector("iframe")).toBeNull();
     }
+  });
+});
+
+describe("extension points", () => {
+  beforeEach(() => { document.body.replaceChildren(); stubObjectUrls(); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  const send = (sandbox: ReturnType<typeof createJsxSandbox>, data: unknown, source: MessageEventSource | null = sandbox.iframe.contentWindow, origin = "null"): void => {
+    window.dispatchEvent(new MessageEvent("message", { source, origin, data }));
+  };
+  const nonceOf = (sandbox: ReturnType<typeof createJsxSandbox>): string => new URL(sandbox.iframe.src).hash.slice(1);
+
+  it("drops every cap/* message by default, and a registered handler sees only identity-valid ones", () => {
+    const quiet = createJsxSandbox(document);
+    const settled = vi.fn();
+    void quiet.render("x", { runtime: "r" }).then(settled, settled);
+    expect(() => send(quiet, { v: 1, type: "cap/kv.get", nonce: nonceOf(quiet), body: { path: "a" } })).not.toThrow();
+    expect(settled).not.toHaveBeenCalled();
+    quiet.destroy();
+
+    const handler = vi.fn();
+    const wired = createJsxSandbox(document, { onCapability: handler });
+    const nonce = nonceOf(wired);
+    send(wired, { v: 1, type: "cap/kv.get", nonce, body: { path: "a" } }, window);
+    send(wired, { v: 1, type: "cap/kv.get", nonce }, wired.iframe.contentWindow, "https://share.tinycloud.xyz");
+    send(wired, { v: 1, type: "cap/kv.get", nonce: "0".repeat(32) });
+    send(wired, { v: 2, type: "cap/kv.get", nonce });
+    send(wired, { v: 1, type: "cap/../escape", nonce });
+    send(wired, { v: 1, type: "cap/kv.get", nonce, extra: 1 });
+    expect(handler).not.toHaveBeenCalled();
+    send(wired, { v: 1, type: "cap/kv.get", nonce, body: { path: "a" } });
+    expect(handler).toHaveBeenCalledExactlyOnceWith({ type: "cap/kv.get", body: { path: "a" } });
+    wired.destroy();
+  });
+
+  it("runs source bytes handed in directly, with its own title and theme, and no share descriptor", async () => {
+    const source = "export default () => null;";
+    const text = (id: string): string => `__TC_DEFINE__(["${id}"],function(){});`;
+    const sha = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+    const files = ["react", "react-dom", "runtime", "tailwind"];
+    const manifest: JsxManifest = { version: 1, files: Object.fromEntries(files.map((id) => [id, { id, url: `/assets/jsx-runtime/${id}.js`, sha256: sha(text(id)), bytes: text(id).length, provides: [id] }])) };
+    const fetchImpl = (async (url: string) => new Response(text(/jsx-runtime\/(.+)\.js$/.exec(url)![1]!), { status: 200 })) as unknown as typeof fetch;
+    const root = document.createElement("main");
+    document.body.append(root);
+    const done = renderJsxPage(root, new TextEncoder().encode(source), { filename: "app.jsx", title: "Tiny app", theme: "dark", onCleanup: () => undefined, manifest, fetch: fetchImpl });
+    const iframe = await vi.waitFor(() => { const found = root.querySelector("iframe"); if (found === null) throw new Error("wait"); return found; });
+    expect(iframe.getAttribute("title")).toBe("Tiny app");
+    const post = vi.spyOn(iframe.contentWindow!, "postMessage");
+    const nonce = new URL(iframe.src).hash.slice(1);
+    window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "bridge-ready", nonce } }));
+    expect(post.mock.calls[0]![0]).toMatchObject({ source, theme: "dark", kind: "jsx" });
+    window.dispatchEvent(new MessageEvent("message", { source: iframe.contentWindow, origin: "null", data: { v: 1, type: "ready", nonce } }));
+    await done;
+    // Invalid UTF-8 never reaches the frame.
+    document.body.replaceChildren();
+    const other = document.createElement("main");
+    document.body.append(other);
+    await renderJsxPage(other, Uint8Array.from([0xff, 0xfe, 0xfd]), { filename: "bad.jsx", onCleanup: () => undefined, manifest, fetch: fetchImpl });
+    expect(other.querySelector("iframe")).toBeNull();
+    expect(other.querySelector(".viewer-jsx-panel")?.textContent).toContain("isn't text");
   });
 });
 

@@ -84,9 +84,7 @@ describe("adaptive viewer adapters", () => {
     expect(iframe.getAttribute("sandbox")).toBe("allow-scripts");
     expect(iframe.getAttribute("src")).toMatch(new RegExp(`^${ARTIFACT_SANDBOX_PATH}#[0-9a-f]{32}$`));
     expect(iframe.hidden).toBe(false);
-    const notice = root.querySelector(".viewer-html-notice")?.textContent ?? "";
-    expect(notice).toContain("comes from the sender");
-    expect(notice).toContain("WebRTC");
+    expect(root.querySelector(".viewer-artifact-notice-text")?.textContent).toBe("This page runs the sender's code. The sender can tell that you opened it.");
     expect(root.innerHTML).not.toContain("marker-1f3a");
     const { nonce, posted } = handshake(iframe);
     expect(posted).toHaveLength(1);

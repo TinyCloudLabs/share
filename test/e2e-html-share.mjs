@@ -104,7 +104,7 @@ try {
   {
     const { page, inner } = await openFixture(browser, "fixture=report");
     assert.equal(await page.$eval(".viewer-filename", (node) => node.textContent), "report.html");
-    assert.match(await page.$eval(".viewer-html-notice", (node) => node.textContent), /comes from the sender.*WebRTC/);
+    assert.equal(await page.$eval(".viewer-artifact-notice-text", (node) => node.textContent), "This page runs the sender's code. The sender can tell that you opened it.");
     assert.equal(await page.$eval(".viewer-download", (node) => node.textContent), "Download original");
     assert.equal(await inner.$eval("#status", (node) => node.textContent), "Script ran inside the frame.");
     assert.equal(await inner.$eval("h1", (node) => getComputedStyle(node).color), "rgb(42, 86, 246)");
