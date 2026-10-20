@@ -59,6 +59,7 @@ const EXPECTED_SENDER_COPY = {
   linkOnlyFolder: "To share multiple files or a folder, choose a specific person or company domain. Anyone-with-link shares support one file at a time.",
   folderUnsupported: "Folder sharing is temporarily unavailable. Choose one file to share.",
   signIn: "Sign-in could not be completed. Try again.",
+  spaceNotReady: "Your TinyCloud storage isn't ready for this yet. This is a known problem we're fixing. Please try again later. If it keeps failing, contact support with code SPACE_NOT_READY.",
 } as const;
 
 const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -628,6 +629,29 @@ describe("share composer access controls", () => {
     expect(captured!.model.content).toMatchObject({ kind: "file" });
     expect(puts).toHaveBeenCalledWith(expect.any(String), new Uint8Array([0, 255, 1]), { contentType: "application/octet-stream" });
     expect(captured!.share.url).toBe("https://share.tinycloud.xyz/viewer#tc1=delegation");
+  });
+
+  it("tells the sender the space isn't ready, and creates no link, when the node answers 404 Space not found", async () => {
+    const puts = vi.fn(async () => ({ ok: false, error: { message: "Failed to put key: 404 - Space not found", meta: { status: 404 } } }));
+    const generate = vi.fn();
+    const root = document.createElement("div");
+    document.body.append(root);
+    const persistShare = vi.fn();
+    mountShareComposer(root, {
+      ...baseOptions(),
+      tinycloud: { activeNodeIdentity: async () => ({ origin: "https://owner-node.example", nodeDid: "did:key:z6MkOwnerNode" }), spaceId: "tinycloud:pkh:eip155:1:0xabc:applications", kvForSpace: () => ({ put: puts }), sharing: { generate, receive: vi.fn(), decodeLink: vi.fn() } } as never,
+      persistShare,
+    });
+    const input = root.querySelector<HTMLInputElement>("input[name=document]")!;
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["hello"], "notes.txt", { type: "text/plain" })] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(root.textContent).toContain("contact support with code SPACE_NOT_READY"), { timeout: 5_000 });
+    expect(puts).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+    expect(persistShare).not.toHaveBeenCalled();
+    expect(root.textContent).not.toContain("Space not found");
   });
 
 });

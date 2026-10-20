@@ -30,15 +30,31 @@
           mediaType,
         }));
         const artifact = await prepareHtmlArtifact(files);
-        const sandbox = createArtifactSandbox(document);
+        // A recognisable fake link secret, planted the way main.ts receives a real
+        // one: it arrives in the fragment, is scrubbed at once, and then lives only
+        // in the Copy link closure. The e2e asserts it appears nowhere else.
+        const FAKE_LINK = `${location.origin}/viewer#tc1=FAKE-LINK-SECRET-8c1`;
+        history.replaceState(null, "", `${location.pathname}#tc1=FAKE-LINK-SECRET-8c1`);
+        history.replaceState(null, "", location.pathname);
+        window.__copied = 0;
+        const stage = document.createElement("div");
+        stage.id = "viewer";
+        const main = document.createElement("main");
+        main.className = "viewer-content viewer-content--frame";
+        stage.append(main);
+        document.body.append(stage);
+        const sandbox = createArtifactSandbox(document, { mount: main });
         await sandbox.render(artifact);
         sandbox.iframe.hidden = false;
-        document.body.classList.add("artifact-active");
+        document.body.classList.add("viewer-fullpage");
         document.getElementById("harness-status").remove();
         await mountArtifactChrome(document, {
           shareId: "browser-artifact-example",
-          shareUrl: `${location.origin}/viewer#tc1=browser-secret`,
-          frame: sandbox.iframe,
+          title: "index.html",
+          provenance: "Sender unverified",
+          expiry: { text: "Jan 1, 2030", datetime: "2030-01-01T00:00:00.000Z" },
+          actions: [{ label: "Copy link", icon: "link", doneLabel: "Copied", doneMessage: "Link copied.", run: () => { window.__copied += FAKE_LINK.length > 0 ? 1 : 0; } }],
+          mount: stage,
         });
         document.documentElement.dataset.ready = "yes";
       } catch (error) {

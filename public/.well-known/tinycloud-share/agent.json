@@ -2,10 +2,11 @@
   "version": 1,
   "cli": "npx -y @tinycloud/cli@latest",
   "minimumCliVersion": "0.8.3",
-  "supportedLinks": ["compact-v1", "inline-v2"],
+  "supportedLinks": ["tc1", "inline-v2"],
   "input": "stdin",
+  "inspectSupportedLinks": ["inline-v2"],
   "inspectArgs": ["share", "inspect", "-", "--json"],
   "receiveArgs": ["share", "receive", "-", "--output", "."],
   "fragmentLocalOnly": true,
-  "guidance": "Keep the complete URL, including its fragment, local to the agent. Never put it in logs, analytics, referrers, or cross-origin messages."
+  "guidance": "A tc1 bearer link (https://share.tinycloud.xyz/viewer#tc1=…, as printed by `tc share publish`) is opaque to `share inspect`: read it with receiveArgs. Keep the complete URL, including its fragment, local to the agent. Never put it in logs, analytics, referrers, or cross-origin messages."
 }

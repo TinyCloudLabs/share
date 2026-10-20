@@ -189,12 +189,13 @@ async function assertDrawnScales(frame, label) {
   const sizes = await frame.$$eval(".viewer-mermaid svg", (svgs) => svgs.map((svg) => {
     const card = svg.parentElement;
     const cardStyle = getComputedStyle(card);
-    const body = getComputedStyle(document.body);
+
     const chrome = (style, side) => Number.parseFloat(style[`padding${side}`]) + Number.parseFloat(style[`border${side}Width`]);
     return {
       natural: svg.viewBox.baseVal.width,
       drawn: svg.getScreenCTM().a,
-      room: document.body.clientWidth - chrome(body, "Left") - chrome(body, "Right") - chrome(cardStyle, "Left") - chrome(cardStyle, "Right"),
+      // A diagram may break out of the reading column up to its own max-width.
+      room: Number.parseFloat(cardStyle.maxWidth) - chrome(cardStyle, "Left") - chrome(cardStyle, "Right"),
       scrolls: card.scrollWidth > card.clientWidth,
       pageScrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     };

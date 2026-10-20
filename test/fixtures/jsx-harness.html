@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>JSX and HTML artifact browser harness</title>
+    <link rel="stylesheet" href="/src/viewer/viewer.css">
+  </head>
+  <body>
+    <main id="harness" class="viewer-content" role="status">Loading artifact…</main>
+    <script type="module">
+      import { renderSafeContent } from "/src/viewer/content.ts";
+
+      const fixtures = {
+        ...import.meta.glob("/examples/jsx-artifact/*.jsx", { query: "?raw", import: "default", eager: true }),
+        ...import.meta.glob("/test/fixtures/jsx/*.jsx", { query: "?raw", import: "default", eager: true }),
+        ...import.meta.glob("/test/fixtures/html/*.html", { query: "?raw", import: "default", eager: true }),
+      };
+      const params = new URLSearchParams(location.search);
+      const name = params.get("f") ?? "counter.jsx";
+      const path = Object.keys(fixtures).find((key) => key.endsWith(`/${name}`));
+      const harness = document.getElementById("harness");
+      try {
+        if (path === undefined) throw new Error(`unknown fixture ${name}`);
+        // Test-only substitutions for the benign self-check/privacy fixtures.
+        const source = fixtures[path]
+          .replaceAll("__BEACON__", params.get("beacon") ?? "http://127.0.0.1:9")
+          .replaceAll("__PROBES__", params.get("probes") ?? "");
+        const bytes = new TextEncoder().encode(source);
+        const kind = await renderSafeContent(harness, bytes, {
+          mediaType: "application/octet-stream",
+          filename: name,
+          byteLength: bytes.byteLength,
+        }, { linkAccess: params.get("access") ?? "bearer" });
+        document.documentElement.dataset.kind = kind;
+        document.documentElement.dataset.ready = "yes";
+      } catch (error) {
+        console.error("JSX harness failed", error);
+        document.documentElement.dataset.ready = "error";
+      }
+    </script>
+  </body>
+</html>

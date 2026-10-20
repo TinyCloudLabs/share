@@ -1,10 +1,14 @@
 import { renderMarkdownInto, type RenderMarkdownOptions } from "./render.js";
 import { createArtifactSandbox } from "./artifact-sandbox.js";
+import { createArtifactNotice } from "./artifact-notice.js";
 import { canonicalShareFilename } from "../filename-policy.js";
+import { downloadMediaType, safeDownloadName } from "./download-name.js";
 
-export type SafeContentKind = "markdown" | "text" | "image" | "html" | "file" | "download";
+export type SafeContentKind = "markdown" | "text" | "image" | "html" | "jsx" | "file" | "download";
 
 export const HTML_FRAME_CLASS = "viewer-html-frame";
+/** A page, document or component owns the whole area under the bar: set as soon as its frame is created, so loading and ready share one layout. */
+export const FRAME_LAYOUT_CLASS = "viewer-content--frame";
 
 export interface ContentDescriptor {
   readonly mediaType: string;
@@ -21,6 +25,8 @@ export interface SafeContentOptions extends RenderMarkdownOptions {
    * could target through side channels. Absent means no HTML execution.
    */
   readonly linkAccess?: "bearer" | "policy";
+  /** Lets the first-view notice remember its dismissal per share. */
+  readonly shareId?: string;
 }
 
 /** The browser must never decode or render bytes above the preview budget. */
@@ -50,6 +56,9 @@ export function classifyContent(descriptor: ContentDescriptor): SafeContentKind 
   // `.html`/`.htm` is a page. Whether it may run is decided by the link type
   // in renderSafeContent; it never reaches a viewer-origin sink.
   if (mediaType === "text/html" || (mediaType === "application/octet-stream" && /\.html?$/i.test(descriptor.filename))) return "html";
+  // A JSX/TSX component: signed `text/jsx|text/tsx`, or an unsigned bearer key
+  // ending `.jsx`/`.tsx`. Like HTML, only a bearer link may run it (renderSafeContent).
+  if (mediaType === "text/jsx" || mediaType === "text/tsx" || (mediaType === "application/octet-stream" && /\.(?:jsx|tsx)$/i.test(descriptor.filename))) return "jsx";
   if (mediaType === "image/svg+xml" || mediaType === "application/javascript") return "download";
   if (mediaType === "text/markdown" || /\.(?:md|markdown)$/i.test(descriptor.filename)) return "markdown";
   if (mediaType.startsWith("text/") || /\.(?:txt|csv|log|json|yaml|yml)$/i.test(descriptor.filename)) return "text";
@@ -87,7 +96,29 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
       return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
     }
     clearPreviousContent(container);
-    await renderHtmlPage(container, source, actualDescriptor.filename);
+    container.classList.add(FRAME_LAYOUT_CLASS);
+    await renderHtmlPage(container, source, actualDescriptor.filename, options);
+    return kind;
+  }
+  if (kind === "jsx") {
+    if (options.linkAccess !== "bearer") {
+      return renderDownloadContent(container, bytes, actualDescriptor, "download", "Preview isn't available for this link type yet. Download it to open it.");
+    }
+    if (utf8(bytes) === undefined) {
+      return renderDownloadContent(container, bytes, { ...actualDescriptor, mediaType: "application/octet-stream", filename: "shared-file.bin" }, "download");
+    }
+    clearPreviousContent(container);
+    container.classList.add(FRAME_LAYOUT_CLASS);
+    const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
+      // Lazy: the sandbox controller, module loader, manifest and panel styles stay out of the root chunk.
+    const { renderJsxPage } = await import("./jsx-render.js");
+    await renderJsxPage(container, bytes, {
+      filename: actualDescriptor.filename,
+      onCleanup: (cleanup) => { activeCleanup.set(container, cleanup); },
+      frameClassName: HTML_FRAME_CLASS,
+      notice,
+      onRestoreControls: () => notice.reveal(),
+    });
     return kind;
   }
   return renderDownloadContent(container, bytes, actualDescriptor, kind);
@@ -99,12 +130,10 @@ export async function renderSafeContent(container: HTMLElement, bytes: Uint8Arra
  * leaves no frame behind) when the page does not load, so the caller's
  * fail-closed notice and the footer download remain the fallback.
  */
-async function renderHtmlPage(container: HTMLElement, source: string, filename: string): Promise<void> {
+async function renderHtmlPage(container: HTMLElement, source: string, filename: string, options: SafeContentOptions): Promise<void> {
   const doc = container.ownerDocument;
-  const notice = doc.createElement("p");
-  notice.className = "viewer-html-notice";
-  notice.textContent = "This page comes from the sender and runs in an isolated frame. It can't read this link or your session, or make signed-in requests to this site. It can still reveal your IP address to the sender, for example through WebRTC.";
-  container.append(notice);
+  const notice = createArtifactNotice(doc, options.shareId === undefined ? {} : { shareId: options.shareId });
+  container.append(notice.element);
   const sandbox = createArtifactSandbox(doc, {
     mount: container,
     className: HTML_FRAME_CLASS,
@@ -130,7 +159,10 @@ async function renderHtmlPage(container: HTMLElement, source: string, filename: 
 function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descriptor: ContentDescriptor, kind: SafeContentKind = "file", detailText = kind === "download" ? "This file can't be previewed here. Download it to open it." : "Download it to open it."): SafeContentKind {
   clearPreviousContent(container);
   const doc = container.ownerDocument;
-  const blob = new Blob([new Uint8Array(bytes).buffer], { type: descriptor.mediaType });
+  // The saved copy is named and typed from what the bytes ARE (the same classification the bar's
+  // Download uses), not from why they are being offered for download instead of previewed.
+  const savedKind = classifyContent(descriptor);
+  const blob = new Blob([new Uint8Array(bytes).buffer], { type: kind === "image" ? descriptor.mediaType : downloadMediaType(savedKind) });
   const href = URL.createObjectURL(blob);
   let revoked = false;
   const revoke = (): void => { if (!revoked) { revoked = true; URL.revokeObjectURL(href); activeCleanup.delete(container); } };
@@ -138,5 +170,5 @@ function renderDownloadContent(container: HTMLElement, bytes: Uint8Array, descri
   if (kind === "image") {
     const image = doc.createElement("img"); image.className = "viewer-safe-image"; image.alt = descriptor.filename; image.src = href; image.addEventListener("load", revoke, { once: true }); image.addEventListener("error", revoke, { once: true }); container.append(image); return kind;
   }
-  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = descriptor.filename; link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
+  const note = doc.createElement("div"); note.className = "viewer-file-note"; const title = doc.createElement("h2"); title.textContent = `${descriptor.filename} — ${formatBytes(descriptor.byteLength)}`; const detail = doc.createElement("p"); detail.textContent = detailText; const link = doc.createElement("a"); link.href = href; link.download = safeDownloadName(descriptor.filename, savedKind, descriptor.mediaType); link.textContent = "Download file"; link.addEventListener("click", revoke, { once: true }); note.append(title, detail, link); container.append(note); return kind;
 }

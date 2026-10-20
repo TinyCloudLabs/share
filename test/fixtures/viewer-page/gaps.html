@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hints the browser acts on outside CSP</title>
+<link rel="preconnect" href="__PROBE__">
+</head>
+<body>
+<p>Static preconnect hint and a cross-origin iframe: neither sends an HTTP request, but Chromium may open a TCP connection to the host.</p>
+<iframe src="__PROBE__/html-iframe" title="probe"></iframe>
+</body>
+</html>
