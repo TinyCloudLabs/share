@@ -133,7 +133,7 @@ function signInSection(entry: CatalogEntry): HTMLElement {
   const { app, registry } = installerAccess(installerManifest({ app_id: entry.app_id, name: entry.name, description: entry.description }));
   return el("section", "apps-section", [
     el("h3", null, ["What this sign-in allows"]),
-    el("p", null, ["You approve in OpenKey. A brand-new account is asked a few times while its spaces are set up. For the next hour, Share can then:"]),
+    el("p", null, ["You approve in OpenKey. A brand-new account is asked a few times while its spaces are set up. For the next 15 minutes, Share can then:"]),
     accessList([...app.change, ...app.read]),
     el("p", null, [`Share also updates your account's list of apps so ${entry.name} shows up there. Other than that list, the sign-in can't read or change anything else in your TinyCloud. The exact list:`]),
     el("details", "apps-files", [

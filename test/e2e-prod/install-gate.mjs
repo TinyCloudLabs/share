@@ -224,7 +224,7 @@ async function reader(page, chunkUrl, request) {
     if (session === undefined) throw new Error("the account chunk does not carry the sign-in helper");
     const config = await (await fetch("/.well-known/tinycloud-share/config.json")).json();
     const manifest = { manifest_version: 1, app_id: "xyz.tinycloud.e2e.reader", name: "Install gate reader", space: "applications", prefix: "", defaults: false, includePublicSpace: false, permissions: [{ service: "tinycloud.kv", path: `${input.appId}/`, actions: ["get", "list", "put", "del", "metadata"], skipPrefix: true }] };
-    const { tinycloud, spaces } = await session.signInWithManifest({ manifest, config, hostSpaces: ["applications"] });
+    const { tinycloud, spaces } = await session.signInWithManifest({ manifest, config, hostSpaces: ["applications"], allowedSpaces: ["applications"], allowedServices: ["kv"], allowedActions: ["get", "put", "list", "metadata", "del"], allowedPathPrefixes: [`${input.appId}/`] });
     const kv = tinycloud.kvForSpace(spaces.applications);
     const hex = async (bytes) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     if (input.op === "edit") {

@@ -6,41 +6,24 @@
  * helper load only then (dynamic imports), so the catalog page stays free of
  * them until a person asks to install something.
  *
- * The sign-in is the shared `signInWithManifest` (src/share/openkey-session.ts),
- * which this module does not change. `InstallerSignInOptions` below is the
- * interface the install needs from it; the options the helper does not honour
- * yet are marked, and everything this module needs from them is also done here
- * (the apps-list confirmation) or is harmless when absent (`dispose`).
+ * The sign-in is the shared `signInWithManifest` (src/share/openkey-session.ts).
+ * The installer states its own scope (`installerScope`), so the helper refuses
+ * a manifest that asks for more than the two put-only folders before OpenKey
+ * opens; it waits for the SDK's apps-list sync, and the session is disposed
+ * when the install ends, whatever the outcome.
  */
 import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig, type SharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
-import type { ApprovalGuard, ManifestSignIn, OpenKeyShareSession, WalletApprovalFailure } from "../share/openkey-session.js";
-import { INSTALL_SPACE, expectedInstallerResources, resourceMismatch, type RequestedResource } from "./install-plan.ts";
+import type { ApprovalGuard, ManifestSignIn, WalletApprovalFailure } from "../share/openkey-session.js";
+import { INSTALL_EXPIRY_MS, INSTALL_SPACE, expectedInstallerResources, installerScope, resourceMismatch, type RequestedResource } from "./install-plan.ts";
 import { InstallError, type InstallFailure, type InstallPorts, type InstallSession, type PutResult } from "./install.ts";
 
-/** What the install asks of the shared sign-in helper. */
-interface InstallerSignInOptions {
-  readonly manifest: Manifest;
-  readonly config: SharePublicConfig;
-  readonly hostSpaces: readonly string[];
-  readonly guardApproval: ApprovalGuard;
-  readonly onClient: (tinycloud: TinyCloudWeb) => void;
-  readonly session?: OpenKeyShareSession;
-  /** Pending S6 fix round: wait for the SDK's sign-in registry sync before returning. */
-  readonly waitForAccountRegistrySync?: boolean;
-}
-
-/** `ManifestSignIn`, plus the teardown the S6 fix round adds. */
-interface InstallerSignIn extends ManifestSignIn {
-  /** Closes any OpenKey window and clears the session. Absent until that round lands. */
-  readonly dispose?: () => Promise<void> | void;
-}
-
-/** How long to wait for the apps list to show the app before registering it explicitly, then for it to show up. */
+/** The helper waits for the SDK's apps-list sync; this is only the bounded fallback if the list still lacks the app. */
 const LISTED_POLL_MS = 1_000;
-const LISTED_ATTEMPTS = 15;
+const LISTED_ATTEMPTS = 5;
+const APP_NAME_MAX = 80;
 
 function guardFailure(error: unknown): InstallFailure | undefined {
   if (!(error instanceof Error)) return undefined;
@@ -83,19 +66,29 @@ export function createInstallPorts(): InstallPorts {
           throw error;
         }
       };
-      // The helper's current signature; the options in InstallerSignInOptions it does not know yet are ignored until the S6 fix round lands.
-      const signIn = session.signInWithManifest as unknown as (options: InstallerSignInOptions) => Promise<InstallerSignIn>;
-      let signedIn: InstallerSignIn;
+      let signedIn: ManifestSignIn;
       try {
-        signedIn = await signIn({ manifest, config, hostSpaces: [INSTALL_SPACE], guardApproval, onClient: (created) => { client = created; }, waitForAccountRegistrySync: true });
+        signedIn = await session.signInWithManifest({
+          manifest,
+          ...installerScope(manifest.app_id),
+          config,
+          hostSpaces: [INSTALL_SPACE],
+          guardApproval,
+          onClient: (created) => { client = created; },
+          appName: `TinyCloud Share: install ${manifest.name}`.slice(0, APP_NAME_MAX),
+          sessionPrefix: "tinycloud-share-install",
+          expiry: INSTALL_EXPIRY_MS,
+          waitForAccountRegistrySync: true,
+        });
       } catch (error) {
         const failure: WalletApprovalFailure | InstallFailure | undefined = observed ?? (client === undefined ? undefined : session.takeWalletApprovalFailure(client));
+        // A manifest outside the installer's scope is a bug in this code, never something to retry.
         throw new InstallError(failure ?? "failed", { cause: error });
       }
       const { tinycloud, spaces } = signedIn;
       const spaceId = spaces[INSTALL_SPACE];
       if (spaceId === undefined) {
-        await Promise.resolve(signedIn.dispose?.()).catch(() => undefined);
+        await signedIn.dispose();
         throw new InstallError("failed", { cause: new Error("install-space-not-hosted") });
       }
       const kv = tinycloud.kvForSpace(spaceId);
@@ -109,16 +102,17 @@ export function createInstallPorts(): InstallPorts {
         },
         async confirmListed(installer: Manifest): Promise<boolean> {
           const listed = async (): Promise<boolean> => (await tinycloud.account.applications.get(installer.app_id)).ok;
-          // The SDK records the app in the background right after sign-in; give it a moment, then say so ourselves once.
+          // The helper already waited for the SDK's sync, so this is normally one read. If the list still lacks the app, register it once and look a few times.
+          if (await listed()) return true;
+          await tinycloud.account.applications.register(installer);
           for (let attempt = 0; attempt < LISTED_ATTEMPTS; attempt += 1) {
             if (await listed()) return true;
-            if (attempt === 4) await tinycloud.account.applications.register(installer);
             await new Promise((resolve) => setTimeout(resolve, LISTED_POLL_MS));
           }
-          return listed();
+          return false;
         },
         async dispose(): Promise<void> {
-          await signedIn.dispose?.();
+          await signedIn.dispose();
         },
       } satisfies InstallSession;
     },
