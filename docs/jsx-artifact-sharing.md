@@ -106,7 +106,7 @@ applies, `<template>` content and shadow roots included) plus a MutationObserver
 `RTCPeerConnection`. **Best effort: these paths are known closed; same-realm code may find others.** The probe (`test/fixtures/apps/leak-vectors.js`, 147 vectors,
 `npm run test:e2e:jsx`) sees zero requests, connections, upgrades and UDP packets, including for prerender, preconnect, dns-prefetch and WebRTC. Still leaking:
 a navigation attempt (`location`, a followed link: one DNS lookup and one TCP connection, no request, and the address can carry a little data), the IP address
-and time of opening, and any browser-initiated request through a path the guard does not know. The runner and the install sheet say so in one line (`src/apps/limits.ts`).
+and time of opening, and any browser-initiated request through a path the guard does not know. The runner says so in one line (`src/apps/limits.ts`).
 
 The viewer says so above the frame: "This page runs the sender's code. The sender
 can tell that you opened it." It is rendered by the viewer, outside the frame,

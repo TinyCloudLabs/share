@@ -16,7 +16,7 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
    catalog's own manifest, shown before anything is signed), and a provenance line that stays
    on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle
    `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can
-   do"." Below it, always: "Some browser requests can't be blocked. Install apps you trust. Beta:
+   do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta:
    use sample data only."
 2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
    Share can read the app from the person's TinyCloud, (2 of 2) to start it with the
@@ -96,9 +96,9 @@ space, but if the runner page's checks failed, the node would not refuse a call 
 
 ### Repair
 
-The refusal screen offers "Repair" (`/apps/#repair=<app_id>`). It is the install sheet in repair
+The refusal screen offers "Repair" (`/apps/#repair=<app_id>`). The Repair sheet runs in repair
 mode: one approval (put, delete and list on `<app_id>/app/`, 15 minutes), and the sheet says it
-"replaces the app's code files; your data is untouched". It writes the catalog's files for the
+"Repair replaces the app's code files with the pinned version. Your data is untouched." It writes the catalog's files for the
 installed digest over the stored ones (`manifest.json` included, so a stray edit is undone too),
 deletes any other file under `app/`, and never touches `install.json`, `knowledge/` or the
 app's data. The bundle is fetched and verified against the catalog before OpenKey opens. A
@@ -155,7 +155,7 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
 - **`sql.execute`** runs one write or DDL statement, and only in the app's **own** databases (a relative
   `db`). TC-1581 (the node lets `sql/write` run DDL) is not fixed here, but the bridge asks for `schema`
   for a CREATE/DROP/ALTER, so an app cannot do DDL on a write-only grant, and it cannot be the way into another
-  app's database. The install sheet already says "This app can change or delete its own tables."
+  app's database. The details sheet already says "This app can change or delete its own tables."
 - **Limits**: 1 MB per call and per answer (strings counted as UTF-8; larger is `TOO_LARGE`), 4 calls in flight
   (the fifth is `BUSY`, not queued), 30 s per call. `TIMEOUT` says the call may still have been applied: read
   back before retrying a write. A call that timed out keeps its slot until it settles or 60 s pass.
@@ -255,7 +255,7 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
   sent, one TCP connection is made. Nothing inside the frame can stop this.
 - Some other browser requests can still carry what the app reads to an address it picks: the CSP does not govern a prerender, a preconnect,
   a DNS prefetch or `<a ping>`, and the guard that refuses them is best effort. These paths are known closed (the probe sees nothing); same-realm
-  code may find others. Install apps you trust; in the beta, use sample data only.
+  code may find others. Open apps you trust; in the beta, use sample data only.
 - Node error text is not shown to the app, except a SQL error's message, which is scrubbed of tokens, identifiers and stack lines.
 - The catalog's two sample bundles still say "no network" in a code comment and a knowledge file: they are pinned by digest and change with the next catalog release.
 - The pin covers the code, not `manifest.json` (capped by the grant check) or `knowledge/` (the person's).
