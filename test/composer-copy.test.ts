@@ -100,6 +100,33 @@ describe("library and upload writes when the node has no row for the space (TC-1
   });
 });
 
+describe("a 404 that is not the missing-space answer keeps the ordinary failure (TC-1578)", () => {
+  const keyNotFound = { message: "Failed to put key: 404 - Key not found", meta: { status: 404 } };
+  const source: Record<string, StoredEntry> = {
+    "library/report.pdf": { data: new Uint8Array([1]), contentType: "application/pdf" },
+    "library/docs/a.md": { data: new Uint8Array([2]), contentType: "text/markdown" },
+  };
+
+  it("fails library copies with the ordinary copy failure, not SPACE_NOT_READY, and writes nothing", async () => {
+    const { tinycloud, store } = fakeTinyCloud(source, keyNotFound);
+    const before = [...store.keys()];
+    for (const [path, kind, target] of [["library/report.pdf", "exact", "shares/abc/report.pdf"], ["library/docs", "prefix", "shares/xyz"]] as const) {
+      const error = await copySelectedSource(tinycloud, "share", path, kind, target).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ kind: "libraryCopy" });
+      expect(error).not.toMatchObject({ code: "SPACE_NOT_READY" });
+    }
+    expect([...store.keys()]).toEqual(before);
+  });
+
+  it("fails an upload with the ordinary upload failure, not SPACE_NOT_READY, and stores nothing", async () => {
+    const { tinycloud, store } = fakeTinyCloud({}, keyNotFound);
+    const error = await uploadSelectedFiles(tinycloud, "share", "shares/exact/one.txt", "exact", [new File(["one"], "one.txt")]).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ kind: "upload" });
+    expect(error).not.toMatchObject({ code: "SPACE_NOT_READY" });
+    expect(store.size).toBe(0);
+  });
+});
+
 describe("uploadSelectedFiles", () => {
   it("stores every selected file as a distinct direct child of the delegated prefix", async () => {
     const { tinycloud, store } = fakeTinyCloud({});
