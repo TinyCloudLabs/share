@@ -660,12 +660,12 @@ try {
       await start(page);
       assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This version of the app isn't in the catalog any more"), true, `${label}: screen (status: ${await statusText(page)})`);
       assert.equal(await page.$("a[href*='repair']"), null, `${label}: Repair offered for a version with no pin`);
-      const text = await page.$eval(".run-screen", (node) => node.textContent);
-      assert(text.includes(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`) && text.includes("tinycloud kv delete --space applications"), `${label}: no removal guidance`);
+      const uninstall = await page.$eval(`a[href='/apps/#uninstall=${encodeURIComponent(HEALTH)}']`, (node) => node.textContent).catch(() => null);
+      assert.equal(uninstall, "Uninstall", `${label}: no Uninstall link`);
       assert.equal(sessionMessages(label).length, 1);
       await captureState(page, "removed-version");
-      report.stages.removedVersion = { guidance: true, repairOffered: false };
       await context.close();
+      report.stages.removedVersion = { uninstallLink: true, repairOffered: false };
     }
     await put(recordKey, Buffer.from(record.data.data));
   }

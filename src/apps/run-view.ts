@@ -42,8 +42,8 @@ interface Screen {
   readonly toApps?: boolean | undefined;
   /** Where "Repair" goes (the apps page's Repair sheet), for a refusal that replacing the code files fixes. */
   readonly repairHref?: string | undefined;
-  /** Command lines shown as code, one per line (set with textContent). */
-  readonly commands?: readonly string[] | undefined;
+  /** Where "Uninstall" goes (the apps page's details sheet), for a version that can't be repaired from here. */
+  readonly uninstallHref?: string | undefined;
   readonly tone?: Tone;
 }
 
@@ -64,10 +64,9 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
       title: "This version of the app isn't in the catalog any more",
       lines: [
         "You installed a version that has since been replaced or removed, so what it asks for can't be checked and it can't be repaired from here. Nothing was started.",
-        `To remove it, delete the files under ${appId ?? "<app id>"}/app/ in your TinyCloud (your data in the other folders stays), then open the listed version again. With the CLI:`,
+        "Uninstall it from the apps page, then open the listed version again.",
       ],
-      toApps: true,
-      commands: [`tinycloud kv list --space applications --prefix ${appId ?? "<app id>"}/app/`, "tinycloud kv delete --space applications <each key listed>"],
+      toApps: true, ...(appId === undefined ? {} : { uninstallHref: `${APPS_HREF}#uninstall=${encodeURIComponent(appId)}` }),
     };
     case "catalog-unavailable": return { title: "Couldn't check this app against the catalog", lines: ["Check your connection and try again. Nothing was started."], retry: "Try again" };
     case "widened": return {
@@ -192,7 +191,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const showScreen = (screen: Screen, onRetry?: () => void): void => {
     const heading = el("h2", "run-screen__title", [screen.title], { tabindex: "-1" });
     const parts: HTMLElement[] = [heading, ...screen.lines.map((line) => el("p", null, [line]))];
-    if (screen.commands !== undefined) parts.push(el("p", "run-screen__detail", screen.commands.flatMap((line, index) => [...(index === 0 ? [] : [el("br", null)]), el("code", null, [line])])));
     if (screen.detail !== undefined) parts.push(el("p", "run-screen__detail", [el("code", null, [screen.detail])]));
     const actions: HTMLElement[] = [];
     if (screen.retry !== undefined && onRetry !== undefined) {
@@ -201,6 +199,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       actions.push(retry);
     }
     if (screen.repairHref !== undefined) actions.push(el("a", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, ["Repair"], { href: screen.repairHref }));
+    if (screen.uninstallHref !== undefined) actions.push(el("a", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, ["Uninstall"], { href: screen.uninstallHref }));
     if (screen.toApps === true) actions.push(el("a", `tc-button ${actions.length === 0 ? "tc-button--primary " : ""}apps-button`, ["Go to Apps"], { href: APPS_HREF }));
     if (actions.length > 0) parts.push(el("div", "run-screen__actions", actions));
     const alert = screen.tone === "danger";
@@ -217,14 +216,14 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const expire = (): void => {
     const name = running?.app.name ?? entry?.name ?? "the app";
     stopFrame();
-    setStatus("Your session expired: open the app again.", "warning");
+    setStatus("");
     showScreen({ title: "Your session expired", lines: ["Your session expired: open the app again. Nothing was lost: what the app saved is in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
 
   const signOutNow = (): void => {
     const name = running?.app.name ?? entry?.name ?? "the app";
     stopFrame();
-    setStatus("Signed out of this app.", "info");
+    setStatus("");
     showScreen({ title: "Signed out of this app", lines: ["Its session is over. Nothing was changed in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
   signOut.addEventListener("click", signOutNow);

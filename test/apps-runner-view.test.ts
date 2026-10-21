@@ -401,7 +401,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     }
   });
 
-  it("an installed version that has left the catalog gets the honest message and what to delete, not a Repair", async () => {
+  it("an installed version that has left the catalog gets the honest message and an Uninstall link, not a Repair", async () => {
     const other = { ...entry, bundle: { ...entry.bundle, digest: "f".repeat(64) } };
     const fake = fakePorts({ catalog: [entry] });
     // The install recorded a digest the catalog no longer lists.
@@ -416,10 +416,9 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     button("Continue")!.click();
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This version of the app isn't in the catalog any more"));
     expect(root.querySelector("a[href*='repair']")).toBeNull();
-    const screen = root.querySelector(".run-screen")?.textContent ?? "";
-    expect(screen).toContain(`delete the files under ${HEALTH}/app/`);
-    expect(screen).toContain(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`);
-    expect(screen).toContain("tinycloud kv delete --space applications");
+    const uninstall = root.querySelector<HTMLAnchorElement>(`a[href='/apps/#uninstall=${encodeURIComponent(HEALTH)}']`);
+    expect(uninstall?.textContent).toBe("Uninstall");
+    expect(root.querySelector(".run-screen")?.textContent ?? "").not.toContain("tinycloud kv");
     expect(fake.runtimes).toBe(0);
   });
 

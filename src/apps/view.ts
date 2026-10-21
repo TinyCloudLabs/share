@@ -280,6 +280,8 @@ export interface MountOptions {
 export interface MountedApps {
   /** Opens the repair sheet for an app (`/apps/#repair=<app_id>`). Returns false when the catalog has no such app. */
   openRepair(appId: string): boolean;
+  /** Opens the details sheet for an app (`/apps/#uninstall=<app_id>`). Returns false when the catalog has no such app. */
+  openUninstall(appId: string): boolean;
 }
 
 /**
@@ -469,6 +471,12 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       const entry = entries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
       show(entry, "repair");
+      return true;
+    },
+    openUninstall(appId): boolean {
+      const entry = entries.find((candidate) => candidate.app_id === appId);
+      if (entry === undefined) return false;
+      show(entry, "details");
       return true;
     },
   };
