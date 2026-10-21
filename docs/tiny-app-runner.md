@@ -7,19 +7,12 @@ those files, signs in for exactly what the manifest asks, and runs `app.jsx` in 
 [JSX sandbox](jsx-artifact-sharing.md), where it reaches the person's data only through a small
 message bridge.
 
-The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). Until the person clicks
-Continue it loads no SDK and makes no request beyond this origin's static files.
+The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open starts when the page loads. Before the OpenKey window opens, the page loads no SDK and fetches only this origin's static files.
 
 ## What a person sees
 
-1. **Start screen**: the app's name and description, what it can read and change (from the
-   catalog's own manifest, shown before anything is signed), and a provenance line that stays
-   on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle
-   `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can
-   do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust."
-2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
-   Share can read the app from the person's TinyCloud and save any missing files, (2 of 2) to start it with the
-   permissions listed on the page. OpenKey connects once.
+1. **Disclosure, inline**: the app's name and description, what it can read and change (from the catalog's own manifest), and a provenance line that stays on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta: use sample data only." It is shown as the open starts, before OpenKey. There is no separate Continue step.
+2. **One OpenKey approval**, named in the status line: "Approve in the OpenKey window so Share can open `<app>` from your TinyCloud". It covers reading the app's saved copy, saving any files that are missing, and starting the app with the permissions listed on the page. OpenKey connects once.
 3. **The app**, in its frame, under the page's own bar: the app name and version, "Open another app",
    "Sign out of this app", a "Where it comes from" disclosure, a status line (a live region), "What this app can do" and "What a
    sandboxed page can still reveal" (the same words as the viewer's notice). The bar is in the
@@ -244,8 +237,7 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
 
 ## Known limits
 
-- Opening needs two approvals: the saved copy cannot be read before signing in, and the app's own session
-  must not exist until it has been checked. A persisted per-app session is a later slice.
+- Opening needs one approval for the union session, sized to the catalog manifest. The saved copy's manifest cannot size the session before sign-in, so the bridge allow-list is narrowed to the stored manifest instead. A persisted per-app session is a later slice.
 - An installed version that has left the catalog cannot be opened or repaired (its code can't be checked); the page shows what to delete.
 - An app can still reveal that you opened it (your IP address and the time), and by trying to open another page (`location`, a followed
   link) it can make your browser look up and connect to an address it picks, which can carry a little data. Measured: no HTTP request is

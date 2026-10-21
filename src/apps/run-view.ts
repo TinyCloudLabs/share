@@ -87,10 +87,10 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
 export function progressText(progress: RunProgress, name: string): string {
   switch (progress.phase) {
     case "checking": return `Opening ${name}…`;
-    case "reading": return progress.approval ? `Approve in the OpenKey window (1 of 2) so Share can read ${name} from your TinyCloud` : `Opening ${name}…`;
+    case "reading": return progress.approval ? `Approve in the OpenKey window so Share can open ${name} from your TinyCloud` : `Opening ${name}…`;
     case "saving": return `Opening ${name}…`;
     case "verifying": return `Opening ${name}…`;
-    case "starting": return progress.approval ? `Approve in the OpenKey window (2 of 2) to start ${name} with the permissions listed here` : `Opening ${name}…`;
+    case "starting": return `Opening ${name}…`;
   }
 }
 
@@ -233,7 +233,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   const paint = (mine: number, progress: RunProgress): void => {
     if (mine !== attempt || entry === undefined) return;
-    const approval = (progress.phase === "reading" || progress.phase === "starting") && progress.approval;
+    const approval = progress.phase === "reading" && progress.approval;
     const base = progressText(progress, entry.name);
     setStatus(base, "info");
     view.clearTimeout(slowTimer);
@@ -266,7 +266,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     const cancelButton = el("button", "tc-button apps-button", ["Cancel"], { type: "button" });
     cancelButton.addEventListener("click", cancel);
     cancelSlot.replaceChildren(cancelButton);
-    stage.replaceChildren(el("div", "run-working tc-panel", [el("div", "tc-skeleton run-working__bar", [], { "aria-hidden": "true" }), el("p", null, ["Opening…"])], { "aria-busy": "true" }));
+    stage.replaceChildren(el("div", "run-working tc-panel", [el("div", "tc-skeleton run-working__bar", [], { "aria-hidden": "true" }), el("p", null, ["Opening…"]), ...disclosure], { "aria-busy": "true" }));
     paint(mine, { phase: "checking" });
     void openApp(appId, ports, (progress) => paint(mine, progress), abort.signal).then(
       (result) => {
@@ -349,27 +349,25 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
         return;
       }
       accessLists(loaded.manifest, entry);
-      mountStart(loaded.manifest);
+      disclose(loaded.manifest);
     });
   }
 
-  function mountStart(manifest: unknown): void {
+  /** The disclosure for this app, shown inline while the open runs. There is no separate step before OpenKey. */
+  let disclosure: Node[] = [];
+  function disclose(manifest: unknown): void {
     if (entry === undefined) return;
-    const go = el("button", "tc-button tc-button--primary apps-button", ["Continue"], { type: "button" });
-    go.addEventListener("click", begin);
-    // The plain statements (changes to its own tables, reads of another app) come before Continue; the full lists are below.
+    // The plain statements (changes to its own tables, reads of another app) come first; the full lists are below.
     const consent = consentFor(entry, manifest, ports.catalog ?? catalog.apps);
-    stage.replaceChildren(el("section", "run-screen tc-panel", [
-      el("h2", "run-screen__title", [`Open ${entry.name}`], { tabindex: "-1" }),
+    disclosure = [
       el("p", null, [entry.description]),
       el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line]))),
       ...noticeList(consent.notices),
       el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
       el("p", "run-caution", [CAUTION]),
-      el("p", null, ["OpenKey asks you to approve twice: once so Share can read the app from your TinyCloud, then once to start it with those permissions."]),
-      el("div", "run-screen__actions", [go]),
-    ]));
+    ];
     access.open = true;
+    begin();
   }
 
   return {

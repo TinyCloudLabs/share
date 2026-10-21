@@ -1,15 +1,15 @@
 /**
  * Browser e2e: the OpenKey window must be usable while an app opens from its runner page.
  *
- * The runner page (`/apps/run#<app_id>`) shows the first-open disclosure on its start screen, before any sign-in.
- * Continue starts the open: the OpenKey SDK appends its window to document.body as a `position: fixed; z-index:
+ * The runner page (`/apps/run#<app_id>`) shows the first-open disclosure inline on its start screen, then starts the open by itself.
+ * The open starts once the manifest loads: the OpenKey SDK appends its window to document.body as a `position: fixed; z-index:
  * 999999` overlay. A modal `<dialog>` (opened with `showModal()`) lives in the browser's TOP LAYER, which no z-index
  * can rise above, so a dialog left open over the page would sit on top of the window and every click would land on
  * the dialog and its backdrop. The runner shows the open's progress and result inline, in its own `role=status`
  * region with a Cancel, and never opens a dialog. This test drives the real runner flow (the real SDK, the real build
  * served with the production headers) against a stand-in OpenKey that waits for a click, and proves:
- *  - the start screen shows the first-open disclosure, and no OpenKey window or request exists before Continue;
- *  - after Continue no modal dialog is open over the page (`:modal` matches nothing, no dialog is open);
+ *  - the first-open disclosure is shown inline, with no Continue button, before the OpenKey window appears;
+ *  - once the window is up no modal dialog is open over the page (`:modal` matches nothing, no dialog is open);
  *  - the OpenKey window is what a hit test returns at its centre, at 390, 1100 and 1440 px;
  *  - a click at its centre reaches the window (the stand-in records it) and does not cancel the open;
  *  - the open's progress is shown inline in a `role=status` region, and the page behind is not inert (a control
@@ -39,7 +39,7 @@ const APP = "xyz.tinycloud.sample.healthlog";
 /** The first-open disclosure line on the start screen (src/apps/first-open.ts). */
 const DISCLOSURE = "If this app isn't in your TinyCloud, we'll save its files as part of opening it.";
 /** The status line while the open waits on its first approval (or just before it). */
-const PROGRESS = /^(Opening Health Log…|Approve in the OpenKey window \(1 of 2\) so Share can read Health Log from your TinyCloud)/;
+const PROGRESS = /^(Opening Health Log…|Approve in the OpenKey window so Share can open Health Log from your TinyCloud)/;
 
 /** A stand-in for OpenKey's embedded window: ready at once, then one big button that waits for a click. It never answers by itself. */
 const STAND_IN = `<!doctype html><meta charset="utf-8"><title>OpenKey stand-in</title>
@@ -105,12 +105,6 @@ async function openPage(browser, { width, height, scheme }) {
   return page;
 }
 
-/** Waits for the start screen's Continue button, then presses it. */
-async function pressContinue(page) {
-  await page.waitForFunction(() => [...document.querySelectorAll(".run-stage button")].some((button) => button.textContent === "Continue" && !button.disabled), { timeout: 60_000 });
-  await page.evaluate(() => [...document.querySelectorAll(".run-stage button")].find((button) => button.textContent === "Continue").click());
-}
-
 /** Where the OpenKey window's card is: centred on a wide screen, a bottom sheet on a phone (its own layout). */
 const windowPoint = (width, height) => (width <= 480 ? [width / 2, height - 120] : [width / 2, height / 2]);
 
@@ -146,17 +140,14 @@ const results = {};
 try {
   browser = await puppeteer.launch({ headless: true });
 
-  // ---- The start screen shows the disclosure and no OpenKey window; after Continue the window is usable, at three widths.
+  // ---- The disclosure shows inline on the start screen and the open starts by itself; the window is usable, at three widths.
   for (const [width, height] of [[1440, 900], [1100, 800], [390, 844]]) {
     const label = `${width}px`;
     const page = await openPage(browser, { width, height, scheme: "light" });
     await page.waitForFunction(() => document.querySelector(".apps-notes li") !== null, { timeout: 60_000 });
     const notes = await page.$$eval(".apps-notes li", (nodes) => nodes.map((node) => node.textContent ?? ""));
     assert.ok(notes.includes(DISCLOSURE), `${label}: the start screen shows the first-open disclosure (${JSON.stringify(notes)})`);
-    assert.equal(await page.evaluate(() => [...document.body.children].some((child) => child.tagName === "DIV" && child.id === "" && child.attributes.length === 0)), false, `${label}: an OpenKey window exists before Continue`);
-    assert.equal(page.report.requests.some((url) => url.startsWith("https://openkey.so/")), false, `${label}: OpenKey was contacted before Continue`);
-
-    await pressContinue(page);
+    assert.equal(await page.$$eval(".run-stage button", (nodes) => nodes.some((node) => node.textContent === "Continue")), false, `${label}: no Continue button before the open`);
     await waitForWidget(page);
 
     const point = windowPoint(width, height);
@@ -164,7 +155,7 @@ try {
     // The hit test is the user's experience: what a click at the window's centre would land on.
     assert.equal(hit.inWindow, true, `${label}: a hit test at the OpenKey window's centre returns ${hit.tag}${hit.id === "" ? "" : `#${hit.id}`}, not the window (modal: ${hit.modal}, dialog open: ${hit.dialogOpen})`);
     assert.equal(hit.modal, null, `${label}: a modal dialog (${hit.modal}) is in the top layer, above the OpenKey window`);
-    assert.equal(hit.dialogOpen, false, `${label}: a dialog is open over the page after Continue`);
+    assert.equal(hit.dialogOpen, false, `${label}: a dialog is open over the page once the window is up`);
 
     // OpenKey's card slides in (250 ms); a click during the animation would land on its backdrop, not the card.
     await new Promise((done) => setTimeout(done, 900));
@@ -181,7 +172,6 @@ try {
   // ---- The inline status: a live region with the progress, and the page behind it is not inert.
   {
     const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
-    await pressContinue(page);
     await waitForWidget(page);
     const behind = await page.evaluate(() => {
       const region = document.querySelector(".run-status-region");
@@ -214,7 +204,6 @@ try {
   for (const scheme of ["light", "dark"]) for (const [width, height] of [[390, 844], [1440, 900]]) {
     const label = `${width}px ${scheme}`;
     const page = await openPage(browser, { width, height, scheme });
-    await pressContinue(page);
     await waitForWidget(page);
     await hideWindow(page);
     await page.waitForFunction(() => document.querySelector(".run-status-region .run-status") !== null);
@@ -230,7 +219,6 @@ try {
   // ---- Cancel and Escape end the open quietly. The runner's Cancel sits beside the status region, not inside it.
   {
     const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
-    await pressContinue(page);
     await waitForWidget(page);
     const cancel = await page.evaluate(() => {
       const button = [...document.querySelectorAll(".run-status-cancel button")].find((node) => node.textContent === "Cancel");
@@ -247,7 +235,6 @@ try {
   // ---- Escape cancels from the status region.
   {
     const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
-    await pressContinue(page);
     await waitForWidget(page);
     await page.evaluate(() => [...document.querySelectorAll(".run-status-cancel button")].find((button) => button.textContent === "Cancel").focus());
     await page.keyboard.press("Escape");
@@ -261,7 +248,6 @@ try {
   for (const scheme of ["light", "dark"]) for (const [width, height] of [[390, 844], [1440, 900]]) {
     const label = `${width}px ${scheme}`;
     const page = await openPage(browser, { width, height, scheme });
-    await pressContinue(page);
     await waitForWidget(page);
     await hideWindow(page);
     await page.evaluate(() => [...document.querySelectorAll(".run-status-cancel button")].find((button) => button.textContent === "Cancel").click());
