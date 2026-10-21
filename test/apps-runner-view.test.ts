@@ -8,7 +8,7 @@ import type { AppData } from "../src/apps/bridge.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type RunPorts, type RunSession, type RuntimeSession, signInPlan } from "../src/apps/run.ts";
 import { CAUTION } from "../src/apps/limits.ts";
-import { failureScreen, mountRunner, progressText, provenanceDetailText, provenanceText } from "../src/apps/run-view.ts";
+import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
 import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
@@ -103,14 +103,12 @@ describe("the runner page before anything is signed", () => {
     expect(root.querySelector(".run-title")?.textContent).toBe("Health Log");
     const provenance = root.querySelector(".run-provenance")?.textContent ?? "";
     expect(provenance).toBe(provenanceText(entry));
-    const whence = [...root.querySelectorAll<HTMLDetailsElement>(".run-bar details")].find((d) => d.querySelector("summary")?.textContent === "Where it comes from");
-    const detail = whence?.querySelector("p")?.textContent ?? "";
-    expect(detail).toBe(provenanceDetailText(entry));
-    expect(detail).toContain(`${entry.source.commit.slice(0, 7)}`);
-    expect(detail).toContain(entry.bundle.digest.slice(0, 12));
-    expect(detail).toContain("It runs in a sandbox");
-    expect(detail).not.toMatch(/no network/i);
-    expect(root.querySelector(".run-bar .run-caution")).toBeNull();
+    expect(provenance).toContain(`${entry.source.commit.slice(0, 7)}`);
+    expect(provenance).toContain(entry.bundle.digest.slice(0, 12));
+    expect(provenance).toContain("sandbox");
+    expect(provenance).toContain("It runs in a sandbox");
+    expect(provenance).not.toMatch(/no network/i);
+    expect(root.querySelector(".run-bar .run-caution")?.textContent).toBe(CAUTION);
     expect(root.querySelector("iframe")).toBeNull();
     expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("What this app can do");
     expect(root.textContent).toContain("It can change");
@@ -277,7 +275,7 @@ describe("opening an app", () => {
 
 describe("opening an app that cannot run", () => {
   const stored = (manifest: unknown): Parameters<typeof fakePorts>[0] => ({ stored: { files: { "manifest.json": new TextEncoder().encode(JSON.stringify(manifest)) } } });
-  interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[] }[]; [key: string]: unknown }
+  interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[]; skipPrefix?: boolean }[]; [key: string]: unknown }
   const original = (): TestManifest => JSON.parse(new TextDecoder().decode(bundleFile("manifest.json"))) as TestManifest;
 
   it("refuses a manifest that was widened, before anything more is signed, and says what differs", async () => {
@@ -295,6 +293,19 @@ describe("opening an app that cannot run", () => {
     expect(repair?.getAttribute("href")).toBe(`${APPS_HREF}#repair=${encodeURIComponent(HEALTH)}`);
     expect(root.querySelector(".run-screen")?.textContent).toMatch(/Repair replaces the app's code files, manifest\.json included, with the catalog's\. Your data is untouched\./);
     expect(root.querySelector(".run-screen")?.textContent).not.toMatch(/Restore manifest\.json from the catalog/);
+  });
+
+  it.each([
+    ["the app's own folder with skipPrefix", { service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["get", "list", "put"], skipPrefix: true }],
+    ["app/ by relative path", { service: "tinycloud.kv", path: "app/", actions: ["get", "put"] }],
+  ])("refuses a saved manifest that adds %s, before anything more is signed", async (_label, entry) => {
+    const manifest = original();
+    manifest.permissions.push(entry);
+    const fake = fakePorts(stored(manifest));
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app asks for more than it did when you installed it"));
+    expect(fake.runtimes).toBe(0);
+    expect(root.querySelector("iframe")).toBeNull();
   });
 
   it("shows a hostile name from the saved manifest as text only", async () => {

@@ -98,14 +98,9 @@ function gitHostPath(repo: string): string {
   return repo.replace(/^https:\/\//, "").replace(/\.git$/, "");
 }
 
-/** The short provenance line: the app's name and version. */
+/** "This app was installed from <source>@<commit>…": from the catalog entry, never from the editable install record. */
 export function provenanceText(entry: CatalogEntry): string {
-  return `${entry.name} · ${versionLabel(entry)}`;
-}
-
-/** The source, digest and sandbox statement, shown in the collapsed "Where it comes from" section. */
-export function provenanceDetailText(entry: CatalogEntry): string {
-  return `This app was installed from ${gitHostPath(entry.source.repo)}@${entry.source.commit.slice(0, 7)} (bundle ${entry.bundle.digest.slice(0, 12)}). It runs in a sandbox and can use only what's listed under “What this app can do”.`;
+  return `This app was installed from ${gitHostPath(entry.source.repo)}@${entry.source.commit.slice(0, 7)} (${versionLabel(entry)}, bundle ${entry.bundle.digest.slice(0, 12)}). It runs in a sandbox and can use only what's listed under “What this app can do”.`;
 }
 
 export interface RunnerOptions {
@@ -132,7 +127,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   // ---- chrome (always visible, outside the frame)
   const title = el("h1", "run-title", [entry?.name ?? "Open an app"], { tabindex: "-1" });
   const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : provenanceText(entry)]);
-  const whence = entry === undefined ? null : el("details", "apps-files run-details", [el("summary", null, ["Where it comes from"]), el("p", null, [provenanceDetailText(entry)])]);
   const openAnother = el("a", "tc-button apps-button", ["Open another app"], { href: APPS_HREF });
   const signOut = el("button", "tc-button apps-button", ["Sign out of this app"], { type: "button" });
   signOut.disabled = true;
@@ -148,7 +142,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const bar = el("section", "run-bar tc-panel", [
     el("div", "run-bar__top", [title, el("div", "run-actions", [openAnother, signOut])]),
     provenance,
-    ...(whence === null ? [] : [whence]),
+    el("p", "run-caution", [CAUTION]),
     status,
     cancelSlot,
   ], { "aria-label": "App details" });

@@ -75,7 +75,7 @@ export interface RunPorts {
   prepare(entry: CatalogEntry): Promise<PreparedApp>;
   /** Step 3: one approval. The sign-in carries the union grants from `plan`, and the same session saves and runs the app. */
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
-  /** The SDK's manifest functions; loaded only after the person clicked. */
+  /** The SDK's manifest functions; loaded when the open starts, before the sign-in. */
   sdk(): Promise<ManifestSdk>;
   readonly catalog?: readonly CatalogEntry[];
 }
