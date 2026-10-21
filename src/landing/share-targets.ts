@@ -4,19 +4,28 @@ export const SHARE_TARGETS: readonly string[] = ["a person", "an email address",
 export const ROTATE_EVERY_MS = 2500;
 export const ROTATE_STOP_AFTER_MS = 15000;
 
+/** Longest phrase by character count. brand.ts renders it into the static `.share-target-sizer`. */
+export function longestShareTarget(): string {
+  return SHARE_TARGETS.reduce((a, b) => (b.length > a.length ? b : a), "");
+}
+
 /**
- * Rotates the phrase inside `wrapper` (`.share-target`, containing `.share-target-text`).
- * Returns a stop function. With reduced motion, nothing changes and no timer is created.
- * Auto-rotation stops after ROTATE_STOP_AFTER_MS and settles on the first phrase. Hover or
- * focus inside the wrapper pauses the rotation; paused ticks still count toward the stop.
+ * Rotates the phrase inside `wrapper` (`.share-target` with `.share-target-text` and the static
+ * `.share-target-sizer`). Returns a cancel function that clears the timer and listeners.
+ *
+ * Reduced motion, or a missing text node: the sizer is removed and no timer is created, so the
+ * line is as wide as the first phrase. Otherwise the sizer keeps the width reserved during
+ * rotation. After ROTATE_STOP_AFTER_MS the rotation settles on the first phrase and the reserved
+ * width collapses to it in one transition. Hover or focus inside the wrapper pauses rotation;
+ * paused ticks still count toward the stop.
  */
 export function startShareTargetRotation(wrapper: HTMLElement, win: Window = window): () => void {
-  if (win.matchMedia("(prefers-reduced-motion: reduce)").matches) return () => {};
-
+  const sizer = wrapper.querySelector<HTMLElement>(".share-target-sizer");
   const text = wrapper.querySelector<HTMLElement>(".share-target-text");
-  if (!text) return () => {};
-
-  wrapper.dataset.longest = SHARE_TARGETS.reduce((a, b) => (b.length > a.length ? b : a), "");
+  if (win.matchMedia("(prefers-reduced-motion: reduce)").matches || !text) {
+    sizer?.remove();
+    return () => {};
+  }
 
   let index = 0;
   let elapsed = 0;
@@ -30,21 +39,37 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
     text.classList.add("is-entering");
   };
 
+  const collapse = (): void => {
+    const from = wrapper.getBoundingClientRect().width;
+    wrapper.style.width = `${from}px`;
+    sizer?.remove();
+    const to = text.getBoundingClientRect().width;
+    if (to === from) {
+      wrapper.style.removeProperty("width");
+      return;
+    }
+    void wrapper.offsetWidth;
+    wrapper.style.width = `${to}px`;
+    wrapper.addEventListener("transitionend", () => wrapper.style.removeProperty("width"), { once: true });
+  };
+
   const timer = win.setInterval(() => {
     elapsed += ROTATE_EVERY_MS;
     if (!paused) show((index + 1) % SHARE_TARGETS.length);
-    if (elapsed >= ROTATE_STOP_AFTER_MS) {
-      stop();
-      if (index !== 0) show(0);
-    }
+    if (elapsed >= ROTATE_STOP_AFTER_MS) settle();
   }, ROTATE_EVERY_MS);
 
-  const stop = (): void => {
+  const cancel = (): void => {
     win.clearInterval(timer);
     wrapper.removeEventListener("pointerenter", pause);
     wrapper.removeEventListener("pointerleave", resume);
     wrapper.removeEventListener("focusin", pause);
     wrapper.removeEventListener("focusout", resume);
+  };
+  const settle = (): void => {
+    cancel();
+    if (index !== 0) show(0);
+    collapse();
   };
   const pause = (): void => {
     paused = true;
@@ -58,5 +83,5 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
   wrapper.addEventListener("focusin", pause);
   wrapper.addEventListener("focusout", resume);
 
-  return stop;
+  return cancel;
 }

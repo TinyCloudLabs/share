@@ -296,18 +296,21 @@ h1 {
   color: var(--accent);
   font-weight: 600;
   vertical-align: baseline;
+  transition: width 200ms var(--ease);
 }
 
+/* Both children share one cell; content width, so the wrapper width is the longest child. */
 .share-target-text,
-.share-target::after {
+.share-target-sizer {
   grid-area: 1 / 1;
+  justify-self: start;
   white-space: nowrap;
 }
 
-/* Hidden sizer: reserves the width of the longest phrase so the sentence does not shift. */
-.share-target::after {
-  content: attr(data-longest);
+/* Static sizer: the longest phrase, hidden, not selectable or copied. Removed by JS when rotation does not run. */
+.share-target-sizer {
   visibility: hidden;
+  user-select: none;
 }
 
 .share-target-text.is-entering {

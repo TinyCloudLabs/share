@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderLandingTemplate } from "../src/landing/brand.ts";
 import {
+  longestShareTarget,
   ROTATE_EVERY_MS,
   ROTATE_STOP_AFTER_MS,
   SHARE_TARGETS,
@@ -49,6 +50,19 @@ describe("share target phrases", () => {
     expect(shown()).toBe(SHARE_TARGETS[0]);
     expect(document.querySelector(".hero-share-line")!.textContent).toContain(SHARE_TARGETS[0]!);
   });
+
+  it("renders the static sizer from the longest phrase", () => {
+    const sizer = new DOMParser().parseFromString(rendered, "text/html").querySelector(".share-target-sizer");
+    expect(sizer?.textContent).toBe(longestShareTarget());
+    expect(longestShareTarget().length).toBe(Math.max(...SHARE_TARGETS.map((phrase) => phrase.length)));
+  });
+
+  it("copies one phrase: sentence text without the sizer reads the first phrase", () => {
+    mountHero(false);
+    const sentence = document.querySelector<HTMLElement>(".hero-share-line")!.cloneNode(true) as HTMLElement;
+    sentence.querySelector(".share-target-sizer")!.remove();
+    expect(sentence.textContent!.replace(/\s+/g, " ").trim()).toBe(`Share with ${SHARE_TARGETS[0]} and only them.`);
+  });
 });
 
 describe("share target rotation", () => {
@@ -83,6 +97,21 @@ describe("share target rotation", () => {
     vi.advanceTimersByTime(ROTATE_STOP_AFTER_MS * 2);
     expect(shown()).toBe(SHARE_TARGETS[0]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("removes the sizer so no width is reserved under reduced motion", () => {
+    const wrapper = mountHero(true);
+    startShareTargetRotation(wrapper);
+    expect(wrapper.querySelector(".share-target-sizer")).toBeNull();
+  });
+
+  it("removes the sizer and clears inline width when it settles on the first phrase", () => {
+    const wrapper = mountHero(false);
+    startShareTargetRotation(wrapper);
+    expect(wrapper.querySelector(".share-target-sizer")).not.toBeNull();
+    vi.advanceTimersByTime(ROTATE_STOP_AFTER_MS);
+    expect(wrapper.querySelector(".share-target-sizer")).toBeNull();
+    expect(wrapper.style.width).toBe("");
   });
 
   it("holds the current phrase while hovered and resumes on leave", () => {
