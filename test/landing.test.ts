@@ -50,6 +50,8 @@ describe("agent prompt copy button", () => {
     vi.useFakeTimers();
     writeText.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    // jsdom has no matchMedia; main.ts reads the reduced-motion preference on load.
+    window.matchMedia = vi.fn(() => ({ matches: false })) as unknown as typeof window.matchMedia;
     document.body.innerHTML = /<body[^>]*>([\s\S]*)<\/body>/.exec(rendered)![1]!;
     // Dynamic import is intentional: main.ts wires listeners on load, so it is re-evaluated per test after the DOM is set up.
     await import("../src/landing/main.ts");

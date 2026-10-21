@@ -282,6 +282,50 @@ h1 {
   grid-area: intro;
 }
 
+.hero-share-line {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1.06rem;
+  line-height: 1.65;
+}
+
+.share-target {
+  display: inline-grid;
+  color: var(--accent);
+  font-weight: 600;
+  vertical-align: baseline;
+}
+
+.share-target-text,
+.share-target::after {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+
+/* Hidden sizer: reserves the width of the longest phrase so the sentence does not shift. */
+.share-target::after {
+  content: attr(data-longest);
+  visibility: hidden;
+}
+
+.share-target-text.is-entering {
+  animation: share-target-in 450ms var(--ease) both;
+}
+
+@keyframes share-target-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .hero-actions,
 .how-action {
   display: flex;
@@ -834,6 +878,12 @@ h1 {
   .hero-intro,
   .how-hero > p:last-child {
     max-width: 33rem;
+    font-size: 1rem;
+  }
+
+  .hero-share-line {
+    grid-column: auto;
+    grid-row: auto;
     font-size: 1rem;
   }
 
