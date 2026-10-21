@@ -1,8 +1,7 @@
 /**
  * The first-open disclosure, as plain sentences. The runner page shows it before
  * any sign-in opens, and the details sheet shows the same list, so the two
- * cannot drift apart. The sample banner is not in this list: each screen shows it
- * on its own. Pure: no DOM.
+ * cannot drift apart. Pure: no DOM.
  */
 import type { CatalogEntry } from "./catalog.ts";
 

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { summarizeAccess, unsupportedManifest } from "../src/apps/access.ts";
 import { type CatalogEntry, catalog as committed } from "../src/apps/catalog.ts";
-import { MAX_NOTICE_TEXT_CHARS, SAMPLE_NOTICE, SQL_CHANGE_NOTICE, clip, consentFor, reachOf, statementFor } from "../src/apps/consent.ts";
+import { MAX_NOTICE_TEXT_CHARS, SQL_CHANGE_NOTICE, clip, consentFor, reachOf, statementFor } from "../src/apps/consent.ts";
 
 const APP = "t.app";
 const OTHER = "other.app";
@@ -59,7 +59,7 @@ const SHAPES: { name: string; manifest: unknown; expected: string[] }[] = [
 describe("what the sheet says about what an app can do once it is opened", () => {
   it.each(SHAPES.map((shape) => [shape.name, shape]))("%s", (_name, shape) => {
     const notices = noticesOf(shape.manifest);
-    expect(notices.filter((notice) => notice !== SAMPLE_NOTICE).sort()).toEqual([...shape.expected].sort());
+    expect([...notices].sort()).toEqual([...shape.expected].sort());
   });
 
   it("an app cannot ask for a reach the sheet does not state: every grant outside its own folder has a sentence, and the lists match what the SDK resolves", () => {
@@ -166,9 +166,5 @@ describe("what the sheet says about what an app can do once it is opened", () =>
   it("shows an empty path as everything in its space, never as an empty box", () => {
     const summary = summarizeAccess(manifestOf([{ service: "tinycloud.kv", path: "", skipPrefix: true, actions: ["put"] }, { service: "tinycloud.kv", space: "default", path: "/", skipPrefix: true, actions: ["del"] }]));
     expect(summary.change.map((item) => item.target)).toEqual(["everything in the applications space", "everything in the default space"]);
-  });
-
-  it("a sample says so first", () => {
-    expect(consentFor(entry({ sample: true }), manifestOf([]), catalog).notices[0]).toBe(SAMPLE_NOTICE);
   });
 });
