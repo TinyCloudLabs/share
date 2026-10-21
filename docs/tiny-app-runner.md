@@ -11,7 +11,7 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
 
 ## What a person sees
 
-1. **Disclosure, inline**: the app's name and description, what it can read and change (from the catalog's own manifest), and a provenance line that stays on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta: use sample data only." It is shown as the open starts, before OpenKey. There is no separate Continue step.
+1. **Disclosure, inline**: the app's description, three plain lines (its own sign-in and what its manifest asks for, its publisher, and that opening saves its files when they are not in the person's TinyCloud yet), the manifest's notices, and the sentence "It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most." Below it: "Some browser requests can't be blocked. Only open apps you trust." A collapsed "Where it comes from" section gives the repo, commit, bundle digest and the sandbox statement. It is shown as the open starts, before OpenKey. There is no separate step before OpenKey.
 2. **One OpenKey approval**, named in the status line: "Approve in the OpenKey window so Share can open `<app>` from your TinyCloud". It covers reading the app's saved copy, saving any files that are missing, and starting the app with the permissions listed on the page. OpenKey connects once.
 3. **The app**, in its frame, under the page's own bar: the app name and version, "Open another app",
    "Sign out of this app", a "Where it comes from" disclosure, a status line (a live region), "What this app can do" and "What a
@@ -90,7 +90,7 @@ space, but if the runner page's checks failed, the node would not refuse a call 
 
 The refusal screen offers "Repair" (`/apps/#repair=<app_id>`), an inline panel on the app's page. The panel runs in repair
 mode: one approval (put, delete and list on `<app_id>/app/`, 15 minutes), and the panel says
-"Repair replaces the app's code files with the pinned version. Your data is untouched." It writes the catalog's files for the
+"This replaces your edited code. Your data is untouched." It writes the catalog's files for the
 installed digest over the stored ones (`manifest.json` included, so a stray edit is undone too),
 deletes any other file under `app/`, and never touches `install.json`, `knowledge/` or the
 app's data. The bundle is fetched and verified against the catalog before OpenKey opens. A

@@ -103,7 +103,7 @@ screenshots (`APPS_SCREENSHOT_DIR`).
 
 Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)); Details is the secondary action and opens the details sheet. The runner page starts the open as it loads: the catalog bundle is checked first, then the one OpenKey approval is requested. Nothing is written before that approval. The SDK and OpenKey load only after the bundle check.
 
-The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`; the details sheet shows the same list). It says that the app runs with its own sign-in, that its manifest lists what it can read and change, who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet. Direct links show it too.
+The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`). It says that the app runs with its own sign-in, that it can only read and change what its manifest asks for (the list is shown below), who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet.
 
 Each open runs these steps in order (`openApp` in `src/apps/run.ts`):
 

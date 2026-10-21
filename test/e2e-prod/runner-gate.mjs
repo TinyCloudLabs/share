@@ -18,7 +18,7 @@
  *    approval, before anything more is signed; a narrowed copy runs, with
  *    exactly what it kept;
  *  - the saved code is PINNED: an edited app.jsx or an extra file is refused before any
- *    runtime session or frame, Repair (the repair sheet) puts the
+ *    runtime session or frame, Repair (the repair panel) puts the
  *    catalog's code back with one approval and the app opens, and an installed version
  *    that has left the catalog gets the honest message and no Repair;
  *  - a hostile app (a catalog entry the gate adds for the run) can do nothing the

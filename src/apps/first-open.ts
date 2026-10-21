@@ -1,7 +1,6 @@
 /**
  * The first-open disclosure, as plain sentences. The runner page shows it before
- * any sign-in opens, and the details sheet shows the same list, so the two
- * cannot drift apart. Pure: no DOM.
+ * any sign-in opens. Pure: no DOM.
  */
 import type { CatalogEntry } from "./catalog.ts";
 
