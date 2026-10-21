@@ -314,6 +314,90 @@ try {
     await page.close();
   }
 
+  // ---- Save a copy: every state of the bar, at both widths and both themes --
+  // The save is settled by hand (the harness' `?save=control`), so idle, pending, the OpenKey approval
+  // hint, a cancelled and a failed sign-in, and Saved can each be looked at. The real sign-in, the
+  // write and the read-back are the joined gate's (test/e2e-prod/joined-gate.mjs).
+  {
+    const toastOf = (page, selector = ".artifact-chrome-toast--job") => page.$eval(selector, (node) => { const r = node.getBoundingClientRect(); const s = getComputedStyle(node); return { text: node.textContent, role: node.getAttribute("role"), live: node.getAttribute("aria-live"), visible: r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none", inside: r.left >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5 }; });
+    const toastSays = (page, text) => page.waitForFunction((value) => document.querySelector(".artifact-chrome-toast--job")?.textContent === value, { timeout: 5_000 }, text);
+    const click = async (page) => { await page.evaluate(() => { delete window.__saveControl; }); await page.click(".viewer-save-to-tinycloud"); await page.waitForFunction(() => window.__saveControl !== undefined, { timeout: 5_000 }); };
+    for (const [width, height] of [[1440, 900], [390, 844]]) {
+      for (const scheme of ["light", "dark"]) {
+        const tag = `${width}-${scheme}`;
+        const label = `save a copy at ${tag}`;
+        const page = await open(browser, `kind=md&save=control&nonce=save-${tag}`, { width, height, scheme });
+        assert.deepEqual(await page.$$eval(".artifact-chrome-button .artifact-chrome-label", (nodes) => nodes.map((node) => node.textContent)), ["Copy link", "Copy text", "Download", "Save a copy", "Share on", "Hide"], `${label}: the action sits with the others`);
+        const save = await page.$(".viewer-save-to-tinycloud");
+        assert.ok(save, `${label}: the button exists`);
+        // The button is a 44px target on a phone and carries its name when the label is icon-only.
+        const box = await save.boundingBox();
+        if (width === 390) assert.ok(box.width >= 44 && box.height >= 44, `${label}: 44px target (${box.width}x${box.height})`);
+        assert.equal(await page.evaluate(() => window.__saveControl), undefined, `${label}: nothing was started by opening the page`);
+        await shoot(page, `save-copy-idle-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: idle: axe AA`);
+
+        // Pending, then the approval hint (visible and announced).
+        await click(page);
+        await toastSays(page, "Saving a copy to your TinyCloud…");
+        assert.equal(await save.evaluate((node) => node.getAttribute("aria-busy") !== null && node.getAttribute("aria-disabled") === "true"), true, `${label}: the button is busy`);
+        await shoot(page, `save-copy-pending-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: pending: axe AA`);
+        await page.evaluate(() => window.__saveControl.approval(true, { n: 2, of: 4 }));
+        await toastSays(page, "Approval 2 of up to 4. Approve in the OpenKey window to save a copy");
+        const hint = await toastOf(page);
+        assert.ok(hint.visible && hint.inside && hint.role === "status" && hint.live === "polite", `${label}: the approval hint is visible and announced (${JSON.stringify(hint)})`);
+        await shoot(page, `save-copy-approval-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: approval hint: axe AA`);
+        assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".viewer-save-to-tinycloud") || document.activeElement === document.body), true, `${label}: the page keeps focus while OpenKey is open`);
+
+        // A cancelled sign-in is a quiet note; the viewer is still usable.
+        await page.evaluate(() => { window.__saveControl.approval(false); window.__saveControl.reject("cancelled"); });
+        await toastSays(page, "Sign-in cancelled. Nothing was saved.");
+        const cancelled = await toastOf(page);
+        assert.ok(cancelled.visible && cancelled.inside && cancelled.role === "status", `${label}: cancelled is visible, announced as a status (${JSON.stringify(cancelled)})`);
+        await shoot(page, `save-copy-cancelled-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: cancelled: axe AA`);
+        assert.equal(await page.$eval(".viewer-save-to-tinycloud", (node) => node.getAttribute("aria-disabled")), "false", `${label}: Save is available again`);
+        assert.ok(await page.$("iframe.viewer-preview-frame"), `${label}: the document is still there`);
+
+        // A failure is an alert.
+        await click(page);
+        await page.evaluate(() => window.__saveControl.reject("failed"));
+        await toastSays(page, "We couldn't save a copy. Nothing was saved. Try again.");
+        const failed = await toastOf(page);
+        assert.ok(failed.visible && failed.inside && failed.role === "alert", `${label}: a failure is announced as an alert (${JSON.stringify(failed)})`);
+        await shoot(page, `save-copy-error-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: error: axe AA`);
+
+        // Saved: a lasting, announced message that names the copy. No link: the library lists shares, not saved copies.
+        await click(page);
+        await page.evaluate(() => window.__saveControl.resolve("q3 report (2).md"));
+        const savedText = "Saved to your TinyCloud files as “q3 report (2).md”.";
+        await toastSays(page, savedText);
+        const saved = await toastOf(page);
+        assert.ok(saved.visible && saved.inside && saved.role === "status" && saved.live === "polite", `${label}: Saved is visible and announced (${JSON.stringify(saved)})`);
+        assert.equal(await page.$(".artifact-chrome-toasts a"), null, `${label}: Saved has no link`);
+        assert.equal(await page.$eval(".viewer-save-to-tinycloud .artifact-chrome-label", (node) => node.textContent), "Saved", `${label}: the button says Saved`);
+        await shoot(page, `save-copy-saved-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: saved: axe AA`);
+        // A later Copy link has its own message and does not replace Saved; the two do not overlap.
+        await page.click(".artifact-chrome-button");
+        await page.waitForFunction(() => /Link copied|Couldn't copy the link/.test(document.querySelector(".artifact-chrome-toast:not(.artifact-chrome-toast--job)")?.textContent ?? ""), { timeout: 5_000 });
+        assert.equal((await toastOf(page)).text, savedText, `${label}: Copy link did not replace Saved`);
+        const both = await page.evaluate(() => [...document.querySelectorAll(".artifact-chrome-toast")].map((node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, inside: r.left >= -0.5 && r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5 }; }));
+        assert.ok(both.length === 2 && both.every((box) => box.inside), `${label}: both messages are on screen (${JSON.stringify(both)})`);
+        assert.ok(both[0].bottom <= both[1].top + 0.5, `${label}: the Copy message sits above Saved, not over it (${JSON.stringify(both)})`);
+        await shoot(page, `save-copy-saved-and-copied-${tag}`);
+        assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: saved and copied: axe AA`);
+        // Lasting: still there after the ordinary toast time.
+        await new Promise((resolve) => setTimeout(resolve, 4_500));
+        assert.equal((await toastOf(page)).text, savedText, `${label}: Saved stays`);
+        await page.close();
+      }
+    }
+  }
+
   // ---- HTML --------------------------------------------------------------
   {
     const page = await open(browser, "kind=html");

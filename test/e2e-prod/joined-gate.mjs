@@ -130,7 +130,7 @@ function headerSubset(request) {
   return headers;
 }
 
-async function installRouting(page, stack) {
+async function installRouting(page, stack, { openKeyOrigin = stack.services.openKeyOrigin } = {}) {
   await page.evaluateOnNewDocument(installBrowserInstrumentation);
   page.on("console", (message) => {
     consoleCounts[message.type()] = (consoleCounts[message.type()] ?? 0) + 1;
@@ -149,8 +149,8 @@ async function installRouting(page, stack) {
       [stack.canonical.node, stack.services.nodeOrigin],
       [stack.canonical.credentials, stack.services.credentialsOrigin],
       [stack.canonical.registry, stack.services.registryOrigin],
-      ["https://openkey.so", stack.services.openKeyOrigin],
-      ["https://api.openkey.so", stack.services.openKeyOrigin],
+      ["https://openkey.so", openKeyOrigin],
+      ["https://api.openkey.so", openKeyOrigin],
     ]);
     const targetOrigin = targets.get(url.origin);
     if (targetOrigin === undefined) { await request.abort("blockedbyclient"); return; }
@@ -300,8 +300,9 @@ async function credentialInputReady(page, expectedType) {
 
 function auditBrowserDiagnostics(stack) {
   const failedRequests = trace.filter((entry) => typeof entry.status === "number" && entry.status >= 400);
-  const locationBootstrapMisses = failedRequests.filter((entry) => ["sender", "sender-relogin", "domain-delivery-sender"].includes(entry.phase) && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
-  const ownerStateBootstrapMisses = failedRequests.filter((entry) => entry.phase === "sender" && entry.origin === stack.canonical.node && (
+  // No location record is ever published for the recipient who saves a copy (it does not share from its own node), so each of its sign-ins asks the registry and is told so.
+  const locationBootstrapMisses = failedRequests.filter((entry) => ["sender", "sender-relogin", "domain-delivery-sender", "save-recipient-one", "save-recipient-two", "save-revoked-recipient"].includes(entry.phase) && entry.origin === stack.canonical.registry && entry.method === "GET" && entry.path.startsWith("/v1/locations/") && entry.status === 404);
+  const ownerStateBootstrapMisses = failedRequests.filter((entry) => ["sender", "save-recipient-one"].includes(entry.phase) && entry.origin === stack.canonical.node && (
     (entry.status === 404 && entry.method === "GET" && entry.path.startsWith("/encryption/networks/"))
     || (entry.status === 404 && entry.method === "POST" && entry.path === "/invoke")
     // Fresh-account SQL migration probe; only this exact Node answer is accepted.
@@ -318,6 +319,10 @@ function auditBrowserDiagnostics(stack) {
     ["domain-negative-tamper", 401],
     ["domain-negative-revoked", 403],
     ["revoked-bearer-recipient", 401],
+    // The second save of a name: the create-only write meets the first copy and moves on to the next name.
+    ["save-recipient-two", 412],
+    // A revoked link-only share, and the read-back of the copies after it.
+    ["save-revoked-recipient", 401],
   ]);
   const admittedRequestReplayRejections = failedRequests.filter((entry) => entry.phase === "domain-replay" && entry.method === "POST" && entry.path === "/policy/v3/delegations" && entry.status >= 400 && entry.status < 500);
   const unexpectedRequests = failedRequests.filter((entry) => !bootstrapMisses.has(entry) && !admittedRequestReplayRejections.includes(entry) && !(entry.method === "POST" && entry.path === "/invoke" && expectedEnforcement.get(entry.phase) === entry.status));
@@ -326,7 +331,7 @@ function auditBrowserDiagnostics(stack) {
   const warnings = consoleDiagnostics.filter((entry) => entry.type === "warn");
   const pageErrors = consoleDiagnostics.filter((entry) => entry.type === "pageerror");
   assert.equal(pageErrors.length, 0, "browser raised an unexpected page error");
-  assert(errors.every((entry) => /^Failed to load resource: the server responded with a status of (400|401|403|404|409) \((?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict)\)$/.test(entry.text)), "browser emitted an unexpected console error");
+  assert(errors.every((entry) => /^Failed to load resource: the server responded with a status of (400|401|403|404|409|412) \((?:Bad Request|Unauthorized|Forbidden|Not Found|Conflict|Precondition Failed)\)$/.test(entry.text)), "browser emitted an unexpected console error");
   assert.equal(errors.length, failedRequests.length, "browser console/network failure accounting diverged");
   assert(locationBootstrapMisses.length > 0, "fresh sender did not observe the expected missing-location bootstrap response");
   assert(ownerStateBootstrapMisses.length > 0, "fresh sender did not observe expected uninitialized owner state");
@@ -336,10 +341,16 @@ function auditBrowserDiagnostics(stack) {
   // warning: older Nodes exhaust the registry retries; Node 1.21 reports the
   // account index (SQL) as not yet created (404 SQL_DATABASE_NOT_FOUND) and continues.
   const bootstrapWarnings = [/^TinyCloud account registry sync failed after retries/, /^TinyCloud account index initialization failed; continuing registry sync/];
-  assert(warnings.length >= 1 && warnings.length <= bootstrapWarnings.length, "browser emitted an unexpected number of warnings");
-  assert(warnings.every((entry) => entry.phase === "sender"), "browser emitted a warning outside sender bootstrap");
-  assert(bootstrapWarnings.every((pattern) => warnings.filter((entry) => pattern.test(entry.text)).length <= 1), "browser repeated a bootstrap warning");
-  assert(warnings.every((entry) => bootstrapWarnings.some((pattern) => pattern.test(entry.text))), "browser emitted an unexpected warning");
+  // The fresh recipient who saves a copy is a fresh account too: its first sign-in logs the same bootstrap warning, once.
+  const senderWarnings = warnings.filter((entry) => entry.phase === "sender");
+  const saveWarnings = warnings.filter((entry) => entry.phase === "save-recipient-one");
+  assert(senderWarnings.length >= 1 && senderWarnings.length <= bootstrapWarnings.length, "browser emitted an unexpected number of warnings");
+  assert.equal(warnings.length, senderWarnings.length + saveWarnings.length, "browser emitted a warning outside sender and fresh-recipient bootstrap");
+  for (const group of [senderWarnings, saveWarnings]) {
+    assert(group.length <= bootstrapWarnings.length, "browser emitted an unexpected number of warnings");
+    assert(bootstrapWarnings.every((pattern) => group.filter((entry) => pattern.test(entry.text)).length <= 1), "browser repeated a bootstrap warning");
+    assert(group.every((entry) => bootstrapWarnings.some((pattern) => pattern.test(entry.text))), "browser emitted an unexpected warning");
+  }
   return {
     unexpectedConsoleErrors: 0,
     unexpectedPageErrors: 0,
@@ -742,6 +753,163 @@ async function verifyBearerRevokeAfterRelogin({ browser, sender, stack }) {
   return { ...revocation, revokedLinkFailsClosed: true, libraryRowsAfter: stillListed };
 }
 
+// A markdown file with a table, multi-byte text and a per-run marker: the bytes a recipient saves must be exactly these.
+const saveCopyName = "save-copy-fixture.md";
+const saveCopyFixture = Buffer.from(`# Save a copy fixture\n\nCafé ✓ — 日本語\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n${randomBytes(8).toString("hex")}\n`, "utf8");
+const saveCopyDigest = createHash("sha256").update(saveCopyFixture).digest("hex");
+
+/**
+ * Reads the recipient's private copies back through the product's own sign-in
+ * helper, in the page that saved them (the account chunk is already loaded
+ * there). Returns each copy's key, SHA-256 and stored media type.
+ */
+async function readBackCopies(page) {
+  return page.evaluate(async () => {
+    const chunk = performance.getEntriesByType("resource").map((entry) => entry.name).find((name) => /\/assets\/openkey-session-[^/]+\.js$/.test(new URL(name).pathname));
+    if (chunk === undefined) throw new Error("the account chunk was never loaded");
+    const chunkExports = await import(chunk);
+    // The build minifies this chunk's export names, but one export is the module's own namespace object, which
+    // keeps the real names: that is where the two helpers are.
+    const session = Object.values(chunkExports).find((value) => typeof value === "object" && value !== null && typeof value.signInWithManifest === "function");
+    if (session === undefined) throw new Error("the account chunk does not carry the sign-in helpers");
+    const { signInWithManifest, saveCopyManifest, SAVE_COPY_MANIFEST_SCOPE } = session;
+    const config = await (await fetch("/.well-known/tinycloud-share/config.json")).json();
+    const signedIn = await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config, hostSpaces: ["files-for-you"] });
+    const { tinycloud, spaces } = signedIn;
+    const kv = tinycloud.kvForSpace(spaces["files-for-you"]);
+    const listed = await kv.list({ prefix: "v1/" });
+    if (!listed.ok) throw new Error(`list failed: ${listed.error?.code}`);
+    const copies = [];
+    for (const key of [...listed.data.keys].sort()) {
+      const got = await kv.get(key, { binary: true });
+      if (!got.ok) throw new Error(`get failed: ${got.error?.code}`);
+      const digest = await crypto.subtle.digest("SHA-256", got.data.data);
+      copies.push({ key, sha256: [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""), contentType: got.data.headers.contentType ?? null, byteLength: got.data.data.byteLength });
+    }
+    // The helper's own teardown, against the real SDK: it must not throw.
+    await signedIn.dispose();
+    return { copies };
+  });
+}
+
+/** A link-only markdown share, from the signed-in sender page. Returns its link. */
+async function shareSaveCopyFixture(sender) {
+  phase = "save-sender";
+  await sender.evaluate(() => { window.location.hash = "#/new"; });
+  await sender.waitForSelector("form.composer-form", { timeout: 180_000 });
+  await sender.$eval('input[name="recipient"][value="bearer"]', (input) => input.click());
+  const upload = await sender.$('input[name="document"]'); assert(upload);
+  const path = join(temporary, saveCopyName); await writeFile(path, saveCopyFixture, { flag: "w", mode: 0o600 });
+  await upload.uploadFile(path);
+  await sender.click("button.create-link-button");
+  await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
+  const copied = await sender.evaluate(() => window.__tc500Clipboard.length);
+  await clickText(sender, "Copy link");
+  const url = await waitUntil(() => sender.evaluate((count) => window.__tc500Clipboard.length > count ? window.__tc500Clipboard.at(-1) : undefined, copied), 10_000);
+  assert.match(url ?? "", /^https:\/\/share\.tinycloud\.xyz\/viewer#tc1=/, "the markdown share did not produce a native tc1 link");
+  return url;
+}
+
+/** Opens `url` as a recipient with their own OpenKey account, clicks Save a copy, and waits for Saved. */
+async function saveFromRecipient({ browser, stack, url, label, expectedName }) {
+  phase = `save-recipient-${label}`;
+  const context = await browser.createBrowserContext(); const reader = await context.newPage();
+  await installRouting(reader, stack, { openKeyOrigin: stack.services.recipientOpenKeyOrigin });
+  await reader.goto(url, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await reader.waitForSelector(".viewer-save-to-tinycloud", { timeout: 180_000 });
+  await reader.waitForSelector(".viewer-preview-frame", { timeout: 60_000 });
+  // Account-free until the click: opening the file touched neither OpenKey nor the recipient's account.
+  const before = trace.filter((entry) => entry.phase === phase);
+  assert(!before.some((entry) => /openkey/i.test(entry.origin)), "the recipient contacted OpenKey before clicking Save");
+  assert(!before.some((entry) => entry.origin === stack.canonical.credentials || entry.path.startsWith("/policy/v3/")), "a bearer recipient ran a credential or policy ceremony");
+  const clickedAt = trace.length;
+  // Record what the live region says, in order, from before the click.
+  await reader.evaluate(() => {
+    window.__toastLog = [];
+    const toast = document.querySelector(".artifact-chrome-toast--job");
+    new MutationObserver(() => window.__toastLog.push({ role: toast.getAttribute("role"), live: toast.getAttribute("aria-live"), text: toast.textContent })).observe(toast, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["role"] });
+  });
+  await reader.click(".viewer-save-to-tinycloud");
+  await reader.waitForFunction(() => /^(Saved to your TinyCloud files|Sign-in cancelled|OpenKey didn't answer|Another OpenKey|That approval came|We couldn't save)/.test(document.querySelector(".artifact-chrome-toast--job")?.textContent ?? ""), { timeout: 300_000 });
+  // The bar's own copy is fixed UI text (never a response body), so it is safe to report.
+  const outcome = await reader.$eval(".artifact-chrome-toast--job", (node) => node.textContent);
+  assert(outcome.startsWith("Saved to your TinyCloud files as"), `Save did not finish: the bar said "${outcome}"`);
+  const toastLog = await reader.evaluate(() => window.__toastLog);
+  const spoken = toastLog.map((entry) => entry.text);
+  assert(spoken.includes("Saving a copy to your TinyCloud…"), "the pending state was never announced");
+  // One hint per signature, counted in order, with the same words each time.
+  const hints = spoken.filter((text) => /^Approval \d+ of up to \d+\. Approve in the OpenKey window to save a copy$/.test(text));
+  assert(hints.length >= 1, "the OpenKey approval hint never appeared");
+  hints.forEach((text, index) => assert(text.startsWith(`Approval ${index + 1} of up to`), `approval hints were not counted in order: ${JSON.stringify(hints)}`));
+  assert.equal(spoken.at(-1), `Saved to your TinyCloud files as “${expectedName}”.`, "the page did not end on Saved, naming the copy");
+  assert(toastLog.every((entry) => entry.live === "polite" || entry.role === "alert"), "a toast message was not in a live region");
+  assert.equal(await reader.$(".artifact-chrome-toasts a"), null, "the Saved message links to a library that does not list copies");
+  const after = trace.slice(clickedAt).filter((entry) => entry.phase === phase);
+  assert(after.some((entry) => /openkey/i.test(entry.origin)), "Save never opened OpenKey");
+  // The bytes that left the page for the node are the fixture's.
+  const puts = after.filter((entry) => entry.origin === stack.canonical.node && entry.path === "/invoke" && entry.requestSha256 === saveCopyDigest && successfulRequest(entry));
+  assert.equal(puts.length, 1, "the exact fixture bytes were not written once to the owner's node");
+  // Nothing is kept by the page: no localStorage, sessionStorage or cookie entry at all, so none holds key or session material.
+  const stored = await reader.evaluate(() => ({ entries: [...Object.entries(localStorage), ...Object.entries(sessionStorage), ...document.cookie.split(";").map((cookie) => cookie.trim()).filter((cookie) => cookie !== "").map((cookie) => cookie.split("="))] }));
+  assert.deepEqual(stored.entries, [], "the page stored something while saving a copy");
+  const databases = await reader.evaluate(async () => (await indexedDB.databases()).map((database) => database.name ?? ""));
+  assert.deepEqual(databases, [], `the page created an IndexedDB database while saving a copy: ${databases.join(",")}`);
+  // A fresh account's first sign-in meets "not found" answers and one bootstrap warning while its space and records do not exist yet; a second save of the same name meets the node's
+  // "precondition failed" for the taken name (counted in auditBrowserDiagnostics). Nothing else is logged.
+  const unexpectedLogs = consoleDiagnostics.filter((entry) => entry.phase === phase && !(
+    (entry.type === "error" && /^Failed to load resource: the server responded with a status of (?:404 \(Not Found\)|412 \(Precondition Failed\))$/.test(entry.text))
+    || (entry.type === "warn" && /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/.test(entry.text))
+  ));
+  assert.equal(unexpectedLogs.length, 0, "the Save path logged something other than the account bootstrap and the taken-name answer");
+  // Every OpenKey approval is one signature the widget was asked for; the first Save on a new account asks several (documented), a later one fewer.
+  const approvals = after.filter((entry) => /openkey/i.test(entry.origin) && entry.method === "POST" && entry.path === "/sign").length;
+  return { context, reader, storageEntries: stored.entries.length, announced: spoken.length, approvals, hints: hints.length };
+}
+
+/**
+ * Save a copy, on the same stack: a recipient with their own OpenKey account
+ * opens a link-only markdown share and clicks Save. The copy appears under
+ * `files-for-you/v1/` in THEIR account with the exact bytes, a second Save
+ * keeps both (a numbered name, never an overwrite), and revoking the original
+ * share leaves every copy readable.
+ */
+async function verifySaveCopy({ browser, sender, stack }) {
+  // Keys are stored percent-encoded (the node refuses a raw space or non-ASCII character); decoded, they are the names.
+  const decoded = (copies) => copies.map((copy) => decodeURIComponent(copy.key.slice("v1/".length))).sort();
+  const url = await shareSaveCopyFixture(sender);
+  const first = await saveFromRecipient({ browser, stack, url, label: "one", expectedName: saveCopyName });
+  const afterFirst = await readBackCopies(first.reader);
+  assert.deepEqual(decoded(afterFirst.copies), [saveCopyName], "the first save is not the recipient's only copy");
+  assert.equal(afterFirst.copies[0].sha256, saveCopyDigest, "the saved bytes differ from the original");
+  assert.equal(afterFirst.copies[0].byteLength, saveCopyFixture.byteLength);
+  assert.match(afterFirst.copies[0].contentType ?? "", /^text\/markdown/, "the copy is not stored as markdown");
+  const second = await saveFromRecipient({ browser, stack, url, label: "two", expectedName: saveCopyName.replace(".md", " (2).md") });
+  const afterSecond = await readBackCopies(second.reader);
+  assert.deepEqual(decoded(afterSecond.copies), [saveCopyName, saveCopyName.replace(".md", " (2).md")].sort(), "a second save did not keep both copies");
+  assert(afterSecond.copies.every((copy) => copy.sha256 === saveCopyDigest), "a saved copy differs from the original");
+
+  // The original share is revoked by its owner; the recipient's copies are theirs and stay.
+  const revocation = await revokeFromLibrary(sender, { relogin: true, recipientText: saveCopyName });
+  phase = "save-revoked-recipient";
+  const context = await browser.createBrowserContext(); const revoked = await context.newPage(); await installRouting(revoked, stack);
+  await revoked.goto(url, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await revoked.waitForSelector(".viewer-state", { timeout: 180_000 });
+  assert.equal(await revoked.$(".viewer-save-to-tinycloud"), null, "a revoked share still offered Save");
+  assert.equal(await revoked.$(".viewer-download"), null, "a revoked share still rendered");
+  await context.close();
+  const afterRevoke = await readBackCopies(first.reader);
+  assert.deepEqual(afterRevoke.copies, afterSecond.copies, "revoking the original share changed the recipient's copies");
+  await first.context.close(); await second.context.close();
+  return {
+    savedOnce: true, savedTwice: true,
+    copyKeys: afterRevoke.copies.map((copy) => copy.key),
+    copySha256: saveCopyDigest, copiesEqualOriginal: true, copyContentType: afterRevoke.copies[0].contentType,
+    openKeyBeforeClick: 0, openKeyApprovals: [first.approvals, second.approvals], approvalHints: [first.hints, second.hints], pendingAnnounced: true, approvalHintShown: true, savedAnnounced: true,
+    storageEntriesAfterSave: first.storageEntries + second.storageEntries,
+    revokedOriginalOffersNoSave: true, copiesSurviveRevoke: true, revocationWallet: revocation.wallet,
+  };
+}
+
 /**
  * Agent-style sender on the same stack: the `tc` CLI publishes an exact-email
  * share and asks the owner's Node and OpenCredentials to email it
@@ -857,6 +1025,76 @@ function traceAudit(stack) {
   return { ownerDidSha256: createHash("sha256").update(ownerDid).digest("hex"), receiverDidSha256: createHash("sha256").update(challenge.body.recipientDid).digest("hex"), nodeInvokeCount: positiveInvokes.length };
 }
 
+/**
+ * TC-1582. The first email share was revoked by the negative-enforcement stage.
+ * Its invitation link must now show the "no longer available" screen without
+ * offering or requesting a code: no OpenCredentials request, no node challenge,
+ * no mail. Also probes the real node (not the gate's rewriting proxy) for the
+ * CORS headers the browser needs on the public status route.
+ */
+async function verifyRevokedEmailShare({ browser, stack, invitation, recipientEmail }) {
+  const mailBefore = stack.mail.length;
+  const codesBefore = stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length;
+  phase = "revoked-email-recipient";
+  const from = trace.length;
+  const context = await browser.createBrowserContext(); const page = await context.newPage(); await installRouting(page, stack);
+  await page.goto(invitation, { waitUntil: "domcontentloaded", timeout: 180_000 });
+  await page.waitForSelector(".recipient-unavailable", { timeout: 90_000 });
+  const screen = await page.evaluate(() => ({
+    title: document.querySelector("h1")?.textContent,
+    detail: document.querySelector(".recipient-detail")?.textContent,
+    role: document.querySelector(".recipient-unavailable")?.getAttribute("role"),
+    requestButtons: document.querySelectorAll(".claim-request-code").length,
+    mentionsVerify: /Verify your email|Email me a code/.test(document.body.textContent ?? ""),
+    focused: document.activeElement?.id,
+  }));
+  assert.equal(screen.title, "This share is no longer available");
+  assert.equal(screen.detail, "The sender may have revoked it, or it has expired.");
+  assert.equal(screen.role, "alert");
+  assert.equal(screen.requestButtons, 0, "a revoked share still offered a code request");
+  assert.equal(screen.mentionsVerify, false, "a revoked share still asked the recipient to verify an email");
+  assert.equal(screen.focused, "viewer", "focus did not move to the unavailable screen");
+  // Give any late request a moment to show up before reading the trace.
+  await new Promise((done) => setTimeout(done, 2_000));
+  const mine = trace.slice(from).filter((entry) => entry.phase === phase);
+  const statusReads = mine.filter((entry) => entry.origin === stack.canonical.node && entry.method === "GET" && entry.path.startsWith("/policy/v3/status/"));
+  assert(statusReads.length >= 1 && statusReads.some((entry) => entry.status === 200 && entry.response?.state === "revoked"), "the page did not read a revoked status from the node");
+  assert.equal(mine.filter((entry) => entry.origin === stack.canonical.credentials).length, 0, "a revoked share contacted OpenCredentials");
+  assert.equal(mine.filter((entry) => entry.origin === stack.canonical.node && entry.method === "POST").length, 0, "a revoked share made a node POST (challenge, delegation or invoke)");
+  assert.equal(mine.filter((entry) => /openkey/i.test(entry.origin)).length, 0, "a revoked share contacted OpenKey");
+  assert.equal(stack.mail.length, mailBefore, "mail was sent for a revoked share");
+  assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, codesBefore, "a code was emailed for a revoked share");
+  const stored = await page.evaluate(async () => ({ session: Object.keys(sessionStorage).length, local: Object.keys(localStorage).length, databases: (await indexedDB.databases()).map((database) => database.name ?? "") }));
+  assert.deepEqual(stored, { session: 0, local: 0, databases: [] }, "a revoked share left receiver state in the browser");
+  const revokedRoot = statusReads.find((entry) => entry.response?.state === "revoked");
+  const direct = await fetch(new URL(revokedRoot.path, stack.services.nodeOrigin), { headers: { origin: stack.canonical.share, accept: "application/json" } });
+  assert.equal(direct.status, 200);
+  assert.equal(direct.headers.get("access-control-allow-origin"), stack.canonical.share, "the node does not allow the Share origin to read policy status");
+  const directBody = await direct.json();
+  assert.equal(directBody.state, "revoked");
+  assert.equal(directBody.rootCid, decodeURIComponent(revokedRoot.path.split("/").at(-1)));
+  // A root the node has never seen is a plain 404, which the page reads as "not revoked".
+  const unknown = await fetch(new URL("/policy/v3/status/bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stack.services.nodeOrigin), { headers: { origin: stack.canonical.share } });
+  assert.equal(unknown.status, 404);
+  const shots = process.env.TC1582_SHOT_DIR;
+  const axeSource = await readFile(join(shareRoot, "node_modules/axe-core/axe.min.js"), "utf8");
+  const axe = {};
+  for (const [width, height] of [[390, 844], [1440, 900]]) for (const scheme of ["light", "dark"]) {
+    await page.setViewport({ width, height }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
+    // The theme switch transitions colours; axe must read the settled values.
+    await new Promise((done) => setTimeout(done, 800));
+    await page.evaluate(axeSource);
+    const result = await page.evaluate(() => globalThis.axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
+    axe[`${width}-${scheme}`] = result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => `${node.target.join(" ")} ${JSON.stringify(node.any[0]?.data ?? {})}`).join("; ")}`);
+    assert.deepEqual(axe[`${width}-${scheme}`], [], `${width}px ${scheme}: axe AA on the unavailable screen`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert(overflow <= 0, `${width}px ${scheme}: the unavailable screen scrolls sideways`);
+    if (shots !== undefined) await page.screenshot({ path: join(shots, `unavailable-${width}-${scheme}.png`) });
+  }
+  await context.close();
+  return { screenShown: true, codeRequests: 0, mailSent: 0, statusReads: statusReads.length, corsAllowsShareOrigin: true, unknownRootStatus: unknown.status, axe };
+}
+
 const temporary = await mkdtemp(join(tmpdir(), "tc500-native-joined-"));
 const fixturePath = join(temporary, "native-fixture.bin"); await writeFile(fixturePath, fixture, { flag: "wx", mode: 0o600 });
 let stack; let candidate; let browser; let recipientEmail; let selectedOtp; let watchdog;
@@ -909,6 +1147,9 @@ try {
   // Opening the link (as a mail scanner would) must not reach OpenCredentials or send a code.
   assert.equal(trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.credentials && entry.method === "POST").length, 0, "the invitation page contacted OpenCredentials before a click");
   assert.equal(stack.mail.filter((message) => isCredentialOtpMail(message, recipientEmail)).length, 0, "a code was emailed before a click");
+  // Both policy roots are checked before the button is offered; a live share's status reads all answer 200.
+  const liveStatusReads = trace.filter((entry) => entry.phase === "recipient" && entry.origin === stack.canonical.node && entry.method === "GET" && entry.path.startsWith("/policy/v3/status/"));
+  assert(liveStatusReads.length >= 2 && liveStatusReads.every((entry) => entry.status === 200 && entry.response?.state === "active"), "the page did not read an active status for each root of a live share");
   // A double click sends one code.
   await recipient.$eval(".claim-request-code", (button) => { button.click(); button.click(); });
   journeyStage = "recipient-otp-delivery";
@@ -941,6 +1182,8 @@ try {
     assert(!/"d"\s*:|"jwk"|privateKey|pkcs8/i.test(value), "private key material was left in browser storage");
   }
   assert.deepEqual(stored.databases.filter((name) => /receiver|share/i.test(name)), ["tinycloud.share.receiver-keys"], "an unexpected receiver database is in IndexedDB");
+  journeyStage = "revoked-email-share";
+  const revokedEmailShare = await verifyRevokedEmailShare({ browser, stack, invitation, recipientEmail });
   journeyStage = "bearer-regression";
   const bearerRegression = await verifyBearerRegression({ browser, sender, stack });
   journeyStage = "domain-journey";
@@ -951,6 +1194,8 @@ try {
   const otherShare = await verifyOtherShareSurvives({ browser, stack });
   journeyStage = "bearer-revoke-after-relogin";
   const bearerRevoke = await verifyBearerRevokeAfterRelogin({ browser, sender, stack });
+  journeyStage = "save-copy";
+  const saveCopy = await verifySaveCopy({ browser, sender, stack });
   journeyStage = "cli-sender";
   // TC500_SKIP_CLI_SENDER=1 runs every browser stage without the `tc` CLI leg (no CLI is installed); such a run is never the release gate.
   const cliSkipped = process.env.TC500_SKIP_CLI_SENDER === "1";
@@ -959,6 +1204,8 @@ try {
   const browserDiagnostics = auditBrowserDiagnostics(stack);
 
   const artifact = { type: "tinycloud.share/native-joined-e2e/v1", result: cliSkipped ? "partial-passed" : gateResult(stack.provenance), fixtureSha256: fixtureDigest, provenance: { ...stack.provenance, ...(await shareProvenance()) }, ...audit, negativeGates, bearerRegression, domainJourney, domainDelivery, otherShare, bearerRevoke, cliSender, revokeRequests: trace.filter((entry) => entry.path === "/revoke").map((entry) => ({ sequence: entry.sequence, phase: entry.phase, origin: entry.origin === stack.canonical.node ? "node" : "other", status: entry.status, jsonBody: entry.body !== undefined, authorizationHeader: typeof entry.authorization === "string" && entry.authorization.length > 0, receiptCidReturned: typeof entry.response?.cid === "string" })), browserDiagnostics, prohibitedShareDataPlaneRequests: 0 };
+  artifact.revokedEmailShare = revokedEmailShare;
+  artifact.saveCopy = saveCopy;
   await writeFile(outputPath, JSON.stringify(artifact, null, 2), { mode: 0o600 });
   console.log(JSON.stringify(artifact, null, 2));
 } catch (error) {
@@ -996,7 +1243,7 @@ try {
     },
     auditDiagnostic: journeyStage === "traffic-audit" && error?.code === "ERR_ASSERTION" ? error.message : undefined,
     negativeDiagnostic: journeyStage === "negative-enforcement" ? String(error?.message ?? "negative enforcement failed").slice(0, 240) : undefined,
-    journeyDiagnostic: ["bearer-regression", "domain-journey", "domain-delivery", "other-share-survives", "bearer-revoke-after-relogin", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
+    journeyDiagnostic: ["revoked-email-share", "bearer-regression", "domain-journey", "domain-delivery", "other-share-survives", "bearer-revoke-after-relogin", "save-copy", "cli-sender", "browser-diagnostics"].includes(journeyStage) && error?.code === "ERR_ASSERTION" ? String(error.message).slice(0, 240) : undefined,
     cliDiagnostic: journeyStage === "cli-sender" ? cliDiagnostic : undefined,
     dataPlaneDiagnostics: recipientInvokes.map((entry) => ({
       responseByteLength: entry.responseByteLength,

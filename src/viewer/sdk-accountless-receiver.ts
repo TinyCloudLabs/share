@@ -1,3 +1,4 @@
+import type { ShareReceivedContent } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import {
   renderRecipientClaim,
@@ -5,9 +6,11 @@ import {
   renderRecipientClaimRecovery,
   renderRecipientCodeRequest,
   renderRecipientCodeRequested,
+  renderRecipientUnavailable,
   type RecipientClaimRecovery,
   type RecipientClaimView,
 } from "../email-share/view.js";
+import { checkShareAvailability, type ShareAvailabilityTarget } from "../email-share/share-status.js";
 import { createShareReceiverClient } from "../share/receiver.js";
 
 /** Minimum time between two code emails the recipient can trigger. */
@@ -46,8 +49,20 @@ export async function receiveWithSdk(input: {
   readonly shareUrl: string;
   readonly config: SharePublicConfig;
   readonly invitation?: AccountlessInvitationSummary;
-  readonly onComplete: (content: { readonly bytes: Uint8Array }) => Promise<void>;
+  /** The received bytes and their descriptor (name, media type, digest), as the SDK verified them. */
+  readonly onComplete: (content: ShareReceivedContent) => Promise<void>;
+  /** Where to ask whether the share can still open. Omitted: no pre-check. */
+  readonly availability?: ShareAvailabilityTarget | undefined;
 }): Promise<void> {
+  // A revoked or expired share can never open, so no key is made and no code is
+  // requested for it. Any doubt (offline, unknown root) lets the normal flow run.
+  const closed = async (): Promise<boolean> => {
+    const state = input.availability === undefined ? "available" : await checkShareAvailability(input.availability);
+    if (state === "available") return false;
+    renderRecipientUnavailable(input.root, state);
+    return true;
+  };
+  if (await closed()) return;
   let view: RecipientClaimView | undefined;
   // The SDK mounts its credential view here only when `get` needs a
   // credential, by which time the claim screen below holds this element.
@@ -72,7 +87,11 @@ export async function receiveWithSdk(input: {
   // An exact-email acquisition mails its code as soon as it starts, and link
   // scanners run page scripts, so it starts only from the recipient's click.
   // A domain invitation already waits for the recipient to type an address.
-  if (recipient.kind === "exactEmail") await new Promise<void>((resolve) => renderRecipientCodeRequest(claim, recipient.email, resolve));
+  // The share is checked again after the click: the page may have waited open.
+  if (recipient.kind === "exactEmail") {
+    await new Promise<void>((resolve) => renderRecipientCodeRequest(claim, recipient.email, resolve));
+    if (await closed()) return;
+  }
   for (;;) {
     mount.replaceChildren();
     if (recipient.kind === "exactEmail") renderRecipientCodeRequested(claim, recipient.email, mount);
@@ -87,5 +106,6 @@ export async function receiveWithSdk(input: {
       // Retrying starts a new acquisition, so OpenCredentials emails a new code.
       await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, requestedAt + RESEND_COOLDOWN_MS));
     }
+    if (await closed()) return;
   }
 }

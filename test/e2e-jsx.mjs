@@ -505,6 +505,58 @@ try {
     await run.page.close();
   }
 
+  // --- Leak vectors: NOTHING may reach the loopback listener ------------------
+  // Every browser-initiated request the frame's CSP does not govern (prerender, prefetch, preconnect, dns-prefetch,
+  // modulepreload, <a ping>, <img>, <form>, <meta refresh>, window.open, WebRTC, fetch, import(), CSS url()/@import/image-set),
+  // through React elements and through every DOM insertion path the page has. The frame's runtime refuses them
+  // (src/artifact/jsx-runtime/url-guard.ts); the listener saw nothing at all: no request, no connection, no UDP packet.
+  {
+    await freshBeacon();
+    const run = await open("leak-vectors.jsx");
+    const lastVectors = [];
+    run.page.on("console", (message) => { if (message.text().startsWith("leak-vector ")) lastVectors.push(message.text()); });
+    const frame = await childFrame(run.page);
+    await frame.waitForSelector("#report[data-done=yes]", { timeout: 90_000 }).catch((error) => { throw new Error(`the leak-vector page stopped after ${lastVectors.slice(-3).join(" | ")}: ${error.message}`); });
+    const { outcomes, violations } = JSON.parse(await frame.$eval("#report", (node) => node.textContent));
+    await sleep(1500);
+    assert.equal(outcomes.webrtc, "removed", "WebRTC is still there");
+    for (const name of ["fetch", "xhr", "import", "sendBeacon"]) assert.notEqual(outcomes[name], "loaded", name);
+    // The declared elements: none that fetches is in the document.
+    const declared = await frame.$$eval("#declared *", (nodes) => nodes.map((node) => `${node.localName} ${node.getAttribute("href") ?? node.getAttribute("src") ?? node.getAttribute("data") ?? node.getAttribute("action") ?? node.getAttribute("ping") ?? ""}`).filter((text) => /127\.0\.0\.1/.test(text)));
+    assert.deepEqual(declared, [], "a JSX element that names the listener is in the document");
+    const inHead = await frame.evaluate(() => [...document.querySelectorAll("link, meta[http-equiv], base, iframe, object, embed")].map((node) => `${node.localName} ${node.getAttribute("href") ?? node.getAttribute("src") ?? ""}`).filter((text) => /127\.0\.0\.1/.test(text)));
+    assert.deepEqual(inHead, [], "an element that names the listener is still in the document");
+    console.log(`leak vectors: ${Object.keys(outcomes).length} DOM vectors, ${violations.length} CSP violation kinds (${violations.join(",")}); listener: requests=${beacon.requests.length} tcp=${beacon.connections} upgrades=${beacon.upgrades} udp=${beacon.udpPackets}`);
+    assert.deepEqual(beacon.requests, [], `a vector reached the listener: ${JSON.stringify(beacon.requests)}`);
+    assert.equal(beacon.connections, 0, "a vector opened a connection to the listener (preconnect?)");
+    assert.equal(beacon.upgrades, 0);
+    assert.equal(beacon.udpPackets, 0, "a vector sent UDP to the listener (WebRTC?)");
+    await run.page.close();
+  }
+  // Chromium caps the speculative loads (prerender, preconnect) it starts per page, so a few leaks in one page can hide the rest:
+  // the DOM-path vectors also run in groups, one fresh page and one fresh listener each, and every group must see nothing.
+  for (const group of ["x-cd,x-comment,x-doctype", "x-attr,x-set", "x-link,x-toggle,x-xhtml,x-createElementNS", "x-replace,x-insert,x-range,x-fragment,x-template,x-import,x-adopt,x-clone", "x-outer,x-inner,x-setHTML,x-create,x-exec", "x-shadow", "x-dsd,x-document,x-custom,x-move", "x-xslt,x-observer,x-spec,x-web,x-adopted"]) {
+    await freshBeacon();
+    const run = await open("leak-vectors.jsx", { query: `&probes=only:${group}` });
+    const frame = await childFrame(run.page);
+    await frame.waitForSelector("#report[data-done=yes]", { timeout: 60_000 }).catch((error) => { throw new Error(`leak vectors ${group}: the page stopped: ${error.message}`); });
+    await sleep(1200);
+    assert.deepEqual(beacon.requests, [], `vectors ${group}: reached the listener: ${JSON.stringify(beacon.requests)}`);
+    assert.equal(beacon.connections, 0, `vectors ${group}: opened a connection to the listener`);
+    assert.equal(beacon.upgrades + beacon.udpPackets, 0, `vectors ${group}: upgrade or UDP`);
+    await run.page.close();
+  }
+  // The one class still measured to leak: the page tries to navigate itself.
+  {
+    await freshBeacon();
+    const run = await open("leak-vectors.jsx", { query: "&probes=navigation" });
+    await sleep(6000);
+    console.log(`KNOWN-LEAK (navigation attempts; not blockable from inside the frame): http requests=${JSON.stringify(beacon.requests)} tcp connections=${beacon.connections} udp packets=${beacon.udpPackets}`);
+    assert.deepEqual(beacon.requests, [], "a navigation attempt sent an HTTP request");
+    assert.equal(beacon.udpPackets, 0);
+    await run.page.close();
+  }
+
   for (const probe of ["object", "embed"]) {
     await freshBeacon();
     const run = await open("privacy.jsx", { query: `&probes=${probe}` });

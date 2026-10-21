@@ -15,6 +15,7 @@ import {
   JSX_SANDBOX_PATH,
   JSX_START_TIMEOUT_MS,
   JSX_MAX_SOURCE_CHARS,
+  buildCapabilityReply,
   buildRenderRequest,
   parseCapabilityMessage,
   parseFrameMessage,
@@ -49,12 +50,15 @@ export interface JsxSandbox {
 }
 
 /**
- * Extension point for viewer capabilities (a later slice): receives a `cap/*`
- * request from this sandbox's own frame after source, origin, version and nonce
- * checks. Without a handler (the default) every `cap/*` message is dropped
- * silently, exactly like any other unknown message.
+ * The ONE extension point for `cap/*`: receives a request from this sandbox's own
+ * frame after source, origin, version and nonce checks, and a `reply` that answers
+ * it (`cap/result`, bound to this sandbox's nonce). Without a handler (the default,
+ * and the share viewer) every `cap/*` message is dropped silently, exactly like any
+ * other unknown message. The installed-app runner registers the handler in
+ * src/apps/bridge.ts; this file decides nothing about what a request may do.
  */
-export type JsxCapabilityHandler = (request: JsxCapabilityMessage) => void;
+export type JsxCapabilityReply = (id: string, result: unknown) => void;
+export type JsxCapabilityHandler = (request: JsxCapabilityMessage, reply: JsxCapabilityReply) => void;
 
 export interface JsxSandboxOptions {
   readonly onCapability?: JsxCapabilityHandler;
@@ -98,6 +102,9 @@ export function createJsxSandbox(doc: Document, options: JsxSandboxOptions = {})
   let lastRestore = 0;
 
   const post = (request: JsxRenderRequest): void => iframe.contentWindow?.postMessage(request, "*");
+  const reply: JsxCapabilityReply = (id, result) => {
+    if (!destroyed) iframe.contentWindow?.postMessage(buildCapabilityReply(nonce, id, result), "*");
+  };
   const settle = (error?: JsxRenderError): void => {
     if (pending === undefined) return;
     clearTimeout(pending.timeout);
@@ -111,7 +118,11 @@ export function createJsxSandbox(doc: Document, options: JsxSandboxOptions = {})
     if (destroyed || event.source !== iframe.contentWindow || event.origin !== "null") return;
     // The one place the reserved capability namespace is decided.
     const capability = parseCapabilityMessage(event.data, nonce);
-    if (capability !== undefined) { options.onCapability?.(capability); return; }
+    if (capability !== undefined) {
+      // A handler that throws must not break the message loop; the frame's own call times out.
+      try { options.onCapability?.(capability, reply); } catch { /* dropped */ }
+      return;
+    }
     const message = parseFrameMessage(event.data, nonce);
     if (message === undefined) return;
     switch (message.type) {

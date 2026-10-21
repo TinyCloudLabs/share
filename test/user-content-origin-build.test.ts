@@ -58,6 +58,16 @@ describe("built viewer and the user-content origin", () => {
     for (const directive of ["frame-src", "connect-src"]) {
       expect(new RegExp(`Content-Security-Policy:[^\\n]*${directive}[^;\\n]*${ORIGIN}`).test(headers), `_headers ${directive}`).toBe(true);
     }
+
+    // /courier renders the same markdown and diagrams: its page policy and its header agree, and both name the origin (the header adds only frame-ancestors).
+    const courierMeta = /<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(readFileSync(join(out, "courier/index.html"), "utf8"))?.[1] ?? "";
+    for (const directive of ["frame-src", "connect-src"]) {
+      expect(new RegExp(`${directive}[^;]*${ORIGIN}`).test(courierMeta), `courier meta ${directive}`).toBe(true);
+    }
+    for (const route of ["/courier", "/courier/"]) {
+      const section = headers.split(/\n\n+/).find((candidate) => candidate.startsWith(`${route}\n`)) ?? "";
+      expect(section, route).toContain(`Content-Security-Policy: ${courierMeta}; frame-ancestors 'none'`);
+    }
   }, 180_000);
 
   it("names no user-content origin anywhere when none is configured", async () => {

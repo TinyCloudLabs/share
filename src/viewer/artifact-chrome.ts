@@ -9,7 +9,33 @@ export interface ArtifactChrome {
   destroy(): void;
 }
 
-export type ArtifactChromeIcon = "link" | "copy" | "download" | "share";
+export type ArtifactChromeIcon = "link" | "copy" | "download" | "share" | "save";
+
+/**
+ * A long action that runs to success once (Save a copy). The bar shows it as
+ * pending, says when an approval window is open, then keeps a lasting done
+ * message and does not run again. A failure puts the button back so it can be
+ * tried again. Its messages have a live region of their own, so a Copy toast
+ * that fades never replaces them.
+ */
+/** Which approval is open: the n-th of up to `of`. */
+export interface ArtifactChromeStep {
+  readonly n: number;
+  readonly of: number;
+}
+
+export interface ArtifactChromeJob {
+  /** The button's label and the lasting line while the job runs. */
+  readonly pendingLabel: string;
+  readonly pendingMessage: string;
+  /** Shown (and announced) while the job reports an open approval; `step` says which one, when the job knows. */
+  readonly approvalMessage: (step?: ArtifactChromeStep) => string;
+  readonly doneLabel: string;
+  /** Plain words for a rejection; `neutral` is a choice or a wait, not a fault. */
+  readonly failure: (error: unknown) => { readonly message: string; readonly neutral: boolean };
+  /** Resolves with the lasting line to show when the job is done (it may name what was made). Set as text, never as HTML. */
+  readonly start: (progress: { approval(open: boolean, step?: ArtifactChromeStep): void }) => Promise<{ readonly doneMessage: string }>;
+}
 
 export interface ArtifactChromeAction {
   readonly label: string;
@@ -24,6 +50,8 @@ export interface ArtifactChromeAction {
   readonly failMessage?: string;
   /** Rejecting shows `failMessage`; resolving shows `doneMessage`. */
   readonly run?: () => Promise<void> | void;
+  /** A pending/approval/done action instead of `run`. */
+  readonly job?: ArtifactChromeJob;
   /** One line of help, as a tooltip and as the button's accessible description. */
   readonly hint?: string;
   /** A disabled action explains itself through this text. */
@@ -54,6 +82,7 @@ const ICON_PATHS: Readonly<Record<ArtifactChromeIcon, readonly string[]>> = {
   copy: ["M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1z", "M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"],
   download: ["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"],
   share: ["M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7", "M16 6l-4-4-4 4", "M12 2v13"],
+  save: ["M12 13v8", "M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242", "m16 16-4-4-4 4"],
 };
 
 function icon(doc: Document, name: ArtifactChromeIcon): SVGSVGElement {
@@ -130,16 +159,32 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   const status = el(doc, "span", "artifact-chrome-status");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
+  // The Copy and Download results fade; a job's messages (pending, approval, done) are separate, so one never replaces the other.
+  const toasts = el(doc, "div", "artifact-chrome-toasts");
   const toast = el(doc, "p", "artifact-chrome-toast");
   toast.setAttribute("role", "status");
   toast.setAttribute("aria-live", "polite");
+  const jobToast = el(doc, "p", "artifact-chrome-toast artifact-chrome-toast--job");
+  jobToast.setAttribute("role", "status");
+  jobToast.setAttribute("aria-live", "polite");
+  toasts.append(toast, jobToast);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  let jobTimer: ReturnType<typeof setTimeout> | undefined;
+  let alive = true;
   const say = (value: string, alert = false): void => {
-    if (toastTimer !== undefined) clearTimeout(toastTimer);
+    clearTimeout(toastTimer);
     toast.setAttribute("role", alert ? "alert" : "status");
     toast.dataset["tone"] = alert ? "danger" : "info";
     toast.textContent = value;
     toastTimer = setTimeout(() => { toast.textContent = ""; toastTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
+  };
+  /** `lasting` keeps the message until the job says something else: an open approval or a finished save must not fade while someone is reading or acting on it. */
+  const jobSay = (value: string, alert = false, lasting = true): void => {
+    clearTimeout(jobTimer);
+    jobToast.setAttribute("role", alert ? "alert" : "status");
+    jobToast.dataset["tone"] = alert ? "danger" : "info";
+    jobToast.textContent = value;
+    if (!lasting) jobTimer = setTimeout(() => { jobToast.textContent = ""; jobTimer = undefined; }, alert ? TOAST_ALERT_MS : TOAST_MS);
   };
 
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -162,6 +207,41 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
       button.setAttribute("aria-describedby", hint.id);
       button.title = action.hint;
       actions.append(hint);
+    }
+    const job = action.job;
+    if (job !== undefined) {
+      let running = false;
+      let finished = false;
+      // aria-disabled, not disabled: the button keeps focus while it works and after it is done.
+      const settle = (): void => {
+        button.toggleAttribute("aria-busy", running);
+        button.setAttribute("aria-disabled", String(running || finished));
+      };
+      button.addEventListener("click", () => {
+        if (running || finished) return;
+        running = true;
+        settle();
+        text.textContent = job.pendingLabel;
+        jobSay(job.pendingMessage);
+        void (async () => {
+          try {
+            const done = await job.start({ approval: (open, step) => { if (alive && running) jobSay(open ? job.approvalMessage(step) : job.pendingMessage); } });
+            finished = true;
+            text.textContent = job.doneLabel;
+            if (alive) jobSay(done.doneMessage);
+          } catch (error) {
+            text.textContent = action.label;
+            const failure = job.failure(error);
+            if (alive) jobSay(failure.message, !failure.neutral, false);
+          } finally {
+            running = false;
+            settle();
+          }
+        })();
+      });
+      actions.append(button);
+      buttons.push(button);
+      continue;
     }
     let attempt = 0;
     button.addEventListener("click", () => {
@@ -204,7 +284,7 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
   render();
   // The pill takes the bar's place in reading and Tab order.
   mount.prepend(bar, pill);
-  mount.append(toast, status);
+  mount.append(toasts, status);
 
   const setHidden = (value: boolean, focus: boolean): void => {
     hidden = value;
@@ -225,12 +305,14 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
 
   return {
     destroy(): void {
+      alive = false;
       view.removeEventListener("keydown", onKeyDown);
       for (const timer of timers) clearTimeout(timer);
-      if (toastTimer !== undefined) clearTimeout(toastTimer);
+      clearTimeout(toastTimer);
+      clearTimeout(jobTimer);
       bar.remove();
       pill.remove();
-      toast.remove();
+      toasts.remove();
       status.remove();
       delete mount.dataset["chrome"];
     },

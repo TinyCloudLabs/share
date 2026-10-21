@@ -47,10 +47,10 @@ export class JsxModuleIntegrityError extends Error {
 }
 
 /** File ids a render needs: every always-present file plus one per known imported specifier. */
-export function requiredFileIds(manifest: JsxManifest, specifiers: readonly string[]): string[] {
+export function requiredFileIds(manifest: JsxManifest, specifiers: readonly string[], allowRunnerModules = false): string[] {
   const ids = new Set<string>(JSX_MODULE_SPECS.filter((spec) => spec.always).map((spec) => spec.id));
   for (const specifier of specifiers) {
-    const id = fileIdForSpecifier(manifest, specifier);
+    const id = fileIdForSpecifier(manifest, specifier, allowRunnerModules);
     if (id !== undefined) ids.add(id);
   }
   return [...ids];
@@ -64,6 +64,8 @@ export interface LoadModulesOptions {
   readonly fetch?: typeof fetch;
   /** Where the library files are served from; defaults to the build's user-content origin. */
   readonly userContentOrigin?: string;
+  /** The installed-app runner only: also load the `@tinycloud/app` client when the source imports it. */
+  readonly allowRunnerModules?: boolean;
 }
 
 /**
@@ -73,7 +75,7 @@ export interface LoadModulesOptions {
 export async function loadJsxModules(manifest: JsxManifest, source: string, options: LoadModulesOptions = {}): Promise<Record<string, string>> {
   const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   const origin = options.userContentOrigin ?? USER_CONTENT_ORIGIN;
-  const ids = requiredFileIds(manifest, scanImportSpecifiers(source));
+  const ids = requiredFileIds(manifest, scanImportSpecifiers(source), options.allowRunnerModules === true);
   const entries = await Promise.all(ids.map(async (id): Promise<[string, string]> => {
     const file = manifest.files[id];
     if (file === undefined) throw new JsxModuleIntegrityError(id, "not in the build manifest");

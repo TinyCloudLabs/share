@@ -384,6 +384,105 @@ body {
   list-style-type: disclosure-open;
 }
 
+/* Install sheet: plain statements, then the live state of the install. */
+.apps-notice {
+  align-items: flex-start;
+  margin: 0;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border-radius: var(--tc-radius-md);
+  font-weight: var(--tc-weight-semibold);
+  line-height: var(--tc-leading-ui);
+}
+
+.apps-notice::before {
+  flex: 0 0 auto;
+  margin-top: 0.45em;
+}
+
+.apps-unavailable {
+  display: grid;
+  gap: var(--tc-space-1);
+  font-weight: var(--tc-weight-regular, 400);
+  overflow-wrap: anywhere;
+}
+
+.apps-unavailable strong {
+  font-weight: var(--tc-weight-semibold);
+}
+
+.apps-unavailable::before {
+  display: none;
+}
+
+.apps-notes {
+  display: grid;
+  gap: var(--tc-space-2);
+  margin: 0;
+  padding-left: var(--tc-space-5);
+}
+
+.apps-notes code {
+  overflow-wrap: anywhere;
+}
+
+.apps-notes--strong {
+  font-weight: var(--tc-weight-semibold);
+}
+
+.apps-badge {
+  color: var(--tc-color-text);
+}
+
+.apps-sheet__footer--install {
+  display: grid;
+  gap: var(--tc-space-3);
+}
+
+.apps-install-status {
+  display: grid;
+  gap: var(--tc-space-2);
+}
+
+.apps-install-status:empty {
+  display: none;
+}
+
+.apps-install-status p {
+  margin: 0;
+}
+
+.apps-install-line {
+  align-items: flex-start;
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border-radius: var(--tc-radius-md);
+  font-size: var(--tc-text-sm);
+  line-height: var(--tc-leading-ui);
+}
+
+.apps-install-line::before {
+  flex: 0 0 auto;
+  margin-top: 0.45em;
+}
+
+.apps-install-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-3);
+}
+
+/* The inline panel an install or repair reports in, under the app's card: the page stays live while OpenKey's window is up. */
+.apps-install-panel {
+  display: grid;
+  gap: var(--tc-space-3);
+  padding-top: var(--tc-space-3);
+  border-top: 1px dotted var(--tc-color-border);
+}
+
+.apps-install-panel:focus-visible {
+  outline: 2px solid var(--tc-color-accent);
+  outline-offset: 4px;
+}
+
 .apps-skeleton {
   display: grid;
   gap: var(--tc-space-3);

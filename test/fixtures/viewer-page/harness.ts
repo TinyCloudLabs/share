@@ -9,6 +9,7 @@ import "../../../src/viewer/viewer.css";
 import { presentShare } from "../../../src/viewer/present.js";
 import { presentationEnvelope } from "../../../src/viewer/resolve.js";
 import { renderLinkNeeded, renderShareUnavailable } from "../../../src/viewer/ui.js";
+import { SaveCopyError, type SaveFailureReason, type SaveToTinyCloud } from "../../../src/viewer/save-copy.js";
 import report from "./report.md?raw";
 import page from "./page.html?raw";
 import gaps from "./gaps.html?raw";
@@ -25,6 +26,21 @@ history.replaceState(null, "", `${location.pathname}${location.search}`);
 const root = document.getElementById("viewer")!;
 document.documentElement.classList.remove("viewer-first-paint");
 
+/**
+ * `?save=control` offers Save a copy with a save the e2e settles by hand
+ * (`window.__saveControl`), so every state of the bar can be looked at. The
+ * real sign-in is exercised by the joined gate, not here.
+ */
+const saveToTinyCloud: SaveToTinyCloud = (copy, progress) => new Promise((resolve, reject) => {
+  Object.assign(window, {
+    __saveControl: {
+      copy,
+      approval: progress.approval,
+      resolve: (name = "q3-agent-report.md") => resolve({ path: `files-for-you/v1/${encodeURIComponent(name)}`, name }),
+      reject: (reason: SaveFailureReason) => reject(new SaveCopyError(reason)),
+    },
+  });
+});
 try {
   const state = params.get("state");
   if (state === "needs-link") {
@@ -51,7 +67,7 @@ try {
         display: { filename },
         expiresAt: "2030-01-01T00:00:00.000Z",
       } as Parameters<typeof presentationEnvelope>[0]),
-    }, { shareUrl: `${location.origin}/viewer#tc1=harness-secret` });
+    }, { shareUrl: `${location.origin}/viewer#tc1=harness-secret`, ...(params.get("save") === null ? {} : { saveToTinyCloud }) });
   }
   document.documentElement.dataset.ready = "yes";
 } catch (error) {

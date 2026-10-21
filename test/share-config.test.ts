@@ -17,6 +17,7 @@ describe("Share public routing config", () => {
     expect(redirects).toContain("/share /share/ 200");
     expect(redirects).toContain("/viewer /viewer/ 200");
     expect(redirects).toContain("/apps /apps/ 200");
+    expect(redirects).toContain("/apps/run /apps/run/ 200");
     expect(redirects).toContain("/s/* /viewer/ 200");
     // Pages serves foo.html at /foo and 308s /foo.html to /foo, so a rewrite to a .html file loops.
     expect(redirects).not.toMatch(/^\S+\s+\/\S*\.html\s+200/m);
@@ -40,7 +41,8 @@ describe("Share public routing config", () => {
   });
 
   it("lets the browser contact any HTTPS owner node while application trust stays registry-bound", () => {
-    const headers = readFileSync("public/_headers", "utf8");
+    // /courier is the one page with an exact host list (test/courier-route.test.ts): its rules are not part of this invariant.
+    const headers = readFileSync("public/_headers", "utf8").split(/\n\n+/).filter((section) => !section.startsWith("/courier")).join("\n\n");
     const documents = ["share/index.html", "viewer/index.html"].map((path) => readFileSync(path, "utf8"));
     for (const policy of [headers, ...documents]) {
       expect(policy).toContain("connect-src 'self' https:;");

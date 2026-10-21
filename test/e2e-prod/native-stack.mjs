@@ -20,6 +20,7 @@ const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "he
 const ISSUER_SEED = Buffer.alloc(32, 67);
 const NODE_SECRET = Buffer.from("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "hex");
 const WALLET = privateKeyToAccount(`0x${"55".repeat(32)}`);
+const RECIPIENT_WALLET = privateKeyToAccount(`0x${"66".repeat(32)}`);
 const CANONICAL = Object.freeze({
   share: "https://share.tinycloud.xyz",
   node: "https://tee.node.tinycloud.xyz",
@@ -260,19 +261,22 @@ async function bootNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }
     overridden,
   };
 
-  const openKeyOrigin = await loopback((request, response) => {
+  // One OpenKey widget per wallet: the sender's, and a different account for a recipient who saves a copy.
+  const openKeyFor = (wallet) => loopback((request, response) => {
     if (request.method === "GET" && request.url?.startsWith("/widget/")) {
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(openKeyWidgetHtml(WALLET.address)); return;
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(openKeyWidgetHtml(wallet.address)); return;
     }
     if (request.method !== "POST" || request.url !== "/sign") { response.writeHead(404).end(); return; }
     const chunks = []; request.on("data", (chunk) => chunks.push(chunk)); request.on("end", async () => {
       try {
         const { message } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        const signature = await WALLET.signMessage({ message });
-        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ address: WALLET.address, signature }));
+        const signature = await wallet.signMessage({ message });
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify({ address: wallet.address, signature }));
       } catch { response.writeHead(400).end(); }
     });
   }, servers);
+  const openKeyOrigin = await openKeyFor(WALLET);
+  const recipientOpenKeyOrigin = await openKeyFor(RECIPIENT_WALLET);
 
   const mail = [];
   const mailOrigin = await loopback((request, response) => {
@@ -384,8 +388,8 @@ async function bootNativeStack({ root, nodeRoot, credentialsRoot, registryRoot }
   assert.equal((await fetch(`${credentialsOrigin}/v1/credential-invitations`, { method: "OPTIONS", headers: { origin: CANONICAL.share, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } })).status, 200);
 
   return {
-    canonical: CANONICAL, walletAddress: WALLET.address, provenance,
-    services: { openKeyOrigin, nodeOrigin, credentialsOrigin, registryOrigin, mailOrigin },
+    canonical: CANONICAL, walletAddress: WALLET.address, recipientWalletAddress: RECIPIENT_WALLET.address, provenance,
+    services: { openKeyOrigin, recipientOpenKeyOrigin, nodeOrigin, credentialsOrigin, registryOrigin, mailOrigin },
     mail,
     // Tail of the witness output; it logs fixed stage labels, never request data.
     credentialsLog: () => children.find(({ child }) => child === credentials)?.output() ?? "",

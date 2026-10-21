@@ -71,6 +71,17 @@ install a CLI there first (`npm install --prefix /tmp/tc500-cli
 the recipient (TC-1424, fixed by TinyCloudLabs/js-sdk#581). It turns green once
 a CLI containing that fix is used.
 
+The recipient page also asks the owner Node whether the share can still open
+before it offers a code (`GET /policy/v3/status/<root CID>`, public, for each of
+the invitation's two policy roots). A live share reads `active` for both roots
+before the "Email me a code" button appears and again after the click. After
+the first email share is revoked, opening its invitation link in a fresh
+context must show "This share is no longer available" and make no
+OpenCredentials, OpenKey or Node POST request, send no mail, and create no key
+or browser storage; the stage also checks the screen with axe (WCAG 2 A/AA, 390
+and 1440 px, light and dark) and probes the real Node for the CORS header on the
+status route. `TC1582_SHOT_DIR` saves the four screenshots.
+
 Revoking after a new sign-in is part of the journey. The sender page keeps no
 session across a load, so each stage that reloads it and signs in again makes a
 new session key: the key that signed the earlier shares is gone. The domain
@@ -81,6 +92,22 @@ still open (a revoke reaches only its own delegation), and finally that
 link-only share is revoked from another new sign-in and must fail closed.
 `TC500_SKIP_CLI_SENDER=1` runs every browser stage without the `tc` CLI leg; the
 artifact then reports `partial-passed`, never `passed`.
+
+After the link-only revoke, the `save-copy` stage runs. The sender shares a
+markdown file (multi-byte text, a table) as a link-only share. A recipient with
+a different OpenKey account (the stack serves a second fixture wallet for it)
+opens the link: before the click the trace holds no OpenKey request and no
+credential or policy ceremony. The click runs the OpenKey sign-in, hosts the
+recipient's `files-for-you` space and writes the file; the live region must say
+pending, the approval hint and "Saved to your TinyCloud files as “<name>”." in that order
+(the second Save must name `<name> (2).md`), the
+node must receive one write whose SHA-256 is the original's, and no storage
+entry (localStorage, sessionStorage, cookie, IndexedDB) may exist. The number of
+OpenKey approvals each Save asked for is recorded in the artifact. The copy is then read back through the
+product's own sign-in helper and must equal the original byte for byte. A second
+Save from a new browser context must keep both copies (`<name> (2).md`). Finally
+the owner revokes the original from a new sign-in: a new reader gets no Save and
+no content, and the recipient's copies are unchanged.
 
 No CI workflow runs this gate; it is a manual release check.
 
