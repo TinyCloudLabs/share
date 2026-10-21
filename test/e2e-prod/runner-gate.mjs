@@ -852,14 +852,16 @@ try {
   // refusals (blocked form, wrong target origin) are logged by the browser in its phase and are the point of it.
   const expectedConsole = [/^Failed to load resource: the server responded with a status of (?:400|401|404|412) /, /^Failed to load resource: net::ERR_FAILED$/, /^Error with Permissions-Policy header: Unrecognized feature: 'web-share'\.$/, /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/];
   // axe (injected by this script to scan a state) messages each frame with the frame's URL as target origin, and the browser warns for an opaque frame: noise from the probe, not the page.
-  // A console error is accepted from the hostile app's open phase only when it is the browser's blocked-request message for that app. Any other error or warning still fails.
+  // A console error is accepted from the hostile app's open phase only when it is the browser's blocked-request message from the app's frame: its srcdoc child or the jsx-sandbox bridge document. The runner page's own refusal fails, as does any other error or warning.
   const hostileRefusals = [/^Connecting to '[^']*' violates the following Content Security Policy directive: "[^"]*"\. The action has been blocked\.$/, /^Fetch API cannot load \S+\. Refused to connect because it violates the document's Content Security Policy\.$/];
-  const isHostileRefusal = (entry) => entry.phase === `open-${HOSTILE}` && entry.type === "error" && hostileRefusals.some((pattern) => pattern.test(entry.text));
-  // Self-test of that predicate: the observed refusal is accepted; an untagged copy of it and a tagged non-CSP error are not.
+  const appFrameAt = (entry) => entry.at.startsWith("about:srcdoc:") || /\/jsx-sandbox\.html(?:[#?:]|$)/.test(entry.at);
+  const isHostileRefusal = (entry) => entry.phase === `open-${HOSTILE}` && entry.type === "error" && appFrameAt(entry) && hostileRefusals.some((pattern) => pattern.test(entry.text));
+  // Self-test of that predicate: the app frame's refusal is accepted; the runner page's copy, an untagged copy and a non-CSP error are not.
   const refusalText = "Connecting to 'http://127.0.0.1:1/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.";
-  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", text: refusalText }), true, "self-test: the hostile app's refusal is accepted");
-  assert.equal(isHostileRefusal({ phase: "run-expiry", type: "error", text: refusalText }), false, "self-test: an untagged CSP message is not accepted");
-  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", text: "Failed to load resource: the server responded with a status of 500 (Internal Server Error)" }), false, "self-test: a tagged non-CSP error is not accepted");
+  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "about:srcdoc:4", text: refusalText }), true, "self-test: the hostile app's refusal is accepted");
+  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "/apps/run:12", text: refusalText }), false, "self-test: the runner page's own CSP refusal is not accepted");
+  assert.equal(isHostileRefusal({ phase: "run-expiry", type: "error", at: "about:srcdoc:4", text: refusalText }), false, "self-test: an untagged CSP message is not accepted");
+  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "about:srcdoc:4", text: "Failed to load resource: the server responded with a status of 500 (Internal Server Error)" }), false, "self-test: a tagged non-CSP error is not accepted");
   const unexpected = consoleLog.filter((entry) => entry.phase !== "run-hostile" && !isHostileRefusal(entry) && !entry.at.startsWith("pptr:") && !expectedConsole.some((pattern) => pattern.test(entry.text)));
   assert.deepEqual(unexpected, [], "the browser logged something unexpected");
   report.consoleTexts = [...new Set(consoleLog.map((entry) => `${entry.phase === "run-hostile" ? "hostile: " : ""}${entry.type}: ${entry.text.slice(0, 110)}`))].sort();

@@ -94,7 +94,7 @@ async function installRouting(page, stack, candidatePort) {
     window.__violations = [];
     document.addEventListener("securitypolicyviolation", (event) => window.__violations.push(`${event.violatedDirective} ${event.blockedURI}`));
   });
-  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push({ phase, type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").slice(0, 240) }); });
+  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push({ phase, type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").slice(0, 240), at: `${message.location()?.url ?? ""}:${message.location()?.lineNumber ?? ""}`.replace(/^https:\/\/[^/]+/, "").slice(0, 120) }); });
   page.on("pageerror", (error) => consoleLog.push({ phase, type: "pageerror", text: String(error?.message ?? "page error").slice(0, 240) }));
   await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
@@ -475,13 +475,21 @@ try {
   // ---- Browser diagnostics: nothing but the fresh-account bootstrap answers and the create-only 412s; no CSP violations (checked per page above).
   const pageErrors = consoleLog.filter((entry) => entry.type === "pageerror");
   assert.deepEqual(pageErrors, [], "a page error was raised");
-  const unexpected = consoleLog.filter((entry) => !(
+  // The browser's postMessage warning is accepted only from axe's injected probe (its evaluate source is `pptr:`) and only with the exact text. Any other source fails.
+  const postMessageWarning = /^Failed to execute 'postMessage' on 'DOMWindow': The target origin provided \('[^']*'\) does not match the recipient window's origin \('[^']*'\)\.$/;
+  const allowedConsole = (entry) => (
     (entry.type === "error" && /^Failed to load resource: the server responded with a status of (?:400|404|412) /.test(entry.text))
     || (entry.type === "error" && /^Failed to load resource: net::ERR_FAILED$/.test(entry.text))
     || (entry.type === "warn" && /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/.test(entry.text))
     || (entry.type === "warn" && /^Error with Permissions-Policy header: Unrecognized feature: 'web-share'\.$/.test(entry.text))
-    || (entry.type === "warn" && /^Failed to execute 'postMessage' on 'DOMWindow': The target origin provided/.test(entry.text))
-  ));
+    || (entry.type === "warn" && entry.at?.startsWith("pptr:") && postMessageWarning.test(entry.text))
+  );
+  // Self-test: the axe probe's warning is accepted; the same warning from the page, and an own-page CSP message, are not.
+  const postMessageText = "Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('<url>') does not match the recipient window's origin ('null').";
+  assert(allowedConsole({ type: "warn", at: "pptr:evaluate", text: postMessageText }), "self-test: the axe probe's postMessage warning is accepted");
+  assert(!allowedConsole({ type: "warn", at: "/apps/:12", text: postMessageText }), "self-test: a postMessage warning outside the axe probe is not accepted");
+  assert(!allowedConsole({ type: "error", at: "/apps/:12", text: "Connecting to '<url>' violates the following Content Security Policy directive: \"connect-src 'self'\". The action has been blocked." }), "self-test: an own-page CSP message is not accepted");
+  const unexpected = consoleLog.filter((entry) => !allowedConsole(entry));
   assert.deepEqual(unexpected, [], "the browser logged something unexpected");
   const allowedHosts = new Set([stack.canonical.share, stack.canonical.node, stack.canonical.registry, "https://openkey.so"]);
   assert(trace.every((entry) => entry.protocol === "data:" || allowedHosts.has(entry.origin) || entry.origin === "null" || entry.origin.startsWith("data") || entry.origin.startsWith("blob")), "a request left the allowed origins");
