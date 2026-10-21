@@ -3,7 +3,7 @@
 # Usage: ./smoke.sh <base-url>   e.g. ./smoke.sh https://share.tinycloud.xyz
 # Creates one link with a one-hour TTL, checks GET headers and bytes, checks a
 # wrong-token DELETE and the uniform 404, deletes the link, and checks the 404
-# after delete. Needs curl. Prints no tokens, ciphertext, or response bodies.
+# after delete. Needs curl and node. Prints no tokens, ciphertext, or response bodies.
 set -eu
 
 if [ "$#" -ne 1 ]; then
@@ -29,9 +29,12 @@ expect_header() {
 expect_not_found() {
   label="$1"
   shift
-  code="$(curl -sS -o "$WORK/nf.json" -w '%{http_code}' "$@")"
+  code="$(curl -sS -D "$WORK/nf.headers" -o "$WORK/nf.json" -w '%{http_code}' "$@")"
   [ "$code" = "404" ] || fail "$label: expected 404, got $code"
   [ "$(cat "$WORK/nf.json")" = '{"error":"not_found"}' ] || fail "$label: body is not the uniform 404"
+  if grep -qi '^access-control-' "$WORK/nf.headers"; then
+    fail "$label: 404 returned a CORS header"
+  fi
   echo "ok: $label -> 404 uniform"
 }
 
@@ -59,6 +62,9 @@ expect_header "$WORK/get.headers" 'content-disposition: attachment' 'GET content
 expect_header "$WORK/get.headers" 'x-content-type-options: nosniff' 'GET nosniff missing'
 expect_header "$WORK/get.headers" 'x-share-cid: bafkrei' 'GET X-Share-Cid missing'
 expect_header "$WORK/get.headers" 'cache-control: no-store' 'GET no-store missing'
+expect_header "$WORK/get.headers" 'content-security-policy: default-src.*sandbox' 'GET CSP missing'
+expect_header "$WORK/get.headers" 'cross-origin-resource-policy: same-origin' 'GET CORP missing'
+expect_header "$WORK/get.headers" 'x-share-expires: [0-9]{4}-' 'GET X-Share-Expires missing'
 if grep -qi '^access-control-' "$WORK/get.headers"; then
   fail "GET returned a CORS header"
 fi

@@ -1,8 +1,10 @@
 name = "share-links"
 main = "src/index.ts"
 compatibility_date = "2025-09-01"
+workers_dev = false
 
 routes = [
+  { pattern = "share.tinycloud.xyz/api/share-links", zone_name = "tinycloud.xyz" },
   { pattern = "share.tinycloud.xyz/api/share-links/*", zone_name = "tinycloud.xyz" }
 ]
 

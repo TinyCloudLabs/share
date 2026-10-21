@@ -53,6 +53,20 @@ function deleteRequest(id: string, token: string | null): Request {
 }
 
 describe("POST /api/share-links", () => {
+  it("routes only the exact collection path to create", async () => {
+    const test = makeTestDb();
+    const exact = await handleRequest(createRequest("198.51.100.30", validBody()), envFor(test), NOW);
+    expect(exact.status).toBe(201);
+    const longer = new Request(`${BASE}X`, {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "198.51.100.31", "Content-Type": "application/json" },
+      body: JSON.stringify(validBody()),
+    });
+    const response = await handleRequest(longer, envFor(test), NOW);
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe(NOT_FOUND_BODY);
+  });
+
   it("returns 201 with id, CID, and delete token, and no-store caching", async () => {
     const test = makeTestDb();
     const response = await handleRequest(createRequest("198.51.100.1", validBody()), envFor(test), NOW);
@@ -113,6 +127,28 @@ describe("POST /api/share-links", () => {
     expect(response.status).toBe(429);
     expect(await response.json()).toEqual({ error: "rate_limited" });
     expect(Number(response.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shares one create bucket across IPv6 addresses in the same /64", async () => {
+    const test = makeTestDb();
+    for (let i = 1; i <= 10; i++) {
+      await create(test, `2001:db8:1:2::${i.toString(16)}`);
+    }
+    const sameSubnet = await handleRequest(createRequest("2001:db8:1:2:ffff::1", validBody()), envFor(test), NOW);
+    expect(sameSubnet.status).toBe(429);
+    const otherSubnet = await handleRequest(createRequest("2001:db8:1:3::1", validBody()), envFor(test), NOW);
+    expect(otherSubnet.status).toBe(201);
+  });
+
+  it("keys IPv4-mapped IPv6 as the IPv4 address and keeps neighbouring IPv4 addresses separate", async () => {
+    const test = makeTestDb();
+    for (let i = 0; i < 10; i++) {
+      await create(test, "::ffff:198.51.100.7");
+    }
+    const mapped = await handleRequest(createRequest("198.51.100.7", validBody()), envFor(test), NOW);
+    expect(mapped.status).toBe(429);
+    const neighbour = await handleRequest(createRequest("198.51.100.8", validBody()), envFor(test), NOW);
+    expect(neighbour.status).toBe(201);
   });
 
   it("returns 503 capacity when the live-byte cap would be exceeded", async () => {
@@ -207,6 +243,17 @@ describe("DELETE /api/share-links/<id>", () => {
       expect(response.status).toBe(404);
       expect(await response.text()).toBe(NOT_FOUND_BODY);
     }
+  });
+
+  it("rate-limits deletes to 120 per minute per client", async () => {
+    const test = makeTestDb();
+    const probe = "a".repeat(26);
+    for (let i = 0; i < 120; i++) {
+      await handleRequest(deleteRequest(probe, null), envFor(test), NOW);
+    }
+    const response = await handleRequest(deleteRequest(probe, null), envFor(test), NOW);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: "rate_limited" });
   });
 });
 

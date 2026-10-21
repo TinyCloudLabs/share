@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { base32Lower, base64UrlDecode, base64UrlEncode, cidForBytes, newShareId } from "../src/encoding";
 
@@ -9,7 +10,7 @@ interface Vector {
 }
 
 const VECTORS: Vector[] = JSON.parse(
-  readFileSync(`${process.env.HOME}/scratch/artifacts/ship/shortlink-vectors.json`, "utf8"),
+  readFileSync(fileURLToPath(new URL("../../../test/fixtures/shortlink-vectors.json", import.meta.url)), "utf8"),
 );
 
 describe("base32Lower", () => {

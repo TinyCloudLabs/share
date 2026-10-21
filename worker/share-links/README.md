@@ -10,7 +10,7 @@ Base path: `/api/share-links` on `share.tinycloud.xyz`.
 | --- | --- | --- | --- |
 | POST | `/api/share-links` | 201 `{id, cid, deleteToken}` | Body `{ciphertext, expiresAt}`. `ciphertext` is unpadded base64url, 1..131072 decoded bytes. `expiresAt` is canonical UTC with milliseconds and `Z`. TTL 120 s to 400 days. |
 | GET | `/api/share-links/<id>` | 200 raw bytes | `application/octet-stream`, `Content-Disposition: attachment; filename="share.bin"`, `X-Share-Cid`, `X-Share-Expires`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`. No CORS headers. |
-| DELETE | `/api/share-links/<id>` | 204 | Requires `Authorization: Bearer <deleteToken>`. |
+| DELETE | `/api/share-links/<id>` | 204 | Requires `Authorization: Bearer <deleteToken>`. Rate-limited. |
 
 Errors:
 
@@ -22,9 +22,9 @@ Errors:
 ## Limits
 
 - Create: 10 per minute and 200 per day per client.
-- Read: 120 per minute per client.
+- Read and delete: 120 per minute per client each.
 - Global: 20,000 live rows and 2 GiB of live ciphertext.
-- Client identity is `CF-Connecting-IP`, hashed with a salt before storage.
+- Client identity is `CF-Connecting-IP`, reduced to a rate-limit key and hashed with a salt before storage. IPv4 keys on the full address. IPv6 keys on the /64 prefix. IPv4-mapped IPv6 keys on its IPv4 address.
 - Create request bodies are capped at 184,320 bytes while reading, before JSON parsing.
 
 ## Storage
@@ -74,13 +74,13 @@ cd worker/share-links
 
 Tests run against an in-memory SQLite database (`node:sqlite`, `test/helpers/d1.ts`) that applies the production migration. They do not exercise Workers runtime or real D1.
 
-`test/encoding.test.ts` checks CIDs against the shared vector file at `~/scratch/artifacts/ship/shortlink-vectors.json`.
+`test/encoding.test.ts` checks CIDs against `test/fixtures/shortlink-vectors.json`, a byte-identical copy of the shared vector file `~/scratch/artifacts/ship/shortlink-vectors.json`.
 
 ## Deploy order
 
 1. Apply the migration to the target D1 database before deploying the Worker.
 2. Deploy the Worker with `wrangler deploy`.
-3. Confirm the route `share.tinycloud.xyz/api/share-links/*` and the cron trigger in the Cloudflare dashboard.
+3. Confirm the routes `share.tinycloud.xyz/api/share-links` and `share.tinycloud.xyz/api/share-links/*` and the cron trigger in the Cloudflare dashboard.
 4. Run the smoke script: `./smoke.sh https://share.tinycloud.xyz`. It creates one link with a one-hour TTL, checks the GET headers and bytes, checks a wrong-token DELETE and the uniform 404, deletes the link, and checks the 404 after delete.
 
 Steps 1 to 4 are performed by the release owner. Nothing here deploys automatically.
