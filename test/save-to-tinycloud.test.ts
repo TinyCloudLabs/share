@@ -156,21 +156,18 @@ describe("Save a copy: pending, approval, saved", () => {
     expect(pending.calls).toHaveLength(1);
   });
 
-  it("counts the approvals when the save says which one is open: the same words each time, with 'Approval n of up to 4' in front", async () => {
+  it("shows the same hint for every approval, with no count in front", async () => {
     const pending = pendingSave();
     await presentShare(root, share("report.md", MARKDOWN), { saveToTinyCloud: pending.save });
     saveButton()!.click();
     await vi.waitFor(() => expect(pending.calls).toHaveLength(1));
-    for (const n of [1, 2, 3, 4]) {
-      pending.progress().approval(true, { n, of: 4 });
-      expect(toast().textContent).toBe(`Approval ${n} of up to 4. ${SAVE_APPROVAL_HINT}`);
+    for (let index = 0; index < 4; index += 1) {
+      pending.progress().approval(true);
+      expect(toast().textContent).toBe(SAVE_APPROVAL_HINT);
       expect(toast().getAttribute("aria-live")).toBe("polite");
       pending.progress().approval(false);
       expect(toast().textContent).toBe("Saving a copy to your TinyCloud…");
     }
-    // Opening OpenKey is not a signature: no count.
-    pending.progress().approval(true);
-    expect(toast().textContent).toBe(SAVE_APPROVAL_HINT);
   });
 
   it("announces what was saved and where, as plain text with no link, and keeps saying it", async () => {

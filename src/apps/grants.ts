@@ -25,6 +25,7 @@ import type { ComposedManifestRequest, Manifest, ResolvedCapabilities, ResourceC
 
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { REGISTRY_RESOURCES } from "./install-plan.ts";
+import { possessive } from "./possessive.ts";
 
 /** The SDK functions the rule needs. `import("@tinycloud/sdk-core")` satisfies it. */
 export interface ManifestSdk {
@@ -142,8 +143,8 @@ export function openManifest(catalog: Manifest): Manifest {
     includePublicSpace: false,
     permissions: [
       ...(catalog.permissions ?? []),
-      kvFolderPermission(`${catalog.app_id}/app/`, ["get", "list", "put"], `Read and save ${catalog.name}'s files (its code, manifest and install record) so they can be checked before it is opened.`),
-      kvFolderPermission(`${catalog.app_id}/knowledge/`, ["put"], `Save ${catalog.name}'s notes folder if it is missing.`),
+      kvFolderPermission(`${catalog.app_id}/app/`, ["get", "list", "put"], `Read and save ${possessive(catalog.name)} files (its code, manifest and install record) so they can be checked before it is opened.`),
+      kvFolderPermission(`${catalog.app_id}/knowledge/`, ["put"], `Save ${possessive(catalog.name)} notes folder if it is missing.`),
     ],
   };
 }

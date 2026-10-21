@@ -13,6 +13,8 @@ import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
 import type { JsxManifest } from "../src/artifact/jsx-runtime/files.ts";
+import { APPROVAL_SLOW_AFTER_MS, APPROVAL_SLOW_COPY } from "../src/share/approval-hint.ts";
+import { OPENKEY_ORIGIN } from "../src/share/openkey-origin.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -110,9 +112,8 @@ describe("the runner page before anything is signed", () => {
     expect(provenance).not.toMatch(/no network/i);
     expect(root.querySelector(".run-bar .run-caution")?.textContent).toBe(CAUTION);
     expect(root.querySelector("iframe")).toBeNull();
-    expect(root.querySelector(".run-details")?.textContent).toContain("What this app can do");
+    expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("What this app can do");
     expect(root.textContent).toContain("It can change");
-    expect(root.textContent).toContain("This app can change or delete its own tables.");
     expect(root.textContent).not.toMatch(/Sample app|throwaway/i);
     expect(root.querySelector("a[href='/apps/']")?.textContent).toBe("Open another app");
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(true);
@@ -159,7 +160,7 @@ describe("opening an app", () => {
     await vi.waitFor(() => expect(status()).toContain("Health Log is running"));
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(false);
     // The permission lists now come from the person's own manifest.
-    expect(root.querySelector(".run-details")?.textContent).toContain("healthlog");
+    expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("healthlog");
   });
 
   it("answers an app's cap/* request through the bridge, under the manifest, and refuses the rest", async () => {
@@ -272,6 +273,34 @@ describe("opening an app", () => {
     expect(fake.runtimes).toBe(0);
     expect(root.querySelector("iframe")).toBeNull();
   });
+
+  it("shows the approval help line at 15 s when no OpenKey window has loaded", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    const fake = fakePorts({ hold: true });
+    const runner = await open(fake);
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
+    expect(status()).toContain(APPROVAL_SLOW_COPY);
+    runner.destroy();
+    fake.release();
+    await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
+  });
+
+  it("does not show the approval help line after 20 s while the OpenKey window is up", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    const fake = fakePorts({ hold: true });
+    const runner = await open(fake);
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    const probe = document.createElement("iframe");
+    document.body.append(probe);
+    window.dispatchEvent(new MessageEvent("message", { origin: OPENKEY_ORIGIN, source: probe.contentWindow, data: { type: "openkey:ready" } }));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(status()).not.toContain(APPROVAL_SLOW_COPY);
+    probe.remove();
+    runner.destroy();
+    fake.release();
+    await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
+  });
 });
 
 describe("opening an app that cannot run", () => {
@@ -345,7 +374,7 @@ describe("copy and the sign-in manifests", () => {
       expect(screen.title.length).toBeGreaterThan(5);
       expect(screen.lines.join(" ")).not.toMatch(/undefined|\[object/);
     }
-    expect(progressText({ phase: "starting" }, "X")).toBe("Starting X…");
+    expect(progressText({ phase: "starting" }, "X")).toBe("Opening X…");
   });
 
   it("the one sign-in asks for get, list and put under <app_id>/app/ and put under <app_id>/knowledge/, in the applications space, inside its scope", () => {
@@ -394,7 +423,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     }
   });
 
-  it("an installed version that has left the catalog gets the honest message and what to delete, not a Repair", async () => {
+  it("an installed version that has left the catalog gets the honest message and an Uninstall link, not a Repair", async () => {
     const other = { ...entry, bundle: { ...entry.bundle, digest: "f".repeat(64) } };
     const fake = fakePorts({ catalog: [entry] });
     // The install recorded a digest the catalog no longer lists.
@@ -408,10 +437,9 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     await open(fake);
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This version of the app isn't in the catalog any more"));
     expect(root.querySelector("a[href*='repair']")).toBeNull();
-    const screen = root.querySelector(".run-screen")?.textContent ?? "";
-    expect(screen).toContain(`delete the files under ${HEALTH}/app/`);
-    expect(screen).toContain(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`);
-    expect(screen).toContain("tinycloud kv delete --space applications");
+    const uninstall = root.querySelector<HTMLAnchorElement>(`a[href='/apps/#uninstall=${encodeURIComponent(HEALTH)}']`);
+    expect(uninstall?.textContent).toBe("Uninstall");
+    expect(root.querySelector(".run-screen")?.textContent ?? "").not.toContain("tinycloud kv");
     expect(fake.runtimes).toBe(0);
   });
 
@@ -450,7 +478,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
   });
 
   it("the page does not claim there is no network access, and says what to do", async () => {
-    const fake = fakePorts();
+    const fake = fakePorts({ hold: true });
     await open(fake);
     expect(root.textContent).not.toMatch(/no network|can't send your data/i);
     expect(root.textContent).toContain(CAUTION);

@@ -7,10 +7,10 @@ import { type AccessItem, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
-import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
 import { loadManifest } from "./manifest.ts";
-import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
+import { possessive } from "./possessive.ts";
+import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, runRepair } from "./repair.ts";
 import { createRepairPorts } from "./repair-session.ts";
 import { type UninstallFailure, UninstallError, uninstallPlan } from "./uninstall-plan.ts";
 import { type UninstallPorts, type UninstallProgress, type UninstallResult, runUninstall } from "./uninstall.ts";
@@ -133,12 +133,12 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const header = sheetHeader(`by ${entry.publisher.name}`, entry.name, entry, close);
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const availability = availabilityOf(entry);
-  const disclosure = el("section", "apps-section", [el("h3", null, ["Before you open it"]), el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line])))]);
-  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), disclosure, access, provenance(entry)]);
-  const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
-  const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
+  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
+  const uninstallNote = el("p", "apps-muted", ["Also deletes notes you edited."], { id: "apps-uninstall-note" });
+  const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}`, "aria-describedby": "apps-uninstall-note" });
   uninstallNow.addEventListener("click", uninstall);
-  const footer = el("footer", "apps-sheet__footer", [open, el("p", "apps-muted", [availability.available ? "Opening checks the app's files before anything is saved." : "Opening is switched off for this app."]), uninstallNow]);
+  const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, uninstallNote]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -153,9 +153,9 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
     case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
     case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
     case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
-    case "tampered": return `${entry.name}'s files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
+    case "tampered": return `${possessive(entry.name)} files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
     case "disabled": return "This app is temporarily unavailable. Nothing was changed.";
-    case "unavailable": return `Couldn't load ${entry.name}'s files. Nothing was changed. Try again.`;
+    case "unavailable": return `Couldn't load ${possessive(entry.name)} files. Nothing was changed. Try again.`;
     case "write-failed": return `Not repaired yet: ${error.written.length} files were replaced. Your data was not touched; try again to finish.`;
     default: return "We couldn't repair this app. Nothing was changed. Try again.";
   }
@@ -163,66 +163,21 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
 
 function repairProgressText(entry: CatalogEntry, progress: RepairProgress): string {
   switch (progress.phase) {
-    case "checking": return `Checking ${entry.name}'s files against the catalog…`;
+    case "checking": return `Checking ${possessive(entry.name)} files against the catalog…`;
     case "signing-in": return "Opening OpenKey…";
     case "approval": return `Approve in the OpenKey window to repair ${entry.name}`;
     case "repairing": return `Repairing ${entry.name}… ${progress.done} of ${progress.total} files`;
   }
 }
 
-/** The repair sheet: what Repair replaces, what it leaves alone, then Continue (which closes the sheet; see inline-panel.ts). One approval. */
-function repairContent(entry: CatalogEntry, onContinue: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
-  const header = sheetHeader("Repair", `Repair ${entry.name}`, entry, close);
-  const availability = availabilityOf(entry);
-  const writes = repairWrites(entry);
-  const body = el("div", "apps-sheet__body", [
-    ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
-    el("section", "apps-section", [
-      el("h3", null, ["What repairing does"]),
-      el("ul", "apps-notes", [
-        el("li", null, [`Replaces the app's code files with the pinned version, under ${entry.app_id}/app/ (${writes.length} files, the manifest included).`]),
-        el("li", null, ["Removes any other file in that folder."]),
-        el("li", null, ["Your data is untouched: its databases, settings and notes are not read or changed."]),
-        el("li", null, ["One OpenKey approval, for 15 minutes, to put, delete and list in that one folder. Nothing stays signed in afterwards."]),
-      ]),
-      el("details", "apps-files", [el("summary", null, [`Files it writes (${writes.length})`]), el("ul", "apps-notes", writes.map((write) => el("li", null, [el("code", null, [write.key])])))]),
-    ]),
-  ]);
-  const actions = el("div", "apps-install-actions", []);
-  const footer = el("footer", "apps-sheet__footer", [actions]);
-  const button = (label: string, className: string, onClick: () => void, disabled = false): HTMLButtonElement => {
-    const node = el("button", `${className} apps-button`, [label], { type: "button" });
-    node.disabled = disabled;
-    node.addEventListener("click", onClick);
-    return node;
-  };
-  actions.replaceChildren(button("Continue", "tc-button tc-button--primary", onContinue, !availability.available), button("Not now", "tc-button", close));
-  return { header, body, footer };
-}
-
-/** The uninstall confirm: what goes, what stays, and that open app tabs stay open. Nothing runs until Remove app. */
-function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
-  const header = sheetHeader("Uninstall", `Remove ${entry.name}`, entry, close);
-  const { rows } = uninstallPlan(entry);
-  const body = el("div", "apps-sheet__body", [
-    el("p", "apps-sheet__lede", [`Remove ${entry.name}'s app files and agent notes? Your app data, settings and files outside those folders stay. Notes you've edited in the app's knowledge folder will be removed. Close any open app tabs first.`]),
-    accessList([...rows.change, ...rows.read]),
-  ], { tabindex: "0" });
-  const remove = el("button", "tc-button tc-button--primary apps-button", ["Remove app"], { type: "button" });
-  remove.addEventListener("click", onConfirm);
-  const keep = el("button", "tc-button apps-button", ["Keep app"], { type: "button" });
-  keep.addEventListener("click", close);
-  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [remove, keep]);
-  return { header, body, footer };
-}
 
 function uninstallProgressText(entry: CatalogEntry, progress: UninstallProgress): string {
   switch (progress.phase) {
-    case "signing-in": return "Opening OpenKey…";
+    case "signing-in": return `Uninstalling ${entry.name}…`;
     case "approval": return `Approve in the OpenKey window to remove ${entry.name}`;
-    case "checking": return `Checking ${entry.name}'s files…`;
-    case "removing": return `Removing ${entry.name}… ${progress.done} of ${progress.total} files`;
-    case "registry": return "Updating your account list…";
+    case "checking": return `Uninstalling ${entry.name}…`;
+    case "removing": return `Uninstalling ${entry.name}… ${progress.done} of ${progress.total} files`;
+    case "registry": return `Uninstalling ${entry.name}…`;
   }
 }
 
@@ -233,9 +188,9 @@ function uninstallFailureText(entry: CatalogEntry, reason: UninstallFailure | "r
     case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
     case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
     case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
-    case "truncated": return `${entry.name}'s file list is too long to check at once. Nothing was deleted. Try again.`;
+    case "truncated": return `${possessive(entry.name)} file list is too long to check at once. Nothing was deleted. Try again.`;
     case "refused": return "Stopped: this app id or file path isn't one uninstall will touch. Nothing outside the app's folders was removed.";
-    case "write-failed": return `Some of ${entry.name}'s files couldn't be removed. Try again to finish.`;
+    case "write-failed": return `Some of ${possessive(entry.name)} files couldn't be removed. Try again to finish.`;
     case "not-started": return "Couldn't start the uninstall. Nothing was changed. Try again.";
     case "failed": return `Couldn't finish removing ${entry.name}. Try again to finish.`;
   }
@@ -266,15 +221,17 @@ export function guardedUninstallPorts(ports: UninstallPorts, cancelled: () => bo
 }
 
 export interface MountOptions {
-  /** The repair flow's sign-in and node. Created when Repair's Continue is clicked. */
+  /** The repair flow's sign-in and node. Created when Repair is clicked. */
   repairPorts?: () => RepairPorts;
-  /** The uninstall flow's sign-in and node. Created when Remove app is clicked; the default loads OpenKey and the SDK then. */
+  /** The uninstall flow's sign-in and node. Created when Uninstall is clicked; the default loads OpenKey and the SDK then. */
   uninstallPorts?: () => UninstallPorts;
 }
 
 export interface MountedApps {
-  /** Opens the repair sheet for an app (`/apps/#repair=<app_id>`). Returns false when the catalog has no such app. */
+  /** Offers repair for an app (`/apps/#repair=<app_id>`). Returns false when the catalog has no such app. */
   openRepair(appId: string): boolean;
+  /** Opens the details sheet for an app (`/apps/#uninstall=<app_id>`). Returns false when the catalog has no such app. */
+  openUninstall(appId: string): boolean;
 }
 
 /**
@@ -347,7 +304,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     cards.get(appId)?.querySelector<HTMLElement>(".apps-card__actions button")?.focus();
   };
 
-  /** One repair at a time per app: a second Continue joins the running one. */
+  /** One repair at a time per app: a second Repair joins the running one. */
   const repairing = new Set<string>();
   const runRepairInline = (entry: CatalogEntry): void => {
     leaveSheet();
@@ -390,6 +347,23 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
         panel.say(repairFailureText(entry, error instanceof RepairError ? error : new RepairError("failed", { cause: error })), "danger", { actions: [{ label: "Try again", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
       },
     );
+  };
+
+  /** Repair from `/apps/#repair=<app_id>`: the inline panel with one Repair action. No sheet, so the OpenKey window is not under a modal. */
+  const offerRepair = (entry: CatalogEntry): void => {
+    leaveSheet();
+    if (repairing.has(entry.app_id)) {
+      panels.get(entry.app_id)?.panel.focus();
+      return;
+    }
+    const availability = availabilityOf(entry);
+    const panel = freshPanel(entry.app_id, `Repair ${entry.name}`);
+    if (availability.available) {
+      panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+    } else {
+      panel.say(availability.reason, "danger", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+    }
+    panel.focus();
   };
 
   /** One uninstall at a time per app; a second Remove joins the running one, as for repair. */
@@ -435,7 +409,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
           panel.say(`Nothing to remove: ${entry.name} had no app files on this account. Your app data and settings are kept.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
           return;
         }
-        panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+        panel.say(`Removed ${possessive(entry.name)} app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -445,17 +419,9 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     );
   };
 
-  const show = (entry: CatalogEntry, mode: "details" | "repair" | "uninstall"): void => {
-    if (mode === "uninstall") {
-      const content = uninstallContent(entry, () => runUninstallInline(entry), close);
-      sheet.replaceChildren(content.header, content.body, content.footer);
-    } else if (mode === "repair") {
-      const content = repairContent(entry, () => runRepairInline(entry), close);
-      sheet.replaceChildren(content.header, content.body, content.footer);
-    } else {
-      const { header, body, footer } = detailsContent(entry, entries, close, () => show(entry, "uninstall"));
-      sheet.replaceChildren(header, body, footer);
-    }
+  const show = (entry: CatalogEntry): void => {
+    const { header, body, footer } = detailsContent(entry, entries, close, () => runUninstallInline(entry));
+    sheet.replaceChildren(header, body, footer);
     if (!sheet.open) sheet.showModal();
   };
 
@@ -463,7 +429,13 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     openRepair(appId): boolean {
       const entry = entries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
-      show(entry, "repair");
+      offerRepair(entry);
+      return true;
+    },
+    openUninstall(appId): boolean {
+      const entry = entries.find((candidate) => candidate.app_id === appId);
+      if (entry === undefined) return false;
+      show(entry);
       return true;
     },
   };
@@ -473,10 +445,12 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   }
   for (const entry of entries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
-    details.addEventListener("click", () => { opener = details; show(entry, "details"); });
+    details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);
-    // A disabled entry still links to the runner: the runner page refuses it there, before any sign-in opens.
-    const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+    // A card that cannot open shows Open as a disabled button; the reason is shown on the card.
+    const open = availability.available
+      ? el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })
+      : el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", disabled: "", "aria-label": `Open ${entry.name}` });
     const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),

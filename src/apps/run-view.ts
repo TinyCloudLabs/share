@@ -25,7 +25,7 @@ import { accessSection, el, noticeList } from "./view.ts";
 import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
 import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
-import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS } from "../share/approval-hint.js";
+import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS, watchOpenKeyModal } from "../share/approval-hint.js";
 import type { JsxCapabilityReply } from "../viewer/jsx-sandbox.js";
 import { type RenderJsxOptions, renderJsxPage } from "../viewer/jsx-render.js";
 
@@ -40,10 +40,10 @@ interface Screen {
   readonly detail?: string | undefined;
   readonly retry?: string | undefined;
   readonly toApps?: boolean | undefined;
-  /** Where "Repair" goes (the apps page's Repair sheet), for a refusal that replacing the code files fixes. */
+  /** Where "Repair" goes (the apps page's Repair panel), for a refusal that replacing the code files fixes. */
   readonly repairHref?: string | undefined;
-  /** Command lines shown as code, one per line (set with textContent). */
-  readonly commands?: readonly string[] | undefined;
+  /** Where "Uninstall" goes (the apps page's details sheet), for a version that can't be repaired from here. */
+  readonly uninstallHref?: string | undefined;
   readonly tone?: Tone;
 }
 
@@ -64,10 +64,9 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
       title: "This version of the app isn't in the catalog any more",
       lines: [
         "You installed a version that has since been replaced or removed, so what it asks for can't be checked and it can't be repaired from here. Nothing was started.",
-        `To remove it, delete the files under ${appId ?? "<app id>"}/app/ in your TinyCloud (your data in the other folders stays), then open the listed version again. With the CLI:`,
+        "Uninstall it from the apps page, then open the listed version again.",
       ],
-      toApps: true,
-      commands: [`tinycloud kv list --space applications --prefix ${appId ?? "<app id>"}/app/`, "tinycloud kv delete --space applications <each key listed>"],
+      toApps: true, ...(appId === undefined ? {} : { uninstallHref: `${APPS_HREF}#uninstall=${encodeURIComponent(appId)}` }),
     };
     case "catalog-unavailable": return { title: "Couldn't check this app against the catalog", lines: ["Check your connection and try again. Nothing was started."], retry: "Try again" };
     case "widened": return {
@@ -87,11 +86,11 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
 /** Status line for each step of an open. */
 export function progressText(progress: RunProgress, name: string): string {
   switch (progress.phase) {
-    case "checking": return `Checking ${name}…`;
-    case "reading": return progress.approval ? `Approve in the OpenKey window so Share can open ${name} from your TinyCloud` : "Opening OpenKey…";
-    case "saving": return `Saving ${name}'s files to your TinyCloud (${progress.done} of ${progress.total})…`;
-    case "verifying": return `Checking your copy of ${name} against the catalog…`;
-    case "starting": return `Starting ${name}…`;
+    case "checking": return `Opening ${name}…`;
+    case "reading": return progress.approval ? `Approve in the OpenKey window so Share can open ${name} from your TinyCloud` : `Opening ${name}…`;
+    case "saving": return `Opening ${name}…`;
+    case "verifying": return `Opening ${name}…`;
+    case "starting": return `Opening ${name}…`;
   }
 }
 
@@ -164,6 +163,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   let frameCleanup: (() => void) | undefined;
   let expiryTimer: number | undefined;
   let slowTimer: number | undefined;
+  let stopModalWatch: (() => void) | undefined;
+  let modalUp = false;
   let live = false;
   let destroyed = false;
 
@@ -186,7 +187,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const showScreen = (screen: Screen, onRetry?: () => void): void => {
     const heading = el("h2", "run-screen__title", [screen.title], { tabindex: "-1" });
     const parts: HTMLElement[] = [heading, ...screen.lines.map((line) => el("p", null, [line]))];
-    if (screen.commands !== undefined) parts.push(el("p", "run-screen__detail", screen.commands.flatMap((line, index) => [...(index === 0 ? [] : [el("br", null)]), el("code", null, [line])])));
     if (screen.detail !== undefined) parts.push(el("p", "run-screen__detail", [el("code", null, [screen.detail])]));
     const actions: HTMLElement[] = [];
     if (screen.retry !== undefined && onRetry !== undefined) {
@@ -195,6 +195,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       actions.push(retry);
     }
     if (screen.repairHref !== undefined) actions.push(el("a", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, ["Repair"], { href: screen.repairHref }));
+    if (screen.uninstallHref !== undefined) actions.push(el("a", `tc-button${actions.length === 0 ? " tc-button--primary" : ""} apps-button`, ["Uninstall"], { href: screen.uninstallHref }));
     if (screen.toApps === true) actions.push(el("a", `tc-button ${actions.length === 0 ? "tc-button--primary " : ""}apps-button`, ["Go to Apps"], { href: APPS_HREF }));
     if (actions.length > 0) parts.push(el("div", "run-screen__actions", actions));
     const alert = screen.tone === "danger";
@@ -211,14 +212,14 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const expire = (): void => {
     const name = running?.app.name ?? entry?.name ?? "the app";
     stopFrame();
-    setStatus("Your session expired: open the app again.", "warning");
+    setStatus("");
     showScreen({ title: "Your session expired", lines: ["Your session expired: open the app again. Nothing was lost: what the app saved is in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
 
   const signOutNow = (): void => {
     const name = running?.app.name ?? entry?.name ?? "the app";
     stopFrame();
-    setStatus("Signed out of this app.", "info");
+    setStatus("");
     showScreen({ title: "Signed out of this app", lines: ["Its session is over. Nothing was changed in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
   signOut.addEventListener("click", signOutNow);
@@ -226,14 +227,23 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const onPageHide = (): void => { if (running !== undefined) signOutNow(); };
   view.addEventListener("pagehide", onPageHide);
 
+  /** Ends the approval wait: its timer and its watch for the OpenKey window. */
+  const clearApprovalWait = (): void => {
+    view.clearTimeout(slowTimer);
+    stopModalWatch?.();
+    stopModalWatch = undefined;
+    modalUp = false;
+  };
   const paint = (mine: number, progress: RunProgress): void => {
     if (mine !== attempt || entry === undefined) return;
     const approval = progress.phase === "reading" && progress.approval;
     const base = progressText(progress, entry.name);
     setStatus(base, "info");
+    if (!approval) { clearApprovalWait(); return; }
     view.clearTimeout(slowTimer);
-    // The same "can't see the OpenKey window?" help the other pages give after a while.
-    if (approval) slowTimer = view.setTimeout(() => { if (mine === attempt) setStatus(`${base}. ${APPROVAL_SLOW_COPY}`, "info"); }, APPROVAL_SLOW_AFTER_MS);
+    // The same "can't see the OpenKey window?" help the other pages give after a while. It stays away while the OpenKey window is up.
+    if (stopModalWatch === undefined) stopModalWatch = watchOpenKeyModal(view, () => { modalUp = true; setStatus(base, "info"); });
+    slowTimer = view.setTimeout(() => { if (mine === attempt && !modalUp) setStatus(`${base}. ${APPROVAL_SLOW_COPY}`, "info"); }, APPROVAL_SLOW_AFTER_MS);
   };
 
   /** Cancel while an open runs: the page stops waiting now. A late OpenKey session is closed and nothing is written (openApp checks the signal). */
@@ -242,7 +252,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     openAbort.abort();
     openAbort = undefined;
     attempt++;
-    view.clearTimeout(slowTimer);
+    clearApprovalWait();
     cancelSlot.replaceChildren();
     const screen = failureScreen("cancelled", entry?.name ?? "");
     setStatus(screen.title, "warning");
@@ -265,14 +275,14 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     paint(mine, { phase: "checking" });
     void openApp(appId, ports, (progress) => paint(mine, progress), abort.signal).then(
       (result) => {
-        view.clearTimeout(slowTimer);
+        clearApprovalWait();
         if (mine !== attempt || destroyed) { void result.session.end().catch(() => undefined); return; }
         cancelSlot.replaceChildren();
         openAbort = undefined;
         start(result, mine);
       },
       (error: unknown) => {
-        view.clearTimeout(slowTimer);
+        clearApprovalWait();
         if (mine !== attempt || destroyed) return;
         cancelSlot.replaceChildren();
         openAbort = undefined;
@@ -372,7 +382,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       openAbort?.abort();
       openAbort = undefined;
       attempt += 1;
-      view.clearTimeout(slowTimer);
+      clearApprovalWait();
       stopFrame();
     },
   };

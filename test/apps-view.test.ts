@@ -113,4 +113,15 @@ describe("apps page rendering", () => {
     expect(sheet.querySelector<HTMLAnchorElement>(`a[href="${runnerHref(entry.app_id)}"]`)).not.toBeNull();
     expect(installButtons(sheet)).toEqual([]);
   });
+
+  it("a disabled entry's card shows Open as a disabled button with no runner link, and says why", async () => {
+    const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
+    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app.", disabled: true, disabledReason: "Paused for maintenance." });
+    mountApps(list, sheet, [entry]);
+    const open = [...list.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Open");
+    expect(open?.disabled).toBe(true);
+    expect(list.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
+    expect(list.textContent).toContain("Paused for maintenance.");
+  });
 });

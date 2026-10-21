@@ -5,6 +5,7 @@ import type { SharePublicConfig } from "../email-share/config.js";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
+import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -16,7 +17,6 @@ export interface OpenKeyShareSession {
 
 export type ShareTinyCloud = TinyCloudWeb;
 
-const OPENKEY_ORIGIN = import.meta.env.VITE_OPENKEY_ORIGIN ?? "https://openkey.so";
 export const SHARE_APPLICATION_SPACE = "applications";
 export const SHARE_APPLICATION_PREFIX = "xyz.tinycloud.share/";
 export const FILES_FOR_YOU_SPACE = "files-for-you";

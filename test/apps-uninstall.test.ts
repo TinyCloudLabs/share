@@ -2,6 +2,7 @@ import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { describe, expect, it } from "vitest";
 
 import { INSTALL_SPACE, installRecordKey, type RequestedResource } from "../src/apps/install-plan.ts";
+import { assertUninstallRequestMatchesSheet } from "../src/apps/uninstall-session.ts";
 import { type UninstallPorts, type UninstallProgress, runUninstall } from "../src/apps/uninstall.ts";
 import {
   ACCOUNT_SPACE,
@@ -148,7 +149,7 @@ describe("the uninstall manifest and scope", () => {
   });
 });
 
-describe("ReCap equals the confirm sheet", () => {
+describe("ReCap equals the uninstall plan", () => {
   function requestFor(options?: { includeAccountRegistryPermissions?: boolean }): { resources: RequestedResource[]; delegations: unknown[] } {
     const composed = composeManifestRequest([uninstallManifest(app)], options);
     return {
@@ -166,6 +167,15 @@ describe("ReCap equals the confirm sheet", () => {
   it("is not satisfied by the default request, which adds the apps-list grants", () => {
     const request = requestFor();
     expect(resourceMismatch(expectedUninstallResources("todo"), request.resources)).not.toBeNull();
+  });
+
+  it("lets the uninstall start when the signed request is exactly the sheet's plan", async () => {
+    await expect(assertUninstallRequestMatchesSheet(plan)).resolves.toBeUndefined();
+  });
+
+  it("stops before OpenKey when the sheet lists fewer resources than the signed request", async () => {
+    const drifted = { ...plan, resources: plan.resources.slice(1) };
+    await expect(assertUninstallRequestMatchesSheet(drifted)).rejects.toBeInstanceOf(UninstallError);
   });
 });
 

@@ -343,8 +343,8 @@ try {
         assert.equal(await save.evaluate((node) => node.getAttribute("aria-busy") !== null && node.getAttribute("aria-disabled") === "true"), true, `${label}: the button is busy`);
         await shoot(page, `save-copy-pending-${tag}`);
         assert.deepEqual(await axeViolations(page.mainFrame()), [], `${label}: pending: axe AA`);
-        await page.evaluate(() => window.__saveControl.approval(true, { n: 2, of: 4 }));
-        await toastSays(page, "Approval 2 of up to 4. Approve in the OpenKey window to save a copy");
+        await page.evaluate(() => window.__saveControl.approval(true));
+        await toastSays(page, "Approve in the OpenKey window to save a copy");
         const hint = await toastOf(page);
         assert.ok(hint.visible && hint.inside && hint.role === "status" && hint.live === "polite", `${label}: the approval hint is visible and announced (${JSON.stringify(hint)})`);
         await shoot(page, `save-copy-approval-${tag}`);
