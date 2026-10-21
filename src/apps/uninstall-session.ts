@@ -44,7 +44,7 @@ function errorCode(error: unknown): string | undefined {
  * sheet lists and what is signed; a mismatch means they drifted, and the
  * uninstall stops.
  */
-async function assertUninstallRequestMatchesSheet(plan: UninstallPlan): Promise<void> {
+export async function assertUninstallRequestMatchesSheet(plan: UninstallPlan): Promise<void> {
   const { composeManifestRequest } = await import("@tinycloud/sdk-core");
   const composed = composeManifestRequest([plan.manifest], { includeAccountRegistryPermissions: false });
   if (composed.delegationTargets.length > 0) throw new UninstallError("not-started", { cause: new Error("uninstall-request-delegates") });
