@@ -1,8 +1,6 @@
 # Apps catalog
 
-`/apps/` lists TinyCloud apps and shows, for each, what it can read and change, and installs an app's
-files into the person's own TinyCloud; an installed app opens at `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)). Until a person clicks Install the page has no SDK, no sign-in,
-and requests only this origin's own files.
+`/apps/` lists TinyCloud apps and shows, for each, what it can read and change. Opening an app saves its files into the person's own TinyCloud when they are not there yet, and the app runs at `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)). Until a person opens an app, the page has no SDK and no sign-in, and requests only this origin's own files.
 
 ## Files
 
@@ -35,7 +33,7 @@ and requests only this origin's own files.
 
 - `source.tag` is `null` when the entry pins a bare commit (the source repo has no tag).
 - `knowledge` is `null` when the bundle has no `knowledge/` folder.
-- `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and the installer refuses a bundle whose manifest differs.
+- `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and opening refuses a bundle whose manifest differs.
 - `sample` is `true` for sample apps and absent otherwise; `release` is present when the bundle ships a `release.json` (see "Sample apps"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
 
 ## Kill switch
@@ -48,9 +46,9 @@ An entry can be switched off without touching its bundle:
 
 - `disabled` is `true` or absent; `disabledReason` (1 to 280 characters) is required with it and allowed only with it. `verifyCatalog` checks this.
 - The flag lives in the entry, not in the bundle, so no digest changes when it flips and the integrity checks stay valid. `vendor-app.mjs` keeps it when an app is updated.
-- The page shows the card with "Temporarily unavailable" and the reason (as text), disables Install on the card and in the details sheet, and a forced click opens only a sheet that says so. The installer refuses a disabled entry before it fetches a file or makes the sign-in ports (`InstallError` reason `disabled`).
-- It takes effect when the site is deployed **and the page is reloaded**: the flag is compiled into the page's JavaScript (the headers are `no-store`, so a reload fetches the new build), and a tab that is already open keeps the catalog it loaded. Within one page load the card, the sheet, the flight and `runInstall` all refuse. The page cuts a `disabledReason` over `MAX_DISABLED_REASON_CHARS` (280) with a "…"; the catalog check refuses it.
-- The runner (T5b) uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops install and open.
+- The page shows the card with "Temporarily unavailable" and the reason (as text). Open still links to the runner, which refuses the entry before any sign-in and shows the same reason; Details shows it too. The card has no Install action.
+- It takes effect when the site is deployed **and the page is reloaded**: the flag is compiled into the page's JavaScript (the headers are `no-store`, so a reload fetches the new build), and a tab that is already open keeps the catalog it loaded. Within one page load the card, the details sheet and the runner all refuse. The page cuts a `disabledReason` over `MAX_DISABLED_REASON_CHARS` (280) with a "…"; the catalog check refuses it.
+- The runner uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops opening.
 
 ## Digest
 
@@ -62,7 +60,7 @@ A bundle is a set of files addressed by relative POSIX paths.
 
 `bundle.digest` covers every file. `knowledge.digest` covers the files under
 `knowledge/`, with paths relative to that folder. `bundle.root` is
-`/apps/b/<bundle.digest>/`. An installer recomputes the same digests from the
+`/apps/b/<bundle.digest>/`. Opening an app recomputes the same digests from the
 bytes it fetched before it writes anything.
 
 ## Adding or updating an app
@@ -97,82 +95,40 @@ The lists mirror what the SDK's `resolveManifest` would sign, and only that
 
 The kit's descriptive `resources.*` blocks grant nothing in the SDK, so they are not listed.
 
-`npm run test:e2e:apps-page` builds the site and checks the page and the install sheets in Chromium
+`npm run test:e2e:apps-page` builds the site and checks the page and the details sheets in Chromium
 at 390 and 1440 px, light and dark, with axe (WCAG 2.x AA), the production headers, and
 screenshots (`APPS_SCREENSHOT_DIR`).
 
-## Install
+## Opening an app saves it
 
-"Install" on a card or in the details sheet opens a pre-consent sheet, then runs the install in
-`src/apps/install*.ts`. Nothing is signed or written until the person clicks Continue; the SDK and
-OpenKey load only then.
+Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)); Details is the secondary action and opens the details sheet. Nothing is signed or written until the person clicks Continue on the runner's start screen. The SDK and OpenKey load only then.
 
-**The sheet closes when Continue is pressed.** The OpenKey window is an overlay the SDK appends to
-`document.body` (fixed, z-index 999999). A modal `<dialog>` is in the browser's top layer, above any
-z-index, so a sheet left open would cover the window. Continue therefore closes the sheet first, and the
-progress is shown in an inline panel under the app's card (`src/apps/inline-panel.ts`): a `role=status`
-live region that takes focus, "Approve in the OpenKey window... A new account may ask a few times." while OpenKey asks (no number: the SDK's approval steps are not a contract, so a count could be wrong), a visible Cancel (Escape also
-cancels), then the result (Installed, Already installed, a refusal, an error with Try again). The page
-behind is not inert while the window is up. Cancel says so at once, opens no window if none was open yet,
-and if a window is approved afterwards the session is closed and nothing is written. Repair works the same
-way. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window and checks, at
-390, 1100 and 1440 px, that nothing modal is above the window and a click reaches it.
+The start screen shows the first-open disclosure before Continue (`src/apps/first-open.ts`; the details sheet shows the same list). It says that the app runs with its own sign-in, that its manifest lists what it can read and change, who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet. Direct links show it too.
 
-1. **Verify, before OpenKey.** Every file of the bundle is fetched from the entry's own
-   `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size. The
-   entry's own file list must hash to its digest, and its paths must pass the install rule
-   (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`):
-   relative, ASCII `[A-Za-z0-9._-]` segments with no leading dot (so no hidden folder, `..`,
-   absolute, backslash or control-character path), at most 8 folders and 128 characters, never
-   `install.json`, no file below a `dev/`, `tests/`, `test/`, `scripts/` or `node_modules/` folder, and
-   no two paths that differ only by case. One bad file refuses the whole install: nothing is
-   written and OpenKey is not opened.
-2. **One sign-in** (`signInWithManifest`; a brand-new account is also asked to host its spaces, which the gate measured as 4 OpenKey signatures, and an existing account as 1) with the *installer manifest* (`src/apps/install-plan.ts`).
-   It takes the app's id, name and description from the verified manifest and nothing else:
-   `defaults: false`, no `secrets`, no `did`, no public space, and exactly two grants in the
-   `applications` space: `put` on `<app_id>/app/` and `put` on `<app_id>/knowledge/`. The SDK adds the
-   account registry's permissions (`includeAccountRegistryPermissions`) and `capabilities/read`. The
-   app's own runtime grants (its SQL, key-value prefixes, reads of another app) are **not** part of
-   this sign-in: the app asks for them with its own sign-in when it is opened. Just before OpenKey
-   opens, the SDK's `composeManifestRequest` of the installer manifest is compared with the list the
-   sheet shows, and the install stops on any difference or any delegation target.
-3. **Create-only writes** into `<app_id>/app/<path>` (and `<app_id>/knowledge/<path>` for
-   `knowledge/**`), with `If-None-Match: *`. A file that already exists (a `412`) is the person's
-   copy and is kept, so a hand-edited `knowledge/app.md` survives a re-install.
-4. **`<app_id>/app/install.json`** (`{ source, digest, installed_at }`) is written last, create-only.
-   "Installed" is only ever said about a bundle that is entirely in place. If a write fails, what
-   was saved stays, the inline panel lists it, and Try again resumes: it keeps those files and writes the
-   rest. A re-install of a finished install writes nothing and says "Already installed: your copy
-   is kept."
-5. **Apps list.** The SDK records the app in the account's apps list in the background right after
-   sign-in; the install waits for it to show (and registers it itself once if it does not). The
-   record is the installer's: the app id and a manifest hash (the web SDK stores `manifests: []`),
-   never the app's own grants. **A half-finished install shows in the apps list**, because the SDK
-   records the app at sign-in, before any file is written: `install.json`, written last, is the only
-   marker of a complete install (the runner, agents and the knowledge docs must use it, not the list).
-   For the same reason the record cannot be used to compare grants later: its hash is the hash of an
-   empty manifest list, the same for every app. The runner (T5b) caps an app's grants against the
-   catalog manifest instead.
+Each open runs these steps in order (`openApp` in `src/apps/run.ts`):
 
-No standing delegation is created: the session is in memory for 15 minutes at most and is disposed when the install ends; opening an
-app later asks for a fresh sign-in. Opening an installed app (`/apps/run#<app_id>`) is the next slice;
-until it lands the sheet says so and offers no link.
+1. **Refuse before any sign-in.** An unknown app, an entry switched off by the kill switch (`EntryDisabledError`, shown with its reason), or an entry without `app.jsx` is refused here, before OpenKey is contacted.
+2. **Verify the bundle, every open.** Every file is fetched from the entry's own `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size; the file list must hash to the digest; and the paths must pass the install rule (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`). A failure refuses the open before OpenKey.
+3. **First approval: one read session.** One OpenKey sign-in with a session for the app's folders, `<app_id>/app/` and `<app_id>/knowledge/`. It carries get, list and create-only `put` (`ifNoneMatch: "*"`) on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/`. Every open therefore takes two approvals: this one and the runtime session.
+4. **Save what is missing.** Each app file that is not in the person's TinyCloud is written create-only (`ifNoneMatch: "*"`), in catalog order. A file that is already there is kept as it is, and step 5 checks it before `install.json` is written. A file that appears between the read and its save stops the save ("saved files changed while opening"), and nothing more is written.
+5. **Write `install.json` after the app files.** `<app_id>/app/install.json` (`{ source, digest, installed_at }`) is written only when no record is saved and the saved code files pass the same check as the open: every code file present, no extra file, each with the catalog's sha256 and size. A failure stops the save with "`<reason>`, so install.json was not written". `manifest.json` is not pinned here; it is capped at verification (step 6). Notes are written after `install.json`, with `knowledge/index.md` last. A folder with `install.json` and every app file counts as installed; notes missing afterwards are written by the next open. The apps list is not used for that.
+6. **Verify the saved app.** The saved files are checked against the catalog version (`verifyStoredApp`), and the manifest is capped against the catalog manifest. A copy whose code files differ from the pins is refused on the "doesn't match the pinned version" screen, which offers Repair. A copy recorded for a digest that is not in the catalog is refused as not listed: the page cannot check or repair it, so it shows the steps to delete its files by hand. Nothing is upgraded silently.
+7. **Second approval: the runtime session.** The read session ends before the app frame exists. A second OpenKey sign-in opens the runtime session, with grants capped to the catalog manifest at the installed digest (valid for one hour). The bridge allow-list comes only from the app's resolved manifest, never from the read session.
 
-One install runs at a time per app (`src/apps/install-flight.ts`): a second click joins the running
-install and starts no second sign-in. A catalog update between a failed install and its retry would
-fill the missing files from the newer bundle while `install.json` records the newer digest; updates
-are a separate feature.
+## Cancel, failure, and partial saves
 
-`test/apps-install*.test.ts` cover verification, create-only handling (through the real port with a
-fake client: every put carries `ifNoneMatch`, only a precondition failure means "kept"), the
-sheet-versus-SDK check before OpenKey opens, the session length (one constant, `INSTALL_EXPIRY_MS`; the
-sheet's "15 minutes" is derived from it), disposal, resume, the double click and the sheet. `node test/e2e-prod/install-gate.mjs` installs the Health Log sample on the hermetic
-native stack in a real browser (see that file's header).
+While an open runs, the progress line shows the step, and a Cancel button sits beside it (Escape cancels too). Cancel stops the open before any further write or app start, and the screen says "Sign-in cancelled. Nothing was started." If the OpenKey window is still open after Cancel, it closes at the end of its request timeout. If the approval arrives after Cancel, the session is closed and nothing is written. Files saved before the cancel stay in place.
+
+Every failure has a title and a plain sentence in the runner's result screen (`failureScreen` in `src/apps/run-view.ts`). A save that stops partway keeps the files already written. Opening the app again keeps them and writes the rest; `install.json` is written once the code files pass the pin check.
+
+Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catalog copy after a confirmation sheet. It takes one approval. The knowledge folder and `install.json` are left as they are.
+
+`test/apps-open-install.test.ts` covers the open steps (verification before any sign-in, create-only writes, the order of `install.json`, cancel during the save, a saved listing that could not be read in full). `test/apps-runner-view.test.ts` and `test/apps-view.test.ts` cover the start screen, the result screens and the card actions. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window at 390, 1100 and 1440 px and checks that nothing modal sits above the window, that a click reaches it, and that Cancel and Escape end the open. `test/e2e-prod/install-gate.mjs` and `test/e2e-prod/runner-gate.mjs` run the same flow against real OpenKey; they are run by QA, not in CI.
+
 
 ## Sample apps
 
-An entry marked `"sample": true` is a sample: its install sheet says "Sample app: use throwaway data
-only." and its card shows a Sample badge. Any app that writes SQL (the default grant included) also
+An entry marked `"sample": true` is a sample: its runner and its details sheet say "Sample app: use throwaway data only.", and its card shows a Sample badge. Any app that writes SQL (the default grant included) also
 says "This app can change or delete its own tables.", and a grant on another app's database is listed
 as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
 `summarizeAccess` the lists use.)
@@ -204,8 +160,8 @@ folder.
 - an invisible character, or any space other than U+0020, in a displayed space, path, service, prefix or secret name or scope. "Invisible" is one definition (`src/share/invisible-text.mjs`, shared with the sign-in labels): any Unicode control, format, surrogate, private-use, unassigned, line or paragraph separator character, any space separator other than U+0020, the Hangul, Khmer and Mongolian fillers, variation selectors and the combining grapheme joiner (U+200B, U+200C, U+2060 and U+0085 among them);
 - an explicit `tinycloud.capabilities` (or `capabilities`) permission (the SDK adds that read per space itself, so a hand-written one is a second row for the same thing).
 
-`unsupportedManifest` (`src/apps/manifest-support.mjs`, one function) is what the installer
-(`bundle.ts`, before OpenKey opens), the sheet (an alert, Continue off) and `verifyCatalog` all call. No
+`unsupportedManifest` (`src/apps/manifest-support.mjs`, one function) is what the verified bundle fetch
+(`bundle.ts`, before OpenKey opens), the details sheet (an alert, the app can't be opened) and `verifyCatalog` all call. No
 catalog app is refused by it. `test/apps-consent.test.ts` checks each shape, that the lists equal what
 the SDK's `resolveManifest` resolves for every shape (nothing skipped), that every grant outside the
 own folder has a sentence, that each refused shape is one the SDK really resolves differently, and each
@@ -215,7 +171,7 @@ When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the ki
 `vendor-app.mjs` copies ONLY the files it lists plus `release.json`, checks each against the sha256
 the release declares and the release's own digest, and records `release: { version, digest }` in the
 entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha256>` lines joined by
-`\n`); the catalog digest above is the one an installer verifies, and the test checks both.
+`\n`); the catalog digest above is the one opening an app verifies, and the test checks both.
 `--sample` sets the flag and later updates keep it.
 
 ## Provenance
@@ -228,3 +184,5 @@ entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha25
 
 That repository is public and has no LICENSE file. Other apps (for example the TinyHealth and
 TinyRecipes forks) are not vendored until their licensing allows it.
+
+Details: TC-1422

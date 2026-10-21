@@ -1,5 +1,5 @@
 /**
- * What counts as invisible text: the ONE definition the sign-in labels, the install sheet's manifest check and the
+ * What counts as invisible text: the ONE definition the sign-in labels, the Details sheet's manifest check and the
  * catalog check all use. A plain .mjs file (with a .d.mts beside it) so the build-time scripts can import it as well as the page.
  */
 

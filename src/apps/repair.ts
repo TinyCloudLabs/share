@@ -19,8 +19,7 @@ import type { Manifest } from "@tinycloud/web-sdk";
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { type BundleFetch, BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
 import { type CatalogEntry, EntryDisabledError, assertAvailable } from "./catalog.ts";
-import { contentTypeOf, type InstallFailure } from "./install.ts";
-import { INSTALL_EXPIRY, INSTALL_SPACE, installKey, installRecordKey } from "./install-plan.ts";
+import { type InstallFailure, INSTALL_EXPIRY, INSTALL_SPACE, contentTypeOf, installKey, installRecordKey } from "./install-plan.ts";
 
 export type RepairFailure = InstallFailure;
 

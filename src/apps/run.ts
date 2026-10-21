@@ -1,43 +1,55 @@
 /**
- * Opening an installed app: look it up, read the person's saved copy, check it,
- * sign in for exactly its grants, hand back what the page needs to run it.
+ * Opening an app: check it, save any missing files, read and check the saved copy, sign in for exactly its grants, hand back what the page needs to run it.
  *
  * Order is the safety argument:
  *  1. The app must be in the catalog (the page's own copy of it) and not switched
- *     off (`assertAvailable`). Nothing is signed for an id the catalog does not
- *     list or has disabled.
- *  2. ONE read-only sign-in (`readStored`): `get` and `list` on `<app_id>/app/` and
- *     nothing else, to read every file there. The session ends before step 4; only
- *     OpenKey's own connection is kept, so the second approval is a signature, not
- *     a second connect.
- *  3. The saved copy is verified (stored-app.ts): every code file is hashed and
+ *     off (`assertAvailable`), and its catalog entry must carry the code it runs
+ *     (`app.jsx`). Nothing is signed for an id the catalog does not list, has
+ *     disabled, or cannot run.
+ *  2. The catalog bundle is fetched and every file is checked against the catalog's
+ *     sha256 and size, and the catalog manifest is loaded (`prepare`). A failure
+ *     here refuses the open before any approval is asked.
+ * 3. ONE read sign-in (`readStored`). It always carries create-only write grants for the
+ *     app's folder and notes, so missing files are saved within that one approval.
+ *     Writes go: app files, then `install.json`, then the notes with `knowledge/index.md`
+ *     last. A folder with `install.json` and every app file is complete. Existing files
+ *     are never replaced.
+ *  4. The saved copy is verified (stored-app.ts): every code file is hashed and
  *     compared with the catalog's pins for the installed digest (an edited, extra or
  *     missing file refuses the open), and the manifest is re-validated and capped
  *     against the catalog manifest. Nothing runs, and no runtime session exists,
  *     until this has passed.
- *  4. The runtime sign-in (`openRuntime`): the person's manifest, one hour, nothing
- *     persisted, no signer left behind (run-session.ts).
+ *  5. The runtime sign-in (`openRuntime`): the person's manifest, one hour, nothing
+ *     persisted, no signer left behind (run-session.ts). The read session has ended
+ *     before this starts, so no install-capable session outlives the save.
  * The sign-in, the node, the SDK and the clock are ports so tests can drive each step.
  */
 import type { AppData } from "./bridge.ts";
 import { type CatalogEntry, EntryDisabledError, assertAvailable, catalog as bundledCatalog } from "./catalog.ts";
 import type { ManifestSdk } from "./grants.ts";
-import { type ManifestResult, loadManifest } from "./manifest.ts";
-import { type RunnableApp, type StoredAppFailure, type StoredFiles, verifyStoredApp } from "./stored-app.ts";
+import { INSTALL_RECORD_PATH, type VerifiedBundle } from "./bundle.ts";
+import { type ManifestResult } from "./manifest.ts";
+import { contentTypeOf, installKey, installOrder, installRecord, installRecordKey } from "./install-plan.ts";
+import { type RunnableApp, type StoredAppFailure, type StoredFiles, parseInstallRecord, pinProblem, verifyStoredApp } from "./stored-app.ts";
 
 export interface RunHooks {
   /** `true` while an OpenKey approval is open. */
   approval(open: boolean): void;
 }
 
-/** The read-only session of step 2. */
+/** A create-only write: `created`, or `exists` (the stored file is left as it is). */
+export type PutResult = "created" | "exists";
+
+/** The read-only session of step 3. */
 export interface ReadSession {
   readonly files: StoredFiles;
+  /** Create-only write under the app's folder and notes. */
+  readonly put: (key: string, bytes: Uint8Array, contentType: string) => Promise<PutResult>;
   /** Ends the session. `keepOpenKey` leaves OpenKey connected so the next sign-in needs no second connect. */
   end(options: { keepOpenKey: boolean }): Promise<void>;
 }
 
-/** The runtime session of step 4. */
+/** The runtime session of step 5. */
 export interface RuntimeSession {
   readonly data: AppData;
   /** Epoch ms after which the session may no longer be used (the sign-in time plus one hour, less a margin). */
@@ -46,21 +58,27 @@ export interface RuntimeSession {
   end(): Promise<void>;
 }
 
+/** What step 2 produces: the catalog bundle, hashed, and the catalog manifest, loaded. */
+export interface PreparedApp {
+  readonly bundle: VerifiedBundle;
+  readonly manifest: ManifestResult;
+}
+
 export interface RunPorts {
-  /** Step 2: one approval; reads the three stored files. */
+  /** Step 2: fetch and verify the catalog bundle, and load the catalog manifest. No approval happens here. */
+  prepare(entry: CatalogEntry): Promise<PreparedApp>;
+  /** Step 3: one approval. The sign-in always carries the create-only write grants for the app's folder and notes. */
   readStored(entry: CatalogEntry, hooks: RunHooks): Promise<ReadSession>;
-  /** Step 4: signs in with `app.signing`. `previous` is the read session, already verified. */
+  /** Step 5: signs in with `app.signing`. `previous` is the read session, already verified. */
   openRuntime(app: RunnableApp, previous: ReadSession, hooks: RunHooks): Promise<RuntimeSession>;
   /** The SDK's manifest functions; loaded only after the person clicked. */
   sdk(): Promise<ManifestSdk>;
   readonly catalog?: readonly CatalogEntry[];
-  readonly loadCatalogManifest?: (entry: CatalogEntry) => Promise<ManifestResult>;
 }
 
 export type RunFailure =
   | "unknown-app"
   | "unavailable"
-  | "not-installed"
   | "damaged"
   | "code-mismatch"
   | "not-listed"
@@ -87,6 +105,7 @@ export class RunError extends Error {
 export type RunProgress =
   | { readonly phase: "checking" }
   | { readonly phase: "reading"; readonly approval: boolean }
+  | { readonly phase: "saving"; readonly done: number; readonly total: number }
   | { readonly phase: "verifying" }
   | { readonly phase: "starting"; readonly approval: boolean };
 
@@ -104,7 +123,59 @@ export function catalogEntryFor(appId: string, entries: readonly CatalogEntry[] 
   return APP_ID.test(appId) ? entries.find((entry) => entry.app_id === appId) : undefined;
 }
 
-export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void): Promise<RunningApp> {
+/**
+ * Writes what is missing from the saved copy, create-only, inside the read session. Returns the files as they now stand.
+ * A saved copy recorded for another digest is left alone: verification then refuses it, nothing is written into it.
+ * Order: the app's files (each one not already saved), then `install.json` (only when no record is saved, and only once the saved
+ * code files pass `pinProblem`, the same check as the open), then the notes with `knowledge/index.md` last. Nothing is cleaned up on failure.
+ */
+async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: StoredFiles, put: ReadSession["put"], report: (progress: RunProgress) => void, signal: AbortSignal | undefined): Promise<StoredFiles> {
+  const recordBytes = files.entries.get(INSTALL_RECORD_PATH);
+  if (recordBytes !== undefined && parseInstallRecord(recordBytes)?.digest !== entry.bundle.digest) return files;
+  const entries = new Map(files.entries);
+  const order = installOrder(bundle.files);
+  const appFiles = order.filter((file) => !file.path.startsWith("knowledge/"));
+  const notes = order.filter((file) => file.path.startsWith("knowledge/"));
+  const total = order.length + 1;
+  let done = 0;
+  try {
+    for (const file of appFiles) {
+      if (signal?.aborted) throw new RunError("cancelled");
+      // Already saved: kept, never rewritten.
+      if (entries.has(file.path)) { done += 1; continue; }
+      report({ phase: "saving", done, total });
+      const result = await put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
+      // Listed and read a moment ago, now present but not in the read: the copy changed under the open, so refuse rather than guess.
+      if (result === "exists") throw new RunError("failed", { detail: "saved files changed while opening" });
+      entries.set(file.path, file.bytes);
+      done += 1;
+    }
+    if (recordBytes === undefined) {
+      // Commit guard: install.json is written only over a copy that verification would accept.
+      const problem = await pinProblem(entry, { entries, ...(files.incomplete === undefined ? {} : { incomplete: files.incomplete }) });
+      if (problem !== undefined) throw new RunError("damaged", { detail: `${problem}, so install.json was not written` });
+      if (signal?.aborted) throw new RunError("cancelled");
+      report({ phase: "saving", done, total });
+      const record = installRecord(entry, new Date());
+      const written = await put(installRecordKey(entry.app_id), record, contentTypeOf("install.json"));
+      if (written === "exists") throw new RunError("failed", { detail: "saved files changed while opening" });
+      entries.set(INSTALL_RECORD_PATH, record);
+      done += 1;
+    }
+    // Notes are create-only: a note already saved is left as it is, so the write result is not checked.
+    for (const file of notes) {
+      if (signal?.aborted) throw new RunError("cancelled");
+      report({ phase: "saving", done, total });
+      await put(installKey(entry.app_id, file.path), file.bytes, contentTypeOf(file.path));
+      done += 1;
+    }
+  } catch (error) {
+    throw error instanceof RunError ? error : new RunError("failed", { cause: error, detail: "saving the app's files" });
+  }
+  return { entries, ...(files.incomplete === undefined ? {} : { incomplete: files.incomplete }) };
+}
+
+export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void, signal?: AbortSignal): Promise<RunningApp> {
   const entries = ports.catalog ?? bundledCatalog.apps;
   const entry = catalogEntryFor(appId, entries);
   if (entry === undefined) throw new RunError("unknown-app");
@@ -112,8 +183,13 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     if (error instanceof EntryDisabledError) throw new RunError("unavailable", { detail: error.reason });
     throw error;
   }
+  // The catalog lists the app, but without its code the page cannot run it: refused before any approval.
+  if (!entry.bundle.files.some((file) => file.path === "app.jsx")) throw new RunError("unavailable", { detail: "The catalog lists no code for this app, so it can't be opened." });
   report({ phase: "checking" });
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
+  const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
+  // Cancel before any approval window opens: nothing is signed or written.
+  if (signal?.aborted) throw new RunError("cancelled");
 
   report({ phase: "reading", approval: false });
   const read = await ports.readStored(entry, { approval: (open) => report({ phase: "reading", approval: open }) }).catch((cause: unknown) => {
@@ -121,10 +197,12 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   });
   let app: RunnableApp;
   try {
-    // Nothing under app/ at all: it was never installed. A partial set is damaged or a mismatch, decided below.
-    if (read.files.entries.size === 0) throw new RunError("not-installed");
+    // Cancel while OpenKey was asking: the late session is closed and nothing is written.
+    if (signal?.aborted) throw new RunError("cancelled");
+    const files = await saveMissing(entry, prepared.bundle, read.files, read.put, report, signal);
+    if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
-    const verified = await verifyStoredApp(appId, read.files, { catalog: entries, loadCatalogManifest: ports.loadCatalogManifest ?? loadManifest, sdk });
+    const verified = await verifyStoredApp(appId, files, { catalog: entries, loadCatalogManifest: async () => prepared.manifest, sdk });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });
     app = verified.app;
   } catch (error) {
@@ -132,6 +210,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     throw error instanceof RunError ? error : new RunError("failed", { cause: error });
   }
 
+  if (signal?.aborted) { await read.end({ keepOpenKey: false }).catch(() => undefined); throw new RunError("cancelled"); }
   report({ phase: "starting", approval: false });
   try {
     const session = await ports.openRuntime(app, read, { approval: (open) => report({ phase: "starting", approval: open }) });

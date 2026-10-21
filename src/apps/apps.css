@@ -219,6 +219,7 @@ body {
 /* 44px touch targets over the patterns' compact defaults. */
 .apps-button {
   min-height: 2.75rem;
+  text-decoration: none;
 }
 
 /* Detail sheet: a right-hand panel on wide screens, a bottom sheet on phones. */
@@ -384,7 +385,7 @@ body {
   list-style-type: disclosure-open;
 }
 
-/* Install sheet: plain statements, then the live state of the install. */
+/* Details sheet notices, and the status lines the inline panel reports in. */
 .apps-notice {
   align-items: flex-start;
   margin: 0;
@@ -431,11 +432,6 @@ body {
 
 .apps-badge {
   color: var(--tc-color-text);
-}
-
-.apps-sheet__footer--install {
-  display: grid;
-  gap: var(--tc-space-3);
 }
 
 .apps-install-status {

@@ -35,8 +35,10 @@ import type { ManifestScope } from "../share/manifest-policy.js";
 import { createAppData } from "./app-data.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
-import { RunError, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
+import { RunError, type PreparedApp, type PutResult, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
+import { BundleRefusal, fetchVerifiedBundle, type VerifiedBundle } from "./bundle.ts";
+import { loadManifest } from "./manifest.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -61,7 +63,15 @@ export function runnerAppName(prefix: string, name: string): string {
  */
 export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
 
-/** The read sign-in's manifest: `get` and `list` on `<app_id>/app/` in the applications space, and nothing else. */
+/** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */
+function kvPermission(path: string, actions: Array<"get" | "list" | "put">, description: string): NonNullable<Manifest["permissions"]>[number] {
+  return { service: "tinycloud.kv", path, actions, skipPrefix: true, description };
+}
+
+/**
+ * The read sign-in's manifest: `get`, `list` and create-only `put` on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/`,
+ * all in the applications space. The write grants let missing files be saved within this same approval. Nothing else.
+ */
 export function readerManifest(appId: string, appName: string): Manifest {
   return {
     manifest_version: 1,
@@ -73,13 +83,21 @@ export function readerManifest(appId: string, appName: string): Manifest {
     defaults: false,
     includePublicSpace: false,
     expiry: "15m",
-    permissions: [{ service: "tinycloud.kv", path: `${appId}/app/`, actions: ["get", "list"], skipPrefix: true, description: `Read ${appName}'s saved files (its code, manifest and install record) so they can be checked before it is opened.` }],
+    permissions: [
+      kvPermission(`${appId}/app/`, ["get", "list", "put"], `Read and save ${appName}'s files (its code, manifest and install record) so they can be checked before it is opened.`),
+      kvPermission(`${appId}/knowledge/`, ["put"], `Save ${appName}'s notes folder if it is missing.`),
+    ],
   };
 }
 
-/** What the read sign-in may ask for: `get` and `list` on the one saved app, and nothing else. */
+/** What the read sign-in may ask for: `get`, `list` and create-only `put` on the one saved app's folder and notes. Nothing else. */
 export function readerScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["get", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  return {
+    allowedSpaces: [INSTALL_SPACE],
+    allowedServices: ["kv"],
+    allowedActions: ["get", "list", "put"],
+    allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }, { space: INSTALL_SPACE, prefix: `${appId}/knowledge/` }],
+  };
 }
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
@@ -107,6 +125,19 @@ interface ReaderKv {
   list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
   /** A short-lived URL for one object (a `get` invocation): fetched below as a STREAM, so the read can stop at the cap. */
   createSignedReadUrl(key: string, options: { expiresInSeconds: number }): Promise<{ ok: true; data: { url: string } } | { ok: false; error: { code?: string } }>;
+}
+
+/** The part of the SDK's key-value service the install write uses. */
+interface WriterKv {
+  put(key: string, value: Uint8Array, options: { contentType: string; ifNoneMatch: "*" }): Promise<{ ok: true } | { ok: false; error: { code?: string } }>;
+}
+
+/** Create-only write: created, or already there and left as it is. Any other failure is a failed open, never a silent skip. */
+export async function putCreateOnly(kv: WriterKv, key: string, bytes: Uint8Array, contentType: string): Promise<PutResult> {
+  const written = await kv.put(key, bytes, { contentType, ifNoneMatch: "*" });
+  if (written.ok) return "created";
+  if (written.error.code === "KV_PRECONDITION_FAILED") return "exists";
+  throw new RunError("failed", { detail: `save ${key}: ${written.error.code ?? "error"}` });
 }
 
 /** The part of `fetch` the reader uses (the page's own `fetch`, or a fake in tests). */
@@ -169,8 +200,21 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: Read
 /** The OpenKey connection a read session hands to the runtime sign-in, and how to end the whole sign-in. */
 const OPENKEY_SESSIONS = new WeakMap<ReadSession, ManifestSignIn>();
 
+
 export function createRunPorts(): RunPorts {
   return {
+    async prepare(entry): Promise<PreparedApp> {
+      // Before any approval: every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
+      const bundle = await fetchVerifiedBundle(entry).catch((error: unknown) => {
+        if (error instanceof BundleRefusal && error.reason !== "unavailable") throw new RunError("catalog-unavailable", { cause: error, detail: "The catalog copy of this app did not match the catalog." });
+        throw new RunError("failed", { cause: error, detail: "The app's files could not be downloaded. Check the connection and try again." });
+      });
+      const manifest = await loadManifest(entry);
+      if (!manifest.ok && manifest.reason === "mismatch") throw new RunError("catalog-unavailable", { detail: "The catalog copy of this app's manifest did not match the catalog." });
+      if (!manifest.ok) throw new RunError("failed", { detail: "The app's manifest could not be downloaded. Check the connection and try again." });
+      return { bundle, manifest };
+    },
+
     async sdk(): Promise<ManifestSdk> {
       // Lazy so the page itself loads no SDK until the person asks to open an app.
       return import("@tinycloud/sdk-core");
@@ -214,6 +258,7 @@ export function createRunPorts(): RunPorts {
       let ended = false;
       const readSession: ReadSession = {
         files,
+        put: (key: string, bytes: Uint8Array, contentType: string) => putCreateOnly(kv, key, bytes, contentType),
         end: async ({ keepOpenKey }) => {
           if (ended) return;
           ended = true;

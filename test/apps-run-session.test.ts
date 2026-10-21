@@ -7,7 +7,7 @@ import { catalog } from "../src/apps/catalog.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS } from "../src/apps/grants.ts";
 import { RunError, type ReadSession, type RunHooks } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
 import { type RunnableApp, verifyStoredApp } from "../src/apps/stored-app.ts";
 import { storedFiles } from "./stored-fixtures.ts";
 
@@ -308,5 +308,42 @@ describe("runnerAppName", () => {
     expect(runnerAppName("TinyCloud Share: ", "evil.example/login")).toBe("TinyCloud Share: Tiny app");
     expect(runnerAppName("TinyCloud Share: ", "\u202eevil")).toBe("TinyCloud Share: Tiny app");
     expect([...runnerAppName("TinyCloud Share: open ", "x".repeat(200))].length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("read scope and create-only writes", () => {
+  it("the read sign-in holds get, list and put on the app's folder, and put alone on its notes", () => {
+    const permissions = readerManifest(HEALTH, entry.name).permissions ?? [];
+    expect(permissions.map((permission) => ({ path: permission.path, actions: permission.actions }))).toEqual([
+      { path: `${HEALTH}/app/`, actions: ["get", "list", "put"] },
+      { path: `${HEALTH}/knowledge/`, actions: ["put"] },
+    ]);
+  });
+
+  it("the read scope allows only those two folders in the applications space, with get, list and put", () => {
+    expect(readerScope(HEALTH)).toEqual({
+      allowedSpaces: [INSTALL_SPACE],
+      allowedServices: ["kv"],
+      allowedActions: ["get", "list", "put"],
+      allowedPathPrefixes: [
+        { space: INSTALL_SPACE, prefix: `${HEALTH}/app/` },
+        { space: INSTALL_SPACE, prefix: `${HEALTH}/knowledge/` },
+      ],
+    });
+  });
+});
+
+describe("putCreateOnly", () => {
+  it("writes with ifNoneMatch '*', reports a created key as created and an existing key as exists", async () => {
+    const put = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: true as const }));
+    await expect(putCreateOnly({ put }, "k", new Uint8Array([1]), "text/plain")).resolves.toBe("created");
+    expect(put).toHaveBeenCalledWith("k", expect.any(Uint8Array), { contentType: "text/plain", ifNoneMatch: "*" });
+    const taken = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: false as const, error: { code: "KV_PRECONDITION_FAILED" } }));
+    await expect(putCreateOnly({ put: taken }, "k", new Uint8Array(), "text/plain")).resolves.toBe("exists");
+  });
+
+  it("any other write error is a failed open, never a silent skip", async () => {
+    const put = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: false as const, error: { code: "KV_ERROR" } }));
+    await expect(putCreateOnly({ put }, "k", new Uint8Array(), "text/plain")).rejects.toMatchObject({ reason: "failed" });
   });
 });
