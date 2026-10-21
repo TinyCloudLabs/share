@@ -35,21 +35,21 @@ export function versionLabel(entry: CatalogEntry): string {
 /** The longest reason the page shows (it cuts a longer one); the catalog check refuses a longer one. scripts/apps-catalog.mjs has the same number. */
 export const MAX_DISABLED_REASON_CHARS = 280;
 
-export type Availability = { available: true } | { available: false; reason: string };
+export type Availability = { available: true } | { available: false; reason: string; temporary: boolean };
 
 /** The file the runner runs. An entry without it has no code to open. */
 const CODE_FILE = "app.jsx";
 
 /** The reason for an entry the catalog lists without its code. */
-const NO_CODE_REASON = "The catalog lists no code for this app, so it can't be opened.";
+const NO_CODE_REASON = "This app isn't available right now.";
 
 /**
  * Whether an entry may be installed, repaired, or opened. The /apps cards and details, the repair panel, and the runner
  * (`assertAvailable`) all ask this, so one rule decides them all.
  */
 export function availabilityOf(entry: CatalogEntry): Availability {
-  if (entry.disabled === true) return { available: false, reason: disabledReason(entry) };
-  if (!entry.bundle.files.some((file) => file.path === CODE_FILE)) return { available: false, reason: NO_CODE_REASON };
+  if (entry.disabled === true) return { available: false, reason: disabledReason(entry), temporary: true };
+  if (!entry.bundle.files.some((file) => file.path === CODE_FILE)) return { available: false, reason: NO_CODE_REASON, temporary: false };
   return { available: true };
 }
 
@@ -64,15 +64,17 @@ function disabledReason(entry: CatalogEntry): string {
 /** Thrown by `assertAvailable` for an entry that cannot be opened. */
 export class EntryDisabledError extends Error {
   readonly reason: string;
-  constructor(reason: string) {
+  readonly temporary: boolean;
+  constructor(reason: string, temporary: boolean) {
     super("catalog-entry-disabled");
     this.name = "EntryDisabledError";
     this.reason = reason;
+    this.temporary = temporary;
   }
 }
 
 /** The runner's gate: throws `EntryDisabledError` for an entry that cannot be opened (switched off, or without code), before any fetch or sign-in. */
 export function assertAvailable(entry: CatalogEntry): void {
   const availability = availabilityOf(entry);
-  if (!availability.available) throw new EntryDisabledError(availability.reason);
+  if (!availability.available) throw new EntryDisabledError(availability.reason, availability.temporary);
 }

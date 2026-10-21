@@ -83,6 +83,7 @@ export interface RunPorts {
 export type RunFailure =
   | "unknown-app"
   | "unavailable"
+  | "no-code"
   | "damaged"
   | "code-mismatch"
   | "not-listed"
@@ -200,7 +201,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   const entry = catalogEntryFor(appId, entries);
   if (entry === undefined) throw new RunError("unknown-app");
   try { assertAvailable(entry); } catch (error) {
-    if (error instanceof EntryDisabledError) throw new RunError("unavailable", { detail: error.reason });
+    if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
     throw error;
   }
   report({ phase: "checking" });

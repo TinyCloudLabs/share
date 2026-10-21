@@ -19,7 +19,7 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
    runner's document, outside the frame; the frame is an isolated, clipped box stacked below it.
 4. **Plain screens** when the app cannot open: "This app asks for more than it did when you installed it", "Your saved copy
    of this app can't be used", "This app's code doesn't match the pinned version" (with Repair),
-   "This app is temporarily unavailable" (the catalog's kill switch, or an entry with no `app.jsx`, with the reason shown), "This version of the app isn't in the catalog any more" (with Uninstall),
+   "This app is temporarily unavailable" (the catalog's kill switch) or "Unavailable" (an entry with no `app.jsx`), each with the reason shown, "This version of the app isn't in the catalog any more" (with Uninstall),
    "Your session expired" (with Open again), and the usual OpenKey outcomes (cancelled, no
    answer in time, another request waiting, wrong account).
 

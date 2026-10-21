@@ -88,6 +88,18 @@ async function shoot(page, name) {
 
 const sheetOpen = (page) => page.$eval("#apps-sheet", (node) => node.open);
 
+// The unavailable notice keeps its full height and sits above the description, never over it.
+async function assertNoticeClear(page, label) {
+  const box = await page.$eval("#apps-sheet", (sheet) => {
+    const notice = sheet.querySelector(".apps-notice");
+    const noticeRect = notice.getBoundingClientRect();
+    const ledeRect = sheet.querySelector(".apps-sheet__lede").getBoundingClientRect();
+    return { noticeBottom: noticeRect.bottom, noticeHeight: noticeRect.height, ledeTop: ledeRect.top, contentHeight: notice.scrollHeight };
+  });
+  assert.ok(box.noticeBottom <= box.ledeTop, `${label}: notice sits above the description (bottom ${box.noticeBottom}, description top ${box.ledeTop})`);
+  assert.ok(box.noticeHeight >= box.contentHeight - 1, `${label}: notice keeps its full height (${box.noticeHeight} of ${box.contentHeight})`);
+}
+
 let browser;
 try {
   browser = await puppeteer.launch({ headless: true });
@@ -125,6 +137,8 @@ try {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
       assert.equal(await page.$eval("#apps-sheet footer button[aria-label^='Open']", (node) => node.disabled), true, `${label}: the sheet's Open is disabled (Notes has no code)`);
+      assert.equal(await page.$eval("#apps-sheet .apps-unavailable strong", (node) => node.textContent), "Unavailable", `${label}: the heading says Unavailable`);
+      await assertNoticeClear(page, label);
       assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label}: sheet has no horizontal scroll`);
       assert.deepEqual(await axeViolations(page), [], `${label}: sheet axe AA`);
       await shoot(page, `apps-sheet-${width}-${scheme}`);
@@ -235,7 +249,7 @@ try {
         assert.equal(card.open, null, `${label}: a disabled card has no runner link`);
         assert.equal(card.openDisabled, true, `${label}: a disabled card's Open is a disabled button`);
         assert.equal(card.details, false, `${label}: Details still opens`);
-        const offCards = await page.$$eval(".apps-card", (nodes) => nodes.filter((node) => node.textContent.includes("Temporarily unavailable")).map((node) => node.querySelector("h2")?.textContent ?? ""));
+        const offCards = await page.$$eval(".apps-card", (nodes) => nodes.filter((node) => node.querySelector(".apps-unavailable") !== null).map((node) => node.querySelector("h2")?.textContent ?? ""));
         assert.deepEqual(offCards.sort(), [target.name, switched.apps.find((app) => app.app_id === "com.example.notes").name].sort(), `${label}: only that card and the one without code are off`);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label}: card axe AA`);
@@ -243,7 +257,8 @@ try {
         await page.evaluate((position) => [...document.querySelectorAll(".apps-card")[position].querySelectorAll(".apps-card__actions button")].find((button) => button.textContent === "Details").click(), index);
         await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
         const detail = await page.$eval("#apps-sheet", (node) => ({ text: node.innerText }));
-        assert.ok(detail.text.includes("Temporarily unavailable") && detail.text.includes("Opening isn't available for this app."), `${label}: the details sheet says so`);
+        assert.ok(detail.text.includes("Temporarily unavailable"), `${label}: the details sheet says so`);
+        await assertNoticeClear(page, label);
         assert.deepEqual(await axeViolations(page), [], `${label}: details sheet axe AA`);
         await shoot(page, `kill-switch-sheet-${width}-${scheme}`);
         assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: no SDK chunk loaded`);

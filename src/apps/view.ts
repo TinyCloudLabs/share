@@ -4,7 +4,7 @@
  * so Trusted Types can stay required for scripts. Sheet copy is fixed text plus those same textContent values; it adds no markup path.
  */
 import { type AccessItem, unsupportedManifest } from "./access.ts";
-import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
+import { type Availability, type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { runnerHref } from "./install-plan.ts";
@@ -93,9 +93,9 @@ export function noticeList(notices: readonly string[]): HTMLElement[] {
   return notices.length === 0 ? [] : [el("ul", "apps-notes apps-notes--strong", notices.map((notice) => el("li", null, [notice])))];
 }
 
-/** The kill switch's banner: fixed heading, the catalog's reason as text. */
-function unavailableNotice(reason: string): HTMLElement {
-  return el("div", "tc-status tc-status--warning apps-notice apps-unavailable", [el("strong", null, ["Temporarily unavailable"]), el("span", null, [reason])]);
+/** The notice for an entry that cannot be opened: the heading says whether the state is temporary, the reason is the text. */
+function unavailableNotice(availability: Extract<Availability, { available: false }>): HTMLElement {
+  return el("div", "tc-status tc-status--warning apps-notice apps-unavailable", [el("strong", null, [availability.temporary ? "Temporarily unavailable" : "Unavailable"]), el("span", null, [availability.reason])]);
 }
 
 function provenance(entry: CatalogEntry): HTMLElement {
@@ -133,14 +133,14 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const header = sheetHeader(`by ${entry.publisher.name}`, entry.name, entry, close);
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const availability = availabilityOf(entry);
-  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
+  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
   const uninstallNote = el("p", "apps-muted", ["Also deletes notes you edited."], { id: "apps-uninstall-note" });
   const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}`, "aria-describedby": "apps-uninstall-note" });
   uninstallNow.addEventListener("click", uninstall);
   const open = availability.available
     ? el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })
     : el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", disabled: "", "aria-label": `Open ${entry.name}` });
-  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening isn't available for this app."])]), uninstallNow, uninstallNote]);
+  const footer = el("footer", "apps-sheet__footer", [open, uninstallNow, uninstallNote]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -156,7 +156,7 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
     case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
     case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
     case "tampered": return `${possessive(entry.name)} files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
-    case "disabled": return "This app is temporarily unavailable. Nothing was changed.";
+    case "disabled": return "This app isn't available right now. Nothing was changed.";
     case "unavailable": return `Couldn't load ${possessive(entry.name)} files. Nothing was changed. Try again.`;
     case "write-failed": return `Not repaired yet: ${error.written.length} files were replaced. Your data was not touched; try again to finish.`;
     default: return "We couldn't repair this app. Nothing was changed. Try again.";
@@ -457,7 +457,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),
       el("p", "apps-card__description", [entry.description]),
-      ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
+      ...(availability.available ? [] : [unavailableNotice(availability)]),
       el("div", "apps-card__actions", [open, details]),
     ]);
     cards.set(entry.app_id, card);

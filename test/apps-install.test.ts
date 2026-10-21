@@ -126,14 +126,14 @@ describe("the kill switch", () => {
     const entry = entryOf(appId);
     return { ...entry, bundle: { ...entry.bundle, files: entry.bundle.files.filter((file) => file.path !== "app.jsx") } };
   };
-  const NO_CODE_REASON = "The catalog lists no code for this app, so it can't be opened.";
+  const NO_CODE_REASON = "This app isn't available right now.";
 
 
   it("an entry is available unless it says otherwise, and a disabled one carries its reason", () => {
     expect(availabilityOf(entryOf(HEALTH))).toEqual({ available: true });
-    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled." });
-    expect(availabilityOf(off("   "))).toEqual({ available: false, reason: "This app is temporarily unavailable." });
-    expect(availabilityOf(off())).toEqual({ available: false, reason: "This app is temporarily unavailable." });
+    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled.", temporary: true });
+    expect(availabilityOf(off("   "))).toEqual({ available: false, reason: "This app is temporarily unavailable.", temporary: true });
+    expect(availabilityOf(off())).toEqual({ available: false, reason: "This app is temporarily unavailable.", temporary: true });
     // Only `true` switches it off.
     expect(availabilityOf({ ...entryOf(HEALTH), disabled: false } as unknown as CatalogEntry)).toEqual({ available: true });
   });
@@ -147,7 +147,7 @@ describe("the kill switch", () => {
     expect([...shown.reason]).toHaveLength(MAX_DISABLED_REASON_CHARS);
     expect(shown.reason.endsWith("…")).toBe(true);
     const exact = off("x".repeat(MAX_DISABLED_REASON_CHARS));
-    expect(availabilityOf(exact)).toEqual({ available: false, reason: "x".repeat(MAX_DISABLED_REASON_CHARS) });
+    expect(availabilityOf(exact)).toEqual({ available: false, reason: "x".repeat(MAX_DISABLED_REASON_CHARS), temporary: true });
   });
 
   it("assertAvailable is the runner's gate: it throws for a switched-off entry or one without code, and for nothing else", () => {
@@ -155,14 +155,14 @@ describe("the kill switch", () => {
     expect(() => assertAvailable(off("Pulled."))).toThrow(EntryDisabledError);
     try { assertAvailable(off("Pulled.")); } catch (error) { expect((error as EntryDisabledError).reason).toBe("Pulled."); }
     expect(() => assertAvailable(noCode(HEALTH))).toThrow(EntryDisabledError);
-    try { assertAvailable(noCode(HEALTH)); } catch (error) { expect((error as EntryDisabledError).reason).toBe(NO_CODE_REASON); }
+    try { assertAvailable(noCode(HEALTH)); } catch (error) { expect((error as EntryDisabledError).reason).toBe(NO_CODE_REASON); expect((error as EntryDisabledError).temporary).toBe(false); }
   });
 
   it("an entry the catalog lists without its code is unavailable with that reason; a switched-off one keeps its own", () => {
-    expect(availabilityOf(noCode(HEALTH))).toEqual({ available: false, reason: NO_CODE_REASON });
+    expect(availabilityOf(noCode(HEALTH))).toEqual({ available: false, reason: NO_CODE_REASON, temporary: false });
     expect(availabilityOf(entryOf(RECIPES))).toEqual({ available: true });
     // A switched-off entry keeps its own reason; the switch is checked first.
-    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled." });
+    expect(availabilityOf(off("Pulled."))).toEqual({ available: false, reason: "Pulled.", temporary: true });
   });
 
 });

@@ -128,6 +128,7 @@ describe("apps page rendering", () => {
     expect(open?.disabled).toBe(true);
     expect(list.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
     expect(list.textContent).toContain("Paused for maintenance.");
+    expect(list.querySelector(".apps-unavailable strong")?.textContent).toBe("Temporarily unavailable");
   });
 
   it("an entry the catalog lists without its code shows Open disabled with the reason, on the card and in its sheet", async () => {
@@ -137,7 +138,8 @@ describe("apps page rendering", () => {
     mountApps(list, sheet, [entry]);
     expect(list.querySelector<HTMLButtonElement>("button[aria-label='Open Plain']")?.disabled).toBe(true);
     expect(list.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
-    expect(list.textContent).toContain("The catalog lists no code for this app, so it can't be opened.");
+    expect(list.querySelector(".apps-unavailable strong")?.textContent).toBe("Unavailable");
+    expect(list.textContent).toContain("This app isn't available right now.");
     list.querySelector<HTMLButtonElement>("button[aria-label='Details for Plain']")!.click();
     await settle();
     expect(sheet.querySelector<HTMLButtonElement>("footer button[aria-label='Open Plain']")?.disabled).toBe(true);
