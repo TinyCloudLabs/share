@@ -217,6 +217,11 @@ export function waitPhrase(ms: number): string {
   return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
+/** The live line under a recovery card: the remaining wait, then the retry as available. */
+function cooldownText(left: number): string {
+  return left > 0 ? `You can ask for a new code in ${waitPhrase(left)}.` : "You can ask for a new code now.";
+}
+
 /**
  * A recoverable stop: nothing was opened and a fresh code can be requested.
  * Until `availableAt` (epoch ms) the button stays disabled, so a recipient
@@ -236,19 +241,22 @@ export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery:
   const wait = availableAt - Date.now();
   if (wait > 0) {
     retry.disabled = true;
-    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", `You can ask for a new code in ${waitPhrase(wait)}.`);
+    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", cooldownText(wait));
     cooldown.setAttribute("aria-live", "polite");
     panel.append(cooldown);
-    // Ticks once a second. The text is replaced only when it changes, so a long wait is announced about once a minute, not every tick.
+    // The retry is enabled by one timer at the moment the wait ends. The text
+    // ticks once a second and changes only when its phrase changes, so a long
+    // wait is announced about once a minute, not every tick.
     const tick = setInterval(() => {
       if (!cooldown.isConnected) { clearInterval(tick); return; }
-      const left = availableAt - Date.now();
-      const text = left > 0 ? `You can ask for a new code in ${waitPhrase(left)}.` : "You can ask for a new code now.";
+      const text = cooldownText(availableAt - Date.now());
       if (cooldown.textContent !== text) cooldown.textContent = text;
-      if (left > 0) return;
+    }, 1000);
+    setTimeout(() => {
       clearInterval(tick);
       retry.disabled = false;
-    }, 1000);
+      cooldown.textContent = "You can ask for a new code now.";
+    }, wait);
   }
   view.verify.replaceChildren(panel);
   title.focus();

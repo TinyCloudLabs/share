@@ -7,7 +7,6 @@ import {
   renderRecipientCodeRequest,
   renderRecipientCodeRequested,
   renderRecipientUnavailable,
-  waitPhrase,
   type RecipientClaimRecovery,
   type RecipientClaimView,
 } from "../email-share/view.js";
@@ -40,12 +39,7 @@ export function claimRecoveryFor(error: unknown): RecipientClaimRecovery | undef
   if (code === "CANCELED") return { title: "Verification canceled", detail: "Nothing was opened. Send a new code when you’re ready.", action: "Send a new code" };
   if (code === "REQUEST_EXPIRED") return { title: "That code expired", detail: "Codes work for a few minutes and only once. Send a new code to try again.", action: "Send a new code" };
   if (code === "VERIFICATION_FAILED" && details?.state === "proof_attempts_exhausted") return { title: "Too many incorrect codes", detail: "For your security, that code no longer works. Send a new code to try again.", action: "Send a new code" };
-  const limited = rateLimitedIssuer(failure);
-  if (limited !== undefined) {
-    const retryAfterMs = issuerRetryAfterMs(limited);
-    const when = retryAfterMs === undefined ? "about an hour" : waitPhrase(retryAfterMs);
-    return { title: "Too many codes requested", detail: `Too many verification codes were requested recently. Nothing was opened. Try again in ${when}.`, action: "Try again" };
-  }
+  if (rateLimitedIssuer(failure) !== undefined) return { title: "Too many codes requested", detail: "Too many verification codes were requested recently. Nothing was opened.", action: "Try again" };
   if (code === "OFFLINE" || code === "ISSUER_UNREADY") return { title: "Email verification is unavailable", detail: "Nothing was opened. Check your connection, then try again.", action: "Try again" };
   return undefined;
 }
@@ -73,12 +67,17 @@ function issuerRetryAfterMs(details: { retryAfterMs?: unknown }): number | undef
   return typeof details.retryAfterMs === "number" && details.retryAfterMs > 0 ? details.retryAfterMs : undefined;
 }
 
-/** How long the recipient waits, from when a refusal arrived, before a new code may be requested. */
-export function resendWaitMs(error: unknown): number {
+/**
+ * When a recovery's retry becomes available, in epoch ms. A rate limit's wait
+ * runs from arrival: the issuer's Retry-After clock starts after the request
+ * is sent, so arrival is never early. Every other stop keeps the cooldown from
+ * the request.
+ */
+export function resendAvailableAt(error: unknown, requestedAt: number, arrivedAt: number): number {
   const failure = credentialFailure(error);
   const limited = failure === undefined ? undefined : rateLimitedIssuer(failure);
-  if (limited === undefined) return RESEND_COOLDOWN_MS;
-  return issuerRetryAfterMs(limited) ?? RATE_LIMIT_FALLBACK_MS;
+  if (limited === undefined) return requestedAt + RESEND_COOLDOWN_MS;
+  return arrivedAt + (issuerRetryAfterMs(limited) ?? RATE_LIMIT_FALLBACK_MS);
 }
 
 /**
@@ -138,6 +137,7 @@ export async function receiveWithSdk(input: {
     mount.replaceChildren();
     if (recipient.kind === "exactEmail") renderRecipientCodeRequested(claim, recipient.email, mount);
     else claim.verify.replaceChildren(mount);
+    const requestedAt = Date.now();
     try {
       await input.onComplete(await received.get());
       return;
@@ -145,9 +145,7 @@ export async function receiveWithSdk(input: {
       const recovery = claimRecoveryFor(error);
       if (recovery === undefined) throw error;
       // Retrying starts a new acquisition, so OpenCredentials emails a new code.
-      // The issuer's Retry-After clock starts after this request was sent, so the wait runs from arrival. Arrival is never earlier than the issuer's answer, so retry is never enabled early.
-      const arrivedAt = Date.now();
-      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, arrivedAt + resendWaitMs(error)));
+      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, resendAvailableAt(error, requestedAt, Date.now())));
     }
     if (await closed()) return;
   }

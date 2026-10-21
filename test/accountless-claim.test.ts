@@ -153,7 +153,7 @@ describe("exact-email claim screen", () => {
         .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
       const { root, done, onComplete } = await start();
       await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
-      expect(root.querySelector(".claim-state-detail:not(.claim-cooldown)")?.textContent).toBe("Too many verification codes were requested recently. Nothing was opened. Try again in 58 minutes.");
+      expect(root.querySelector(".claim-state-detail:not(.claim-cooldown)")?.textContent).toBe("Too many verification codes were requested recently. Nothing was opened.");
       const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
       expect(retry.disabled).toBe(true);
       expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 58 minutes.");
@@ -211,12 +211,100 @@ describe("exact-email claim screen", () => {
         .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
       const { root, done, onComplete } = await start();
       await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
-      expect(root.querySelector(".claim-state-detail:not(.claim-cooldown)")?.textContent).toBe("Too many verification codes were requested recently. Nothing was opened. Try again in about an hour.");
+      expect(root.querySelector(".claim-state-detail:not(.claim-cooldown)")?.textContent).toBe("Too many verification codes were requested recently. Nothing was opened.");
       const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
       expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 60 minutes.");
       vi.advanceTimersByTime(refusedAt + 3_599_999 - Date.now());
       expect(retry.disabled).toBe(true);
       vi.advanceTimersByTime(refusedAt + 3_600_000 - Date.now());
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the rate-limit detail fixed while the live countdown runs", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      let refusedAt = 0;
+      state.get
+        .mockImplementationOnce(async () => {
+          refusedAt = Date.now();
+          throw credentialError("ISSUER_UNREADY", { state: "rate_limited", retryAfterMs: 3_448_000 });
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const detail = () => root.querySelector(".claim-state-detail:not(.claim-cooldown)")?.textContent;
+      const fixed = "Too many verification codes were requested recently. Nothing was opened.";
+      expect(detail()).toBe(fixed);
+      expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 58 minutes.");
+      vi.advanceTimersByTime(refusedAt + 600_000 - Date.now());
+      expect(detail()).toBe(fixed);
+      expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 48 minutes.");
+      vi.advanceTimersByTime(refusedAt + 3_300_000 - Date.now());
+      expect(detail()).toBe(fixed);
+      expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 3 minutes.");
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      vi.advanceTimersByTime(refusedAt + 3_448_000 - Date.now());
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["CANCELED", {}],
+    ["REQUEST_EXPIRED", {}],
+    ["VERIFICATION_FAILED", { state: "proof_attempts_exhausted" }],
+    ["OFFLINE", {}],
+  ])("offers %s's retry at once when the refusal arrives after the resend cooldown", async (code, details) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      state.get
+        .mockImplementationOnce(async () => {
+          vi.advanceTimersByTime(120_000);
+          throw credentialError(code, details);
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(root.querySelector(".claim-cooldown")).toBeNull();
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the retry disabled until the resend cooldown ends when the refusal arrives inside it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      let refusedAt = 0;
+      state.get
+        .mockImplementationOnce(async () => {
+          refusedAt = Date.now();
+          vi.advanceTimersByTime(10_000);
+          throw credentialError("OFFLINE");
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(root.querySelector(".claim-cooldown")?.textContent).toBe("You can ask for a new code in 20 seconds.");
+      // The cooldown runs from the request, so it ends 30 s after refusedAt, not 30 s after the refusal.
+      vi.advanceTimersByTime(refusedAt + 29_999 - Date.now());
+      expect(retry.disabled).toBe(true);
+      vi.advanceTimersByTime(refusedAt + 30_000 - Date.now());
       expect(retry.disabled).toBe(false);
       retry.click();
       await done;
