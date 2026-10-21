@@ -207,6 +207,16 @@ export interface RecipientClaimRecovery {
   readonly action: string;
 }
 
+/** A wait as the recipient reads it: whole minutes from one minute up, seconds below that. */
+export function waitPhrase(ms: number): string {
+  if (ms >= 60_000) {
+    const minutes = Math.ceil(ms / 60_000);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const seconds = Math.max(1, Math.ceil(ms / 1000));
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
 /**
  * A recoverable stop: nothing was opened and a fresh code can be requested.
  * Until `availableAt` (epoch ms) the button stays disabled, so a recipient
@@ -226,10 +236,19 @@ export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery:
   const wait = availableAt - Date.now();
   if (wait > 0) {
     retry.disabled = true;
-    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", `You can ask for a new code in ${Math.ceil(wait / 1000)} seconds.`);
+    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", `You can ask for a new code in ${waitPhrase(wait)}.`);
     cooldown.setAttribute("aria-live", "polite");
     panel.append(cooldown);
-    setTimeout(() => { retry.disabled = false; cooldown.textContent = "You can ask for a new code now."; }, wait);
+    // Ticks once a second. The text is replaced only when it changes, so a long wait is announced about once a minute, not every tick.
+    const tick = setInterval(() => {
+      if (!cooldown.isConnected) { clearInterval(tick); return; }
+      const left = availableAt - Date.now();
+      const text = left > 0 ? `You can ask for a new code in ${waitPhrase(left)}.` : "You can ask for a new code now.";
+      if (cooldown.textContent !== text) cooldown.textContent = text;
+      if (left > 0) return;
+      clearInterval(tick);
+      retry.disabled = false;
+    }, 1000);
   }
   view.verify.replaceChildren(panel);
   title.focus();
