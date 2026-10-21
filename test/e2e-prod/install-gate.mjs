@@ -49,7 +49,6 @@ const axeSource = await readFile(join(shareRoot, "node_modules/axe-core/axe.min.
 const app = (id) => catalog.apps.find((entry) => entry.app_id === id);
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES = "xyz.tinycloud.sample.recipes";
-const NOTES = "com.example.notes";
 
 const trace = [];
 const consoleLog = [];
@@ -261,6 +260,8 @@ async function reader(page, chunkUrl, request) {
 
 /** The installer's capability set as a recap lists it: `<space>/<service>/<path> <ability>`, from install-plan.ts (the sheet's own source). */
 const expectedResources = (appId) => [
+  `applications/kv/${appId}/app/ tinycloud.kv/get`,
+  `applications/kv/${appId}/app/ tinycloud.kv/list`,
   `applications/kv/${appId}/app/ tinycloud.kv/put`,
   `applications/kv/${appId}/knowledge/ tinycloud.kv/put`,
   "applications/capabilities tinycloud.capabilities/read",
@@ -344,7 +345,7 @@ try {
     assert(sessionMessage, "no session SIWE message with a ReCap was signed");
     const recap = JSON.parse(Buffer.from(sessionMessage.match(/urn:recap:([A-Za-z0-9_-]+)/)[1], "base64url").toString("utf8"));
     const granted = Object.entries(recap.att).flatMap(([resource, abilities]) => Object.entries(abilities).map(([ability]) => `${resource.replace(/^tinycloud:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:/, "")} ${ability}`)).sort();
-    assert.deepEqual(granted, expectedResources(HEALTH).sort(), "the signed ReCap is not exactly the two install folders plus the account registry");
+    assert.deepEqual(granted, expectedResources(HEALTH).sort(), "the signed ReCap is not exactly the app's folder grants plus the account registry");
     report.signedRecap = granted;
     // OpenKey signatures this open needed (connect is separate): a brand-new account also hosts its spaces.
     const signs = during.filter((entry) => entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;
@@ -414,11 +415,11 @@ try {
     await pressContinue(page);
     const outcome = await finished(page);
     assert.doesNotMatch(outcome.status, /is running\./, "a failed save said the app is running");
-    const total = recipes.bundle.files.length + 1;
+    const appFiles = recipes.bundle.files.filter((file) => !file.path.startsWith("knowledge/")).length;
     await captureState(page, "error-partial");
     const midway = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
-    assert.equal(midway.keys.length, total - 1, "the files before the failure are saved");
-    assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was written before the bundle was complete");
+    assert.equal(midway.keys.length, appFiles, "the app files are saved and the notes are not, because install.json failed");
+    assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was saved despite the failed write");
     controls.failRecord = false;
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector(".run-screen", { timeout: 60_000 });
@@ -429,22 +430,22 @@ try {
     const done = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
     assert.deepEqual(done.keys, expectedKeys(recipes));
     assert(done.registered.some((entry) => entry.appId === RECIPES));
-    report.stages.partialFailure = { failed: outcome.status.slice(0, 70), resumed: resumed.status.slice(0, 80), installJsonLast: true };
+    report.stages.partialFailure = { failed: outcome.status.slice(0, 70), resumed: resumed.status.slice(0, 80) };
     await context.close();
   }
 
   // ---- 5. A double click on Continue is one sign-in.
   {
-    const { page, context } = await openApps(browser, stack, candidate.port, "double-click-notes");
-    await openFromCard(page, NOTES);
+    const { page, context } = await openApps(browser, stack, candidate.port, "double-click-recipes");
+    await openFromCard(page, RECIPES);
     const begun = trace.length;
     await page.evaluate(() => { const button = [...document.querySelectorAll("button")].find((node) => node.textContent === "Continue"); button.click(); button.click(); });
     const outcome = await finished(page);
     assert.match(outcome.status, /is running\./, "the double click ran the app");
-    const widgets = trace.slice(begun).filter((entry) => entry.phase === "double-click-notes" && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path));
+    const widgets = trace.slice(begun).filter((entry) => entry.phase === "double-click-recipes" && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path));
     assert.equal(widgets.length, 1, "a double click connected to OpenKey twice");
-    const stored = await reader(page, chunkUrl, { op: "read", appId: NOTES });
-    assert.deepEqual(stored.keys, expectedKeys(app(NOTES)));
+    const stored = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+    assert.deepEqual(stored.keys, expectedKeys(recipes));
     report.stages.doubleClick = { openKeyWindows: widgets.length, outcome: outcome.status.slice(0, 80) };
     await context.close();
   }

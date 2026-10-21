@@ -7,7 +7,7 @@ import { catalog } from "../src/apps/catalog.ts";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS } from "../src/apps/grants.ts";
 import { RunError, type ReadSession, type RunHooks } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
 import { type RunnableApp, verifyStoredApp } from "../src/apps/stored-app.ts";
 import { storedFiles } from "./stored-fixtures.ts";
 
@@ -89,7 +89,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("reading the saved app (sign-in 1)", () => {
   it("asks the shared sign-in for a get and a list on the one app's folder, under the runner's identity, 15 minutes, with a label that is allowed", async () => {
-    const read = await createRunPorts().readStored(entry, hooks, { install: false });
+    const read = await createRunPorts().readStored(entry, hooks);
     expect(calls).toHaveLength(1);
     const { options } = calls[0]!;
     expect(options["manifest"]).toEqual(readerManifest(HEALTH, entry.name));
@@ -104,7 +104,7 @@ describe("reading the saved app (sign-in 1)", () => {
   });
 
   it("signs nothing more once it has signed in: a later signature request is refused", async () => {
-    await createRunPorts().readStored(entry, hooks, { install: false });
+    await createRunPorts().readStored(entry, hooks);
     const wait = vi.fn(async () => "signed");
     await expect(calls[0]!.guard(wait)).rejects.toThrow("runner-signing-closed");
     expect(wait).not.toHaveBeenCalled();
@@ -113,35 +113,35 @@ describe("reading the saved app (sign-in 1)", () => {
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
     let inside: Promise<unknown> | undefined;
     signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
-    await createRunPorts().readStored(entry, hooks, { install: false });
+    await createRunPorts().readStored(entry, hooks);
     await expect(inside).resolves.toBe("signed");
   });
 
   it("disposes the sign-in when the files cannot be read, and says it failed", async () => {
     kvListResult = { ok: false, error: { code: "KV_ERROR" } };
-    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toMatchObject({ reason: "failed" });
+    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
     seedSaved();
     fetchStatus = 500;
     calls.length = 0;
-    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toBeInstanceOf(RunError);
+    await expect(createRunPorts().readStored(entry, hooks)).rejects.toBeInstanceOf(RunError);
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("disposes the sign-in when the applications space is not hosted", async () => {
     spaces = {};
-    await expect(createRunPorts().readStored(entry, hooks, { install: false })).rejects.toMatchObject({ reason: "failed" });
+    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("ending the read session keeps OpenKey connected for the next sign-in, or closes everything", async () => {
-    const keep = await createRunPorts().readStored(entry, hooks, { install: false });
+    const keep = await createRunPorts().readStored(entry, hooks);
     await keep.end({ keepOpenKey: true });
     await keep.end({ keepOpenKey: true });
     expect(calls[0]!.fake.tinycloud.signOut).toHaveBeenCalledTimes(1);
     expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
     calls.length = 0;
-    const close = await createRunPorts().readStored(entry, hooks, { install: false });
+    const close = await createRunPorts().readStored(entry, hooks);
     await close.end({ keepOpenKey: false });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
@@ -245,7 +245,7 @@ describe("starting the app (sign-in 2)", () => {
   async function started(): Promise<{ app: RunnableApp; read: ReadSession; runtime: Awaited<ReturnType<ReturnType<typeof createRunPorts>["openRuntime"]>> }> {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks, { install: false });
+    const read = await ports.readStored(entry, hooks);
     const runtime = await ports.openRuntime(app, read, hooks);
     return { app, read, runtime };
   }
@@ -285,7 +285,7 @@ describe("starting the app (sign-in 2)", () => {
   it("a failed runtime sign-in disposes the reader's OpenKey connection and reports the failure", async () => {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks, { install: false });
+    const read = await ports.readStored(entry, hooks);
     signInBehaviour = (call) => { if (call === 2) throw new Error("approval closed"); };
     await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
@@ -294,7 +294,7 @@ describe("starting the app (sign-in 2)", () => {
   it("a missing applications space disposes both sign-ins", async () => {
     const ports = createRunPorts();
     const app = await runnable();
-    const read = await ports.readStored(entry, hooks, { install: false });
+    const read = await ports.readStored(entry, hooks);
     spaces = {};
     await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(calls[1]!.fake.dispose).toHaveBeenCalledTimes(1);
@@ -308,5 +308,42 @@ describe("runnerAppName", () => {
     expect(runnerAppName("TinyCloud Share: ", "evil.example/login")).toBe("TinyCloud Share: Tiny app");
     expect(runnerAppName("TinyCloud Share: ", "\u202eevil")).toBe("TinyCloud Share: Tiny app");
     expect([...runnerAppName("TinyCloud Share: open ", "x".repeat(200))].length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("read scope and create-only writes", () => {
+  it("the read sign-in holds get, list and put on the app's folder, and put alone on its notes", () => {
+    const permissions = readerManifest(HEALTH, entry.name).permissions ?? [];
+    expect(permissions.map((permission) => ({ path: permission.path, actions: permission.actions }))).toEqual([
+      { path: `${HEALTH}/app/`, actions: ["get", "list", "put"] },
+      { path: `${HEALTH}/knowledge/`, actions: ["put"] },
+    ]);
+  });
+
+  it("the read scope allows only those two folders in the applications space, with get, list and put", () => {
+    expect(readerScope(HEALTH)).toEqual({
+      allowedSpaces: [INSTALL_SPACE],
+      allowedServices: ["kv"],
+      allowedActions: ["get", "list", "put"],
+      allowedPathPrefixes: [
+        { space: INSTALL_SPACE, prefix: `${HEALTH}/app/` },
+        { space: INSTALL_SPACE, prefix: `${HEALTH}/knowledge/` },
+      ],
+    });
+  });
+});
+
+describe("putCreateOnly", () => {
+  it("writes with ifNoneMatch '*', reports a created key as created and an existing key as exists", async () => {
+    const put = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: true as const }));
+    await expect(putCreateOnly({ put }, "k", new Uint8Array([1]), "text/plain")).resolves.toBe("created");
+    expect(put).toHaveBeenCalledWith("k", expect.any(Uint8Array), { contentType: "text/plain", ifNoneMatch: "*" });
+    const taken = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: false as const, error: { code: "KV_PRECONDITION_FAILED" } }));
+    await expect(putCreateOnly({ put: taken }, "k", new Uint8Array(), "text/plain")).resolves.toBe("exists");
+  });
+
+  it("any other write error is a failed open, never a silent skip", async () => {
+    const put = vi.fn(async (_key: string, _value: Uint8Array, _options: unknown) => ({ ok: false as const, error: { code: "KV_ERROR" } }));
+    await expect(putCreateOnly({ put }, "k", new Uint8Array(), "text/plain")).rejects.toMatchObject({ reason: "failed" });
   });
 });

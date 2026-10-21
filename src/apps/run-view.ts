@@ -54,7 +54,6 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
   switch (reason) {
     case "unknown-app": return { title: "We don't know this app", lines: ["This address doesn't match an app in the catalog."], toApps: true };
     case "unavailable": return { title: "This app is temporarily unavailable", lines: [detail ?? "It has been switched off for now.", "Nothing was started."], toApps: true };
-    case "not-installed": return { title: "This app's saved files are gone", lines: [`${name}'s files aren't in your TinyCloud any more, so nothing was started.`, "Open it again to save them. Nothing else is changed."], toApps: true };
     case "damaged": return { title: "Your saved copy of this app can't be used", lines: ["Its files in your TinyCloud are incomplete, or were edited into something this page can't read. Nothing was started."], toApps: true, detail };
     case "code-mismatch": return {
       title: "This app's code doesn't match the pinned version",
@@ -134,10 +133,10 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   signOut.disabled = true;
   // The live region exists from the start and only its content changes, so each change is announced.
   const status = el("div", "run-status-region", [], { role: "status" });
-  // The status line and the Cancel control are separate children: the line changes with progress, and Cancel stays until the open ends.
+  // The status line changes with progress and is the only live content. Cancel sits beside the region, so its label is not announced with each update.
   const statusLine = el("div", "run-status-line", []);
   const cancelSlot = el("div", "run-status-cancel", []);
-  status.replaceChildren(statusLine, cancelSlot);
+  status.replaceChildren(statusLine);
   const access = el("details", "apps-files run-details", [el("summary", null, ["What this app can do"])]);
   access.hidden = true;
   const reveal = el("details", "apps-files run-details", [el("summary", null, ["What a sandboxed page can still reveal"]), el("p", null, ["The sandbox blocks the requests a page makes itself, but some browser requests can't be blocked, so a page can still reveal that you opened it: your IP address and the time."]), el("p", null, [KNOWN_LIMITS])]);
@@ -146,6 +145,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     provenance,
     el("p", "run-caution", [CAUTION]),
     status,
+    cancelSlot,
   ], { "aria-label": "App details" });
   // Below the app, where it never pushes the app off the screen; open on the start screen, closed while it runs.
   const info = el("section", "run-info", [access, reveal], { "aria-label": "About this app" });
@@ -248,7 +248,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     setStatus(screen.title, "warning");
     showScreen(screen, begin);
   }
-  status.addEventListener("keydown", (event) => {
+  bar.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && openAbort !== undefined) { event.preventDefault(); cancel(); }
   });
 
@@ -372,6 +372,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     destroy(): void {
       view.removeEventListener("pagehide", onPageHide);
       destroyed = true;
+      openAbort?.abort();
+      openAbort = undefined;
       attempt += 1;
       view.clearTimeout(slowTimer);
       stopFrame();

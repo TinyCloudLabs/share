@@ -1,8 +1,8 @@
 # Opening an installed app: `/apps/run#<app_id>`
 
-An app installed from [`/apps/`](apps-catalog.md) is three files in the person's own TinyCloud:
-`<app_id>/app/app.jsx` (its code), `<app_id>/app/manifest.json` (what it may use) and
-`<app_id>/app/install.json` (`{source, digest, installed_at}`). The runner opens it: it reads
+An app opened from [`/apps/`](apps-catalog.md) is saved in the person's own TinyCloud: its pinned
+files under `<app_id>/app/` (`app.jsx` is its code, `manifest.json` says what it may use), its
+`<app_id>/app/install.json` (`{source, digest, installed_at}`), and any notes under `<app_id>/knowledge/`. The runner opens it: it reads
 those files, signs in for exactly what the manifest asks, and runs `app.jsx` in the
 [JSX sandbox](jsx-artifact-sharing.md), where it reaches the person's data only through a small
 message bridge.
@@ -19,14 +19,13 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
    do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta:
    use sample data only."
 2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
-   Share can read the app from the person's TinyCloud, (2 of 2) to start it with the
+   Share can read the app from the person's TinyCloud and save any missing files, (2 of 2) to start it with the
    permissions listed on the page. OpenKey connects once.
 3. **The app**, in its frame, under the page's own bar: the app name, "Open another app",
    "Sign out of this app", a status line (a live region), "What this app can do" and "What a
    sandboxed page can still reveal" (the same words as the viewer's notice). The bar is in the
    runner's document, outside the frame; the frame is an isolated, clipped box stacked below it.
-4. **Plain screens** when the app cannot open: "This app needs to be installed first" (with a
-   link to `/apps/`), "This app asks for more than it did when you installed it", "Your saved copy
+4. **Plain screens** when the app cannot open: "This app asks for more than it did when you installed it", "Your saved copy
    of this app can't be used", "This app's code doesn't match the pinned version" (with Repair),
    "This app is temporarily unavailable" (the catalog's kill switch), "This version of the app isn't in the catalog any more",
    "Your session expired: open the app again", and the usual OpenKey outcomes (cancelled, no
@@ -49,8 +48,9 @@ app is signed for, but never more than the catalog's manifest for the version th
 
 0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before any
    sign-in: a disabled entry opens nothing.
-1. Read everything under `<app_id>/app/` with a first sign-in that asks only for `get` and `list`
-   on `<app_id>/app/`, 15 minutes (under share's own identity, so the person's apps list gains no
+1. Read everything under `<app_id>/app/` with a first sign-in that asks for `get` and `list` on
+   `<app_id>/app/`, and create-only `put` on `<app_id>/app/` and `<app_id>/knowledge/` for the save
+   step (see [apps-catalog.md](apps-catalog.md)), 15 minutes (under share's own identity, so the person's apps list gains no
    record named after the app). That session ends before the next sign-in. The read is bounded
    (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a
    stream from a short-lived signed read URL (a `get`) and the read stops, cancelling the stream, at the first byte past the cap: a 1 GB

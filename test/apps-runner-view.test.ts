@@ -40,7 +40,7 @@ interface Fake {
   release(): void;
 }
 
-function fakePorts(overrides: { stored?: StoredOverrides | "empty"; hinted?: boolean; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
+function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; runtimeError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
   const fake: Fake = { reads: 0, runtimes: 0, ended: { read: [], runtime: 0 }, calls: [], release: () => undefined, ports: undefined as unknown as RunPorts };
   const data: AppData = {
     kvGet: async (path) => { fake.calls.push(`kv.get ${path}`); return { ok: true, data: { bytes: new TextEncoder().encode("hi"), contentType: "text/plain" } }; },
@@ -58,15 +58,14 @@ function fakePorts(overrides: { stored?: StoredOverrides | "empty"; hinted?: boo
       const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
       return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
     },
-    hints: { get: () => (overrides.hinted === true ? entry.bundle.digest : undefined), set: () => undefined, clear: () => undefined },
     async readStored(_entry, hooks): Promise<ReadSession> {
       fake.reads += 1;
       hooks.approval(true);
       if (overrides.hold === true) await gate;
       hooks.approval(false);
       if (overrides.readError !== undefined) throw overrides.readError;
-      const files = overrides.stored === "empty" ? { entries: new Map<string, Uint8Array>() } : storedFiles(entry, overrides.stored);
-      return { files, end: async ({ keepOpenKey }) => { fake.ended.read.push(keepOpenKey); } };
+      const files = storedFiles(entry, overrides.stored);
+      return { files, put: async () => "created" as const, end: async ({ keepOpenKey }) => { fake.ended.read.push(keepOpenKey); } };
     },
     async openRuntime(): Promise<RuntimeSession> {
       fake.runtimes += 1;
@@ -267,14 +266,15 @@ describe("opening an app", () => {
     expect(fake.ended.runtime).toBe(1);
   });
 
-  it("a session that arrives after the page was replaced is ended, not used", async () => {
+  it("destroying the page while the read approval is pending aborts the open: the read session is ended and no runtime session starts", async () => {
     const fake = fakePorts({ hold: true });
     const runner = await open(fake);
     button("Continue")!.click();
     await vi.waitFor(() => expect(fake.reads).toBe(1));
     runner.destroy();
     fake.release();
-    await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
+    await vi.waitFor(() => expect(fake.ended.read).toEqual([false]));
+    expect(fake.runtimes).toBe(0);
     expect(root.querySelector("iframe")).toBeNull();
   });
 });
@@ -283,17 +283,6 @@ describe("opening an app that cannot run", () => {
   const stored = (manifest: unknown): Parameters<typeof fakePorts>[0] => ({ stored: { files: { "manifest.json": new TextEncoder().encode(JSON.stringify(manifest)) } } });
   interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[] }[]; [key: string]: unknown }
   const original = (): TestManifest => JSON.parse(new TextDecoder().decode(bundleFile("manifest.json"))) as TestManifest;
-
-  it("says the saved files are gone and to open again to save them, when this device had them saved and the folder is now empty", async () => {
-    const fake = fakePorts({ stored: "empty", hinted: true });
-    await open(fake);
-    button("Continue")!.click();
-    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app's saved files are gone"));
-    expect(root.querySelector(`a[href='${APPS_HREF}']`)).not.toBeNull();
-    expect(root.querySelector("iframe")).toBeNull();
-    expect(fake.runtimes).toBe(0);
-    expect(fake.ended.read).toEqual([false]);
-  });
 
   it("refuses a manifest that was widened, before anything more is signed, and says what differs", async () => {
     const manifest = original();
@@ -353,7 +342,7 @@ describe("opening an app that cannot run", () => {
 
 describe("copy and the sign-in manifests", () => {
   it("every failure has a screen with a title and plain lines", () => {
-    for (const reason of ["unknown-app", "not-installed", "damaged", "not-listed", "catalog-unavailable", "widened", "unsupported", "cancelled", "timeout", "busy", "wrong-account", "failed"] as const) {
+    for (const reason of ["unknown-app", "damaged", "not-listed", "catalog-unavailable", "widened", "unsupported", "cancelled", "timeout", "busy", "wrong-account", "failed"] as const) {
       const screen = failureScreen(reason, "X");
       expect(screen.title.length).toBeGreaterThan(5);
       expect(screen.lines.join(" ")).not.toMatch(/undefined|\[object/);
@@ -361,20 +350,21 @@ describe("copy and the sign-in manifests", () => {
     expect(progressText({ phase: "starting", approval: true }, "X")).toContain("(2 of 2)");
   });
 
-  it("the read sign-in asks for a get and a list under <app_id>/app/ in the applications space, under the runner's own identity, inside its scope", () => {
+  it("the read sign-in asks for get, list and put under <app_id>/app/ and put under <app_id>/knowledge/, in the applications space, under the runner's own identity, inside its scope", () => {
     const manifest = readerManifest(HEALTH, "Health Log");
     expect(manifest.app_id).toBe(RUNNER_APP_ID);
     expect(manifest.app_id).not.toBe("xyz.tinycloud.share");
     expect(() => assertManifestInScope(sdkCore.validateManifest(manifest), readerScope(HEALTH), MANIFEST_CHECK_ADDRESS)).not.toThrow();
-    // The helper would refuse the same manifest widened: another app's folder, a write, the default tier.
+    // The helper would refuse the same manifest widened: another app's folder, a delete, the default tier.
     const widen = (change: Partial<sdkCore.Manifest>): unknown => { try { assertManifestInScope({ ...sdkCore.validateManifest(manifest), ...change }, readerScope(HEALTH), MANIFEST_CHECK_ADDRESS); return "accepted"; } catch (error) { return error instanceof ManifestRejectedError ? error.code : error; } };
     expect(widen({ permissions: [{ service: "tinycloud.kv", path: `${RECIPES_ID}/app/`, actions: ["get"], skipPrefix: true }] })).toBe("path-not-allowed");
-    expect(widen({ permissions: [{ service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["get", "put"], skipPrefix: true }] })).toBe("action-not-allowed");
+    expect(widen({ permissions: [{ service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["get", "delete"], skipPrefix: true }] })).toBe("action-not-allowed");
     expect(widen({ defaults: true })).not.toBe("accepted");
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     expect(composed.resources.filter((resource) => resource.service === "tinycloud.kv" && resource.space === "applications")).toEqual([
-      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list"] }),
+      expect.objectContaining({ path: `${HEALTH}/app/`, actions: ["tinycloud.kv/get", "tinycloud.kv/list", "tinycloud.kv/put"] }),
+      expect.objectContaining({ path: `${HEALTH}/knowledge/`, actions: ["tinycloud.kv/put"] }),
     ]);
   });
 });
@@ -414,11 +404,11 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     const fake = fakePorts({ catalog: [entry] });
     // The install recorded a digest the catalog no longer lists.
     const original = fake.ports.readStored;
-    fake.ports.readStored = async (candidate, hooks, options) => {
-      const session = await original(candidate, hooks, options);
+    fake.ports.readStored = async (candidate, hooks) => {
+      const session = await original(candidate, hooks);
       const files = { entries: new Map(session.files.entries) };
       files.entries.set("install.json", new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: other.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" })));
-      return { files, end: session.end };
+      return { files, put: session.put, end: session.end };
     };
     await open(fake);
     button("Continue")!.click();

@@ -420,8 +420,8 @@ try {
     const sessions = sessionMessages(label);
     assert.equal(sessions.length, 2, "two session sign-ins");
     const reader = recapOf(sessions[0]);
-    // In the app's space the read session holds one get and the SDK's capabilities/read; the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`].sort(), "the read session asks for more than a get and a list on the saved app");
+    // In the app's space the read session holds get, list and create-only put on the saved app, and put on its knowledge folder; the SDK's capabilities/read and the account lines are the registry's.
+    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/put`, `applications/kv/${HEALTH}/knowledge/ tinycloud.kv/put`].sort(), "the read session is not exactly the install grants plus get and list on the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
     assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");

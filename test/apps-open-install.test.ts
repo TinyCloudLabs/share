@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { INSTALL_RECORD_PATH } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
-import { installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
+import { KNOWLEDGE_INDEX, installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
 import { type PutResult, type PreparedApp, RunError, type RunPorts, type RuntimeSession, openApp } from "../src/apps/run.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
@@ -30,7 +30,6 @@ const fullCopy = (): Map<string, Uint8Array> => new Map<string, Uint8Array>([
 ]);
 
 interface HarnessOptions {
-  hint?: string;
   prepareError?: RunError;
   catalog?: readonly CatalogEntry[];
 }
@@ -38,8 +37,7 @@ interface HarnessOptions {
 /** Ports over an in-memory saved copy. `puts` records every create-only write key in order. */
 function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {}) {
   const puts: string[] = [];
-  const reads: boolean[] = [];
-  const hints = new Map<string, string>(options.hint === undefined ? [] : [[HEALTH, options.hint]]);
+  const reads = { count: 0 };
   const counts = { prepares: 0, runtimes: 0 };
   const put = async (key: string, bytes: Uint8Array): Promise<PutResult> => {
     puts.push(key);
@@ -57,28 +55,23 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
       if (options.prepareError !== undefined) throw options.prepareError;
       return { bundle: { files: bundleFiles, manifest }, manifest: { ok: true, manifest: manifest as never } };
     },
-    readStored: async (_entry, _hooks, { install }) => {
-      reads.push(install);
-      return { files: { entries: new Map(initial) }, ...(install ? { put } : {}), end: async () => undefined };
+    readStored: async () => {
+      reads.count += 1;
+      return { files: { entries: new Map(initial) }, put, end: async () => undefined };
     },
     openRuntime: async () => {
       counts.runtimes += 1;
       return { data: {}, expiresAt: 0, end: async () => undefined } as unknown as RuntimeSession;
     },
     sdk: async () => sdkCore,
-    hints: {
-      get: (appId) => hints.get(appId),
-      set: (appId, digest) => { hints.set(appId, digest); },
-      clear: (appId) => { hints.delete(appId); },
-    },
   };
-  return { ports, puts, reads, hints, counts };
+  return { ports, puts, reads, counts };
 }
 
 describe("installOrder", () => {
-  it("puts app files first, then notes, each group sorted by path", () => {
-    const ordered = installOrder([{ path: "knowledge/b.md" }, { path: "app.jsx" }, { path: "knowledge/a.md" }, { path: "app/util.js" }]).map((file) => file.path);
-    expect(ordered).toEqual(["app.jsx", "app/util.js", "knowledge/a.md", "knowledge/b.md"]);
+  it("puts app files first, then notes, each group sorted by path, with the notes index last", () => {
+    const ordered = installOrder([{ path: "knowledge/index.md" }, { path: "knowledge/b.md" }, { path: "app.jsx" }, { path: "knowledge/a.md" }, { path: "app/util.js" }]).map((file) => file.path);
+    expect(ordered).toEqual(["app.jsx", "app/util.js", "knowledge/a.md", "knowledge/b.md", "knowledge/index.md"]);
   });
 });
 
@@ -86,14 +79,14 @@ describe("openApp: refusals before any approval", () => {
   it("refuses a catalog entry with no code, before the read approval", async () => {
     const h = harness(new Map(), { catalog: [notes] });
     await expect(openApp(NOTES, h.ports, noop)).rejects.toMatchObject({ reason: "unavailable", detail: expect.stringContaining("no code") });
-    expect(h.reads).toEqual([]);
+    expect(h.reads.count).toBe(0);
     expect(h.counts.prepares).toBe(0);
   });
 
   it("a catalog bundle that fails verification refuses before the read approval", async () => {
     const h = harness(new Map(), { prepareError: new RunError("catalog-unavailable") });
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "catalog-unavailable" });
-    expect(h.reads).toEqual([]);
+    expect(h.reads.count).toBe(0);
     expect(h.counts.runtimes).toBe(0);
   });
 });
@@ -103,26 +96,21 @@ describe("openApp: install on open", () => {
     const h = harness(new Map());
     const running = await openApp(HEALTH, h.ports, noop);
     expect(running.app).toBeDefined();
-    expect(h.reads).toEqual([true]);
-    expect(h.puts).toEqual([...installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path)), recordKey]);
+    expect(h.reads.count).toBe(1);
+    const ordered = installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path));
+    const appCount = bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).length;
+    expect(h.puts).toEqual([...ordered.slice(0, appCount), recordKey, ...ordered.slice(appCount)]);
+    expect(h.puts.at(-1)).toBe(installKey(HEALTH, KNOWLEDGE_INDEX));
     expect(h.counts.runtimes).toBe(1);
-    expect(h.hints.get(HEALTH)).toBe(health.bundle.digest);
   });
 
-  it("complete saved copy on a device with no hint: no app-file writes, no install.json rewrite", async () => {
+  it("complete saved copy: no app-file writes and no install.json rewrite; a missing note is still saved", async () => {
     const h = harness(fullCopy());
     await openApp(HEALTH, h.ports, noop);
-    expect(h.reads).toEqual([true]);
+    expect(h.reads.count).toBe(1);
     expect(h.puts).not.toContain(recordKey);
     expect(h.puts.filter((key) => appKeys.includes(key))).toEqual([]);
     expect(h.counts.runtimes).toBe(1);
-  });
-
-  it("matching device hint: plain read with no write grants and no writes", async () => {
-    const h = harness(fullCopy(), { hint: health.bundle.digest });
-    await openApp(HEALTH, h.ports, noop);
-    expect(h.reads).toEqual([false]);
-    expect(h.puts).toEqual([]);
   });
 
   it("a tampered saved app file is never overwritten, install.json is not committed, and nothing is signed for runtime", async () => {
@@ -134,7 +122,16 @@ describe("openApp: install on open", () => {
     expect(h.puts).not.toContain(installKey(HEALTH, "app.jsx"));
     expect(h.puts).not.toContain(recordKey);
     expect(h.counts.runtimes).toBe(0);
-    expect(h.hints.has(HEALTH)).toBe(false);
+  });
+
+  it("an extra file under app/ refuses the open and install.json is not committed", async () => {
+    const copy = fullCopy();
+    copy.delete(INSTALL_RECORD_PATH);
+    copy.set("extra.js", new TextEncoder().encode("1"));
+    const h = harness(copy);
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "damaged" });
+    expect(h.puts).not.toContain(recordKey);
+    expect(h.counts.runtimes).toBe(0);
   });
 
   it("an install.json recorded for another digest: nothing is written and the open is refused", async () => {
@@ -142,6 +139,40 @@ describe("openApp: install on open", () => {
     const copy = new Map<string, Uint8Array>([[INSTALL_RECORD_PATH, installRecord(other, new Date("2026-10-20T10:00:00.000Z"))]]);
     const h = harness(copy);
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toBeInstanceOf(RunError);
+    expect(h.puts).toEqual([]);
+    expect(h.counts.runtimes).toBe(0);
+  });
+
+  it("the saved copy holds the verified bundle's bytes, byte for byte", async () => {
+    const copy = new Map<string, Uint8Array>();
+    const h = harness(copy);
+    await openApp(HEALTH, h.ports, noop);
+    for (const file of bundleFiles.filter((candidate) => !candidate.path.startsWith("knowledge/"))) {
+      expect(copy.get(file.path)).toEqual(file.bytes);
+    }
+  });
+
+  it("a file that appears between the read and its save refuses the open, and install.json is not written", async () => {
+    const h = harness(new Map());
+    const readStored = h.ports.readStored;
+    h.ports.readStored = async (entry, hooks) => {
+      const session = await readStored(entry, hooks);
+      return { ...session, put: async (key, bytes, contentType) => (key === installKey(HEALTH, "app.jsx") ? "exists" : session.put(key, bytes, contentType)) };
+    };
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "failed" });
+    expect(h.puts).not.toContain(recordKey);
+    expect(h.counts.runtimes).toBe(0);
+  });
+
+  it("cancel during the read approval writes nothing and starts nothing", async () => {
+    const h = harness(new Map());
+    const controller = new AbortController();
+    const readStored = h.ports.readStored;
+    h.ports.readStored = async (entry, hooks) => {
+      controller.abort();
+      return readStored(entry, hooks);
+    };
+    await expect(openApp(HEALTH, h.ports, noop, controller.signal)).rejects.toMatchObject({ reason: "cancelled" });
     expect(h.puts).toEqual([]);
     expect(h.counts.runtimes).toBe(0);
   });

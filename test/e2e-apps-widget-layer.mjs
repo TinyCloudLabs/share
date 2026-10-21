@@ -227,17 +227,17 @@ try {
     await page.close();
   }
 
-  // ---- Cancel and Escape end the open quietly. The runner's Cancel sits in the status region.
+  // ---- Cancel and Escape end the open quietly. The runner's Cancel sits beside the status region, not inside it.
   {
     const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
     await pressContinue(page);
     await waitForWidget(page);
     const cancel = await page.evaluate(() => {
-      const button = [...document.querySelectorAll(".run-status-region button")].find((node) => node.textContent === "Cancel");
+      const button = [...document.querySelectorAll(".run-status-cancel button")].find((node) => node.textContent === "Cancel");
       return button === undefined ? null : button.getBoundingClientRect().width > 0;
     });
-    assert.equal(cancel, true, "a visible Cancel in the status region while the OpenKey window is open");
-    await page.evaluate(() => [...document.querySelectorAll(".run-status-region button")].find((button) => button.textContent === "Cancel").click());
+    assert.equal(cancel, true, "a visible Cancel beside the status region while the OpenKey window is open");
+    await page.evaluate(() => [...document.querySelectorAll(".run-status-cancel button")].find((button) => button.textContent === "Cancel").click());
     await page.waitForFunction(() => /Sign-in cancelled/.test(document.querySelector(".run-screen__title")?.textContent ?? ""), { timeout: 15_000 });
     assert.equal(await page.$$eval("#runner [role=alert]", (nodes) => nodes.length), 0, "a cancel is a quiet note, not an alert");
     results.cancel = true;
@@ -249,7 +249,7 @@ try {
     const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
     await pressContinue(page);
     await waitForWidget(page);
-    await page.evaluate(() => [...document.querySelectorAll(".run-status-region button")].find((button) => button.textContent === "Cancel").focus());
+    await page.evaluate(() => [...document.querySelectorAll(".run-status-cancel button")].find((button) => button.textContent === "Cancel").focus());
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => /Sign-in cancelled/.test(document.querySelector(".run-screen__title")?.textContent ?? ""), { timeout: 15_000 });
     assert.equal(await page.$$eval("#runner [role=alert]", (nodes) => nodes.length), 0, "an Escape cancel is a quiet note, not an alert");
@@ -264,7 +264,7 @@ try {
     await pressContinue(page);
     await waitForWidget(page);
     await hideWindow(page);
-    await page.evaluate(() => [...document.querySelectorAll(".run-status-region button")].find((button) => button.textContent === "Cancel").click());
+    await page.evaluate(() => [...document.querySelectorAll(".run-status-cancel button")].find((button) => button.textContent === "Cancel").click());
     await page.waitForFunction(() => /Sign-in cancelled/.test(document.querySelector(".run-screen__title")?.textContent ?? ""), { timeout: 15_000 });
     assert.deepEqual(await axeViolations(page), [], `${label}: cancelled state axe AA`);
     await page.screenshot({ path: join(shotDir, `inline-cancelled-${width}-${scheme}.png`) });

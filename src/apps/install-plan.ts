@@ -4,8 +4,9 @@
  * shared sign-in adds. Pure: no DOM, no network, no SDK.
  *
  * Opening an app saves its files under `<app_id>/app/` and `<app_id>/knowledge/`
- * in the `applications` space (run.ts, run-session.ts). `install.json` is written
- * last in that order, so a folder that has it is complete.
+ * in the `applications` space (run.ts, run-session.ts). Order: the app's files,
+ * then `install.json` (the commit point for the app's files), then the notes.
+ * A folder with `install.json` and every app file is complete.
  */
 import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
@@ -36,14 +37,17 @@ export function installRecordKey(appId: string): string {
   return `${appId}/app/${INSTALL_RECORD_PATH}`;
 }
 
+/** The notes' index: the last file written, so its presence means every note is in place. */
+export const KNOWLEDGE_INDEX = "knowledge/index.md";
+
 /**
- * The order an app's files are written in: the app's files, then its notes, both sorted by path. `install.json` is
- * written after this list by every caller, so a folder that has it is complete (the commit point). Nothing writes it earlier.
+ * The order an app's files are written in: the app's files, sorted by path, then the notes, sorted by path with the index last.
+ * `install.json` is not in this list: the caller writes it after the app's files and before the notes (the commit point).
  */
 export function installOrder<T extends { path: string }>(files: readonly T[]): T[] {
   const byPath = (a: T, b: T) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const app = files.filter((file) => !file.path.startsWith("knowledge/")).sort(byPath);
-  const knowledge = files.filter((file) => file.path.startsWith("knowledge/")).sort(byPath);
+  const knowledge = files.filter((file) => file.path.startsWith("knowledge/")).sort((a, b) => Number(a.path === KNOWLEDGE_INDEX) - Number(b.path === KNOWLEDGE_INDEX) || byPath(a, b));
   return [...app, ...knowledge];
 }
 
