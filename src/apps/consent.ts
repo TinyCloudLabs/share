@@ -19,7 +19,7 @@
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
-export const SQL_CHANGE_NOTICE = "This app can change or delete its own tables.";
+export const SQL_CHANGE_NOTICE = "Can change or delete its own tables.";
 
 export interface Consent {
   /** What the app will be able to do once it is opened (not granted by the install). */
