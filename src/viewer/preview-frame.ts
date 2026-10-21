@@ -64,7 +64,7 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
 /**
  * The srcdoc document's own CSP (additive to the inherited viewer CSP —
  * see module doc). Deliberately NO script-src directive: it falls back to
- * default-src 'none'. Script inertness itself comes from sandbox="", not
+ * default-src 'none'. Script inertness itself comes from the sandbox (no allow-scripts), not
  * from this policy. VIEWER PRIVACY: a Markdown document makes no request and
  * no connection to any host, so its author cannot tell who opened it or when:
  * images are data:/blob: only; fonts, media, connections, frames and scripts
@@ -135,7 +135,8 @@ body { margin: 0; }
  * Build the complete srcdoc document around the sanitized content HTML.
  * The content string has been through the FULL pipeline already; it is
  * embedded in body context as-is. Even if it somehow carried markup that
- * breaks document structure, nothing in this frame can execute (sandbox=""),
+ * breaks document structure, nothing in this frame can execute (no allow-scripts;
+ * sandbox="allow-popups allow-popups-to-escape-sandbox"),
  * so the failure mode is cosmetic, never privileged. `diagramCount` (the
  * rendered Mermaid diagrams in it) splits the print height budget; it is a
  * number the viewer counted, never document text.

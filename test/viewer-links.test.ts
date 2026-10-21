@@ -48,6 +48,7 @@ describe("destinations that cannot open stay as inert text", () => {
     const root = await rendered(markdown);
     expect(root.querySelector("a")).toBeNull();
     expect(root.querySelector("span.viewer-inert-link")?.textContent).toBe("x");
+    expect(root.querySelector("span.viewer-inert-link")?.hasAttribute("href")).toBe(false);
   });
 
   it.each([
@@ -76,6 +77,7 @@ describe("destinations that cannot open stay as inert text", () => {
     const root = await rendered(markdown);
     expect(root.querySelector("a")).toBeNull();
     expect(root.querySelector("span.viewer-inert-link")?.textContent).toBe("x");
+    expect(root.querySelector("span.viewer-inert-link")?.hasAttribute("href")).toBe(false);
   });
 });
 

@@ -44,7 +44,7 @@
  * bounded by a TOTAL node-count cap (MAX_PREVIEW_NODES; breach throws
  * ContentTooLargeError → the caller shows a "content too large" state), and
  * then shipped as ONE sanitized HTML string into the SCRIPTLESS preview
- * iframe (preview-frame.ts: sandbox="" — opaque origin AND parser-level
+ * iframe (preview-frame.ts: popup-only sandbox tokens — opaque origin AND parser-level
  * script blocking, own strict CSP, no message channel). The privileged
  * document keeps only the chrome; the content the user reads lives entirely
  * inside that frame.
