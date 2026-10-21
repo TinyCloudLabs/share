@@ -190,7 +190,10 @@ function world(keys: readonly string[], initial: WorldOptions = {}) {
           if (options.failListOn === prefix) throw new Error("list down");
           log.push(`list:${prefix}`);
           if (options.truncatedWithoutCursor) return { keys: [], truncated: true };
-          if (options.alwaysTruncated) return { keys: [], truncated: true, nextCursor: `${cursor ?? ""}+` };
+          if (options.alwaysTruncated) {
+            if (log.filter((entry) => entry.startsWith("list:")).length > 1000) throw new Error("unbounded listing");
+            return { keys: [], truncated: true, nextCursor: `${cursor ?? ""}+` };
+          }
           const all = [...store].filter((key) => key.startsWith(prefix)).sort();
           const size = options.pageSize ?? all.length;
           const start = cursor === undefined ? 0 : Number(cursor);
@@ -262,8 +265,8 @@ describe("runUninstall", () => {
   it("refuses a listing still truncated at the page cap, before any delete", async () => {
     const w = world(KEYS, { alwaysTruncated: true });
     await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
+    expect(w.log.filter((entry) => entry === "list:todo/app/")).toHaveLength(MAX_LIST_PAGES);
     expect(w.log.some((entry) => entry.startsWith("del:") || entry.startsWith("registry:"))).toBe(false);
-    expect(MAX_LIST_PAGES).toBeGreaterThan(1);
   });
 
   it("refuses a truncated page that has no cursor to follow", async () => {

@@ -81,6 +81,19 @@ describe("the uninstall confirm sheet", () => {
     expect(node.opened).toBe(0);
   });
 
+  it("lists every delete the session will sign, taken from the same plan as the request", () => {
+    openConfirm(fakeUninstall());
+    const items = [...sheet.querySelectorAll<HTMLElement>(".apps-access__item")];
+    // Every row the plan gives (the destructive grants and the reads) is on the sheet, once each.
+    expect(items).toHaveLength(plan.rows.change.length + plan.rows.read.length);
+    for (const change of plan.rows.change) {
+      const item = items.find((node) => node.querySelector(".apps-access__text")?.textContent === change.description);
+      expect(item).toBeDefined();
+      expect(item!.textContent).toContain("del");
+    }
+    expect(plan.rows.change.map((row) => row.actions)).toEqual([["del"], ["del"], ["del"]]);
+  });
+
   it("Keep app closes the sheet and touches no session", () => {
     const node = fakeUninstall();
     openConfirm(node);
