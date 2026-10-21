@@ -137,8 +137,10 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const uninstallNote = el("p", "apps-muted", ["Also deletes notes you edited."], { id: "apps-uninstall-note" });
   const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}`, "aria-describedby": "apps-uninstall-note" });
   uninstallNow.addEventListener("click", uninstall);
-  const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
-  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, uninstallNote]);
+  const open = availability.available
+    ? el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })
+    : el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", disabled: "", "aria-label": `Open ${entry.name}` });
+  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening isn't available for this app."])]), uninstallNow, uninstallNote]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }

@@ -37,17 +37,31 @@ export const MAX_DISABLED_REASON_CHARS = 280;
 
 export type Availability = { available: true } | { available: false; reason: string };
 
-/** Whether an entry may be installed or opened. The /apps page and the runner both ask this, so one flag stops both. */
+/** The file the runner runs. An entry without it has no code to open. */
+const CODE_FILE = "app.jsx";
+
+/** The reason for an entry the catalog lists without its code. */
+const NO_CODE_REASON = "The catalog lists no code for this app, so it can't be opened.";
+
+/**
+ * Whether an entry may be installed, repaired, or opened. The /apps cards and details, the repair panel, and the runner
+ * (`assertAvailable`) all ask this, so one rule decides them all.
+ */
 export function availabilityOf(entry: CatalogEntry): Availability {
-  if (entry.disabled !== true) return { available: true };
-  const reason = typeof entry.disabledReason === "string" ? entry.disabledReason.trim() : "";
-  if (reason === "") return { available: false, reason: "This app is temporarily unavailable." };
-  // The CI catalog check refuses a longer reason; the page cuts one anyway (with a mark), so a bad catalog cannot fill the screen.
-  const characters = [...reason];
-  return { available: false, reason: characters.length <= MAX_DISABLED_REASON_CHARS ? reason : `${characters.slice(0, MAX_DISABLED_REASON_CHARS - 1).join("")}…` };
+  if (entry.disabled === true) return { available: false, reason: disabledReason(entry) };
+  if (!entry.bundle.files.some((file) => file.path === CODE_FILE)) return { available: false, reason: NO_CODE_REASON };
+  return { available: true };
 }
 
-/** Thrown by `assertAvailable` for a disabled entry. */
+function disabledReason(entry: CatalogEntry): string {
+  const reason = typeof entry.disabledReason === "string" ? entry.disabledReason.trim() : "";
+  if (reason === "") return "This app is temporarily unavailable.";
+  // The CI catalog check refuses a longer reason; the page cuts one anyway (with a mark), so a bad catalog cannot fill the screen.
+  const characters = [...reason];
+  return characters.length <= MAX_DISABLED_REASON_CHARS ? reason : `${characters.slice(0, MAX_DISABLED_REASON_CHARS - 1).join("")}…`;
+}
+
+/** Thrown by `assertAvailable` for an entry that cannot be opened. */
 export class EntryDisabledError extends Error {
   readonly reason: string;
   constructor(reason: string) {
@@ -57,7 +71,7 @@ export class EntryDisabledError extends Error {
   }
 }
 
-/** The runner's gate (and the installer's): throws `EntryDisabledError` for a disabled entry, before any fetch or sign-in. */
+/** The runner's gate: throws `EntryDisabledError` for an entry that cannot be opened (switched off, or without code), before any fetch or sign-in. */
 export function assertAvailable(entry: CatalogEntry): void {
   const availability = availabilityOf(entry);
   if (!availability.available) throw new EntryDisabledError(availability.reason);
