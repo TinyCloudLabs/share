@@ -125,14 +125,6 @@ function sheetHeader(kicker: string, title: string, entry: CatalogEntry, close: 
   ]);
 }
 
-/** The Open control: a link to the runner, or a disabled button when the app is switched off (no link to a refusal page). */
-function openControl(entry: CatalogEntry): HTMLElement {
-  if (availabilityOf(entry).available) return el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
-  const off = el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", "aria-label": `Open ${entry.name}` });
-  off.disabled = true;
-  return off;
-}
-
 // ---------------------------------------------------------------------------
 // Details
 
@@ -143,7 +135,8 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
   const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
   uninstallNow.addEventListener("click", uninstall);
-  const footer = el("footer", "apps-sheet__footer", [openControl(entry), ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, el("p", "apps-muted", ["Also deletes notes you edited."])]);
+  const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, el("p", "apps-muted", ["Also deletes notes you edited."])]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -452,7 +445,8 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);
-    const open = openControl(entry);
+    // A disabled entry still links to the runner: the runner page refuses it there, before any sign-in opens.
+    const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
     const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),

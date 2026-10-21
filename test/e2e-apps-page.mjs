@@ -1,7 +1,7 @@
 /**
  * Browser e2e for the /apps catalog page, against a production build served
  * with the real public/_headers and public/_redirects. Proves:
- *  - /apps and /apps/ list every catalog entry in cards, each with an Open link to the runner and a Details sheet (the first-open disclosure is checked here; opening and saving run in test/e2e-prod/install-gate.mjs);
+ *  - /apps and /apps/ list every catalog entry in cards, each with an Open link to the runner and a Details sheet (the first-open disclosure is on the runner page, see e2e-apps-widget-layer; opening and saving run in test/e2e-prod/install-gate.mjs);
  *  - the page loads no SDK chunk, makes no request off this origin, and its
  *    only data request is a manifest under /apps/b/<digest>/ after Details is
  *    opened; no CSP or Trusted Types violation fires;
@@ -121,7 +121,7 @@ try {
       await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
       assert.equal(await sheetOpen(page), true, `${label}: sheet opens`);
       const sheetText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest, "If this app isn't in your TinyCloud, we'll save its files as part of opening it.", "Opening checks the app's files before anything is saved."]) {
+      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest]) {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
       assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${catalog.apps[0].app_id}`, `${label}: the sheet's Open goes to the runner`);
@@ -152,10 +152,10 @@ try {
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
 
-      // First open, per app: the details sheet shows the first-open disclosure and an Open link to the runner. Opening it signs nothing in and loads no SDK.
+      // First open, per app: the details sheet shows an Open link to the runner. Opening it signs nothing in and loads no SDK.
       const detailsCases = [
-        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
-        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: [], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: [], absent: [] },
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["'s database ("], absent: [] },
       ];
       for (const { app, tag, expect: wanted, absent } of detailsCases) {
