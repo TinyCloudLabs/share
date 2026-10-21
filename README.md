@@ -18,3 +18,18 @@ See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the
 `npm install`, then use `npm run dev`, `npm test`, `npm run typecheck`, and `npm run build`.
 
 The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no server-side package.
+
+## Landing page: recipient kinds
+
+The rotating line on the landing page lists only recipient kinds that work end to end today (`src/landing/share-targets.ts`, `SHARE_TARGETS`). When a new recipient kind or claim type is live in Share, add its phrase to that array in the same release.
+
+Planned, not yet live. Do not add these to `SHARE_TARGETS` until the kind works end to end in Share:
+
+- your family
+- your team
+- your friend group
+- your group chat
+
+They join the rotation when group credentials and their claim type work end to end.
+
+When "your team" goes live (group credentials), it replaces "your team's domain" in the array; it is not added beside it.
