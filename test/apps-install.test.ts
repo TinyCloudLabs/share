@@ -100,7 +100,7 @@ describe("what the pre-consent sheet says", () => {
   it("an app that reads another app's database lists it as a whole-database read", () => {
     const entry = entryOf(RECIPES);
     const { notices, runtime } = consentFor(entry, manifestOf(entry), catalog.apps);
-    expect(notices).toContain("This app can read Health Log (sample)'s database (whole database).");
+    expect(notices).toContain("This app can read Health Log's database (whole database).");
     expect(notices).toContain(SQL_CHANGE_NOTICE);
     // The cross-app grant is a read: it is not among the changes.
     expect(runtime.change.some((item) => item.target.startsWith(`${HEALTH}/`))).toBe(false);

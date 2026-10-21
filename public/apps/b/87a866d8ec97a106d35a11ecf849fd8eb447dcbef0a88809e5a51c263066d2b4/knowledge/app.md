@@ -1,12 +1,12 @@
 ---
 type: "TinyCloud App"
-title: "Recipes (sample)"
+title: Recipes
 description: "A small recipe book."
 generated: { by: tinycloud-app-kit/okf }
 tinycloud: { app: xyz.tinycloud.sample.recipes, profile: tinycloud.app.v1, containsSecretValue: false }
 ---
 
-A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log sample. Sample tiny app, written from scratch for TinyCloud.
+A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log.
 
 # What it holds
 

@@ -405,12 +405,12 @@ try {
     // Hold the first approval to show the status, then the second.
     controls.sign = hold();
     await arrivedOrExplain(page, controls.sign, "the first approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\) so Share can read Health Log \(sample\) from your TinyCloud/);
+    assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\) so Share can read Health Log from your TinyCloud/);
     await captureState(page, "approval-1-of-2");
     controls.sign.release();
     controls.sign = hold();
     await arrivedOrExplain(page, controls.sign, "the second approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(2 of 2\) to start Health Log \(sample\)/);
+    assert.match(await statusText(page), /^Approve in the OpenKey window \(2 of 2\) to start Health Log/);
     await captureState(page, "approval-2-of-2");
     controls.sign.release(); controls.sign = undefined;
     const child = await runningFrame(page);

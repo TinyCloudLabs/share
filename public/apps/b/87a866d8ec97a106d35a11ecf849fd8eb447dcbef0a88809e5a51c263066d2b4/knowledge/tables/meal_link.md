@@ -1,7 +1,7 @@
 ---
 type: "SQLite Table"
 title: meal_link
-description: "Links a recipe to a meal in the Health Log sample (app xyz.tinycloud.sample.healthlog, database healthlog, table meal)."
+description: "Links a recipe to a meal in the Health Log (app xyz.tinycloud.sample.healthlog, database healthlog, table meal)."
 resource: tinycloud.sql:applications:xyz.tinycloud.sample.recipes/recipes
 table: meal_link
 generated: { by: tinycloud-app-kit/okf }
@@ -12,7 +12,7 @@ tinycloud:
   containsSecretValue: false
 ---
 
-Links a recipe to a meal in the Health Log sample (app xyz.tinycloud.sample.healthlog, database healthlog, table meal). This app only reads that table; the link lives here, never there. The meal_* columns are a snapshot taken at link time so the list renders without reading the other app.
+Links a recipe to a meal in the Health Log (app xyz.tinycloud.sample.healthlog, database healthlog, table meal). This app only reads that table; the link lives here, never there. The meal_* columns are a snapshot taken at link time so the list renders without reading the other app.
 
 Table `meal_link` in SQLite database `xyz.tinycloud.sample.recipes/recipes` (space `applications`).
 

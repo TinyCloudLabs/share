@@ -5,18 +5,18 @@
   "files": [
     {
       "path": "app.jsx",
-      "sha256": "ccffda6f88cc30ac528070b2016aa0e897bcbf4f4afc74da0f96fea5292b70c2",
-      "size": 43954
+      "sha256": "9606dcd83327a0700dcc6dc490b6e963ea4216510860b45339bb8d2aa53c29de",
+      "size": 43931
     },
     {
       "path": "knowledge/app.md",
-      "sha256": "1714aa7b56eaecd60622b026fe2e8038a419b88df9dbcf18350af8c87eab68e6",
-      "size": 5134
+      "sha256": "f760b4519ac9684129719fad54df4dcecd56d9f63e4695c2db75b1dcfdf0ddd7",
+      "size": 5063
     },
     {
       "path": "knowledge/index.md",
-      "sha256": "1631095d2e909ff5a49023aab0a5b4534e61b21b20ba228f89331ab4113fd591",
-      "size": 1077
+      "sha256": "475c2772960f5dee4cd80a7482a30f3d36f4185802840b5d0ce795e7cc6bd2d1",
+      "size": 1061
     },
     {
       "path": "knowledge/kv/app.md",
@@ -35,13 +35,13 @@
     },
     {
       "path": "knowledge/log.md",
-      "sha256": "95dd7cc4665d109fc32319ba3ec4bf325f7d200b8978aa669a9c51aa92b025c9",
-      "size": 225
+      "sha256": "3fdfcf2fa68ec83ec3318a1c6655e09421c2402fe9f58c0a5edd984f52fb68d3",
+      "size": 308
     },
     {
       "path": "knowledge/tables/meal_link.md",
-      "sha256": "e7fc091b61897d6f18d1e198f5cfdb41899261d24956f11d7367d9b50d9ca29e",
-      "size": 1632
+      "sha256": "3ed7fdfe915bda4cd478c44eab852108382244ad713cd26fc2b32fb04937d069",
+      "size": 1618
     },
     {
       "path": "knowledge/tables/recipe.md",
@@ -70,14 +70,14 @@
     },
     {
       "path": "manifest.json",
-      "sha256": "6bc186bbf88e57c574dc52eeb895b36fc0cb1ba763fa94fc28ec52caa5766cb5",
-      "size": 1943
+      "sha256": "e6d9e84d65b9747ad0ff180328a3b648faebcb50519dda48a722b3811b7b3215",
+      "size": 1874
     },
     {
       "path": "schema.sql",
-      "sha256": "febf7eff8760f62369053e09736b25b03ca2e2ce71d8b465c46563009f3d8724",
-      "size": 5394
+      "sha256": "0ec7c2e9b7c2e6568b62c5f145b54ca6491f6ea834d4a31994596463864ec8e2",
+      "size": 5378
     }
   ],
-  "digest": "3934e27b9700508af2045846a36784748a605607b6cc4daaa11d1c13910b166a"
+  "digest": "4cc2329809db532b2f1be928002c0fbc333945554791799966c284752fc37139"
 }

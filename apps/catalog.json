@@ -65,41 +65,41 @@
     },
     {
       "app_id": "xyz.tinycloud.sample.healthlog",
-      "name": "Health Log (sample)",
-      "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart. Sample tiny app, written from scratch for TinyCloud.",
+      "name": "Health Log",
+      "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart.",
       "publisher": {
         "name": "TinyCloud"
       },
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
         "tag": null,
-        "commit": "d8739346a833d0ac5941fcfc51e378ba0281ccb3"
+        "commit": "dfe1900a352d6e70c4d894f066f47e4e89e9535a"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "f001d6618c535182c5a64cad1a18ace17d62ced635651ad8b2fba4d01161707c"
+        "digest": "828057515ba93e2736fc93d1b2e2729de16f826e2bb40dcdbdab3c297e5e5d40"
       },
       "manifest": {
         "path": "manifest.json",
-        "sha256": "0b6162faa784fa2698a50481b2edf6385f10cb7bba03183bfe3c2047a4d622df"
+        "sha256": "7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802"
       },
       "bundle": {
-        "root": "/apps/b/e807668820cd592646e21fc88f15aa30ab5fcec196bbdec0dafd52b12c343fa4/",
+        "root": "/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "56075597ad5f7dcfcc027d2a105c275a7713f7fc0588cec5290d56ebfee2e83f",
-            "size": 25459
+            "sha256": "9e45ebdf5f5697a473c20558eaf3cfdb295ed954908119a970772fa0b6900b0c",
+            "size": 25450
           },
           {
             "path": "knowledge/app.md",
-            "sha256": "3050818fd96e048e8c26bf1ec04c74b7c2681128d51e173cae2a2718257bb445",
-            "size": 4064
+            "sha256": "74a65d0332ba06fe5f7fb47c67243ebc6ca80435f3388cb5201712287240f4c7",
+            "size": 3994
           },
           {
             "path": "knowledge/index.md",
-            "sha256": "df4d75cd52928ffe059568093c60a84b105e542b005bf36e939516fed5eec7fc",
-            "size": 954
+            "sha256": "06e54fa6a4f14ae13bdbcf2ad5ab22b6d561da90e04c27fc616787762e45811e",
+            "size": 945
           },
           {
             "path": "knowledge/kv/app.md",
@@ -143,64 +143,64 @@
           },
           {
             "path": "manifest.json",
-            "sha256": "0b6162faa784fa2698a50481b2edf6385f10cb7bba03183bfe3c2047a4d622df",
-            "size": 1458
+            "sha256": "7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802",
+            "size": 1396
           },
           {
             "path": "release.json",
-            "sha256": "83e52ee70b967efbc2434c0b85c15d2f9b65332616a9cd1df438393338a72118",
+            "sha256": "1c81933fb4eb3eb3a07b8df22df6739550b824709eb675ac4b2f7170785d5666",
             "size": 2200
           },
           {
             "path": "schema.sql",
-            "sha256": "3ca912568852c8a4fea184bd54c7d3e606ae52b2dc1230dd37bdf84bc2876439",
-            "size": 4114
+            "sha256": "bb46ab35ac7887f672beba2f50b9f982c31d41607b3fa77ac9c2e72003edf199",
+            "size": 4105
           }
         ],
-        "digest": "e807668820cd592646e21fc88f15aa30ab5fcec196bbdec0dafd52b12c343fa4"
+        "digest": "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014"
       },
       "knowledge": {
-        "root": "/apps/b/e807668820cd592646e21fc88f15aa30ab5fcec196bbdec0dafd52b12c343fa4/knowledge/",
-        "digest": "c38581867fa64a2d5ec2589ef5345ea2eeb517c75fcb448e26a146282bf803dc"
+        "root": "/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/knowledge/",
+        "digest": "7970187161281c0399046bc742bba369f57379ba570d5d5d6ef4ffb40b131503"
       }
     },
     {
       "app_id": "xyz.tinycloud.sample.recipes",
-      "name": "Recipes (sample)",
-      "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log sample. Sample tiny app, written from scratch for TinyCloud.",
+      "name": "Recipes",
+      "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log.",
       "publisher": {
         "name": "TinyCloud"
       },
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
         "tag": null,
-        "commit": "d8739346a833d0ac5941fcfc51e378ba0281ccb3"
+        "commit": "dfe1900a352d6e70c4d894f066f47e4e89e9535a"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "3934e27b9700508af2045846a36784748a605607b6cc4daaa11d1c13910b166a"
+        "digest": "4cc2329809db532b2f1be928002c0fbc333945554791799966c284752fc37139"
       },
       "manifest": {
         "path": "manifest.json",
-        "sha256": "6bc186bbf88e57c574dc52eeb895b36fc0cb1ba763fa94fc28ec52caa5766cb5"
+        "sha256": "e6d9e84d65b9747ad0ff180328a3b648faebcb50519dda48a722b3811b7b3215"
       },
       "bundle": {
-        "root": "/apps/b/abe4415b0ca0b637b32cee359ff1bef1d8f5a31b9145c1aa6107eea0ba16c747/",
+        "root": "/apps/b/87a866d8ec97a106d35a11ecf849fd8eb447dcbef0a88809e5a51c263066d2b4/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "ccffda6f88cc30ac528070b2016aa0e897bcbf4f4afc74da0f96fea5292b70c2",
-            "size": 43954
+            "sha256": "9606dcd83327a0700dcc6dc490b6e963ea4216510860b45339bb8d2aa53c29de",
+            "size": 43931
           },
           {
             "path": "knowledge/app.md",
-            "sha256": "1714aa7b56eaecd60622b026fe2e8038a419b88df9dbcf18350af8c87eab68e6",
-            "size": 5134
+            "sha256": "f760b4519ac9684129719fad54df4dcecd56d9f63e4695c2db75b1dcfdf0ddd7",
+            "size": 5063
           },
           {
             "path": "knowledge/index.md",
-            "sha256": "1631095d2e909ff5a49023aab0a5b4534e61b21b20ba228f89331ab4113fd591",
-            "size": 1077
+            "sha256": "475c2772960f5dee4cd80a7482a30f3d36f4185802840b5d0ce795e7cc6bd2d1",
+            "size": 1061
           },
           {
             "path": "knowledge/kv/app.md",
@@ -219,13 +219,13 @@
           },
           {
             "path": "knowledge/log.md",
-            "sha256": "95dd7cc4665d109fc32319ba3ec4bf325f7d200b8978aa669a9c51aa92b025c9",
-            "size": 225
+            "sha256": "3fdfcf2fa68ec83ec3318a1c6655e09421c2402fe9f58c0a5edd984f52fb68d3",
+            "size": 308
           },
           {
             "path": "knowledge/tables/meal_link.md",
-            "sha256": "e7fc091b61897d6f18d1e198f5cfdb41899261d24956f11d7367d9b50d9ca29e",
-            "size": 1632
+            "sha256": "3ed7fdfe915bda4cd478c44eab852108382244ad713cd26fc2b32fb04937d069",
+            "size": 1618
           },
           {
             "path": "knowledge/tables/recipe.md",
@@ -254,25 +254,25 @@
           },
           {
             "path": "manifest.json",
-            "sha256": "6bc186bbf88e57c574dc52eeb895b36fc0cb1ba763fa94fc28ec52caa5766cb5",
-            "size": 1943
+            "sha256": "e6d9e84d65b9747ad0ff180328a3b648faebcb50519dda48a722b3811b7b3215",
+            "size": 1874
           },
           {
             "path": "release.json",
-            "sha256": "c34454da20e829ab02828f251c0731ec33226010768bb1108d45a6dde937795e",
+            "sha256": "dce68937a47b082a956c58f74443be387cc0890c14ebc32d41e9f41dc1f3c5d6",
             "size": 2533
           },
           {
             "path": "schema.sql",
-            "sha256": "febf7eff8760f62369053e09736b25b03ca2e2ce71d8b465c46563009f3d8724",
-            "size": 5394
+            "sha256": "0ec7c2e9b7c2e6568b62c5f145b54ca6491f6ea834d4a31994596463864ec8e2",
+            "size": 5378
           }
         ],
-        "digest": "abe4415b0ca0b637b32cee359ff1bef1d8f5a31b9145c1aa6107eea0ba16c747"
+        "digest": "87a866d8ec97a106d35a11ecf849fd8eb447dcbef0a88809e5a51c263066d2b4"
       },
       "knowledge": {
-        "root": "/apps/b/abe4415b0ca0b637b32cee359ff1bef1d8f5a31b9145c1aa6107eea0ba16c747/knowledge/",
-        "digest": "77bf1788f22c8775cf853206d99e90d8c09a5c23e8d2f4b2404ed8e89bc7ca15"
+        "root": "/apps/b/87a866d8ec97a106d35a11ecf849fd8eb447dcbef0a88809e5a51c263066d2b4/knowledge/",
+        "digest": "913f7a775de7e44cf642f13974c4f07d6ee27d5136ff77e27a65517586b4ac57"
       }
     }
   ]

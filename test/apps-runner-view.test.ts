@@ -103,7 +103,7 @@ describe("the runner page before anything is signed", () => {
   it("says which app it is, where it came from and that it is sandboxed, outside the frame", async () => {
     const fake = fakePorts();
     await open(fake);
-    expect(root.querySelector(".run-title")?.textContent).toBe("Health Log (sample)");
+    expect(root.querySelector(".run-title")?.textContent).toBe("Health Log");
     const provenance = root.querySelector(".run-provenance")?.textContent ?? "";
     expect(provenance).toBe(provenanceText(entry));
     expect(provenance).toContain(`${entry.source.commit.slice(0, 7)}`);
@@ -148,7 +148,7 @@ describe("opening an app", () => {
     expect(fake.runtimes).toBe(1);
     const iframe = frame();
     expect(iframe.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(iframe.getAttribute("title")).toBe("Health Log (sample) (installed app)");
+    expect(iframe.getAttribute("title")).toBe("Health Log (installed app)");
     expect(iframe.className).toBe("run-frame");
     // The frame starts and reports ready.
     const post = vi.spyOn(iframe.contentWindow!, "postMessage");
@@ -157,7 +157,7 @@ describe("opening an app", () => {
     expect(render.source).toBe(new TextDecoder().decode(bundleFile("app.jsx")));
     expect(Object.keys(render.modules)).toContain("tinycloud-app");
     fromFrame(iframe, { type: "ready" });
-    await vi.waitFor(() => expect(status()).toContain("Health Log (sample) is running"));
+    await vi.waitFor(() => expect(status()).toContain("Health Log is running"));
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(false);
     // The permission lists now come from the person's own manifest.
     expect(root.querySelector(".run-details")?.textContent).toContain("healthlog");
@@ -222,7 +222,7 @@ describe("opening an app", () => {
     post.mockClear();
     fromFrame(iframe, { type: "cap/kv.get", body: { id: "9", args: { key: "prefs/a" } } });
     expect(post).not.toHaveBeenCalled();
-    expect(button("Open Health Log (sample) again")).toBeTruthy();
+    expect(button("Open Health Log again")).toBeTruthy();
   });
 
   it("the session ends at its time: the frame goes away, calls are refused and the page says so", async () => {
@@ -239,7 +239,7 @@ describe("opening an app", () => {
     expect(root.querySelector(".run-screen__title")?.textContent).toBe("Your session expired");
     expect(root.textContent).toContain("Your session expired: open the app again.");
     expect(fake.ended.runtime).toBe(1);
-    expect(button("Open Health Log (sample) again")).toBeTruthy();
+    expect(button("Open Health Log again")).toBeTruthy();
   });
 
   it("a page that stops after it started says so and keeps Sign out available", async () => {
@@ -326,7 +326,7 @@ describe("opening an app that cannot run", () => {
     await open(fake);
     button("Continue")!.click();
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe(title));
-    expect(button("Open Health Log (sample) again")).toBeTruthy();
+    expect(button("Open Health Log again")).toBeTruthy();
     expect(root.querySelector("iframe")).toBeNull();
     expect(fake.runtimes).toBe(0);
   });

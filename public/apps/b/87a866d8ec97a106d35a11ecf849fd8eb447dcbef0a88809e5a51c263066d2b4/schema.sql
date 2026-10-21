@@ -1,4 +1,4 @@
--- Recipes (sample): xyz.tinycloud.sample.recipes
+-- Recipes: xyz.tinycloud.sample.recipes
 -- One SQLite database, `recipes`, in the user's `applications` space.
 -- Every statement is idempotent (IF NOT EXISTS) so the app can re-run this file.
 -- Ids are client-generated text (rcp_..., shf_..., lnk_...): replaying an
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS recipe_shelf (
 
 CREATE INDEX IF NOT EXISTS idx_recipe_shelf_shelf ON recipe_shelf(shelf_id);
 
--- Links a recipe to a meal in the Health Log sample (app xyz.tinycloud.sample.healthlog, database healthlog, table meal). This app only reads that table; the link lives here, never there. The meal_* columns are a snapshot taken at link time so the list renders without reading the other app.
+-- Links a recipe to a meal in the Health Log (app xyz.tinycloud.sample.healthlog, database healthlog, table meal). This app only reads that table; the link lives here, never there. The meal_* columns are a snapshot taken at link time so the list renders without reading the other app.
 CREATE TABLE IF NOT EXISTS meal_link (
   id             TEXT    PRIMARY KEY,            -- lnk_ + time + random
   recipe_id      TEXT    NOT NULL REFERENCES recipe(id) ON DELETE CASCADE,

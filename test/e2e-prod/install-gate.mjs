@@ -311,13 +311,13 @@ try {
     // Hold the last write (install.json) to show the saving state with the files already in place.
     controls.record = hold();
     await controls.record.arrived;
-    assert.match(await statusText(page), /^Saving Health Log \(sample\)'s files to your TinyCloud \(4 of 15\)/, "the save progress is shown");
+    assert.match(await statusText(page), /^Saving Health Log's files to your TinyCloud \(4 of 15\)/, "the save progress is shown");
     await captureState(page, "saving");
     controls.record.release(); controls.record = undefined;
     const outcome = await finished(page);
     assert.match(outcome.status, /is running\./, "a fresh Open runs the app");
     const announced = await page.evaluate(() => window.__announced);
-    for (const expected of ["Checking Health Log (sample)", "Opening OpenKey…", "Approve in the OpenKey window (1 of 2)", "Saving Health Log (sample)'s files to your TinyCloud", "Approve in the OpenKey window (2 of 2)", "Health Log (sample) is running."]) {
+    for (const expected of ["Checking Health Log", "Opening OpenKey…", "Approve in the OpenKey window (1 of 2)", "Saving Health Log's files to your TinyCloud", "Approve in the OpenKey window (2 of 2)", "Health Log is running."]) {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
     const during = trace.slice(before).filter((entry) => entry.phase === "install-health");

@@ -195,8 +195,8 @@ entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha25
 | App | Source | Pinned at |
 | --- | --- | --- |
 | `com.example.notes` | `TinyCloudLabs/tinycloud-app-kit` `examples/sqlite-app` | commit `5059c5b` |
-| `xyz.tinycloud.sample.healthlog` (sample) | same repository, `examples/sample-healthlog` | commit `d8739346a833d0ac5941fcfc51e378ba0281ccb3` (the repository has no tags) |
-| `xyz.tinycloud.sample.recipes` (sample) | same repository, `examples/sample-recipes` | commit `d8739346a833d0ac5941fcfc51e378ba0281ccb3` |
+| `xyz.tinycloud.sample.healthlog` | same repository, `examples/sample-healthlog` | commit `dfe1900a352d6e70c4d894f066f47e4e89e9535a` (the repository has no tags) |
+| `xyz.tinycloud.sample.recipes` | same repository, `examples/sample-recipes` | commit `dfe1900a352d6e70c4d894f066f47e4e89e9535a` |
 
 That repository is public and has no LICENSE file. Other apps (for example the TinyHealth and
 TinyRecipes forks) are not vendored until their licensing allows it.

@@ -1,4 +1,4 @@
--- Health Log (sample): xyz.tinycloud.sample.healthlog
+-- Health Log: xyz.tinycloud.sample.healthlog
 -- One SQLite database, `healthlog`, in the user's `applications` space.
 -- Every statement is idempotent (IF NOT EXISTS) so the app can re-run this file.
 -- Comments next to tables, views and columns become the knowledge bundle's descriptions
