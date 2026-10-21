@@ -5,7 +5,7 @@
  */
 import { type AccessItem, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
-import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
+import { consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
@@ -82,26 +82,20 @@ async function renderAccess(entry: CatalogEntry, catalog: readonly CatalogEntry[
   }
   const consent = consentFor(entry, result.manifest, catalog);
   target.replaceChildren(
-    ...(entry.sample === true ? [sampleNotice()] : []),
     ...noticeList(consent.notices),
     accessSection("It can read", "Nothing.", consent.runtime.read),
     accessSection("It can change", "Nothing. This app can't change your data.", consent.runtime.change),
   );
 }
 
-/** The app's plain statements (SQL changes, reads of another app); the sample notice has its own banner. */
+/** The app's plain statements (SQL changes, reads of another app). */
 export function noticeList(notices: readonly string[]): HTMLElement[] {
-  const own = notices.filter((notice) => notice !== SAMPLE_NOTICE);
-  return own.length === 0 ? [] : [el("ul", "apps-notes apps-notes--strong", own.map((notice) => el("li", null, [notice])))];
+  return notices.length === 0 ? [] : [el("ul", "apps-notes apps-notes--strong", notices.map((notice) => el("li", null, [notice])))];
 }
 
 /** The kill switch's banner: fixed heading, the catalog's reason as text. */
 function unavailableNotice(reason: string): HTMLElement {
   return el("div", "tc-status tc-status--warning apps-notice apps-unavailable", [el("strong", null, ["Temporarily unavailable"]), el("span", null, [reason])]);
-}
-
-function sampleNotice(): HTMLElement {
-  return el("p", "tc-status tc-status--warning apps-notice", [SAMPLE_NOTICE]);
 }
 
 function provenance(entry: CatalogEntry): HTMLElement {
@@ -485,7 +479,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
     const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
-      el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`, ...(entry.sample === true ? [" ", el("span", "tc-badge apps-badge", ["Sample"])] : [])]),
+      el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),
       el("p", "apps-card__description", [entry.description]),
       ...(availability.available ? [] : [unavailableNotice(availability.reason)]),
       el("div", "apps-card__actions", [open, details]),

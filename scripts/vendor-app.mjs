@@ -4,7 +4,7 @@
  * apps/catalog.json. The result is committed; the build and the site fetch
  * nothing.
  *
- *   node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--sample] [--publisher <name>] [--publisher-did <did>]
+ *   node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] [--publisher-did <did>]
  *
  * `<tag>` is a tag name or a full 40-hex commit id. Branch names are refused:
  * they move, and a catalog entry pins one exact commit.
@@ -28,8 +28,6 @@
  * Every copied path must pass the installer's path rule (no `..`, absolute, backslash, control or hidden-folder paths, no
  * `dev/`, `tests/`, `scripts/` or `node_modules/` folders, no case collisions), and no component of it may be a symlink.
  * An entry's `disabled`/`disabledReason` (the kill switch) is kept on update.
- * `--sample` marks the entry `sample: true` (kept on update): the install sheet
- * then tells people to use throwaway data only.
  */
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -130,7 +128,6 @@ const { values, positionals } = parseArgs({
   options: {
     path: { type: "string", default: "tinycloud/app" },
     publisher: { type: "string" },
-    sample: { type: "boolean", default: false },
     "publisher-did": { type: "string" },
     catalog: { type: "string", default: join(root, "apps", "catalog.json") },
     public: { type: "string", default: join(root, "public") },
@@ -184,14 +181,12 @@ try {
   const publisher = values.publisher === undefined ? previous?.publisher : { name: values.publisher, ...(values["publisher-did"] === undefined ? {} : { did: values["publisher-did"] }) };
   if (publisher === undefined) die("--publisher <name> is required for a new app");
 
-  const sample = values.sample === true || previous?.sample === true;
   // A kill switch survives an update: re-vendoring must not quietly re-enable an app someone switched off.
   const killSwitch = previous?.disabled === true ? { disabled: true, disabledReason: previous.disabledReason } : {};
   const entry = {
     app_id: manifest.app_id,
     name: manifest.name,
     description: manifest.description,
-    ...(sample ? { sample: true } : {}),
     ...killSwitch,
     publisher,
     source: { repo: url.replace(/\.git$/, ""), tag: COMMIT_ID.test(ref) ? null : ref, commit },

@@ -19,7 +19,6 @@
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
-export const SAMPLE_NOTICE = "Sample app: use throwaway data only.";
 export const SQL_CHANGE_NOTICE = "This app can change or delete its own tables.";
 
 export interface Consent {
@@ -109,7 +108,6 @@ export function consentFor(entry: CatalogEntry, manifest: unknown, catalog: read
   const runtime = summarizeAccess(manifest);
   const nameOf = (id: string): string | undefined => catalog.find((candidate) => candidate.app_id === id)?.name;
   const notices: string[] = [];
-  if (entry.sample === true) notices.push(SAMPLE_NOTICE);
   // Changes first: they are the ones a person most needs to see.
   for (const kind of ["change", "read"] as const) {
     for (const item of runtime[kind]) {

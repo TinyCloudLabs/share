@@ -430,10 +430,6 @@ body {
   font-weight: var(--tc-weight-semibold);
 }
 
-.apps-badge {
-  color: var(--tc-color-text);
-}
-
 .apps-install-status {
   display: grid;
   gap: var(--tc-space-2);

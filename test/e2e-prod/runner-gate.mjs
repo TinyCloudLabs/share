@@ -113,7 +113,7 @@ function addHostileEntry() {
   cpSync(stagingDir, target, { recursive: true });
   rmSync(stagingDir, { recursive: true, force: true });
   parsed.apps.push({
-    app_id: HOSTILE, name: manifest.name, description: manifest.description, sample: true,
+    app_id: HOSTILE, name: manifest.name, description: manifest.description,
     publisher: { name: "Runner gate (test)" },
     source: { repo: "https://github.com/example/hostile-test-app", tag: null, commit: "0".repeat(40) },
     manifest: described.manifest, bundle: described.bundle, knowledge: described.knowledge,

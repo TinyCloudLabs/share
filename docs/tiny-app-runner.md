@@ -16,8 +16,7 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
    catalog's own manifest, shown before anything is signed), and a provenance line that stays
    on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle
    `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can
-   do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta:
-   use sample data only."
+   do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust."
 2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
    Share can read the app from the person's TinyCloud and save any missing files, (2 of 2) to start it with the
    permissions listed on the page. OpenKey connects once.
@@ -169,7 +168,7 @@ memory. The frame's CSP blocks every content and script request (`connect-src 'n
 'none'`, images and media from `data:`/`blob:` only), and there is no storage of the page's origin,
 popups, forms, workers or downloads. Its data is what the bridge gives it, under the manifest the person signed.
 This is **not** "no network access": some browser requests can't be blocked (see the known limits), so the page
-tells people to install apps they trust and, in the beta, to use sample data only.
+tells people to install apps they trust.
 
 The static scan in the kit's samples is defence in depth only: the sandbox is the boundary.
 
@@ -255,7 +254,7 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
   sent, one TCP connection is made. Nothing inside the frame can stop this.
 - Some other browser requests can still carry what the app reads to an address it picks: the CSP does not govern a prerender, a preconnect,
   a DNS prefetch or `<a ping>`, and the guard that refuses them is best effort. These paths are known closed (the probe sees nothing); same-realm
-  code may find others. Open apps you trust; in the beta, use sample data only.
+  code may find others. Open apps you trust.
 - Node error text is not shown to the app, except a SQL error's message, which is scrubbed of tokens, identifiers and stack lines.
 - The catalog's two sample bundles still say "no network" in a code comment and a knowledge file: they are pinned by digest and change with the next catalog release.
 - The pin covers the code, not `manifest.json` (capped by the grant check) or `knowledge/` (the person's).

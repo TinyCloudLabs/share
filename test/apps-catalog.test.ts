@@ -71,8 +71,8 @@ describe("apps catalog digests", () => {
     expect(errors.some((error) => error.includes("knowledge.digest"))).toBe(true);
   });
 
-  it("pins the kit samples to a full commit, marks them as samples, and checks the kit's own release digest as well", () => {
-    const samples = catalog.apps.filter((app) => app.sample === true);
+  it("pins the kit samples to a full commit and checks the kit's own release digest as well", () => {
+    const samples = catalog.apps.filter((app) => app.app_id.startsWith("xyz.tinycloud.sample."));
     expect(samples.map((app) => app.app_id)).toEqual(["xyz.tinycloud.sample.healthlog", "xyz.tinycloud.sample.recipes"]);
     for (const app of samples) {
       expect(app.source.tag).toBeNull();
@@ -83,13 +83,10 @@ describe("apps catalog digests", () => {
       expect(app.bundle.files.map((file) => file.path).filter((path) => /^(dev|tests|scripts|node_modules)\//.test(path) || path === "package.json")).toEqual([]);
     }
     const wrongRelease = structuredClone(catalog);
-    const sample = wrongRelease.apps.find((app) => app.sample === true);
+    const sample = wrongRelease.apps.find((app) => app.app_id.startsWith("xyz.tinycloud.sample."));
     if (sample?.release === undefined) throw new Error("fixture");
     sample.release.digest = "9".repeat(64);
     expect(verifyCatalog(wrongRelease, "public").some((error) => error.includes("release.digest differs"))).toBe(true);
-    const notBoolean = structuredClone(catalog) as unknown as { apps: { sample?: unknown }[] };
-    notBoolean.apps[1]!.sample = "yes";
-    expect(verifyCatalog(notBoolean, "public").some((error) => error.includes("sample must be true"))).toBe(true);
   });
 
   describe("the kill switch", () => {
@@ -269,17 +266,16 @@ describe("scripts/vendor-app.mjs", () => {
     return { repo, url: "https://example.test/app-repo" };
   }
 
-  it("with a release.json, copies ONLY the files it lists (never dev/, tests/, scripts/ or node_modules), marks a sample, and records both digests", () => {
+  it("with a release.json, copies ONLY the files it lists (never dev/, tests/, scripts/ or node_modules), and records both digests", () => {
     const { repo, url } = releaseRepo();
     const work = tempDir();
     const catalogFile = join(work, "catalog.json");
     const publicDir = join(work, "public");
     const commit = git(repo, "rev-parse", "HEAD");
-    const run = vendor(`${url}@${commit}`, catalogFile, publicDir, "--path", "examples/sample", "--sample", "--publisher", "Tests");
+    const run = vendor(`${url}@${commit}`, catalogFile, publicDir, "--path", "examples/sample", "--publisher", "Tests");
     expect(run.stderr).toBe("");
     const written = JSON.parse(readFileSync(catalogFile, "utf8"));
     const entry = written.apps[0];
-    expect(entry.sample).toBe(true);
     expect(entry.source).toEqual({ repo: url, tag: null, commit });
     expect(entry.release).toEqual({ version: "0.1.0", digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(entry.bundle.files.map((file: { path: string }) => file.path)).toEqual(["app.jsx", "knowledge/index.md", "knowledge/tables/t.md", "manifest.json", "release.json", "schema.sql"]);
@@ -287,10 +283,6 @@ describe("scripts/vendor-app.mjs", () => {
     const folder = join(publicDir, "apps", "b", entry.bundle.digest);
     expect(readdirSync(folder).sort()).toEqual(["app.jsx", "knowledge", "manifest.json", "release.json", "schema.sql"]);
     expect(verifyCatalog(written, publicDir)).toEqual([]);
-
-    // The sample flag survives an update that does not repeat it.
-    expect(vendor(`${url}@${commit}`, catalogFile, publicDir, "--path", "examples/sample").status).toBe(0);
-    expect(JSON.parse(readFileSync(catalogFile, "utf8")).apps[0].sample).toBe(true);
   }, 60_000);
 
   it("refuses a listed file whose bytes differ from the release", () => {

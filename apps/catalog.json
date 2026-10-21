@@ -67,7 +67,6 @@
       "app_id": "xyz.tinycloud.sample.healthlog",
       "name": "Health Log (sample)",
       "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart. Sample tiny app, written from scratch for TinyCloud.",
-      "sample": true,
       "publisher": {
         "name": "TinyCloud"
       },
@@ -169,7 +168,6 @@
       "app_id": "xyz.tinycloud.sample.recipes",
       "name": "Recipes (sample)",
       "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log sample. Sample tiny app, written from scratch for TinyCloud.",
-      "sample": true,
       "publisher": {
         "name": "TinyCloud"
       },
