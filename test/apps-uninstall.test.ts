@@ -1,7 +1,7 @@
 import { composeManifestRequest } from "@tinycloud/sdk-core";
 import { describe, expect, it } from "vitest";
 
-import { INSTALL_SPACE, installRecordKey, resourceMismatch, type RequestedResource } from "../src/apps/install-plan.ts";
+import { INSTALL_SPACE, installRecordKey, type RequestedResource } from "../src/apps/install-plan.ts";
 import { type UninstallPorts, type UninstallProgress, runUninstall } from "../src/apps/uninstall.ts";
 import {
   ACCOUNT_SPACE,
@@ -9,6 +9,7 @@ import {
   UNINSTALL_IDENTITY_ID,
   UninstallError,
   assertPlainAppId,
+  resourceMismatch,
   deleteOrder,
   expectedUninstallResources,
   folderPrefixes,

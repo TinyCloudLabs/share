@@ -19,8 +19,8 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
-import { INSTALL_EXPIRY_MS, INSTALL_SPACE, resourceMismatch, type RequestedResource } from "./install-plan.ts";
-import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UninstallError, type UninstallFailure, type UninstallPlan } from "./uninstall-plan.ts";
+import { INSTALL_EXPIRY_MS, INSTALL_SPACE, type RequestedResource } from "./install-plan.ts";
+import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UninstallError, resourceMismatch, type UninstallFailure, type UninstallPlan } from "./uninstall-plan.ts";
 import type { ListPage, UninstallPorts, UninstallSession } from "./uninstall.ts";
 
 /** The error code a key-value service returns for a key that is not there. */

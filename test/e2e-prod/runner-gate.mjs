@@ -7,7 +7,7 @@
  * OpenCredentials; OpenKey is the signing fixture; the browser reaches the
  * candidate build at https://share.tinycloud.xyz/apps/run). It proves, in a real
  * browser against a real Node:
- *  - install the Health Log sample, open `/apps/run#<app_id>`, log a meal in the
+ *  - open the Health Log sample from the apps page (the first Open saves its files, then runs it), log a meal in the
  *    app's frame, and the owner's own SDK client reads that row from the app's
  *    database; the Recipes sample (installed too) lists that meal through its
  *    cross-app read grant and cannot write to the Health Log;
@@ -18,7 +18,7 @@
  *    approval, before anything more is signed; a narrowed copy runs, with
  *    exactly what it kept;
  *  - the saved code is PINNED: an edited app.jsx or an extra file is refused before any
- *    runtime session or frame, Repair (the install sheet in repair mode) puts the
+ *    runtime session or frame, Repair (the repair sheet) puts the
  *    catalog's code back with one approval and the app opens, and an installed version
  *    that has left the catalog gets the honest message and no Repair;
  *  - a hostile app (a catalog entry the gate adds for the run) can do nothing the
@@ -249,20 +249,16 @@ async function newPage(browser, stack, label, url, init) {
   return { context, page };
 }
 
-// ---- installing through the apps page (the person's real path)
-const INSTALL_TERMINAL = /^(Installed\.|Already installed|Not installed yet|Sign-in cancelled|OpenKey didn't|Another OpenKey|That approval|We couldn't|.* files don't match the catalog|This catalog entry|Couldn't load)/;
-async function install(browser, stack, appId) {
-  const { page, context } = await newPage(browser, stack, `install-${appId}`, `${stack.canonical.share}/apps/`);
+// ---- opening from the apps page (the person's real path): the card's Open link lands on the runner
+async function openFirst(browser, stack, appId) {
+  const { page, context } = await newPage(browser, stack, `open-${appId}`, `${stack.canonical.share}/apps/`);
   await page.waitForSelector(".apps-card", { timeout: 60_000 });
   const index = catalog.apps.findIndex((entry) => entry.app_id === appId);
-  await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelectorAll("button")[1].click(), index);
-  await page.waitForFunction(() => [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue" && !button.disabled), { timeout: 60_000 });
-  await page.click("#apps-sheet footer button");
-  const text = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return INSTALL_TERMINAL.test(value) ? value : undefined; }, 300_000);
-  assert(text?.startsWith("Installed.") || text?.startsWith("Already installed"), `install of ${appId} ended with "${text}"`);
-  // The Open control is a link to the runner now.
-  const href = await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href"));
-  assert.equal(href, `/apps/run#${appId}`);
+  await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").click(), index);
+  await page.waitForSelector(".run-screen", { timeout: 60_000 });
+  assert.equal(new URL(page.url()).hash, `#${appId}`);
+  await start(page);
+  await page.waitForFunction(() => /is running/.test(document.querySelector(".run-status-region")?.textContent ?? ""), { timeout: 300_000 });
   await context.close();
 }
 
@@ -374,7 +370,7 @@ try {
   const healthManifest = await manifestOf(health);
   const recipesManifest = await manifestOf(recipes);
 
-  /** From a runner refusal screen: Repair -> the install sheet in repair mode -> Continue -> the sheet's last line. */
+  /** From a runner refusal screen: Repair -> the repair sheet -> Continue -> the sheet's last line. */
   async function repairFromRunner(page, label) {
     await page.click(`a[href='/apps/#repair=${HEALTH}']`);
     await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
@@ -382,24 +378,6 @@ try {
     await clickByText(page, "Continue");
     const text = await waitUntil(async () => { const line = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(line) ? line : undefined; }, 300_000);
     return text ?? "";
-  }
-
-  // ---- 0. Nothing installed yet: the runner says so after one read approval and starts nothing.
-  phase = "0. Nothing installed yet: the runner says so after one read "; console.error(`[t5b] ${phase}`);
-  {
-    const { page, context } = await openRunner(browser, stack, "not-installed", HEALTH);
-    // A first-time account is asked to host its spaces too: this is the first sign-in of the run.
-    assert.equal(await screenTitle(page), `Open ${health.name}`);
-    assert.equal(await page.$eval(".run-provenance", (node) => node.textContent), `This app was installed from ${health.source.repo.replace(/^https:\/\//, "")}@${health.source.commit.slice(0, 7)} (${health.source.tag ?? `commit ${health.source.commit.slice(0, 7)}`}, bundle ${health.bundle.digest.slice(0, 12)}). It runs in a sandbox and can use only what's listed under “What this app can do”.`);
-    await captureState(page, "start");
-    await start(page);
-    assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This app needs to be installed first"), true, `not-installed screen (status: ${await statusText(page)})`);
-    assert.equal(await page.$("iframe"), null);
-    assert((await page.$("a[href='/apps/']")) !== null);
-    await captureState(page, "not-installed");
-    await noViolations(page, "not-installed");
-    report.stages.notInstalled = { screen: await screenTitle(page), recapSessions: sessionMessages("not-installed").length };
-    await context.close();
   }
 
   // ---- 1. Unknown or malformed addresses open nothing and call nothing.
@@ -414,10 +392,10 @@ try {
     await context.close();
   }
 
-  // ---- 2. Install both samples through the apps page, then open the Health Log.
-  phase = "2. Install both samples through the apps page, then open the"; console.error(`[t5b] ${phase}`);
-  await install(browser, stack, HEALTH);
-  await install(browser, stack, RECIPES);
+  // ---- 2. Open both samples from the apps page; the first Open saves each app's files, then opens it.
+  phase = "2. Open both samples from the apps page, then open the"; console.error(`[t5b] ${phase}`);
+  await openFirst(browser, stack, HEALTH);
+  await openFirst(browser, stack, RECIPES);
 
   {
     const label = "run-health";
@@ -442,8 +420,8 @@ try {
     const sessions = sessionMessages(label);
     assert.equal(sessions.length, 2, "two session sign-ins");
     const reader = recapOf(sessions[0]);
-    // In the app's space the read session holds one get and the SDK's capabilities/read; the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`].sort(), "the read session asks for more than a get and a list on the saved app");
+    // In the app's space the read session holds get, list and create-only put on the saved app, and put on its knowledge folder; the SDK's capabilities/read and the account lines are the registry's.
+    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/put`, `applications/kv/${HEALTH}/knowledge/ tinycloud.kv/put`].sort(), "the read session is not exactly the install grants plus get and list on the saved app");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
     assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
     assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
@@ -639,7 +617,7 @@ try {
       assert.deepEqual(listener.requests, [], `${label}: the tampered code ran`);
       if (label === "run-tampered") await captureState(page, "code-mismatch");
       report.stages[label] = { refused: true, sessionsSigned: 1, approvals: 1 };
-      // Repair: the apps page opens the install sheet in repair mode; one approval; the code files come back; the stray goes.
+      // Repair: the apps page opens the repair sheet; one approval; the code files come back; the stray goes.
       const repairFrom = trace.length;
       await page.click(`a[href='/apps/#repair=${HEALTH}']`);
       await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
@@ -695,7 +673,7 @@ try {
   // ---- 5b. A hostile app, installed from a catalog entry (its code is pinned, so this is the only way it can reach the runner).
   phase = "5b. A hostile app, installed from a catalog entry (its code "; console.error(`[t5b] ${phase}`);
   {
-    await install(browser, stack, HOSTILE);
+    await openFirst(browser, stack, HOSTILE);
     const node = await ownerClient(HOSTILE);
     const label = "run-hostile";
     const from = trace.length;
@@ -863,10 +841,9 @@ try {
     assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
     await context.close();
     const { page: runner, context: runnerContext } = await openRunner(browser, stack, "after-uninstall", HEALTH);
-    await start(runner);
-    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === "This app needs to be installed first"), true, `after uninstall the runner did not say it needs installing (status: ${await statusText(runner)})`);
-    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame");
-    report.stages.uninstalled = { screen: "This app needs to be installed first", frame: false };
+    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === `Open ${health.name}`), true, `after uninstall the runner did not offer to open the app again (status: ${await statusText(runner)})`);
+    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame before Continue");
+    report.stages.uninstalled = { screen: `Open ${health.name}`, frame: false };
     await runnerContext.close();
   }
 

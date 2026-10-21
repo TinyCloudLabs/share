@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CatalogEntry } from "../src/apps/catalog.ts";
+import { runnerHref } from "../src/apps/install-plan.ts";
 import { mountApps } from "../src/apps/view.ts";
 
 const HOSTILE = "<img src=x onerror=\"window.__pwned=1\"><script>window.__pwned=1</script>";
@@ -64,8 +65,8 @@ describe("apps page rendering", () => {
     }
     expect(sheet.textContent).toContain(HOSTILE);
     expect(list.querySelector("h2")?.textContent).toBe(HOSTILE);
-    // The hostile source URL is shown as text, not made a link.
-    expect(sheet.querySelector("a")).toBeNull();
+    // The hostile source URL is shown as text, never a link: the only link is the runner's Open link.
+    expect([...sheet.querySelectorAll("a")].every((link) => link.getAttribute("href")?.startsWith("/apps/run#") === true)).toBe(true);
     expect((window as unknown as Record<string, unknown>).__pwned).toBeUndefined();
   });
 
@@ -95,18 +96,21 @@ describe("apps page rendering", () => {
     expect(sheet.querySelector("[role=alert]")?.textContent).toContain("Couldn't load");
   });
 
-  it("offers Install on the card and in the details sheet, and starts nothing until Continue", async () => {
+  it("makes Open the card's primary action, Details secondary, and offers no Install button anywhere", async () => {
     const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
     vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
-    const ports = vi.fn(() => { throw new Error("the install ports must not be created before Continue"); });
-    mountApps(list, sheet, [await entryFor(manifest, { name: "Plain", description: "Plain app." })], { ports });
-    const install = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
-    expect(install(list).map((button) => button.disabled)).toEqual([false]);
-    list.querySelector<HTMLButtonElement>("button:not([disabled])")?.click();
+    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app." });
+    mountApps(list, sheet, [entry]);
+    const installButtons = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
+    const openLink = list.querySelector<HTMLAnchorElement>(`a[href="${runnerHref(entry.app_id)}"]`);
+    expect(openLink?.textContent).toBe("Open");
+    expect(openLink?.getAttribute("aria-label")).toBe("Open Plain");
+    expect(installButtons(list)).toEqual([]);
+    const details = [...list.querySelectorAll("button")].find((button) => button.textContent === "Details");
+    expect(details).toBeDefined();
+    details?.click();
     await settle();
-    expect(install(sheet).map((button) => button.disabled)).toEqual([false]);
-    install(sheet)[0]?.click();
-    expect(sheet.querySelector("h2")?.textContent).toBe("Install Plain to your TinyCloud");
-    expect(ports).not.toHaveBeenCalled();
+    expect(sheet.querySelector<HTMLAnchorElement>(`a[href="${runnerHref(entry.app_id)}"]`)).not.toBeNull();
+    expect(installButtons(sheet)).toEqual([]);
   });
 });

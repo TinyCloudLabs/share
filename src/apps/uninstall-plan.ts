@@ -146,6 +146,17 @@ export function expectedUninstallResources(appId: string): RequestedResource[] {
   ];
 }
 
+const resourceKey = (resource: RequestedResource): string => `${resource.service}|${resource.space}|${resource.path}|${[...resource.actions].sort().join(",")}`;
+/** Two requests match when they grant the same resources with the same actions and nothing more: null when they match, otherwise what differs. */
+export function resourceMismatch(expected: readonly RequestedResource[], actual: readonly RequestedResource[]): string | null {
+  const want = new Set(expected.map(resourceKey));
+  const got = new Set(actual.map(resourceKey));
+  const extra = [...got].filter((key) => !want.has(key));
+  const missing = [...want].filter((key) => !got.has(key));
+  if (extra.length === 0 && missing.length === 0 && actual.length === expected.length) return null;
+  return `unexpected: ${extra.join("; ") || "none"}; missing: ${missing.join("; ") || "none"}`;
+}
+
 /** Everything one uninstall needs, built once from the app: what is signed, what the sheet lists, and what the signed request must be. */
 export interface UninstallPlan {
   readonly app_id: string;

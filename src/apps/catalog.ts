@@ -5,9 +5,9 @@ export interface CatalogEntry {
   app_id: string;
   name: string;
   description: string;
-  /** A sample app: its install sheet says to use throwaway data only. */
+  /** A sample app: its first-open notice says to use throwaway data only. */
   sample?: true;
-  /** Kill switch: the entry stays listed, but cannot be installed or opened. Lives here, not in the bundle, so the digests do not change. */
+  /** Kill switch: the entry stays listed, but cannot be opened. Lives here, not in the bundle, so the digests do not change. */
   disabled?: true;
   /** Why it is unavailable, in a sentence; shown as text. Present only with `disabled`. */
   disabledReason?: string;
