@@ -1,0 +1,160 @@
+import {
+  base64UrlEncode,
+  cidForBytes,
+  constantTimeEqual,
+  hashDeleteToken,
+  newDeleteToken,
+  newShareId,
+  sha256,
+} from "./encoding";
+import { toBytes, type D1Database, type Env } from "./d1";
+import { hitRateLimit } from "./ratelimit";
+import { COMMON_HEADERS, jsonResponse, notFound, rateLimited, rawSealedResponse } from "./responses";
+import { insertLink, readLiveDeleteHash, readLiveLink, runCleanup, tombstoneLink } from "./store";
+import { parseCreateBody } from "./validate";
+
+const PREFIX = "/api/share-links";
+const ID_RE = /^[a-z2-7]{26}$/;
+const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const IP_SALT = "tc1737-share-links-ip-v1";
+
+function nowSecondsOf(nowMs: number): number {
+  return Math.floor(nowMs / 1000);
+}
+
+function errorName(err: unknown): string {
+  return err instanceof Error ? err.name : "unknown";
+}
+
+async function clientIpHash(request: Request): Promise<string> {
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  const digest = await sha256(new TextEncoder().encode(ip + IP_SALT));
+  return base64UrlEncode(digest).slice(0, 16);
+}
+
+async function handleCreate(request: Request, db: D1Database, nowMs: number): Promise<Response> {
+  const nowSeconds = nowSecondsOf(nowMs);
+  const ipHash = await clientIpHash(request);
+  const minute = await hitRateLimit(db, "c", ipHash, 10, 60, nowSeconds);
+  if (!minute.allowed) {
+    return rateLimited(minute.retryAfterSeconds);
+  }
+  const day = await hitRateLimit(db, "d", ipHash, 200, 86_400, nowSeconds);
+  if (!day.allowed) {
+    return rateLimited(day.retryAfterSeconds);
+  }
+
+  const text = await request.text();
+  const input = parseCreateBody(text, nowMs);
+  if (input === null) {
+    return jsonResponse(400, { error: "invalid" });
+  }
+
+  const cid = await cidForBytes(input.bytes);
+  const deleteToken = newDeleteToken();
+  const deleteHash = await hashDeleteToken(deleteToken);
+  const expiresAtSeconds = Math.floor(input.expiresAtMs / 1000);
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = newShareId();
+    const outcome = await insertLink(db, {
+      id,
+      ciphertext: input.bytes,
+      cid,
+      expiresAtSeconds,
+      deleteHash,
+      nowSeconds,
+    });
+    if (outcome === "ok") {
+      return jsonResponse(201, { id, cid, deleteToken });
+    }
+    if (outcome === "capacity") {
+      return jsonResponse(503, { error: "capacity" }, { "Retry-After": "3600" });
+    }
+  }
+  return jsonResponse(500, { error: "internal" });
+}
+
+async function handleRead(request: Request, db: D1Database, id: string, nowMs: number): Promise<Response> {
+  const nowSeconds = nowSecondsOf(nowMs);
+  const decision = await hitRateLimit(db, "r", await clientIpHash(request), 120, 60, nowSeconds);
+  if (!decision.allowed) {
+    return rateLimited(decision.retryAfterSeconds);
+  }
+  const normalized = id.toLowerCase();
+  if (!ID_RE.test(normalized)) {
+    return notFound();
+  }
+  const row = await readLiveLink(db, normalized, nowSeconds);
+  if (row === null) {
+    return notFound();
+  }
+  return rawSealedResponse(
+    toBytes(row.ciphertext),
+    row.cid,
+    new Date(row.expires_at * 1000).toISOString(),
+  );
+}
+
+async function handleDelete(request: Request, db: D1Database, id: string, nowMs: number): Promise<Response> {
+  const nowSeconds = nowSecondsOf(nowMs);
+  const normalized = id.toLowerCase();
+  if (!ID_RE.test(normalized)) {
+    return notFound();
+  }
+  const auth = request.headers.get("Authorization") ?? "";
+  if (!auth.startsWith("Bearer ")) {
+    return notFound();
+  }
+  const token = auth.slice("Bearer ".length);
+  if (!TOKEN_RE.test(token)) {
+    return notFound();
+  }
+  const storedHash = await readLiveDeleteHash(db, normalized, nowSeconds);
+  if (storedHash === null) {
+    return notFound();
+  }
+  const presentedHash = await hashDeleteToken(token);
+  if (!constantTimeEqual(presentedHash, storedHash)) {
+    return notFound();
+  }
+  const removed = await tombstoneLink(db, normalized, nowSeconds);
+  if (!removed) {
+    return notFound();
+  }
+  return new Response(null, { status: 204, headers: { ...COMMON_HEADERS } });
+}
+
+async function route(request: Request, env: Env, nowMs: number): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  if (pathname === PREFIX) {
+    return request.method === "POST" ? handleCreate(request, env.DB, nowMs) : notFound();
+  }
+  if (!pathname.startsWith(PREFIX + "/")) {
+    return notFound();
+  }
+  const rest = pathname.slice(PREFIX.length + 1);
+  if (rest.includes("/")) {
+    return notFound();
+  }
+  if (request.method === "GET") {
+    return handleRead(request, env.DB, rest, nowMs);
+  }
+  if (request.method === "DELETE") {
+    return handleDelete(request, env.DB, rest, nowMs);
+  }
+  return notFound();
+}
+
+export async function handleRequest(request: Request, env: Env, nowMs: number): Promise<Response> {
+  try {
+    return await route(request, env, nowMs);
+  } catch (err) {
+    console.error("share-links internal", errorName(err));
+    return jsonResponse(500, { error: "internal" });
+  }
+}
+
+export async function handleScheduled(env: Env, nowMs: number): Promise<void> {
+  await runCleanup(env.DB, nowSecondsOf(nowMs));
+}
