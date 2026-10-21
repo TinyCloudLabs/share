@@ -295,7 +295,7 @@ h1 {
   display: inline-block;
   color: var(--accent);
   font-weight: 600;
-  vertical-align: baseline;
+  vertical-align: top;
   transition: width 200ms var(--ease);
 }
 

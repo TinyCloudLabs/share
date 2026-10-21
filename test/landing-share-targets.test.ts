@@ -69,6 +69,15 @@ describe("share target phrases", () => {
     const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.share-target::after\s*\{\s*display:\s*none/);
   });
+
+  it("reserves width with zero height and top alignment, so the hero line keeps one height", () => {
+    const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
+    const reserve = css.match(/\.share-target::after\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(reserve).toMatch(/height:\s*0;/);
+    expect(reserve).toMatch(/overflow:\s*hidden;/);
+    const target = css.match(/\.share-target\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(target).toMatch(/vertical-align:\s*top;/);
+  });
 });
 
 describe("share target rotation", () => {
