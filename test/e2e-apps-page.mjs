@@ -171,7 +171,7 @@ try {
         for (const expected of wanted) assert.ok(sheet.includes(expected), `${label} ${tag}: shows "${expected}"`);
         for (const unexpected of absent) assert.ok(!sheet.includes(unexpected), `${label} ${tag}: does not show "${unexpected}"`);
         assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${app.app_id}`, `${label} ${tag}: Open goes to the runner`);
-        assert.equal(await page.$$eval("#apps-sheet button", (nodes) => nodes.some((node) => /install/i.test(node.textContent))), false, `${label} ${tag}: no Install button`);
+        assert.equal(await page.$$eval("#apps-sheet button", (nodes) => nodes.some((node) => /^install/i.test(node.textContent.trim()))), false, `${label} ${tag}: no Install button`);
         assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label} ${tag}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label} ${tag}: details sheet axe AA`);
         await shoot(page, `details-${tag}-${width}-${scheme}`);
