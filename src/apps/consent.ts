@@ -18,6 +18,7 @@
  */
 import { type AccessItem, type AccessSummary, summarizeAccess } from "./access.ts";
 import type { CatalogEntry } from "./catalog.ts";
+import { possessive } from "./possessive.ts";
 
 export const SQL_CHANGE_NOTICE = "Can change or delete its own tables.";
 
@@ -62,7 +63,7 @@ export function statementFor(source: AccessItem, kind: "read" | "change", appId:
   const listed = owner === null ? undefined : nameOf(owner);
   // Everything a sentence repeats from a manifest or the catalog is cut to the cap, with a mark.
   const item: AccessItem = { ...source, path: clip(source.path), target: clip(source.target) };
-  const them = listed === undefined ? undefined : clip(listed);
+  const theirs = listed === undefined ? undefined : possessive(clip(listed));
   // A folder that is no listed app's is described by its path, like a root-level key: the sheet never calls it an app's.
   const found = reachOf(source, appId);
   const reach: Reach = found === "other-app" && listed === undefined ? "root" : found;
@@ -82,7 +83,7 @@ export function statementFor(source: AccessItem, kind: "read" | "change", appId:
     case "SQL database": {
       if (reach === "own") return change ? SQL_CHANGE_NOTICE : null;
       if (reach === "whole") return change ? "This app can change or delete tables in every SQL database in your applications space, including other apps'." : "This app can read every SQL database in your applications space, including other apps'.";
-      if (reach === "other-app") return change ? `This app can change or delete tables in ${them}'s database (${databases(item.path)}).` : `This app can read ${them}'s database (${databases(item.path)}).`;
+      if (reach === "other-app") return change ? `This app can change or delete tables in ${theirs} database (${databases(item.path)}).` : `This app can read ${theirs} database (${databases(item.path)}).`;
       if (reach === "root") return change ? `This app can change or delete tables in the database ${item.path}, which is not inside its own folder.` : `This app can read the database ${item.path}, which is not inside its own folder.`;
       if (item.path === "") return change ? `This app can change or delete tables in every SQL database in your ${space} space.` : `This app can read every SQL database in your ${space} space.`;
       return change ? `This app can change or delete tables in the database ${item.path} in your ${space} space.` : `This app can read the database ${item.path} in your ${space} space.`;
@@ -90,7 +91,7 @@ export function statementFor(source: AccessItem, kind: "read" | "change", appId:
     case "Key-value": {
       if (reach === "own") return null;
       if (reach === "whole") return change ? "This app can change or delete any file in your applications space, including other apps' files." : "This app can read everything in your applications space, including other apps' data.";
-      if (reach === "other-app") return change ? `This app can change or delete ${them}'s files under ${item.path}.` : `This app can read ${them}'s files under ${item.path}.`;
+      if (reach === "other-app") return change ? `This app can change or delete ${theirs} files under ${item.path}.` : `This app can read ${theirs} files under ${item.path}.`;
       if (reach === "root") return change ? `This app can change or delete files outside its own folder: ${item.path} in your applications space.` : `This app can read files outside its own folder: ${item.path} in your applications space.`;
       if (item.path === "") return change ? `This app can change or delete every file in your ${space} space.` : `This app can read every file in your ${space} space.`;
       return change ? `This app can change or delete files under ${item.path} in your ${space} space.` : `This app can read files under ${item.path} in your ${space} space.`;

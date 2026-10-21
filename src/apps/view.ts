@@ -9,6 +9,7 @@ import { consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { runnerHref } from "./install-plan.ts";
 import { loadManifest } from "./manifest.ts";
+import { possessive } from "./possessive.ts";
 import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, runRepair } from "./repair.ts";
 import { createRepairPorts } from "./repair-session.ts";
 import { type UninstallFailure, UninstallError, uninstallPlan } from "./uninstall-plan.ts";
@@ -152,9 +153,9 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
     case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
     case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
     case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
-    case "tampered": return `${entry.name}'s files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
+    case "tampered": return `${possessive(entry.name)} files don't match the catalog, so nothing was changed. Nothing was written to your TinyCloud.`;
     case "disabled": return "This app is temporarily unavailable. Nothing was changed.";
-    case "unavailable": return `Couldn't load ${entry.name}'s files. Nothing was changed. Try again.`;
+    case "unavailable": return `Couldn't load ${possessive(entry.name)} files. Nothing was changed. Try again.`;
     case "write-failed": return `Not repaired yet: ${error.written.length} files were replaced. Your data was not touched; try again to finish.`;
     default: return "We couldn't repair this app. Nothing was changed. Try again.";
   }
@@ -162,7 +163,7 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
 
 function repairProgressText(entry: CatalogEntry, progress: RepairProgress): string {
   switch (progress.phase) {
-    case "checking": return `Checking ${entry.name}'s files against the catalog…`;
+    case "checking": return `Checking ${possessive(entry.name)} files against the catalog…`;
     case "signing-in": return "Opening OpenKey…";
     case "approval": return `Approve in the OpenKey window to repair ${entry.name}`;
     case "repairing": return `Repairing ${entry.name}… ${progress.done} of ${progress.total} files`;
@@ -187,9 +188,9 @@ function uninstallFailureText(entry: CatalogEntry, reason: UninstallFailure | "r
     case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
     case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
     case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
-    case "truncated": return `${entry.name}'s file list is too long to check at once. Nothing was deleted. Try again.`;
+    case "truncated": return `${possessive(entry.name)} file list is too long to check at once. Nothing was deleted. Try again.`;
     case "refused": return "Stopped: this app id or file path isn't one uninstall will touch. Nothing outside the app's folders was removed.";
-    case "write-failed": return `Some of ${entry.name}'s files couldn't be removed. Try again to finish.`;
+    case "write-failed": return `Some of ${possessive(entry.name)} files couldn't be removed. Try again to finish.`;
     case "not-started": return "Couldn't start the uninstall. Nothing was changed. Try again.";
     case "failed": return `Couldn't finish removing ${entry.name}. Try again to finish.`;
   }
@@ -408,7 +409,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
           panel.say(`Nothing to remove: ${entry.name} had no app files on this account. Your app data and settings are kept.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
           return;
         }
-        panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+        panel.say(`Removed ${possessive(entry.name)} app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -446,8 +447,10 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);
-    // A disabled entry still links to the runner: the runner page refuses it there, before any sign-in opens.
-    const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+    // A card that cannot open shows Open as a disabled button; the reason is shown on the card.
+    const open = availability.available
+      ? el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` })
+      : el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", disabled: "", "aria-label": `Open ${entry.name}` });
     const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),
