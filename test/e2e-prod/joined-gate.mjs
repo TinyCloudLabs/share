@@ -837,10 +837,9 @@ async function saveFromRecipient({ browser, stack, url, label, expectedName }) {
   const toastLog = await reader.evaluate(() => window.__toastLog);
   const spoken = toastLog.map((entry) => entry.text);
   assert(spoken.includes("Saving a copy to your TinyCloud…"), "the pending state was never announced");
-  // One hint per signature, counted in order, with the same words each time.
-  const hints = spoken.filter((text) => /^Approval \d+ of up to \d+\. Approve in the OpenKey window to save a copy$/.test(text));
+  // The OpenKey approval hint: the same words each time, with no count.
+  const hints = spoken.filter((text) => text === "Approve in the OpenKey window to save a copy");
   assert(hints.length >= 1, "the OpenKey approval hint never appeared");
-  hints.forEach((text, index) => assert(text.startsWith(`Approval ${index + 1} of up to`), `approval hints were not counted in order: ${JSON.stringify(hints)}`));
   assert.equal(spoken.at(-1), `Saved to your TinyCloud files as “${expectedName}”.`, "the page did not end on Saved, naming the copy");
   assert(toastLog.every((entry) => entry.live === "polite" || entry.role === "alert"), "a toast message was not in a live region");
   assert.equal(await reader.$(".artifact-chrome-toasts a"), null, "the Saved message links to a library that does not list copies");

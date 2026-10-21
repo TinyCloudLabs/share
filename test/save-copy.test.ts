@@ -176,34 +176,15 @@ describe("Save a copy from the viewer", () => {
     expect((await second as Error).message).toBe("revoke-another-approval");
   });
 
-  it("counts the signatures, one at a time: 'approval n of up to 4', and not the connect", async () => {
-    const seen: Array<[boolean, { n: number; of: number } | undefined]> = [];
+  it("reports each OpenKey approval as open and closed, the sign-in and each signature alike", async () => {
+    const seen: boolean[] = [];
     state.signIn.mockImplementation(async (options: { guardApproval: <T>(wait: () => Promise<T>, info?: { kind: "connect" | "sign" }) => Promise<T> }) => {
       await options.guardApproval(async () => "connected", { kind: "connect" });
       for (let index = 0; index < 4; index += 1) await options.guardApproval(async () => "signed", { kind: "sign" });
-      // A fifth, which the SDK might one day ask for, grows the total instead of showing "5 of 4".
-      await options.guardApproval(async () => "signed", { kind: "sign" });
       return { dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } };
     });
-    await createSaveToTinyCloud(CONFIG)(COPY, { approval: (open, step) => seen.push([open, step]) });
-    expect(seen).toEqual([
-      [true, undefined], [false, undefined],
-      [true, { n: 1, of: 4 }], [false, undefined],
-      [true, { n: 2, of: 4 }], [false, undefined],
-      [true, { n: 3, of: 4 }], [false, undefined],
-      [true, { n: 4, of: 4 }], [false, undefined],
-      [true, { n: 5, of: 5 }], [false, undefined],
-    ]);
-  });
-
-  it("a guard that is called without saying what the wait is (an older caller) still shows the plain hint", async () => {
-    const seen: Array<[boolean, unknown]> = [];
-    state.signIn.mockImplementation(async (options: { guardApproval: <T>(wait: () => Promise<T>) => Promise<T> }) => {
-      await options.guardApproval(async () => "signed");
-      return { dispose: state.dispose, tinycloud: { kvForSpace: () => fakeKv() }, spaces: { "files-for-you": "space" } };
-    });
-    await createSaveToTinyCloud(CONFIG)(COPY, { approval: (open, step) => seen.push([open, step]) });
-    expect(seen).toEqual([[true, undefined], [false, undefined]]);
+    await createSaveToTinyCloud(CONFIG)(COPY, { approval: (open) => seen.push(open) });
+    expect(seen).toEqual([true, false, true, false, true, false, true, false, true, false]);
   });
 
   it.each([

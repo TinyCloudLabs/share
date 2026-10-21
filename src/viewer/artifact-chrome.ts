@@ -18,23 +18,17 @@ export type ArtifactChromeIcon = "link" | "copy" | "download" | "share" | "save"
  * tried again. Its messages have a live region of their own, so a Copy toast
  * that fades never replaces them.
  */
-/** Which approval is open: the n-th of up to `of`. */
-export interface ArtifactChromeStep {
-  readonly n: number;
-  readonly of: number;
-}
-
 export interface ArtifactChromeJob {
   /** The button's label and the lasting line while the job runs. */
   readonly pendingLabel: string;
   readonly pendingMessage: string;
-  /** Shown (and announced) while the job reports an open approval; `step` says which one, when the job knows. */
-  readonly approvalMessage: (step?: ArtifactChromeStep) => string;
+  /** Shown (and announced) while the job reports an open approval. */
+  readonly approvalMessage: () => string;
   readonly doneLabel: string;
   /** Plain words for a rejection; `neutral` is a choice or a wait, not a fault. */
   readonly failure: (error: unknown) => { readonly message: string; readonly neutral: boolean };
   /** Resolves with the lasting line to show when the job is done (it may name what was made). Set as text, never as HTML. */
-  readonly start: (progress: { approval(open: boolean, step?: ArtifactChromeStep): void }) => Promise<{ readonly doneMessage: string }>;
+  readonly start: (progress: { approval(open: boolean): void }) => Promise<{ readonly doneMessage: string }>;
 }
 
 export interface ArtifactChromeAction {
@@ -225,7 +219,7 @@ export async function mountArtifactChrome(doc: Document, options: ArtifactChrome
         jobSay(job.pendingMessage);
         void (async () => {
           try {
-            const done = await job.start({ approval: (open, step) => { if (alive && running) jobSay(open ? job.approvalMessage(step) : job.pendingMessage); } });
+            const done = await job.start({ approval: (open) => { if (alive && running) jobSay(open ? job.approvalMessage() : job.pendingMessage); } });
             finished = true;
             text.textContent = job.doneLabel;
             if (alive) jobSay(done.doneMessage);
