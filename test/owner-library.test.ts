@@ -58,8 +58,8 @@ describe("owner library entries", () => {
 
   it("never offers a share's short-link delete record, with or without the application prefix", () => {
     expect(ownerLibraryEntries([
-      "shares/abc/short-link.json",
-      "xyz.tinycloud.share/shares/abc/short-link.json",
+      "shares/abc/.short-link.json",
+      "xyz.tinycloud.share/shares/abc/.short-link.json",
     ])).toEqual([]);
   });
 
@@ -70,6 +70,10 @@ describe("owner library entries", () => {
       "shares/abc/notes.txt",
     ]).map((entry) => entry.path);
     expect(paths).toEqual(["shares/abc/short-link.json.bak", "shares/abc/sub/short-link.json", "shares/abc/notes.txt"]);
+  });
+
+  it("still offers a user's own short-link.json, since the share record is dotted", () => {
+    expect(ownerLibraryEntries(["shares/abc/short-link.json"]).map((entry) => entry.path)).toEqual(["shares/abc/short-link.json"]);
   });
 
   it("still offers a sender object whose name merely starts with the reserved word", () => {

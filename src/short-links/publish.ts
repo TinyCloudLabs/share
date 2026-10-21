@@ -30,6 +30,7 @@ export interface ShortLinkPublication {
 
 export interface ShortLinkKv {
   get(key: string): Promise<{ readonly ok: boolean; readonly data?: { readonly data?: unknown } }>;
+  put(key: string, value: Uint8Array, options: { readonly contentType: string }): Promise<unknown>;
 }
 
 interface ServiceOptions {
@@ -38,11 +39,12 @@ interface ServiceOptions {
 }
 
 export function shortLinkRecordPath(shareId: string): string {
-  return `${SHARE_APPLICATION_PREFIX}shares/${shareId}/short-link.json`;
+  // The leading dot keeps the record out of the user-file namespace: stored file names never start with a dot.
+  return `${SHARE_APPLICATION_PREFIX}shares/${shareId}/.short-link.json`;
 }
 
-/** Shown when a revoke succeeded but its short-link record was kept for the next revoke attempt. */
-export const SHORT_LINK_KEPT_NOTICE = "The short link will be removed on the next revoke attempt.";
+/** Shown when a revoke could not delete the short link. The link stops resolving when the share expires. */
+export const SHORT_LINK_KEPT_NOTICE = "The short link stops resolving when the share expires.";
 
 /** Canonical UTC milliseconds, at least 120 s and at most 400 days away. */
 export function canonicalShortLinkExpiry(expiresAt: string | undefined, now: number = Date.now()): string {
@@ -72,6 +74,8 @@ export async function publishShortLinkOrInline(input: {
     if (created.cid !== input.material.shareCid) throw new ShortLinkError("cid_mismatch");
     const url = splitInlineToShort(input.inlineUrl, created.id);
     if (url === undefined) throw new ShortLinkError("invalid_response");
+    // The `c` the short link resolves with must be the CID the server stored.
+    if (new URLSearchParams(new URL(url).hash.slice(1)).get("c") !== created.cid) throw new ShortLinkError("cid_mismatch");
     await input.storeRecord({ id: created.id, deleteToken: created.deleteToken });
     return { url };
   } catch {
@@ -97,9 +101,10 @@ function readRecord(value: unknown): ShortLinkRecord | undefined {
 }
 
 /**
- * Deletes a share's short link after the node revoke has succeeded. The record
- * is kept, so a failed DELETE can be retried by the next revoke. A 404 counts
- * as not deleted: the token or id did not match, so the link may still be live.
+ * Deletes a share's short link after the node revoke has succeeded. A 204 and a
+ * 404 both mean the link is gone (a 404 is a lost 204 or an expired link), so the
+ * record is cleared. A 5xx, rate limit, or network error keeps the record and
+ * returns "kept". A KV read error also returns "kept", since the token cannot be read.
  */
 export async function revokeStoredShortLink(input: {
   readonly shareId: string;
@@ -116,5 +121,15 @@ export async function revokeStoredShortLink(input: {
   } catch {
     return "kept";
   }
+  await clearRecord(input.kv, path);
   return "deleted";
+}
+
+/**
+ * The owner session grants KV put under shares/ but no delete, so the record is
+ * overwritten with an empty object. A failed write leaves the old token, which
+ * can only re-delete a link that is already gone (404).
+ */
+async function clearRecord(kv: ShortLinkKv, path: string): Promise<void> {
+  await kv.put(path, new TextEncoder().encode("{}"), { contentType: "application/json" }).catch(() => undefined);
 }

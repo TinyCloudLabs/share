@@ -157,9 +157,9 @@ describe("sender home canonical lifecycle adapters", () => {
 function shortLinkStore(shareId: string): ShortLinkKv {
   const path = shortLinkRecordPath(shareId);
   const data = { id: "lqdw5iopqq2tkkvjj6gbbi5vbv", deleteToken: "tok" };
-  return { get: async (key: string) => (key === path ? { ok: true, data: { data } } : { ok: false }) };
+  return { get: async (key: string) => (key === path ? { ok: true, data: { data } } : { ok: false }), put: async () => ({ ok: true }) };
 }
-const noShortLink: ShortLinkKv = { get: async () => ({ ok: false }) };
+const noShortLink: ShortLinkKv = { get: async () => ({ ok: false }), put: async () => ({ ok: true }) };
 /** The DELETE calls to the short-link API, in order. */
 function shortLinkDeletes(spy: { readonly mock: { readonly calls: ReadonlyArray<Parameters<typeof fetch>> } }) {
   return spy.mock.calls.filter(([url, init]) => String(url).includes("/api/share-links/") && init?.method === "DELETE");
@@ -240,17 +240,24 @@ describe("TC-1737 short-link revoke order and notice", () => {
 
   it.each([
     ["a 500", (): Response => new Response(null, { status: 500 })],
-    ["a 404", (): Response => new Response(null, { status: 404 })],
     ["a network error", (): Response => { throw new TypeError("Failed to fetch"); }],
-  ])("revokes the share and shows a note when the short-link DELETE fails with %s", async (_name, respond) => {
+  ])("keeps the record and shows a note when the short-link DELETE fails with %s", async (_name, respond) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => respond());
     const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(messages).toContain("Share revoked.");
-    expect(root.querySelector(".sender-row-note")?.textContent).toBe("The short link will be removed on the next revoke attempt.");
+    expect(root.querySelector(".sender-row-note")?.textContent).toBe("The short link stops resolving when the share expires.");
     const deletes = shortLinkDeletes(fetchSpy);
     expect(deletes).toHaveLength(1);
     expect(new Headers(deletes[0]![1]!.headers).get("authorization")).toBe("Bearer tok");
+  });
+
+  it("shows no note when the short link is already gone (DELETE answers 404)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 404 }));
+    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(messages).toContain("Share revoked.");
+    expect(root.querySelector(".sender-row-note")).toBeNull();
   });
 
   it("shows no note when the short-link DELETE succeeds", async () => {

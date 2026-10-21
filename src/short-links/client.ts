@@ -35,7 +35,7 @@ async function send(url: string, init: RequestInit, options: ClientOptions): Pro
     controller.abort();
   }, options.timeoutMs ?? SHORT_LINK_TIMEOUT_MS);
   try {
-    return await fetchFn(url, { ...init, credentials: "omit", signal: controller.signal });
+    return await fetchFn(url, { ...init, credentials: "omit", redirect: "error", signal: controller.signal });
   } catch {
     throw new ShortLinkError(timedOut ? "timeout" : "network");
   } finally {
@@ -66,16 +66,17 @@ export async function createShortLink(input: { readonly ciphertext: string; read
 }
 
 /**
- * Deletes a short link with its delete token. Only 204 means the link is gone.
- * A 404 means the id or token did not match, so the link may still be live.
+ * Deletes a short link with its delete token. 204 means it was deleted; 404 means
+ * it is already gone (a lost 204 or an expired link). Both are done. Any other
+ * failure throws, and the link may still be live.
  */
-export async function deleteShortLink(id: string, deleteToken: string, options: ClientOptions = {}): Promise<void> {
+export async function deleteShortLink(id: string, deleteToken: string, options: ClientOptions = {}): Promise<"deleted" | "gone"> {
   if (!SHORT_ID.test(id)) throw new ShortLinkError("rejected");
   const response = await send(`${ENDPOINT}/${id}`, {
     method: "DELETE",
     headers: { authorization: `Bearer ${deleteToken}` },
   }, options);
-  if (response.status === 204) return;
-  if (response.status === 404) throw new ShortLinkError("rejected");
+  if (response.status === 204) return "deleted";
+  if (response.status === 404) return "gone";
   throw new ShortLinkError(response.status === 429 ? "rate_limited" : "server");
 }

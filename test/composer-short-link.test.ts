@@ -50,11 +50,14 @@ const created = (cid: string = vector.cid!) => () => new Response(JSON.stringify
 
 function mount(fetchFn: typeof fetch) {
   const records: { path: string; body: unknown }[] = [];
+  const puts: string[] = [];
   const put = vi.fn(async (path: string, value: Uint8Array) => {
-    if (path.endsWith("/short-link.json")) records.push({ path, body: JSON.parse(new TextDecoder().decode(value)) });
+    puts.push(path);
+    if (path.endsWith("/.short-link.json")) records.push({ path, body: JSON.parse(new TextDecoder().decode(value)) });
     return { ok: true };
   });
   const copyText = vi.fn(async (_value: string) => undefined);
+  const authorize = vi.fn(async (input: { readonly shareUrl: string }) => ({ request: { returnLink: input.shareUrl } }));
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: "did:key:z6MkOwnerSession",
@@ -65,14 +68,15 @@ function mount(fetchFn: typeof fetch) {
     signSessionBytes: async () => new Uint8Array(64),
     createUnifiedOwnerRoot: vi.fn(),
     registerPolicy: vi.fn(),
+    authorizeShareDeliveryV3: authorize,
   } as unknown as ShareTinyCloud;
   const root = document.createElement("div");
   document.body.append(root);
   mountShareComposer(root, { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud, fetchFn, copyText });
-  return { root, records, copyText };
+  return { root, records, puts, copyText, authorize };
 }
 
-async function submit(root: HTMLElement): Promise<void> {
+async function submit(root: HTMLElement, filename = "notes.txt"): Promise<void> {
   const choice = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
   choice.checked = true;
   choice.dispatchEvent(new Event("change", { bubbles: true }));
@@ -80,7 +84,7 @@ async function submit(root: HTMLElement): Promise<void> {
   value.value = "reader@example.com";
   value.dispatchEvent(new Event("input", { bubbles: true }));
   const file = root.querySelector<HTMLInputElement>("input[type=file]")!;
-  Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
+  Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], filename, { type: "text/plain" })] });
   file.dispatchEvent(new Event("change", { bubbles: true }));
   root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   await vi.waitFor(() => expect(root.querySelector(".result-title")).not.toBeNull());
@@ -122,7 +126,7 @@ describe("composer short link for an addressed share", () => {
     expect(String(post.init.body)).not.toContain(vector.k!);
 
     const shareId = state.published[0]!.shareId as string;
-    expect(records).toEqual([{ path: `xyz.tinycloud.share/shares/${shareId}/short-link.json`, body: { id: vector.id, deleteToken: "delete-token-1" } }]);
+    expect(records).toEqual([{ path: `xyz.tinycloud.share/shares/${shareId}/.short-link.json`, body: { id: vector.id, deleteToken: "delete-token-1" } }]);
   });
 
   it("falls back to the inline link with the visible notice when the service is unavailable", async () => {
@@ -166,5 +170,40 @@ describe("composer short link for an addressed share", () => {
     expect(copyText).toHaveBeenCalledWith(vector.inline);
     expect(root.querySelector(".result-notice")?.textContent).toBe(NOTICE);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("composer short link and Notify", () => {
+  it("sends the inline link, never the short one, to the node and the witness on Notify", async () => {
+    const { fetchFn, calls } = shortLinkService(created());
+    const { root, authorize } = mount(fetchFn);
+
+    await submit(root);
+    const confirm = await vi.waitFor(() => {
+      const button = root.querySelector<HTMLButtonElement>(".confirm-notification");
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    confirm.click();
+
+    const witnessUrl = "https://witness.example/v1/credential-invitations";
+    await vi.waitFor(() => expect(calls.some((call) => call.url === witnessUrl)).toBe(true));
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ shareUrl: vector.inline }));
+    const witness = calls.find((call) => call.url === witnessUrl)!;
+    expect(JSON.parse(String(witness.init.body)).request.returnLink).toBe(vector.inline);
+    expect(String(witness.init.body)).not.toContain(vector.short!);
+  });
+
+  it("keeps a user file named short-link.json at its own key, apart from the share record", async () => {
+    const { fetchFn } = shortLinkService(created());
+    const { root, records, puts } = mount(fetchFn);
+
+    await submit(root, "short-link.json");
+
+    await vi.waitFor(() => expect(records).toHaveLength(1));
+    const content = puts.find((path) => path.endsWith("/short-link.json"));
+    expect(content).toBeDefined();
+    expect(records[0]!.path).not.toBe(content);
+    expect(records[0]!.path.endsWith("/.short-link.json")).toBe(true);
   });
 });

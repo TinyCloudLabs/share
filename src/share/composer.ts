@@ -55,8 +55,12 @@ export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
  * The per-share short-link delete record (see `shortLinkRecordPath`). The
  * listing may return keys with or without the application prefix, so both
  * forms are matched. Only this exact record name is excluded.
+ *
+ * The record is written to the owner's `applications` space. The CLI writes
+ * its record to `default` until the shared share index lands (TC-1739); each
+ * client reads back only the records it wrote.
  */
-const SHORT_LINK_RECORD_KEY = /^(?:xyz\.tinycloud\.share\/)?shares\/[^/]+\/short-link\.json$/;
+const SHORT_LINK_RECORD_KEY = /^(?:xyz\.tinycloud\.share\/)?shares\/[^/]+\/\.short-link\.json$/;
 
 /** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
 function unsafeLibraryKey(value: string): boolean {
@@ -439,7 +443,6 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     ...(publication.notice === undefined ? {} : { notice: publication.notice }),
     ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
     ...(deliveryRecipients.length === 0 ? {} : { notify: async () => {
-      const share = { url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
       if (deliveryMaterial === undefined) throw new Error("We couldn't send that email. The link above still works.");
       const material = deliveryMaterial;
@@ -469,7 +472,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
             shareCid: material.shareCid,
             resourcePath,
             recipientEmail,
-            shareUrl: share.url,
+            // The node and OpenCredentials accept only the inline link here, never the short one.
+            shareUrl: published.url,
             documentName: filename,
             expiresAt: delivery.expiresAt,
             idempotencyKey: deliveryKey(recipientEmail, delivery.attempt),
@@ -477,7 +481,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
             // generic credential-invitation endpoint.
             deliveryAudience: config.credentialsOrigin,
           });
-          await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+          await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: published.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
           delivery.sent = true;
         } catch {
           failed += 1;

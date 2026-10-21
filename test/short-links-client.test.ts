@@ -138,13 +138,13 @@ describe("deleteShortLink", () => {
   it("treats 204 as deleted", async () => {
     const { fetchFn } = fetchReturning(new Response(null, { status: 204 }));
 
-    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).resolves.toBeUndefined();
+    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).resolves.toBe("deleted");
   });
 
-  it("throws on 404 so the caller keeps its record, since a wrong token leaves the link live", async () => {
+  it("treats 404 as gone: the link was already deleted or has expired", async () => {
     const { fetchFn } = fetchReturning(new Response(null, { status: 404 }));
 
-    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).rejects.toMatchObject({ reason: "rejected" });
+    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).resolves.toBe("gone");
   });
 
   it("reports a server error so the caller can keep the record for retry", async () => {

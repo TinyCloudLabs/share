@@ -71,6 +71,16 @@ describe("publishShortLinkOrInline", () => {
     expect(stored).toEqual([{ id: vector.id, deleteToken: "tok" }]);
   });
 
+  it("falls back inline and stores nothing when the short link's cid differs from the service's cid", async () => {
+    const { run, stored } = publish({
+      material: { sealedEnvelope: vector.ciphertextB64Url, shareCid: "bafy-other" },
+      fetchFn: recordingFetch((call) => (call.init.method === "DELETE" ? ok() : created({ cid: "bafy-other" }))).fetchFn,
+    });
+
+    expect(await run()).toEqual({ url: vector.inline, notice: SHORT_LINK_UNAVAILABLE_NOTICE });
+    expect(stored).toEqual([]);
+  });
+
   it("posts only the sealed bytes and canonical UTC expiry, never the key", async () => {
     const { run, calls } = publish();
 
@@ -203,46 +213,88 @@ describe("canonicalShortLinkExpiry", () => {
 });
 
 describe("revokeStoredShortLink", () => {
-  const kvWith = (value: unknown) => ({
-    get: async () => ({ ok: true, data: { data: value } }),
-  });
+  const recordKv = (value: unknown) => {
+    const writes: { key: string; value: string }[] = [];
+    return {
+      writes,
+      get: async () => ({ ok: true, data: { data: value } }),
+      put: async (key: string, bytes: Uint8Array) => {
+        writes.push({ key, value: new TextDecoder().decode(bytes) });
+        return { ok: true };
+      },
+    };
+  };
+  const storedRecord = JSON.stringify({ id: vector.id, deleteToken: "tok" });
 
-  it("reads the record at the share's record path and deletes the short link", async () => {
+  it("reads the record at the dotted record path and deletes the short link", async () => {
     const reads: string[] = [];
     const kv = {
+      ...recordKv(storedRecord),
       get: async (key: string) => {
         reads.push(key);
-        return { ok: true, data: { data: JSON.stringify({ id: vector.id, deleteToken: "tok" }) } };
+        return { ok: true, data: { data: storedRecord } };
       },
     };
     const { fetchFn, calls } = recordingFetch(() => ok());
 
     expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("deleted");
-    expect(reads).toEqual([shortLinkRecordPath("share-1")]);
+    expect(reads).toEqual(["xyz.tinycloud.share/shares/share-1/.short-link.json"]);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(`/api/share-links/${vector.id}`);
     expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe("Bearer tok");
   });
 
   it("reads a record stored as bytes", async () => {
-    const bytes = new TextEncoder().encode(JSON.stringify({ id: vector.id, deleteToken: "tok" }));
+    const bytes = new TextEncoder().encode(storedRecord);
     const { fetchFn, calls } = recordingFetch(() => ok());
 
-    expect(await revokeStoredShortLink({ shareId: "share-1", kv: kvWith(bytes), fetchFn })).toBe("deleted");
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv: recordKv(bytes), fetchFn })).toBe("deleted");
     expect(calls).toHaveLength(1);
   });
 
-  it("keeps the record when the DELETE fails so the next revoke can retry it", async () => {
+  it("treats a 404 as already gone: reports deleted and empties the record", async () => {
+    const kv = recordKv(storedRecord);
+    const { fetchFn, calls } = recordingFetch(() => new Response(null, { status: 404 }));
+
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("deleted");
+    expect(calls).toHaveLength(1);
+    expect(kv.writes).toEqual([{ key: "xyz.tinycloud.share/shares/share-1/.short-link.json", value: "{}" }]);
+  });
+
+  it("keeps the record when the DELETE fails with a server error so the next revoke can retry", async () => {
+    const kv = recordKv(storedRecord);
     const { fetchFn, calls } = recordingFetch(() => new Response(null, { status: 500 }));
 
-    expect(await revokeStoredShortLink({ shareId: "share-1", kv: kvWith(JSON.stringify({ id: vector.id, deleteToken: "tok" })), fetchFn })).toBe(
-      "kept",
-    );
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("kept");
     expect(calls).toHaveLength(1);
+    expect(kv.writes).toEqual([]);
+  });
+
+  it("keeps the record when the DELETE cannot reach the service", async () => {
+    const kv = recordKv(storedRecord);
+    const fetchFn = (async () => {
+      throw new TypeError("network down");
+    }) as typeof fetch;
+
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("kept");
+    expect(kv.writes).toEqual([]);
+  });
+
+  it("keeps the record and sends nothing when the record cannot be read", async () => {
+    const kv = {
+      get: async () => {
+        throw new Error("kv unavailable");
+      },
+      put: async () => ({ ok: true }),
+    };
+    const { fetchFn, calls } = recordingFetch(() => ok());
+
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("kept");
+    expect(calls).toHaveLength(0);
   });
 
   it("returns none for a share with no record, so older inline-only shares are untouched", async () => {
-    const kv = { get: async () => ({ ok: false }) };
+    const kv = { get: async () => ({ ok: false }), put: async () => ({ ok: true }) };
     const { fetchFn, calls } = recordingFetch(() => ok());
 
     expect(await revokeStoredShortLink({ shareId: "share-1", kv, fetchFn })).toBe("none");
@@ -252,7 +304,14 @@ describe("revokeStoredShortLink", () => {
   it("returns none for a malformed record without sending a DELETE", async () => {
     const { fetchFn, calls } = recordingFetch(() => ok());
 
-    expect(await revokeStoredShortLink({ shareId: "share-1", kv: kvWith("{not json"), fetchFn })).toBe("none");
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv: recordKv("{not json"), fetchFn })).toBe("none");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("returns none for a cleared {} record, which has no id or deleteToken", async () => {
+    const { fetchFn, calls } = recordingFetch(() => ok());
+
+    expect(await revokeStoredShortLink({ shareId: "share-1", kv: recordKv("{}"), fetchFn })).toBe("none");
     expect(calls).toHaveLength(0);
   });
 });
