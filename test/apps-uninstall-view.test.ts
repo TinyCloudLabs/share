@@ -5,6 +5,7 @@ import { guardedUninstallPorts, mountApps } from "../src/apps/view.ts";
 import { UninstallError, uninstallPlan } from "../src/apps/uninstall-plan.ts";
 import type { UninstallPorts, UninstallSession } from "../src/apps/uninstall.ts";
 import { runUninstall } from "../src/apps/uninstall.ts";
+import { applyAppsHash } from "../src/apps/hash-route.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH)!;
@@ -70,6 +71,8 @@ describe("the details Uninstall control", () => {
     openDetails(node);
     expect(uninstallButton()).not.toBeNull();
     expect(sheet.textContent ?? "").toContain("Also deletes notes you edited.");
+    const describedBy = uninstallButton()?.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(describedBy)?.textContent).toBe("Also deletes notes you edited.");
     expect(node.opened).toBe(0);
     expect(list.querySelector(".apps-install-panel")).toBeNull();
   });
@@ -80,6 +83,27 @@ describe("the details Uninstall control", () => {
     sheet.close();
     expect(node.opened).toBe(0);
     expect(list.querySelector(".apps-install-panel")).toBeNull();
+  });
+});
+
+describe("the apps page hash opens the details sheet", () => {
+  it("#uninstall=<id> opens details with Uninstall, and runs nothing", () => {
+    const node = fakeUninstall();
+    const mounted = mountApps(list, sheet, catalog.apps, { uninstallPorts: () => node.ports });
+    expect(applyAppsHash(mounted, `#uninstall=${encodeURIComponent(HEALTH)}`)).toBe(true);
+    expect(sheet.hasAttribute("open")).toBe(true);
+    expect(uninstallButton()).not.toBeNull();
+    expect(node.opened).toBe(0);
+  });
+
+  it("an unknown id, a malformed id or another hash does nothing", () => {
+    const node = fakeUninstall();
+    const mounted = mountApps(list, sheet, catalog.apps, { uninstallPorts: () => node.ports });
+    expect(applyAppsHash(mounted, "#uninstall=com.example.nothing")).toBe(false);
+    expect(applyAppsHash(mounted, "#uninstall=%E0%A4%A")).toBe(false);
+    expect(applyAppsHash(mounted, "#other=1")).toBe(false);
+    expect(sheet.hasAttribute("open")).toBe(false);
+    expect(node.opened).toBe(0);
   });
 });
 

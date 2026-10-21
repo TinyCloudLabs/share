@@ -133,10 +133,11 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const availability = availabilityOf(entry);
   const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
-  const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
+  const uninstallNote = el("p", "apps-muted", ["Also deletes notes you edited."], { id: "apps-uninstall-note" });
+  const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}`, "aria-describedby": "apps-uninstall-note" });
   uninstallNow.addEventListener("click", uninstall);
   const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
-  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, el("p", "apps-muted", ["Also deletes notes you edited."])]);
+  const footer = el("footer", "apps-sheet__footer", [open, ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, uninstallNote]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -357,7 +358,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     const availability = availabilityOf(entry);
     const panel = freshPanel(entry.app_id, `Repair ${entry.name}`);
     if (availability.available) {
-      panel.say("Replaces the app's code files with the pinned version and removes other files in its app folder. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+      panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
     } else {
       panel.say(availability.reason, "danger", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
     }

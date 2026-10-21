@@ -50,8 +50,7 @@ describe("repair from the inline panel", () => {
     expect(mounted.openRepair(HEALTH)).toBe(true);
     expect(sheet.hasAttribute("open")).toBe(false);
     const text = list.querySelector(".apps-install-panel")?.textContent ?? "";
-    expect(text).toContain("Replaces the app's code files with the pinned version");
-    expect(text).toContain("Your data is untouched");
+    expect(text).toContain("This replaces your edited code. Your data is untouched.");
     expect(panelButtons("Repair")).toHaveLength(1);
     expect(node.sessions).toBe(0);
     expect(mounted.openRepair("com.example.nothing")).toBe(false);
