@@ -66,8 +66,8 @@ export async function createShortLink(input: { readonly ciphertext: string; read
 }
 
 /**
- * Deletes a short link with its delete token. 204 and 404 both mean the link
- * is gone (404 covers unknown, expired, and already deleted), so both return true.
+ * Deletes a short link with its delete token. Only 204 means the link is gone.
+ * A 404 means the id or token did not match, so the link may still be live.
  */
 export async function deleteShortLink(id: string, deleteToken: string, options: ClientOptions = {}): Promise<void> {
   if (!SHORT_ID.test(id)) throw new ShortLinkError("rejected");
@@ -75,6 +75,7 @@ export async function deleteShortLink(id: string, deleteToken: string, options: 
     method: "DELETE",
     headers: { authorization: `Bearer ${deleteToken}` },
   }, options);
-  if (response.status === 204 || response.status === 404) return;
+  if (response.status === 204) return;
+  if (response.status === 404) throw new ShortLinkError("rejected");
   throw new ShortLinkError(response.status === 429 ? "rate_limited" : "server");
 }

@@ -157,6 +157,7 @@ describe("publishShortLinkOrInline", () => {
 
     expect(result).toEqual({ url: vector.inline, notice: SHORT_LINK_UNAVAILABLE_NOTICE });
     expect(calls.map((call) => call.init.method)).toEqual(["POST", "DELETE"]);
+    expect(new Headers(calls[1]!.init.headers).get("authorization")).toBe("Bearer tok");
   });
 
   it("does not call the service when the expiry is under 120 seconds away", async () => {

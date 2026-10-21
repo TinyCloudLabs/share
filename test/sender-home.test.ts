@@ -4,6 +4,8 @@ import { mountSenderHome, nodeReproducibleRevocationTime } from "../src/share/se
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
+import { shortLinkRecordPath } from "../src/short-links/publish.js";
+import type { ShortLinkKv } from "../src/short-links/publish.js";
 
 const { getPolicyRootStatusV3, revokePolicyRootV3 } = vi.hoisted(() => ({
   getPolicyRootStatusV3: vi.fn(async (): Promise<{ readonly state: "active" | "revoked" }> => ({ state: "active" })),
@@ -151,8 +153,20 @@ describe("sender home canonical lifecycle adapters", () => {
   });
 });
 
+/** Owner KV holding the short-link record for `shareId`, the only key the revoke reads. */
+function shortLinkStore(shareId: string): ShortLinkKv {
+  const path = shortLinkRecordPath(shareId);
+  const data = { id: "lqdw5iopqq2tkkvjj6gbbi5vbv", deleteToken: "tok" };
+  return { get: async (key: string) => (key === path ? { ok: true, data: { data } } : { ok: false }) };
+}
+const noShortLink: ShortLinkKv = { get: async () => ({ ok: false }) };
+/** The DELETE calls to the short-link API, in order. */
+function shortLinkDeletes(spy: { readonly mock: { readonly calls: ReadonlyArray<Parameters<typeof fetch>> } }) {
+  return spy.mock.calls.filter(([url, init]) => String(url).includes("/api/share-links/") && init?.method === "DELETE");
+}
+
 /** Mounts the library with one revocable email share. Native `confirm` is dismissed, as automation and embedded webviews do. */
-async function mountRevoke() {
+async function mountRevoke(shortLinks: ShortLinkKv = noShortLink) {
   getPolicyRootStatusV3.mockClear(); revokePolicyRootV3.mockClear();
   const root = document.createElement("div"); document.body.append(root);
   const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
@@ -163,6 +177,8 @@ async function mountRevoke() {
     credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
     activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
     signSessionBytes: async () => new Uint8Array(64),
+    spaceId: "space-1",
+    kvForSpace: () => shortLinks,
   } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
   await vi.waitFor(() => expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).not.toBeNull());
   const live = root.querySelector<HTMLElement>(".sender-live")!; const messages: string[] = [];
@@ -170,8 +186,8 @@ async function mountRevoke() {
   return { root, history, live, messages, nativeConfirm };
 }
 
-async function clickRevoke() {
-  const mounted = await mountRevoke();
+async function clickRevoke(shortLinks?: ShortLinkKv) {
+  const mounted = await mountRevoke(shortLinks);
   mounted.root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')!.click();
   confirmInPage(mounted.root);
   return mounted;
@@ -208,6 +224,41 @@ describe("TC-657 revoke retry after a lost response", () => {
     expect(root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')?.disabled).toBe(false);
     expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
     expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
+  });
+});
+
+describe("TC-1737 short-link revoke order and notice", () => {
+  it("sends no short-link DELETE when the node revoke is refused", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 }));
+    const { root, history } = await clickRevoke(shortLinkStore("retry-me"));
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
+    expect(shortLinkDeletes(fetchSpy)).toEqual([]);
+    expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
+    expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
+  });
+
+  it.each([
+    ["a 500", (): Response => new Response(null, { status: 500 })],
+    ["a 404", (): Response => new Response(null, { status: 404 })],
+    ["a network error", (): Response => { throw new TypeError("Failed to fetch"); }],
+  ])("revokes the share and shows a note when the short-link DELETE fails with %s", async (_name, respond) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => respond());
+    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(messages).toContain("Share revoked.");
+    expect(root.querySelector(".sender-row-note")?.textContent).toBe("The short link will be removed on the next revoke attempt.");
+    const deletes = shortLinkDeletes(fetchSpy);
+    expect(deletes).toHaveLength(1);
+    expect(new Headers(deletes[0]![1]!.headers).get("authorization")).toBe("Bearer tok");
+  });
+
+  it("shows no note when the short-link DELETE succeeds", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    expect(messages).toContain("Share revoked.");
+    expect(root.querySelector(".sender-row-note")).toBeNull();
   });
 });
 

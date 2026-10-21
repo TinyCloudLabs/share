@@ -41,6 +41,9 @@ export function shortLinkRecordPath(shareId: string): string {
   return `${SHARE_APPLICATION_PREFIX}shares/${shareId}/short-link.json`;
 }
 
+/** Shown when a revoke succeeded but its short-link record was kept for the next revoke attempt. */
+export const SHORT_LINK_KEPT_NOTICE = "The short link will be removed on the next revoke attempt.";
+
 /** Canonical UTC milliseconds, at least 120 s and at most 400 days away. */
 export function canonicalShortLinkExpiry(expiresAt: string | undefined, now: number = Date.now()): string {
   if (expiresAt === undefined) throw new ShortLinkError("rejected");
@@ -95,8 +98,8 @@ function readRecord(value: unknown): ShortLinkRecord | undefined {
 
 /**
  * Deletes a share's short link after the node revoke has succeeded. The record
- * is kept, so a failed DELETE can be retried by the next revoke; a repeated
- * DELETE on an already-deleted link returns 404, which counts as done.
+ * is kept, so a failed DELETE can be retried by the next revoke. A 404 counts
+ * as not deleted: the token or id did not match, so the link may still be live.
  */
 export async function revokeStoredShortLink(input: {
   readonly shareId: string;

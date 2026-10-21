@@ -69,6 +69,8 @@ describe("createShortLink", () => {
     expect(String(sent.init.body)).not.toContain(vector.k);
     expect(JSON.stringify(sent.init.headers)).not.toContain(vector.k);
     expect(sent.url).not.toContain(vector.k);
+    expect(String(sent.init.body)).not.toContain(vector.cid);
+    expect(JSON.stringify(sent.init.headers)).not.toContain(vector.cid);
   });
 
   it("returns the id, cid, and delete token from a 201", async () => {
@@ -139,10 +141,10 @@ describe("deleteShortLink", () => {
     await expect(deleteShortLink(vector.id, "tok", { fetchFn })).resolves.toBeUndefined();
   });
 
-  it("treats 404 as already gone, so a repeat delete counts as done", async () => {
+  it("throws on 404 so the caller keeps its record, since a wrong token leaves the link live", async () => {
     const { fetchFn } = fetchReturning(new Response(null, { status: 404 }));
 
-    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).resolves.toBeUndefined();
+    await expect(deleteShortLink(vector.id, "tok", { fetchFn })).rejects.toMatchObject({ reason: "rejected" });
   });
 
   it("reports a server error so the caller can keep the record for retry", async () => {
