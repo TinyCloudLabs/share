@@ -174,6 +174,7 @@ type WorldOptions = {
   truncatedWithoutCursor?: boolean;
   failDelOn?: string;
   failRegistry?: boolean;
+  failListOn?: string;
 };
 
 /** An in-memory account: one key set holds the folders, the data keys, and the registry entries. `log` records each mutation in order. */
@@ -186,6 +187,7 @@ function world(keys: readonly string[], initial: WorldOptions = {}) {
     async openSession() {
       return {
         async list(prefix, cursor) {
+          if (options.failListOn === prefix) throw new Error("list down");
           log.push(`list:${prefix}`);
           if (options.truncatedWithoutCursor) return { keys: [], truncated: true };
           if (options.alwaysTruncated) return { keys: [], truncated: true, nextCursor: `${cursor ?? ""}+` };
@@ -268,6 +270,13 @@ describe("runUninstall", () => {
     const w = world(KEYS, { truncatedWithoutCursor: true });
     await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
     expect(w.log.some((entry) => entry.startsWith("del:"))).toBe(false);
+  });
+
+  it("a failed listing of one folder refuses before any delete and leaves the registry entry", async () => {
+    const w = world(KEYS, { failListOn: "todo/knowledge/" });
+    await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({ reason: "failed" });
+    expect(w.log.some((entry) => entry.startsWith("del:") || entry.startsWith("registry:"))).toBe(false);
+    expect([...w.store].sort()).toEqual([...KEYS].sort());
   });
 
   it("never deletes a listed key that escapes the folders, and still removes every owned key in order", async () => {

@@ -118,6 +118,7 @@ describe("the uninstall run", () => {
     openConfirm(node);
     sheetButton("Remove app")!.click();
     await vi.waitFor(() => expect(line()).toBe("The app was removed; its entry in your account list couldn't be updated; try again."));
+    expect(list.querySelector('[role="alert"]')?.textContent).toBe("The app was removed; its entry in your account list couldn't be updated; try again.");
     const actions = [...list.querySelectorAll(".apps-install-panel button")].map((button) => button.textContent);
     expect(actions).toContain("Try again");
     expect(actions).toContain("Dismiss");
