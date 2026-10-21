@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.sample.healthlog",
-  "name": "Health Log (sample)",
-  "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart. Sample tiny app, written from scratch for TinyCloud.",
+  "name": "Health Log",
+  "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart.",
   "appVersion": "0.1.0",
   "space": "applications",
   "defaults": false,

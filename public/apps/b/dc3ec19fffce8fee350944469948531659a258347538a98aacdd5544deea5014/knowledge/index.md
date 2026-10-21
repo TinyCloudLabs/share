@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # App
 
-* [Health Log (sample)](app.md) - A small health log: meals with macros, body weight, a today card and a last-7-days chart.
+* [Health Log](app.md) - A small health log: meals with macros, body weight, a today card and a last-7-days chart.
 
 # Tables
 

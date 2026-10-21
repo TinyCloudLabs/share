@@ -110,7 +110,7 @@ describe("classifySql: one statement, one class", () => {
 
   it("classifies the real schema files of the catalog's samples statement by statement as schema, never read or write", () => {
     // The apps run each CREATE as its own execute call: every one of them is a "schema" statement.
-    const schema = readFileSync("public/apps/b/e807668820cd592646e21fc88f15aa30ab5fcec196bbdec0dafd52b12c343fa4/schema.sql", "utf8");
+    const schema = readFileSync("public/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/schema.sql", "utf8");
     const withoutComments = schema.replace(/--[^\n]*/g, "");
     const statements = withoutComments.split(/;\s*(?:\n|$)/).map((part) => part.trim()).filter((part) => part !== "" && !/\bTRIGGER\b/i.test(part));
     expect(statements.length).toBeGreaterThan(3);

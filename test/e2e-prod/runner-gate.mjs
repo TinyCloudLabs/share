@@ -403,7 +403,7 @@ try {
     controls.sign = hold();
     await start(page);
     await arrivedOrExplain(page, controls.sign, "the approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log \(sample\) from your TinyCloud/);
+    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log from your TinyCloud/);
     await captureState(page, "approval");
     controls.sign.release(); controls.sign = undefined;
     const child = await runningFrame(page);
@@ -793,6 +793,11 @@ try {
     assert.deepEqual(meals.data.rows, [[1]], "a forced call changed the Health Log");
     const tables = await owner2.sql.db(`${HEALTH}/healthlog`).query("SELECT name FROM sqlite_master WHERE name = 'sneaky'");
     assert.deepEqual(tables.data.rows, [], "a forced DDL created a table");
+    // Remove the probe file the node accepted above, so the app folder is what the catalog installed; stage 7 reopens the app and its pin check refuses extra files.
+    const probeDeleted = await owner2.kv.delete(`${HEALTH}/app/node-boundary.txt`);
+    assert(probeDeleted.ok, `deleting the probe file failed: ${JSON.stringify(probeDeleted.error)}`);
+    const probeLeft = await owner2.kv.list({ prefix: `${HEALTH}/app/node-boundary` });
+    assert.deepEqual(probeLeft.data.keys, [], "the probe file is still in the app's folder");
     report.stages.nodeBoundary = { refusedByNode: true };
   }
 
@@ -808,7 +813,7 @@ try {
     assert.equal(await screenTitle(page), "Your session expired");
     assert.match(await page.$eval(".run-screen", (node) => node.textContent), /Your session expired: open the app again\./);
     await captureState(page, "expired");
-    // Opening it again works (a new pair of approvals).
+    // Opening it again works (one approval).
     await clickByText(page, `Open ${health.name} again`);
     await runningFrame(page);
     report.stages.expiry = { screen: "Your session expired", reopened: true };
@@ -826,10 +831,17 @@ try {
     const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
     assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
     await context.close();
+    // After the uninstall, opening the app starts OpenKey on load; the approval reinstalls its files from the catalog and runs it.
+    controls.sign = hold();
     const { page: runner, context: runnerContext } = await openRunner(browser, stack, "after-uninstall", HEALTH);
-    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === `Open ${health.name}`), true, `after uninstall the runner did not offer to open the app again (status: ${await statusText(runner)})`);
-    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame before Continue");
-    report.stages.uninstalled = { screen: `Open ${health.name}`, frame: false };
+    await arrivedOrExplain(runner, controls.sign, "the approval after the uninstall");
+    assert.match(await statusText(runner), /^Approve in the OpenKey window so Share can open Health Log from your TinyCloud/, "after the uninstall the runner did not ask for the approval");
+    assert.equal(frames(runner).child, undefined, "the app's frame started before the approval");
+    controls.sign.release(); controls.sign = undefined;
+    await runningFrame(runner);
+    const reinstalled = await (await ownerClient(HEALTH)).kv.list({ prefix: `${HEALTH}/app/` });
+    assert(reinstalled.data.keys.includes(`${HEALTH}/app/app.jsx`), "the open after the uninstall did not reinstall the app's code");
+    report.stages.uninstalled = { reinstalledAfterApproval: true };
     await runnerContext.close();
   }
 

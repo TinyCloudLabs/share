@@ -5,18 +5,18 @@
   "files": [
     {
       "path": "app.jsx",
-      "sha256": "56075597ad5f7dcfcc027d2a105c275a7713f7fc0588cec5290d56ebfee2e83f",
-      "size": 25459
+      "sha256": "9e45ebdf5f5697a473c20558eaf3cfdb295ed954908119a970772fa0b6900b0c",
+      "size": 25450
     },
     {
       "path": "knowledge/app.md",
-      "sha256": "3050818fd96e048e8c26bf1ec04c74b7c2681128d51e173cae2a2718257bb445",
-      "size": 4064
+      "sha256": "74a65d0332ba06fe5f7fb47c67243ebc6ca80435f3388cb5201712287240f4c7",
+      "size": 3994
     },
     {
       "path": "knowledge/index.md",
-      "sha256": "df4d75cd52928ffe059568093c60a84b105e542b005bf36e939516fed5eec7fc",
-      "size": 954
+      "sha256": "06e54fa6a4f14ae13bdbcf2ad5ab22b6d561da90e04c27fc616787762e45811e",
+      "size": 945
     },
     {
       "path": "knowledge/kv/app.md",
@@ -60,14 +60,14 @@
     },
     {
       "path": "manifest.json",
-      "sha256": "0b6162faa784fa2698a50481b2edf6385f10cb7bba03183bfe3c2047a4d622df",
-      "size": 1458
+      "sha256": "7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802",
+      "size": 1396
     },
     {
       "path": "schema.sql",
-      "sha256": "3ca912568852c8a4fea184bd54c7d3e606ae52b2dc1230dd37bdf84bc2876439",
-      "size": 4114
+      "sha256": "bb46ab35ac7887f672beba2f50b9f982c31d41607b3fa77ac9c2e72003edf199",
+      "size": 4105
     }
   ],
-  "digest": "f001d6618c535182c5a64cad1a18ace17d62ced635651ad8b2fba4d01161707c"
+  "digest": "828057515ba93e2736fc93d1b2e2729de16f826e2bb40dcdbdab3c297e5e5d40"
 }

@@ -104,8 +104,8 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
 `BAD_REQUEST`, `TOO_LARGE`, `BUSY`, `TIMEOUT`, `INTERNAL`, `NOT_CONNECTED`.
 
 - **Paths** are relative to `<app_id>/`. A leading `/` is an absolute path in the space, allowed only
-  where a manifest entry with `skipPrefix: true` covers it (the Recipes sample reads the Health Log's
-  database that way; the page lists it as "can read Health Log (sample)'s database (whole database)").
+  where a manifest entry with `skipPrefix: true` covers it (the Recipes app reads the Health Log's
+  database that way; the page lists it as "can read Health Log's database (whole database)").
   Keys and database names refuse `..`, `.` and empty segments, control characters and backslashes.
 - **The check order**: a known operation and key set; id and plain-data shape; size; session still live;
   in-flight cap; per-operation validation; statement class; then `(service, path, action)` against the

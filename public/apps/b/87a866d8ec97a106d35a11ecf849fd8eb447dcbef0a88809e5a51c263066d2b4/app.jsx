@@ -1,7 +1,7 @@
-// Recipes (sample): xyz.tinycloud.sample.recipes
+// Recipes: xyz.tinycloud.sample.recipes
 //
 // A tiny app for TinyCloud: shelves, a recipe list and detail view, add/edit,
-// and "start from a meal" which reads the Health Log sample's `meal` table
+// and "start from a meal" which reads the Health Log's `meal` table
 // through a READ-ONLY cross-app grant (see manifest.json).
 //
 // Runs sealed in the share sandbox: the only things it imports are React and
@@ -880,7 +880,7 @@ function MealPicker({ onPick, onCancel }) {
       {state.status === "loading" ? <p className="text-sm text-stone-500 dark:text-stone-400">Loading your meals…</p> : null}
       {state.status === "error" ? (
         <Banner tone="error">
-          Your health log is not available to this app ({state.message}). Install the Health Log sample, or check that this app may read it.
+          Your health log is not available to this app ({state.message}). Install the Health Log, or check that this app may read it.
         </Banner>
       ) : null}
       {state.status === "ready" && state.meals.length === 0 ? <p className="text-sm text-stone-600 dark:text-stone-400">No meals logged yet.</p> : null}

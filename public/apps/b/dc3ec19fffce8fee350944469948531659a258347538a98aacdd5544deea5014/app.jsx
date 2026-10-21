@@ -1,4 +1,4 @@
-// Health Log (sample): xyz.tinycloud.sample.healthlog
+// Health Log: xyz.tinycloud.sample.healthlog
 //
 // A tiny app: this one file plus manifest.json, schema.sql and knowledge/.
 // It runs sealed in the sandbox (no network, no eval, no storage of its own).
