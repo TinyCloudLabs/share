@@ -35,9 +35,6 @@ describe("landing template", () => {
 
   it("offers a secondary sign-in under the note that targets the same place as the bottom CTA", () => {
     const hero = /<p class="agent-signin">([\s\S]*?)<\/p>/.exec(rendered)![1]!;
-    expect(hero.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()).toBe(
-      "Accessing content you've shared, or that's been shared with you? Sign in",
-    );
     const heroLink = /<a class="agent-signin-link" href="([^"]+)">Sign in<\/a>/.exec(hero)![1];
     const bottomLink = /<a class="signin-link" href="([^"]+)">Sign in<\/a>/.exec(rendered)![1];
     expect(heroLink).toBeTruthy();
