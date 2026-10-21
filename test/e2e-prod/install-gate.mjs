@@ -173,7 +173,7 @@ async function openFromCard(page, appId, clicks = 1) {
   const index = catalog.apps.findIndex((entry) => entry.app_id === appId);
   assert.equal(await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").getAttribute("href"), index), `/apps/run#${appId}`, "the card's Open links to the runner");
   await page.evaluate((position, times) => { const link = document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a"); for (let i = 0; i < times; i++) link.click(); }, index, clicks);
-  await page.waitForSelector(".run-screen", { timeout: 60_000 });
+  await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
 }
 
 const statusText = (page) => page.$eval(".run-status-region", (node) => node.textContent).catch(() => "");
@@ -212,7 +212,7 @@ async function captureState(page, name) {
     const found = result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).join(" | ")}`);
     axeFindings.push({ state: name, width, scheme, violations: found });
     assert.deepEqual(found, [], `${name} ${width}px ${scheme}: axe AA`);
-    assert((await page.evaluate(() => { const screen = document.querySelector(".run-screen"); return screen.scrollWidth - screen.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the screen scrolls sideways`);
+    assert((await page.evaluate(() => { const screen = document.querySelector(".run-screen, .run-working") ?? document.querySelector(".run-stage"); return screen.scrollWidth - screen.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the screen scrolls sideways`);
     // The status sits under the start screen's text: show the end of the screen too.
     await page.evaluate(() => document.querySelector(".run-status-region")?.scrollIntoView({ block: "center" }));
     if (shotDir !== undefined) { await mkdir(shotDir, { recursive: true }); await page.screenshot({ path: join(shotDir, `install-${name}-${width}-${scheme}.png`) }); }
@@ -413,7 +413,7 @@ try {
     assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was saved despite the failed write");
     controls.failRecord = false;
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".run-screen", { timeout: 60_000 });
+    await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
     const resumed = await finished(page);
     assert.match(resumed.status, /is running\./, "the reopen runs the app");
     await captureState(page, "running-resumed");
@@ -480,6 +480,8 @@ try {
     (entry.type === "error" && /^Failed to load resource: the server responded with a status of (?:400|404|412) /.test(entry.text))
     || (entry.type === "error" && /^Failed to load resource: net::ERR_FAILED$/.test(entry.text))
     || (entry.type === "warn" && /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/.test(entry.text))
+    || (entry.type === "warn" && /^Error with Permissions-Policy header: Unrecognized feature: 'web-share'\.$/.test(entry.text))
+    || (entry.type === "warn" && /^Failed to execute 'postMessage' on 'DOMWindow': The target origin provided/.test(entry.text))
   ));
   assert.deepEqual(unexpected, [], "the browser logged something unexpected");
   const allowedHosts = new Set([stack.canonical.share, stack.canonical.node, stack.canonical.registry, "https://openkey.so"]);

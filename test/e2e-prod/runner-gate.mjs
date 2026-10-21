@@ -255,7 +255,7 @@ async function openFirst(browser, stack, appId) {
   await page.waitForSelector(".apps-card", { timeout: 60_000 });
   const index = catalog.apps.findIndex((entry) => entry.app_id === appId);
   await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").click(), index);
-  await page.waitForSelector(".run-screen", { timeout: 60_000 });
+  await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
   assert.equal(new URL(page.url()).hash, `#${appId}`);
   await start(page);
   await page.waitForFunction(() => /is running/.test(document.querySelector(".run-status-region")?.textContent ?? ""), { timeout: 300_000 });
@@ -287,14 +287,14 @@ const screenTitle = (page) => page.$eval(".run-screen__title", (node) => node.te
 
 async function openRunner(browser, stack, label, appId, init) {
   const opened = await newPage(browser, stack, label, RUN_URL(stack, appId), init);
-  await opened.page.waitForSelector(".run-screen", { timeout: 60_000 });
+  await opened.page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
   return opened;
 }
 async function clickByText(page, label) {
   await page.evaluate((text) => [...document.querySelectorAll("button, a")].find((node) => node.textContent === text).click(), label);
 }
 async function start(page) {
-  await page.waitForSelector(".run-screen", { timeout: 60_000 });
+  await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
 }
 const frames = (page) => {
   const bridge = page.frames().find((candidate) => candidate.url().includes("/jsx-sandbox.html"));
