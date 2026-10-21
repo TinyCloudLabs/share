@@ -18,7 +18,10 @@
  *    and no OpenKey or Node request at all;
  *  - a write that fails mid-save leaves install.json unwritten, and reopening resumes,
  *    keeping what was saved;
- *  - a double click on Continue is one sign-in;
+ *  - a double click on Open is one sign-in;
+ *  - uninstall removes the app's code, manifest, install record and agent
+ *    notes, keeps the app's data (a prefs key survives), and a re-install
+ *    restores the app with that data intact;
  *  - nothing is kept in browser storage, and no CSP / Trusted Types violation
  *    fires;
  *  - the runner's start and status states at 390 and 1440 px, light and dark, with axe.
@@ -455,6 +458,37 @@ try {
     const stored = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
     assert.deepEqual(stored.keys, expectedKeys(recipes));
     report.stages.doubleClick = { openKeyWindows: widgets.length, outcome: outcome.status.slice(0, 80) };
+    await context.close();
+  }
+
+  // ---- 6. Uninstall removes the app's files and agent notes, keeps app data, and a re-install works.
+  {
+    const { page, context } = await openApps(browser, stack, candidate.port, "uninstall-health");
+    // App data the uninstall must keep: a prefs key written through the app's own folder.
+    const prefsKey = `${HEALTH}/prefs/units.json`;
+    await reader(page, chunkUrl, { op: "edit", appId: HEALTH, key: prefsKey, text: "{\"units\":\"metric\"}" });
+    const before = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
+    assert(before.keys.includes(`${HEALTH}/app/install.json`), "Health Log is not installed before the uninstall");
+    await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), app(HEALTH).name);
+    await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), app(HEALTH).name);
+    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
+    await page.waitForFunction(() => /^Removed /.test(document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
+    const removed = await page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent ?? "");
+    assert(removed.includes("Your app data and settings are kept.") && removed.includes(`Open ${app(HEALTH).name} again to restore it.`), `the uninstall message was "${removed}"`);
+    const after = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
+    // Subset check: the prefs key this stage wrote survives, and nothing under the app's own folders does. Other keys earlier stages left are not compared.
+    assert(after.keys.includes(prefsKey), "uninstall dropped the kept app data");
+    assert(!after.keys.some((key) => key.startsWith(`${HEALTH}/app/`) || key.startsWith(`${HEALTH}/knowledge/`)), "uninstall left app files or agent notes behind");
+    assert(!after.registered.some((entry) => entry.appId === HEALTH), "the app is still in the account's apps list");
+    // Re-install: the kept prefs survive, the app files come back.
+    await openFromCard(page, HEALTH);
+    await pressContinue(page);
+    const reinstalled = await finished(page);
+    assert.match(reinstalled.status, /is running\./, "re-opening after the uninstall runs the app");
+    const again = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
+    assert(again.keys.includes(prefsKey), "re-install lost the kept app data");
+    assert(again.keys.includes(`${HEALTH}/app/install.json`), "re-install did not restore the app");
+    report.stages.uninstall = { removed: removed.slice(0, 80), keptKeys: after.keys, reinstalled: reinstalled.status.slice(0, 40) };
     await context.close();
   }
 

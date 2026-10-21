@@ -126,6 +126,23 @@ Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catal
 `test/apps-open-install.test.ts` covers the open steps (verification before any sign-in, create-only writes, the order of `install.json`, cancel during the save, a saved listing that could not be read in full). `test/apps-runner-view.test.ts` and `test/apps-view.test.ts` cover the start screen, the result screens and the card actions. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window at 390, 1100 and 1440 px and checks that nothing modal sits above the window, that a click reaches it, and that Cancel and Escape end the open. `test/e2e-prod/install-gate.mjs` and `test/e2e-prod/runner-gate.mjs` run the same flow against real OpenKey; they are run by QA, not in CI.
 
 
+## Uninstall
+
+"Uninstall" is on an app's details sheet. It removes the app's code, manifest, install record and agent knowledge notes, and keeps the app's data.
+
+- **Confirm sheet.** It names the app and says what goes (the files under `<app_id>/app/` and `<app_id>/knowledge/`, including notes the person edited there) and what stays (SQL databases and prefs under `<app_id>/`, and files outside those folders). It lists every change and read the signed request covers, including the SDK's added read of the permissions in the applications and account spaces, from the same plan the request is checked against. It asks the person to close the app's open tabs first. "Keep app" closes the sheet; nothing is signed or changed.
+- **One sign-in** with the uninstaller identity (`tinycloud-share-uninstall`, `src/apps/uninstall-plan.ts`). Its ReCap is checked against the confirm sheet before OpenKey opens: the request grants `kv` list and delete on `<app_id>/app/` and `<app_id>/knowledge/`, and delete on the single key `applications/<app_id>` in the account space. Registry sync is not awaited.
+- **Order.** `<app_id>/knowledge/index.md`, then `<app_id>/app/install.json`, then the rest of `app/` and `knowledge/` in sorted order, then the registry record last. A missing key counts as success, so a retry after an interruption finishes the job. An interrupted run leaves a partial install, which Uninstall can finish again.
+- **Listing limit.** A listing that is still truncated after 200 pages of 500 keys stops the run before anything is deleted.
+- **Keys outside the folders are ignored.** A listed key outside `<app_id>/app/` and `<app_id>/knowledge/` is skipped, not deleted, so a listing cannot widen the delete set. The delete plan applies the same filter, so no `del` is issued for such a key.
+- **Registry failure is not fatal.** The files are already gone, so the sheet says "The app was removed; its entry in your account list couldn't be updated; try again." A retry removes only the registry entry.
+- **Stopped before sign-in.** If the signed request does not match the confirm sheet, or would delegate to another identity, the run stops before OpenKey opens: "Couldn't start the uninstall. Nothing was changed. Try again."
+- **Nothing listed.** If the app has no files left, the run only removes the registry entry and the sheet says there was nothing to remove.
+- **Account app list.** The SDK's `applications.remove` treats a failed removal of the app's index row as success. After an uninstall, `applications.list()` no longer returns the app, but `applications.list({ preferIndex: true })` (and `tc account applications`) can still show it. The uninstall cannot report this.
+- **Re-install** after an uninstall works, and the kept SQL and prefs are still there.
+
+`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and the sheet's delete and read rows, the stop-before-sign-in copy, the nothing-to-remove copy, and the registry-failure retry. `test/e2e-prod/install-gate.mjs` (stage 6) and `runner-gate.mjs` (stage 8) run uninstall against the hermetic stack; see those files' headers.
+
 ## Sample apps
 
 An entry marked `"sample": true` is a sample: its runner and its details sheet say "Sample app: use throwaway data only.", and its card shows a Sample badge. Any app that writes SQL (the default grant included) also

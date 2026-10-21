@@ -18,7 +18,7 @@
  *    approval, before anything more is signed; a narrowed copy runs, with
  *    exactly what it kept;
  *  - the saved code is PINNED: an edited app.jsx or an extra file is refused before any
- *    runtime session or frame, Repair (the install sheet in repair mode) puts the
+ *    runtime session or frame, Repair (the repair sheet) puts the
  *    catalog's code back with one approval and the app opens, and an installed version
  *    that has left the catalog gets the honest message and no Repair;
  *  - a hostile app (a catalog entry the gate adds for the run) can do nothing the
@@ -370,7 +370,7 @@ try {
   const healthManifest = await manifestOf(health);
   const recipesManifest = await manifestOf(recipes);
 
-  /** From a runner refusal screen: Repair -> the install sheet in repair mode -> Continue -> the sheet's last line. */
+  /** From a runner refusal screen: Repair -> the repair sheet -> Continue -> the sheet's last line. */
   async function repairFromRunner(page, label) {
     await page.click(`a[href='/apps/#repair=${HEALTH}']`);
     await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
@@ -617,7 +617,7 @@ try {
       assert.deepEqual(listener.requests, [], `${label}: the tampered code ran`);
       if (label === "run-tampered") await captureState(page, "code-mismatch");
       report.stages[label] = { refused: true, sessionsSigned: 1, approvals: 1 };
-      // Repair: the apps page opens the install sheet in repair mode; one approval; the code files come back; the stray goes.
+      // Repair: the apps page opens the repair sheet; one approval; the code files come back; the stray goes.
       const repairFrom = trace.length;
       await page.click(`a[href='/apps/#repair=${HEALTH}']`);
       await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
@@ -827,6 +827,24 @@ try {
     await runningFrame(page);
     report.stages.expiry = { screen: "Your session expired", reopened: true };
     await context.close();
+  }
+
+  // ---- 8. Uninstall the Health Log from the apps page: the runner then says it needs installing and starts nothing.
+  phase = "8. Uninstall the Health Log from the apps page: the runner t"; console.error(`[t5b] ${phase}`);
+  {
+    const { page, context } = await newPage(browser, stack, "uninstall-health", `${stack.canonical.share}/apps/`);
+    await page.waitForSelector(".apps-card", { timeout: 60_000 });
+    await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), health.name);
+    await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), health.name);
+    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
+    const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
+    assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
+    await context.close();
+    const { page: runner, context: runnerContext } = await openRunner(browser, stack, "after-uninstall", HEALTH);
+    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === `Open ${health.name}`), true, `after uninstall the runner did not offer to open the app again (status: ${await statusText(runner)})`);
+    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame before Continue");
+    report.stages.uninstalled = { screen: `Open ${health.name}`, frame: false };
+    await runnerContext.close();
   }
 
   // ---- Diagnostics: no page error, no unexpected console output, nothing left the allowed origins.

@@ -139,6 +139,17 @@ try {
       assert.ok(page.report.requests.every((url) => new URL(url).origin === origin), `${label}: same origin only after Details`);
       assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: no SDK or wasm chunk loaded`);
 
+      // Uninstall: the confirm sheet from Details. Nothing runs here: copy, axe and a screenshot, then Keep app.
+      await page.click(`#apps-sheet button[aria-label='Uninstall ${catalog.apps[0].name}']`);
+      await page.waitForFunction(() => (document.querySelector("#apps-sheet")?.textContent ?? "").includes("app files and agent notes?"));
+      const confirmText = await page.$eval("#apps-sheet", (node) => node.innerText);
+      for (const expected of ["Your app data, settings and files outside those folders stay.", "See which permissions it has been given in this space", "Remove app", "Keep app"]) {
+        assert.ok(confirmText.includes(expected), `${label}: uninstall confirm shows "${expected}"`);
+      }
+      assert.deepEqual(await axeViolations(page), [], `${label}: uninstall confirm axe AA`);
+      await shoot(page, `apps-uninstall-${width}-${scheme}`);
+      await page.evaluate(() => [...document.querySelectorAll("#apps-sheet button")].find((button) => button.textContent === "Keep app")?.click());
+
       await page.keyboard.press("Escape");
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
@@ -160,7 +171,7 @@ try {
         for (const expected of wanted) assert.ok(sheet.includes(expected), `${label} ${tag}: shows "${expected}"`);
         for (const unexpected of absent) assert.ok(!sheet.includes(unexpected), `${label} ${tag}: does not show "${unexpected}"`);
         assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${app.app_id}`, `${label} ${tag}: Open goes to the runner`);
-        assert.equal(await page.$$eval("#apps-sheet button", (nodes) => nodes.some((node) => /install/i.test(node.textContent))), false, `${label} ${tag}: no Install button`);
+        assert.equal(await page.$$eval("#apps-sheet button", (nodes) => nodes.some((node) => /^install/i.test(node.textContent.trim()))), false, `${label} ${tag}: no Install button`);
         assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label} ${tag}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label} ${tag}: details sheet axe AA`);
         await shoot(page, `details-${tag}-${width}-${scheme}`);

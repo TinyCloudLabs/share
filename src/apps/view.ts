@@ -12,6 +12,9 @@ import { runnerHref } from "./install-plan.ts";
 import { loadManifest } from "./manifest.ts";
 import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
 import { createRepairPorts } from "./repair-session.ts";
+import { type UninstallFailure, UninstallError, uninstallPlan } from "./uninstall-plan.ts";
+import { type UninstallPorts, type UninstallProgress, type UninstallResult, runUninstall } from "./uninstall.ts";
+import { createUninstallPorts } from "./uninstall-session.ts";
 
 type Child = Node | string;
 
@@ -132,14 +135,16 @@ function sheetHeader(kicker: string, title: string, entry: CatalogEntry, close: 
 // ---------------------------------------------------------------------------
 // Details
 
-function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
+function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], close: () => void, uninstall: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
   const header = sheetHeader(`by ${entry.publisher.name}`, entry.name, entry, close);
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const availability = availabilityOf(entry);
   const disclosure = el("section", "apps-section", [el("h3", null, ["Before you open it"]), el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line])))]);
   const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), disclosure, access, provenance(entry)]);
   const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
-  const footer = el("footer", "apps-sheet__footer", [open, el("p", "apps-muted", [availability.available ? "Opening checks the app's files before anything is saved." : "Opening is switched off for this app."])]);
+  const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
+  uninstallNow.addEventListener("click", uninstall);
+  const footer = el("footer", "apps-sheet__footer", [open, el("p", "apps-muted", [availability.available ? "Opening checks the app's files before anything is saved." : "Opening is switched off for this app."]), uninstallNow]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -201,9 +206,76 @@ function repairContent(entry: CatalogEntry, onContinue: () => void, close: () =>
   return { header, body, footer };
 }
 
+/** The uninstall confirm: what goes, what stays, and that open app tabs stay open. Nothing runs until Remove app. */
+function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
+  const header = sheetHeader("Uninstall", `Remove ${entry.name}`, entry, close);
+  const { rows } = uninstallPlan(entry);
+  const body = el("div", "apps-sheet__body", [
+    el("p", "apps-sheet__lede", [`Remove ${entry.name}'s app files and agent notes? Your app data, settings and files outside those folders stay. Notes you've edited in the app's knowledge folder will be removed. Close any open app tabs first.`]),
+    accessList([...rows.change, ...rows.read]),
+  ], { tabindex: "0" });
+  const remove = el("button", "tc-button tc-button--primary apps-button", ["Remove app"], { type: "button" });
+  remove.addEventListener("click", onConfirm);
+  const keep = el("button", "tc-button apps-button", ["Keep app"], { type: "button" });
+  keep.addEventListener("click", close);
+  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [remove, keep]);
+  return { header, body, footer };
+}
+
+function uninstallProgressText(entry: CatalogEntry, progress: UninstallProgress): string {
+  switch (progress.phase) {
+    case "signing-in": return "Opening OpenKey…";
+    case "approval": return `Approve in the OpenKey window to remove ${entry.name}`;
+    case "checking": return `Checking ${entry.name}'s files…`;
+    case "removing": return `Removing ${entry.name}… ${progress.done} of ${progress.total} files`;
+    case "registry": return "Updating your account list…";
+  }
+}
+
+function uninstallFailureText(entry: CatalogEntry, reason: UninstallFailure | "registry"): string {
+  switch (reason) {
+    case "registry": return "The app was removed; its entry in your account list couldn't be updated; try again.";
+    case "cancelled": return "Sign-in cancelled. Nothing was changed.";
+    case "timeout": return "OpenKey didn't answer in time. Nothing was changed. Try again.";
+    case "busy": return "Another OpenKey request is waiting. Finish or cancel it, then try again.";
+    case "wrong-account": return "That approval came from a different account than the one signed in. Nothing was changed.";
+    case "truncated": return `${entry.name}'s file list is too long to check at once. Nothing was deleted. Try again.`;
+    case "refused": return "Stopped: this app id or file path isn't one uninstall will touch. Nothing outside the app's folders was removed.";
+    case "write-failed": return `Some of ${entry.name}'s files couldn't be removed. Try again to finish.`;
+    case "not-started": return "Couldn't start the uninstall. Nothing was changed. Try again.";
+    case "failed": return `Couldn't finish removing ${entry.name}. Try again to finish.`;
+  }
+}
+
+/**
+ * `UninstallPorts` for one uninstall run: once the person cancels, nothing new starts (no OpenKey window), a session
+ * that arrives late is closed, and no list, delete or registry call is made. The sign-in and the deletes are the real ones.
+ */
+export function guardedUninstallPorts(ports: UninstallPorts, cancelled: () => boolean): UninstallPorts {
+  return {
+    openSession: async (plan, hooks) => {
+      if (cancelled()) throw new UninstallError("cancelled");
+      const session = await ports.openSession(plan, hooks);
+      if (cancelled()) {
+        await Promise.resolve(session.dispose()).catch(() => undefined);
+        throw new UninstallError("cancelled");
+      }
+      const refuse = (): void => { if (cancelled()) throw new UninstallError("cancelled"); };
+      return {
+        list: async (prefix, cursor) => { refuse(); return session.list(prefix, cursor); },
+        del: async (key) => { refuse(); return session.del(key); },
+        removeRegistry: async (appId) => { refuse(); return session.removeRegistry(appId); },
+        dispose: () => session.dispose(),
+      };
+    },
+  };
+}
+
 export interface MountOptions {
   /** The repair flow's sign-in and node. Created when Repair's Continue is clicked. */
   repairPorts?: () => RepairPorts;
+  /** The uninstall flow's sign-in and node. Created when Remove app is clicked; the default loads OpenKey and the SDK then. */
+  uninstallPorts?: () => UninstallPorts;
 }
 
 export interface MountedApps {
@@ -238,6 +310,7 @@ function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): Repai
 
 export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): MountedApps {
   const repairPorts = options.repairPorts ?? createRepairPorts;
+  const uninstallPortsFor = options.uninstallPorts ?? createUninstallPorts;
   let opener: HTMLElement | null = null;
   const cards = new Map<string, HTMLElement>();
   /** The inline panel under each card, with what stops it listening to its run. */
@@ -325,12 +398,68 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     );
   };
 
-  const show = (entry: CatalogEntry, mode: "details" | "repair"): void => {
-    if (mode === "repair") {
+  /** One uninstall at a time per app; a second Remove joins the running one, as for repair. */
+  const uninstalling = new Set<string>();
+  const runUninstallInline = (entry: CatalogEntry): void => {
+    leaveSheet();
+    if (uninstalling.has(entry.app_id)) {
+      panels.get(entry.app_id)?.panel.focus();
+      return;
+    }
+    uninstalling.add(entry.app_id);
+    const panel = freshPanel(entry.app_id, `Uninstall ${entry.name}`);
+    let cancelled = false;
+    let running = true;
+    const stop = (): void => {
+      running = false;
+      uninstalling.delete(entry.app_id);
+      panel.onEscape = undefined;
+    };
+    const retryOrDismiss: PanelAction[] = [{ label: "Try again", primary: true, onClick: () => runUninstallInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }];
+    const cancel = (): void => {
+      if (!running) return;
+      cancelled = true;
+      stop();
+      panel.say("Uninstall cancelled. Files already removed stay removed; uninstalling again finishes the rest. If an OpenKey window is still open, close it.", "neutral", { actions: retryOrDismiss });
+    };
+    const working = (message: string): void => {
+      if (cancelled) return;
+      panel.onEscape = cancel;
+      panel.say(message, "info", { actions: [{ label: "Cancel", onClick: cancel }] });
+    };
+    working(uninstallProgressText(entry, { phase: "signing-in" }));
+    panel.focus();
+    void runUninstall(uninstallPlan(entry), guardedUninstallPorts(uninstallPortsFor(), () => cancelled), (progress) => working(uninstallProgressText(entry, progress))).then(
+      (result: UninstallResult) => {
+        if (cancelled) return;
+        stop();
+        if (result.registry === "failed") {
+          panel.say(uninstallFailureText(entry, "registry"), "danger", { actions: retryOrDismiss });
+          return;
+        }
+        if (result.removed === 0) {
+          panel.say(`Nothing to remove: ${entry.name} had no app files on this account. Your app data and settings are kept.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+          return;
+        }
+        panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        stop();
+        panel.say(uninstallFailureText(entry, error instanceof UninstallError ? error.reason : "failed"), "danger", { actions: retryOrDismiss });
+      },
+    );
+  };
+
+  const show = (entry: CatalogEntry, mode: "details" | "repair" | "uninstall"): void => {
+    if (mode === "uninstall") {
+      const content = uninstallContent(entry, () => runUninstallInline(entry), close);
+      sheet.replaceChildren(content.header, content.body, content.footer);
+    } else if (mode === "repair") {
       const content = repairContent(entry, () => runRepairInline(entry), close);
       sheet.replaceChildren(content.header, content.body, content.footer);
     } else {
-      const { header, body, footer } = detailsContent(entry, entries, close);
+      const { header, body, footer } = detailsContent(entry, entries, close, () => show(entry, "uninstall"));
       sheet.replaceChildren(header, body, footer);
     }
     if (!sheet.open) sheet.showModal();
