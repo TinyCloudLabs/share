@@ -1,6 +1,6 @@
 import { SHARE_APPLICATION_PREFIX } from "../share/openkey-session.js";
-import { parseInlineSharePayload, splitInlineToShort } from "./codec-local.js";
 import { createShortLink, deleteShortLink, ShortLinkError, type ShortLinkCreated } from "./client.js";
+import { splitInlineToShort } from "./codec.js";
 
 export const SHORT_LINK_UNAVAILABLE_NOTICE = "Short link unavailable: this link is long. Try again later for a shorter one.";
 
@@ -11,6 +11,14 @@ const MAX_TTL_MS = 400 * 24 * 60 * 60 * 1000;
 export interface ShortLinkRecord {
   readonly id: string;
   readonly deleteToken: string;
+}
+
+/** The sealed bytes of the share, as the SDK reports them at publish time. */
+export interface ShortLinkMaterial {
+  /** base64url of the sealed bytes. Equal to the inline link's `c`. */
+  readonly sealedEnvelope: string;
+  /** CID of the sealed bytes. Equal to the inline link's `cid`. */
+  readonly shareCid: string;
 }
 
 export interface ShortLinkPublication {
@@ -48,17 +56,19 @@ export function canonicalShortLinkExpiry(expiresAt: string | undefined, now: num
  */
 export async function publishShortLinkOrInline(input: {
   readonly inlineUrl: string;
+  readonly material: ShortLinkMaterial | undefined;
   readonly expiresAt: string | undefined;
   readonly storeRecord: (record: ShortLinkRecord) => Promise<void>;
 } & ServiceOptions): Promise<ShortLinkPublication> {
   const service: ServiceOptions = { fetchFn: input.fetchFn, timeoutMs: input.timeoutMs };
   let created: ShortLinkCreated | undefined;
   try {
-    const payload = parseInlineSharePayload(input.inlineUrl);
+    if (input.material === undefined) throw new ShortLinkError("rejected");
     const expiresAt = canonicalShortLinkExpiry(input.expiresAt);
-    created = await createShortLink({ ciphertext: payload.c, expiresAt }, service);
-    if (created.cid !== payload.cid) throw new ShortLinkError("cid_mismatch");
+    created = await createShortLink({ ciphertext: input.material.sealedEnvelope, expiresAt }, service);
+    if (created.cid !== input.material.shareCid) throw new ShortLinkError("cid_mismatch");
     const url = splitInlineToShort(input.inlineUrl, created.id);
+    if (url === undefined) throw new ShortLinkError("invalid_response");
     await input.storeRecord({ id: created.id, deleteToken: created.deleteToken });
     return { url };
   } catch {

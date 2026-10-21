@@ -50,6 +50,7 @@ function publish(overrides: Partial<Parameters<typeof publishShortLinkOrInline>[
   const { fetchFn, calls } = recordingFetch(() => created());
   const input = {
     inlineUrl: vector.inline,
+    material: { sealedEnvelope: vector.ciphertextB64Url, shareCid: vector.cid },
     expiresAt: futureExpiry(3 * DAY_MS),
     storeRecord: async (record: { id: string; deleteToken: string }) => {
       stored.push(record);
@@ -88,6 +89,7 @@ describe("publishShortLinkOrInline", () => {
 
     const result = await publishShortLinkOrInline({
       inlineUrl: vector.inline,
+      material: { sealedEnvelope: vector.ciphertextB64Url, shareCid: vector.cid },
       expiresAt: futureExpiry(3 * DAY_MS),
       storeRecord: async (record) => {
         stored.push(record);
@@ -106,6 +108,7 @@ describe("publishShortLinkOrInline", () => {
     const stored: unknown[] = [];
     const result = await publishShortLinkOrInline({
       inlineUrl: vector.inline,
+      material: { sealedEnvelope: vector.ciphertextB64Url, shareCid: vector.cid },
       expiresAt: futureExpiry(3 * DAY_MS),
       storeRecord: async (record) => {
         stored.push(record);
@@ -144,6 +147,7 @@ describe("publishShortLinkOrInline", () => {
 
     const result = await publishShortLinkOrInline({
       inlineUrl: vector.inline,
+      material: { sealedEnvelope: vector.ciphertextB64Url, shareCid: vector.cid },
       expiresAt: futureExpiry(3 * DAY_MS),
       storeRecord: async () => {
         throw new Error("kv down");

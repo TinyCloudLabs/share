@@ -423,6 +423,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   });
   const publication = await publishShortLinkOrInline({
     inlineUrl: published.url,
+    material: deliveryMaterial,
     expiresAt: published.metadata.expiresAt,
     storeRecord: async (shortRecord) => {
       const stored = await tinycloud.kvForSpace(spaceId).put(shortLinkRecordPath(shareId), new TextEncoder().encode(JSON.stringify(shortRecord)), { contentType: "application/json" });
