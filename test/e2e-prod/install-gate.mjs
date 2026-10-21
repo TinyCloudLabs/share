@@ -292,7 +292,7 @@ try {
     await openFromCard(page, HEALTH);
     await recordStatus(page);
     await controls.sign.arrived;
-    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log \(sample\) from your TinyCloud/, "the approval is announced");
+    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log from your TinyCloud/, "the approval is announced");
     await captureState(page, "pending-approval");
     controls.sign.release(); controls.sign = undefined;
     // Hold the last write (install.json) to show the saving state with the files already in place.
