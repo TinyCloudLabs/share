@@ -51,6 +51,12 @@ export const OWNER_LIBRARY_LIMIT = 1000;
  * exclusion is stated once and testable.
  */
 export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
+/**
+ * The per-share short-link delete record (see `shortLinkRecordPath`). The
+ * listing may return keys with or without the application prefix, so both
+ * forms are matched. Only this exact record name is excluded.
+ */
+const SHORT_LINK_RECORD_KEY = /^(?:xyz\.tinycloud\.share\/)?shares\/[^/]+\/short-link\.json$/;
 
 /** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
 function unsafeLibraryKey(value: string): boolean {
@@ -91,6 +97,7 @@ export function ownerLibraryEntries(keys: readonly string[]): readonly { readonl
     if (trimmed.length === 0 || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) continue;
     if (unsafeLibraryKey(trimmed)) continue;
     if (OWNER_LIBRARY_RESERVED_PREFIXES.some((prefix) => trimmed === prefix.replace(/\/$/, "") || trimmed.startsWith(prefix))) continue;
+    if (SHORT_LINK_RECORD_KEY.test(trimmed)) continue;
     add(trimmed);
   }
   return entries;
