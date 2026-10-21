@@ -267,3 +267,65 @@ describe("scheduled cleanup", () => {
     expect(remaining.map((row) => row.id)).toEqual([live.id]);
   });
 });
+
+describe("query strings and sibling paths", () => {
+  it("answers the collection path with a query string as the uniform 404 without CORS", async () => {
+    const test = makeTestDb();
+    const request = new Request(`${BASE}?list`, { method: "GET", headers: { "CF-Connecting-IP": "198.51.100.40" } });
+    const response = await handleRequest(request, envFor(test), NOW);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Content-Type")).toMatch(/application\/json/);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(await response.text()).toBe(NOT_FOUND_BODY);
+  });
+
+  it("answers a trailing slash with a query string as the uniform 404 without CORS", async () => {
+    const test = makeTestDb();
+    const request = new Request(`${BASE}/?list`, { method: "GET", headers: { "CF-Connecting-IP": "198.51.100.41" } });
+    const response = await handleRequest(request, envFor(test), NOW);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(await response.text()).toBe(NOT_FOUND_BODY);
+  });
+
+  it("answers a sibling path as the uniform 404 without CORS, with or without a query string", async () => {
+    const test = makeTestDb();
+    for (const url of [`${BASE}X`, `${BASE}X?list`]) {
+      const request = new Request(url, { method: "GET", headers: { "CF-Connecting-IP": "198.51.100.42" } });
+      const response = await handleRequest(request, envFor(test), NOW);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+      expect(await response.text()).toBe(NOT_FOUND_BODY);
+    }
+  });
+
+  it("creates a link on POST with a query string, as on POST without one", async () => {
+    const test = makeTestDb();
+    const request = new Request(`${BASE}?x=1`, {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "198.51.100.43", "Content-Type": "application/json" },
+      body: JSON.stringify(validBody()),
+    });
+    const response = await handleRequest(request, envFor(test), NOW);
+    expect(response.status).toBe(201);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    const body = (await response.json()) as { id: string; cid: string; deleteToken: string };
+    expect(body.id).toMatch(/^[a-z2-7]{26}$/);
+  });
+
+  it("answers an invalid POST with a query string exactly as without one", async () => {
+    const test = makeTestDb();
+    const plain = await handleRequest(createRequest("198.51.100.44", "{not json"), envFor(test), NOW);
+    const request = new Request(`${BASE}?x=1`, {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "198.51.100.45", "Content-Type": "application/json" },
+      body: "{not json",
+    });
+    const withQuery = await handleRequest(request, envFor(test), NOW);
+    expect(withQuery.status).toBe(400);
+    expect(withQuery.status).toBe(plain.status);
+    expect(await withQuery.text()).toBe(await plain.text());
+    expect(withQuery.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});

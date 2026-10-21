@@ -80,7 +80,7 @@ Tests run against an in-memory SQLite database (`node:sqlite`, `test/helpers/d1.
 
 1. Apply the migration to the target D1 database before deploying the Worker.
 2. Deploy the Worker with `wrangler deploy`.
-3. Confirm the routes `share.tinycloud.xyz/api/share-links` and `share.tinycloud.xyz/api/share-links/*` and the cron trigger in the Cloudflare dashboard.
+3. Confirm the single route `share.tinycloud.xyz/api/share-links*` (zone `tinycloud.xyz`) and the cron trigger in the Cloudflare dashboard. The pattern matches the base path with any query string and every path below `/api/share-links`; the Worker answers each of them.
 4. Run the smoke script: `./smoke.sh https://share.tinycloud.xyz`. It creates one link with a one-hour TTL, checks the GET headers and bytes, checks a wrong-token DELETE and the uniform 404, deletes the link, and checks the 404 after delete.
 
 Steps 1 to 4 are performed by the release owner. Nothing here deploys automatically.
