@@ -370,12 +370,12 @@ try {
   const healthManifest = await manifestOf(health);
   const recipesManifest = await manifestOf(recipes);
 
-  /** From a runner refusal screen: Repair -> the repair sheet -> Continue -> the sheet's last line. */
+  /** From a runner refusal screen: Repair -> the inline repair panel -> Repair -> the panel's last line. */
   async function repairFromRunner(page, label) {
     await page.click(`a[href='/apps/#repair=${HEALTH}']`);
-    await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-    assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
-    await clickByText(page, "Continue");
+    await page.waitForFunction(() => [...document.querySelectorAll(".apps-install-panel button")].some((button) => button.textContent === "Repair"), { timeout: 60_000 });
+    assert.match(await page.$eval(".apps-install-panel", (node) => node.innerText), /Your data is untouched/);
+    await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Repair").click());
     const text = await waitUntil(async () => { const line = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(line) ? line : undefined; }, 300_000);
     return text ?? "";
   }
@@ -617,13 +617,13 @@ try {
       assert.deepEqual(listener.requests, [], `${label}: the tampered code ran`);
       if (label === "run-tampered") await captureState(page, "code-mismatch");
       report.stages[label] = { refused: true, sessionsSigned: 1, approvals: 1 };
-      // Repair: the apps page opens the repair sheet; one approval; the code files come back; the stray goes.
+      // Repair: the apps page opens the inline repair panel; one approval; the code files come back; the stray goes.
       const repairFrom = trace.length;
       await page.click(`a[href='/apps/#repair=${HEALTH}']`);
-      await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-      assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
-      if (label === "run-tampered") await captureState(page, "repair-sheet");
-      await clickByText(page, "Continue");
+      await page.waitForFunction(() => [...document.querySelectorAll(".apps-install-panel button")].some((button) => button.textContent === "Repair"), { timeout: 60_000 });
+      assert.match(await page.$eval(".apps-install-panel", (node) => node.innerText), /Your data is untouched/);
+      if (label === "run-tampered") await captureState(page, "repair-panel");
+      await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Repair").click());
       const repaired = await waitUntil(async () => { const text = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(text) ? text : undefined; }, 300_000);
       assert.match(repaired ?? "", /^Repaired\./, `${label}: repair ended with "${repaired}"`);
       assert.equal(signCount(repairFrom, label), 1, `${label}: Repair needed one approval`);
