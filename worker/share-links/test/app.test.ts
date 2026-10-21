@@ -79,6 +79,31 @@ describe("POST /api/share-links", () => {
     expect(await response.json()).toEqual({ error: "invalid" });
   });
 
+  it("stops reading an oversized streamed body and answers the uniform 400", async () => {
+    const test = makeTestDb();
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls > 8) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new Uint8Array(65536).fill(32));
+      },
+    });
+    const request = new Request(BASE, {
+      method: "POST",
+      headers: { "CF-Connecting-IP": "198.51.100.1", "Content-Type": "application/json" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+    const response = await handleRequest(request, envFor(test), NOW);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid" });
+    expect(pulls).toBeLessThan(8);
+  });
+
   it("rate-limits creates to 10 per minute per client", async () => {
     const test = makeTestDb();
     for (let i = 0; i < 10; i++) {

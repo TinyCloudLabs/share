@@ -25,6 +25,7 @@ Errors:
 - Read: 120 per minute per client.
 - Global: 20,000 live rows and 2 GiB of live ciphertext.
 - Client identity is `CF-Connecting-IP`, hashed with a salt before storage.
+- Create request bodies are capped at 184,320 bytes while reading, before JSON parsing.
 
 ## Storage
 
@@ -39,6 +40,16 @@ The delete token is stored only as `base64url(sha256(token))`.
 
 An hourly cron (`0 * * * *`) deletes rows with `expires_at < now` and rate-limit rows with `exp < now`.
 
+## Operations
+
+Read-only capacity check (the alert reads these names; the same figures the create cap uses):
+
+```
+SELECT count(*), coalesce(sum(size), 0) FROM links WHERE deleted_at IS NULL AND expires_at > :now;
+```
+
+Request bodies are read with a running byte cap (184,320 bytes) and rejected before the full body is buffered.
+
 ## Layout
 
 - `src/index.ts`: Worker entry (fetch and scheduled).
@@ -49,6 +60,7 @@ An hourly cron (`0 * * * *`) deletes rows with `expires_at < now` and rate-limit
 - `src/ratelimit.ts`: fixed-window counters.
 - `src/responses.ts`: response helpers and common headers.
 - `src/d1.ts`: D1 binding types.
+- `smoke.sh`: post-deploy smoke check (POST, GET headers and bytes, DELETE, uniform 404).
 
 ## Tests
 
@@ -69,5 +81,6 @@ Tests run against an in-memory SQLite database (`node:sqlite`, `test/helpers/d1.
 1. Apply the migration to the target D1 database before deploying the Worker.
 2. Deploy the Worker with `wrangler deploy`.
 3. Confirm the route `share.tinycloud.xyz/api/share-links/*` and the cron trigger in the Cloudflare dashboard.
+4. Run the smoke script: `./smoke.sh https://share.tinycloud.xyz`. It creates one link with a one-hour TTL, checks the GET headers and bytes, checks a wrong-token DELETE and the uniform 404, deletes the link, and checks the 404 after delete.
 
-Steps 1 to 3 are performed by the release owner. Nothing here deploys automatically.
+Steps 1 to 4 are performed by the release owner. Nothing here deploys automatically.
