@@ -154,11 +154,11 @@ try {
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
 
-      // First open, per app: the details sheet shows the first-open disclosure, the sample banner where it applies, and an Open link to the runner. Opening it signs nothing in and loads no SDK.
+      // First open, per app: the details sheet shows the first-open disclosure and an Open link to the runner. Opening it signs nothing in and loads no SDK.
       const detailsCases = [
-        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: ["Sample app: use throwaway data only."] },
-        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["Sample app: use throwaway data only.", "If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
-        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["Sample app: use throwaway data only.", "'s database ("], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["'s database ("], absent: [] },
       ];
       for (const { app, tag, expect: wanted, absent } of detailsCases) {
         const index = catalog.apps.indexOf(app);

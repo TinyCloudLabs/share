@@ -204,7 +204,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   const accessLists = (manifest: unknown, forEntry: CatalogEntry): void => {
     const consent = consentFor(forEntry, manifest, ports.catalog ?? catalog.apps);
-    access.replaceChildren(el("summary", null, ["What this app can do"]), ...(forEntry.sample === true ? [el("p", "tc-status tc-status--warning apps-notice", ["Sample app: use throwaway data only."])] : []), ...noticeList(consent.notices), accessSection("It can read", "Nothing.", consent.runtime.read), accessSection("It can change", "Nothing. This app can't change your data.", consent.runtime.change));
+    access.replaceChildren(el("summary", null, ["What this app can do"]), ...noticeList(consent.notices), accessSection("It can read", "Nothing.", consent.runtime.read), accessSection("It can change", "Nothing. This app can't change your data.", consent.runtime.change));
     access.hidden = false;
   };
 
@@ -357,7 +357,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     disclosure = [
       el("p", null, [entry.description]),
       el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line]))),
-      ...(entry.sample === true ? [el("p", "tc-status tc-status--warning apps-notice", ["Sample app: use throwaway data only."])] : []),
       ...noticeList(consent.notices),
       el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
       el("p", "run-caution", [CAUTION]),

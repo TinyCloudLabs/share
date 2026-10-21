@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type BundleFetch, type BundleResponse, INSTALL_RECORD_PATH, bundleDigest, fetchVerifiedBundle, installPathProblem, sha256Hex } from "../src/apps/bundle.ts";
 import { EntryDisabledError, MAX_DISABLED_REASON_CHARS, type CatalogEntry, assertAvailable, availabilityOf, catalog } from "../src/apps/catalog.ts";
-import { SAMPLE_NOTICE, SQL_CHANGE_NOTICE, consentFor } from "../src/apps/consent.ts";
+import { SQL_CHANGE_NOTICE, consentFor } from "../src/apps/consent.ts";
 import { MAX_DISABLED_REASON_CHARS as buildTimeReasonCap, installPathProblem as buildTimePathProblem } from "../scripts/apps-catalog.mjs";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -89,13 +89,11 @@ describe("a hostile or odd catalog entry is rejected at load, before any fetch",
 describe("what the pre-consent sheet says", () => {
   const manifestOf = (entry: CatalogEntry): unknown => JSON.parse(readFileSync(join("public", entry.bundle.root, "manifest.json"), "utf8"));
 
-  it("a sample that writes SQL says so plainly, and says to use throwaway data", () => {
+  it("an app that writes SQL says so plainly", () => {
     const entry = entryOf(HEALTH);
     const { notices, runtime } = consentFor(entry, manifestOf(entry), catalog.apps);
-    expect(notices).toContain(SAMPLE_NOTICE);
     expect(notices).toContain(SQL_CHANGE_NOTICE);
     expect(SQL_CHANGE_NOTICE).toBe("This app can change or delete its own tables.");
-    expect(SAMPLE_NOTICE).toBe("Sample app: use throwaway data only.");
     expect(runtime.change.some((item) => item.service === "SQL database" && item.actions.includes("schema"))).toBe(true);
   });
 
@@ -109,7 +107,7 @@ describe("what the pre-consent sheet says", () => {
     expect(runtime.read.some((item) => item.target === `${HEALTH}/healthlog`)).toBe(true);
   });
 
-  it("a non-sample app with the default grants still says it can change or delete its own tables, and no sample notice", () => {
+  it("an app with the default grants still says it can change or delete its own tables", () => {
     const entry = entryOf("com.example.notes");
     const { notices } = consentFor(entry, manifestOf(entry), catalog.apps);
     expect(notices).toEqual([SQL_CHANGE_NOTICE]);
@@ -118,8 +116,7 @@ describe("what the pre-consent sheet says", () => {
   it("an app that does not write SQL has no SQL notice", () => {
     const entry = entryOf(HEALTH);
     const readOnly = { app_id: entry.app_id, name: "R", defaults: false, permissions: [{ service: "tinycloud.sql", path: "db", actions: ["read"] }] };
-    const { sample: _sample, ...plain } = entry;
-    expect(consentFor(plain, readOnly, catalog.apps).notices).toEqual([]);
+    expect(consentFor(entry, readOnly, catalog.apps).notices).toEqual([]);
   });
 });
 

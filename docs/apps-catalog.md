@@ -34,7 +34,7 @@
 - `source.tag` is `null` when the entry pins a bare commit (the source repo has no tag).
 - `knowledge` is `null` when the bundle has no `knowledge/` folder.
 - `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and opening refuses a bundle whose manifest differs.
-- `sample` is `true` for sample apps and absent otherwise; `release` is present when the bundle ships a `release.json` (see "Sample apps"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
+- `release` is present when the bundle ships a `release.json` (see "What the sheet says"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
 
 ## Kill switch
 
@@ -66,7 +66,7 @@ bytes it fetched before it writes anything.
 ## Adding or updating an app
 
 ```sh
-node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--sample] [--publisher <name>] [--publisher-did <did>]
+node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] [--publisher-did <did>]
 ```
 
 - `<tag>` is a tag name or a full 40-hex commit id. Branches are refused because they move.
@@ -143,9 +143,9 @@ Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catal
 
 `test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and the sheet's delete and read rows, the stop-before-sign-in copy, the nothing-to-remove copy, and the registry-failure retry. `test/e2e-prod/install-gate.mjs` (stage 6) and `runner-gate.mjs` (stage 8) run uninstall against the hermetic stack; see those files' headers.
 
-## Sample apps
+## What the sheet says
 
-An entry marked `"sample": true` is a sample: its runner and its details sheet say "Sample app: use throwaway data only.", and its card shows a Sample badge. Any app that writes SQL (the default grant included) also
+Any app that writes SQL (the default grant included) also
 says "This app can change or delete its own tables.", and a grant on another app's database is listed
 as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
 `summarizeAccess` the lists use.)
@@ -189,7 +189,6 @@ When a bundle folder has a `release.json` (`tinycloud.app-release/v1`, as the ki
 the release declares and the release's own digest, and records `release: { version, digest }` in the
 entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha256>` lines joined by
 `\n`); the catalog digest above is the one opening an app verifies, and the test checks both.
-`--sample` sets the flag and later updates keep it.
 
 ## Provenance
 

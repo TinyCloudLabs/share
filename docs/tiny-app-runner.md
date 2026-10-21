@@ -11,7 +11,7 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
 
 ## What a person sees
 
-1. **Disclosure, inline**: the app's name and description, what it can read and change (from the catalog's own manifest), and a provenance line that stays on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust. Beta: use sample data only." It is shown as the open starts, before OpenKey. There is no separate Continue step.
+1. **Disclosure, inline**: the app's name and description, what it can read and change (from the catalog's own manifest), and a provenance line that stays on screen the whole time: "This app was installed from `<repo>@<commit>` (version, bundle `<digest>`). It runs in a sandbox and can use only what's listed under "What this app can do"." Below it, always: "Some browser requests can't be blocked. Only open apps you trust." It is shown as the open starts, before OpenKey. There is no separate Continue step.
 2. **One OpenKey approval**, named in the status line: "Approve in the OpenKey window so Share can open `<app>` from your TinyCloud". It covers reading the app's saved copy, saving any files that are missing, and starting the app with the permissions listed on the page. OpenKey connects once.
 3. **The app**, in its frame, under the page's own bar: the app name, "Open another app",
    "Sign out of this app", a status line (a live region), "What this app can do" and "What a
@@ -161,7 +161,7 @@ memory. The frame's CSP blocks every content and script request (`connect-src 'n
 'none'`, images and media from `data:`/`blob:` only), and there is no storage of the page's origin,
 popups, forms, workers or downloads. Its data is what the bridge gives it, under the manifest the person signed.
 This is **not** "no network access": some browser requests can't be blocked (see the known limits), so the page
-tells people to install apps they trust and, in the beta, to use sample data only.
+tells people to install apps they trust.
 
 The static scan in the kit's samples is defence in depth only: the sandbox is the boundary.
 
@@ -246,7 +246,7 @@ The `@tinycloud/app` library file is built, hashed and served with the other JSX
   sent, one TCP connection is made. Nothing inside the frame can stop this.
 - Some other browser requests can still carry what the app reads to an address it picks: the CSP does not govern a prerender, a preconnect,
   a DNS prefetch or `<a ping>`, and the guard that refuses them is best effort. These paths are known closed (the probe sees nothing); same-realm
-  code may find others. Open apps you trust; in the beta, use sample data only.
+  code may find others. Open apps you trust.
 - Node error text is not shown to the app, except a SQL error's message, which is scrubbed of tokens, identifiers and stack lines.
 - The catalog's two sample bundles still say "no network" in a code comment and a knowledge file: they are pinned by digest and change with the next catalog release.
 - The pin covers the code, not `manifest.json` (capped by the grant check) or `knowledge/` (the person's).
