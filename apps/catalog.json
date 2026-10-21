@@ -73,7 +73,7 @@
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
         "tag": null,
-        "commit": "dfe1900a352d6e70c4d894f066f47e4e89e9535a"
+        "commit": "58760311ff3af940761332c3460f1d9498b56c1f"
       },
       "release": {
         "version": "0.1.0",
@@ -174,7 +174,7 @@
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
         "tag": null,
-        "commit": "dfe1900a352d6e70c4d894f066f47e4e89e9535a"
+        "commit": "58760311ff3af940761332c3460f1d9498b56c1f"
       },
       "release": {
         "version": "0.1.0",
