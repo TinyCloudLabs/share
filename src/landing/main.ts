@@ -1,5 +1,6 @@
 import "./landing.css";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { startShareTargetRotation } from "./share-targets.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -47,3 +48,6 @@ function wireCopyButton(button: HTMLButtonElement): void {
 }
 
 document.querySelectorAll<HTMLButtonElement>("button[data-copy-target]").forEach(wireCopyButton);
+
+const shareTarget = document.querySelector<HTMLElement>(".share-target");
+if (shareTarget) startShareTargetRotation(shareTarget);
