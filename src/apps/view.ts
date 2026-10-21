@@ -143,7 +143,7 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
   const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
   uninstallNow.addEventListener("click", uninstall);
-  const footer = el("footer", "apps-sheet__footer", [openControl(entry), ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow]);
+  const footer = el("footer", "apps-sheet__footer", [openControl(entry), ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow, el("p", "apps-muted", ["Also deletes notes you edited."])]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -175,21 +175,6 @@ function repairProgressText(entry: CatalogEntry, progress: RepairProgress): stri
   }
 }
 
-/** The uninstall confirm: what goes, what stays, and that open app tabs stay open. Nothing runs until Remove app. */
-function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
-  const header = sheetHeader("Uninstall", `Remove ${entry.name}`, entry, close);
-  const { rows } = uninstallPlan(entry);
-  const body = el("div", "apps-sheet__body", [
-    el("p", "apps-sheet__lede", [`Remove ${entry.name}'s app files and agent notes? Your app data, settings and files outside those folders stay. Notes you've edited in the app's knowledge folder will be removed. Close any open app tabs first.`]),
-    accessList([...rows.change, ...rows.read]),
-  ], { tabindex: "0" });
-  const remove = el("button", "tc-button tc-button--primary apps-button", ["Remove app"], { type: "button" });
-  remove.addEventListener("click", onConfirm);
-  const keep = el("button", "tc-button apps-button", ["Keep app"], { type: "button" });
-  keep.addEventListener("click", close);
-  const footer = el("footer", "apps-sheet__footer apps-sheet__footer--install", [remove, keep]);
-  return { header, body, footer };
-}
 
 function uninstallProgressText(entry: CatalogEntry, progress: UninstallProgress): string {
   switch (progress.phase) {
@@ -243,7 +228,7 @@ export function guardedUninstallPorts(ports: UninstallPorts, cancelled: () => bo
 export interface MountOptions {
   /** The repair flow's sign-in and node. Created when Repair is clicked. */
   repairPorts?: () => RepairPorts;
-  /** The uninstall flow's sign-in and node. Created when Remove app is clicked; the default loads OpenKey and the SDK then. */
+  /** The uninstall flow's sign-in and node. Created when Uninstall is clicked; the default loads OpenKey and the SDK then. */
   uninstallPorts?: () => UninstallPorts;
 }
 
@@ -439,14 +424,9 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     );
   };
 
-  const show = (entry: CatalogEntry, mode: "details" | "uninstall"): void => {
-    if (mode === "uninstall") {
-      const content = uninstallContent(entry, () => runUninstallInline(entry), close);
-      sheet.replaceChildren(content.header, content.body, content.footer);
-    } else {
-      const { header, body, footer } = detailsContent(entry, entries, close, () => show(entry, "uninstall"));
-      sheet.replaceChildren(header, body, footer);
-    }
+  const show = (entry: CatalogEntry): void => {
+    const { header, body, footer } = detailsContent(entry, entries, close, () => runUninstallInline(entry));
+    sheet.replaceChildren(header, body, footer);
     if (!sheet.open) sheet.showModal();
   };
 
@@ -460,7 +440,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     openUninstall(appId): boolean {
       const entry = entries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
-      show(entry, "details");
+      show(entry);
       return true;
     },
   };
@@ -470,7 +450,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
   }
   for (const entry of entries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
-    details.addEventListener("click", () => { opener = details; show(entry, "details"); });
+    details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);
     const open = openControl(entry);
     const card = el("li", "apps-card tc-panel", [

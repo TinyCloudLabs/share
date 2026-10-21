@@ -139,16 +139,14 @@ try {
       assert.ok(page.report.requests.every((url) => new URL(url).origin === origin), `${label}: same origin only after Details`);
       assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: no SDK or wasm chunk loaded`);
 
-      // Uninstall: the confirm sheet from Details. Nothing runs here: copy, axe and a screenshot, then Keep app.
-      await page.click(`#apps-sheet button[aria-label='Uninstall ${catalog.apps[0].name}']`);
-      await page.waitForFunction(() => (document.querySelector("#apps-sheet")?.textContent ?? "").includes("app files and agent notes?"));
-      const confirmText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["Your app data, settings and files outside those folders stay.", "See which permissions it has been given in this space", "Remove app", "Keep app"]) {
-        assert.ok(confirmText.includes(expected), `${label}: uninstall confirm shows "${expected}"`);
+      // Uninstall: the details footer carries the control and the notes line. Nothing runs here: copy, axe and a screenshot, then close.
+      const footerText = await page.$eval("#apps-sheet footer", (node) => node.innerText);
+      for (const expected of ["Also deletes notes you edited."]) {
+        assert.ok(footerText.includes(expected), `${label}: details footer shows "${expected}"`);
       }
-      assert.deepEqual(await axeViolations(page), [], `${label}: uninstall confirm axe AA`);
+      assert.ok(await page.$(`#apps-sheet footer button[aria-label='Uninstall ${catalog.apps[0].name}']`), `${label}: details footer has the Uninstall control`);
+      assert.deepEqual(await axeViolations(page), [], `${label}: details footer axe AA`);
       await shoot(page, `apps-uninstall-${width}-${scheme}`);
-      await page.evaluate(() => [...document.querySelectorAll("#apps-sheet button")].find((button) => button.textContent === "Keep app")?.click());
 
       await page.keyboard.press("Escape");
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);

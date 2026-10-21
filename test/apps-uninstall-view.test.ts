@@ -55,67 +55,42 @@ function fakeUninstall(options: { openFails?: UninstallError; registryFails?: bo
   return state;
 }
 
-const sheetButton = (label: string): HTMLButtonElement | undefined =>
-  [...sheet.querySelectorAll("button")].find((node) => node.textContent === label);
 const line = (): string => list.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? "";
+const uninstallButton = (): HTMLButtonElement | null => sheet.querySelector<HTMLButtonElement>(`button[aria-label='Uninstall ${entry.name}']`);
 
-/** Card → Details → Uninstall: the confirm sheet is open with nothing run yet. */
-function openConfirm(uninstall: FakeUninstall): void {
+/** Card → Details: the Uninstall control sits in the details footer. Nothing runs yet. */
+function openDetails(uninstall: FakeUninstall): void {
   mountApps(list, sheet, catalog.apps, { uninstallPorts: () => uninstall.ports });
   list.querySelector<HTMLButtonElement>(`button[aria-label='Details for ${entry.name}']`)!.click();
-  sheet.querySelector<HTMLButtonElement>(`button[aria-label='Uninstall ${entry.name}']`)!.click();
 }
 
-describe("the uninstall confirm sheet", () => {
-  it("says what goes, what stays and to close app tabs, and runs nothing until Remove app", () => {
+describe("the details Uninstall control", () => {
+  it("shows Uninstall and the notes line in details, and runs nothing until clicked", () => {
     const node = fakeUninstall();
-    openConfirm(node);
-    const text = sheet.textContent ?? "";
-    expect(text).toContain(`Remove ${entry.name}`);
-    expect(text).toContain(`Remove ${entry.name}'s app files and agent notes?`);
-    expect(text).toContain("Your app data, settings and files outside those folders stay.");
-    expect(text).toContain("Notes you've edited in the app's knowledge folder will be removed.");
-    expect(text).toContain("Close any open app tabs first.");
-    expect(sheetButton("Remove app")).toBeDefined();
-    expect(sheetButton("Keep app")).toBeDefined();
+    openDetails(node);
+    expect(uninstallButton()).not.toBeNull();
+    expect(sheet.textContent ?? "").toContain("Also deletes notes you edited.");
     expect(node.opened).toBe(0);
+    expect(list.querySelector(".apps-install-panel")).toBeNull();
   });
 
-  it("makes the confirm body keyboard-focusable, so a long delete list can be scrolled", () => {
-    openConfirm(fakeUninstall());
-    expect(sheet.querySelector(".apps-sheet__body")?.getAttribute("tabindex")).toBe("0");
-  });
-
-  it("lists every delete the session will sign, taken from the same plan as the request", () => {
-    openConfirm(fakeUninstall());
-    const items = [...sheet.querySelectorAll<HTMLElement>(".apps-access__item")];
-    // Every row the plan gives (the destructive grants and the reads) is on the sheet, once each.
-    expect(items).toHaveLength(plan.rows.change.length + plan.rows.read.length);
-    for (const change of plan.rows.change) {
-      const item = items.find((node) => node.querySelector(".apps-access__text")?.textContent === change.description);
-      expect(item).toBeDefined();
-      expect(item!.textContent).toContain("del");
-    }
-    expect(plan.rows.change.map((row) => row.actions)).toEqual([["del"], ["del"], ["del"]]);
-  });
-
-  it("Keep app closes the sheet and touches no session", () => {
+  it("closing details touches no session", () => {
     const node = fakeUninstall();
-    openConfirm(node);
-    sheetButton("Keep app")!.click();
-    expect(sheet.hasAttribute("open")).toBe(false);
+    openDetails(node);
+    sheet.close();
     expect(node.opened).toBe(0);
     expect(list.querySelector(".apps-install-panel")).toBeNull();
   });
 });
 
 describe("the uninstall run", () => {
-  it("Remove app runs once and reports the files and agent notes removed, with app data kept", async () => {
+  it("Uninstall runs once and reports the files and agent notes removed, with app data kept", async () => {
     const node = fakeUninstall({ keys: [`${HEALTH}/app/a.js`] });
-    openConfirm(node);
-    sheetButton("Remove app")!.click();
+    openDetails(node);
+    uninstallButton()!.click();
     await vi.waitFor(() => expect(line()).toMatch(/^Removed /));
     expect(node.opened).toBe(1);
+    expect(node.deleted).toEqual([`${HEALTH}/app/a.js`]);
     expect(node.removedRegistry).toEqual([HEALTH]);
     expect(node.disposed).toBe(1);
     expect(line()).toContain("Your app data and settings are kept.");
@@ -124,8 +99,8 @@ describe("the uninstall run", () => {
 
   it("says nothing was there to remove when no app files were listed, and still removes the registry entry", async () => {
     const node = fakeUninstall();
-    openConfirm(node);
-    sheetButton("Remove app")!.click();
+    openDetails(node);
+    uninstallButton()!.click();
     await vi.waitFor(() => expect(line()).toMatch(/^Nothing to remove: /));
     expect(node.deleted).toEqual([]);
     expect(node.removedRegistry).toEqual([HEALTH]);
@@ -133,8 +108,8 @@ describe("the uninstall run", () => {
 
   it("a failed registry step says the files are gone and offers Try again", async () => {
     const node = fakeUninstall({ registryFails: true });
-    openConfirm(node);
-    sheetButton("Remove app")!.click();
+    openDetails(node);
+    uninstallButton()!.click();
     await vi.waitFor(() => expect(line()).toBe("The app was removed; its entry in your account list couldn't be updated; try again."));
     expect(list.querySelector('[role="alert"]')?.textContent).toBe("The app was removed; its entry in your account list couldn't be updated; try again.");
     const actions = [...list.querySelectorAll(".apps-install-panel button")].map((button) => button.textContent);
@@ -144,8 +119,8 @@ describe("the uninstall run", () => {
 
   it("a wrong-account approval reports that nothing changed", async () => {
     const node = fakeUninstall({ openFails: new UninstallError("wrong-account") });
-    openConfirm(node);
-    sheetButton("Remove app")!.click();
+    openDetails(node);
+    uninstallButton()!.click();
     await vi.waitFor(() => expect(line()).toContain("Nothing was changed."));
     expect(line()).toContain("different account");
     expect(node.removedRegistry).toEqual([]);

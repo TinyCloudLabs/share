@@ -471,7 +471,6 @@ try {
     assert(before.keys.includes(`${HEALTH}/app/install.json`), "Health Log is not installed before the uninstall");
     await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), app(HEALTH).name);
     await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), app(HEALTH).name);
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
     await page.waitForFunction(() => /^Removed /.test(document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
     const removed = await page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent ?? "");
     assert(removed.includes("Your app data and settings are kept.") && removed.includes(`Open ${app(HEALTH).name} again to restore it.`), `the uninstall message was "${removed}"`);

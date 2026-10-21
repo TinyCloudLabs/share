@@ -836,7 +836,6 @@ try {
     await page.waitForSelector(".apps-card", { timeout: 60_000 });
     await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), health.name);
     await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), health.name);
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
     const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
     assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
     await context.close();
