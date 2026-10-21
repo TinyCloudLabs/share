@@ -38,6 +38,8 @@ import puppeteer from "puppeteer";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { runBoundedStep, startNativeStack } from "./native-stack.mjs";
+import * as sdkCore from "@tinycloud/sdk-core";
+import { openManifest } from "../../src/apps/grants.ts";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -256,18 +258,9 @@ async function reader(page, chunkUrl, request) {
   }, chunkUrl, request);
 }
 
-/** The installer's capability set as a recap lists it: `<space>/<service>/<path> <ability>`, from install-plan.ts (the sheet's own source). */
-const expectedResources = (appId) => [
-  `applications/kv/${appId}/app/ tinycloud.kv/get`,
-  `applications/kv/${appId}/app/ tinycloud.kv/list`,
-  `applications/kv/${appId}/app/ tinycloud.kv/put`,
-  `applications/kv/${appId}/knowledge/ tinycloud.kv/put`,
-  "applications/capabilities tinycloud.capabilities/read",
-  ...[["get", "put", "list"].map((verb) => `account/kv/applications/ tinycloud.kv/${verb}`), ["get", "put", "list"].map((verb) => `account/kv/spaces/ tinycloud.kv/${verb}`), ["get", "put"].map((verb) => `account/kv/system/bootstrap/complete tinycloud.kv/${verb}`)].flat(),
-  "account/delegation tinycloud.delegation/list",
-  ...["read", "write", "schema"].map((verb) => `account/sql/account tinycloud.sql/${verb}`),
-  "account/capabilities tinycloud.capabilities/read",
-];
+/** The one sign-in an open makes, as the SDK composes it: the catalog manifest under `openManifest` (src/apps/grants.ts), with the account registry. */
+const expectedResources = (catalogManifest) => sdkCore.composeManifestRequest([openManifest(sdkCore.validateManifest(catalogManifest))], { includeAccountRegistryPermissions: true }).resources
+  .flatMap((resource) => resource.actions.map((action) => `${resource.space}/${resource.service.replace("tinycloud.", "")}${resource.path === "" ? "" : `/${resource.path}`} ${action}`)).sort();
 const expectedKeys = (entry) => [...entry.bundle.files.map((file) => (file.path.startsWith("knowledge/") ? `${entry.app_id}/${file.path}` : `${entry.app_id}/app/${file.path}`)), `${entry.app_id}/app/install.json`].sort();
 const nodeRequests = (stack, from) => trace.slice(from).filter((entry) => entry.origin === stack.canonical.node || /openkey/.test(entry.origin));
 
@@ -291,6 +284,7 @@ try {
 
   // ---- 1. A fresh account opens the Health Log sample: the first Open saves its files, then runs it (states held for the screenshots).
   const health = app(HEALTH);
+  const healthManifest = JSON.parse(await readFile(join(shareRoot, "public", health.bundle.root, "manifest.json"), "utf8"));
   {
     const { page, context } = await openApps(browser, stack, candidate.port, "install-health");
     const before = trace.length;
@@ -340,12 +334,12 @@ try {
     // (Its manifestHash is the hash of an empty manifest list, the same for every app: it says nothing about grants.)
     assert.deepEqual(record_?.manifests, [], "the registry record carries manifests");
     assert(!JSON.stringify(record_).match(/tinycloud\.sql|secrets|"did"/), "the registry record carries the app's own runtime grants");
-    // The read session it signed: its ReCap, decoded from the SIWE message OpenKey signed, is exactly the install grants.
+    // The open's one session: its ReCap, decoded from the SIWE message OpenKey signed, is exactly the union of the catalog grants and the folder grants.
     const sessionMessage = signedMessages.filter((entry) => entry.phase === "install-health").map((entry) => entry.message).find((message) => message.includes("urn:recap:"));
     assert(sessionMessage, "no session SIWE message with a ReCap was signed");
     const recap = JSON.parse(Buffer.from(sessionMessage.match(/urn:recap:([A-Za-z0-9_-]+)/)[1], "base64url").toString("utf8"));
     const granted = Object.entries(recap.att).flatMap(([resource, abilities]) => Object.entries(abilities).map(([ability]) => `${resource.replace(/^tinycloud:pkh:eip155:\d+:0x[0-9a-fA-F]{40}:/, "")} ${ability}`)).sort();
-    assert.deepEqual(granted, expectedResources(HEALTH).sort(), "the signed ReCap is not exactly the app's union manifest");
+    assert.deepEqual(granted, expectedResources(healthManifest).sort(), "the signed ReCap is not exactly the open's union manifest");
     report.signedRecap = granted;
     // OpenKey signatures this open needed (connect is separate): a brand-new account also hosts its spaces.
     const signs = during.filter((entry) => entry.origin === "https://openkey.so" && entry.method === "POST" && entry.path === "/sign").length;

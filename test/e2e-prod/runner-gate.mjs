@@ -58,7 +58,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { describeBundle } from "../../scripts/apps-catalog.mjs";
 import { createAppData } from "../../src/apps/app-data.ts";
 import { createCapabilityBridge } from "../../src/apps/bridge.ts";
-import { capGrants, makeAuthorizer } from "../../src/apps/grants.ts";
+import { openManifest } from "../../src/apps/grants.ts";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -409,11 +409,10 @@ try {
     const child = await runningFrame(page);
     const afterStart = trace.length;
 
-    // The one session it signed: exactly the app's own manifest for one hour.
+    // The one session it signed: the open's union for one hour, the catalog grants plus get, list and put on its own folders.
     const sessions = sessionMessages(label);
     assert.equal(sessions.length, 1, "one session sign-in");
-    const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
-    assert.deepEqual(recapOf(sessions[0]), expectedRecap(signingManifest), "the session's ReCap is not exactly the app's manifest");
+    assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(healthManifest))), "the session's ReCap is not exactly the open's union");
     assert.equal(lifetimeMs(sessions[0]), 3_600_000, "the session lasts exactly one hour");
     report.signedRuntimeRecap = recapOf(sessions[0]);
     assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "one approval and one OpenKey connect");
@@ -481,9 +480,9 @@ try {
     await start(page);
     const child = await runningFrame(page);
     const sessions = sessionMessages(label);
-    assert.deepEqual(recapOf(sessions[1]), expectedRecap({ ...recipesManifest, expiry: "1h", includePublicSpace: false }));
-    assert(recapOf(sessions[1]).includes(`applications/sql/${HEALTH}/healthlog tinycloud.sql/read`), "the cross-app read is in the signed ReCap");
-    assert(!recapOf(sessions[1]).some((line) => line.startsWith(`applications/sql/${HEALTH}/healthlog`) && !line.endsWith("tinycloud.sql/read")), "the cross-app grant is read-only");
+    assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(recipesManifest))), "the Recipes session's ReCap is not exactly the app's union");
+    assert(recapOf(sessions[0]).includes(`applications/sql/${HEALTH}/healthlog tinycloud.sql/read`), "the cross-app read is in the signed ReCap");
+    assert(!recapOf(sessions[0]).some((line) => line.startsWith(`applications/sql/${HEALTH}/healthlog`) && !line.endsWith("tinycloud.sql/read")), "the cross-app grant is read-only");
     await captureState(page, "recipes-running");
     await noViolations(page, "recipes");
     await child.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "From a health-log entry"), { timeout: 120_000 });
@@ -560,8 +559,9 @@ try {
       await start(page);
       const child = await runningFrame(page);
       const sessions = sessionMessages(label);
-      assert.deepEqual(recapOf(sessions[1]), expectedRecap({ ...narrowed, expiry: "1h", includePublicSpace: false }), "the narrowed copy is signed as it is");
-      assert(!recapOf(sessions[1]).some((line) => line.includes("knowledge/")), "a grant the person removed is not signed");
+      assert.equal(sessions.length, 1, "one session sign-in");
+      // The session holds the catalog union; the saved copy's removed grant is refused by the bridge (checked below), not by the node.
+      assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(healthManifest))), "the narrowed copy's session is not the catalog union");
       const outcome = await child.evaluate(async () => {
         const app = __TC_REQUIRE__("@tinycloud/app");
         const code = (result) => (result.ok ? "ok" : result.error.code);
@@ -570,7 +570,7 @@ try {
       assert.equal(outcome.knowledge, "PERMISSION_DENIED", "a grant the person removed still works");
       assert.equal(outcome.prefsPut, "PERMISSION_DENIED", "an action the person removed still works");
       assert(["ok", "NOT_FOUND"].includes(outcome.prefsGet), `the kept grant was refused: ${outcome.prefsGet}`);
-      report.stages.narrowed = { signedWithoutKnowledge: true, ...outcome };
+      report.stages.narrowed = { sessionIsUnion: true, ...outcome };
       await context.close();
     }
     // Restore the person's original copy.
@@ -735,8 +735,6 @@ try {
   phase = "6. Forced past the runner page, the NODE refuses: the real d"; console.error(`[t5b] ${phase}`);
   {
     phase = "node-boundary";
-    const sdk = sdkCore;
-    const capped = (manifest, catalogManifest) => { const result = capGrants(sdkCore.validateManifest(manifest), sdkCore.validateManifest(catalogManifest), sdk); assert(result.ok, JSON.stringify(result)); return result.value; };
     const sessionFor = async (signing) => {
       const wallet = new TinyCloudNode({ privateKey: WALLET_KEY, host: ownerHost, autoCreateSpace: true, manifest: signing });
       await wallet.signIn();
@@ -752,16 +750,16 @@ try {
     };
     const refusedByNode = (result, what) => { assert.equal(result.ok, false, `${what}: the node accepted a call the session does not cover: ${JSON.stringify(result)}`); assert.equal(result.error.code, "PERMISSION_DENIED", `${what}: ${JSON.stringify(result)}`); };
 
-    // Health Log, as the runner signs it.
-    const healthSession = capped(healthManifest, healthManifest);
-    const { holder: healthHolder } = await sessionFor(healthSession.signing);
+    // Health Log, as the runner signs it: the open's one session.
+    const { holder: healthHolder } = await sessionFor(openManifest(sdkCore.validateManifest(healthManifest)));
     const callHealth = forced(healthHolder, HEALTH);
     // Allowed by the session: its own database and prefs.
     assert.equal((await callHealth("sql.query", { db: "healthlog", sql: "SELECT count(*) FROM meal", params: [] })).ok, true);
     assert.equal((await callHealth("kv.put", { key: "prefs/node-boundary.json", body: "{}", contentType: "application/json" })).ok, true);
     // Refused by the node, with the parent's manifest check skipped.
     refusedByNode(await callHealth("kv.get", { key: "secrets/x" }), "kv.get outside the manifest");
-    refusedByNode(await callHealth("kv.put", { key: "app/app.jsx", body: "pwned" }), "kv.put on the app's own code (get-only grant)");
+    // The union grants put on the app's own folder, so the node accepts it; the bridge refuses it (stage 5b, kvPutOwnCode).
+    assert.equal((await callHealth("kv.put", { key: "app/node-boundary.txt", body: "ok" })).ok, true, "the node refused the union's put on app/");
     refusedByNode(await callHealth("kv.del", { key: "prefs/goals.json" }), "kv.del (no del grant)");
     refusedByNode(await callHealth("kv.list", { key: "" }), "kv.list of the app's root");
     refusedByNode(await callHealth("kv.get", { key: `/${RECIPES}/prefs/settings.json` }), "kv.get of another app");
@@ -774,8 +772,7 @@ try {
     // The holder is signer-less (a wallet-mode client escalates its own session on demand; this one has no signer to do it with).
     assert.equal(healthHolder.isSessionOnly, true, "the session holder has a signer");
     // Recipes, as the runner signs it: the cross-app read works, a write does not, DDL in its own database needs `schema`.
-    const recipesSession = capped(recipesManifest, recipesManifest);
-    const { holder: recipesHolder } = await sessionFor(recipesSession.signing);
+    const { holder: recipesHolder } = await sessionFor(openManifest(sdkCore.validateManifest(recipesManifest)));
     const callRecipes = forced(recipesHolder, RECIPES);
     assert.equal((await callRecipes("sql.query", { db: `/${HEALTH}/healthlog`, sql: "SELECT count(*) FROM meal", params: [] })).ok, true, "the cross-app read");
     refusedByNode(await callRecipes("sql.execute", { db: "../x", sql: "DELETE FROM meal", params: [] }).then((r) => (r.ok ? r : { ok: false, error: { code: "PERMISSION_DENIED" } })), "traversal");

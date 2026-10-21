@@ -7,7 +7,7 @@ those files, signs in for exactly what the manifest asks, and runs `app.jsx` in 
 [JSX sandbox](jsx-artifact-sharing.md), where it reaches the person's data only through a small
 message bridge.
 
-The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open starts when the page loads. Before the OpenKey window opens, the page loads no SDK and fetches only this origin's static files.
+The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open starts when the page loads, with no click. Before the OpenKey window opens, the page loads the SDK and fetches only this origin's static files; it reads and writes nothing in TinyCloud until the one approval.
 
 ## What a person sees
 
@@ -35,50 +35,23 @@ cannot be dismissed, and keeps the sandbox's privacy limits one click away in th
 
 ## Sign-in: the grant cap
 
-The saved manifest is the person's to edit (their agent may rewrite it), and it decides what the
-app is signed for, but never more than the catalog's manifest for the version they installed:
+The saved manifest is the person's to edit (their agent may rewrite it). It decides what the bridge
+lets the app call, but never more than the catalog's manifest for the version they installed:
 
-0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before any
-   sign-in: a disabled entry opens nothing.
-1. Read everything under `<app_id>/app/` with a first sign-in that asks for `get` and `list` on
-   `<app_id>/app/`, and create-only `put` on `<app_id>/app/` and `<app_id>/knowledge/` for the save
-   step (see [apps-catalog.md](apps-catalog.md)), 15 minutes (under share's own identity, so the person's apps list gains no
-   record named after the app). That session ends before the next sign-in. The read is bounded
-   (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a
-   stream from a short-lived signed read URL (a `get`) and the read stops, cancelling the stream, at the first byte past the cap: a 1 GB
-   `app/x` is refused after a few chunks, not downloaded. A listing that does not fit counts as a mismatch.
-2. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. None:
-   "isn't in the catalog any more", nothing signed. **The pin**: on every open, before any runtime
-   session, bridge or frame, hash every code file under `app/` (everything the catalog lists for
-   that digest except `knowledge/` and `manifest.json`; `install.json` is the install record) and
-   compare with the catalog's sha256 for the installed digest. A differing, missing or extra file is
-   refused with the "This app's code doesn't match the pinned version" screen, which offers Repair.
-   `knowledge/` stays the person's: it is never hashed. `manifest.json` is not pinned either: it is
-   the person's to narrow, and the cap below decides what it may ask for. Then fetch that entry's
-   manifest from `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).
-3. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own
-   composed ReCap resources of both (`composeManifestRequest`, with the account registry grants the
-   sign-in always adds). Every `(service, space, action, path)` of the saved manifest must be covered by
-   one of the catalog's: same service and space, the action in the covering grant's actions, and
-   the path equal, under a covering "/"-ending prefix, or covered by an empty path. Narrowing
-   (fewer actions, longer paths, fewer grants) passes; anything wider is "asks for more than it did
-   when you installed it" and stops after one approval. The first difference is shown.
-4. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a
-   service other than key-value and SQL, a custom folder prefix, a path with `..` or an empty
-   segment. `includePublicSpace` is forced off and `expiry` to `1h`.
-5. Sign in with that manifest (`signInWithManifest`, src/share/openkey-session.ts, unchanged),
-   one hour, `persistSession: false`.
+0. The catalog's kill switch (`assertAvailable`, from the apps catalog) is checked before anything else: a disabled entry opens nothing.
+1. Find the catalog entry whose `app_id` and `bundle.digest` equal the install record's. None: "This version of the app isn't in the catalog any more", nothing signed. Otherwise fetch that entry's manifest from `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).
+2. Sign in once for the open's union (`openManifest`, src/apps/grants.ts): the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/` (see [apps-catalog.md](apps-catalog.md)). One hour, `persistSession: false`. The session is signed under the app's own `app_id`, so the SDK's registry sync lists the app once the person approves, even if the open is refused later. The same session reads the saved copy and saves missing files. The read is bounded (64 files, 8 MB). The node's metadata does not give a file's size and `kv.get` buffers the whole value, so each file is fetched as a stream from a short-lived signed read URL (a `get`) and the read stops, cancelling the stream, at the first byte past the cap: a 1 GB `app/x` is refused after a few chunks, not downloaded. A listing that does not fit counts as a mismatch.
+3. **The pin**: hash every code file under `app/` (everything the catalog lists for the installed digest, except `knowledge/` and `manifest.json`; `install.json` is the install record) and compare with the catalog's sha256. A differing, missing or extra file is refused with the "This app's code doesn't match the pinned version" screen, which offers Repair. `knowledge/` stays the person's and is never hashed. `manifest.json` is not pinned: it is the person's to narrow, and step 4 decides what it may ask for.
+4. Re-validate the saved manifest with the SDK's `validateManifest`, then compare the SDK's own composed ReCap resources of both (`composeManifestRequest`, with the account registry grants the sign-in always adds). Every `(service, space, action, path)` of the saved manifest must be covered by one of the catalog's: same service and space, the action in the covering grant's actions, and the path equal, under a covering "/"-ending prefix, or covered by an empty path. Narrowing (fewer actions, longer paths, fewer grants) passes; anything wider is "This app asks for more than it did when you installed it" and stops after one approval. The first difference is shown.
+5. Also refused: a delegation target (`did`), `secrets`, a space other than `applications`, a service other than key-value and SQL, a custom folder prefix, a path with `..` or an empty segment. `includePublicSpace` is forced off and `expiry` to `1h` (set by `openManifest`).
+6. The bridge's allow-list is `makeAuthorizer` on the capped copy (`capGrants(saved, catalog).signing`). The frame's calls are checked against that list, not against the session.
 
 ### No signer escalation
 
 A wallet-mode client signs for more than its session covers when asked. The runner's web client has
 OpenKey as its signer, so once the runtime sign-in finishes every signature request is refused
 (`runner-signing-closed`, in the approval guard both the provider and the SDK's sign callback go
-through), and the services the bridge uses invoke with the session key only. A call outside the
-session's ReCap therefore goes to the node and is refused there. `test/e2e-prod/runner-gate.mjs`
-runs the real data adapter and bridge with the page's manifest check skipped, over a signer-less
-node-sdk client restored from the manifest-scoped session, against a real node, and asserts the
-node refuses every call the manifest does not cover.
+through), and the services the bridge uses invoke with the session key only. So a call outside the session's ReCap goes to the node and is refused there. The session is the open's union, so the node accepts writes under `<app_id>/app/` and `<app_id>/knowledge/`. The bridge's allow-list refuses the `app/` writes, and lets `knowledge/` writes through only as the saved manifest grants them. The page, not the node, keeps saving rights away from the app frame. `test/e2e-prod/runner-gate.mjs` (stage 6) runs the real data adapter and bridge with the page's manifest check skipped, over a signer-less node-sdk client restored from the union session, against a real node. It asserts the node refuses each call the union does not cover and accepts the `app/` write.
 
 Residual: the sign-in helper hard-codes `includeAccountRegistryPermissions: true`
 (`src/share/openkey-session.ts`), so the session also carries `account`-space registry permissions (kv

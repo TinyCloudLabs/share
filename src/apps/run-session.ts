@@ -161,7 +161,7 @@ export function createRunPorts(): RunPorts {
     },
 
     async signIn(entry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession> {
-      // Dynamic on purpose: OpenKey and the shared sign-in load only on the click, never on page load.
+      // Dynamic on purpose: OpenKey and the shared sign-in load only when the sign-in starts.
       const openkey = await import("../share/openkey-session.js");
       const config = await loadSharePublicConfig();
       const approvals = approvalGuard(hooks);

@@ -1,11 +1,11 @@
 /**
  * What an installed app may be signed for, and what its bridge may touch. Pure:
  * no DOM, no network; the SDK's manifest functions are passed in so the page can
- * load the SDK after a click and tests can use the real one.
+ * load the SDK when the open starts and tests can use the real one.
  *
  * THE GRANT-CAP RULE. The copy of `manifest.json` in the person's own TinyCloud
- * is theirs to edit (their agent may rewrite it), and it decides what the app is
- * signed for. It can never widen beyond what the CATALOG's manifest for the
+ * is theirs to edit (their agent may rewrite it), and it decides what the bridge
+ * may let the app call. It can never widen beyond what the CATALOG's manifest for the
  * installed bundle declared. `capGrants` composes both manifests with the SDK's
  * own `composeManifestRequest` (the exact set of ReCap resources the sign-in
  * would ask OpenKey to sign) and requires every (service, space, action, path)
@@ -71,7 +71,7 @@ function isImplicit(resource: ResourceCapability): boolean {
 }
 
 export interface CappedGrants {
-  /** What the runner signs in with: the person's copy, with a 1 h expiry and no public space. */
+  /** The person's copy, capped, with a 1 h expiry and no public space. It feeds the bridge allow-list and the consent lists; the sign-in itself uses the catalog union (`openManifest`). */
   readonly signing: Manifest;
   /** The SDK's resolution of `signing` (own folder, skipPrefix grants and defaults, in the app's space). */
   readonly resolved: ResolvedCapabilities;
