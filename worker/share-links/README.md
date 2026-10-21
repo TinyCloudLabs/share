@@ -84,3 +84,14 @@ Tests run against an in-memory SQLite database (`node:sqlite`, `test/helpers/d1.
 4. Run the smoke script: `./smoke.sh https://share.tinycloud.xyz`. It creates one link with a one-hour TTL, checks the GET headers and bytes, checks a wrong-token DELETE and the uniform 404, deletes the link, and checks the 404 after delete.
 
 Steps 1 to 4 are performed by the release owner. Nothing here deploys automatically.
+
+## Temp files
+
+`smoke.sh` creates its work directory with `mktemp -d -p /var/tmp`, sets it to mode 700 and runs under `umask 077`. The created `create.json` (which holds the `deleteToken`) stays inside that directory, and an EXIT trap removes it. Scripts in this package follow the same rule: no temp files in `/tmp`, and no secrets in any temp file that outlives the script.
+
+## Skipped review items
+
+- Optional keyed hash for the client IP key (a Worker secret used as the HMAC key in place of the in-source salt) is not in day-one scope.
+- Per-creator create bucket on `links` is not in day-one scope; create limits are per client only.
+- Edge rate-limit rule is configured outside this repo and is not in day-one scope.
+- CI wiring for the worker (`tsc` and vitest in `.github/workflows/share-sdk.yml`) is not in day-one scope; root CI covers the root packages only.

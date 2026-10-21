@@ -16,3 +16,6 @@ migrations_dir = "migrations"
 
 [triggers]
 crons = ["0 * * * *"]
+
+[observability]
+enabled = false

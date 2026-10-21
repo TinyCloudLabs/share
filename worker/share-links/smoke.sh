@@ -12,7 +12,9 @@ if [ "$#" -ne 1 ]; then
 fi
 
 BASE="${1%/}/api/share-links"
-WORK="$(mktemp -d)"
+umask 077
+WORK="$(mktemp -d -p /var/tmp)"
+chmod 700 "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 fail() {
