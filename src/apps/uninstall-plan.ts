@@ -127,8 +127,8 @@ export function uninstallManifest(app: { app_id: string; name: string }): Manife
     includePublicSpace: false,
     expiry: INSTALL_EXPIRY,
     permissions: [
-      { service: "tinycloud.kv", path: "app/", actions: ["list", "del"], description: "Remove the app's code files. Your data and settings are not touched." },
-      { service: "tinycloud.kv", path: "knowledge/", actions: ["list", "del"], description: "Remove the app's agent notes, including any you edited." },
+      { service: "tinycloud.kv", path: "app/", actions: ["list", "del"], description: "Remove the app's files. Your data and settings are not touched." },
+      { service: "tinycloud.kv", path: "knowledge/", actions: ["list", "del"], description: "Remove its notes, including any you edited." },
       { service: "tinycloud.kv", space: ACCOUNT_SPACE, path: registryKey(app.app_id), skipPrefix: true, actions: ["del"], description: "Remove the app from your apps list." },
     ],
   } as Manifest;

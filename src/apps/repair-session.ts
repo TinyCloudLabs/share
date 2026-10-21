@@ -1,6 +1,6 @@
 /**
- * The real ports for Repair: OpenKey, the Web SDK and the node. Loaded only when the person clicks Continue on the
- * repair sheet (dynamic imports), like the open flow's. The sign-in is the shared `signInWithManifest` with Repair's own
+ * The real ports for Repair: OpenKey, the Web SDK and the node. Loaded only when the person clicks Repair in the
+ * repair panel (dynamic imports), like the open flow's. The sign-in is the shared `signInWithManifest` with Repair's own
  * scope (`repairScope`), so the helper refuses a manifest that asks for more than `put`/`del`/`list` on the one
  * app's `app/` folder before OpenKey opens.
  */

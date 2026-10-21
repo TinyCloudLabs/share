@@ -1,7 +1,7 @@
 /**
  * Browser e2e for the /apps catalog page, against a production build served
  * with the real public/_headers and public/_redirects. Proves:
- *  - /apps and /apps/ list every catalog entry in cards, each with an Open link to the runner and a Details sheet (the first-open disclosure is checked here; opening and saving run in test/e2e-prod/install-gate.mjs);
+ *  - /apps and /apps/ list every catalog entry in cards, each with an Open link to the runner and a Details sheet (the first-open disclosure is on the runner page, see e2e-apps-widget-layer; opening and saving run in test/e2e-prod/install-gate.mjs);
  *  - the page loads no SDK chunk, makes no request off this origin, and its
  *    only data request is a manifest under /apps/b/<digest>/ after Details is
  *    opened; no CSP or Trusted Types violation fires;
@@ -121,7 +121,7 @@ try {
       await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
       assert.equal(await sheetOpen(page), true, `${label}: sheet opens`);
       const sheetText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest, "If this app isn't in your TinyCloud, we'll save its files as part of opening it.", "Opening checks the app's files before anything is saved."]) {
+      for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest]) {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
       assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${catalog.apps[0].app_id}`, `${label}: the sheet's Open goes to the runner`);
@@ -139,25 +139,23 @@ try {
       assert.ok(page.report.requests.every((url) => new URL(url).origin === origin), `${label}: same origin only after Details`);
       assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: no SDK or wasm chunk loaded`);
 
-      // Uninstall: the confirm sheet from Details. Nothing runs here: copy, axe and a screenshot, then Keep app.
-      await page.click(`#apps-sheet button[aria-label='Uninstall ${catalog.apps[0].name}']`);
-      await page.waitForFunction(() => (document.querySelector("#apps-sheet")?.textContent ?? "").includes("app files and agent notes?"));
-      const confirmText = await page.$eval("#apps-sheet", (node) => node.innerText);
-      for (const expected of ["Your app data, settings and files outside those folders stay.", "See which permissions it has been given in this space", "Remove app", "Keep app"]) {
-        assert.ok(confirmText.includes(expected), `${label}: uninstall confirm shows "${expected}"`);
+      // Uninstall: the details footer carries the control and the notes line. Nothing runs here: copy, axe and a screenshot, then close.
+      const footerText = await page.$eval("#apps-sheet footer", (node) => node.innerText);
+      for (const expected of ["Also deletes notes you edited."]) {
+        assert.ok(footerText.includes(expected), `${label}: details footer shows "${expected}"`);
       }
-      assert.deepEqual(await axeViolations(page), [], `${label}: uninstall confirm axe AA`);
+      assert.ok(await page.$(`#apps-sheet footer button[aria-label='Uninstall ${catalog.apps[0].name}']`), `${label}: details footer has the Uninstall control`);
+      assert.deepEqual(await axeViolations(page), [], `${label}: details footer axe AA`);
       await shoot(page, `apps-uninstall-${width}-${scheme}`);
-      await page.evaluate(() => [...document.querySelectorAll("#apps-sheet button")].find((button) => button.textContent === "Keep app")?.click());
 
       await page.keyboard.press("Escape");
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
 
-      // First open, per app: the details sheet shows the first-open disclosure and an Open link to the runner. Opening it signs nothing in and loads no SDK.
+      // First open, per app: the details sheet shows an Open link to the runner. Opening it signs nothing in and loads no SDK.
       const detailsCases = [
-        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
-        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: ["If this app isn't in your TinyCloud, we'll save its files as part of opening it."], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: [], absent: [] },
+        { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: [], absent: [] },
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["'s database ("], absent: [] },
       ];
       for (const { app, tag, expect: wanted, absent } of detailsCases) {
@@ -231,15 +229,16 @@ try {
         const label = `kill switch ${width}px ${scheme}`;
         const page = await open(browser, "/apps", { width, scheme, base: off.origin });
         const index = switched.apps.indexOf(target);
-        const card = await page.evaluate((position) => { const node = document.querySelectorAll(".apps-card")[position]; return { text: node.textContent, open: node.querySelector(".apps-card__actions a")?.getAttribute("href") ?? null, details: node.querySelector(".apps-card__actions button")?.disabled ?? true }; }, index);
+        const card = await page.evaluate((position) => { const node = document.querySelectorAll(".apps-card")[position]; const buttons = [...node.querySelectorAll(".apps-card__actions button")]; return { text: node.textContent, open: node.querySelector(".apps-card__actions a")?.getAttribute("href") ?? null, openDisabled: buttons.find((button) => button.textContent === "Open")?.disabled ?? false, details: buttons.find((button) => button.textContent === "Details")?.disabled ?? true }; }, index);
         assert.ok(card.text.includes("Temporarily unavailable") && card.text.includes(target.disabledReason), `${label}: the card says why`);
-        assert.equal(card.open, `/apps/run#${target.app_id}`, `${label}: Open still goes to the runner, which refuses it before sign-in`);
+        assert.equal(card.open, null, `${label}: a disabled card has no runner link`);
+        assert.equal(card.openDisabled, true, `${label}: a disabled card's Open is a disabled button`);
         assert.equal(card.details, false, `${label}: Details still opens`);
         assert.equal(await page.$$eval(".apps-card", (nodes) => nodes.filter((node) => node.textContent.includes("Temporarily unavailable")).length), 1, `${label}: only that card is off`);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label}: card axe AA`);
         await shoot(page, `kill-switch-list-${width}-${scheme}`);
-        await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions button").click(), index);
+        await page.evaluate((position) => [...document.querySelectorAll(".apps-card")[position].querySelectorAll(".apps-card__actions button")].find((button) => button.textContent === "Details").click(), index);
         await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
         const detail = await page.$eval("#apps-sheet", (node) => ({ text: node.innerText }));
         assert.ok(detail.text.includes("Temporarily unavailable") && detail.text.includes("Opening is switched off for this app."), `${label}: the details sheet says so`);

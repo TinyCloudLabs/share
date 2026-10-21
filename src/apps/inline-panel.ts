@@ -3,8 +3,8 @@
  *
  * Why it is not the sheet: the OpenKey window is an overlay the SDK appends to `document.body` (fixed, z-index
  * 999999). A modal `<dialog>` is in the browser's top layer, which no z-index rises above, so a sheet that stays modal
- * while the window is open covers it: clicks land on the dialog and its backdrop. The sheet therefore closes when
- * Continue is pressed, and the progress, the approval hint, a Cancel and the result are shown here, in the page, which
+ * while the window is open covers it: clicks land on the dialog and its backdrop. The sheet therefore closes when a run
+ * starts, and the progress, the approval hint, a Cancel and the result are shown here, in the page, which
  * is not inert while the window is up.
  *
  * The panel is a live region (`role=status`). It takes focus when it appears so the person (and a screen reader) is

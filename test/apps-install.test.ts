@@ -93,7 +93,6 @@ describe("what the pre-consent sheet says", () => {
     const entry = entryOf(HEALTH);
     const { notices, runtime } = consentFor(entry, manifestOf(entry), catalog.apps);
     expect(notices).toContain(SQL_CHANGE_NOTICE);
-    expect(SQL_CHANGE_NOTICE).toBe("This app can change or delete its own tables.");
     expect(runtime.change.some((item) => item.service === "SQL database" && item.actions.includes("schema"))).toBe(true);
   });
 

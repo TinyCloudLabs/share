@@ -18,7 +18,7 @@
  *    approval, before anything more is signed; a narrowed copy runs, with
  *    exactly what it kept;
  *  - the saved code is PINNED: an edited app.jsx or an extra file is refused before any
- *    runtime session or frame, Repair (the repair sheet) puts the
+ *    runtime session or frame, Repair (the repair panel) puts the
  *    catalog's code back with one approval and the app opens, and an installed version
  *    that has left the catalog gets the honest message and no Repair;
  *  - a hostile app (a catalog entry the gate adds for the run) can do nothing the
@@ -369,12 +369,12 @@ try {
   const healthManifest = await manifestOf(health);
   const recipesManifest = await manifestOf(recipes);
 
-  /** From a runner refusal screen: Repair -> the repair sheet -> Continue -> the sheet's last line. */
+  /** From a runner refusal screen: Repair -> the inline repair panel -> Repair -> the panel's last line. */
   async function repairFromRunner(page, label) {
     await page.click(`a[href='/apps/#repair=${HEALTH}']`);
-    await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-    assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
-    await clickByText(page, "Continue");
+    await page.waitForFunction(() => [...document.querySelectorAll(".apps-install-panel button")].some((button) => button.textContent === "Repair"), { timeout: 60_000 });
+    assert.match(await page.$eval(".apps-install-panel", (node) => node.innerText), /Your data is untouched/);
+    await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Repair").click());
     const text = await waitUntil(async () => { const line = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(line) ? line : undefined; }, 300_000);
     return text ?? "";
   }
@@ -606,13 +606,13 @@ try {
       assert.deepEqual(listener.requests, [], `${label}: the tampered code ran`);
       if (label === "run-tampered") await captureState(page, "code-mismatch");
       report.stages[label] = { refused: true, sessionsSigned: 1, approvals: 1 };
-      // Repair: the apps page opens the repair sheet; one approval; the code files come back; the stray goes.
+      // Repair: the apps page opens the inline repair panel; one approval; the code files come back; the stray goes.
       const repairFrom = trace.length;
       await page.click(`a[href='/apps/#repair=${HEALTH}']`);
-      await page.waitForFunction(() => document.querySelector("#apps-sheet")?.open === true && [...document.querySelectorAll("#apps-sheet button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-      assert.match(await page.$eval("#apps-sheet", (node) => node.innerText), /Your data is untouched/);
-      if (label === "run-tampered") await captureState(page, "repair-sheet");
-      await clickByText(page, "Continue");
+      await page.waitForFunction(() => [...document.querySelectorAll(".apps-install-panel button")].some((button) => button.textContent === "Repair"), { timeout: 60_000 });
+      assert.match(await page.$eval(".apps-install-panel", (node) => node.innerText), /Your data is untouched/);
+      if (label === "run-tampered") await captureState(page, "repair-panel");
+      await page.evaluate(() => [...document.querySelectorAll(".apps-install-panel button")].find((button) => button.textContent === "Repair").click());
       const repaired = await waitUntil(async () => { const text = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^(Repaired\.|Not repaired|Sign-in|OpenKey|We couldn't)/.test(text) ? text : undefined; }, 300_000);
       assert.match(repaired ?? "", /^Repaired\./, `${label}: repair ended with "${repaired}"`);
       assert.equal(signCount(repairFrom, label), 1, `${label}: Repair needed one approval`);
@@ -649,12 +649,12 @@ try {
       await start(page);
       assert.equal(await waitUntil(async () => (await screenTitle(page)) === "This version of the app isn't in the catalog any more"), true, `${label}: screen (status: ${await statusText(page)})`);
       assert.equal(await page.$("a[href*='repair']"), null, `${label}: Repair offered for a version with no pin`);
-      const text = await page.$eval(".run-screen", (node) => node.textContent);
-      assert(text.includes(`tinycloud kv list --space applications --prefix ${HEALTH}/app/`) && text.includes("tinycloud kv delete --space applications"), `${label}: no removal guidance`);
+      const uninstall = await page.$eval(`a[href='/apps/#uninstall=${encodeURIComponent(HEALTH)}']`, (node) => node.textContent).catch(() => null);
+      assert.equal(uninstall, "Uninstall", `${label}: no Uninstall link`);
       assert.equal(sessionMessages(label).length, 1);
       await captureState(page, "removed-version");
-      report.stages.removedVersion = { guidance: true, repairOffered: false };
       await context.close();
+      report.stages.removedVersion = { uninstallLink: true, repairOffered: false };
     }
     await put(recordKey, Buffer.from(record.data.data));
   }
@@ -827,7 +827,6 @@ try {
     await page.waitForSelector(".apps-card", { timeout: 60_000 });
     await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), health.name);
     await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), health.name);
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
     const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
     assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
     await context.close();

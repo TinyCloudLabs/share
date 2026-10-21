@@ -103,7 +103,7 @@ screenshots (`APPS_SCREENSHOT_DIR`).
 
 Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)); Details is the secondary action and opens the details sheet. The runner page starts the open as it loads: the catalog bundle is checked first, then the one OpenKey approval is requested. Nothing is written before that approval. The SDK loads before the bundle check; OpenKey loads only after it passes.
 
-The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`; the details sheet shows the same list). It says that the app runs with its own sign-in, that its manifest lists what it can read and change, who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet. Direct links show it too.
+The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`). It says that the app runs with its own sign-in, that it can only read and change what its manifest asks for (the list is shown below), who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet.
 
 Each open runs these steps in order (`openApp` in `src/apps/run.ts`):
 
@@ -121,32 +121,32 @@ While an open runs, the progress line shows the step, and a Cancel button sits b
 
 Every failure has a title and a plain sentence in the runner's result screen (`failureScreen` in `src/apps/run-view.ts`). A save that stops partway keeps the files already written. Opening the app again keeps them and writes the rest; `install.json` is written once the code files pass the pin check.
 
-Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catalog copy after a confirmation sheet. It takes one approval. The knowledge folder and `install.json` are left as they are.
+Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catalog copy. It opens as an inline panel on the apps page, and one Repair click starts it. It takes one approval. The knowledge folder and `install.json` are left as they are.
 
 `test/apps-open-install.test.ts` covers the open steps (verification before any sign-in, create-only writes, the order of `install.json`, cancel during the save, a saved listing that could not be read in full). `test/apps-runner-view.test.ts` and `test/apps-view.test.ts` cover the start screen, the result screens and the card actions. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window at 390, 1100 and 1440 px and checks that nothing modal sits above the window, that a click reaches it, and that Cancel and Escape end the open. `test/e2e-prod/install-gate.mjs` and `test/e2e-prod/runner-gate.mjs` run the same flow against real OpenKey; they are run by QA, not in CI.
 
 
 ## Uninstall
 
-"Uninstall" is on an app's details sheet. It removes the app's code, manifest, install record and agent knowledge notes, and keeps the app's data.
+"Uninstall" is in an app's details panel. It removes the app's code, manifest, install record and agent knowledge notes, and keeps the app's data.
 
-- **Confirm sheet.** It names the app and says what goes (the files under `<app_id>/app/` and `<app_id>/knowledge/`, including notes the person edited there) and what stays (SQL databases and prefs under `<app_id>/`, and files outside those folders). It lists every change and read the signed request covers, including the SDK's added read of the permissions in the applications and account spaces, from the same plan the request is checked against. It asks the person to close the app's open tabs first. "Keep app" closes the sheet; nothing is signed or changed.
-- **One sign-in** with the uninstaller identity (`tinycloud-share-uninstall`, `src/apps/uninstall-plan.ts`). Its ReCap is checked against the confirm sheet before OpenKey opens: the request grants `kv` list and delete on `<app_id>/app/` and `<app_id>/knowledge/`, and delete on the single key `applications/<app_id>` in the account space. Registry sync is not awaited.
+- **Details footer.** Uninstall sits in the details footer, with "Also deletes notes you edited." beside it. It runs with no confirm step. The signed request covers the files under `<app_id>/app/` and `<app_id>/knowledge/` (including notes the person edited there), and the SDK's added read of the permissions in the applications and account spaces. The same plan is checked against the request before OpenKey opens. Data stays: SQL databases and prefs under `<app_id>/`, and files outside those folders.
+- **One sign-in** with the uninstaller identity (`tinycloud-share-uninstall`, `src/apps/uninstall-plan.ts`). Its ReCap is checked against the uninstall plan before OpenKey opens: the request grants `kv` list and delete on `<app_id>/app/` and `<app_id>/knowledge/`, and delete on the single key `applications/<app_id>` in the account space. Registry sync is not awaited.
 - **Order.** `<app_id>/knowledge/index.md`, then `<app_id>/app/install.json`, then the rest of `app/` and `knowledge/` in sorted order, then the registry record last. A missing key counts as success, so a retry after an interruption finishes the job. An interrupted run leaves a partial install, which Uninstall can finish again.
 - **Listing limit.** A listing that is still truncated after 200 pages of 500 keys stops the run before anything is deleted.
 - **Keys outside the folders are ignored.** A listed key outside `<app_id>/app/` and `<app_id>/knowledge/` is skipped, not deleted, so a listing cannot widen the delete set. The delete plan applies the same filter, so no `del` is issued for such a key.
-- **Registry failure is not fatal.** The files are already gone, so the sheet says "The app was removed; its entry in your account list couldn't be updated; try again." A retry removes only the registry entry.
-- **Stopped before sign-in.** If the signed request does not match the confirm sheet, or would delegate to another identity, the run stops before OpenKey opens: "Couldn't start the uninstall. Nothing was changed. Try again."
-- **Nothing listed.** If the app has no files left, the run only removes the registry entry and the sheet says there was nothing to remove.
-- **Account app list.** The SDK's `applications.remove` treats a failed removal of the app's index row as success. After an uninstall, `applications.list()` no longer returns the app, but `applications.list({ preferIndex: true })` (and `tc account applications`) can still show it. The uninstall cannot report this.
+- **Registry failure is not fatal.** The files are already gone, so the page says "The app was removed; its entry in your account list couldn't be updated; try again." A retry removes only the registry entry.
+- **Stopped before sign-in.** If the signed request does not match the uninstall plan, or would delegate to another identity, the run stops before OpenKey opens: "Couldn't start the uninstall. Nothing was changed. Try again."
+- **Nothing listed.** If the app has no files left, the run only removes the registry entry and the page says there was nothing to remove.
+- **Account app list.** Uninstall deletes the app's `applications/<app_id>` key directly and does not write the account's app index. After an uninstall, `applications.list()` no longer returns the app, but `applications.list({ preferIndex: true })` (and `tc account applications`) can still show it.
 - **Re-install** after an uninstall works, and the kept SQL and prefs are still there.
 
-`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and the sheet's delete and read rows, the stop-before-sign-in copy, the nothing-to-remove copy, and the registry-failure retry. `test/e2e-prod/install-gate.mjs` (stage 6) and `runner-gate.mjs` (stage 8) run uninstall against the hermetic stack; see those files' headers.
+`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the plan/ReCap match and the plan's delete and read rows, the stop-before-sign-in copy, the nothing-to-remove copy, and the registry-failure retry. `test/e2e-prod/install-gate.mjs` (stage 6) and `runner-gate.mjs` (stage 8) run uninstall against the hermetic stack; see those files' headers.
 
 ## What the sheet says
 
 Any app that writes SQL (the default grant included) also
-says "This app can change or delete its own tables.", and a grant on another app's database is listed
+says "Can change or delete its own tables.", and a grant on another app's database is listed
 as "This app can read <app>'s database (whole database)." (`src/apps/consent.ts`, from the same
 `summarizeAccess` the lists use.)
 

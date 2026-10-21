@@ -36,12 +36,13 @@ interface FakeHandle {
   dispose: Mock;
 }
 
-function fakeTinyCloud(replies: { list?: Reply; del?: Reply; remove?: Reply } = {}): FakeTinyCloud {
+function fakeTinyCloud(replies: { list?: Reply; del?: Reply } = {}): FakeTinyCloud {
   const kv: FakeKv = {
     list: vi.fn(async () => replies.list ?? { ok: true, data: { keys: [], truncated: false } }),
     delete: vi.fn(async () => replies.del ?? { ok: true }),
   };
-  const remove = vi.fn(async () => replies.remove ?? { ok: true, data: undefined });
+  // The SDK's `applications.remove` stays as a spy: the uninstall must never call it.
+  const remove = vi.fn(async () => ({ ok: true, data: undefined }));
   return {
     kv,
     remove,
@@ -151,23 +152,25 @@ describe("createUninstallPorts: folder listing and deletes", () => {
 });
 
 describe("createUninstallPorts: registry removal", () => {
-  it("removes the app's entry by its id", async () => {
+  it("deletes the app's registry key in the account space, never through the SDK's applications.remove", async () => {
     const tc = fakeTinyCloud();
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
     const session = await createUninstallPorts().openSession(plan, hooks);
     await session.removeRegistry("todo");
-    expect(tc.remove).toHaveBeenCalledWith("todo");
+    expect(tc.tinycloud.kvForSpace).toHaveBeenCalledWith("space-account");
+    expect(tc.kv.delete).toHaveBeenCalledWith("applications/todo");
+    expect(tc.remove).not.toHaveBeenCalled();
   });
 
   it("an entry that is already gone counts as removed", async () => {
-    const tc = fakeTinyCloud({ remove: { ok: false, error: { code: "KV_NOT_FOUND" } } });
+    const tc = fakeTinyCloud({ del: { ok: false, error: { code: "KV_NOT_FOUND" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
     const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.removeRegistry("todo")).resolves.toBeUndefined();
   });
 
   it("any other registry failure rejects, so the run reports the entry as not removed", async () => {
-    const tc = fakeTinyCloud({ remove: { ok: false, error: { code: "NETWORK_ERROR" } } });
+    const tc = fakeTinyCloud({ del: { ok: false, error: { code: "NETWORK_ERROR" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
     const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.removeRegistry("todo")).rejects.toThrow("uninstall-registry-failed:NETWORK_ERROR");

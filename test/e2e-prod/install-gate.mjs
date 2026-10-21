@@ -298,13 +298,13 @@ try {
     // Hold the last write (install.json) to show the saving state with the files already in place.
     controls.record = hold();
     await controls.record.arrived;
-    assert.match(await statusText(page), /^Saving Health Log's files to your TinyCloud \(4 of 15\)/, "the save progress is shown");
+    assert.match(await statusText(page), /^Opening Health Log…/, "the save progress is shown");
     await captureState(page, "saving");
     controls.record.release(); controls.record = undefined;
     const outcome = await finished(page);
     assert.match(outcome.status, /is running\./, "a fresh Open runs the app");
     const announced = await page.evaluate(() => window.__announced);
-    for (const expected of ["Approve in the OpenKey window so Share can open Health Log from your TinyCloud", "Saving Health Log's files to your TinyCloud", "Health Log is running."]) {
+    for (const expected of ["Opening Health Log…", "Approve in the OpenKey window so Share can open Health Log from your TinyCloud", "Health Log is running."]) {
       assert(announced.some((text) => text.startsWith(expected)), `the live region never said "${expected}" (${JSON.stringify(announced.map((text) => text.slice(0, 50)))})`);
     }
     const during = trace.slice(before).filter((entry) => entry.phase === "install-health");
@@ -453,7 +453,6 @@ try {
     assert(before.keys.includes(`${HEALTH}/app/install.json`), "Health Log is not installed before the uninstall");
     await page.evaluate((name) => document.querySelector(`button[aria-label='Details for ${name}']`).click(), app(HEALTH).name);
     await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), app(HEALTH).name);
-    await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
     await page.waitForFunction(() => /^Removed /.test(document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
     const removed = await page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent ?? "");
     assert(removed.includes("Your app data and settings are kept.") && removed.includes(`Open ${app(HEALTH).name} again to restore it.`), `the uninstall message was "${removed}"`);
