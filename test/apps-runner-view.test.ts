@@ -13,6 +13,8 @@ import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
 import type { JsxManifest } from "../src/artifact/jsx-runtime/files.ts";
+import { APPROVAL_SLOW_AFTER_MS, APPROVAL_SLOW_COPY } from "../src/share/approval-hint.ts";
+import { OPENKEY_ORIGIN } from "../src/share/openkey-origin.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -270,6 +272,34 @@ describe("opening an app", () => {
     await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
     expect(fake.runtimes).toBe(0);
     expect(root.querySelector("iframe")).toBeNull();
+  });
+
+  it("shows the approval help line at 15 s when no OpenKey window has loaded", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    const fake = fakePorts({ hold: true });
+    const runner = await open(fake);
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
+    expect(status()).toContain(APPROVAL_SLOW_COPY);
+    runner.destroy();
+    fake.release();
+    await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
+  });
+
+  it("does not show the approval help line after 20 s while the OpenKey window is up", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+    const fake = fakePorts({ hold: true });
+    const runner = await open(fake);
+    await vi.waitFor(() => expect(status()).toContain("Approve in the OpenKey window"));
+    const probe = document.createElement("iframe");
+    document.body.append(probe);
+    window.dispatchEvent(new MessageEvent("message", { origin: OPENKEY_ORIGIN, source: probe.contentWindow, data: { type: "openkey:ready" } }));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(status()).not.toContain(APPROVAL_SLOW_COPY);
+    probe.remove();
+    runner.destroy();
+    fake.release();
+    await vi.waitFor(() => expect(fake.ended.runtime).toBe(1));
   });
 });
 

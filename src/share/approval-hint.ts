@@ -8,6 +8,7 @@
  * on every way out (approved, refused, cancelled, timed out, screen replaced),
  * so it cannot sit next to a "Share revoked." or "Your link is ready" line.
  */
+import { OPENKEY_ORIGIN } from "./openkey-origin.js";
 
 /** After this long without an answer the hint adds where the window may be. */
 export const APPROVAL_SLOW_AFTER_MS = 15_000;
@@ -15,6 +16,27 @@ export const APPROVAL_SLOW_AFTER_MS = 15_000;
 export const APPROVAL_TIMEOUT_AFTER_MS = 60_000;
 
 export const APPROVAL_SLOW_COPY = "Can't see the OpenKey window? It may be behind this tab or blocked as a pop-up. Cancel and try again.";
+
+/**
+ * Calls `onModal` when OpenKey's in-page window reports ready. The SDK keeps that window in a closed shadow root, so the
+ * page cannot read whether it is open; the window's frame posts `openkey:ready` to this window. The popup fallback posts
+ * the same message from a top-level window, which is not a child frame of this one, so it does not count.
+ * Returns the stop function.
+ */
+export function watchOpenKeyModal(view: Window, onModal: () => void): () => void {
+  const onMessage = (event: MessageEvent): void => {
+    if (event.origin !== OPENKEY_ORIGIN || event.data?.type !== "openkey:ready") return;
+    if (!isChildFrame(view, event.source)) return;
+    onModal();
+  };
+  view.addEventListener("message", onMessage);
+  return () => view.removeEventListener("message", onMessage);
+}
+
+function isChildFrame(view: Window, source: MessageEventSource | null): boolean {
+  for (let index = 0; index < view.frames.length; index += 1) if (view.frames[index] === source) return true;
+  return false;
+}
 
 export interface ApprovalHintOptions {
   /** The first line, e.g. "Approve in the OpenKey window to revoke". */
@@ -49,11 +71,17 @@ export function showApprovalHint(parent: HTMLElement, options: ApprovalHintOptio
     cancel.addEventListener("click", () => { if (cancel === undefined) return; cancel.disabled = true; cancel.textContent = "Cancelling…"; onCancel(); });
     element.append(cancel);
   }
-  const slow = view.setTimeout(() => { more.textContent = APPROVAL_SLOW_COPY; more.hidden = false; }, options.slowAfterMs ?? APPROVAL_SLOW_AFTER_MS);
+  // While the OpenKey window is up the wait is working: the help line stays away, and comes off if the window arrives late.
+  let modalShown = false;
+  const stopModalWatch = watchOpenKeyModal(view, () => {
+    modalShown = true;
+    if (more.textContent === APPROVAL_SLOW_COPY) { more.textContent = ""; more.hidden = true; }
+  });
+  const slow = view.setTimeout(() => { if (!modalShown) { more.textContent = APPROVAL_SLOW_COPY; more.hidden = false; } }, options.slowAfterMs ?? APPROVAL_SLOW_AFTER_MS);
   const timeout = view.setTimeout(() => { more.textContent = options.timeoutCopy; more.hidden = false; }, options.timeoutAfterMs ?? APPROVAL_TIMEOUT_AFTER_MS);
   parent.append(element);
   return {
     element,
-    dispose: () => { view.clearTimeout(slow); view.clearTimeout(timeout); element.remove(); },
+    dispose: () => { view.clearTimeout(slow); view.clearTimeout(timeout); stopModalWatch(); element.remove(); },
   };
 }

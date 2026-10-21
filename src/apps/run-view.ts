@@ -25,7 +25,7 @@ import { accessSection, el, noticeList } from "./view.ts";
 import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
 import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
-import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS } from "../share/approval-hint.js";
+import { APPROVAL_SLOW_COPY, APPROVAL_SLOW_AFTER_MS, watchOpenKeyModal } from "../share/approval-hint.js";
 import type { JsxCapabilityReply } from "../viewer/jsx-sandbox.js";
 import { type RenderJsxOptions, renderJsxPage } from "../viewer/jsx-render.js";
 
@@ -163,6 +163,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   let frameCleanup: (() => void) | undefined;
   let expiryTimer: number | undefined;
   let slowTimer: number | undefined;
+  let stopModalWatch: (() => void) | undefined;
+  let modalUp = false;
   let live = false;
   let destroyed = false;
 
@@ -225,14 +227,23 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   const onPageHide = (): void => { if (running !== undefined) signOutNow(); };
   view.addEventListener("pagehide", onPageHide);
 
+  /** Ends the approval wait: its timer and its watch for the OpenKey window. */
+  const clearApprovalWait = (): void => {
+    view.clearTimeout(slowTimer);
+    stopModalWatch?.();
+    stopModalWatch = undefined;
+    modalUp = false;
+  };
   const paint = (mine: number, progress: RunProgress): void => {
     if (mine !== attempt || entry === undefined) return;
     const approval = progress.phase === "reading" && progress.approval;
     const base = progressText(progress, entry.name);
     setStatus(base, "info");
+    if (!approval) { clearApprovalWait(); return; }
     view.clearTimeout(slowTimer);
-    // The same "can't see the OpenKey window?" help the other pages give after a while.
-    if (approval) slowTimer = view.setTimeout(() => { if (mine === attempt) setStatus(`${base}. ${APPROVAL_SLOW_COPY}`, "info"); }, APPROVAL_SLOW_AFTER_MS);
+    // The same "can't see the OpenKey window?" help the other pages give after a while. It stays away while the OpenKey window is up.
+    if (stopModalWatch === undefined) stopModalWatch = watchOpenKeyModal(view, () => { modalUp = true; setStatus(base, "info"); });
+    slowTimer = view.setTimeout(() => { if (mine === attempt && !modalUp) setStatus(`${base}. ${APPROVAL_SLOW_COPY}`, "info"); }, APPROVAL_SLOW_AFTER_MS);
   };
 
   /** Cancel while an open runs: the page stops waiting now. A late OpenKey session is closed and nothing is written (openApp checks the signal). */
@@ -241,7 +252,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     openAbort.abort();
     openAbort = undefined;
     attempt++;
-    view.clearTimeout(slowTimer);
+    clearApprovalWait();
     cancelSlot.replaceChildren();
     const screen = failureScreen("cancelled", entry?.name ?? "");
     setStatus(screen.title, "warning");
@@ -264,14 +275,14 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     paint(mine, { phase: "checking" });
     void openApp(appId, ports, (progress) => paint(mine, progress), abort.signal).then(
       (result) => {
-        view.clearTimeout(slowTimer);
+        clearApprovalWait();
         if (mine !== attempt || destroyed) { void result.session.end().catch(() => undefined); return; }
         cancelSlot.replaceChildren();
         openAbort = undefined;
         start(result, mine);
       },
       (error: unknown) => {
-        view.clearTimeout(slowTimer);
+        clearApprovalWait();
         if (mine !== attempt || destroyed) return;
         cancelSlot.replaceChildren();
         openAbort = undefined;
@@ -371,7 +382,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
       openAbort?.abort();
       openAbort = undefined;
       attempt += 1;
-      view.clearTimeout(slowTimer);
+      clearApprovalWait();
       stopFrame();
     },
   };
