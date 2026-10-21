@@ -126,8 +126,8 @@ export function catalogEntryFor(appId: string, entries: readonly CatalogEntry[] 
 /**
  * Writes what is missing from the saved copy, create-only, inside the read session. Returns the files as they now stand.
  * A saved copy recorded for another digest is left alone: verification then refuses it, nothing is written into it.
- * Order: the app's files (each one not already saved), then `install.json` (only when no record is saved, and only once every
- * app file is byte-identical to the catalog's), then the notes with `knowledge/index.md` last. Nothing is cleaned up on failure.
+ * Order: the app's files (each one not already saved), then `install.json` (only when no record is saved, and only once the saved
+ * code files pass `pinProblem`, the same check as the open), then the notes with `knowledge/index.md` last. Nothing is cleaned up on failure.
  */
 async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: StoredFiles, put: ReadSession["put"], report: (progress: RunProgress) => void, signal: AbortSignal | undefined): Promise<StoredFiles> {
   const recordBytes = files.entries.get(INSTALL_RECORD_PATH);

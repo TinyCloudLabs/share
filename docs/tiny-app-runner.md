@@ -60,7 +60,7 @@ app is signed for, but never more than the catalog's manifest for the version th
    session, bridge or frame, hash every code file under `app/` (everything the catalog lists for
    that digest except `knowledge/` and `manifest.json`; `install.json` is the install record) and
    compare with the catalog's sha256 for the installed digest. A differing, missing or extra file is
-   refused with "This app's code doesn't match the pinned version. Remove it and install again."
+   refused with the "This app's code doesn't match the pinned version" screen, which offers Repair.
    `knowledge/` stays the person's: it is never hashed. `manifest.json` is not pinned either: it is
    the person's to narrow, and the cap below decides what it may ask for. Then fetch that entry's
    manifest from `/apps/b/<digest>/` and check it against the catalog's sha256 (as the install does).

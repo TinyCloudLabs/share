@@ -9,7 +9,7 @@
  * browser against a real Node:
  *  - a fresh account opens the Health Log sample from its card: the runner asks two
  *    approvals (read, then run), every file is created only under `<app_id>/app/` and
- *    `<app_id>/knowledge/`, install.json is written last, and the app is in the account's apps list;
+ *    `<app_id>/knowledge/`, app files first, then install.json, then the notes with `knowledge/index.md` last, and the app is in the account's apps list;
  *  - the read session asked for exactly the two put-only folders plus the
  *    account registry, and nothing the app itself asks for (the recorded
  *    registry manifest carries no SQL grant);
@@ -308,7 +308,7 @@ try {
     // Hold the last write (install.json) to show the saving state with the files already in place.
     controls.record = hold();
     await controls.record.arrived;
-    assert.match(await statusText(page), /^Saving Health Log \(sample\)'s files to your TinyCloud \(14 of 15\)/, "the save progress is shown");
+    assert.match(await statusText(page), /^Saving Health Log \(sample\)'s files to your TinyCloud \(4 of 15\)/, "the save progress is shown");
     await captureState(page, "saving");
     controls.record.release(); controls.record = undefined;
     const outcome = await finished(page);
@@ -331,11 +331,15 @@ try {
     assert.deepEqual(Object.keys(record).sort(), ["digest", "installed_at", "source"]);
     assert.equal(record.digest, health.bundle.digest);
     assert.equal(record.source.commit, health.source.commit);
-    const listed = stored.registered.find((entry) => entry.appId === HEALTH);
-    assert(listed, `the account apps list shows the app (${JSON.stringify(stored.registered.map((entry) => entry.appId))})`);
+    // The apps-list record comes from the runtime sign-in's background sync, so it is polled, not read once.
+    const listedRead = await waitUntil(async () => {
+      const next = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
+      return next.registered.some((entry) => entry.appId === HEALTH) ? next : undefined;
+    }, 60_000);
+    assert(listedRead, "the account apps list shows the app");
     // The registry record is the opener's request, not the app's: no SQL, no cross-app grant, no secrets.
     // The SDK's registry record for this app is its id and a manifest hash (the web SDK stores `manifests: []`): the record cannot carry the app's own grants.
-    const record_ = stored.records[HEALTH];
+    const record_ = listedRead.records[HEALTH];
     assert.equal(record_?.appId, HEALTH);
     // (Its manifestHash is the hash of an empty manifest list, the same for every app: it says nothing about grants.)
     assert.deepEqual(record_?.manifests, [], "the registry record carries manifests");
@@ -427,9 +431,13 @@ try {
     const resumed = await finished(page);
     assert.match(resumed.status, /is running\./, "the reopen runs the app");
     await captureState(page, "running-resumed");
-    const done = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+    // The apps-list record comes from the runtime sign-in's background sync, so it is polled, not read once.
+    const done = await waitUntil(async () => {
+      const next = await reader(page, chunkUrl, { op: "read", appId: RECIPES });
+      return next.registered.some((entry) => entry.appId === RECIPES) ? next : undefined;
+    }, 60_000);
+    assert(done, "the account apps list shows the recipes app");
     assert.deepEqual(done.keys, expectedKeys(recipes));
-    assert(done.registered.some((entry) => entry.appId === RECIPES));
     report.stages.partialFailure = { failed: outcome.status.slice(0, 70), resumed: resumed.status.slice(0, 80) };
     await context.close();
   }

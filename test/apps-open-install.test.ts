@@ -176,4 +176,47 @@ describe("openApp: install on open", () => {
     expect(h.puts).toEqual([]);
     expect(h.counts.runtimes).toBe(0);
   });
+
+  it("a save cancelled mid-write stops before the next write: no install.json, nothing starts, and the next open resumes", async () => {
+    const copy = new Map<string, Uint8Array>();
+    const h = harness(copy);
+    const controller = new AbortController();
+    const readStored = h.ports.readStored;
+    h.ports.readStored = async (entry, hooks) => {
+      const session = await readStored(entry, hooks);
+      let writes = 0;
+      return {
+        ...session,
+        put: async (key, bytes, contentType) => {
+          writes += 1;
+          if (writes === 1) controller.abort();
+          return session.put(key, bytes, contentType);
+        },
+      };
+    };
+    await expect(openApp(HEALTH, h.ports, noop, controller.signal)).rejects.toMatchObject({ reason: "cancelled" });
+    const ordered = installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path));
+    expect(h.puts).toEqual(ordered.slice(0, 1));
+    expect(copy.has(INSTALL_RECORD_PATH)).toBe(false);
+    expect(h.counts.runtimes).toBe(0);
+    const resumed = harness(copy);
+    await openApp(HEALTH, resumed.ports, noop);
+    expect(resumed.puts).not.toContain(ordered[0]);
+    expect(resumed.puts).toContain(recordKey);
+    expect(resumed.counts.runtimes).toBe(1);
+  });
+
+  it("a saved copy that could not be listed in full refuses the open: install.json is not committed", async () => {
+    const copy = fullCopy();
+    copy.delete(INSTALL_RECORD_PATH);
+    const h = harness(copy);
+    const readStored = h.ports.readStored;
+    h.ports.readStored = async (entry, hooks) => {
+      const session = await readStored(entry, hooks);
+      return { ...session, files: { entries: session.files.entries, incomplete: true } };
+    };
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "damaged" });
+    expect(h.puts).toEqual([]);
+    expect(h.counts.runtimes).toBe(0);
+  });
 });
