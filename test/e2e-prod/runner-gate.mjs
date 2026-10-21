@@ -50,6 +50,7 @@ import puppeteer from "puppeteer";
 import * as sdkCore from "@tinycloud/sdk-core";
 import { TinyCloudNode } from "@tinycloud/node-sdk";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
+import { consoleEntry, isHostileRefusal } from "./console-filter.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { runBoundedStep, startNativeStack } from "./native-stack.mjs";
 import dgram from "node:dgram";
@@ -185,7 +186,7 @@ async function installRouting(page, stack) {
     window.__violations = [];
     document.addEventListener("securitypolicyviolation", (event) => window.__violations.push(`${event.violatedDirective} ${event.blockedURI}`));
   });
-  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push({ phase, type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").slice(0, 240), at: `${message.location()?.url ?? ""}:${message.location()?.lineNumber ?? ""}`.replace(/^https:\/\/[^/]+/, "").slice(0, 120) }); });
+  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push(consoleEntry(phase, message.type(), message.text(), message.location())); });
   page.on("pageerror", (error) => consoleLog.push({ phase, type: "pageerror", text: String(error?.message ?? "page error").slice(0, 240) }));
   await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
@@ -259,6 +260,7 @@ async function openFirst(browser, stack, appId) {
   assert.equal(new URL(page.url()).hash, `#${appId}`);
   await start(page);
   await page.waitForFunction(() => /is running/.test(document.querySelector(".run-status-region")?.textContent ?? ""), { timeout: 300_000 });
+  await noViolations(page, `open-${appId}`);
   await context.close();
 }
 
@@ -853,16 +855,13 @@ try {
   const expectedConsole = [/^Failed to load resource: the server responded with a status of (?:400|401|404|412) /, /^Failed to load resource: net::ERR_FAILED$/, /^Error with Permissions-Policy header: Unrecognized feature: 'web-share'\.$/, /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/];
   // axe (injected by this script to scan a state) messages each frame with the frame's URL as target origin, and the browser warns for an opaque frame: noise from the probe, not the page.
   // A console error is accepted from the hostile app's open phase only when it is the browser's blocked-request message from the app's frame: its srcdoc child or the jsx-sandbox bridge document. The runner page's own refusal fails, as does any other error or warning.
-  const hostileRefusals = [/^Connecting to '[^']*' violates the following Content Security Policy directive: "[^"]*"\. The action has been blocked\.$/, /^Fetch API cannot load \S+\. Refused to connect because it violates the document's Content Security Policy\.$/];
-  const appFrameAt = (entry) => entry.at.startsWith("about:srcdoc:") || /\/jsx-sandbox\.html(?:[#?:]|$)/.test(entry.at);
-  const isHostileRefusal = (entry) => entry.phase === `open-${HOSTILE}` && entry.type === "error" && appFrameAt(entry) && hostileRefusals.some((pattern) => pattern.test(entry.text));
-  // Self-test of that predicate: the app frame's refusal is accepted; the runner page's copy, an untagged copy and a non-CSP error are not.
-  const refusalText = "Connecting to 'http://127.0.0.1:1/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.";
-  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "about:srcdoc:4", text: refusalText }), true, "self-test: the hostile app's refusal is accepted");
-  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "/apps/run:12", text: refusalText }), false, "self-test: the runner page's own CSP refusal is not accepted");
-  assert.equal(isHostileRefusal({ phase: "run-expiry", type: "error", at: "about:srcdoc:4", text: refusalText }), false, "self-test: an untagged CSP message is not accepted");
-  assert.equal(isHostileRefusal({ phase: `open-${HOSTILE}`, type: "error", at: "about:srcdoc:4", text: "Failed to load resource: the server responded with a status of 500 (Internal Server Error)" }), false, "self-test: a tagged non-CSP error is not accepted");
-  const unexpected = consoleLog.filter((entry) => entry.phase !== "run-hostile" && !isHostileRefusal(entry) && !entry.at.startsWith("pptr:") && !expectedConsole.some((pattern) => pattern.test(entry.text)));
+  // Self-test of that predicate (console-filter.mjs): the app frame's refusal is accepted; the runner page's copy, an untagged copy and a non-CSP error are not. The text goes through the same redaction as the live capture.
+  const refusalText = consoleEntry(`open-${HOSTILE}`, "error", "Connecting to 'http://127.0.0.1:1/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.", { url: "about:srcdoc", lineNumber: 4 });
+  assert.equal(isHostileRefusal(refusalText, HOSTILE), true, "self-test: the hostile app's refusal is accepted");
+  assert.equal(isHostileRefusal({ ...refusalText, at: "/apps/run:12" }, HOSTILE), false, "self-test: a refusal from a page document is not accepted");
+  assert.equal(isHostileRefusal({ ...refusalText, phase: "run-expiry" }, HOSTILE), false, "self-test: an untagged CSP message is not accepted");
+  assert.equal(isHostileRefusal({ ...refusalText, text: "Failed to load resource: the server responded with a status of 500 (Internal Server Error)" }, HOSTILE), false, "self-test: a tagged non-CSP error is not accepted");
+  const unexpected = consoleLog.filter((entry) => entry.phase !== "run-hostile" && !isHostileRefusal(entry, HOSTILE) && !entry.at.startsWith("pptr:") && !expectedConsole.some((pattern) => pattern.test(entry.text)));
   assert.deepEqual(unexpected, [], "the browser logged something unexpected");
   report.consoleTexts = [...new Set(consoleLog.map((entry) => `${entry.phase === "run-hostile" ? "hostile: " : ""}${entry.type}: ${entry.text.slice(0, 110)}`))].sort();
   const allowedHosts = new Set([stack.canonical.share, stack.canonical.node, stack.canonical.registry, "https://openkey.so", "https://api.openkey.so"]);
