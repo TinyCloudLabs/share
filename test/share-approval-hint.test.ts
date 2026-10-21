@@ -16,7 +16,7 @@ beforeEach(() => {
 afterEach(() => {
   hint?.dispose();
   hint = undefined;
-  document.querySelectorAll("iframe").forEach((frame) => frame.remove());
+  document.body.replaceChildren();
   parent.remove();
   vi.useRealTimers();
 });
@@ -27,15 +27,29 @@ function show(): HTMLElement {
   return hint.element.querySelector<HTMLElement>(".sender-approval-more") as HTMLElement;
 }
 
-/** A child frame of this page: the OpenKey window's frame posts from here. */
+/**
+ * The OpenKey window's child window. The SDK mounts its iframe in a closed shadow root, which `window.frames` does not
+ * list, and jsdom gives such a frame no `contentWindow`. So the child is modelled by what the watcher reads: its `top`
+ * is the page, not the child itself.
+ */
 function openKeyFrame(): Window {
-  const frame = document.createElement("iframe");
-  document.body.append(frame);
-  return frame.contentWindow as Window;
+  const child = {} as Window;
+  Object.defineProperty(child, "top", { value: window });
+  return child;
 }
 
+/** A top-level window, as the popup fallback opens: its `top` is itself. */
+function popupWindow(): Window {
+  const popup = {} as Window;
+  Object.defineProperty(popup, "top", { value: popup });
+  return popup;
+}
+
+/** Dispatches the message as the browser would, with `source` as the sending window. */
 function postReady(source: Window, origin: string = OPENKEY_ORIGIN): void {
-  window.dispatchEvent(new MessageEvent("message", { origin, source, data: { type: "openkey:ready" } }));
+  const event = new MessageEvent("message", { origin, data: { type: "openkey:ready" } });
+  Object.defineProperty(event, "source", { value: source });
+  window.dispatchEvent(event);
 }
 
 describe("the approval hint's slow line", () => {
@@ -63,9 +77,9 @@ describe("the approval hint's slow line", () => {
     expect(more.textContent).toBe("");
   });
 
-  it("keeps showing the help line for a ready from a window that is not a child frame (the popup fallback)", async () => {
+  it("keeps showing the help line for a top-level popup, whose parent is itself (the popup fallback)", async () => {
     const more = show();
-    postReady(window);
+    postReady(popupWindow());
     await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
     expect(more.textContent).toBe(APPROVAL_SLOW_COPY);
   });
@@ -73,6 +87,13 @@ describe("the approval hint's slow line", () => {
   it("keeps showing the help line for a ready from another origin", async () => {
     const more = show();
     postReady(openKeyFrame(), "https://elsewhere.example");
+    await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
+    expect(more.textContent).toBe(APPROVAL_SLOW_COPY);
+  });
+
+  it("does not take an origin that only starts with the OpenKey origin", async () => {
+    const more = show();
+    postReady(openKeyFrame(), `${OPENKEY_ORIGIN}.evil.example`);
     await vi.advanceTimersByTimeAsync(APPROVAL_SLOW_AFTER_MS);
     expect(more.textContent).toBe(APPROVAL_SLOW_COPY);
   });

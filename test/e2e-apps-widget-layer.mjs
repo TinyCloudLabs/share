@@ -40,14 +40,16 @@ const APP = "xyz.tinycloud.sample.healthlog";
 const DISCLOSURE = "If this app isn't in your TinyCloud, we'll save its files as part of opening it.";
 /** The status line while the open waits on its first approval (or just before it). */
 const PROGRESS = /^(Opening Health Log…|Approve in the OpenKey window so Share can open Health Log from your TinyCloud)/;
+/** The help line the approval status shows after 15 s when no OpenKey window is up (src/share/approval-hint.ts). */
+const HELP = "Can't see the OpenKey window?";
 
-/** A stand-in for OpenKey's embedded window: ready at once, then one big button that waits for a click. It never answers by itself. */
-const STAND_IN = `<!doctype html><meta charset="utf-8"><title>OpenKey stand-in</title>
+/** A stand-in for OpenKey's embedded window: ready at once unless `ready` is false, then one big button that waits for a click. It never answers by itself. */
+const STAND_IN = (ready) => `<!doctype html><meta charset="utf-8"><title>OpenKey stand-in</title>
 <body style="margin:0;background:#fff"><button id="approve" style="display:block;width:100%;height:100vh;font:600 22px sans-serif;background:#e9efff;border:0">Approve (stand-in)</button>
 <script>
 const target = "*";
 let asked = false;
-parent.postMessage({ type: "openkey:ready" }, target);
+${ready ? 'parent.postMessage({ type: "openkey:ready" }, target);' : ""}
 addEventListener("message", (event) => { if (event.data?.type === "openkey:auth:request") asked = true; });
 document.getElementById("approve").addEventListener("click", () => {
   parent.postMessage({ type: "stand-in:clicked" }, target);
@@ -79,8 +81,8 @@ async function axeViolations(page) {
   return result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).join(" | ")}`);
 }
 
-/** Opens the runner page for the Health Log app, at the start screen. */
-async function openPage(browser, { width, height, scheme }) {
+/** Opens the runner page for the Health Log app, at the start screen. With `ready` false the stand-in never reports ready. */
+async function openPage(browser, { width, height, scheme, ready = true }) {
   const page = await browser.newPage();
   page.report = { requests: [], errors: [] };
   await page.setViewport({ width, height, deviceScaleFactor: 1 });
@@ -97,7 +99,7 @@ async function openPage(browser, { width, height, scheme }) {
     page.report.requests.push(url.origin + url.pathname);
     if (url.origin === origin || url.protocol === "data:" || url.protocol === "blob:") { void request.continue(); return; }
     // The stand-in answers for OpenKey; every other host is refused, so nothing here can reach a real service.
-    if (url.origin === "https://openkey.so" && url.pathname.startsWith("/widget/")) { void request.respond({ status: 200, contentType: "text/html; charset=utf-8", body: STAND_IN }); return; }
+    if (url.origin === "https://openkey.so" && url.pathname.startsWith("/widget/")) { void request.respond({ status: 200, contentType: "text/html; charset=utf-8", body: STAND_IN(ready) }); return; }
     void request.abort("blockedbyclient");
   });
   page.on("pageerror", (error) => page.report.errors.push(String(error)));
@@ -241,6 +243,26 @@ try {
     await page.waitForFunction(() => /Sign-in cancelled/.test(document.querySelector(".run-screen__title")?.textContent ?? ""), { timeout: 15_000 });
     assert.equal(await page.$$eval("#runner [role=alert]", (nodes) => nodes.length), 0, "an Escape cancel is a quiet note, not an alert");
     results.escape = true;
+    await page.close();
+  }
+
+  // ---- The help line stays away while the OpenKey window is up, and shows at 15 s when a sign-in started with no window.
+  {
+    const page = await openPage(browser, { width: 1440, height: 900, scheme: "light" });
+    await waitForWidget(page);
+    await new Promise((done) => setTimeout(done, 20_000));
+    const shown = await statusText(page);
+    assert.match(shown, PROGRESS, "the open still waits on the approval after 20 s");
+    assert.ok(!shown.includes(HELP), `the help line shows while the OpenKey window is up (status: "${shown}")`);
+    await page.close();
+    results.modalUp = { helpShown: false };
+  }
+
+  {
+    const page = await openPage(browser, { width: 1440, height: 900, scheme: "light", ready: false });
+    await waitForWidget(page);
+    await page.waitForFunction((help) => (document.querySelector(".run-status-region .run-status-line")?.textContent ?? "").includes(help), { timeout: 30_000 }, HELP);
+    results.noModal = { helpShown: true };
     await page.close();
   }
 

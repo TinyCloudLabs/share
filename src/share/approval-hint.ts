@@ -19,23 +19,19 @@ export const APPROVAL_SLOW_COPY = "Can't see the OpenKey window? It may be behin
 
 /**
  * Calls `onModal` when OpenKey's in-page window reports ready. The SDK keeps that window in a closed shadow root, so the
- * page cannot read whether it is open; the window's frame posts `openkey:ready` to this window. The popup fallback posts
- * the same message from a top-level window, which is not a child frame of this one, so it does not count.
- * Returns the stop function.
+ * page cannot read whether it is open. The window's frame posts `openkey:ready` to this window from the exact OpenKey
+ * origin. A top-level popup (the SDK's CSP fallback) posts the same message from a window that is its own `top`, so it
+ * does not count: the help line still shows for a popup that may be behind this tab. Returns the stop function.
  */
 export function watchOpenKeyModal(view: Window, onModal: () => void): () => void {
   const onMessage = (event: MessageEvent): void => {
     if (event.origin !== OPENKEY_ORIGIN || event.data?.type !== "openkey:ready") return;
-    if (!isChildFrame(view, event.source)) return;
+    const source = event.source as WindowProxy | null;
+    if (source === null || source.top === source) return;
     onModal();
   };
   view.addEventListener("message", onMessage);
   return () => view.removeEventListener("message", onMessage);
-}
-
-function isChildFrame(view: Window, source: MessageEventSource | null): boolean {
-  for (let index = 0; index < view.frames.length; index += 1) if (view.frames[index] === source) return true;
-  return false;
 }
 
 export interface ApprovalHintOptions {
