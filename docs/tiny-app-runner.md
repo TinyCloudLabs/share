@@ -20,14 +20,14 @@ Continue it loads no SDK and makes no request beyond this origin's static files.
 2. **Two OpenKey approvals**, one at a time, each named in the status line: (1 of 2) so
    Share can read the app from the person's TinyCloud and save any missing files, (2 of 2) to start it with the
    permissions listed on the page. OpenKey connects once.
-3. **The app**, in its frame, under the page's own bar: the app name, "Open another app",
-   "Sign out of this app", a status line (a live region), "What this app can do" and "What a
+3. **The app**, in its frame, under the page's own bar: the app name and version, "Open another app",
+   "Sign out of this app", a "Where it comes from" disclosure, a status line (a live region), "What this app can do" and "What a
    sandboxed page can still reveal" (the same words as the viewer's notice). The bar is in the
    runner's document, outside the frame; the frame is an isolated, clipped box stacked below it.
 4. **Plain screens** when the app cannot open: "This app asks for more than it did when you installed it", "Your saved copy
    of this app can't be used", "This app's code doesn't match the pinned version" (with Repair),
-   "This app is temporarily unavailable" (the catalog's kill switch), "This version of the app isn't in the catalog any more",
-   "Your session expired: open the app again", and the usual OpenKey outcomes (cancelled, no
+   "This app is temporarily unavailable" (the catalog's kill switch), "This version of the app isn't in the catalog any more" (with Uninstall),
+   "Your session expired" (with Open again), and the usual OpenKey outcomes (cancelled, no
    answer in time, another request waiting, wrong account).
 
 The session lasts one hour. At its end the frame is removed and the page says so. "Sign out of
@@ -95,15 +95,13 @@ space, but if the runner page's checks failed, the node would not refuse a call 
 
 ### Repair
 
-The refusal screen offers "Repair" (`/apps/#repair=<app_id>`). The Repair sheet runs in repair
-mode: one approval (put, delete and list on `<app_id>/app/`, 15 minutes), and the sheet says it
+The refusal screen offers "Repair" (`/apps/#repair=<app_id>`), an inline panel on the app's page. The panel runs in repair
+mode: one approval (put, delete and list on `<app_id>/app/`, 15 minutes), and the panel says
 "Repair replaces the app's code files with the pinned version. Your data is untouched." It writes the catalog's files for the
 installed digest over the stored ones (`manifest.json` included, so a stray edit is undone too),
 deletes any other file under `app/`, and never touches `install.json`, `knowledge/` or the
 app's data. The bundle is fetched and verified against the catalog before OpenKey opens. A
-version that has left the catalog has nothing to repair from: the page says so and shows what to
-delete (`tinycloud kv list --space applications --prefix <app_id>/app/`, then
-`tinycloud kv delete --space applications <each key listed>`).
+version that has left the catalog has nothing to repair from: the page says so and offers Uninstall, which removes the app's code, manifest, install record and knowledge notes and keeps its data.
 
 ## The bridge
 
@@ -154,7 +152,7 @@ throws into the frame. Codes: `PERMISSION_DENIED`, `NOT_FOUND`, `PRECONDITION_FA
 - **`sql.execute`** runs one write or DDL statement, and only in the app's **own** databases (a relative
   `db`). TC-1581 (the node lets `sql/write` run DDL) is not fixed here, but the bridge asks for `schema`
   for a CREATE/DROP/ALTER, so an app cannot do DDL on a write-only grant, and it cannot be the way into another
-  app's database. The details sheet already says "This app can change or delete its own tables."
+  app's database. The details sheet already says "Can change or delete its own tables."
 - **Limits**: 1 MB per call and per answer (strings counted as UTF-8; larger is `TOO_LARGE`), 4 calls in flight
   (the fifth is `BUSY`, not queued), 30 s per call. `TIMEOUT` says the call may still have been applied: read
   back before retrying a write. A call that timed out keeps its slot until it settles or 60 s pass.

@@ -40,7 +40,7 @@ interface Screen {
   readonly detail?: string | undefined;
   readonly retry?: string | undefined;
   readonly toApps?: boolean | undefined;
-  /** Where "Repair" goes (the apps page's Repair sheet), for a refusal that replacing the code files fixes. */
+  /** Where "Repair" goes (the apps page's Repair panel), for a refusal that replacing the code files fixes. */
   readonly repairHref?: string | undefined;
   /** Where "Uninstall" goes (the apps page's details sheet), for a version that can't be repaired from here. */
   readonly uninstallHref?: string | undefined;

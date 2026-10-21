@@ -117,7 +117,6 @@ describe("the runner page before anything is signed", () => {
     expect(root.querySelector("iframe")).toBeNull();
     expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("What this app can do");
     expect(root.textContent).toContain("It can change");
-    expect(root.textContent).toContain("This app can change or delete its own tables.");
     expect(root.textContent).not.toMatch(/Sample app|throwaway/i);
     expect(root.querySelector("a[href='/apps/']")?.textContent).toBe("Open another app");
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(true);

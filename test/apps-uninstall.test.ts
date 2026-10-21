@@ -148,7 +148,7 @@ describe("the uninstall manifest and scope", () => {
   });
 });
 
-describe("ReCap equals the confirm sheet", () => {
+describe("ReCap equals the uninstall plan", () => {
   function requestFor(options?: { includeAccountRegistryPermissions?: boolean }): { resources: RequestedResource[]; delegations: unknown[] } {
     const composed = composeManifestRequest([uninstallManifest(app)], options);
     return {
