@@ -276,7 +276,7 @@ describe("opening an app", () => {
 
 describe("opening an app that cannot run", () => {
   const stored = (manifest: unknown): Parameters<typeof fakePorts>[0] => ({ stored: { files: { "manifest.json": new TextEncoder().encode(JSON.stringify(manifest)) } } });
-  interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[] }[]; [key: string]: unknown }
+  interface TestManifest { name: string; permissions: { service: string; path: string; actions: string[]; skipPrefix?: boolean }[]; [key: string]: unknown }
   const original = (): TestManifest => JSON.parse(new TextDecoder().decode(bundleFile("manifest.json"))) as TestManifest;
 
   it("refuses a manifest that was widened, before anything more is signed, and says what differs", async () => {
@@ -294,6 +294,19 @@ describe("opening an app that cannot run", () => {
     expect(repair?.getAttribute("href")).toBe(`${APPS_HREF}#repair=${encodeURIComponent(HEALTH)}`);
     expect(root.querySelector(".run-screen")?.textContent).toMatch(/Repair replaces the app's code files, manifest\.json included, with the catalog's\. Your data is untouched\./);
     expect(root.querySelector(".run-screen")?.textContent).not.toMatch(/Restore manifest\.json from the catalog/);
+  });
+
+  it.each([
+    ["the app's own folder with skipPrefix", { service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["get", "list", "put"], skipPrefix: true }],
+    ["app/ by relative path", { service: "tinycloud.kv", path: "app/", actions: ["get", "put"] }],
+  ])("refuses a saved manifest that adds %s, before anything more is signed", async (_label, entry) => {
+    const manifest = original();
+    manifest.permissions.push(entry);
+    const fake = fakePorts(stored(manifest));
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app asks for more than it did when you installed it"));
+    expect(fake.runtimes).toBe(0);
+    expect(root.querySelector("iframe")).toBeNull();
   });
 
   it("shows a hostile name from the saved manifest as text only", async () => {
