@@ -8,7 +8,7 @@ import type { AppData } from "../src/apps/bridge.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type ReadSession, type RunPorts, type RuntimeSession } from "../src/apps/run.ts";
 import { CAUTION } from "../src/apps/limits.ts";
-import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
+import { failureScreen, mountRunner, progressText, provenanceDetailText, provenanceText } from "../src/apps/run-view.ts";
 import { RUNNER_APP_ID, readerManifest, readerScope } from "../src/apps/run-session.ts";
 import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
@@ -106,14 +106,16 @@ describe("the runner page before anything is signed", () => {
     expect(root.querySelector(".run-title")?.textContent).toBe("Health Log");
     const provenance = root.querySelector(".run-provenance")?.textContent ?? "";
     expect(provenance).toBe(provenanceText(entry));
-    expect(provenance).toContain(`${entry.source.commit.slice(0, 7)}`);
-    expect(provenance).toContain(entry.bundle.digest.slice(0, 12));
-    expect(provenance).toContain("sandbox");
-    expect(provenance).toContain("It runs in a sandbox");
-    expect(provenance).not.toMatch(/no network/i);
-    expect(root.querySelector(".run-bar .run-caution")?.textContent).toBe(CAUTION);
+    const whence = [...root.querySelectorAll<HTMLDetailsElement>(".run-bar details")].find((d) => d.querySelector("summary")?.textContent === "Where it comes from");
+    const detail = whence?.querySelector("p")?.textContent ?? "";
+    expect(detail).toBe(provenanceDetailText(entry));
+    expect(detail).toContain(`${entry.source.commit.slice(0, 7)}`);
+    expect(detail).toContain(entry.bundle.digest.slice(0, 12));
+    expect(detail).toContain("It runs in a sandbox");
+    expect(detail).not.toMatch(/no network/i);
+    expect(root.querySelector(".run-bar .run-caution")).toBeNull();
     expect(root.querySelector("iframe")).toBeNull();
-    expect(root.querySelector(".run-details")?.textContent).toContain("What this app can do");
+    expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("What this app can do");
     expect(root.textContent).toContain("It can change");
     expect(root.textContent).toContain("This app can change or delete its own tables.");
     expect(root.textContent).not.toMatch(/Sample app|throwaway/i);
@@ -160,7 +162,7 @@ describe("opening an app", () => {
     await vi.waitFor(() => expect(status()).toContain("Health Log is running"));
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(false);
     // The permission lists now come from the person's own manifest.
-    expect(root.querySelector(".run-details")?.textContent).toContain("healthlog");
+    expect([...root.querySelectorAll(".run-details")].find((d) => d.querySelector("summary")?.textContent === "What this app can do")?.textContent).toContain("healthlog");
   });
 
   it("answers an app's cap/* request through the bridge, under the manifest, and refuses the rest", async () => {
