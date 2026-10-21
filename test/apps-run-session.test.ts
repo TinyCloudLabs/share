@@ -304,7 +304,7 @@ describe("starting the app (sign-in 2)", () => {
 
 describe("runnerAppName", () => {
   it("uses the catalog's name when the sign-in accepts it as a label, and a fixed one when it does not", () => {
-    expect(runnerAppName("TinyCloud Share: ", "Health Log (sample)")).toBe("TinyCloud Share: Health Log (sample)");
+    expect(runnerAppName("TinyCloud Share: ", "Health Log")).toBe("TinyCloud Share: Health Log");
     expect(runnerAppName("TinyCloud Share: ", "evil.example/login")).toBe("TinyCloud Share: Tiny app");
     expect(runnerAppName("TinyCloud Share: ", "\u202eevil")).toBe("TinyCloud Share: Tiny app");
     expect([...runnerAppName("TinyCloud Share: open ", "x".repeat(200))].length).toBeLessThanOrEqual(64);

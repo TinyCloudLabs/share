@@ -4,14 +4,14 @@ okf_version: "0.2"
 
 # App
 
-* [Recipes (sample)](app.md) - A small recipe book.
+* [Recipes](app.md) - A small recipe book.
 
 # Tables
 
 * [recipe](tables/recipe.md) - A recipe.
 * [shelf](tables/shelf.md) - A named group of recipes ("Weeknight dinners").
 * [recipe_shelf](tables/recipe_shelf.md) - Which recipes are on which shelf (many to many).
-* [meal_link](tables/meal_link.md) - Links a recipe to a meal in the Health Log sample (app xyz.tinycloud.sample.healthlog, database healthlog, table meal).
+* [meal_link](tables/meal_link.md) - Links a recipe to a meal in the Health Log (app xyz.tinycloud.sample.healthlog, database healthlog, table meal).
 
 # Views
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "app_id": "xyz.tinycloud.sample.recipes",
-  "name": "Recipes (sample)",
-  "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log sample. Sample tiny app, written from scratch for TinyCloud.",
+  "name": "Recipes",
+  "description": "A small recipe book: shelves, recipes, and recipes started from a meal in the Health Log.",
   "appVersion": "0.1.0",
   "space": "applications",
   "defaults": false,
