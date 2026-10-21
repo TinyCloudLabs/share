@@ -222,6 +222,14 @@ function cooldownText(left: number): string {
   return left > 0 ? `You can ask for a new code in ${waitPhrase(left)}.` : "You can ask for a new code now.";
 }
 
+const MINUTE_MS = 60_000;
+
+/** Delay until the live line can next change, or until the wait ends. Never more than a minute. */
+function msUntilLineChanges(left: number, minuteFrame: boolean): number {
+  const minutes = Math.ceil(left / MINUTE_MS);
+  return minuteFrame && minutes > 1 ? left - (minutes - 1) * MINUTE_MS : left;
+}
+
 /**
  * A recoverable stop: nothing was opened and a fresh code can be requested.
  * Until `availableAt` (epoch ms) the button stays disabled, so a recipient
@@ -244,19 +252,25 @@ export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery:
     const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", cooldownText(wait));
     cooldown.setAttribute("aria-live", "polite");
     panel.append(cooldown);
-    // The retry is enabled by one timer at the moment the wait ends. The text
-    // ticks once a second and changes only when its phrase changes, so a long
-    // wait is announced about once a minute, not every tick.
-    const tick = setInterval(() => {
-      if (!cooldown.isConnected) { clearInterval(tick); return; }
-      const text = cooldownText(availableAt - Date.now());
-      if (cooldown.textContent !== text) cooldown.textContent = text;
-    }, 1000);
-    setTimeout(() => {
-      clearInterval(tick);
-      retry.disabled = false;
-      cooldown.textContent = "You can ask for a new code now.";
-    }, wait);
+    // The live line changes only when its whole-minute count changes; under a
+    // minute it keeps the text it was rendered with. One timer enables the retry
+    // when the wait ends. Every delay is at most a minute, so none nears
+    // setTimeout's range limit.
+    const minuteFrame = wait >= MINUTE_MS;
+    const wake = (): void => {
+      const left = availableAt - Date.now();
+      if (left <= 0) {
+        retry.disabled = false;
+        cooldown.textContent = "You can ask for a new code now.";
+        return;
+      }
+      if (minuteFrame) {
+        const text = cooldownText(left);
+        if (cooldown.textContent !== text) cooldown.textContent = text;
+      }
+      setTimeout(wake, msUntilLineChanges(left, minuteFrame));
+    };
+    setTimeout(wake, msUntilLineChanges(wait, minuteFrame));
   }
   view.verify.replaceChildren(panel);
   title.focus();

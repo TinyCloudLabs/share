@@ -259,6 +259,105 @@ describe("exact-email claim screen", () => {
     }
   });
 
+  it("changes the 30-second cooldown line once, when the retry opens", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      let refusedAt = 0;
+      state.get
+        .mockImplementationOnce(async () => {
+          refusedAt = Date.now();
+          throw credentialError("OFFLINE", {});
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const cooldown = root.querySelector<HTMLElement>(".claim-cooldown")!;
+      const said: string[] = [cooldown.textContent ?? ""];
+      const observer = new MutationObserver(() => {});
+      observer.observe(cooldown, { childList: true, characterData: true, subtree: true });
+      for (let t = 1000; t <= 30_000; t += 1000) {
+        vi.advanceTimersByTime(Math.max(0, refusedAt + t - Date.now()));
+        if (observer.takeRecords().length > 0) said.push(cooldown.textContent ?? "");
+      }
+      observer.disconnect();
+      expect(said).toEqual(["You can ask for a new code in 30 seconds.", "You can ask for a new code now."]);
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("changes the rate-limit line only when the whole-minute count changes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      let refusedAt = 0;
+      state.get
+        .mockImplementationOnce(async () => {
+          refusedAt = Date.now();
+          throw credentialError("ISSUER_UNREADY", { state: "rate_limited", retryAfterMs: 210_000 });
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const cooldown = root.querySelector<HTMLElement>(".claim-cooldown")!;
+      const said: string[] = [cooldown.textContent ?? ""];
+      const observer = new MutationObserver(() => {});
+      observer.observe(cooldown, { childList: true, characterData: true, subtree: true });
+      for (let t = 1000; t <= 210_000; t += 1000) {
+        vi.advanceTimersByTime(Math.max(0, refusedAt + t - Date.now()));
+        if (observer.takeRecords().length > 0) said.push(cooldown.textContent ?? "");
+      }
+      observer.disconnect();
+      expect(said).toEqual([
+        "You can ask for a new code in 4 minutes.",
+        "You can ask for a new code in 3 minutes.",
+        "You can ask for a new code in 2 minutes.",
+        "You can ask for a new code in 1 minute.",
+        "You can ask for a new code now.",
+      ]);
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps retry disabled for a Retry-After beyond setTimeout's range, then enables it when the wait ends", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      const thirtyDays = 2_592_000_000;
+      let refusedAt = 0;
+      state.get
+        .mockImplementationOnce(async () => {
+          refusedAt = Date.now();
+          throw credentialError("ISSUER_UNREADY", { state: "rate_limited", retryAfterMs: thirtyDays });
+        })
+        .mockResolvedValueOnce({ bytes: new Uint8Array([7]) });
+      const { root, done, onComplete } = await start();
+      await vi.waitFor(() => expect(root.querySelector(".claim-state[role=alert]")).not.toBeNull());
+      const retry = root.querySelector<HTMLButtonElement>(".claim-state button")!;
+      expect(retry.disabled).toBe(true);
+      vi.advanceTimersByTime(Math.max(0, refusedAt + 25 * 86_400_000 - Date.now()));
+      expect(retry.disabled).toBe(true);
+      vi.advanceTimersByTime(Math.max(0, refusedAt + thirtyDays - 1 - Date.now()));
+      expect(retry.disabled).toBe(true);
+      vi.advanceTimersByTime(Math.max(0, refusedAt + thirtyDays - Date.now()));
+      expect(retry.disabled).toBe(false);
+      retry.click();
+      await done;
+      expect(onComplete).toHaveBeenCalledWith({ bytes: new Uint8Array([7]) });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["CANCELED", {}],
     ["REQUEST_EXPIRED", {}],
