@@ -11,6 +11,7 @@ import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.
 import { failIfSpaceNotReady } from "./space-not-ready.js";
 import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
+import { publishShortLinkOrInline, shortLinkRecordPath } from "../short-links/publish.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { createAnnouncer } from "./announcer.js";
@@ -155,6 +156,8 @@ export interface ComposerShareResult {
   readonly record?: SenderShareRecord;
   /** The revocable delegation CID backing this share. */
   readonly delegationCid?: string;
+  /** Shown when the short link could not be created and the long inline link is used. */
+  readonly notice?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
   readonly notify?: () => Promise<void>;
 }
@@ -411,12 +414,24 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       registerPolicy: (input) => tinycloud.registerPolicy(input),
     },
   });
-  const record = historyRecordForPublishedShare(published);
+  const publication = await publishShortLinkOrInline({
+    inlineUrl: published.url,
+    expiresAt: published.metadata.expiresAt,
+    storeRecord: async (shortRecord) => {
+      const stored = await tinycloud.kvForSpace(spaceId).put(shortLinkRecordPath(shareId), new TextEncoder().encode(JSON.stringify(shortRecord)), { contentType: "application/json" });
+      failIfSpaceNotReady(stored);
+      if (!stored.ok) throw new Error("short link record was not stored");
+    },
+    ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+  });
+  const url = publication.url;
+  const record = { ...historyRecordForPublishedShare(published), link: url };
   return {
-    url: published.url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record,
+    url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record,
+    ...(publication.notice === undefined ? {} : { notice: publication.notice }),
     ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
     ...(deliveryRecipients.length === 0 ? {} : { notify: async () => {
-      const share = { url: published.url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
+      const share = { url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
       if (deliveryMaterial === undefined) throw new Error("We couldn't send that email. The link above still works.");
       const material = deliveryMaterial;
@@ -1046,6 +1061,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can open it. ${canNotify(model) ? "Copy the link, or have us email it to the addresses you listed." : "Copy the link and send it to people at that domain."}`
           : model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
         status.append(el(doc, "span", "sender-status-detail result-expiry", `Works until ${shortDate(created.expiresAt ?? model.expiresAt)}. Revoke it any time from All shares. Anyone who already saved or copied the file keeps their copy.`));
+        if (created.notice !== undefined) status.append(el(doc, "span", "sender-status-detail result-notice", created.notice));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";
