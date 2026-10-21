@@ -4,26 +4,25 @@ export const SHARE_TARGETS: readonly string[] = ["a person", "an email address",
 export const ROTATE_EVERY_MS = 2500;
 export const ROTATE_STOP_AFTER_MS = 15000;
 
-/** Longest phrase by character count. brand.ts renders it into the static `.share-target-sizer`. */
+/** Longest phrase by character count. brand.ts renders it into `data-longest` on `.share-target`. */
 export function longestShareTarget(): string {
   return SHARE_TARGETS.reduce((a, b) => (b.length > a.length ? b : a), "");
 }
 
 /**
- * Rotates the phrase inside `wrapper` (`.share-target` with `.share-target-text` and the static
- * `.share-target-sizer`). Returns a cancel function that clears the timer and listeners.
+ * Rotates the phrase inside `wrapper` (`.share-target` with `.share-target-text`). The longest
+ * phrase's width is reserved by the CSS `.share-target::after` rule, fed by `data-longest` rendered
+ * statically from `longestShareTarget()`. Returns a cancel function that clears the timer and listeners.
  *
- * Reduced motion, or a missing text node: the sizer is removed and no timer is created, so the
- * line is as wide as the first phrase. Otherwise the sizer keeps the width reserved during
- * rotation. After ROTATE_STOP_AFTER_MS the rotation settles on the first phrase and the reserved
- * width collapses to it in one transition. Hover or focus inside the wrapper pauses rotation;
- * paused ticks still count toward the stop.
+ * Reduced motion, or a missing text node: no timer is created, and CSS drops the reservation under
+ * reduced motion, so the line is as wide as the first phrase from first paint. Otherwise the
+ * reservation holds the width during rotation. After ROTATE_STOP_AFTER_MS the rotation settles on
+ * the first phrase and the reserved width collapses to it in one transition. Hover or focus inside
+ * the wrapper pauses rotation; paused ticks still count toward the stop.
  */
 export function startShareTargetRotation(wrapper: HTMLElement, win: Window = window): () => void {
-  const sizer = wrapper.querySelector<HTMLElement>(".share-target-sizer");
   const text = wrapper.querySelector<HTMLElement>(".share-target-text");
   if (win.matchMedia("(prefers-reduced-motion: reduce)").matches || !text) {
-    sizer?.remove();
     return () => {};
   }
 
@@ -42,7 +41,7 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
   const collapse = (): void => {
     const from = wrapper.getBoundingClientRect().width;
     wrapper.style.width = `${from}px`;
-    sizer?.remove();
+    wrapper.classList.add("is-settled");
     const to = text.getBoundingClientRect().width;
     if (to === from) {
       wrapper.style.removeProperty("width");

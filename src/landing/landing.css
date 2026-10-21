@@ -292,25 +292,42 @@ h1 {
 }
 
 .share-target {
-  display: inline-grid;
+  display: inline-block;
   color: var(--accent);
   font-weight: 600;
   vertical-align: baseline;
   transition: width 200ms var(--ease);
 }
 
-/* Both children share one cell; content width, so the wrapper width is the longest child. */
-.share-target-text,
-.share-target-sizer {
-  grid-area: 1 / 1;
-  justify-self: start;
+/*
+ * Reserves the longest phrase's width. Generated from the static data-longest attribute, so it
+ * holds without JS. Hidden and not selectable: copy gets only the rotating text, and no line
+ * breaks (block-level children such as grid items serialize as newlines). Dropped under reduced
+ * motion and once rotation settles.
+ */
+.share-target::after {
+  content: attr(data-longest);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  user-select: none;
   white-space: nowrap;
 }
 
-/* Static sizer: the longest phrase, hidden, not selectable or copied. Removed by JS when rotation does not run. */
-.share-target-sizer {
-  visibility: hidden;
-  user-select: none;
+.share-target-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.share-target.is-settled::after {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-target::after {
+    display: none;
+  }
 }
 
 .share-target-text.is-entering {
