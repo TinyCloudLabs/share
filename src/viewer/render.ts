@@ -204,6 +204,7 @@ const URL_REFERENCE_ATTRS = new Set([
  *  - strip style attributes whose CSS reaches for url()/@import;
  *  - strip url-capable presentation attributes unless every url() is a
  *    same-document fragment reference.
+ *  - keep target only as target="_blank" on an anchor (rehypeExternalLinks sets it).
  * <style> elements never reach these hooks: both passes forbid them.
  */
 DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
@@ -224,6 +225,9 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     RESOURCE_LOADING_TAGS.has(node.tagName?.toLowerCase() ?? "") &&
     isRemoteResourceRef(data.attrValue)
   ) {
+    data.keepAttr = false;
+  }
+  if (attrName === "target" && !(node.tagName?.toLowerCase() === "a" && data.attrValue === "_blank")) {
     data.keepAttr = false;
   }
 });
@@ -298,6 +302,50 @@ function rehypeBlockExternalImages() {
   };
 }
 
+/** The only link destinations a rendered document may open: web pages and mail. */
+const EXTERNAL_LINK_PROTOCOLS: Record<string, true> = { "https:": true, "http:": true, "mailto:": true };
+
+/**
+ * Runs AFTER rehype-sanitize. Each anchor's destination is parsed the way a
+ * browser parses it (`new URL` also strips the tab or newline that can hide in
+ * a scheme; entities were already decoded into the tree):
+ *  - http(s) and mailto open in a new tab: `target="_blank"`,
+ *    `rel="noopener noreferrer"`, and a title naming the destination;
+ *  - anything else (javascript:, data:, file:, relative, protocol-relative,
+ *    same-document #anchor) becomes inert text: the destination is dropped,
+ *    the visible words stay, and the frame never navigates.
+ */
+function rehypeExternalLinks() {
+  return (tree: HastNode): void => {
+    walkHast(tree, (child, index, parent) => {
+      if (child.type !== "element" || child.tagName !== "a") return;
+      const href = typeof child.properties?.["href"] === "string" ? child.properties["href"] : "";
+      let url: URL | undefined;
+      try {
+        url = new URL(href);
+      } catch {
+        url = undefined; // no scheme: relative, protocol-relative or fragment
+      }
+      if (url === undefined || EXTERNAL_LINK_PROTOCOLS[url.protocol] !== true) {
+        (parent.children as HastNode[])[index] = {
+          type: "element",
+          tagName: "span",
+          properties: { className: ["viewer-inert-link"] },
+          children: child.children ?? [],
+        };
+        return;
+      }
+      child.properties = {
+        ...child.properties,
+        href: url.href,
+        target: "_blank",
+        rel: ["noopener", "noreferrer"],
+        title: url.protocol === "mailto:" ? `Email ${url.pathname}` : url.host,
+      };
+    });
+  };
+}
+
 /**
  * Runs AFTER rehype-sanitize. Accessibility only (WCAG 2.2): a scrollable
  * `pre` or table must be reachable by keyboard, and the disabled GFM
@@ -327,6 +375,7 @@ const processor = unified()
   .use(remarkRehype)
   .use(rehypeBlockExternalImages)
   .use(rehypeSanitize, sanitizeSchema)
+  .use(rehypeExternalLinks)
   .use(rehypeReadingAffordances)
   .use(rehypeStringify);
 
@@ -345,6 +394,7 @@ export async function markdownToSanitizedHtml(markdown: string): Promise<string>
     USE_PROFILES: { html: true },
     FORBID_TAGS: ["style", "form", "math", "svg"],
     FORBID_ATTR: ["style", "srcset"],
+    ADD_ATTR: ["target", "rel"],
   });
 }
 

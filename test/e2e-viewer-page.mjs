@@ -42,6 +42,10 @@ const probe = httpServer((request, response) => { probeRequests.push(`${request.
 probe.on("connection", () => { probeConnections += 1; });
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
 const probeOrigin = `http://127.0.0.1:${probe.address().port}`;
+const landingRequests = [];
+const landing = httpServer((request, response) => { landingRequests.push(request.url); response.writeHead(200, { "content-type": "text/html; charset=utf-8" }); response.end("<!doctype html><title>landing</title><p>landing ok</p>"); });
+await new Promise((resolve) => landing.listen(0, "127.0.0.1", resolve));
+const landingUrl = `http://127.0.0.1:${landing.address().port}/landing`;
 
 const separateOrigin = process.env.VIEWER_PAGE_USERCONTENT === "1";
 const freePort = async () => {
@@ -248,7 +252,7 @@ try {
     await secretSurfaces(page, consoleOf.get(page), "markdown");
 
     const outer = await page.$eval("iframe.viewer-preview-frame", (node) => ({ sandbox: node.getAttribute("sandbox"), srcdoc: node.getAttribute("srcdoc") }));
-    assert.equal(outer.sandbox, "", "markdown frame grants nothing");
+    assert.equal(outer.sandbox, "allow-popups allow-popups-to-escape-sandbox", "markdown frame grants popups only");
     assert.ok(outer.srcdoc.includes(`content="${PREVIEW_FRAME_CSP}"`), "markdown frame pins its CSP");
     assert.equal(PREVIEW_FRAME_CSP, "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'");
     // The frame fills the area under the bar: no 75vh box.
@@ -296,6 +300,63 @@ try {
     await page.click(".artifact-chrome-pill");
     assert.equal(await page.$eval(".artifact-chrome", (node) => node.hidden), false, "the pill brings the bar back");
     assert.equal(await page.evaluate(() => localStorage.length), 0, "nothing is stored while the bar is shown");
+    await page.close();
+  }
+
+  // ---- links: every link type, clicked in the real frame; the document stays rendered ----
+  for (const access of ["bearer", "policy"]) {
+    const page = await open(browser, `kind=links&access=${access}&landing=${encodeURIComponent(landingUrl)}`);
+    const pageUrl = page.url();
+    const frameOf = async () => (await (await page.$("iframe.viewer-preview-frame")).contentFrame());
+    let current = await frameOf();
+    await current.waitForSelector("h1");
+    assert.equal(await page.$eval("iframe.viewer-preview-frame", (node) => node.getAttribute("sandbox")), "allow-popups allow-popups-to-escape-sandbox", `${access}: links frame grants popups only`);
+    const anchors = await current.$$eval("a", (nodes) => nodes.map((node) => ({ href: node.getAttribute("href"), target: node.getAttribute("target"), rel: node.getAttribute("rel"), title: node.getAttribute("title") })));
+    assert.deepEqual(anchors.map((anchor) => anchor.href), [landingUrl, "https://tinycloud.invalid/guide", "mailto:team@example.com"], `${access}: only https, http and mailto stay links`);
+    for (const anchor of anchors) assert.deepEqual([anchor.target, anchor.rel], ["_blank", "noopener noreferrer"], `${access}: ${anchor.href} opens in a new tab without an opener`);
+    assert.equal(anchors[0].title, new URL(landingUrl).host, `${access}: http title shows the host`);
+    assert.equal(anchors[1].title, "tinycloud.invalid", `${access}: https title shows the host`);
+    assert.equal(anchors[2].title, "Email team@example.com", `${access}: mailto title shows the address`);
+    assert.deepEqual(await current.$$eval("span.viewer-inert-link", (nodes) => nodes.map((node) => node.textContent)), ["Script link", "Data link", "Section anchor", "Relative file", "Root relative", "Protocol relative"], `${access}: dropped and relative links render as inert text`);
+
+    const assertRendered = async (label) => {
+      current = await frameOf();
+      assert.equal(current.url(), "about:srcdoc", `${access} ${label}: the frame did not navigate`);
+      assert.equal(await current.$eval("h1", (node) => node.textContent), "Link check", `${access} ${label}: the document still renders`);
+      assert.equal(await current.$$eval("a", (nodes) => nodes.length), 3, `${access} ${label}: links remain`);
+      assert.equal(page.url(), pageUrl, `${access} ${label}: the viewer page did not navigate`);
+    };
+
+    // Inert links: no click creates a target or changes the frame.
+    const targetsBeforeInert = (await browser.targets()).length;
+    for (const span of await current.$$("span.viewer-inert-link")) await span.click();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal((await browser.targets()).length, targetsBeforeInert, `${access}: inert links open nothing`);
+    await assertRendered("after inert links");
+
+    // mailto: hands off to the OS; the frame keeps the document.
+    await current.click('a[href="mailto:team@example.com"]');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await assertRendered("after mailto");
+
+    // http: a real popup that loads the loopback page with no opener.
+    const beforeHttp = new Set(await browser.targets());
+    await current.click(`a[href="${landingUrl}"]`);
+    const httpTarget = await browser.waitForTarget((target) => target.type() === "page" && !beforeHttp.has(target), { timeout: 15_000 });
+    const httpPopup = await httpTarget.page();
+    await httpPopup.waitForFunction(() => document.body?.textContent.includes("landing ok"), { timeout: 15_000 });
+    assert.equal(await httpPopup.evaluate(() => window.opener), null, `${access}: http popup has no opener`);
+    assert.ok(landingRequests.includes("/landing"), `${access}: the http popup loaded the landing page`);
+    await httpPopup.close();
+    await assertRendered("after http");
+
+    // https: the popup opens in a new tab (the host does not resolve in this environment; the target is what matters).
+    const beforeHttps = new Set(await browser.targets());
+    await current.click('a[href="https://tinycloud.invalid/guide"]');
+    const httpsTarget = await browser.waitForTarget((target) => target.type() === "page" && !beforeHttps.has(target), { timeout: 15_000 });
+    await (await httpsTarget.page())?.close();
+    await assertRendered("after https");
+
     await page.close();
   }
 
@@ -606,4 +667,5 @@ try {
   viewerProxy?.close();
   contentServer?.close();
   probe.close();
+  landing.close();
 }

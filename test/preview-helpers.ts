@@ -21,12 +21,12 @@ export function previewFrameOf(container: HTMLElement): HTMLIFrameElement {
 /**
  * Parse the frame's srcdoc document and return its <body>. Asserts the
  * structural isolation invariants every time the interior is inspected:
- * the sandbox attribute grants NOTHING (no allow-scripts, no
- * allow-same-origin — empty token list).
+ * the sandbox attribute grants popups only (allow-popups and
+ * allow-popups-to-escape-sandbox; no allow-scripts, no allow-same-origin).
  */
 export function previewBodyOf(container: HTMLElement): HTMLElement {
   const frame = previewFrameOf(container);
-  expect(frame.getAttribute("sandbox"), "sandbox must grant nothing").toBe("");
+  expect(frame.getAttribute("sandbox"), "sandbox must grant popups only").toBe("allow-popups allow-popups-to-escape-sandbox");
   const doc = new DOMParser().parseFromString(frame.srcdoc, "text/html");
   return doc.body;
 }
