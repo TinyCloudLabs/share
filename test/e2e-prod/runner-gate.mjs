@@ -294,8 +294,7 @@ async function clickByText(page, label) {
   await page.evaluate((text) => [...document.querySelectorAll("button, a")].find((node) => node.textContent === text).click(), label);
 }
 async function start(page) {
-  await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-  await clickByText(page, "Continue");
+  await page.waitForSelector(".run-screen", { timeout: 60_000 });
 }
 const frames = (page) => {
   const bridge = page.frames().find((candidate) => candidate.url().includes("/jsx-sandbox.html"));
@@ -401,33 +400,23 @@ try {
     const label = "run-health";
     const from = trace.length;
     const { page, context } = await openRunner(browser, stack, label, HEALTH, recordMessages);
+    controls.sign = hold();
     await start(page);
-    // Hold the first approval to show the status, then the second.
-    controls.sign = hold();
-    await arrivedOrExplain(page, controls.sign, "the first approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\) so Share can read Health Log \(sample\) from your TinyCloud/);
-    await captureState(page, "approval-1-of-2");
-    controls.sign.release();
-    controls.sign = hold();
-    await arrivedOrExplain(page, controls.sign, "the second approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(2 of 2\) to start Health Log \(sample\)/);
-    await captureState(page, "approval-2-of-2");
+    await arrivedOrExplain(page, controls.sign, "the approval");
+    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log \(sample\) from your TinyCloud/);
+    await captureState(page, "approval");
     controls.sign.release(); controls.sign = undefined;
     const child = await runningFrame(page);
     const afterStart = trace.length;
 
-    // The two sessions it signed: reading the saved copy, then exactly the app's own manifest for one hour.
+    // The one session it signed: exactly the app's own manifest for one hour.
     const sessions = sessionMessages(label);
-    assert.equal(sessions.length, 2, "two session sign-ins");
-    const reader = recapOf(sessions[0]);
-    // In the app's space the read session holds get, list and create-only put on the saved app, and put on its knowledge folder; the SDK's capabilities/read and the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/put`, `applications/kv/${HEALTH}/knowledge/ tinycloud.kv/put`].sort(), "the read session is not exactly the install grants plus get and list on the saved app");
+    assert.equal(sessions.length, 1, "one session sign-in");
     const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
-    assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
-    assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
-    assert.equal(lifetimeMs(sessions[1]), 3_600_000, "the runtime session lasts exactly one hour");
-    report.signedRuntimeRecap = recapOf(sessions[1]);
-    assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "two approvals but one OpenKey connect");
+    assert.deepEqual(recapOf(sessions[0]), expectedRecap(signingManifest), "the session's ReCap is not exactly the app's manifest");
+    assert.equal(lifetimeMs(sessions[0]), 3_600_000, "the session lasts exactly one hour");
+    report.signedRuntimeRecap = recapOf(sessions[0]);
+    assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "one approval and one OpenKey connect");
 
     // The page: chrome outside the frame, the frame sandboxed.
     assert.equal(await page.$eval(".run-title", (node) => node.textContent), health.name);

@@ -123,6 +123,15 @@ describe("bridge: the parent's manifest check, before any SDK call", () => {
     expect(h.calls).toEqual([]);
   });
 
+  it("account, registry and capability calls are not bridge operations: they never reach the port", async () => {
+    const h = harness(HEALTH);
+    const args = { key: "k", value: "v", db: "x", sql: "SELECT 1", params: [] };
+    for (const op of ["registry.list", "account.get", "capabilities.list", "capabilities.grant", "cap/kv.put"]) {
+      expect(code(await h.call(op, args)), op).toBe("BAD_REQUEST");
+    }
+    expect(h.calls).toEqual([]);
+  });
+
   it("another app's files are reachable only where the manifest has a cross-app grant, by absolute path", async () => {
     const h = harness(HEALTH);
     expect(code(await h.call("kv.get", { key: `/${RECIPES}/prefs/settings.json` }))).toBe("PERMISSION_DENIED");

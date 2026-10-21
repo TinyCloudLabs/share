@@ -125,6 +125,40 @@ export function runtimeScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveM
   return { allowedSpaces: [APP_SPACE], allowedServices: ["kv", "sql"], allowedActions: actions, allowedPathPrefixes: prefixes.map((prefix) => ({ space: APP_SPACE, prefix })) };
 }
 
+/** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */
+export function kvFolderPermission(path: string, actions: Array<"get" | "list" | "put">, description: string): NonNullable<Manifest["permissions"]>[number] {
+  return { service: "tinycloud.kv", path, actions, skipPrefix: true, description };
+}
+
+/**
+ * The one sign-in an open makes: the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
+ * and create-only `put` on `<app_id>/knowledge/`. Built from the catalog manifest so the request is known before OpenKey opens;
+ * the saved copy is checked against it afterwards and only the bridge's allow-list (makeAuthorizer on the capped copy) reaches the frame.
+ */
+export function openManifest(catalog: Manifest): Manifest {
+  return {
+    ...catalog,
+    expiry: RUNTIME_SESSION_EXPIRY,
+    includePublicSpace: false,
+    permissions: [
+      ...(catalog.permissions ?? []),
+      kvFolderPermission(`${catalog.app_id}/app/`, ["get", "list", "put"], `Read and save ${catalog.name}'s files (its code, manifest and install record) so they can be checked before it is opened.`),
+      kvFolderPermission(`${catalog.app_id}/knowledge/`, ["put"], `Save ${catalog.name}'s notes folder if it is missing.`),
+    ],
+  };
+}
+
+/** The upper bound `openManifest` must stay inside: `runtimeScope` plus `get`, `list`, `put` on the two folders. */
+export function openScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveManifest">): ManifestScope {
+  const base = runtimeScope(catalog, sdk);
+  const folders = [`${catalog.app_id}/app/`, `${catalog.app_id}/knowledge/`].map((prefix) => ({ space: APP_SPACE, prefix }));
+  return {
+    ...base,
+    allowedActions: [...new Set([...(base.allowedActions ?? []), "get", "list", "put"])],
+    allowedPathPrefixes: [...(base.allowedPathPrefixes ?? []), ...folders],
+  };
+}
+
 export type BridgeService = "tinycloud.kv" | "tinycloud.sql";
 export type BridgeAction = "get" | "put" | "list" | "del" | "read" | "write" | "schema";
 

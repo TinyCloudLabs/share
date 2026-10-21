@@ -1,18 +1,21 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Manifest } from "@tinycloud/sdk-core";
+import type { ScopedPrefix } from "../src/share/manifest-policy.ts";
 import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalog } from "../src/apps/catalog.ts";
-import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "../src/apps/install-plan.ts";
-import { RUNTIME_SESSION_MS } from "../src/apps/grants.ts";
-import { RunError, type ReadSession, type RunHooks } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, RUNNER_APP_ID, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, readerManifest, readerScope, runnerAppName } from "../src/apps/run-session.ts";
-import { type RunnableApp, verifyStoredApp } from "../src/apps/stored-app.ts";
-import { storedFiles } from "./stored-fixtures.ts";
+import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
+import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
+import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName } from "../src/apps/run-session.ts";
+import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
+const SIBLING = "xyz.tinycloud.sample.healthlog2";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH)!;
+const appFiles = entry.bundle.files.filter((file) => !file.path.startsWith("knowledge/"));
 
 interface SignInCall { options: Record<string, unknown>; guard: (wait: () => Promise<unknown>) => Promise<unknown>; fake: FakeSignIn }
 interface FakeSignIn {
@@ -23,10 +26,15 @@ interface FakeSignIn {
 }
 
 const calls: SignInCall[] = [];
+/** Every key the sign-in's kv writes were asked for, in order. */
+const puts: string[] = [];
 let kvFiles: Map<string, Uint8Array>;
-let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string } };
+/** When set, the listing answers this instead of the keys in `kvFiles`. */
+let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string } } | undefined;
 let signInBehaviour: (call: number, options: Record<string, unknown>) => Promise<void> | void;
 let spaces: Record<string, string>;
+/** The node's status for a signed read URL that has bytes (200 by default). */
+let fetchStatus: number;
 
 vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async () => ({ shareOrigin: "https://share.example" }) }));
 vi.mock("../src/share/openkey-session.js", () => ({
@@ -35,7 +43,13 @@ vi.mock("../src/share/openkey-session.js", () => ({
     const fake: FakeSignIn = {
       tinycloud: {
         kvForSpace: () => ({
-          list: async () => kvListResult,
+          list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
+          put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
+            puts.push(key);
+            if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+            kvFiles.set(key, value);
+            return { ok: true };
+          },
           createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
         }),
         sqlForSpace: () => ({ db: () => ({}) }),
@@ -52,33 +66,36 @@ vi.mock("../src/share/openkey-session.js", () => ({
   },
 }));
 
-const hooks: RunHooks = { approval: () => undefined };
 const manifestJson = (): unknown => JSON.parse(readFileSync(join("public", entry.bundle.root, entry.manifest.path), "utf8")) as unknown;
+const catalogManifest = (): Manifest => sdkCore.validateManifest(manifestJson());
 
-async function runnable(): Promise<RunnableApp> {
-  const result = await verifyStoredApp(HEALTH, storedFiles(entry), { catalog: catalog.apps, loadCatalogManifest: async () => ({ ok: true, manifest: manifestJson() }), sdk: sdkCore });
-  if (!result.ok) throw new Error(`fixture: ${result.failure.reason}`);
-  return result.app;
-}
-
-function seedSaved(): void {
+function seedSaved(overrides: StoredOverrides = {}): void {
   kvFiles = new Map();
-  const stored = storedFiles(entry);
-  for (const [path, bytes] of stored.entries) kvFiles.set(`${HEALTH}/app/${path}`, bytes);
-  kvListResult = { ok: true, data: { keys: [...kvFiles.keys()] } };
+  kvListResult = undefined;
+  for (const [path, bytes] of storedFiles(entry, overrides).entries) kvFiles.set(`${HEALTH}/app/${path}`, bytes);
 }
+
+/** The real ports, with the catalog bundle read from `public/` in place of the network. */
+function ports(overrides: Partial<RunPorts> = {}): RunPorts {
+  return {
+    ...createRunPorts(),
+    prepare: async (): Promise<PreparedApp> => ({
+      bundle: { files: entry.bundle.files.map((file) => ({ ...file, bytes: bundleBytes(entry, file.path) })), manifest: manifestJson() },
+      manifest: { ok: true, manifest: manifestJson() },
+    }),
+    ...overrides,
+  };
+}
+
+const open = (run: RunPorts = ports(), signal?: AbortSignal) => openApp(HEALTH, run, () => undefined, signal);
 
 beforeEach(() => {
   calls.length = 0;
+  puts.length = 0;
   spaces = { [INSTALL_SPACE]: "space-id" };
   signInBehaviour = () => undefined;
-  seedSaved();
-});
-
-/** The node's signed read URLs, served from `kvFiles` (a test sets `fetchStatus` to make the node answer something else). */
-let fetchStatus: number;
-beforeEach(() => {
   fetchStatus = 200;
+  seedSaved();
   vi.stubGlobal("fetch", async (url: string) => {
     const key = decodeURIComponent(String(url).slice("https://node.example/signed/".length));
     const value = kvFiles.get(key);
@@ -87,65 +104,6 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 
-describe("reading the saved app (sign-in 1)", () => {
-  it("asks the shared sign-in for a get and a list on the one app's folder, under the runner's identity, 15 minutes, with a label that is allowed", async () => {
-    const read = await createRunPorts().readStored(entry, hooks);
-    expect(calls).toHaveLength(1);
-    const { options } = calls[0]!;
-    expect(options["manifest"]).toEqual(readerManifest(HEALTH, entry.name));
-    expect((options["manifest"] as { app_id: string }).app_id).toBe(RUNNER_APP_ID);
-    expect(options["allowedActions"]).toEqual(readerScope(HEALTH).allowedActions);
-    expect(options["allowedPathPrefixes"]).toEqual(readerScope(HEALTH).allowedPathPrefixes);
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
-    expect(options["expiry"]).toBe(INSTALL_EXPIRY_MS);
-    expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: open ", entry.name));
-    expect([...read.files.entries.keys()].sort()).toEqual([...storedFiles(entry).entries.keys()].sort());
-    expect(read.files.incomplete).toBe(false);
-  });
-
-  it("signs nothing more once it has signed in: a later signature request is refused", async () => {
-    await createRunPorts().readStored(entry, hooks);
-    const wait = vi.fn(async () => "signed");
-    await expect(calls[0]!.guard(wait)).rejects.toThrow("runner-signing-closed");
-    expect(wait).not.toHaveBeenCalled();
-  });
-
-  it("lets the approvals of the sign-in itself through, one at a time", async () => {
-    let inside: Promise<unknown> | undefined;
-    signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
-    await createRunPorts().readStored(entry, hooks);
-    await expect(inside).resolves.toBe("signed");
-  });
-
-  it("disposes the sign-in when the files cannot be read, and says it failed", async () => {
-    kvListResult = { ok: false, error: { code: "KV_ERROR" } };
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-    seedSaved();
-    fetchStatus = 500;
-    calls.length = 0;
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toBeInstanceOf(RunError);
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("disposes the sign-in when the applications space is not hosted", async () => {
-    spaces = {};
-    await expect(createRunPorts().readStored(entry, hooks)).rejects.toMatchObject({ reason: "failed" });
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("ending the read session keeps OpenKey connected for the next sign-in, or closes everything", async () => {
-    const keep = await createRunPorts().readStored(entry, hooks);
-    await keep.end({ keepOpenKey: true });
-    await keep.end({ keepOpenKey: true });
-    expect(calls[0]!.fake.tinycloud.signOut).toHaveBeenCalledTimes(1);
-    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
-    calls.length = 0;
-    const close = await createRunPorts().readStored(entry, hooks);
-    await close.end({ keepOpenKey: false });
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-  });
-});
 
 describe("readSavedFiles: bounded, never silently cut", () => {
   const prefix = "a/app/";
@@ -241,63 +199,128 @@ describe("readSavedFiles: bounded, never silently cut", () => {
   });
 });
 
-describe("starting the app (sign-in 2)", () => {
-  async function started(): Promise<{ app: RunnableApp; read: ReadSession; runtime: Awaited<ReturnType<ReturnType<typeof createRunPorts>["openRuntime"]>> }> {
-    const ports = createRunPorts();
-    const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
-    const runtime = await ports.openRuntime(app, read, hooks);
-    return { app, read, runtime };
-  }
-
-  it("signs exactly the checked manifest, inside the catalog-derived scope, for one hour, on the reader's OpenKey connection", async () => {
-    const { app, runtime } = await started();
-    expect(calls).toHaveLength(2);
-    const { options } = calls[1]!;
-    expect(options["manifest"]).toBe(app.signing);
-    expect(options["allowedActions"]).toEqual(app.scope.allowedActions);
-    expect(options["allowedPathPrefixes"]).toEqual(app.scope.allowedPathPrefixes);
-    expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
-    expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
-    expect(options["session"]).toBe(calls[0]!.fake.session);
-    // The reader's client was signed out first; OpenKey itself stays connected for this one.
-    expect(calls[0]!.fake.tinycloud.signOut).toHaveBeenCalledTimes(1);
-    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
-    expect(runtime.expiresAt).toBeGreaterThan(Date.now() + RUNTIME_SESSION_MS - 120_000);
-    expect(runtime.expiresAt).toBeLessThan(Date.now() + RUNTIME_SESSION_MS);
+describe("opening an installed app: one sign-in per open", () => {
+  it("a repeat open signs in once, reads the saved copy, and writes no app file", async () => {
+    const app = await open();
+    expect(calls).toHaveLength(1);
+    expect(puts.filter((key) => key.startsWith(`${HEALTH}/app/`))).toEqual([]);
+    expect(app.session.expiresAt).toBeGreaterThan(Date.now());
   });
 
-  it("refuses every signature request after the runtime sign-in: the page's substitute for a signer-less client", async () => {
-    await started();
+  it("a fresh install signs in once and saves every app file and the install record", async () => {
+    kvFiles = new Map();
+    await open();
+    expect(calls).toHaveLength(1);
+    for (const file of appFiles) expect(kvFiles.get(`${HEALTH}/app/${file.path}`)).toEqual(bundleBytes(entry, file.path));
+    expect(kvFiles.has(`${HEALTH}/app/install.json`)).toBe(true);
+  });
+
+  it("a partial install resumes under the same single sign-in: only the missing record is written", async () => {
+    seedSaved({ remove: ["install.json"] });
+    const appJsx = kvFiles.get(`${HEALTH}/app/app.jsx`);
+    await open();
+    expect(calls).toHaveLength(1);
+    expect(puts.filter((key) => key.startsWith(`${HEALTH}/app/`))).toEqual([`${HEALTH}/app/install.json`]);
+    expect(kvFiles.get(`${HEALTH}/app/app.jsx`)).toBe(appJsx);
+  });
+
+  it("a file that appears after the listing is never overwritten: the open fails and the saved bytes stand", async () => {
+    const junk = new Uint8Array([0]);
+    kvFiles = new Map(appFiles.map((file) => [`${HEALTH}/app/${file.path}`, junk]));
+    kvListResult = { ok: true, data: { keys: [] } };
+    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+    expect(calls).toHaveLength(1);
+    expect(puts).toHaveLength(1);
+    expect([...kvFiles.values()].every((value) => value === junk)).toBe(true);
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a kill-switched app is refused before any sign-in", async () => {
+    const prepare = vi.fn(ports().prepare);
+    await expect(open(ports({ catalog: [{ ...entry, disabled: true, disabledReason: "Paused for maintenance" }], prepare }))).rejects.toMatchObject({ reason: "unavailable" });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a failed download of the catalog copy is refused before any sign-in", async () => {
+    await expect(open(ports({ prepare: async () => { throw new Error("offline"); } }))).rejects.toMatchObject({ reason: "failed" });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("cancelled before the sign-in: nothing is signed or written", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(open(ports(), controller.signal)).rejects.toMatchObject({ reason: "cancelled" });
+    expect(calls).toHaveLength(0);
+    expect(puts).toEqual([]);
+  });
+
+  it("cancelled while OpenKey is asking: the sign-in is ended and nothing is saved", async () => {
+    seedSaved({ remove: ["install.json"] });
+    const controller = new AbortController();
+    signInBehaviour = () => { controller.abort(); };
+    await expect(open(ports(), controller.signal)).rejects.toMatchObject({ reason: "cancelled" });
+    expect(calls).toHaveLength(1);
+    expect(puts).toEqual([]);
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-in that fails is a plain failure, and nothing is written", async () => {
+    signInBehaviour = () => { throw new Error("approval closed"); };
+    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+    expect(calls).toHaveLength(1);
+    expect(puts).toEqual([]);
+  });
+
+  it("an applications space that is not hosted ends the sign-in and fails", async () => {
+    spaces = {};
+    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a listing that fails ends the sign-in and fails", async () => {
+    kvListResult = { ok: false, error: { code: "KV_ERROR" } };
+    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("a download that answers an error ends the sign-in and fails", async () => {
+    fetchStatus = 500;
+    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {
+    await open();
+    const catalogManifest = sdkCore.validateManifest(manifestJson());
+    const { options } = calls[0]!;
+    expect(options["manifest"]).toEqual(openManifest(catalogManifest));
+    expect(options["allowedActions"]).toEqual(openScope(catalogManifest, sdkCore).allowedActions);
+    expect(options["allowedPathPrefixes"]).toEqual(openScope(catalogManifest, sdkCore).allowedPathPrefixes);
+    expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
+    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
+  });
+
+  it("lets the approvals of the sign-in itself through, one at a time", async () => {
+    let inside: Promise<unknown> | undefined;
+    signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
+    await open();
+    await expect(inside).resolves.toBe("signed");
+  });
+
+  it("refuses every signature request once the sign-in is done", async () => {
+    await open();
     const wait = vi.fn(async () => "signed");
-    await expect(calls[1]!.guard(wait)).rejects.toThrow("runner-signing-closed");
+    await expect(calls[0]!.guard(wait)).rejects.toThrow("runner-signing-closed");
     expect(wait).not.toHaveBeenCalled();
   });
 
-  it("ending the runtime session disposes the app's session AND the reader's OpenKey connection, once", async () => {
-    const { runtime } = await started();
-    await runtime.end();
-    await runtime.end();
-    expect(calls[1]!.fake.dispose).toHaveBeenCalledTimes(1);
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("a failed runtime sign-in disposes the reader's OpenKey connection and reports the failure", async () => {
-    const ports = createRunPorts();
-    const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
-    signInBehaviour = (call) => { if (call === 2) throw new Error("approval closed"); };
-    await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-  });
-
-  it("a missing applications space disposes both sign-ins", async () => {
-    const ports = createRunPorts();
-    const app = await runnable();
-    const read = await ports.readStored(entry, hooks);
-    spaces = {};
-    await expect(ports.openRuntime(app, read, hooks)).rejects.toMatchObject({ reason: "failed" });
-    expect(calls[1]!.fake.dispose).toHaveBeenCalledTimes(1);
+  it("ending the app's session disposes OpenKey's connection once", async () => {
+    const app = await open();
+    await app.session.end();
+    await app.session.end();
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 });
@@ -311,25 +334,36 @@ describe("runnerAppName", () => {
   });
 });
 
-describe("read scope and create-only writes", () => {
-  it("the read sign-in holds get, list and put on the app's folder, and put alone on its notes", () => {
-    const permissions = readerManifest(HEALTH, entry.name).permissions ?? [];
-    expect(permissions.map((permission) => ({ path: permission.path, actions: permission.actions }))).toEqual([
+describe("the one sign-in's request, per app id", () => {
+  it("asks for get, list and create-only put on the app's folder, and create-only put on its notes, and nothing else under the app's id", () => {
+    const manifest = openManifest(catalogManifest());
+    const own = (manifest.permissions ?? []).filter((permission) => (permission.path ?? "").startsWith(`${HEALTH}/`));
+    expect(own.map((permission) => ({ path: permission.path, actions: permission.actions }))).toEqual([
       { path: `${HEALTH}/app/`, actions: ["get", "list", "put"] },
       { path: `${HEALTH}/knowledge/`, actions: ["put"] },
     ]);
+    expect(manifest.expiry).toBe("1h");
+    expect(manifest.includePublicSpace).toBe(false);
   });
 
-  it("the read scope allows only those two folders in the applications space, with get, list and put", () => {
-    expect(readerScope(HEALTH)).toEqual({
-      allowedSpaces: [INSTALL_SPACE],
-      allowedServices: ["kv"],
-      allowedActions: ["get", "list", "put"],
-      allowedPathPrefixes: [
-        { space: INSTALL_SPACE, prefix: `${HEALTH}/app/` },
-        { space: INSTALL_SPACE, prefix: `${HEALTH}/knowledge/` },
-      ],
-    });
+  const prefixOf = (entryPath: ScopedPrefix): string => (typeof entryPath === "string" ? entryPath : entryPath.prefix);
+
+  it("a sibling app id gets only its own two folders in the request and in the upper bound", () => {
+    const sibling = { ...catalogManifest(), app_id: SIBLING };
+    const folders = (openManifest(sibling).permissions ?? []).map((permission) => permission.path ?? "").filter((path) => path.startsWith(`${SIBLING}/`));
+    expect(folders).toEqual([`${SIBLING}/app/`, `${SIBLING}/knowledge/`]);
+    const prefixes = (openScope(sibling, sdkCore).allowedPathPrefixes ?? []).map(prefixOf);
+    expect([...new Set(prefixes.filter((prefix) => prefix === `${SIBLING}/app/` || prefix === `${SIBLING}/knowledge/`))]).toEqual([`${SIBLING}/app/`, `${SIBLING}/knowledge/`]);
+    expect(prefixes).not.toContain(`${HEALTH}/app/`);
+    // The fixture's own grants already cover the sibling's folders, so only "no prefix belongs to another id" pins the bound to the app id.
+    expect(prefixes.filter((prefix) => !prefix.startsWith(`${SIBLING}/`))).toEqual([]);
+  });
+
+  it("the upper bound names the app's two folders and grants get, list and put", () => {
+    const scope = openScope(catalogManifest(), sdkCore);
+    const folders = [...new Set((scope.allowedPathPrefixes ?? []).map(prefixOf).filter((prefix) => prefix === `${HEALTH}/app/` || prefix === `${HEALTH}/knowledge/`))];
+    expect(folders).toEqual([`${HEALTH}/app/`, `${HEALTH}/knowledge/`]);
+    expect(scope.allowedActions).toEqual(expect.arrayContaining(["get", "list", "put"]));
   });
 });
 

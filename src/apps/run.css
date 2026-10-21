@@ -159,7 +159,7 @@
   padding: var(--tc-space-5);
 }
 
-.run-working p {
+.run-working p:not(.tc-status) {
   margin: 0;
   color: var(--tc-color-text-muted);
 }
