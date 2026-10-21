@@ -1,6 +1,10 @@
+import { parseShortLink, type ShortLinkParts } from "../short-links/codec.js";
+
 export interface CapturedLaunch {
   shareHref: string;
-  readonly kind: "bearer" | "addressed";
+  readonly kind: "bearer" | "addressed" | "short";
+  /** Present when kind is "short": the key and CID that verify the fetched bytes. */
+  readonly shortLink?: ShortLinkParts;
 }
 
 const NATIVE_LAUNCH = /^#tc1=([^&]+)$/;
@@ -13,6 +17,7 @@ const MAX_POLICY_FRAGMENT = 700_000;
  *
  * - `#tc1` is a secret bearer capability.
  * - `/s/inline#v=2&p=…` is a locally decrypted addressed-policy envelope.
+ * - `/s/<id>#v=3&k=…&c=…` is a short link. Its sealed bytes are fetched and then received as the inline form.
  *
  * No plaintext `?tc2`, unresolved compact `/s/<cid>`, claim-secret, or
  * reload-cache form is accepted.
@@ -23,6 +28,8 @@ export function captureAndScrubLaunch(loc: Location, history: History): Captured
   const search = loc.search;
   const hash = loc.hash;
   history.replaceState(null, "", "/viewer");
+  const shortLink = parseShortLink(href);
+  if (shortLink !== undefined) return { shareHref: href, kind: "short", shortLink };
 
   if (pathname === "/viewer" && search === "") {
     return NATIVE_LAUNCH.test(hash) ? { shareHref: href, kind: "bearer" } : undefined;
