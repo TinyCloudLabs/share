@@ -207,6 +207,29 @@ export interface RecipientClaimRecovery {
   readonly action: string;
 }
 
+/** A wait as the recipient reads it: whole minutes from one minute up, seconds below that. */
+export function waitPhrase(ms: number): string {
+  if (ms >= 60_000) {
+    const minutes = Math.ceil(ms / 60_000);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  const seconds = Math.max(1, Math.ceil(ms / 1000));
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+/** The live line under a recovery card: the remaining wait, then the retry as available. */
+function cooldownText(left: number): string {
+  return left > 0 ? `You can ask for a new code in ${waitPhrase(left)}.` : "You can ask for a new code now.";
+}
+
+const MINUTE_MS = 60_000;
+
+/** Delay until the live line can next change, or until the wait ends. Never more than a minute. */
+function msUntilLineChanges(left: number, minuteFrame: boolean): number {
+  const minutes = Math.ceil(left / MINUTE_MS);
+  return minuteFrame && minutes > 1 ? left - (minutes - 1) * MINUTE_MS : left;
+}
+
 /**
  * A recoverable stop: nothing was opened and a fresh code can be requested.
  * Until `availableAt` (epoch ms) the button stays disabled, so a recipient
@@ -226,10 +249,28 @@ export function renderRecipientClaimRecovery(view: RecipientClaimView, recovery:
   const wait = availableAt - Date.now();
   if (wait > 0) {
     retry.disabled = true;
-    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", `You can ask for a new code in ${Math.ceil(wait / 1000)} seconds.`);
+    const cooldown = element(doc, "p", "claim-state-detail claim-cooldown", cooldownText(wait));
     cooldown.setAttribute("aria-live", "polite");
     panel.append(cooldown);
-    setTimeout(() => { retry.disabled = false; cooldown.textContent = "You can ask for a new code now."; }, wait);
+    // The live line changes only when its whole-minute count changes; under a
+    // minute it keeps the text it was rendered with. One timer enables the retry
+    // when the wait ends. Every delay is at most a minute, so none nears
+    // setTimeout's range limit.
+    const minuteFrame = wait >= MINUTE_MS;
+    const wake = (): void => {
+      const left = availableAt - Date.now();
+      if (left <= 0) {
+        retry.disabled = false;
+        cooldown.textContent = "You can ask for a new code now.";
+        return;
+      }
+      if (minuteFrame) {
+        const text = cooldownText(left);
+        if (cooldown.textContent !== text) cooldown.textContent = text;
+      }
+      setTimeout(wake, msUntilLineChanges(left, minuteFrame));
+    };
+    setTimeout(wake, msUntilLineChanges(wait, minuteFrame));
   }
   view.verify.replaceChildren(panel);
   title.focus();
