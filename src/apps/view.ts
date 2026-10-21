@@ -441,7 +441,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
           panel.say(`Nothing to remove: ${entry.name} had no app files on this account. Your app data and settings are kept.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
           return;
         }
-        panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Install ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
+        panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Open ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
       },
       (error: unknown) => {
         if (cancelled) return;

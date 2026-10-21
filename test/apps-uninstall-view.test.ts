@@ -81,6 +81,11 @@ describe("the uninstall confirm sheet", () => {
     expect(node.opened).toBe(0);
   });
 
+  it("makes the confirm body keyboard-focusable, so a long delete list can be scrolled", () => {
+    openConfirm(fakeUninstall());
+    expect(sheet.querySelector(".apps-sheet__body")?.getAttribute("tabindex")).toBe("0");
+  });
+
   it("lists every delete the session will sign, taken from the same plan as the request", () => {
     openConfirm(fakeUninstall());
     const items = [...sheet.querySelectorAll<HTMLElement>(".apps-access__item")];
@@ -114,7 +119,7 @@ describe("the uninstall run", () => {
     expect(node.removedRegistry).toEqual([HEALTH]);
     expect(node.disposed).toBe(1);
     expect(line()).toContain("Your app data and settings are kept.");
-    expect(line()).toContain(`Install ${entry.name} again to restore it.`);
+    expect(line()).toContain(`Open ${entry.name} again to restore it.`);
   });
 
   it("says nothing was there to remove when no app files were listed, and still removes the registry entry", async () => {

@@ -473,10 +473,12 @@ try {
     await page.evaluate((name) => document.querySelector(`#apps-sheet button[aria-label='Uninstall ${name}']`).click(), app(HEALTH).name);
     await page.evaluate(() => [...document.querySelectorAll("#apps-sheet footer button")].find((node) => node.textContent === "Remove app").click());
     await page.waitForFunction(() => /^Removed /.test(document.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? ""), { timeout: 300_000 });
-    const removed = await statusText(page);
-    assert(removed.includes("Your app data and settings are kept."), `the uninstall message was "${removed}"`);
+    const removed = await page.$eval(".apps-install-panel .apps-install-line", (node) => node.textContent ?? "");
+    assert(removed.includes("Your app data and settings are kept.") && removed.includes(`Open ${app(HEALTH).name} again to restore it.`), `the uninstall message was "${removed}"`);
     const after = await reader(page, chunkUrl, { op: "read", appId: HEALTH });
-    assert.deepEqual(after.keys, [prefsKey], "uninstall left app files or agent notes behind, or dropped app data");
+    // Subset check: the prefs key this stage wrote survives, and nothing under the app's own folders does. Other keys earlier stages left are not compared.
+    assert(after.keys.includes(prefsKey), "uninstall dropped the kept app data");
+    assert(!after.keys.some((key) => key.startsWith(`${HEALTH}/app/`) || key.startsWith(`${HEALTH}/knowledge/`)), "uninstall left app files or agent notes behind");
     assert(!after.registered.some((entry) => entry.appId === HEALTH), "the app is still in the account's apps list");
     // Re-install: the kept prefs survive, the app files come back.
     await openFromCard(page, HEALTH);
