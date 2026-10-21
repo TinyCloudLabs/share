@@ -223,11 +223,11 @@ function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () 
 
 function uninstallProgressText(entry: CatalogEntry, progress: UninstallProgress): string {
   switch (progress.phase) {
-    case "signing-in": return "Opening OpenKey…";
+    case "signing-in": return `Uninstalling ${entry.name}…`;
     case "approval": return `Approve in the OpenKey window to remove ${entry.name}`;
-    case "checking": return `Checking ${entry.name}'s files…`;
-    case "removing": return `Removing ${entry.name}… ${progress.done} of ${progress.total} files`;
-    case "registry": return "Updating your account list…";
+    case "checking": return `Uninstalling ${entry.name}…`;
+    case "removing": return `Uninstalling ${entry.name}… ${progress.done} of ${progress.total} files`;
+    case "registry": return `Uninstalling ${entry.name}…`;
   }
 }
 

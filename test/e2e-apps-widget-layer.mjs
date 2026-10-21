@@ -39,7 +39,7 @@ const APP = "xyz.tinycloud.sample.healthlog";
 /** The first-open disclosure line on the start screen (src/apps/first-open.ts). */
 const DISCLOSURE = "If this app isn't in your TinyCloud, we'll save its files as part of opening it.";
 /** The status line while the open waits on its first approval (or just before it). */
-const PROGRESS = /^(Checking Health Log…|Opening OpenKey…|Approve in the OpenKey window \(1 of 2\) so Share can read Health Log from your TinyCloud)/;
+const PROGRESS = /^(Opening Health Log…|Approve in the OpenKey window \(1 of 2\) so Share can read Health Log from your TinyCloud)/;
 
 /** A stand-in for OpenKey's embedded window: ready at once, then one big button that waits for a click. It never answers by itself. */
 const STAND_IN = `<!doctype html><meta charset="utf-8"><title>OpenKey stand-in</title>

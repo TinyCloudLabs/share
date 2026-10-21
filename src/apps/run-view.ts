@@ -87,11 +87,11 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
 /** Status line for each step of an open. */
 export function progressText(progress: RunProgress, name: string): string {
   switch (progress.phase) {
-    case "checking": return `Checking ${name}…`;
-    case "reading": return progress.approval ? `Approve in the OpenKey window (1 of 2) so Share can read ${name} from your TinyCloud` : "Opening OpenKey…";
-    case "saving": return `Saving ${name}'s files to your TinyCloud (${progress.done} of ${progress.total})…`;
-    case "verifying": return `Checking your copy of ${name} against the catalog…`;
-    case "starting": return progress.approval ? `Approve in the OpenKey window (2 of 2) to start ${name} with the permissions listed here` : `Starting ${name}…`;
+    case "checking": return `Opening ${name}…`;
+    case "reading": return progress.approval ? `Approve in the OpenKey window (1 of 2) so Share can read ${name} from your TinyCloud` : `Opening ${name}…`;
+    case "saving": return `Opening ${name}…`;
+    case "verifying": return `Opening ${name}…`;
+    case "starting": return progress.approval ? `Approve in the OpenKey window (2 of 2) to start ${name} with the permissions listed here` : `Opening ${name}…`;
   }
 }
 
