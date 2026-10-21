@@ -89,4 +89,20 @@ expect_not_found "GET after delete" "$BASE/$ID"
 # GET unknown id: same uniform 404
 expect_not_found "GET unknown id" "$BASE/aaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+# Query strings and sibling paths reach the Worker (one route pattern), so each
+# gets the Worker's own uniform answer with no CORS header.
+expect_not_found "GET collection with query" "$BASE?list"
+expect_not_found "GET trailing slash with query" "$BASE/?list"
+expect_not_found "GET sibling path" "${BASE}X"
+
+# POST with a query string: same 400 as POST without one, no CORS header
+code="$(curl -sS -D "$WORK/q.headers" -o "$WORK/q.json" -w '%{http_code}' -X POST "$BASE?x=1" \
+  -H 'Content-Type: application/json' --data '')"
+[ "$code" = "400" ] || fail "POST with query: expected 400 for empty body, got $code"
+[ "$(cat "$WORK/q.json")" = '{"error":"invalid"}' ] || fail "POST with query: body is not the uniform 400"
+if grep -qi '^access-control-' "$WORK/q.headers"; then
+  fail "POST with query returned a CORS header"
+fi
+echo "ok: POST with query string -> 400 invalid, no CORS"
+
 echo "smoke: all checks passed"
