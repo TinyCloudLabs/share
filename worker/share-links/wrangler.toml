@@ -1,0 +1,21 @@
+name = "share-links"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+workers_dev = false
+
+routes = [
+  { pattern = "share.tinycloud.xyz/api/share-links", zone_name = "tinycloud.xyz" },
+  { pattern = "share.tinycloud.xyz/api/share-links/*", zone_name = "tinycloud.xyz" }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "share-short-links"
+database_id = "01e22624-e647-45bb-99b8-5472e8be044f"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[observability]
+enabled = false
