@@ -18,6 +18,7 @@ import type { Manifest } from "@tinycloud/web-sdk";
 
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { type RequestedResource, INSTALL_EXPIRY, INSTALL_SPACE, installRecordKey } from "./install-plan.ts";
+import { type AccessSummary, summarizeAccess } from "./access.ts";
 
 /** The Share maintenance identity. Not any app's id: see the header. */
 export const UNINSTALL_IDENTITY_ID = "tinycloud-share-uninstall";
@@ -28,7 +29,7 @@ export const ACCOUNT_SPACE = "account";
 export const LIST_PAGE_LIMIT = 500;
 export const MAX_LIST_PAGES = 200;
 
-export type UninstallFailure = "refused" | "truncated" | "cancelled" | "timeout" | "wrong-account" | "busy" | "failed" | "write-failed";
+export type UninstallFailure = "refused" | "truncated" | "cancelled" | "timeout" | "wrong-account" | "busy" | "not-started" | "failed" | "write-failed";
 
 export class UninstallError extends Error {
   readonly reason: UninstallFailure;
@@ -74,10 +75,6 @@ export function isOwnedKey(appId: string, key: string): boolean {
     return rest.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".." && !/%2e|%2f|%5c|\\|[\u0000-\u001f\u007f]/i.test(segment));
   }
   return false;
-}
-
-export function assertOwnedKey(appId: string, key: string): void {
-  if (!isOwnedKey(appId, key)) throw new UninstallError("refused");
 }
 
 /**
@@ -147,4 +144,32 @@ export function expectedUninstallResources(appId: string): RequestedResource[] {
     { service: "tinycloud.capabilities", space: INSTALL_SPACE, path: "", actions: ["tinycloud.capabilities/read"] },
     { service: "tinycloud.capabilities", space: ACCOUNT_SPACE, path: "", actions: ["tinycloud.capabilities/read"] },
   ];
+}
+
+/** Everything one uninstall needs, built once from the app: what is signed, what the sheet lists, and what the signed request must be. */
+export interface UninstallPlan {
+  readonly app_id: string;
+  /** What is signed: the maintenance identity's manifest. */
+  readonly manifest: Manifest;
+  /** The app's name as the sign-in shows it. */
+  readonly appName: string;
+  readonly scope: ManifestScope;
+  /** What the sheet lists: `summarizeAccess` over `manifest`, the same manifest that is signed. */
+  readonly rows: AccessSummary;
+  /** What the composed request must match, resource for resource. */
+  readonly resources: RequestedResource[];
+}
+
+/** Builds the plan for one app. Throws `refused` for an unsafe id, before anything is shown or signed. */
+export function uninstallPlan(app: { app_id: string; name: string }): UninstallPlan {
+  assertPlainAppId(app.app_id);
+  const manifest = uninstallManifest(app);
+  return {
+    app_id: app.app_id,
+    appName: uninstallAppName(app.name),
+    manifest,
+    scope: uninstallScope(app.app_id),
+    rows: summarizeAccess(manifest),
+    resources: expectedUninstallResources(app.app_id),
+  };
 }

@@ -3,7 +3,7 @@ import type { Mock } from "vitest";
 
 import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { createUninstallPorts } from "../src/apps/uninstall-session.ts";
-import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UNINSTALL_IDENTITY_ID, UninstallError, uninstallScope } from "../src/apps/uninstall-plan.ts";
+import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UNINSTALL_IDENTITY_ID, UninstallError, uninstallPlan, uninstallScope } from "../src/apps/uninstall-plan.ts";
 
 const mocks = vi.hoisted(() => ({
   signInWithManifest: vi.fn(),
@@ -57,6 +57,7 @@ function signedIn(
 }
 
 const app = { app_id: "todo", name: "Todo" };
+const plan = uninstallPlan(app);
 const hooks = { approval: vi.fn() };
 
 beforeEach(() => {
@@ -70,7 +71,7 @@ describe("createUninstallPorts: sign-in", () => {
     const handle = signedIn(tc);
     mocks.signInWithManifest.mockResolvedValue(handle);
 
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
 
     expect(mocks.signInWithManifest).toHaveBeenCalledTimes(1);
     const args = mocks.signInWithManifest.mock.calls[0]?.[0];
@@ -90,7 +91,7 @@ describe("createUninstallPorts: sign-in", () => {
     const handle = signedIn(tc, { [INSTALL_SPACE]: "space-install" });
     mocks.signInWithManifest.mockResolvedValue(handle);
 
-    await expect(createUninstallPorts().openSession(app, hooks)).rejects.toMatchObject({ reason: "failed" });
+    await expect(createUninstallPorts().openSession(plan, hooks)).rejects.toMatchObject({ reason: "failed" });
     expect(handle.dispose).toHaveBeenCalledTimes(1);
   });
 
@@ -101,7 +102,7 @@ describe("createUninstallPorts: sign-in", () => {
     });
     mocks.takeWalletApprovalFailure.mockReturnValue("wrong-account");
 
-    await expect(createUninstallPorts().openSession(app, hooks)).rejects.toMatchObject({ reason: "wrong-account" });
+    await expect(createUninstallPorts().openSession(plan, hooks)).rejects.toMatchObject({ reason: "wrong-account" });
   });
 
   it("maps an approval window that was abandoned to timeout", async () => {
@@ -110,12 +111,12 @@ describe("createUninstallPorts: sign-in", () => {
       throw new Error("openkey-rejected");
     });
 
-    await expect(createUninstallPorts().openSession(app, hooks)).rejects.toMatchObject({ reason: "timeout" });
+    await expect(createUninstallPorts().openSession(plan, hooks)).rejects.toMatchObject({ reason: "timeout" });
   });
 
   it("a sign-in failure with nothing else known is a plain failure", async () => {
     mocks.signInWithManifest.mockRejectedValue(new Error("network"));
-    const error = await createUninstallPorts().openSession(app, hooks).catch((caught: unknown) => caught);
+    const error = await createUninstallPorts().openSession(plan, hooks).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(UninstallError);
     expect((error as UninstallError).reason).toBe("failed");
   });
@@ -125,7 +126,7 @@ describe("createUninstallPorts: folder listing and deletes", () => {
   it("maps a listing page and passes the page size and cursor on", async () => {
     const tc = fakeTinyCloud({ list: { ok: true, data: { keys: ["todo/app/a"], truncated: true, nextCursor: "n1" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
 
     await expect(session.list("todo/app/")).resolves.toEqual({ keys: ["todo/app/a"], truncated: true, nextCursor: "n1" });
     expect(tc.kv.list).toHaveBeenCalledWith({ prefix: "todo/app/", limit: LIST_PAGE_LIMIT });
@@ -137,14 +138,14 @@ describe("createUninstallPorts: folder listing and deletes", () => {
   it("a key that is already gone counts as deleted", async () => {
     const tc = fakeTinyCloud({ del: { ok: false, error: { code: "KV_NOT_FOUND" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.del("todo/app/a")).resolves.toBeUndefined();
   });
 
   it("any other delete failure rejects", async () => {
     const tc = fakeTinyCloud({ del: { ok: false, error: { code: "KV_WRITE_FAILED" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.del("todo/app/a")).rejects.toThrow("uninstall-delete-failed:KV_WRITE_FAILED");
   });
 });
@@ -153,7 +154,7 @@ describe("createUninstallPorts: registry removal", () => {
   it("removes the app's entry by its id", async () => {
     const tc = fakeTinyCloud();
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
     await session.removeRegistry("todo");
     expect(tc.remove).toHaveBeenCalledWith("todo");
   });
@@ -161,14 +162,52 @@ describe("createUninstallPorts: registry removal", () => {
   it("an entry that is already gone counts as removed", async () => {
     const tc = fakeTinyCloud({ remove: { ok: false, error: { code: "KV_NOT_FOUND" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.removeRegistry("todo")).resolves.toBeUndefined();
   });
 
   it("any other registry failure rejects, so the run reports the entry as not removed", async () => {
     const tc = fakeTinyCloud({ remove: { ok: false, error: { code: "NETWORK_ERROR" } } });
     mocks.signInWithManifest.mockResolvedValue(signedIn(tc));
-    const session = await createUninstallPorts().openSession(app, hooks);
+    const session = await createUninstallPorts().openSession(plan, hooks);
     await expect(session.removeRegistry("todo")).rejects.toThrow("uninstall-registry-failed:NETWORK_ERROR");
+  });
+});
+
+describe("createUninstallPorts: the request before OpenKey", () => {
+  /** The plan with its `app/` grant widened to `put`: the signed request would exceed the sheet. */
+  const widened = (): typeof plan => ({
+    ...plan,
+    manifest: {
+      ...plan.manifest,
+      permissions: (plan.manifest.permissions ?? []).map((permission) => (permission.path === "app/" ? { ...permission, actions: ["list", "del", "put"] } : permission)),
+    } as typeof plan.manifest,
+  });
+
+  it("stops when the composed request grants more than the sheet lists, before OpenKey opens", async () => {
+    await expect(createUninstallPorts().openSession(widened(), hooks)).rejects.toMatchObject({ reason: "not-started", cause: expect.objectContaining({ message: "uninstall-request-differs-from-sheet" }) });
+    expect(mocks.signInWithManifest).not.toHaveBeenCalled();
+  });
+
+  it("stops when the request would delegate to another DID, before OpenKey opens", async () => {
+    const delegated = { ...plan, manifest: { ...plan.manifest, did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" } as typeof plan.manifest };
+    await expect(createUninstallPorts().openSession(delegated, hooks)).rejects.toMatchObject({ reason: "not-started", cause: expect.objectContaining({ message: "uninstall-request-delegates" }) });
+    expect(mocks.signInWithManifest).not.toHaveBeenCalled();
+  });
+
+  it("signs in with the uninstall's own scope, a 15-minute window, and no account creation", async () => {
+    mocks.signInWithManifest.mockResolvedValue(signedIn(fakeTinyCloud()));
+    await createUninstallPorts().openSession(plan, hooks);
+    expect(mocks.signInWithManifest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manifest: plan.manifest,
+        allowedSpaces: [INSTALL_SPACE, ACCOUNT_SPACE],
+        allowedActions: ["list", "del"],
+        expiry: 15 * 60 * 1000,
+        autoCreateSpace: false,
+        includeAccountRegistryPermissions: false,
+        sessionPrefix: "tinycloud-share-uninstall",
+      }),
+    );
   });
 });

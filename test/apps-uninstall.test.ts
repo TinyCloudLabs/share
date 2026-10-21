@@ -16,11 +16,13 @@ import {
   registryKey,
   uninstallAppName,
   uninstallManifest,
+  uninstallPlan,
   uninstallScope,
 } from "../src/apps/uninstall-plan.ts";
 
 const app = { app_id: "todo", name: "Todo" };
 const RECORD = installRecordKey("todo");
+const plan = uninstallPlan(app);
 
 describe("assertPlainAppId", () => {
   it.each(["", "..", "a/b", "a\\b", "%2e%2e", "a..b", " todo", "-todo", "todo/", "../todo"])("refuses %j", (appId) => {
@@ -231,7 +233,7 @@ const DATA_KEYS = ["todo/prefs/theme.json", "todo/data.sqlite", "todo/files/phot
 describe("runUninstall", () => {
   it("lists the two folders only, deletes code and notes in plan order, keeps data, and removes the registry entry last", async () => {
     const w = world(KEYS);
-    const result = await runUninstall(app, w.ports, () => undefined);
+    const result = await runUninstall(plan, w.ports, () => undefined);
 
     expect(w.log).toEqual([
       "list:todo/app/",
@@ -250,62 +252,60 @@ describe("runUninstall", () => {
 
   it("follows the listing across pages", async () => {
     const w = world(KEYS, { pageSize: 2 });
-    const result = await runUninstall(app, w.ports, () => undefined);
+    const result = await runUninstall(plan, w.ports, () => undefined);
     expect(result).toEqual({ removed: 5, registry: "removed" });
     expect([...w.store].sort()).toEqual([...DATA_KEYS].sort());
   });
 
   it("refuses a listing still truncated at the page cap, before any delete", async () => {
     const w = world(KEYS, { alwaysTruncated: true });
-    await expect(runUninstall(app, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
+    await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
     expect(w.log.some((entry) => entry.startsWith("del:") || entry.startsWith("registry:"))).toBe(false);
     expect(MAX_LIST_PAGES).toBeGreaterThan(1);
   });
 
   it("refuses a truncated page that has no cursor to follow", async () => {
     const w = world(KEYS, { truncatedWithoutCursor: true });
-    await expect(runUninstall(app, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
+    await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({ reason: "truncated" });
     expect(w.log.some((entry) => entry.startsWith("del:"))).toBe(false);
   });
 
   it("never deletes a listed key that escapes the folders, and still removes every owned key in order", async () => {
     const w = world([...KEYS, "todo/app/../prefs/x", "todo/app/%2e%2e/x", "todo2/app/x"]);
-    await runUninstall(app, w.ports, () => undefined);
+    await runUninstall(plan, w.ports, () => undefined);
     const dels = w.log.filter((entry) => entry.startsWith("del:")).map((entry) => entry.slice("del:".length));
     expect(dels.every((key) => isOwnedKey("todo", key))).toBe(true);
     expect(dels.slice(0, 2)).toEqual(["todo/knowledge/index.md", RECORD]);
     expect(dels).toEqual(expect.arrayContaining(KEYS.filter((key) => isOwnedKey("todo", key))));
   });
 
-  it.each(["", "..", "%2e%2e", "a/b", "a\\b", "todo/", "../todo"])("refuses the app id %j before any sign-in or delete", async (appId) => {
-    const w = world(KEYS);
-    await expect(runUninstall({ app_id: appId, name: "x" }, w.ports, () => undefined)).rejects.toMatchObject({ reason: "refused" });
-    expect(w.log).toEqual([]);
+  it.each(["", "..", "%2e%2e", "a/b", "a\\b", "todo/", "../todo"])("refuses the app id %j when the plan is built", (appId) => {
+    expect(() => uninstallPlan({ app_id: appId, name: "x" })).toThrow(UninstallError);
   });
 
   it("stops at a failed delete, reports the keys already deleted, and a retry finishes the rest", async () => {
     const w = world(KEYS, { failDelOn: "todo/app/js/main.js" });
-    await expect(runUninstall(app, w.ports, () => undefined)).rejects.toMatchObject({
+    await expect(runUninstall(plan, w.ports, () => undefined)).rejects.toMatchObject({
       reason: "write-failed",
       deleted: ["todo/knowledge/index.md", RECORD, "todo/app/index.html"],
     });
     expect(w.log).not.toContain("registry:todo");
 
     delete w.options.failDelOn;
-    const retry = await runUninstall(app, w.ports, () => undefined);
+    const retry = await runUninstall(plan, w.ports, () => undefined);
     expect(retry).toEqual({ removed: 2, registry: "removed" });
     expect([...w.store].sort()).toEqual([...DATA_KEYS].sort());
   });
 
   it("a failed registry removal does not undo the file deletes; the retry removes only the entry", async () => {
     const w = world(KEYS, { failRegistry: true });
-    const first = await runUninstall(app, w.ports, () => undefined);
+    const first = await runUninstall(plan, w.ports, () => undefined);
     expect(first).toEqual({ removed: 5, registry: "failed" });
     expect(w.store.has("applications/todo")).toBe(true);
     expect(w.store.has("todo/app/index.html")).toBe(false);
 
     w.options.failRegistry = false;
-    const retry = await runUninstall(app, w.ports, () => undefined);
+    const retry = await runUninstall(plan, w.ports, () => undefined);
     expect(retry).toEqual({ removed: 0, registry: "removed" });
     expect(w.log.filter((entry) => entry.startsWith("del:"))).toHaveLength(5);
     expect(w.store.has("applications/todo")).toBe(false);
@@ -313,19 +313,19 @@ describe("runUninstall", () => {
 
   it("running again after a finished uninstall is a no-op that still succeeds", async () => {
     const w = world(KEYS);
-    await runUninstall(app, w.ports, () => undefined);
-    const again = await runUninstall(app, w.ports, () => undefined);
+    await runUninstall(plan, w.ports, () => undefined);
+    const again = await runUninstall(plan, w.ports, () => undefined);
     expect(again).toEqual({ removed: 0, registry: "removed" });
     expect([...w.store].sort()).toEqual([...DATA_KEYS].sort());
   });
 
   it("a reinstall writes the code back and the next uninstall removes it, keeping the data", async () => {
     const w = world(KEYS);
-    await runUninstall(app, w.ports, () => undefined);
+    await runUninstall(plan, w.ports, () => undefined);
     w.store.add("todo/app/index.html");
     w.store.add(RECORD);
     w.store.add("applications/todo");
-    const result = await runUninstall(app, w.ports, () => undefined);
+    const result = await runUninstall(plan, w.ports, () => undefined);
     expect(result).toEqual({ removed: 2, registry: "removed" });
     expect(w.store.has("todo/prefs/theme.json")).toBe(true);
     expect(w.store.has("todo/data.sqlite")).toBe(true);
@@ -339,14 +339,32 @@ describe("runUninstall", () => {
         throw new UninstallError("cancelled");
       },
     };
-    await expect(runUninstall(app, ports, () => undefined)).rejects.toMatchObject({ reason: "cancelled" });
+    await expect(runUninstall(plan, ports, () => undefined)).rejects.toMatchObject({ reason: "cancelled" });
     expect(log).toEqual(["open"]);
   });
 
   it("reports the phases in order", async () => {
     const phases: UninstallProgress[] = [];
-    await runUninstall(app, world(KEYS).ports, (progress) => phases.push(progress));
+    await runUninstall(plan, world(KEYS).ports, (progress) => phases.push(progress));
     const seen = phases.map((progress) => progress.phase).filter((phase, index, all) => index === 0 || phase !== all[index - 1]);
     expect(seen).toEqual(["signing-in", "checking", "removing", "registry"]);
+  });
+});
+
+describe("the sheet and the request", () => {
+  it("the sheet's rows are the request's resources, one for one", () => {
+    // Rows split a path into a read row and a change row; the request lists one resource per path. Compare by space and path.
+    const byPath = (items: readonly { space: string | null; path: string; actions: readonly string[] }[]): Record<string, string[]> => {
+      const grouped: Record<string, Set<string>> = {};
+      for (const item of items) {
+        const key = `${item.space ?? INSTALL_SPACE}|${item.path}`;
+        grouped[key] ??= new Set();
+        for (const action of item.actions) grouped[key].add(action);
+      }
+      return Object.fromEntries(Object.entries(grouped).map(([key, actions]) => [key, [...actions].sort()]));
+    };
+    const { rows } = uninstallPlan(app);
+    const resources = plan.resources.map((resource) => ({ space: resource.space, path: resource.path, actions: resource.actions.map((action) => action.split("/")[1] ?? action) }));
+    expect(byPath([...rows.change, ...rows.read])).toEqual(byPath(resources));
   });
 });

@@ -179,11 +179,12 @@ native stack in a real browser (see that file's header).
 - **Listing limit.** A listing that is still truncated after 200 pages of 500 keys stops the run before anything is deleted.
 - **Keys outside the folders are ignored.** A listed key outside `<app_id>/app/` and `<app_id>/knowledge/` is skipped, not deleted, so a listing cannot widen the delete set. A key that would escape the folders at delete time is refused before its `del` runs.
 - **Registry failure is not fatal.** The files are already gone, so the sheet says "The app was removed; its entry in your account list couldn't be updated; try again." A retry removes only the registry entry.
+- **Stopped before sign-in.** If the signed request does not match the confirm sheet, or would delegate to another identity, the run stops before OpenKey opens: "Couldn't start the uninstall. Nothing was changed. Try again."
+- **Nothing listed.** If the app has no files left, the run only removes the registry entry and the sheet says there was nothing to remove.
+- **Account app list.** The SDK's `applications.remove` treats a failed removal of the app's index row as success. After an uninstall, `applications.list()` no longer returns the app, but `applications.list({ preferIndex: true })` (and `tc account applications`) can still show it. The uninstall cannot report this.
 - **Re-install** after an uninstall works, and the kept SQL and prefs are still there.
 
-`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and its read rows, the registry-failure retry and the sheet copy. `test/e2e-prod/install-gate.mjs` and `runner-gate.mjs` run uninstall against the hermetic stack (see those files' headers); they were syntax-checked only and have not run.
-
-Details: TC-1422
+`test/apps-uninstall*.test.ts` cover the path guard (`isOwnedKey`, including `<app_id>2`, `..`, `%2e` and empty ids), the ignore rule for listed keys outside the folders, the delete order, pagination and the truncation limit, the confirm-sheet/ReCap match and its read rows, the stop-before-sign-in copy, the nothing-to-remove copy, and the registry-failure retry. `test/e2e-prod/install-gate.mjs` (stage 6) and `runner-gate.mjs` (stage 8) run uninstall against the hermetic stack; see those files' headers.
 
 ## Sample apps
 

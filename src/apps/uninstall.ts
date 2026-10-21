@@ -8,7 +8,7 @@
  * already removed and a retry removes the entry. A missing key is success
  * everywhere, so a retry after any interruption finishes the job.
  */
-import { LIST_PAGE_LIMIT, MAX_LIST_PAGES, UninstallError, assertOwnedKey, assertPlainAppId, deleteOrder, folderPrefixes } from "./uninstall-plan.ts";
+import { LIST_PAGE_LIMIT, MAX_LIST_PAGES, UninstallError, type UninstallPlan, deleteOrder, folderPrefixes } from "./uninstall-plan.ts";
 
 export interface ListPage {
   keys: string[];
@@ -25,7 +25,7 @@ export interface UninstallSession {
 }
 
 export interface UninstallPorts {
-  openSession(app: { app_id: string; name: string }, hooks: { approval(open: boolean): void }): Promise<UninstallSession>;
+  openSession(plan: UninstallPlan, hooks: { approval(open: boolean): void }): Promise<UninstallSession>;
 }
 
 export type UninstallProgress =
@@ -56,19 +56,18 @@ async function listAll(session: UninstallSession, prefix: string): Promise<strin
 }
 
 export async function runUninstall(
-  app: { app_id: string; name: string },
+  plan: UninstallPlan,
   ports: UninstallPorts,
   report: (progress: UninstallProgress) => void,
 ): Promise<UninstallResult> {
-  assertPlainAppId(app.app_id);
   let session: UninstallSession | undefined;
   try {
     report({ phase: "signing-in" });
-    session = await ports.openSession(app, { approval: (open) => report({ phase: "approval", open }) });
+    session = await ports.openSession(plan, { approval: (open) => report({ phase: "approval", open }) });
 
     report({ phase: "checking" });
     const listed: string[] = [];
-    for (const prefix of folderPrefixes(app.app_id)) {
+    for (const prefix of folderPrefixes(plan.app_id)) {
       try {
         listed.push(...(await listAll(session, prefix)));
       } catch (error) {
@@ -76,11 +75,10 @@ export async function runUninstall(
         throw new UninstallError("failed", { cause: error });
       }
     }
-    const order = deleteOrder(app.app_id, listed);
+    const order = deleteOrder(plan.app_id, listed);
 
     const deleted: string[] = [];
     for (const key of order) {
-      assertOwnedKey(app.app_id, key);
       report({ phase: "removing", done: deleted.length, total: order.length });
       try {
         await session.del(key);
@@ -92,7 +90,7 @@ export async function runUninstall(
 
     report({ phase: "registry" });
     try {
-      await session.removeRegistry(app.app_id);
+      await session.removeRegistry(plan.app_id);
       return { removed: deleted.length, registry: "removed" };
     } catch {
       // Files are already gone; the entry is retried by the next run. The cause is not shown: the copy says what to do.

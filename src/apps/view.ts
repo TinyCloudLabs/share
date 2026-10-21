@@ -4,19 +4,19 @@
  * so Trusted Types can stay required for scripts. The install sheet's words are
  * fixed text plus those same textContent values; it adds no markup path.
  */
-import { type AccessItem, type AccessSummary, selfGrantRead, unsupportedManifest } from "./access.ts";
+import { type AccessItem, type AccessSummary, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { SAMPLE_NOTICE, consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
 import { type InstallFlight, flightFor, startInstall } from "./install-flight.ts";
 import type { InstallError, InstallPorts } from "./install.ts";
 import { createInstallPorts } from "./install-session.ts";
-import { INSTALL_SESSION_LABEL, INSTALL_SPACE, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
+import { INSTALL_SESSION_LABEL, installerAccess, installerManifest, runnerHref } from "./install-plan.ts";
 import { CAUTION, KNOWN_LIMITS } from "./limits.ts";
 import { loadManifest } from "./manifest.ts";
 import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
 import { createRepairPorts } from "./repair-session.ts";
-import { ACCOUNT_SPACE, type UninstallFailure, UninstallError } from "./uninstall-plan.ts";
+import { type UninstallFailure, UninstallError, uninstallPlan } from "./uninstall-plan.ts";
 import { type UninstallPorts, type UninstallProgress, type UninstallResult, runUninstall } from "./uninstall.ts";
 import { createUninstallPorts } from "./uninstall-session.ts";
 
@@ -364,10 +364,11 @@ function repairContent(entry: CatalogEntry, onContinue: () => void, close: () =>
 /** The uninstall confirm: what goes, what stays, and that open app tabs stay open. Nothing runs until Remove app. */
 function uninstallContent(entry: CatalogEntry, onConfirm: () => void, close: () => void): { header: HTMLElement; body: HTMLElement; footer: HTMLElement } {
   const header = sheetHeader("Uninstall", `Remove ${entry.name}`, entry, close);
+  const { rows } = uninstallPlan(entry);
   const body = el("div", "apps-sheet__body", [
     el("p", "apps-sheet__lede", [`Remove ${entry.name}'s app files and agent notes? Your app data, settings and files outside those folders stay. Notes you've edited in the app's knowledge folder will be removed. Close any open app tabs first.`]),
-    accessList([selfGrantRead(INSTALL_SPACE), selfGrantRead(ACCOUNT_SPACE)]),
-  ]);
+    accessList([...rows.change, ...rows.read]),
+  ], { tabindex: "0" });
   const remove = el("button", "tc-button tc-button--primary apps-button", ["Remove app"], { type: "button" });
   remove.addEventListener("click", onConfirm);
   const keep = el("button", "tc-button apps-button", ["Keep app"], { type: "button" });
@@ -396,6 +397,7 @@ function uninstallFailureText(entry: CatalogEntry, reason: UninstallFailure | "r
     case "truncated": return `${entry.name}'s file list is too long to check at once. Nothing was deleted. Try again.`;
     case "refused": return "Stopped: this app id or file path isn't one uninstall will touch. Nothing outside the app's folders was removed.";
     case "write-failed": return `Some of ${entry.name}'s files couldn't be removed. Try again to finish.`;
+    case "not-started": return "Couldn't start the uninstall. Nothing was changed. Try again.";
     case "failed": return `Couldn't finish removing ${entry.name}. Try again to finish.`;
   }
 }
@@ -404,11 +406,11 @@ function uninstallFailureText(entry: CatalogEntry, reason: UninstallFailure | "r
  * `UninstallPorts` for one uninstall run: once the person cancels, nothing new starts (no OpenKey window), a session
  * that arrives late is closed, and no list, delete or registry call is made. The sign-in and the deletes are the real ones.
  */
-function guardedUninstallPorts(ports: UninstallPorts, cancelled: () => boolean): UninstallPorts {
+export function guardedUninstallPorts(ports: UninstallPorts, cancelled: () => boolean): UninstallPorts {
   return {
-    openSession: async (app, hooks) => {
+    openSession: async (plan, hooks) => {
       if (cancelled()) throw new UninstallError("cancelled");
-      const session = await ports.openSession(app, hooks);
+      const session = await ports.openSession(plan, hooks);
       if (cancelled()) {
         await Promise.resolve(session.dispose()).catch(() => undefined);
         throw new UninstallError("cancelled");
@@ -608,12 +610,16 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     };
     working(uninstallProgressText(entry, { phase: "signing-in" }));
     panel.focus();
-    void runUninstall(entry, guardedUninstallPorts(uninstallPortsFor(), () => cancelled), (progress) => working(uninstallProgressText(entry, progress))).then(
+    void runUninstall(uninstallPlan(entry), guardedUninstallPorts(uninstallPortsFor(), () => cancelled), (progress) => working(uninstallProgressText(entry, progress))).then(
       (result: UninstallResult) => {
         if (cancelled) return;
         stop();
         if (result.registry === "failed") {
           panel.say(uninstallFailureText(entry, "registry"), "danger", { actions: retryOrDismiss });
+          return;
+        }
+        if (result.removed === 0) {
+          panel.say(`Nothing to remove: ${entry.name} had no app files on this account. Your app data and settings are kept.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
           return;
         }
         panel.say(`Removed ${entry.name}'s app files and agent notes. Your app data and settings are kept. Install ${entry.name} again to restore it.`, "success", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });

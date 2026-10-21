@@ -14,13 +14,13 @@
  * A key that is already missing counts as deleted (`KV_NOT_FOUND`), so a retry
  * after an interrupted run finishes the job.
  */
-import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE, resourceMismatch, type RequestedResource } from "./install-plan.ts";
-import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UninstallError, expectedUninstallResources, uninstallAppName, uninstallManifest, uninstallScope, type UninstallFailure } from "./uninstall-plan.ts";
+import { ACCOUNT_SPACE, LIST_PAGE_LIMIT, UninstallError, type UninstallFailure, type UninstallPlan } from "./uninstall-plan.ts";
 import type { ListPage, UninstallPorts, UninstallSession } from "./uninstall.ts";
 
 /** The error code a key-value service returns for a key that is not there. */
@@ -39,25 +39,25 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * The SDK's reading of the uninstall manifest, checked against the confirm
- * sheet right before OpenKey opens. The sheet must never describe less than the
- * sign-in asks for, so a mismatch stops the uninstall.
+ * The SDK's reading of the uninstall request, checked against the plan's
+ * resources right before OpenKey opens. The plan's manifest is both what the
+ * sheet lists and what is signed; a mismatch means they drifted, and the
+ * uninstall stops.
  */
-async function assertUninstallRequestMatchesSheet(manifest: Manifest, appId: string): Promise<void> {
+async function assertUninstallRequestMatchesSheet(plan: UninstallPlan): Promise<void> {
   const { composeManifestRequest } = await import("@tinycloud/sdk-core");
-  const composed = composeManifestRequest([manifest], { includeAccountRegistryPermissions: false });
-  if (composed.delegationTargets.length > 0) throw new Error("uninstall-request-delegates");
+  const composed = composeManifestRequest([plan.manifest], { includeAccountRegistryPermissions: false });
+  if (composed.delegationTargets.length > 0) throw new UninstallError("not-started", { cause: new Error("uninstall-request-delegates") });
   const actual = composed.resources.map((resource): RequestedResource => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
-  if (resourceMismatch(expectedUninstallResources(appId), actual) !== null) throw new Error("uninstall-request-differs-from-sheet");
+  if (resourceMismatch(plan.resources, actual) !== null) throw new UninstallError("not-started", { cause: new Error("uninstall-request-differs-from-sheet") });
 }
 
 export function createUninstallPorts(): UninstallPorts {
   return {
-    async openSession(app, hooks) {
+    async openSession(plan, hooks) {
       const session = await import("../share/openkey-session.js");
       const config = await loadSharePublicConfig();
-      const manifest = uninstallManifest(app);
-      await assertUninstallRequestMatchesSheet(manifest, app.app_id);
+      await assertUninstallRequestMatchesSheet(plan);
 
       let client: TinyCloudWeb | undefined;
       let observed: UninstallFailure | undefined;
@@ -73,14 +73,15 @@ export function createUninstallPorts(): UninstallPorts {
       let signedIn: ManifestSignIn;
       try {
         signedIn = await session.signInWithManifest({
-          manifest,
-          ...uninstallScope(app.app_id),
+          manifest: plan.manifest,
+          ...plan.scope,
           config,
           hostSpaces: [INSTALL_SPACE, ACCOUNT_SPACE],
           includeAccountRegistryPermissions: false,
+          autoCreateSpace: false,
           guardApproval,
           onClient: (created) => { client = created; },
-          appName: uninstallAppName(app.name),
+          appName: plan.appName,
           sessionPrefix: "tinycloud-share-uninstall",
           expiry: INSTALL_EXPIRY_MS,
         });
@@ -109,7 +110,9 @@ export function createUninstallPorts(): UninstallPorts {
           throw new Error(`uninstall-delete-failed:${removed.error.code}`);
         },
         async removeRegistry(appId: string): Promise<void> {
-          // `applications.remove` deletes `applications/<appId>` in the account space; a missing entry is success.
+          // `applications.remove` deletes `applications/<appId>` in the account space, then removes the app's index row
+          // best-effort and reports success either way: a stale index row is not visible from here (docs/apps-catalog.md).
+          // A missing entry is success.
           const removed = await tinycloud.account.applications.remove(appId);
           if (removed.ok || errorCode(removed.error) === MISSING) return;
           throw new Error(`uninstall-registry-failed:${errorCode(removed.error) ?? "unknown"}`);
