@@ -12,7 +12,7 @@ import { INSTALL_RECORD_PATH } from "./bundle.ts";
 import type { CatalogEntry } from "./catalog.ts";
 
 export const INSTALL_SPACE = "applications";
-/** The read session that also saves the files is short. Everything below derives from this one constant. */
+/** Expiry of the install, repair and uninstall sessions. The runner's open has its own, longer one (grants.ts). Everything below derives from this one constant. */
 export const INSTALL_EXPIRY_MS = 15 * 60 * 1000;
 /** The manifest's own expiry string (ms-format), derived from the constant. */
 export const INSTALL_EXPIRY = `${INSTALL_EXPIRY_MS / 60_000}m`;

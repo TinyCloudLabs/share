@@ -10,8 +10,8 @@
  * The code and the knowledge are the person's: whatever is stored runs. The
  * GRANTS are not: the stored manifest is re-validated with the SDK's
  * `validateManifest` and capped against the catalog manifest of the digest the
- * install recorded (grants.ts), so editing the copy can narrow what the app is
- * signed for but never widen it.
+ * install recorded (grants.ts), so editing the copy can narrow what the bridge
+ * lets the app call but never widen it.
  *
  * The CODE is pinned. Every file under `<app_id>/app/` other than manifest.json
  * (checked by the cap above) and install.json (the install's own record) must be
@@ -87,9 +87,9 @@ export interface RunnableApp {
   /** The catalog entry of the installed bundle: where the app came from, verified. */
   readonly entry: CatalogEntry;
   readonly install: InstallRecord;
-  /** What the runner signs in with (grants.ts). */
+  /** The capped copy: the source of the bridge allow-list and the consent lists (grants.ts). */
   readonly signing: Manifest;
-  /** What the sign-in helper may let `signing` ask for: derived from the catalog manifest, not the stored one. */
+  /** What the sign-in helper may let the open ask for: derived from the catalog manifest, not the stored one. */
   readonly scope: ManifestScope;
   readonly authorize: Authorizer;
   /** app.jsx, byte for byte the pinned file. */

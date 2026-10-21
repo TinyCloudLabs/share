@@ -60,6 +60,15 @@ describe("the grant cap: the stored manifest can narrow what an app is signed fo
     expect(result.app.entry.bundle.digest).toBe(health.bundle.digest);
   });
 
+  it("the bridge allow-list is the capped stored manifest: app/ is readable but never writable through it", async () => {
+    const result = await verifyStoredApp(HEALTH, filesFor(health), deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.app.authorize("tinycloud.kv", `${HEALTH}/app/app.jsx`, "get", false)).toBe(true);
+    expect(result.app.authorize("tinycloud.kv", `${HEALTH}/app/app.jsx`, "put", false)).toBe(false);
+    expect(result.app.authorize("tinycloud.kv", `${HEALTH}/knowledge/a.md`, "put", false)).toBe(true);
+  });
+
   it("allows narrowing: fewer actions, a longer path, a removed grant, defaults already off", async () => {
     const narrowed = manifestOf(health);
     narrowed.permissions = [

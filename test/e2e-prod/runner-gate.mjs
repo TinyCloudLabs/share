@@ -58,7 +58,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { describeBundle } from "../../scripts/apps-catalog.mjs";
 import { createAppData } from "../../src/apps/app-data.ts";
 import { createCapabilityBridge } from "../../src/apps/bridge.ts";
-import { capGrants, makeAuthorizer } from "../../src/apps/grants.ts";
+import { openManifest } from "../../src/apps/grants.ts";
 
 const shareRoot = resolve(import.meta.dirname, "../..");
 const workspaceRoot = resolve(shareRoot, "../../../../");
@@ -294,8 +294,7 @@ async function clickByText(page, label) {
   await page.evaluate((text) => [...document.querySelectorAll("button, a")].find((node) => node.textContent === text).click(), label);
 }
 async function start(page) {
-  await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Continue"), { timeout: 60_000 });
-  await clickByText(page, "Continue");
+  await page.waitForSelector(".run-screen", { timeout: 60_000 });
 }
 const frames = (page) => {
   const bridge = page.frames().find((candidate) => candidate.url().includes("/jsx-sandbox.html"));
@@ -401,33 +400,22 @@ try {
     const label = "run-health";
     const from = trace.length;
     const { page, context } = await openRunner(browser, stack, label, HEALTH, recordMessages);
+    controls.sign = hold();
     await start(page);
-    // Hold the first approval to show the status, then the second.
-    controls.sign = hold();
-    await arrivedOrExplain(page, controls.sign, "the first approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(1 of 2\) so Share can read Health Log from your TinyCloud/);
-    await captureState(page, "approval-1-of-2");
-    controls.sign.release();
-    controls.sign = hold();
-    await arrivedOrExplain(page, controls.sign, "the second approval");
-    assert.match(await statusText(page), /^Approve in the OpenKey window \(2 of 2\) to start Health Log/);
-    await captureState(page, "approval-2-of-2");
+    await arrivedOrExplain(page, controls.sign, "the approval");
+    assert.match(await statusText(page), /^Approve in the OpenKey window so Share can open Health Log from your TinyCloud/);
+    await captureState(page, "approval");
     controls.sign.release(); controls.sign = undefined;
     const child = await runningFrame(page);
     const afterStart = trace.length;
 
-    // The two sessions it signed: reading the saved copy, then exactly the app's own manifest for one hour.
+    // The one session it signed: the open's union for one hour, the catalog grants plus get, list and put on its own folders.
     const sessions = sessionMessages(label);
-    assert.equal(sessions.length, 2, "two session sign-ins");
-    const reader = recapOf(sessions[0]);
-    // In the app's space the read session holds get, list and create-only put on the saved app, and put on its knowledge folder; the SDK's capabilities/read and the account lines are the registry's.
-    assert.deepEqual(reader.filter((line) => line.startsWith("applications/")), [`applications/capabilities tinycloud.capabilities/read`, `applications/kv/${HEALTH}/app/ tinycloud.kv/get`, `applications/kv/${HEALTH}/app/ tinycloud.kv/list`, `applications/kv/${HEALTH}/app/ tinycloud.kv/put`, `applications/kv/${HEALTH}/knowledge/ tinycloud.kv/put`].sort(), "the read session is not exactly the install grants plus get and list on the saved app");
-    const signingManifest = { ...healthManifest, expiry: "1h", includePublicSpace: false };
-    assert.deepEqual(recapOf(sessions[1]), expectedRecap(signingManifest), "the runtime session's ReCap is not exactly the app's manifest");
-    assert.equal(lifetimeMs(sessions[0]), 15 * 60_000, "the read session lasts 15 minutes and is ended at once");
-    assert.equal(lifetimeMs(sessions[1]), 3_600_000, "the runtime session lasts exactly one hour");
-    report.signedRuntimeRecap = recapOf(sessions[1]);
-    assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "two approvals but one OpenKey connect");
+    assert.equal(sessions.length, 1, "one session sign-in");
+    assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(healthManifest))), "the session's ReCap is not exactly the open's union");
+    assert.equal(lifetimeMs(sessions[0]), 3_600_000, "the session lasts exactly one hour");
+    report.signedRuntimeRecap = recapOf(sessions[0]);
+    assert.equal(trace.slice(from).filter((entry) => entry.phase === label && entry.origin === "https://openkey.so" && /^\/widget\/embed\/(?!sign)/.test(entry.path)).length, 1, "one approval and one OpenKey connect");
 
     // The page: chrome outside the frame, the frame sandboxed.
     assert.equal(await page.$eval(".run-title", (node) => node.textContent), health.name);
@@ -492,9 +480,9 @@ try {
     await start(page);
     const child = await runningFrame(page);
     const sessions = sessionMessages(label);
-    assert.deepEqual(recapOf(sessions[1]), expectedRecap({ ...recipesManifest, expiry: "1h", includePublicSpace: false }));
-    assert(recapOf(sessions[1]).includes(`applications/sql/${HEALTH}/healthlog tinycloud.sql/read`), "the cross-app read is in the signed ReCap");
-    assert(!recapOf(sessions[1]).some((line) => line.startsWith(`applications/sql/${HEALTH}/healthlog`) && !line.endsWith("tinycloud.sql/read")), "the cross-app grant is read-only");
+    assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(recipesManifest))), "the Recipes session's ReCap is not exactly the app's union");
+    assert(recapOf(sessions[0]).includes(`applications/sql/${HEALTH}/healthlog tinycloud.sql/read`), "the cross-app read is in the signed ReCap");
+    assert(!recapOf(sessions[0]).some((line) => line.startsWith(`applications/sql/${HEALTH}/healthlog`) && !line.endsWith("tinycloud.sql/read")), "the cross-app grant is read-only");
     await captureState(page, "recipes-running");
     await noViolations(page, "recipes");
     await child.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "From a health-log entry"), { timeout: 120_000 });
@@ -571,8 +559,9 @@ try {
       await start(page);
       const child = await runningFrame(page);
       const sessions = sessionMessages(label);
-      assert.deepEqual(recapOf(sessions[1]), expectedRecap({ ...narrowed, expiry: "1h", includePublicSpace: false }), "the narrowed copy is signed as it is");
-      assert(!recapOf(sessions[1]).some((line) => line.includes("knowledge/")), "a grant the person removed is not signed");
+      assert.equal(sessions.length, 1, "one session sign-in");
+      // The session holds the catalog union; the saved copy's removed grant is refused by the bridge (checked below), not by the node.
+      assert.deepEqual(recapOf(sessions[0]), expectedRecap(openManifest(sdkCore.validateManifest(healthManifest))), "the narrowed copy's session is not the catalog union");
       const outcome = await child.evaluate(async () => {
         const app = __TC_REQUIRE__("@tinycloud/app");
         const code = (result) => (result.ok ? "ok" : result.error.code);
@@ -581,7 +570,7 @@ try {
       assert.equal(outcome.knowledge, "PERMISSION_DENIED", "a grant the person removed still works");
       assert.equal(outcome.prefsPut, "PERMISSION_DENIED", "an action the person removed still works");
       assert(["ok", "NOT_FOUND"].includes(outcome.prefsGet), `the kept grant was refused: ${outcome.prefsGet}`);
-      report.stages.narrowed = { signedWithoutKnowledge: true, ...outcome };
+      report.stages.narrowed = { sessionIsUnion: true, ...outcome };
       await context.close();
     }
     // Restore the person's original copy.
@@ -746,8 +735,6 @@ try {
   phase = "6. Forced past the runner page, the NODE refuses: the real d"; console.error(`[t5b] ${phase}`);
   {
     phase = "node-boundary";
-    const sdk = sdkCore;
-    const capped = (manifest, catalogManifest) => { const result = capGrants(sdkCore.validateManifest(manifest), sdkCore.validateManifest(catalogManifest), sdk); assert(result.ok, JSON.stringify(result)); return result.value; };
     const sessionFor = async (signing) => {
       const wallet = new TinyCloudNode({ privateKey: WALLET_KEY, host: ownerHost, autoCreateSpace: true, manifest: signing });
       await wallet.signIn();
@@ -763,16 +750,16 @@ try {
     };
     const refusedByNode = (result, what) => { assert.equal(result.ok, false, `${what}: the node accepted a call the session does not cover: ${JSON.stringify(result)}`); assert.equal(result.error.code, "PERMISSION_DENIED", `${what}: ${JSON.stringify(result)}`); };
 
-    // Health Log, as the runner signs it.
-    const healthSession = capped(healthManifest, healthManifest);
-    const { holder: healthHolder } = await sessionFor(healthSession.signing);
+    // Health Log, as the runner signs it: the open's one session.
+    const { holder: healthHolder } = await sessionFor(openManifest(sdkCore.validateManifest(healthManifest)));
     const callHealth = forced(healthHolder, HEALTH);
     // Allowed by the session: its own database and prefs.
     assert.equal((await callHealth("sql.query", { db: "healthlog", sql: "SELECT count(*) FROM meal", params: [] })).ok, true);
     assert.equal((await callHealth("kv.put", { key: "prefs/node-boundary.json", body: "{}", contentType: "application/json" })).ok, true);
     // Refused by the node, with the parent's manifest check skipped.
     refusedByNode(await callHealth("kv.get", { key: "secrets/x" }), "kv.get outside the manifest");
-    refusedByNode(await callHealth("kv.put", { key: "app/app.jsx", body: "pwned" }), "kv.put on the app's own code (get-only grant)");
+    // The union grants put on the app's own folder, so the node accepts it; the bridge refuses it (stage 5b, kvPutOwnCode).
+    assert.equal((await callHealth("kv.put", { key: "app/node-boundary.txt", body: "ok" })).ok, true, "the node refused the union's put on app/");
     refusedByNode(await callHealth("kv.del", { key: "prefs/goals.json" }), "kv.del (no del grant)");
     refusedByNode(await callHealth("kv.list", { key: "" }), "kv.list of the app's root");
     refusedByNode(await callHealth("kv.get", { key: `/${RECIPES}/prefs/settings.json` }), "kv.get of another app");
@@ -785,8 +772,7 @@ try {
     // The holder is signer-less (a wallet-mode client escalates its own session on demand; this one has no signer to do it with).
     assert.equal(healthHolder.isSessionOnly, true, "the session holder has a signer");
     // Recipes, as the runner signs it: the cross-app read works, a write does not, DDL in its own database needs `schema`.
-    const recipesSession = capped(recipesManifest, recipesManifest);
-    const { holder: recipesHolder } = await sessionFor(recipesSession.signing);
+    const { holder: recipesHolder } = await sessionFor(openManifest(sdkCore.validateManifest(recipesManifest)));
     const callRecipes = forced(recipesHolder, RECIPES);
     assert.equal((await callRecipes("sql.query", { db: `/${HEALTH}/healthlog`, sql: "SELECT count(*) FROM meal", params: [] })).ok, true, "the cross-app read");
     refusedByNode(await callRecipes("sql.execute", { db: "../x", sql: "DELETE FROM meal", params: [] }).then((r) => (r.ok ? r : { ok: false, error: { code: "PERMISSION_DENIED" } })), "traversal");
@@ -807,6 +793,11 @@ try {
     assert.deepEqual(meals.data.rows, [[1]], "a forced call changed the Health Log");
     const tables = await owner2.sql.db(`${HEALTH}/healthlog`).query("SELECT name FROM sqlite_master WHERE name = 'sneaky'");
     assert.deepEqual(tables.data.rows, [], "a forced DDL created a table");
+    // Remove the probe file the node accepted above, so the app folder is what the catalog installed; stage 7 reopens the app and its pin check refuses extra files.
+    const probeDeleted = await owner2.kv.delete(`${HEALTH}/app/node-boundary.txt`);
+    assert(probeDeleted.ok, `deleting the probe file failed: ${JSON.stringify(probeDeleted.error)}`);
+    const probeLeft = await owner2.kv.list({ prefix: `${HEALTH}/app/node-boundary` });
+    assert.deepEqual(probeLeft.data.keys, [], "the probe file is still in the app's folder");
     report.stages.nodeBoundary = { refusedByNode: true };
   }
 
@@ -822,7 +813,7 @@ try {
     assert.equal(await screenTitle(page), "Your session expired");
     assert.match(await page.$eval(".run-screen", (node) => node.textContent), /Your session expired: open the app again\./);
     await captureState(page, "expired");
-    // Opening it again works (a new pair of approvals).
+    // Opening it again works (one approval).
     await clickByText(page, `Open ${health.name} again`);
     await runningFrame(page);
     report.stages.expiry = { screen: "Your session expired", reopened: true };
@@ -840,10 +831,17 @@ try {
     const removed = await waitUntil(async () => { const value = await page.$eval(".apps-install-line", (node) => node.textContent).catch(() => ""); return /^Removed /.test(value) ? value : undefined; }, 300_000);
     assert(removed?.includes("Your app data and settings are kept."), `uninstall ended with "${removed}"`);
     await context.close();
+    // After the uninstall, opening the app starts OpenKey on load; the approval reinstalls its files from the catalog and runs it.
+    controls.sign = hold();
     const { page: runner, context: runnerContext } = await openRunner(browser, stack, "after-uninstall", HEALTH);
-    assert.equal(await waitUntil(async () => (await screenTitle(runner)) === `Open ${health.name}`), true, `after uninstall the runner did not offer to open the app again (status: ${await statusText(runner)})`);
-    assert.equal(await runner.$("iframe"), null, "after uninstall the runner started a frame before Continue");
-    report.stages.uninstalled = { screen: `Open ${health.name}`, frame: false };
+    await arrivedOrExplain(runner, controls.sign, "the approval after the uninstall");
+    assert.match(await statusText(runner), /^Approve in the OpenKey window so Share can open Health Log from your TinyCloud/, "after the uninstall the runner did not ask for the approval");
+    assert.equal(frames(runner).child, undefined, "the app's frame started before the approval");
+    controls.sign.release(); controls.sign = undefined;
+    await runningFrame(runner);
+    const reinstalled = await (await ownerClient(HEALTH)).kv.list({ prefix: `${HEALTH}/app/` });
+    assert(reinstalled.data.keys.includes(`${HEALTH}/app/app.jsx`), "the open after the uninstall did not reinstall the app's code");
+    report.stages.uninstalled = { reinstalledAfterApproval: true };
     await runnerContext.close();
   }
 

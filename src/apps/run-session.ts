@@ -1,44 +1,31 @@
 /**
- * The real ports for opening an installed app: OpenKey, the Web SDK and the node.
+ * The real ports for opening an installed app: the Web SDK, OpenKey and the node.
  *
- * Nothing here is imported by the page until the person clicks Continue; the SDK,
- * OpenKey and the shared sign-in helper load then (dynamic imports), so the page
- * itself loads no SDK and makes no request beyond this origin's own files.
+ * The SDK, OpenKey and the shared sign-in helper load only when the person opens an app
+ * (dynamic imports).
  *
- * Two sign-ins, both the shared `signInWithManifest` (src/share/openkey-session.ts),
- * which this module does not change, each stating its own scope so the helper
- * refuses a manifest outside it before OpenKey opens:
- *   1. READ: the runner's own identity and one `get` grant on `<app_id>/app/`
- *      (skipPrefix), to read the saved manifest, code and install record. It is
- *      ended before the next sign-in; OpenKey stays connected.
- *   2. RUN: exactly the manifest `verifyStoredApp` returned (the person's copy,
- *      capped against the catalog), one hour, nothing persisted. Its scope is
- *      derived from the CATALOG's manifest (stored-app.ts), so the helper checks
- *      the resolved request against the catalog independently of the cap check.
+ * One sign-in per open (`signIn`, which calls the shared `signInWithManifest` in
+ * src/share/openkey-session.ts). The requested manifest is the union built in grants.ts:
+ * the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
+ * and create-only `put` on `<app_id>/knowledge/`. The same session reads the saved copy,
+ * saves what is missing and runs the app.
  *
- * NO SIGNER ESCALATION. A wallet-mode client can sign for more than its session
- * covers: asked for something outside its ReCap it can ask its signer. The web client
- * here has OpenKey as its signer, so once the runtime sign-in is done every signature
- * request is refused (`runner-signing-closed`, in the approval guard both the
- * provider and the SDK's sign callback go through), and the services handed to the
- * bridge invoke with the session key only. A call outside the session's ReCap goes to
- * the node and is refused there: the node, not this page, is the boundary. The same
- * adapter over a signer-less node-sdk client is exercised against a real node in
- * test/e2e-prod/runner-node-boundary.mjs.
+ * Signing is closed once the sign-in completes: the approval guard refuses any further
+ * signature request (`runner-signing-closed`).
  */
-import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
-import { loadSharePublicConfig, type SharePublicConfig } from "../email-share/config.js";
+import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
-import type { ApprovalGuard, ManifestSignIn, OpenKeyShareSession, WalletApprovalFailure } from "../share/openkey-session.js";
-import type { ManifestScope } from "../share/manifest-policy.js";
+import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
-import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
+import { INSTALL_SPACE } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
-import { RunError, type PreparedApp, type PutResult, type ReadSession, type RunFailure, type RunHooks, type RunPorts, type RuntimeSession } from "./run.ts";
+import { RunError, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
-import { BundleRefusal, fetchVerifiedBundle, type VerifiedBundle } from "./bundle.ts";
+import { BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
+import type { StoredFiles } from "./stored-app.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -55,49 +42,6 @@ export function runnerAppName(prefix: string, name: string): string {
   const named = isSignInLabel(name) ? name : "Tiny app";
   const cut = [...`${prefix}${named}`].slice(0, APP_NAME_MAX_CHARS).join("").trimEnd();
   return isSignInLabel(cut) ? cut : `${prefix}Tiny app`;
-}
-
-/**
- * Identity the read sign-in uses: the runner's own, so the person's apps list does not gain a record named after the
- * app being opened and the record Share's library keeps under `xyz.tinycloud.share` is never overwritten.
- */
-export const RUNNER_APP_ID = "xyz.tinycloud.share.runner";
-
-/** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */
-function kvPermission(path: string, actions: Array<"get" | "list" | "put">, description: string): NonNullable<Manifest["permissions"]>[number] {
-  return { service: "tinycloud.kv", path, actions, skipPrefix: true, description };
-}
-
-/**
- * The read sign-in's manifest: `get`, `list` and create-only `put` on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/`,
- * all in the applications space. The write grants let missing files be saved within this same approval. Nothing else.
- */
-export function readerManifest(appId: string, appName: string): Manifest {
-  return {
-    manifest_version: 1,
-    app_id: RUNNER_APP_ID,
-    name: "TinyCloud Share",
-    description: `Open ${appName}.`,
-    space: INSTALL_SPACE,
-    prefix: "",
-    defaults: false,
-    includePublicSpace: false,
-    expiry: "15m",
-    permissions: [
-      kvPermission(`${appId}/app/`, ["get", "list", "put"], `Read and save ${appName}'s files (its code, manifest and install record) so they can be checked before it is opened.`),
-      kvPermission(`${appId}/knowledge/`, ["put"], `Save ${appName}'s notes folder if it is missing.`),
-    ],
-  };
-}
-
-/** What the read sign-in may ask for: `get`, `list` and create-only `put` on the one saved app's folder and notes. Nothing else. */
-export function readerScope(appId: string): ManifestScope {
-  return {
-    allowedSpaces: [INSTALL_SPACE],
-    allowedServices: ["kv"],
-    allowedActions: ["get", "list", "put"],
-    allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }, { space: INSTALL_SPACE, prefix: `${appId}/knowledge/` }],
-  };
 }
 
 /** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
@@ -149,7 +93,7 @@ export type ReaderFetch = (url: string, init: { signal: AbortSignal; credentials
  * `kv.get` buffers the whole value, so a 1 GB file could not be refused after the fact: each file is fetched as a STREAM from a signed
  * read URL and the read stops (the stream is cancelled) at the first byte past the cap.
  */
-export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: ReaderFetch = (url, init) => fetch(url, init)): Promise<ReadSession["files"]> {
+export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: ReaderFetch = (url, init) => fetch(url, init)): Promise<StoredFiles> {
   const listed = await kv.list({ prefix });
   if (!listed.ok) throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}` });
   const paths = listed.data.keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)).filter((path) => path !== "");
@@ -197,10 +141,6 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: Read
   return { entries, incomplete };
 }
 
-/** The OpenKey connection a read session hands to the runtime sign-in, and how to end the whole sign-in. */
-const OPENKEY_SESSIONS = new WeakMap<ReadSession, ManifestSignIn>();
-
-
 export function createRunPorts(): RunPorts {
   return {
     async prepare(entry): Promise<PreparedApp> {
@@ -220,96 +160,59 @@ export function createRunPorts(): RunPorts {
       return import("@tinycloud/sdk-core");
     },
 
-    async readStored(entry, hooks): Promise<ReadSession> {
-      // Dynamic on purpose: the SDK, OpenKey and the shared sign-in load only on the click.
+    async signIn(entry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession> {
+      // Dynamic on purpose: OpenKey and the shared sign-in load only when the sign-in starts.
       const openkey = await import("../share/openkey-session.js");
       const config = await loadSharePublicConfig();
       const approvals = approvalGuard(hooks);
+      const startedAt = Date.now();
       let client: TinyCloudWeb | undefined;
       let signedIn: ManifestSignIn;
       try {
         signedIn = await openkey.signInWithManifest({
-          manifest: readerManifest(entry.app_id, entry.name),
-          ...readerScope(entry.app_id),
+          manifest: plan.manifest,
+          ...plan.scope,
           config,
           hostSpaces: [INSTALL_SPACE],
           guardApproval: approvals.guard,
           onClient: (created) => { client = created; },
-          appName: runnerAppName("TinyCloud Share: open ", entry.name),
-          sessionPrefix: "tinycloud-share-runner-read",
-          expiry: INSTALL_EXPIRY_MS,
+          appName: runnerAppName("TinyCloud Share: ", entry.name),
+          sessionPrefix: "tinycloud-share-runner",
+          expiry: RUNTIME_SESSION_MS,
         });
       } catch (error) {
-        const reason: WalletApprovalFailure | RunFailure | undefined = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
+        const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
         throw new RunError(reason ?? "failed", { cause: error });
       }
-      const { tinycloud, spaces } = signedIn;
+      const { tinycloud, spaces, dispose } = signedIn;
       const space = spaces[INSTALL_SPACE];
-      if (space === undefined) { await signedIn.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
+      if (space === undefined) {
+        await dispose();
+        throw new RunError("failed", { detail: "the applications space is not hosted" });
+      }
+      // Signing ends here, for good: the saves and the app run on this session without a signature request.
       approvals.lock();
       const kv = tinycloud.kvForSpace(space);
-      let files: ReadSession["files"];
+      let files: StoredFiles;
       try {
         files = await readSavedFiles(kv, `${entry.app_id}/app/`);
       } catch (error) {
-        await signedIn.dispose();
+        await dispose();
         throw error instanceof RunError ? error : new RunError("failed", { cause: error });
       }
-      let ended = false;
-      const readSession: ReadSession = {
-        files,
-        put: (key: string, bytes: Uint8Array, contentType: string) => putCreateOnly(kv, key, bytes, contentType),
-        end: async ({ keepOpenKey }) => {
-          if (ended) return;
-          ended = true;
-          // The client's session key goes either way; closing OpenKey's own windows only when nothing follows.
-          if (keepOpenKey) { try { await tinycloud.signOut(); } catch { /* it lives only in this tab */ } } else await signedIn.dispose();
-        },
-      };
-      OPENKEY_SESSIONS.set(readSession, signedIn);
-      return readSession;
-    },
-
-    async openRuntime(app, previous, hooks): Promise<RuntimeSession> {
-      const openkey = await import("../share/openkey-session.js");
-      const config = await loadSharePublicConfig();
-      const carried = OPENKEY_SESSIONS.get(previous);
-      // The read session is over; OpenKey stays connected so this is one more approval, not a second connect.
-      await previous.end({ keepOpenKey: true });
-      const startedAt = Date.now();
-      const approvals = approvalGuard(hooks);
-      let client: TinyCloudWeb | undefined;
-      let signedIn: ManifestSignIn;
-      try {
-        signedIn = await openkey.signInWithManifest({
-          manifest: app.signing,
-          ...app.scope,
-          config,
-          hostSpaces: [INSTALL_SPACE],
-          guardApproval: approvals.guard,
-          onClient: (created) => { client = created; },
-          appName: runnerAppName("TinyCloud Share: ", app.entry.name),
-          sessionPrefix: "tinycloud-share-runner",
-          expiry: RUNTIME_SESSION_MS,
-          ...(carried === undefined ? {} : { session: carried.session }),
-        });
-      } catch (error) {
-        const reason: WalletApprovalFailure | RunFailure | undefined = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
-        await carried?.dispose();
-        throw new RunError(reason ?? "failed", { cause: error });
-      }
-      const { tinycloud, spaces } = signedIn;
-      // From here the page signs nothing more: a call outside the session's ReCap is the node's to refuse.
-      approvals.lock();
-      const space = spaces[INSTALL_SPACE];
-      if (space === undefined) { await signedIn.dispose(); await carried?.dispose(); throw new RunError("failed", { detail: "the applications space is not hosted" }); }
-      const data = createAppData(tinycloud.kvForSpace(space), tinycloud.sqlForSpace(space));
       let ending: Promise<void> | undefined;
+      const end = (): Promise<void> => {
+        ending ??= dispose();
+        return ending;
+      };
       return {
-        data,
-        expiresAt: startedAt + RUNTIME_SESSION_MS - EXPIRY_MARGIN_MS,
-        // The runtime sign-in was handed the reader's OpenKey connection, so the helper leaves it open: close it with the reader's.
-        end: () => (ending ??= (async () => { await signedIn.dispose(); await carried?.dispose(); })()),
+        files,
+        put: (key, bytes, contentType): Promise<PutResult> => putCreateOnly(kv, key, bytes, contentType),
+        runtime: {
+          data: createAppData(tinycloud.kvForSpace(space), tinycloud.sqlForSpace(space)),
+          expiresAt: startedAt + RUNTIME_SESSION_MS - EXPIRY_MARGIN_MS,
+          end,
+        },
       };
     },
   };

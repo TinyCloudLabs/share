@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { INSTALL_RECORD_PATH } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { KNOWLEDGE_INDEX, installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
-import { type PutResult, type PreparedApp, RunError, type RunPorts, type RuntimeSession, openApp } from "../src/apps/run.ts";
+import { type PutResult, type PreparedApp, RunError, type RunPorts, type RunSession, type RuntimeSession, openApp } from "../src/apps/run.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -55,13 +55,13 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
       if (options.prepareError !== undefined) throw options.prepareError;
       return { bundle: { files: bundleFiles, manifest }, manifest: { ok: true, manifest: manifest as never } };
     },
-    readStored: async () => {
+    // `counts.runtimes` is the number of runtime sessions signed in and not yet ended.
+    signIn: async (): Promise<RunSession> => {
       reads.count += 1;
-      return { files: { entries: new Map(initial) }, put, end: async () => undefined };
-    },
-    openRuntime: async () => {
       counts.runtimes += 1;
-      return { data: {}, expiresAt: 0, end: async () => undefined } as unknown as RuntimeSession;
+      let ended = false;
+      const runtime = { data: {}, expiresAt: 0, end: async () => { if (!ended) { ended = true; counts.runtimes -= 1; } } };
+      return { files: { entries: new Map(initial) }, put, runtime: runtime as unknown as RuntimeSession };
     },
     sdk: async () => sdkCore,
   };
@@ -154,9 +154,9 @@ describe("openApp: install on open", () => {
 
   it("a file that appears between the read and its save refuses the open, and install.json is not written", async () => {
     const h = harness(new Map());
-    const readStored = h.ports.readStored;
-    h.ports.readStored = async (entry, hooks) => {
-      const session = await readStored(entry, hooks);
+    const signIn = h.ports.signIn;
+    h.ports.signIn = async (entry, plan, hooks) => {
+      const session = await signIn(entry, plan, hooks);
       return { ...session, put: async (key, bytes, contentType) => (key === installKey(HEALTH, "app.jsx") ? "exists" : session.put(key, bytes, contentType)) };
     };
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "failed" });
@@ -167,10 +167,10 @@ describe("openApp: install on open", () => {
   it("cancel during the read approval writes nothing and starts nothing", async () => {
     const h = harness(new Map());
     const controller = new AbortController();
-    const readStored = h.ports.readStored;
-    h.ports.readStored = async (entry, hooks) => {
+    const signIn = h.ports.signIn;
+    h.ports.signIn = async (entry, plan, hooks) => {
       controller.abort();
-      return readStored(entry, hooks);
+      return signIn(entry, plan, hooks);
     };
     await expect(openApp(HEALTH, h.ports, noop, controller.signal)).rejects.toMatchObject({ reason: "cancelled" });
     expect(h.puts).toEqual([]);
@@ -181,9 +181,9 @@ describe("openApp: install on open", () => {
     const copy = new Map<string, Uint8Array>();
     const h = harness(copy);
     const controller = new AbortController();
-    const readStored = h.ports.readStored;
-    h.ports.readStored = async (entry, hooks) => {
-      const session = await readStored(entry, hooks);
+    const signIn = h.ports.signIn;
+    h.ports.signIn = async (entry, plan, hooks) => {
+      const session = await signIn(entry, plan, hooks);
       let writes = 0;
       return {
         ...session,
@@ -210,9 +210,9 @@ describe("openApp: install on open", () => {
     const copy = fullCopy();
     copy.delete(INSTALL_RECORD_PATH);
     const h = harness(copy);
-    const readStored = h.ports.readStored;
-    h.ports.readStored = async (entry, hooks) => {
-      const session = await readStored(entry, hooks);
+    const signIn = h.ports.signIn;
+    h.ports.signIn = async (entry, plan, hooks) => {
+      const session = await signIn(entry, plan, hooks);
       return { ...session, files: { entries: session.files.entries, incomplete: true } };
     };
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "damaged" });

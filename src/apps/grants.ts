@@ -1,11 +1,11 @@
 /**
  * What an installed app may be signed for, and what its bridge may touch. Pure:
  * no DOM, no network; the SDK's manifest functions are passed in so the page can
- * load the SDK after a click and tests can use the real one.
+ * load the SDK when the open starts and tests can use the real one.
  *
  * THE GRANT-CAP RULE. The copy of `manifest.json` in the person's own TinyCloud
- * is theirs to edit (their agent may rewrite it), and it decides what the app is
- * signed for. It can never widen beyond what the CATALOG's manifest for the
+ * is theirs to edit (their agent may rewrite it), and it decides what the bridge
+ * may let the app call. It can never widen beyond what the CATALOG's manifest for the
  * installed bundle declared. `capGrants` composes both manifests with the SDK's
  * own `composeManifestRequest` (the exact set of ReCap resources the sign-in
  * would ask OpenKey to sign) and requires every (service, space, action, path)
@@ -71,7 +71,7 @@ function isImplicit(resource: ResourceCapability): boolean {
 }
 
 export interface CappedGrants {
-  /** What the runner signs in with: the person's copy, with a 1 h expiry and no public space. */
+  /** The person's copy, capped, with a 1 h expiry and no public space. It feeds the bridge allow-list and the consent lists; the sign-in itself uses the catalog union (`openManifest`). */
   readonly signing: Manifest;
   /** The SDK's resolution of `signing` (own folder, skipPrefix grants and defaults, in the app's space). */
   readonly resolved: ResolvedCapabilities;
@@ -123,6 +123,40 @@ export function runtimeScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveM
   const actions = [...new Set(own.flatMap((grant) => grant.actions.map((action) => action.slice(action.lastIndexOf("/") + 1))))];
   const prefixes = [...new Set(own.map((grant) => grant.path))].filter((path) => path !== "");
   return { allowedSpaces: [APP_SPACE], allowedServices: ["kv", "sql"], allowedActions: actions, allowedPathPrefixes: prefixes.map((prefix) => ({ space: APP_SPACE, prefix })) };
+}
+
+/** One permission on one folder of the app's kv space: skipPrefix, so the folder itself is the grant. */
+export function kvFolderPermission(path: string, actions: Array<"get" | "list" | "put">, description: string): NonNullable<Manifest["permissions"]>[number] {
+  return { service: "tinycloud.kv", path, actions, skipPrefix: true, description };
+}
+
+/**
+ * The one sign-in an open makes: the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
+ * and create-only `put` on `<app_id>/knowledge/`. Built from the catalog manifest so the request is known before OpenKey opens;
+ * the saved copy is checked against it afterwards and only the bridge's allow-list (makeAuthorizer on the capped copy) reaches the frame.
+ */
+export function openManifest(catalog: Manifest): Manifest {
+  return {
+    ...catalog,
+    expiry: RUNTIME_SESSION_EXPIRY,
+    includePublicSpace: false,
+    permissions: [
+      ...(catalog.permissions ?? []),
+      kvFolderPermission(`${catalog.app_id}/app/`, ["get", "list", "put"], `Read and save ${catalog.name}'s files (its code, manifest and install record) so they can be checked before it is opened.`),
+      kvFolderPermission(`${catalog.app_id}/knowledge/`, ["put"], `Save ${catalog.name}'s notes folder if it is missing.`),
+    ],
+  };
+}
+
+/** The upper bound `openManifest` must stay inside: `runtimeScope` plus `get`, `list`, `put` on the two folders. */
+export function openScope(catalog: Manifest, sdk: Pick<ManifestSdk, "resolveManifest">): ManifestScope {
+  const base = runtimeScope(catalog, sdk);
+  const folders = [`${catalog.app_id}/app/`, `${catalog.app_id}/knowledge/`].map((prefix) => ({ space: APP_SPACE, prefix }));
+  return {
+    ...base,
+    allowedActions: [...new Set([...(base.allowedActions ?? []), "get", "list", "put"])],
+    allowedPathPrefixes: [...(base.allowedPathPrefixes ?? []), ...folders],
+  };
 }
 
 export type BridgeService = "tinycloud.kv" | "tinycloud.sql";
