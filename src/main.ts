@@ -1,6 +1,7 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
 import { purgeLegacyReceiverStorage } from "./email-share/receiver-storage.js";
 import type { ResolveResult } from "./viewer/resolve.js";
+import { ShortLinkError } from "./short-links/errors.js";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
 // <div id="viewer">. There is no non-viewer branch here on purpose: the
@@ -80,8 +81,16 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       }, { shareUrl: shareHref, saveToTinyCloud });
       return;
     }
+    // A short link's sealed bytes are fetched from the share origin and then
+    // received as the inline form, which the existing receive path verifies.
+    let receivableHref = shareHref;
+    if (launch.shortLink !== undefined) {
+      // Lazy like every viewer module here, so the SDK loads only for short links.
+      const { inlineHrefForShortLink } = await import("./short-links/resolve.js");
+      receivableHref = await inlineHrefForShortLink(shareHref, shareConfig.shareOrigin);
+    }
     const { resolveShare } = await import("./viewer/resolve.js");
-    const resolved: ResolveResult = await resolveShare(shareHref, { expectedOrigin: shareConfig.shareOrigin });
+    const resolved: ResolveResult = await resolveShare(receivableHref, { expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
     // policy admission followed by generic /delegate and /invoke.
@@ -91,7 +100,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       const accountlessEnvelope = resolved.envelope;
       await receiveWithSdk({
         root,
-        shareUrl: shareHref,
+        shareUrl: receivableHref,
         config: shareConfig,
         availability: availabilityTarget(accountlessEnvelope),
         invitation: {
@@ -130,6 +139,17 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     }
     if (error instanceof Error && error.name === "ShareReceiverSessionEndedError") {
       renderRecipientInvalid(root, "Your verification on this page has ended. Open the link from your email again and verify again.");
+      return;
+    }
+    if (error instanceof ShortLinkError && error.reason === "gone") {
+      // Same lazy-load pattern as the other viewer modules in this file.
+      const { renderViewerState } = await import("./viewer/ui.js");
+      renderViewerState(root, { state: "fetch-failed", detail: "share unavailable" });
+      return;
+    }
+    if (error instanceof ShortLinkError) {
+      const { renderShareUnavailable } = await import("./viewer/ui.js");
+      renderShareUnavailable(root, "unavailable", undefined, retry);
       return;
     }
     if (error instanceof Error && /unavailable|capability|config|binding/.test(error.message)) {
