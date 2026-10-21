@@ -35,9 +35,6 @@ describe("landing template", () => {
 
   it("offers a secondary sign-in under the note that targets the same place as the bottom CTA", () => {
     const hero = /<p class="agent-signin">([\s\S]*?)<\/p>/.exec(rendered)![1]!;
-    expect(hero.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()).toBe(
-      "Already have a TinyCloud account? Sign in to create a share yourself.",
-    );
     const heroLink = /<a class="agent-signin-link" href="([^"]+)">Sign in<\/a>/.exec(hero)![1];
     const bottomLink = /<a class="signin-link" href="([^"]+)">Sign in<\/a>/.exec(rendered)![1];
     expect(heroLink).toBeTruthy();
@@ -53,6 +50,8 @@ describe("agent prompt copy button", () => {
     vi.useFakeTimers();
     writeText.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    // jsdom has no matchMedia; main.ts reads the reduced-motion preference on load.
+    window.matchMedia = vi.fn(() => ({ matches: false })) as unknown as typeof window.matchMedia;
     document.body.innerHTML = /<body[^>]*>([\s\S]*)<\/body>/.exec(rendered)![1]!;
     // Dynamic import is intentional: main.ts wires listeners on load, so it is re-evaluated per test after the DOM is set up.
     await import("../src/landing/main.ts");

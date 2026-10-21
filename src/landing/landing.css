@@ -282,6 +282,70 @@ h1 {
   grid-area: intro;
 }
 
+.hero-share-line {
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1.06rem;
+  line-height: 1.65;
+}
+
+.share-target {
+  display: inline-block;
+  color: var(--accent);
+  font-weight: 600;
+  vertical-align: top;
+  transition: width 200ms var(--ease);
+}
+
+/*
+ * Reserves the longest phrase's width. Generated from the static data-longest attribute, so it
+ * holds without JS. Hidden and not selectable: copy gets only the rotating text, and no line
+ * breaks (block-level children such as grid items serialize as newlines). Dropped under reduced
+ * motion and once rotation settles.
+ */
+.share-target::after {
+  content: attr(data-longest);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.share-target-text {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.share-target.is-settled::after {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-target::after {
+    display: none;
+  }
+}
+
+.share-target-text.is-entering {
+  animation: share-target-in 450ms var(--ease) both;
+}
+
+@keyframes share-target-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35em);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .hero-actions,
 .how-action {
   display: flex;
@@ -834,6 +898,12 @@ h1 {
   .hero-intro,
   .how-hero > p:last-child {
     max-width: 33rem;
+    font-size: 1rem;
+  }
+
+  .hero-share-line {
+    grid-column: auto;
+    grid-row: auto;
     font-size: 1rem;
   }
 
