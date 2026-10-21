@@ -7,7 +7,6 @@ import { type AccessItem, unsupportedManifest } from "./access.ts";
 import { type CatalogEntry, availabilityOf, versionLabel } from "./catalog.ts";
 import { consentFor } from "./consent.ts";
 import { InlinePanel, type PanelAction } from "./inline-panel.ts";
-import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
 import { loadManifest } from "./manifest.ts";
 import { RepairError, type RepairOutcome, type RepairPorts, type RepairProgress, repairWrites, runRepair } from "./repair.ts";
@@ -126,6 +125,14 @@ function sheetHeader(kicker: string, title: string, entry: CatalogEntry, close: 
   ]);
 }
 
+/** The Open control: a link to the runner, or a disabled button when the app is switched off (no link to a refusal page). */
+function openControl(entry: CatalogEntry): HTMLElement {
+  if (availabilityOf(entry).available) return el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+  const off = el("button", "tc-button tc-button--primary apps-button", ["Open"], { type: "button", "aria-label": `Open ${entry.name}` });
+  off.disabled = true;
+  return off;
+}
+
 // ---------------------------------------------------------------------------
 // Details
 
@@ -133,12 +140,10 @@ function detailsContent(entry: CatalogEntry, catalog: readonly CatalogEntry[], c
   const header = sheetHeader(`by ${entry.publisher.name}`, entry.name, entry, close);
   const access = el("div", "apps-access-region", [], { "aria-live": "polite" });
   const availability = availabilityOf(entry);
-  const disclosure = el("section", "apps-section", [el("h3", null, ["Before you open it"]), el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line])))]);
-  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), disclosure, access, provenance(entry)]);
-  const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+  const body = el("div", "apps-sheet__body", [...(availability.available ? [] : [unavailableNotice(availability.reason)]), el("p", "apps-sheet__lede", [entry.description]), access, provenance(entry)]);
   const uninstallNow = el("button", "tc-button apps-button", ["Uninstall"], { type: "button", "aria-label": `Uninstall ${entry.name}` });
   uninstallNow.addEventListener("click", uninstall);
-  const footer = el("footer", "apps-sheet__footer", [open, el("p", "apps-muted", [availability.available ? "Opening checks the app's files before anything is saved." : "Opening is switched off for this app."]), uninstallNow]);
+  const footer = el("footer", "apps-sheet__footer", [openControl(entry), ...(availability.available ? [] : [el("p", "apps-muted", ["Opening is switched off for this app."])]), uninstallNow]);
   void renderAccess(entry, catalog, access);
   return { header, body, footer };
 }
@@ -475,8 +480,7 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry, "details"); });
     const availability = availabilityOf(entry);
-    // A disabled entry still links to the runner: the runner page refuses it there, before any sign-in opens.
-    const open = el("a", "tc-button tc-button--primary apps-button", ["Open"], { href: runnerHref(entry.app_id), "aria-label": `Open ${entry.name}` });
+    const open = openControl(entry);
     const card = el("li", "apps-card tc-panel", [
       el("h2", "apps-card__name", [entry.name]),
       el("p", "apps-card__meta", [`${entry.publisher.name} · ${versionLabel(entry)}`]),
