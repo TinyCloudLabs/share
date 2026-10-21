@@ -11,6 +11,7 @@ import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL } from "./artifact-kind.js";
 import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
+import { revokeStoredShortLink, SHORT_LINK_KEPT_NOTICE } from "../short-links/publish.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
@@ -231,6 +232,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         revoke.remove();
         live.textContent = "Share revoked.";
         say("Share revoked.");
+        if (flight.note !== undefined) controls.append(node(doc, "p", "sender-row-note", flight.note));
         return;
       }
       // Only a status code or a fixed reason is shown; the error text can carry a response body.
@@ -330,6 +332,13 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       },
     });
     if (result.state !== "revoked") throw new Error("revoke-unsupported");
+    // The node revoke above is the authority. The short-link delete is best
+    // effort: a failed delete keeps its record, so the next revoke attempt retries it.
+    const spaceId = options.tinycloud.spaceId;
+    if (spaceId !== undefined && spaceId.length > 0) {
+      const shortLink = await revokeStoredShortLink({ shareId, kv: options.tinycloud.kvForSpace(spaceId) });
+      if (shortLink === "kept") flight.note = SHORT_LINK_KEPT_NOTICE;
+    }
   };
   /**
    * TC-721. Revoke is confirmed in the page, never with `window.confirm`: a
