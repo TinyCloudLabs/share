@@ -14,7 +14,12 @@ import {
 
 const rendered = renderLandingTemplate(readFileSync(join(process.cwd(), "index.html"), "utf8"));
 
-const PLANNED_NOT_LIVE = ["your family", "your team", "your friend group", "your group chat"];
+/** Phrases listed under README "Landing page: recipient kinds", in order. */
+function readmePhrases(): string[] {
+  const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
+  const section = /## Landing page: recipient kinds\n([\s\S]*?)(?=\n## |$)/.exec(readme)?.[1] ?? "";
+  return [...section.matchAll(/^- (.+?) \((?:live|not live yet)\)$/gm)].map((match) => match[1]!);
+}
 
 function mountHero(reduced: boolean): HTMLElement {
   document.body.innerHTML = new DOMParser().parseFromString(rendered, "text/html").body.innerHTML;
@@ -36,47 +41,23 @@ function shown(): string | null {
 }
 
 describe("share target phrases", () => {
-  it("lists at least three live phrases, none about links", () => {
-    expect(SHARE_TARGETS.length).toBeGreaterThanOrEqual(3);
-    expect(SHARE_TARGETS.filter((phrase) => phrase.includes("link"))).toEqual([]);
+  it("are the README list, in the README order", () => {
+    const listed = readmePhrases();
+    expect(listed.length).toBeGreaterThan(0);
+    expect(SHARE_TARGETS).toEqual(listed);
   });
 
-  it("keeps planned-but-not-live recipient kinds out of the array", () => {
-    for (const planned of PLANNED_NOT_LIVE) expect(SHARE_TARGETS).not.toContain(planned);
-  });
-
-  it("renders the first phrase statically in the hero sentence", () => {
+  it("renders the first phrase statically, so the page reads without JavaScript", () => {
     mountHero(false);
     expect(shown()).toBe(SHARE_TARGETS[0]);
-    expect(document.querySelector(".hero-share-line")!.textContent).toContain(SHARE_TARGETS[0]!);
   });
 
-  it("sets data-longest on the share target from the longest phrase", () => {
+  it("renders the longest phrase as the width/height reservation, and no extra copyable node", () => {
     const target = new DOMParser().parseFromString(rendered, "text/html").querySelector<HTMLElement>(".share-target");
     expect(target?.dataset.longest).toBe(longestShareTarget());
     expect(longestShareTarget().length).toBe(Math.max(...SHARE_TARGETS.map((phrase) => phrase.length)));
-  });
-
-  it("renders no sizer element, so the sentence has no extra copyable node", () => {
     mountHero(false);
-    expect(document.querySelector(".share-target-sizer")).toBeNull();
-    expect(document.querySelector(".hero-share-line")!.textContent!.replace(/\s+/g, " ").trim()).toContain(
-      `Share with ${SHARE_TARGETS[0]} and only them.`,
-    );
-  });
-
-  it("hides the reserved width under reduced motion in CSS", () => {
-    const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.share-target::after\s*\{\s*display:\s*none/);
-  });
-
-  it("reserves width with zero height and top alignment, so the hero line keeps one height", () => {
-    const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
-    const reserve = css.match(/\.share-target::after\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(reserve).toMatch(/height:\s*0;/);
-    expect(reserve).toMatch(/overflow:\s*hidden;/);
-    const target = css.match(/\.share-target\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(target).toMatch(/vertical-align:\s*top;/);
+    expect(document.querySelector(".hero-phrase")!.textContent!.trim()).toBe(SHARE_TARGETS[0]);
   });
 });
 
@@ -90,17 +71,17 @@ describe("share target rotation", () => {
     document.body.innerHTML = "";
   });
 
-  it("cycles through every phrase, then stops and settles on the first", () => {
+  it("shows every phrase in order, then stops on the first", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
 
-    const seen = new Set<string | null>([shown()]);
+    const seen: (string | null)[] = [shown()];
     for (let step = 0; step < ROTATE_STOP_AFTER_MS / ROTATE_EVERY_MS; step++) {
       vi.advanceTimersByTime(ROTATE_EVERY_MS);
-      seen.add(shown());
+      seen.push(shown());
     }
 
-    expect([...seen].sort()).toEqual([...SHARE_TARGETS].sort());
+    expect(seen.slice(0, SHARE_TARGETS.length)).toEqual([...SHARE_TARGETS]);
     expect(shown()).toBe(SHARE_TARGETS[0]);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -116,16 +97,9 @@ describe("share target rotation", () => {
 
   it("makes no DOM changes under reduced motion", () => {
     const wrapper = mountHero(true);
-    const before = document.querySelector(".hero-share-line")!.innerHTML;
+    const before = document.querySelector(".hero-phrase")!.innerHTML;
     startShareTargetRotation(wrapper);
-    expect(document.querySelector(".hero-share-line")!.innerHTML).toBe(before);
-  });
-
-  it("marks the target settled on the first phrase", () => {
-    const wrapper = mountHero(false);
-    startShareTargetRotation(wrapper);
-    vi.advanceTimersByTime(ROTATE_STOP_AFTER_MS);
-    expect(wrapper.classList.contains("is-settled")).toBe(true);
+    expect(document.querySelector(".hero-phrase")!.innerHTML).toBe(before);
   });
 
   it("holds the current phrase while hovered and resumes on leave", () => {

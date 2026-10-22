@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Paste one prompt into your agent. It publishes from your own TinyCloud and gives you a link to share."
+      content="Give your agent a prompt. It publishes your document, web page or tiny app from your own TinyCloud and gives you a link to share."
     />
     <meta name="color-scheme" content="light dark" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'" />
@@ -40,43 +40,47 @@
       <main id="main">
         <section class="hero" aria-labelledby="hero-title">
           <div class="hero-copy">
-            <h1 id="hero-title">Share what your agent makes.</h1>
+            <div class="hero-lead">
+              <h1 id="hero-title">Share what your agent makes.</h1>
 
-            <p class="hero-intro">
-              Paste one prompt into your agent. It publishes a document, page or small app from
-              your own TinyCloud and gives you a link. You choose who can open it.
-            </p>
+              <p class="hero-phrase"><span class="share-target" data-longest="{{SHARE_TARGET_LONGEST}}"><span class="share-target-slot"><mark class="share-target-text">{{SHARE_TARGET_FIRST}}</mark></span></span></p>
+            </div>
 
-            <p class="hero-share-line">
-              Share with <span class="share-target" data-longest="{{SHARE_TARGET_LONGEST}}"><span class="share-target-text">a person</span></span> and only them.
-            </p>
+            <div class="hero-body">
+              <p class="hero-intro">
+                <strong>Give your agent a prompt.</strong>
+                It publishes your document, web page or tiny app from your own TinyCloud, and gives
+                you <span id="privacy-clause">{{PRIVACY_CLAUSE}}</span>.
+              </p>
+
+              <div class="agent-box">
+                <code class="agent-prompt" id="agent-prompt">{{AGENT_PROMPT}}</code>
+                <button
+                  class="pill pill-solid copy-button"
+                  id="copy-prompt"
+                  type="button"
+                  aria-describedby="agent-prompt"
+                  data-copy-target="agent-prompt"
+                  hidden
+                >Copy</button>
+              </div>
+
+              <nav class="agent-links" aria-label="Open your agent">
+            {{AGENT_LINKS}}
+              </nav>
+              <p class="agent-status" id="copy-status" role="status" aria-live="polite"></p>
+
+              <p class="agent-note">
+                Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through
+                the TinyCloud MCP are next.
+              </p>
+
+              <p class="agent-signin">
+                Accessing content you've shared, or that's been shared with you?
+                <a class="agent-signin-link" href="/share">Sign in</a>
+              </p>
+            </div>
           </div>
-        </section>
-
-        <section class="agent-cta structural-section" aria-labelledby="agent-cta-title">
-          <h2 id="agent-cta-title">Give this to your agent to start sharing</h2>
-
-          <div class="agent-box">
-            <code class="agent-prompt" id="agent-prompt">{{AGENT_PROMPT}}</code>
-            <button
-              class="pill pill-solid copy-button"
-              id="copy-prompt"
-              type="button"
-              aria-describedby="agent-prompt"
-              data-copy-target="agent-prompt"
-            >Copy</button>
-          </div>
-          <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
-
-          <p class="agent-note">
-            Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through
-            the TinyCloud MCP are next.
-          </p>
-
-          <p class="agent-signin">
-            Accessing content you've shared, or that's been shared with you?
-            <a class="agent-signin-link" href="/share">Sign in</a>
-          </p>
         </section>
 
         <section class="copy-section structural-section" aria-labelledby="how-title">

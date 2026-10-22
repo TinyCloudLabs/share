@@ -1,0 +1,28 @@
+.preview-variant {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem 1rem;
+  border-bottom: 1px dashed var(--ink-soft);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  gap: 0.25rem;
+}
+
+.preview-variant a {
+  display: inline-grid;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.preview-variant a[aria-current] {
+  background: var(--accent);
+  color: var(--button-ink);
+}
