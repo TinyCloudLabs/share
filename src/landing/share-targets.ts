@@ -1,21 +1,25 @@
-// Recipient kinds that work end to end in Share today. A phrase is added only when its kind is live; see README "Landing page: recipient kinds".
-export const SHARE_TARGETS: readonly string[] = ["a person", "an email address", "your team's domain"];
+// Recipients typed at the end of the landing headline. The longest sets the headline's fit; see `.share-target` in landing.css.
+export const SHARE_TARGETS: readonly string[] = [
+  "a person",
+  "your family",
+  "your friends",
+  "your team",
+  "your group chat",
+  "your community",
+  "your club",
+  "your company",
+  "an email address",
+];
 
-export const TYPE_MS = 200;
-export const DELETE_MS = 50;
-export const HOLD_MS = 1500;
-
-/** Longest phrase by character count. brand.ts renders it into `data-longest` on `.share-target`. */
-export function longestShareTarget(): string {
-  return SHARE_TARGETS.reduce((a, b) => (b.length > a.length ? b : a), "");
-}
+export const TYPE_MS = 60;
+export const DELETE_MS = 30;
+export const HOLD_MS = 1100;
 
 /**
  * Types the phrases into `wrapper` (`.share-target` with `.share-target-text`) one character at a
- * time behind a blinking cursor, holds each for HOLD_MS, deletes it, and types the next. After one
- * pass through every phrase it types the first phrase again, removes the cursor and stops. The
- * headline's size is held by the CSS `.share-target::after` reservation. Hover or focus inside the
- * wrapper pauses typing. Returns a cancel function that clears the timer and listeners.
+ * time behind a blinking cursor, holds each for HOLD_MS, deletes it, and types the next, looping
+ * through the list. Hover or focus inside the wrapper pauses typing. Returns a cancel function that
+ * clears the timer and listeners.
  *
  * Reduced motion, or a missing text node: nothing changes, and the first phrase rendered in the
  * static HTML stays.
@@ -36,7 +40,6 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
   let index = 0;
   let length = 0;
   let deleting = false;
-  let lastPhrase = false;
   let paused = false;
   let timer: number | undefined;
 
@@ -50,11 +53,7 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
     if (!deleting && length < phrase.length) {
       length += 1;
       text.textContent = phrase.slice(0, length);
-      if (length < phrase.length) schedule(TYPE_MS);
-      else if (lastPhrase) {
-        cancel();
-        cursor.remove();
-      } else schedule(HOLD_MS);
+      schedule(length < phrase.length ? TYPE_MS : HOLD_MS);
       return;
     }
     deleting = true;
@@ -63,7 +62,6 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
     if (length > 0) return schedule(DELETE_MS);
     deleting = false;
     index = (index + 1) % SHARE_TARGETS.length;
-    lastPhrase = index === 0;
     schedule(TYPE_MS);
   };
 

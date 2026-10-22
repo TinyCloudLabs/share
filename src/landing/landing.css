@@ -239,10 +239,13 @@ h3 {
   display: grid;
   align-items: end;
   width: 100%;
+  container-type: inline-size;
   padding: clamp(2.5rem, 5vw, 3.5rem) 0;
   animation: page-enter 650ms var(--ease) both;
-  grid-template-columns: minmax(0, 1.1fr) minmax(20rem, 0.9fr);
-  grid-template-areas: "title intro";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "title"
+    "intro";
   gap: 1.5rem 3rem;
 }
 
@@ -282,26 +285,16 @@ h1 {
   grid-area: intro;
 }
 
-.share-target {
-  display: inline-grid;
-  color: var(--accent);
-}
-
 /*
- * Reserves the longest phrase's box (width and wrapped height) in the same grid cell as the typed
- * line, so the headline keeps one size while phrases are typed and deleted. Generated from the
- * static data-longest attribute, so it holds without JS; hidden and not selectable. Dropped under
- * reduced motion, where the first phrase stays put.
+ * One line at any width: the typed phrase never wraps, and its size shrinks below the headline's
+ * when the column can't fit the longest phrase ("an email address|.", about 7.4em) at full size.
+ * Raise the 7.6 if a longer phrase is added.
  */
-.share-target::after,
-.share-target-line {
-  grid-area: 1 / 1;
-}
-
-.share-target::after {
-  content: attr(data-longest) ".";
-  visibility: hidden;
-  user-select: none;
+.share-target {
+  display: inline-block;
+  color: var(--accent);
+  font-size: min(1em, calc(100cqi / 7.6));
+  white-space: nowrap;
 }
 
 .share-target-end {
@@ -315,12 +308,6 @@ h1 {
 @keyframes share-target-blink {
   50% {
     opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .share-target::after {
-    display: none;
   }
 }
 

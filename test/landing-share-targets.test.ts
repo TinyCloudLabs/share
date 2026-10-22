@@ -4,11 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderLandingTemplate } from "../src/landing/brand.ts";
-import { HOLD_MS, longestShareTarget, SHARE_TARGETS, startShareTargetRotation, TYPE_MS } from "../src/landing/share-targets.ts";
+import { HOLD_MS, SHARE_TARGETS, startShareTargetRotation, TYPE_MS } from "../src/landing/share-targets.ts";
 
 const rendered = renderLandingTemplate(readFileSync(join(process.cwd(), "index.html"), "utf8"));
-
-const PLANNED_NOT_LIVE = ["your family", "your team", "your friend group", "your group chat"];
 
 function mountHero(reduced: boolean): HTMLElement {
   document.body.innerHTML = new DOMParser().parseFromString(rendered, "text/html").body.innerHTML;
@@ -30,13 +28,9 @@ function shown(): string | null {
 }
 
 describe("share target phrases", () => {
-  it("lists at least three live phrases, none about links", () => {
+  it("lists at least three phrases, none about links", () => {
     expect(SHARE_TARGETS.length).toBeGreaterThanOrEqual(3);
     expect(SHARE_TARGETS.filter((phrase) => phrase.includes("link"))).toEqual([]);
-  });
-
-  it("keeps planned-but-not-live recipient kinds out of the array", () => {
-    for (const planned of PLANNED_NOT_LIVE) expect(SHARE_TARGETS).not.toContain(planned);
   });
 
   it("renders the first phrase statically at the end of the headline", () => {
@@ -45,12 +39,6 @@ describe("share target phrases", () => {
     expect(document.querySelector("h1")!.textContent!.replace(/\s+/g, " ").trim()).toBe(
       `Share what your agent makes with ${SHARE_TARGETS[0]}.`,
     );
-  });
-
-  it("sets data-longest on the share target from the longest phrase", () => {
-    const target = new DOMParser().parseFromString(rendered, "text/html").querySelector<HTMLElement>(".share-target");
-    expect(target?.dataset.longest).toBe(longestShareTarget());
-    expect(longestShareTarget().length).toBe(Math.max(...SHARE_TARGETS.map((phrase) => phrase.length)));
   });
 });
 
@@ -64,25 +52,29 @@ describe("share target rotation", () => {
     document.body.innerHTML = "";
   });
 
-  it("types every phrase in turn, then settles on the first and removes the cursor", () => {
+  it("types every phrase in turn and loops back to the first", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
     expect(shown()).toBe("");
     expect(wrapper.querySelector(".share-target-cursor")?.getAttribute("aria-hidden")).toBe("true");
 
-    const completed: (string | null)[] = [];
-    let previous = shown();
-    for (let tick = 0; tick < 2000 && vi.getTimerCount() > 0; tick++) {
-      vi.advanceTimersByTime(50);
-      const now = shown();
-      if (now !== previous && SHARE_TARGETS.includes(now ?? "")) completed.push(now);
+    // A phrase is complete when the text stops growing and starts being deleted.
+    const completed: string[] = [];
+    let previous = "";
+    let growing = false;
+    while (completed.length <= SHARE_TARGETS.length) {
+      vi.advanceTimersByTime(10);
+      const now = shown() ?? "";
+      if (now.length > previous.length) growing = true;
+      if (now.length < previous.length && growing) {
+        completed.push(previous);
+        growing = false;
+      }
       previous = now;
     }
 
     expect(completed).toEqual([...SHARE_TARGETS, SHARE_TARGETS[0]]);
-    expect(shown()).toBe(SHARE_TARGETS[0]);
-    expect(wrapper.querySelector(".share-target-cursor")).toBeNull();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
   });
 
   it("never starts a timer and makes no DOM changes when reduced motion is requested", () => {

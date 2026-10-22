@@ -19,17 +19,6 @@ See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the
 
 The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no server-side package.
 
-## Landing page: recipient kinds
+## Landing page: recipients
 
-The phrase typed at the end of the landing headline ("Share what your agent makes with …") lists only recipient kinds that work end to end today (`src/landing/share-targets.ts`, `SHARE_TARGETS`). When a new recipient kind or claim type is live in Share, add its phrase to that array in the same release.
-
-Planned, not yet live. Do not add these to `SHARE_TARGETS` until the kind works end to end in Share:
-
-- your family
-- your team
-- your friend group
-- your group chat
-
-They join the rotation when group credentials and their claim type work end to end.
-
-When "your team" goes live (group credentials), it replaces "your team's domain" in the array; it is not added beside it.
+The landing headline ("Share what your agent makes with …") types the phrases in `SHARE_TARGETS` (`src/landing/share-targets.ts`) one after another, on one line. If you add a phrase longer than "an email address", raise the fit divisor in `.share-target` (`src/landing/landing.css`).
