@@ -15,6 +15,11 @@ import { SHARE_TARGETS } from "./share-targets.js";
 
 export const PRODUCT = "TinyCloud Sharing";
 export const DOMAIN = "share.tinycloud.xyz";
+/**
+ * Trust path: every agent tile points the agent at this URL, and the Hermes tile installs it as a
+ * skill (hermes://skill/install). Whoever controls agents.tinycloud.xyz controls the instructions
+ * those agents follow, so treat changes there as security-sensitive.
+ */
 export const AGENT_SKILL_URL = "https://agents.tinycloud.xyz/share";
 export const AGENT_PROMPT = `Share this with TinyCloud, and ask me who should be able to open it: ${AGENT_SKILL_URL}`;
 

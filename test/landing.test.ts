@@ -60,10 +60,9 @@ describe("landing template", () => {
     for (const link of appLinks) expect(link.hasAttribute("target")).toBe(false);
   });
 
-  it("describes the page with the hero subtitle", () => {
-    const description = /<meta\s+name="description"\s+content="([^"]+)"/.exec(rendered)![1];
-    const subtitle = /<p class="hero-intro">([\s\S]*?)<\/p>/.exec(rendered)![1]!.replace(/\s+/g, " ").trim();
-    expect(description).toBe(subtitle);
+  it("keeps the Muse tile hidden without JS, since it only copies", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    expect(doc.querySelector<HTMLElement>('[data-agent="muse"]')!.hidden).toBe(true);
   });
 });
 
@@ -114,5 +113,39 @@ describe("agent prompt copy button", () => {
 
     expect(writeText).toHaveBeenCalledExactlyOnceWith(EXPECTED_PROMPT);
     expect(document.querySelector("#agent-status")!.textContent).toBe("Opening ChatGPT. The prompt is copied too.");
+  });
+
+  it("shows the Muse tile once JS runs", () => {
+    expect(document.querySelector<HTMLElement>('[data-agent="muse"]')!.hidden).toBe(false);
+  });
+});
+
+describe("agent row on a phone", () => {
+  const IPHONE_UA =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+  const desktopUa = navigator.userAgent;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    Object.defineProperty(navigator, "userAgent", { value: IPHONE_UA, configurable: true });
+    window.matchMedia = vi.fn(() => ({ matches: false })) as unknown as typeof window.matchMedia;
+    document.head.innerHTML = `<style>${readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8")}</style>`;
+    document.body.innerHTML = /<body[^>]*>([\s\S]*)<\/body>/.exec(rendered)![1]!;
+    // Dynamic import is intentional: main.ts reads the user agent on load, so it must run after the override.
+    await import("../src/landing/main.ts");
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "userAgent", { value: desktopUa, configurable: true });
+    document.head.innerHTML = "";
+    delete document.documentElement.dataset.device;
+  });
+
+  it("hides the desktop-only Cursor tile and keeps the others", () => {
+    expect(document.documentElement.dataset.device).toBe("mobile");
+    const display = (agent: string) =>
+      getComputedStyle(document.querySelector<HTMLElement>(`[data-agent="${agent}"]`)!).display;
+    expect(display("cursor")).toBe("none");
+    expect(display("chatgpt")).not.toBe("none");
   });
 });

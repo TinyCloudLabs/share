@@ -26,3 +26,5 @@ The landing headline ("Share what your agent makes with …") types the phrases 
 The list may include recipient kinds that don't work end to end yet (family, club, community and so on). Sam decided this on 2026-10-22, so don't bring back the old rule that only live kinds may appear.
 
 Accessibility: the `<h1>` carries the whole sentence as its `aria-label` (`HEADLINE_LABEL` in `src/landing/brand.ts`) and the typed part is `aria-hidden`. Typing runs `CYCLES` passes, then stops on the first phrase. Under `prefers-reduced-motion` it doesn't animate.
+
+Agent buttons: the tiles under the prompt (`src/landing/agent-links.html`) open each agent with the prompt, which points it at `https://agents.tinycloud.xyz/share`. The Hermes tile installs that URL as a skill. So agents.tinycloud.xyz is in the skill-install trust path: whatever it serves is what those agents follow.
