@@ -19,6 +19,7 @@
   --grid-dot: rgb(42 86 246 / 12%);
   --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --content-column: 46rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -239,6 +240,8 @@ h3 {
   display: grid;
   align-items: end;
   width: 100%;
+  max-width: var(--content-column);
+  margin-inline: auto;
   container-type: inline-size;
   padding: clamp(2.5rem, 5vw, 3.5rem) 0;
   animation: page-enter 650ms var(--ease) both;
@@ -568,8 +571,10 @@ h1 {
   line-height: 1.05;
 }
 
+/* Same centered column as the hero; padding (not width) keeps the section's full-width rule. */
 .agent-cta {
   padding-top: clamp(2.25rem, 4vw, 3.5rem);
+  padding-inline: max(0px, calc((100% - var(--content-column)) / 2));
 }
 
 .agent-cta h2 {
