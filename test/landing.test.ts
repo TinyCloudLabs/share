@@ -40,6 +40,16 @@ describe("landing template", () => {
     expect(heroLink).toBeTruthy();
     expect(heroLink).toBe(bottomLink);
   });
+
+  it("opens every web agent with exactly the prompt filled in", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    const prompts = [...doc.querySelectorAll<HTMLAnchorElement>("a.agent-link[href^='https:']")].map((link) => {
+      const url = new URL(link.href);
+      return url.searchParams.get("q") ?? url.searchParams.get("text");
+    });
+    expect(prompts).toHaveLength(6);
+    for (const prompt of prompts) expect(prompt).toBe(EXPECTED_PROMPT);
+  });
 });
 
 describe("agent prompt copy button", () => {
@@ -79,5 +89,15 @@ describe("agent prompt copy button", () => {
     expect(button.textContent).toBe("Copy");
     expect(button.dataset.state).toBeUndefined();
     expect(document.querySelector("#copy-status")!.textContent).toBe("");
+  });
+
+  it("copies the prompt and says so when an agent tile is clicked", async () => {
+    const chatgpt = document.querySelector<HTMLAnchorElement>('[data-agent="chatgpt"]')!;
+    chatgpt.addEventListener("click", (event) => event.preventDefault());
+    chatgpt.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(EXPECTED_PROMPT);
+    expect(document.querySelector("#agent-status")!.textContent).toBe("Opening ChatGPT. The prompt is copied too.");
   });
 });
