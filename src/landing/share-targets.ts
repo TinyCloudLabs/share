@@ -1,24 +1,28 @@
-// Recipient kinds that work end to end in Share today. A phrase is added only when its kind is live; see README "Landing page: recipient kinds".
-export const SHARE_TARGETS: readonly string[] = ["a person", "an email address", "your team's domain"];
+// Recipients typed at the end of the landing headline. The longest sets the headline's fit; see `.share-target` in landing.css.
+export const SHARE_TARGETS: readonly string[] = [
+  "a person",
+  "your family",
+  "your friends",
+  "your team",
+  "your group chat",
+  "your community",
+  "your club",
+  "your company",
+  "an email address",
+];
 
-export const ROTATE_EVERY_MS = 2500;
-export const ROTATE_STOP_AFTER_MS = 15000;
-
-/** Longest phrase by character count. brand.ts renders it into `data-longest` on `.share-target`. */
-export function longestShareTarget(): string {
-  return SHARE_TARGETS.reduce((a, b) => (b.length > a.length ? b : a), "");
-}
+export const TYPE_MS = 60;
+export const DELETE_MS = 30;
+export const HOLD_MS = 1100;
 
 /**
- * Rotates the phrase inside `wrapper` (`.share-target` with `.share-target-text`). The longest
- * phrase's width is reserved by the CSS `.share-target::after` rule, fed by `data-longest` rendered
- * statically from `longestShareTarget()`. Returns a cancel function that clears the timer and listeners.
+ * Types the phrases into `wrapper` (`.share-target` with `.share-target-text`) one character at a
+ * time behind a blinking cursor, holds each for HOLD_MS, deletes it, and types the next, looping
+ * through the list. Hover or focus inside the wrapper pauses typing. Returns a cancel function that
+ * clears the timer and listeners.
  *
- * Reduced motion, or a missing text node: no timer is created, and CSS drops the reservation under
- * reduced motion, so the line is as wide as the first phrase from first paint. Otherwise the
- * reservation holds the width during rotation. After ROTATE_STOP_AFTER_MS the rotation settles on
- * the first phrase and the reserved width collapses to it in one transition. Hover or focus inside
- * the wrapper pauses rotation; paused ticks still count toward the stop.
+ * Reduced motion, or a missing text node: nothing changes, and the first phrase rendered in the
+ * static HTML stays.
  */
 export function startShareTargetRotation(wrapper: HTMLElement, win: Window = window): () => void {
   const text = wrapper.querySelector<HTMLElement>(".share-target-text");
@@ -26,49 +30,47 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
     return () => {};
   }
 
-  let index = 0;
-  let elapsed = 0;
-  let paused = false;
+  const cursor = win.document.createElement("span");
+  cursor.className = "share-target-cursor";
+  cursor.setAttribute("aria-hidden", "true");
+  cursor.textContent = "|";
+  text.after(cursor);
+  text.textContent = "";
 
-  const show = (next: number): void => {
-    index = next;
-    text.textContent = SHARE_TARGETS[next] ?? "";
-    text.classList.remove("is-entering");
-    void text.offsetWidth;
-    text.classList.add("is-entering");
+  let index = 0;
+  let length = 0;
+  let deleting = false;
+  let paused = false;
+  let timer: number | undefined;
+
+  const schedule = (ms: number): void => {
+    timer = win.setTimeout(step, ms);
   };
 
-  const collapse = (): void => {
-    const from = wrapper.getBoundingClientRect().width;
-    wrapper.style.width = `${from}px`;
-    wrapper.classList.add("is-settled");
-    const to = text.getBoundingClientRect().width;
-    if (to === from) {
-      wrapper.style.removeProperty("width");
+  const step = (): void => {
+    if (paused) return schedule(TYPE_MS);
+    const phrase = SHARE_TARGETS[index] ?? "";
+    if (!deleting && length < phrase.length) {
+      length += 1;
+      text.textContent = phrase.slice(0, length);
+      schedule(length < phrase.length ? TYPE_MS : HOLD_MS);
       return;
     }
-    void wrapper.offsetWidth;
-    wrapper.style.width = `${to}px`;
-    wrapper.addEventListener("transitionend", () => wrapper.style.removeProperty("width"), { once: true });
+    deleting = true;
+    length -= 1;
+    text.textContent = phrase.slice(0, length);
+    if (length > 0) return schedule(DELETE_MS);
+    deleting = false;
+    index = (index + 1) % SHARE_TARGETS.length;
+    schedule(TYPE_MS);
   };
 
-  const timer = win.setInterval(() => {
-    elapsed += ROTATE_EVERY_MS;
-    if (!paused) show((index + 1) % SHARE_TARGETS.length);
-    if (elapsed >= ROTATE_STOP_AFTER_MS) settle();
-  }, ROTATE_EVERY_MS);
-
   const cancel = (): void => {
-    win.clearInterval(timer);
+    win.clearTimeout(timer);
     wrapper.removeEventListener("pointerenter", pause);
     wrapper.removeEventListener("pointerleave", resume);
     wrapper.removeEventListener("focusin", pause);
     wrapper.removeEventListener("focusout", resume);
-  };
-  const settle = (): void => {
-    cancel();
-    if (index !== 0) show(0);
-    collapse();
   };
   const pause = (): void => {
     paused = true;
@@ -81,6 +83,7 @@ export function startShareTargetRotation(wrapper: HTMLElement, win: Window = win
   wrapper.addEventListener("pointerleave", resume);
   wrapper.addEventListener("focusin", pause);
   wrapper.addEventListener("focusout", resume);
+  schedule(TYPE_MS);
 
   return cancel;
 }

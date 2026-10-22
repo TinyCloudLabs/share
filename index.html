@@ -40,15 +40,14 @@
       <main id="main">
         <section class="hero" aria-labelledby="hero-title">
           <div class="hero-copy">
-            <h1 id="hero-title">Share what your agent makes.</h1>
+            <h1 id="hero-title">
+              Share what your agent makes with<br />
+              <span class="share-target"><span class="share-target-text">a person</span><span class="share-target-end">.</span></span>
+            </h1>
 
             <p class="hero-intro">
-              Paste one prompt into your agent. It publishes a document, page or small app from
-              your own TinyCloud and gives you a link. You choose who can open it.
-            </p>
-
-            <p class="hero-share-line">
-              Share with <span class="share-target" data-longest="{{SHARE_TARGET_LONGEST}}"><span class="share-target-text">a person</span></span> and only them.
+              Give your agent a prompt, and it publishes from your own TinyCloud and gives you a
+              link. You choose who can open it. No one else can access it.
             </p>
           </div>
         </section>
@@ -66,7 +65,9 @@
               data-copy-target="agent-prompt"
             >Copy</button>
           </div>
+{{AGENT_LINKS}}
           <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
+          <p class="agent-status" id="agent-status" role="status"></p>
 
           <p class="agent-note">
             Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through
