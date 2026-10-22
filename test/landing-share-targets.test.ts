@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderLandingTemplate } from "../src/landing/brand.ts";
-import { HOLD_MS, SHARE_TARGETS, startShareTargetRotation, TYPE_MS } from "../src/landing/share-targets.ts";
+import { CYCLES, HOLD_MS, SHARE_TARGETS, startShareTargetRotation, TYPE_MS } from "../src/landing/share-targets.ts";
 
 const rendered = renderLandingTemplate(readFileSync(join(process.cwd(), "index.html"), "utf8"));
 
@@ -40,6 +40,16 @@ describe("share target phrases", () => {
       `Share what your agent makes with ${SHARE_TARGETS[0]}.`,
     );
   });
+
+  it("gives screen readers the whole sentence once and hides the typed part", () => {
+    mountHero(false);
+    const h1 = document.querySelector("h1")!;
+    const label = h1.getAttribute("aria-label")!;
+    expect(label.startsWith("Share what your agent makes with ")).toBe(true);
+    expect(label.endsWith(".")).toBe(true);
+    for (const phrase of SHARE_TARGETS) expect(label).toContain(phrase);
+    expect(h1.querySelector(".share-target")!.getAttribute("aria-hidden")).toBe("true");
+  });
 });
 
 describe("share target rotation", () => {
@@ -52,17 +62,17 @@ describe("share target rotation", () => {
     document.body.innerHTML = "";
   });
 
-  it("types every phrase in turn and loops back to the first", () => {
+  it("types every phrase in turn for CYCLES passes, then settles on the first and stops", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
     expect(shown()).toBe("");
     expect(wrapper.querySelector(".share-target-cursor")?.getAttribute("aria-hidden")).toBe("true");
 
-    // A phrase is complete when the text stops growing and starts being deleted.
+    // A phrase is complete when the text stops growing: it is then deleted, or typing stops.
     const completed: string[] = [];
     let previous = "";
     let growing = false;
-    while (completed.length <= SHARE_TARGETS.length) {
+    for (let tick = 0; tick < 100_000 && vi.getTimerCount() > 0; tick++) {
       vi.advanceTimersByTime(10);
       const now = shown() ?? "";
       if (now.length > previous.length) growing = true;
@@ -72,9 +82,13 @@ describe("share target rotation", () => {
       }
       previous = now;
     }
+    if (growing) completed.push(previous);
 
-    expect(completed).toEqual([...SHARE_TARGETS, SHARE_TARGETS[0]]);
-    expect(vi.getTimerCount()).toBe(1);
+    const passes = Array.from({ length: CYCLES }, () => SHARE_TARGETS).flat();
+    expect(completed).toEqual([...passes, SHARE_TARGETS[0]]);
+    expect(shown()).toBe(SHARE_TARGETS[0]);
+    expect(wrapper.querySelector(".share-target-cursor")).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("never starts a timer and makes no DOM changes when reduced motion is requested", () => {

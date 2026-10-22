@@ -2,8 +2,8 @@
  * Single source for the product name, domain and agent prompt shown on the
  * landing page. Renaming the product or domain is an edit to this file only.
  *
- * `index.html` holds `{{PRODUCT}}`, `{{PRODUCT_WORDMARK}}`, `{{DOMAIN}}`, `{{AGENT_PROMPT}}` and
- * `{{AGENT_LINKS}}` placeholders; `renderLandingTemplate` substitutes them at build/dev time
+ * `index.html` holds `{{PRODUCT}}`, `{{PRODUCT_WORDMARK}}`, `{{DOMAIN}}`, `{{AGENT_PROMPT}}`,
+ * `{{AGENT_LINKS}}` and `{{HEADLINE_LABEL}}` placeholders; `renderLandingTemplate` substitutes them at build/dev time
  * (see the `landing-template` plugin in vite.config.ts), so the page is fully
  * static and works without JavaScript.
  */
@@ -11,8 +11,15 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SHARE_TARGETS } from "./share-targets.js";
+
 export const PRODUCT = "TinyCloud Sharing";
 export const DOMAIN = "share.tinycloud.xyz";
+/**
+ * Trust path: every agent tile points the agent at this URL, and the Hermes tile installs it as a
+ * skill (hermes://skill/install). Whoever controls agents.tinycloud.xyz controls the instructions
+ * those agents follow, so treat changes there as security-sensitive.
+ */
 export const AGENT_SKILL_URL = "https://agents.tinycloud.xyz/share";
 export const AGENT_PROMPT = `Share this with TinyCloud, and ask me who should be able to open it: ${AGENT_SKILL_URL}`;
 
@@ -25,6 +32,12 @@ const AGENT_LINKS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "
   .replaceAll("{{AGENT_PROMPT_QUERY}}", encodeURIComponent(AGENT_PROMPT))
   .replaceAll("{{AGENT_SKILL_QUERY}}", encodeURIComponent(AGENT_SKILL_URL))
   .trimEnd();
+
+/**
+ * The hero headline's accessible name. The visible headline types one recipient at a time, so
+ * screen readers get the whole sentence once instead (the animated part is aria-hidden).
+ */
+export const HEADLINE_LABEL = `Share what your agent makes with ${SHARE_TARGETS.slice(0, -1).join(", ")} or ${SHARE_TARGETS.at(-1)}.`;
 
 /**
  * Token values are HTML-escaped on render, except the AGENT_LINKS markup. PRODUCT_WORDMARK is the
@@ -49,6 +62,7 @@ const TOKENS: Readonly<Record<string, string>> = {
   DOMAIN: escapeHtml(DOMAIN),
   AGENT_PROMPT: escapeHtml(AGENT_PROMPT),
   AGENT_LINKS,
+  HEADLINE_LABEL: escapeHtml(HEADLINE_LABEL),
 };
 
 /** Replace every `{{TOKEN}}` with its rendered value; unknown tokens throw. */
