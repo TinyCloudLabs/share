@@ -47,8 +47,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for attempt in $(seq 1 60); do
+            # Exact name: "Cloudflare Pages: share-usercontent" is a separate project's check.
             state=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
-              --jq '[.check_runs[] | select(.name == "Cloudflare Pages")][0] | "\(.status) \(.conclusion)"')
+              --jq '[.check_runs[] | select(.name == "Cloudflare Pages: share")][0] | "\(.status) \(.conclusion)"')
             echo "Cloudflare Pages: ${state}"
             case "$state" in
               "completed success") exit 0 ;;
