@@ -50,6 +50,21 @@ describe("landing template", () => {
     expect(prompts).toHaveLength(6);
     for (const prompt of prompts) expect(prompt).toBe(EXPECTED_PROMPT);
   });
+
+  it("opens app-scheme agents (OpenClaw, Hermes) in place, not in a new blank tab", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    const appLinks = [...doc.querySelectorAll<HTMLAnchorElement>("a.agent-link")].filter(
+      (link) => !link.getAttribute("href")!.startsWith("https:"),
+    );
+    expect(appLinks.map((link) => link.dataset.agent)).toEqual(["openclaw", "hermes"]);
+    for (const link of appLinks) expect(link.hasAttribute("target")).toBe(false);
+  });
+
+  it("describes the page with the hero subtitle", () => {
+    const description = /<meta\s+name="description"\s+content="([^"]+)"/.exec(rendered)![1];
+    const subtitle = /<p class="hero-intro">([\s\S]*?)<\/p>/.exec(rendered)![1]!.replace(/\s+/g, " ").trim();
+    expect(description).toBe(subtitle);
+  });
 });
 
 describe("agent prompt copy button", () => {
