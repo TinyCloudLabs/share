@@ -21,15 +21,21 @@ The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no s
 
 ## Landing page: recipient kinds
 
-The rotating line on the landing page lists only recipient kinds that work end to end today (`src/landing/share-targets.ts`, `SHARE_TARGETS`). When a new recipient kind or claim type is live in Share, add its phrase to that array in the same release.
+The rotating phrase under the landing headline (`src/landing/share-targets.ts`, `SHARE_TARGETS`) is this list, in this order. `test/landing-share-targets.test.ts` fails if the array and the list differ. Each phrase completes "Share what your agent makes …", so every entry starts with "with".
 
-Planned, not yet live. Do not add these to `SHARE_TARGETS` until the kind works end to end in Share:
+The rotation deliberately includes kinds that are not live yet. This was a product decision on 22 Oct 2026 and replaces the earlier rule of showing only live kinds. Do not remove an entry because its kind is not live; the marker after each entry is information for maintainers, not a filter.
 
-- your family
-- your team
-- your friend group
-- your group chat
+- with a person (live)
+- with an email address (live)
+- with your team (not live yet)
+- with your friends (not live yet)
+- with your family (not live yet)
+- with your group chat (not live yet)
+- with everyone at your company (live)
+- with your clients (not live yet)
+- with your classmates (not live yet)
+- with your neighbours (not live yet)
 
-They join the rotation when group credentials and their claim type work end to end.
+"with a person" is first because it is the phrase shown without JavaScript and under reduced motion. "with everyone at your company" is the domain recipient kind. Group kinds (team, friends, family, group chat) become live with group credentials and their claim type.
 
-When "your team" goes live (group credentials), it replaces "your team's domain" in the array; it is not added beside it.
+Details: TC-1422

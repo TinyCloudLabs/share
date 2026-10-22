@@ -237,13 +237,17 @@ h3 {
 
 .hero-copy {
   display: grid;
-  align-items: end;
+  align-items: start;
   width: 100%;
   padding: clamp(2.5rem, 5vw, 3.5rem) 0;
   animation: page-enter 650ms var(--ease) both;
   grid-template-columns: minmax(0, 1.1fr) minmax(20rem, 0.9fr);
-  grid-template-areas: "title intro";
   gap: 1.5rem 3rem;
+}
+
+.hero-lead,
+.hero-body {
+  min-width: 0;
 }
 
 .eyebrow,
@@ -269,68 +273,71 @@ h1 {
   margin-bottom: 0;
   font-size: clamp(3.75rem, 8vw, 6rem);
   line-height: 0.98;
-  grid-area: title;
 }
 
 .hero-intro {
   max-width: 31rem;
-  margin: 0;
+  margin: 0 0 1.5rem;
   color: var(--ink-soft);
   font-size: 1.06rem;
   line-height: 1.65;
   text-wrap: pretty;
-  grid-area: intro;
 }
 
-.hero-share-line {
-  grid-column: 2;
-  grid-row: 2;
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 1.06rem;
-  line-height: 1.65;
+.hero-phrase {
+  margin: 1.25rem 0 0;
+  font-size: clamp(2rem, 4.6vw, 3.4rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1.32;
+  text-wrap: pretty;
 }
 
-.share-target {
-  display: inline-block;
-  color: var(--accent);
-  font-weight: 600;
-  vertical-align: top;
-  transition: width 200ms var(--ease);
+.hero-intro strong {
+  color: var(--ink);
+  font-weight: 650;
 }
 
 /*
- * Reserves the longest phrase's width. Generated from the static data-longest attribute, so it
- * holds without JS. Hidden and not selectable: copy gets only the rotating text, and no line
- * breaks (block-level children such as grid items serialize as newlines). Dropped under reduced
- * motion and once rotation settles.
+ * One grid cell holds both the visible phrase and a hidden copy of the longest phrase
+ * (`data-longest`, rendered statically), so the line keeps the longest phrase's height at any
+ * viewport width and nothing below it moves when the phrase changes. The hidden copy is not
+ * selectable and not exposed to assistive tech. Dropped when there is nothing to rotate.
  */
+.share-target {
+  display: grid;
+}
+
 .share-target::after {
   content: attr(data-longest);
-  display: block;
-  height: 0;
-  overflow: hidden;
+  padding-inline: 0.3em;
+  grid-area: 1 / 1;
   visibility: hidden;
   user-select: none;
-  white-space: nowrap;
+  pointer-events: none;
 }
 
-.share-target-text {
-  display: inline-block;
-  white-space: nowrap;
+.share-target-slot {
+  grid-area: 1 / 1;
 }
 
-.share-target.is-settled::after {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
+@media (prefers-reduced-motion: reduce), (scripting: none) {
   .share-target::after {
     display: none;
   }
 }
 
-.share-target-text.is-entering {
+/* The highlight: one marker stroke per wrapped line. */
+.share-target-text {
+  padding: 0.02em 0.3em;
+  border-radius: 0.22em;
+  background: var(--accent);
+  color: var(--button-ink);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.share-target-slot.is-entering {
   animation: share-target-in 450ms var(--ease) both;
 }
 
@@ -596,20 +603,10 @@ h1 {
   white-space: nowrap;
 }
 
-.agent-cta h2,
 .copy-section > h2 {
   margin: 0 0 clamp(1.75rem, 4vw, 2.75rem);
   font-size: clamp(2rem, 4vw, 3.25rem);
   line-height: 1.05;
-}
-
-.agent-cta {
-  padding-top: clamp(2.25rem, 4vw, 3.5rem);
-}
-
-.agent-cta h2 {
-  max-width: 24ch;
-  margin-bottom: clamp(1.5rem, 2.5vw, 2rem);
 }
 
 .agent-box {
@@ -655,8 +652,73 @@ h1 {
   text-wrap: pretty;
 }
 
-.agent-box + .visually-hidden + .agent-note {
-  margin-top: 1.5rem;
+.agent-links {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 40rem;
+  margin: 1rem 0 0;
+  gap: 0.5rem;
+}
+
+.agent-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.3rem 0.9rem 0.3rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 560;
+  text-decoration: none;
+  gap: 0.55rem;
+  transition:
+    border-color 160ms var(--ease),
+    color 160ms var(--ease),
+    transform 200ms var(--ease);
+}
+
+.agent-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-2px);
+}
+
+/* Letter badge instead of a vendor logo. */
+.agent-badge {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--button-ink);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* Cursor's deep link opens the desktop app only. */
+@media (hover: none) and (pointer: coarse) {
+  .agent-link[data-only="desktop"] {
+    display: none;
+  }
+}
+
+/* Toast line. Its height is always reserved, so a message appearing moves nothing. */
+.agent-status {
+  min-height: 1.6rem;
+  max-width: 40rem;
+  margin: 0.75rem 0 0;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.agent-status + .agent-note {
+  margin-top: 0.5rem;
 }
 
 .agent-signin {
@@ -879,10 +941,7 @@ h1 {
   .hero-copy {
     padding: 3rem 0 1.5rem;
     grid-template-columns: 1fr;
-    grid-template-areas:
-      "title"
-      "intro";
-    gap: 1.5rem;
+    gap: 2rem;
   }
 
   .eyebrow {
@@ -901,10 +960,8 @@ h1 {
     font-size: 1rem;
   }
 
-  .hero-share-line {
-    grid-column: auto;
-    grid-row: auto;
-    font-size: 1rem;
+  .hero-phrase {
+    font-size: clamp(1.75rem, 8.4vw, 2.4rem);
   }
 
   .section-heading,
@@ -958,10 +1015,6 @@ h1 {
 
   .how-step p {
     grid-column: 2;
-  }
-
-  .agent-cta {
-    padding-top: 1.5rem;
   }
 
   .agent-box {

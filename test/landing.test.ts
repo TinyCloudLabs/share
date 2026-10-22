@@ -3,10 +3,10 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AGENT_PROMPT, PRODUCT, renderLandingTemplate } from "../src/landing/brand.ts";
+import { mountPrivacyVariant } from "../src/landing/preview-variant.ts";
+import { AGENT_PROMPT, AGENT_TARGETS, PRIVACY_CLAUSE, PRODUCT, renderLandingTemplate, SKILL_URL } from "../src/landing/brand.ts";
 
-const EXPECTED_PROMPT =
-  "Share this with TinyCloud, and ask me who should be able to open it: https://agents.tinycloud.xyz/share";
+const EXPECTED_PROMPT = "Read https://agents.tinycloud.xyz/share and follow it.";
 
 const rendered = renderLandingTemplate(readFileSync(join(process.cwd(), "index.html"), "utf8"));
 
@@ -39,6 +39,30 @@ describe("landing template", () => {
     const bottomLink = /<a class="signin-link" href="([^"]+)">Sign in<\/a>/.exec(rendered)![1];
     expect(heroLink).toBeTruthy();
     expect(heroLink).toBe(bottomLink);
+  });
+
+  it("renders the copy button hidden and the prompt selectable, so the page works without script", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    expect(doc.querySelector<HTMLButtonElement>("#copy-prompt")!.hidden).toBe(true);
+    expect(doc.querySelector("#agent-prompt")!.textContent).toBe(EXPECTED_PROMPT);
+  });
+
+  it("renders every agent link statically, each carrying the exact prompt (or the skill URL for Hermes)", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    const links = [...doc.querySelectorAll<HTMLAnchorElement>("nav.agent-links a[data-agent]")];
+    expect(links.map((link) => link.dataset.agent)).toEqual(AGENT_TARGETS.map((agent) => agent.id));
+    for (const link of links) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener");
+      const url = new URL(link.getAttribute("href")!);
+      const carried = link.dataset.agent === "hermes" ? SKILL_URL : AGENT_PROMPT;
+      expect([...url.searchParams.values()]).toContain(carried);
+    }
+  });
+
+  it("renders the default privacy sentence", () => {
+    const doc = new DOMParser().parseFromString(rendered, "text/html");
+    expect(doc.querySelector("#privacy-clause")!.textContent).toBe(PRIVACY_CLAUSE);
   });
 });
 
@@ -79,5 +103,55 @@ describe("agent prompt copy button", () => {
     expect(button.textContent).toBe("Copy");
     expect(button.dataset.state).toBeUndefined();
     expect(document.querySelector("#copy-status")!.textContent).toBe("");
+  });
+
+  it("copies the prompt and shows the agent's message when an agent link is clicked", async () => {
+    const link = document.querySelector<HTMLAnchorElement>('a[data-agent="gemini"]')!;
+    link.addEventListener("click", (event) => event.preventDefault());
+    link.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(EXPECTED_PROMPT);
+    expect(document.querySelector("#copy-status")!.textContent).toBe("Copied. Paste it into Gemini.");
+  });
+
+  it("tells the reader to copy by hand when the clipboard is unavailable", async () => {
+    writeText.mockRejectedValue(new Error("denied"));
+    document.execCommand = vi.fn(() => false);
+    const link = document.querySelector<HTMLAnchorElement>('a[data-agent="claude"]')!;
+    link.addEventListener("click", (event) => event.preventDefault());
+    link.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(document.querySelector("#copy-status")!.textContent).toBe("Copy the prompt, then paste it into your agent.");
+  });
+
+  it("reveals the copy button once script runs", () => {
+    expect(document.querySelector<HTMLButtonElement>("#copy-prompt")!.hidden).toBe(false);
+  });
+});
+
+describe("preview privacy wording switch", () => {
+  beforeEach(() => {
+    document.body.innerHTML = /<body[^>]*>([\s\S]*)<\/body>/.exec(rendered)![1]!;
+  });
+
+  it("shows the alternative with ?v=b and the default otherwise", () => {
+    mountPrivacyVariant(document, "?v=b");
+    expect(document.querySelector("#privacy-clause")!.textContent).toBe("a link that no one else can open, not even TinyCloud");
+    document.body.innerHTML = /<body[^>]*>([\s\S]*)<\/body>/.exec(rendered)![1]!;
+    mountPrivacyVariant(document, "?v=a");
+    expect(document.querySelector("#privacy-clause")!.textContent).toBe(PRIVACY_CLAUSE);
+  });
+
+  it("is not loaded by the landing script unless the preview flag is set", async () => {
+    vi.resetModules();
+    window.matchMedia = vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia;
+    window.history.replaceState(null, "", "/?v=b");
+    await import("../src/landing/main.ts");
+    await Promise.resolve();
+    expect(document.querySelector("#privacy-clause")!.textContent).toBe(PRIVACY_CLAUSE);
+    expect(document.querySelector(".preview-variant")).toBeNull();
+    window.history.replaceState(null, "", "/");
   });
 });
