@@ -4,13 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderLandingTemplate } from "../src/landing/brand.ts";
-import {
-  longestShareTarget,
-  ROTATE_EVERY_MS,
-  ROTATE_STOP_AFTER_MS,
-  SHARE_TARGETS,
-  startShareTargetRotation,
-} from "../src/landing/share-targets.ts";
+import { HOLD_MS, longestShareTarget, SHARE_TARGETS, startShareTargetRotation, TYPE_MS } from "../src/landing/share-targets.ts";
 
 const rendered = renderLandingTemplate(readFileSync(join(process.cwd(), "index.html"), "utf8"));
 
@@ -45,38 +39,18 @@ describe("share target phrases", () => {
     for (const planned of PLANNED_NOT_LIVE) expect(SHARE_TARGETS).not.toContain(planned);
   });
 
-  it("renders the first phrase statically in the hero sentence", () => {
+  it("renders the first phrase statically at the end of the headline", () => {
     mountHero(false);
     expect(shown()).toBe(SHARE_TARGETS[0]);
-    expect(document.querySelector(".hero-share-line")!.textContent).toContain(SHARE_TARGETS[0]!);
+    expect(document.querySelector("h1")!.textContent!.replace(/\s+/g, " ").trim()).toBe(
+      `Share what your agent makes with ${SHARE_TARGETS[0]}.`,
+    );
   });
 
   it("sets data-longest on the share target from the longest phrase", () => {
     const target = new DOMParser().parseFromString(rendered, "text/html").querySelector<HTMLElement>(".share-target");
     expect(target?.dataset.longest).toBe(longestShareTarget());
     expect(longestShareTarget().length).toBe(Math.max(...SHARE_TARGETS.map((phrase) => phrase.length)));
-  });
-
-  it("renders no sizer element, so the sentence has no extra copyable node", () => {
-    mountHero(false);
-    expect(document.querySelector(".share-target-sizer")).toBeNull();
-    expect(document.querySelector(".hero-share-line")!.textContent!.replace(/\s+/g, " ").trim()).toContain(
-      `Share with ${SHARE_TARGETS[0]} and only them.`,
-    );
-  });
-
-  it("hides the reserved width under reduced motion in CSS", () => {
-    const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.share-target::after\s*\{\s*display:\s*none/);
-  });
-
-  it("reserves width with zero height and top alignment, so the hero line keeps one height", () => {
-    const css = readFileSync(join(process.cwd(), "src/landing/landing.css"), "utf8");
-    const reserve = css.match(/\.share-target::after\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(reserve).toMatch(/height:\s*0;/);
-    expect(reserve).toMatch(/overflow:\s*hidden;/);
-    const target = css.match(/\.share-target\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(target).toMatch(/vertical-align:\s*top;/);
   });
 });
 
@@ -90,68 +64,64 @@ describe("share target rotation", () => {
     document.body.innerHTML = "";
   });
 
-  it("cycles through every phrase, then stops and settles on the first", () => {
+  it("types every phrase in turn, then settles on the first and removes the cursor", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
+    expect(shown()).toBe("");
+    expect(wrapper.querySelector(".share-target-cursor")?.getAttribute("aria-hidden")).toBe("true");
 
-    const seen = new Set<string | null>([shown()]);
-    for (let step = 0; step < ROTATE_STOP_AFTER_MS / ROTATE_EVERY_MS; step++) {
-      vi.advanceTimersByTime(ROTATE_EVERY_MS);
-      seen.add(shown());
+    const completed: (string | null)[] = [];
+    let previous = shown();
+    for (let tick = 0; tick < 2000 && vi.getTimerCount() > 0; tick++) {
+      vi.advanceTimersByTime(50);
+      const now = shown();
+      if (now !== previous && SHARE_TARGETS.includes(now ?? "")) completed.push(now);
+      previous = now;
     }
 
-    expect([...seen].sort()).toEqual([...SHARE_TARGETS].sort());
+    expect(completed).toEqual([...SHARE_TARGETS, SHARE_TARGETS[0]]);
     expect(shown()).toBe(SHARE_TARGETS[0]);
+    expect(wrapper.querySelector(".share-target-cursor")).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("never starts a timer when reduced motion is requested", () => {
+  it("never starts a timer and makes no DOM changes when reduced motion is requested", () => {
     const wrapper = mountHero(true);
+    const before = document.querySelector("h1")!.innerHTML;
     startShareTargetRotation(wrapper);
 
-    vi.advanceTimersByTime(ROTATE_STOP_AFTER_MS * 2);
-    expect(shown()).toBe(SHARE_TARGETS[0]);
     expect(vi.getTimerCount()).toBe(0);
+    expect(document.querySelector("h1")!.innerHTML).toBe(before);
   });
 
-  it("makes no DOM changes under reduced motion", () => {
-    const wrapper = mountHero(true);
-    const before = document.querySelector(".hero-share-line")!.innerHTML;
-    startShareTargetRotation(wrapper);
-    expect(document.querySelector(".hero-share-line")!.innerHTML).toBe(before);
-  });
-
-  it("marks the target settled on the first phrase", () => {
+  it("holds the typed text while hovered and resumes on leave", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
-    vi.advanceTimersByTime(ROTATE_STOP_AFTER_MS);
-    expect(wrapper.classList.contains("is-settled")).toBe(true);
-  });
-
-  it("holds the current phrase while hovered and resumes on leave", () => {
-    const wrapper = mountHero(false);
-    startShareTargetRotation(wrapper);
+    vi.advanceTimersByTime(TYPE_MS * 3);
+    const held = shown();
 
     wrapper.dispatchEvent(new Event("pointerenter"));
-    vi.advanceTimersByTime(ROTATE_EVERY_MS);
-    expect(shown()).toBe(SHARE_TARGETS[0]);
+    vi.advanceTimersByTime(HOLD_MS * 4);
+    expect(shown()).toBe(held);
 
     wrapper.dispatchEvent(new Event("pointerleave"));
-    vi.advanceTimersByTime(ROTATE_EVERY_MS);
-    expect(shown()).toBe(SHARE_TARGETS[1]);
+    vi.advanceTimersByTime(TYPE_MS * 2);
+    expect(shown()).not.toBe(held);
   });
 
-  it("holds the current phrase while focus is inside and resumes on focus-out", () => {
+  it("holds the typed text while focus is inside and resumes on focus-out", () => {
     const wrapper = mountHero(false);
     startShareTargetRotation(wrapper);
+    vi.advanceTimersByTime(TYPE_MS * 3);
+    const held = shown();
 
     wrapper.dispatchEvent(new Event("focusin"));
-    vi.advanceTimersByTime(ROTATE_EVERY_MS);
-    expect(shown()).toBe(SHARE_TARGETS[0]);
+    vi.advanceTimersByTime(HOLD_MS * 4);
+    expect(shown()).toBe(held);
 
     wrapper.dispatchEvent(new Event("focusout"));
-    vi.advanceTimersByTime(ROTATE_EVERY_MS);
-    expect(shown()).toBe(SHARE_TARGETS[1]);
+    vi.advanceTimersByTime(TYPE_MS * 2);
+    expect(shown()).not.toBe(held);
   });
 
   it("clears its timer when the returned stop function is called", () => {

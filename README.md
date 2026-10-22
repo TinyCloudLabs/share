@@ -21,7 +21,7 @@ The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no s
 
 ## Landing page: recipient kinds
 
-The rotating line on the landing page lists only recipient kinds that work end to end today (`src/landing/share-targets.ts`, `SHARE_TARGETS`). When a new recipient kind or claim type is live in Share, add its phrase to that array in the same release.
+The phrase typed at the end of the landing headline ("Share what your agent makes with …") lists only recipient kinds that work end to end today (`src/landing/share-targets.ts`, `SHARE_TARGETS`). When a new recipient kind or claim type is live in Share, add its phrase to that array in the same release.
 
 Planned, not yet live. Do not add these to `SHARE_TARGETS` until the kind works end to end in Share:
 
