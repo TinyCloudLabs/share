@@ -36,6 +36,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { installBrowserInstrumentation } from "./browser-instrumentation.mjs";
+import { consoleEntry, postMessageWarning } from "./console-filter.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { runBoundedStep, startNativeStack } from "./native-stack.mjs";
 import * as sdkCore from "@tinycloud/sdk-core";
@@ -94,7 +95,7 @@ async function installRouting(page, stack, candidatePort) {
     window.__violations = [];
     document.addEventListener("securitypolicyviolation", (event) => window.__violations.push(`${event.violatedDirective} ${event.blockedURI}`));
   });
-  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push({ phase, type: message.type(), text: message.text().replaceAll(/https:\/\/[^\s#]+(?:#[^\s]*)?/g, "<url>").slice(0, 240) }); });
+  page.on("console", (message) => { if (message.type() === "error" || message.type() === "warn") consoleLog.push(consoleEntry(phase, message.type(), message.text(), message.location())); });
   page.on("pageerror", (error) => consoleLog.push({ phase, type: "pageerror", text: String(error?.message ?? "page error").slice(0, 240) }));
   await page.setRequestInterception(true);
   page.on("request", (request) => { void (async () => {
@@ -173,7 +174,7 @@ async function openFromCard(page, appId, clicks = 1) {
   const index = catalog.apps.findIndex((entry) => entry.app_id === appId);
   assert.equal(await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a").getAttribute("href"), index), `/apps/run#${appId}`, "the card's Open links to the runner");
   await page.evaluate((position, times) => { const link = document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions a"); for (let i = 0; i < times; i++) link.click(); }, index, clicks);
-  await page.waitForSelector(".run-screen", { timeout: 60_000 });
+  await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
 }
 
 const statusText = (page) => page.$eval(".run-status-region", (node) => node.textContent).catch(() => "");
@@ -212,7 +213,7 @@ async function captureState(page, name) {
     const found = result.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).join(" | ")}`);
     axeFindings.push({ state: name, width, scheme, violations: found });
     assert.deepEqual(found, [], `${name} ${width}px ${scheme}: axe AA`);
-    assert((await page.evaluate(() => { const screen = document.querySelector(".run-screen"); return screen.scrollWidth - screen.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the screen scrolls sideways`);
+    assert((await page.evaluate(() => { const screen = document.querySelector(".run-screen, .run-working") ?? document.querySelector(".run-stage"); return screen.scrollWidth - screen.clientWidth; })) <= 0, `${name} ${width}px ${scheme}: the screen scrolls sideways`);
     // The status sits under the start screen's text: show the end of the screen too.
     await page.evaluate(() => document.querySelector(".run-status-region")?.scrollIntoView({ block: "center" }));
     if (shotDir !== undefined) { await mkdir(shotDir, { recursive: true }); await page.screenshot({ path: join(shotDir, `install-${name}-${width}-${scheme}.png`) }); }
@@ -413,7 +414,7 @@ try {
     assert(!midway.keys.includes(`${RECIPES}/app/install.json`), "install.json was saved despite the failed write");
     controls.failRecord = false;
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector(".run-screen", { timeout: 60_000 });
+    await page.waitForSelector(".run-screen, .run-working", { timeout: 60_000 });
     const resumed = await finished(page);
     assert.match(resumed.status, /is running\./, "the reopen runs the app");
     await captureState(page, "running-resumed");
@@ -475,11 +476,20 @@ try {
   // ---- Browser diagnostics: nothing but the fresh-account bootstrap answers and the create-only 412s; no CSP violations (checked per page above).
   const pageErrors = consoleLog.filter((entry) => entry.type === "pageerror");
   assert.deepEqual(pageErrors, [], "a page error was raised");
-  const unexpected = consoleLog.filter((entry) => !(
+  // The browser's postMessage warning is accepted only from axe's injected probe (its evaluate source is `pptr:`) and only with the exact text. Any other source fails.
+  const allowedConsole = (entry) => (
     (entry.type === "error" && /^Failed to load resource: the server responded with a status of (?:400|404|412) /.test(entry.text))
     || (entry.type === "error" && /^Failed to load resource: net::ERR_FAILED$/.test(entry.text))
     || (entry.type === "warn" && /^TinyCloud account (?:registry sync failed after retries|index initialization failed; continuing registry sync)/.test(entry.text))
-  ));
+    || (entry.type === "warn" && /^Error with Permissions-Policy header: Unrecognized feature: 'web-share'\.$/.test(entry.text))
+    || (entry.type === "warn" && entry.at?.startsWith("pptr:") && postMessageWarning.test(entry.text))
+  );
+  // Self-test: the axe probe's warning is accepted; the same warning from the page, and an own-page CSP message, are not. The texts go through the same redaction as the live capture.
+  const postMessageEntry = consoleEntry("install", "warn", "Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('https://share.tinycloud.xyz') does not match the recipient window's origin ('null').", { url: "pptr:evaluate;captureState", lineNumber: 11 });
+  assert(allowedConsole(postMessageEntry), "self-test: the axe probe's postMessage warning is accepted");
+  assert(!allowedConsole({ ...postMessageEntry, at: "/apps/:12" }), "self-test: a postMessage warning outside the axe probe is not accepted");
+  assert(!allowedConsole(consoleEntry("install", "error", "Connecting to 'http://127.0.0.1:1/x' violates the following Content Security Policy directive: \"connect-src 'self'\". The action has been blocked.", { url: "/apps/", lineNumber: 12 })), "self-test: an own-page CSP message is not accepted");
+  const unexpected = consoleLog.filter((entry) => !allowedConsole(entry));
   assert.deepEqual(unexpected, [], "the browser logged something unexpected");
   const allowedHosts = new Set([stack.canonical.share, stack.canonical.node, stack.canonical.registry, "https://openkey.so"]);
   assert(trace.every((entry) => entry.protocol === "data:" || allowedHosts.has(entry.origin) || entry.origin === "null" || entry.origin.startsWith("data") || entry.origin.startsWith("blob")), "a request left the allowed origins");

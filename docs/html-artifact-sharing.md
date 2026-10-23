@@ -258,8 +258,8 @@ navigation attempts, dns-prefetch and WebRTC open connections. The author can
 learn the viewer's IP, the time of opening, and that the page was opened. The
 viewer does not claim more than that.
 
-- **Markdown** renders in a scriptless `sandbox=""` frame whose CSP is
-  `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'`. Remote
+- **Markdown** renders in a scriptless frame (`sandbox="allow-popups allow-popups-to-escape-sandbox"`, no `allow-scripts`, opaque origin) whose CSP is
+  `default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'`. Links: http, https and mailto open in a new tab with `rel="noopener noreferrer"`; every other link, including `#anchor` and relative links, renders as inert text. Remote
   and relative images never load: the renderer replaces them with the text
   “Image not loaded: external images are blocked to protect your privacy” and
   the URL as plain text (not a link and not an image). Raw HTML, remote CSS, and fonts never reach the document, and

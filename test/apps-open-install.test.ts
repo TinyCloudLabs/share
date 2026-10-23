@@ -78,7 +78,7 @@ describe("installOrder", () => {
 describe("openApp: refusals before any approval", () => {
   it("refuses a catalog entry with no code, before the read approval", async () => {
     const h = harness(new Map(), { catalog: [notes] });
-    await expect(openApp(NOTES, h.ports, noop)).rejects.toMatchObject({ reason: "unavailable", detail: expect.stringContaining("no code") });
+    await expect(openApp(NOTES, h.ports, noop)).rejects.toMatchObject({ reason: "no-code", detail: "This app isn't available right now." });
     expect(h.reads.count).toBe(0);
     expect(h.counts.prepares).toBe(0);
   });

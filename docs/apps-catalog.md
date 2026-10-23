@@ -46,7 +46,7 @@ An entry can be switched off without touching its bundle:
 
 - `disabled` is `true` or absent; `disabledReason` (1 to 280 characters) is required with it and allowed only with it. `verifyCatalog` checks this.
 - The flag lives in the entry, not in the bundle, so no digest changes when it flips and the integrity checks stay valid. `vendor-app.mjs` keeps it when an app is updated.
-- The page shows the card with "Temporarily unavailable" and the reason (as text). Open still links to the runner, which refuses the entry before any sign-in and shows the same reason; Details shows it too. The card has no Install action.
+- The page shows the card with the reason (as text). A switched-off entry is headed "Temporarily unavailable"; an entry without `app.jsx` is headed "Unavailable". Open is a disabled button on the card and in the details sheet, with no runner link; Details shows the reason too. The card has no Install action. A deep link to `/apps/run#<app_id>` still reaches the runner, which refuses the entry before any sign-in and shows the same reason.
 - It takes effect when the site is deployed **and the page is reloaded**: the flag is compiled into the page's JavaScript (the headers are `no-store`, so a reload fetches the new build), and a tab that is already open keeps the catalog it loaded. Within one page load the card, the details sheet and the runner all refuse. The page cuts a `disabledReason` over `MAX_DISABLED_REASON_CHARS` (280) with a "…"; the catalog check refuses it.
 - The runner uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops opening.
 
@@ -101,7 +101,7 @@ screenshots (`APPS_SCREENSHOT_DIR`).
 
 ## Opening an app saves it
 
-Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)); Details is the secondary action and opens the details sheet. The runner page starts the open as it loads: the catalog bundle is checked first, then the one OpenKey approval is requested. Nothing is written before that approval. The SDK loads before the bundle check; OpenKey loads only after it passes.
+Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)) when the entry can be opened; for an entry that is switched off, or has no `app.jsx`, it is a disabled button. Details is the secondary action and opens the details sheet, whose Open follows the same rule. The runner page starts the open as it loads: the catalog bundle is checked first, then the one OpenKey approval is requested. Nothing is written before that approval. The SDK loads before the bundle check; OpenKey loads only after it passes.
 
 The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`). It says that the app runs with its own sign-in, that it can only read and change what its manifest asks for (the list is shown below), who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet.
 

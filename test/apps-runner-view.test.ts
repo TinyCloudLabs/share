@@ -369,7 +369,7 @@ describe("opening an app that cannot run", () => {
 
 describe("copy and the sign-in manifests", () => {
   it("every failure has a screen with a title and plain lines", () => {
-    for (const reason of ["unknown-app", "damaged", "not-listed", "catalog-unavailable", "widened", "unsupported", "cancelled", "timeout", "busy", "wrong-account", "failed"] as const) {
+    for (const reason of ["unknown-app", "no-code", "damaged", "not-listed", "catalog-unavailable", "widened", "unsupported", "cancelled", "timeout", "busy", "wrong-account", "failed"] as const) {
       const screen = failureScreen(reason, "X");
       expect(screen.title.length).toBeGreaterThan(5);
       expect(screen.lines.join(" ")).not.toMatch(/undefined|\[object/);
@@ -450,6 +450,16 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This app is temporarily unavailable"));
     expect(root.querySelector(".run-screen")?.textContent).toContain("A problem was found in this app.");
     expect(button("Continue")).toBeUndefined();
+    expect(fake.reads).toBe(0);
+    expect(fake.runtimes).toBe(0);
+  });
+
+  it("an entry without its code gets an Unavailable screen and calls nothing", async () => {
+    const noCode = { ...entry, bundle: { ...entry.bundle, files: entry.bundle.files.filter((file) => file.path !== "app.jsx") } };
+    const fake = fakePorts({ catalog: [noCode] });
+    mountRunner(root, { appId: HEALTH, ports: fake.ports });
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("Unavailable"));
+    expect(root.querySelector(".run-screen")?.textContent).toContain("This app isn't available right now.");
     expect(fake.reads).toBe(0);
     expect(fake.runtimes).toBe(0);
   });
