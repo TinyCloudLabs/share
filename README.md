@@ -21,7 +21,7 @@ The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no s
 
 ## Landing page: recipients
 
-The landing headline ("Share what your agent makes with …") types the phrases in `SHARE_TARGETS` (`src/landing/share-targets.ts`) one after another, on one line. If you add a phrase longer than "an email address", raise the fit divisor in `.share-target` (`src/landing/landing.css`).
+The landing headline is three lines with no period: "Share what your" / "agent makes with" / a recipient typed from `SHARE_TARGETS` (`src/landing/share-targets.ts`), one after another. The headline scales so its longest line fits the column. If you add a phrase longer than "an email address", raise the divisor in `#hero-title` (`src/landing/landing.css`).
 
 The list may include recipient kinds that don't work end to end yet (family, club, community and so on). Sam decided this on 2026-10-22, so don't bring back the old rule that only live kinds may appear.
 
