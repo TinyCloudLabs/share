@@ -572,9 +572,13 @@ h1 {
 }
 
 /* Same centered column as the hero; padding (not width) keeps the section's full-width rule. */
+.agent-cta,
+.copy-section {
+  padding-inline: max(0px, calc((100% - var(--content-column)) / 2));
+}
+
 .agent-cta {
   padding-top: clamp(2.25rem, 4vw, 3.5rem);
-  padding-inline: max(0px, calc((100% - var(--content-column)) / 2));
 }
 
 .agent-cta h2 {
@@ -807,6 +811,22 @@ h1 {
   list-style: none;
   border-top: 1px dotted var(--line);
   border-bottom: 0;
+}
+
+/* In the landing's narrow column each step stacks: number and heading, then the text under the heading. */
+.copy-section .how-step {
+  min-height: 0;
+  padding: 1.75rem 0;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 0.75rem 1rem;
+}
+
+.copy-section .how-step h3 {
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+}
+
+.copy-section .how-step p {
+  grid-column: 2;
 }
 
 .signin-line {
