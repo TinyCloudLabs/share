@@ -54,6 +54,7 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
   switch (reason) {
     case "unknown-app": return { title: "We don't know this app", lines: ["This address doesn't match an app in the catalog."], toApps: true };
     case "unavailable": return { title: "This app is temporarily unavailable", lines: [detail ?? "It has been switched off for now.", "Nothing was started."], toApps: true };
+    case "no-code": return { title: "Unavailable", lines: [detail ?? "This app isn't available right now.", "Nothing was started."], toApps: true };
     case "damaged": return { title: "Your saved copy of this app can't be used", lines: ["Its files in your TinyCloud are incomplete, or were edited into something this page can't read. Nothing was started."], toApps: true, detail };
     case "code-mismatch": return {
       title: "This app's code doesn't match the pinned version",
@@ -339,10 +340,10 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     setStatus("");
     showScreen(failureScreen("unknown-app", appId ?? ""));
   } else if (!availabilityOf(entry).available) {
-    // The kill switch: a disabled entry opens nothing, and says why.
+    // A switched-off entry and one without code open nothing, and say why.
     const availability = availabilityOf(entry);
     setStatus("");
-    showScreen(failureScreen("unavailable", entry.name, availability.available ? undefined : availability.reason, appId));
+    showScreen(failureScreen(availability.available || availability.temporary ? "unavailable" : "no-code", entry.name, availability.available ? undefined : availability.reason, appId));
   } else {
     const start0 = el("section", "run-screen tc-panel", [], { "aria-busy": "true" });
     stage.replaceChildren(start0);

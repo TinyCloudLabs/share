@@ -83,6 +83,7 @@ export interface RunPorts {
 export type RunFailure =
   | "unknown-app"
   | "unavailable"
+  | "no-code"
   | "damaged"
   | "code-mismatch"
   | "not-listed"
@@ -200,11 +201,9 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   const entry = catalogEntryFor(appId, entries);
   if (entry === undefined) throw new RunError("unknown-app");
   try { assertAvailable(entry); } catch (error) {
-    if (error instanceof EntryDisabledError) throw new RunError("unavailable", { detail: error.reason });
+    if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
     throw error;
   }
-  // The catalog lists the app, but without its code the page cannot run it: refused before any approval.
-  if (!entry.bundle.files.some((file) => file.path === "app.jsx")) throw new RunError("unavailable", { detail: "The catalog lists no code for this app, so it can't be opened." });
   report({ phase: "checking" });
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
   const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
