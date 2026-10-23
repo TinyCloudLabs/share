@@ -6,6 +6,7 @@ import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { buildFullLink, parseLink } from "../src/short-links/codec.js";
 import { verifyStrict } from "../src/short-links/ed25519.js";
 import { LinkReadError, resolveLink } from "../src/short-links/resolve.js";
+import { LINK_BODY_MAX_BYTES } from "../src/short-links/limits.js";
 import { checkRecord } from "../src/short-links/record.js";
 import { chooseLink } from "../src/short-links/publish.js";
 import { createMockLinksApi } from "./fixtures/links-mock-api.js";
@@ -15,7 +16,7 @@ const FIXTURE = "test/fixtures/links-api-vectors.json";
  * SHA-256 of the shared vector file (contract Appendix B). The copy is byte-identical to the
  * canonical one in tinycloud-dev `docs/specs/`; a change there changes this pin.
  */
-const VECTORS_SHA256 = "4b7c95e9bd0e5a489ab17c0b28bd334f06f2c17dd8ac982eedee04df2fab6bdd";
+const VECTORS_SHA256 = "72db4cd91ba0ae9c530d541ad0f7b1a05c76b8de942b0fe247f1356ff5899d25";
 const bytes = readFileSync(FIXTURE);
 const vectors = JSON.parse(bytes.toString("utf8"));
 const NOW = Date.parse(vectors.meta.now);
@@ -26,6 +27,11 @@ const hex = (text: string): Uint8Array => Uint8Array.from(Buffer.from(text, "hex
 describe("shared vector file", () => {
   it("is the pinned copy", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(VECTORS_SHA256);
+  });
+
+  it("states the one size limit this build uses", () => {
+    expect(vectors.constants.maxLinkBodyBytes).toBe(LINK_BODY_MAX_BYTES);
+    expect(vectors.constants.requestBodyCapBytes).toBe(90_454);
   });
 });
 
@@ -64,12 +70,26 @@ describe("links vectors (grammar)", () => {
 });
 
 describe("records vectors (reader checks)", () => {
+  /** A vector with no content key states the checks that come before the body is opened. */
+  const synthesized = (vector: { bodySynthesized: { length: number; fillByte: number; firstByte: number } }): Uint8Array => {
+    const body = new Uint8Array(vector.bodySynthesized.length).fill(vector.bodySynthesized.fillByte);
+    body[0] = vector.bodySynthesized.firstByte;
+    return body;
+  };
   for (const vector of vectors.records) {
     it(vector.name, async () => {
-      const record = { header: vector.record.header, ...(vector.record.signature === undefined ? {} : { signature: vector.record.signature }), body: fromBase64Url(vector.record.body) };
-      const result = await checkRecord(record, { now: Date.parse(vector.now), key: fromBase64Url(vector.contentKeyB64u), maxBodyBytes: Number.POSITIVE_INFINITY });
-      if (vector.expect.status === 200) expect("refusal" in result).toBe(false);
-      else expect("refusal" in result ? result.refusal : undefined).toBe(vector.expect.reason);
+      const unopened = vector.contentKeyB64u === null;
+      const body = vector.bodySynthesized === undefined ? fromBase64Url(vector.record.body) : synthesized(vector);
+      const record = { header: vector.record.header, ...(vector.record.signature === undefined ? {} : { signature: vector.record.signature }), body };
+      const key = unopened ? new Uint8Array(32) : fromBase64Url(vector.contentKeyB64u);
+      const result = await checkRecord(record, { now: Date.parse(vector.now), key, maxBodyBytes: LINK_BODY_MAX_BYTES });
+      const refusal = "refusal" in result ? result.refusal : undefined;
+      if (vector.expect.status === 200) {
+        // Without a key the reader stops at opening: every check before it passed.
+        expect(refusal).toBe(unopened ? "body_open_failed" : undefined);
+      } else {
+        expect(refusal).toBe(vector.expect.reason);
+      }
     });
   }
 });

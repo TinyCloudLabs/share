@@ -88,8 +88,7 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
     record = embeddedRecord(link.record);
   }
   const key = fromBase64Url(link.key);
-  // A full link is not stored; the fragment bound in the link grammar limits it instead of the stored-link size.
-  const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key, maxBodyBytes: link.form === "short" ? LINK_BODY_MAX_BYTES : Number.POSITIVE_INFINITY });
+  const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key, maxBodyBytes: LINK_BODY_MAX_BYTES });
   if ("refusal" in checked) throw notFound(checked.refusal);
   const { header, plaintext } = checked;
   if (link.form === "short") {

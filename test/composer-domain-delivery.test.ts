@@ -22,8 +22,9 @@ const state = vi.hoisted(() => ({
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tinycloud/share-sdk")>()),
   prepareAddressedShare: vi.fn((await importOriginal<typeof import("@tinycloud/share-sdk")>()).prepareAddressedShare),
-  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly onDeliveryMaterial: (material: unknown) => void }) => {
-    state.published.push(options);
+  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly contentSource: unknown; readonly onDeliveryMaterial: (material: unknown) => void }) => {
+    // The size check runs the builder first, with the longest stand-in key version; only the real publish is recorded.
+    if ((options.contentSource as { keyVersion?: number }).keyVersion !== 4_294_967_295) state.published.push(options);
     const { sealedEnvelope, envelopeKey, shareCid } = await (await import("./fixtures/link-material.js")).sealedMaterial();
     options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope, envelopeKey, shareCid });
     return { url: "unused", link: { cid: shareCid }, metadata: { expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } };

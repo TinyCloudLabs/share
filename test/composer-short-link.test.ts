@@ -5,7 +5,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-s
 import { mountShareComposer } from "../src/share/composer.js";
 import { parseLink } from "../src/short-links/codec.js";
 import { resolveLink } from "../src/short-links/resolve.js";
-import { FULL_LINK_NO_EMAIL, LINK_LONG_LIFE_NOTICE, SHORT_LINK_UNAVAILABLE_NOTICE } from "../src/short-links/strings.js";
+import { FULL_LINK_NO_EMAIL, LINK_LONG_LIFE_NOTICE, SHARE_TOO_LARGE_FOR_LINK, SHORT_LINK_UNAVAILABLE_NOTICE } from "../src/short-links/strings.js";
 import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer } from "./fixtures/link-material.js";
 
 // The composer runs for real, with real signing and the mock links API. Only the SDK publish call,
@@ -16,15 +16,19 @@ const state = vi.hoisted(() => ({
   published: [] as Record<string, unknown>[],
   expiresAt: "",
   material: undefined as undefined | { sealedEnvelope: string; envelopeKey: string; shareCid: string },
+  /** Extra plaintext bytes in the sealed envelope, to make it larger. */
+  pad: 0,
+  registrations: 0,
 }));
 
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof SdkModule>()),
-  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly onDeliveryMaterial: (material: unknown) => void }) => {
-    state.published.push(options);
+  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly contentSource: unknown; readonly onDeliveryMaterial: (material: unknown) => void }) => {
+    // The size check runs the builder first, with the longest stand-in key version; only the real publish is recorded.
+    if ((options.contentSource as { keyVersion?: number }).keyVersion !== 4_294_967_295) state.published.push(options);
     // vi.mock factories run before static imports exist, so this module is loaded here.
     const { sealedMaterial } = await import("./fixtures/link-material.js");
-    state.material = await sealedMaterial();
+    state.material = await sealedMaterial({ version: 3, signature: { signerDid: "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S", algorithm: "Ed25519", value: "TEST ONLY" }, pad: "x".repeat(state.pad) });
     options.onDeliveryMaterial({ envelope: { version: 3 }, ...state.material });
     return { url: "unused", link: { cid: state.material.shareCid }, metadata: { expiresAt: state.expiresAt } };
   }),
@@ -56,16 +60,18 @@ function mount(fetchFn: typeof fetch) {
   const copyText = vi.fn(async (_value: string) => undefined);
   const authorize = vi.fn(async (input: { readonly shareUrl: string }) => ({ request: { returnLink: input.shareUrl } }));
   const saved: { link?: string }[] = [];
+  const encryptToNetwork = vi.fn(async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AAAA", nonce: "AAAA" } }));
+  const registerPolicy = vi.fn();
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
-    encryption: { encryptToNetwork: async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AAAA", nonce: "AAAA" } }) },
+    encryption: { encryptToNetwork },
     kvForSpace: () => ({ put }),
     signSessionBytes: signWithIssuer,
     createUnifiedOwnerRoot: vi.fn(),
-    registerPolicy: vi.fn(),
+    registerPolicy,
     authorizeShareDeliveryV3: authorize,
   } as unknown as ShareTinyCloud;
   const root = document.createElement("div");
@@ -74,7 +80,7 @@ function mount(fetchFn: typeof fetch) {
     openKeyAddress: "0x1234567890abcdef", origin: SHARE_ORIGIN, onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud, fetchFn, copyText,
     persistShare: async ({ share }) => { saved.push(share.record as { link?: string }); },
   });
-  return { root, puts, copyText, authorize, saved };
+  return { root, puts, copyText, authorize, saved, encryptToNetwork, registerPolicy, put };
 }
 
 async function submit(root: HTMLElement): Promise<void> {
@@ -97,6 +103,7 @@ function clickCopy(root: HTMLElement): void {
 
 beforeEach(() => {
   state.published.length = 0;
+  state.pad = 0;
   state.expiresAt = new Date(Date.now() + 7 * DAY_MS).toISOString();
 });
 
@@ -254,5 +261,36 @@ describe("composer opened by Send the link again", () => {
     mountShareComposer(root, { openKeyAddress: "0x1234567890abcdef", origin: SHARE_ORIGIN, onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud: {} as unknown as ShareTinyCloud });
     expect(root.querySelector(".send-again-hint")).toBeNull();
     expect(root.querySelector<HTMLInputElement>("input[name=recipient]:checked")?.value).toBe("bearer");
+  });
+});
+
+describe("a share too large for any link", () => {
+  it("is refused before anything is uploaded or registered, with no request to any service, and shows the message", async () => {
+    state.pad = 70_000;
+    const { fetchFn, calls } = spy(mockLinks().fetchFn);
+    const { root, put, puts, encryptToNetwork, registerPolicy, saved, authorize } = mount(fetchFn);
+
+    root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!.click();
+    const value = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
+    value.value = "reader@example.com";
+    value.dispatchEvent(new Event("input", { bubbles: true }));
+    const file = root.querySelector<HTMLInputElement>("input[type=file]")!;
+    Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
+    file.dispatchEvent(new Event("change", { bubbles: true }));
+    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
+    expect(root.querySelector(".composer-status")?.textContent).toContain(SHARE_TOO_LARGE_FOR_LINK);
+    expect(SHARE_TOO_LARGE_FOR_LINK).toBe("This share is too large to send as a link, so nothing was shared. Use a shorter path or fewer folders.");
+    // Nothing written: no encryption request, no upload, no registration, no history, no link, no delivery.
+    expect(encryptToNetwork).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+    expect(puts).toEqual([]);
+    expect(registerPolicy).not.toHaveBeenCalled();
+    expect(saved).toEqual([]);
+    expect(authorize).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    // No link of any form is offered.
+    expect(root.querySelector(".result-title")).toBeNull();
   });
 });

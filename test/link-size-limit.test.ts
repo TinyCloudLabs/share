@@ -4,7 +4,7 @@ import { generateKey, seal, toBase64Url } from "@tinycloud/share-envelope";
 import { LINK_BODY_MAX_BYTES } from "../src/short-links/limits.js";
 import { LinkReadError, resolveLink } from "../src/short-links/resolve.js";
 import { publishLink } from "../src/short-links/publish.js";
-import { SHORT_LINK_UNAVAILABLE_NOTICE } from "../src/short-links/strings.js";
+import { ShareTooLargeForLink } from "../src/short-links/errors.js";
 import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer, type SealedMaterial } from "./fixtures/link-material.js";
 
 /** A sealed share body of exactly `bytes` bytes (the seal adds 29 bytes to its plaintext). */
@@ -34,15 +34,21 @@ describe("the one stored-link size limit", () => {
     expect(links.api.state.records.size).toBe(1);
   });
 
-  it("gives a body one byte over the limit the full link with the notice, without calling the API", async () => {
+  it("creates no link of any form for a body one byte over the limit, and never calls the API", async () => {
     const fetchFn = vi.fn() as unknown as typeof fetch;
-    const result = await publish(await sealedOfSize(LINK_BODY_MAX_BYTES + 1), fetchFn);
-    expect(result.form).toBe("full");
-    expect(result.notice).toBe(SHORT_LINK_UNAVAILABLE_NOTICE);
+    await expect(publish(await sealedOfSize(LINK_BODY_MAX_BYTES + 1), fetchFn)).rejects.toBeInstanceOf(ShareTooLargeForLink);
     expect(fetchFn).not.toHaveBeenCalled();
-    // The full link opens: it is not stored, so the stored-link limit does not apply to it.
-    const opened = await resolveLink(result.url, { trustedOrigins: [SHARE_ORIGIN], apiOrigin: API_ORIGIN, fetchFn });
-    expect(opened.sealedBody.byteLength).toBe(LINK_BODY_MAX_BYTES + 1);
+  });
+
+  it("opens a full link whose body is exactly the limit, and refuses one a byte over as not found", async () => {
+    const links = mockLinks();
+    const fetchFn = vi.fn() as unknown as typeof fetch;
+    const atLimit = await publishLink({
+      material: await sealedOfSize(LINK_BODY_MAX_BYTES), expiresAt: new Date(Date.now() + 40 * 86_400_000).toISOString(), signer: { issuerDid: ISSUER_DID, sign: signWithIssuer },
+      shareOrigin: SHARE_ORIGIN, apiOrigin: API_ORIGIN, fetchFn: links.fetchFn,
+    });
+    expect(atLimit.form).toBe("full");
+    await expect(resolveLink(atLimit.url, { trustedOrigins: [SHARE_ORIGIN], apiOrigin: API_ORIGIN, fetchFn })).resolves.toMatchObject({ type: "share" });
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
@@ -53,9 +59,6 @@ describe("the one stored-link size limit", () => {
     await expect(resolveLink(atLimit.url, options)).resolves.toMatchObject({ type: "share" });
 
     // A service that stores more than the viewer reads: the viewer's streaming bound refuses it.
-    const over = await sealedOfSize(LINK_BODY_MAX_BYTES + 1);
-    const created = await publish(over, links.fetchFn);
-    expect(created.form).toBe("full");
     const [id, record] = [...links.api.state.records.entries()][0]!;
     const { header, signature } = JSON.parse(atob((await links.api.handle({ method: "GET", path: `/v1/links/${id}`, headers: {} })).headers.get("x-link-record")!.replace(/-/g, "+").replace(/_/g, "/")));
     links.api.state.records.set("aaaaaaaaaaaaaaaaaaaaaaaaaa", { ...record, body: new Uint8Array(LINK_BODY_MAX_BYTES + 1), headerJcs: JSON.stringify(header), signature });

@@ -1,6 +1,7 @@
 import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { createLink, deleteLink, type LinkApiOptions } from "./client.js";
 import { buildFullLink, buildShortLink, shortLinkId } from "./codec.js";
+import { ShareTooLargeForLink } from "./errors.js";
 import { LINK_BODY_MAX_BYTES, MAX_FULL_LINK_FRAGMENT } from "./limits.js";
 import { buildDeleteRequest, buildHeader, DELETE_DOMAIN, HEADER_DOMAIN, LINK_TYPES, MIN_LIFE_SECONDS, signObject } from "./record.js";
 import { LINK_LONG_LIFE_NOTICE, SHORT_LINK_UNAVAILABLE_NOTICE } from "./strings.js";
@@ -61,18 +62,18 @@ export async function publishLink(input: {
   const expiresMs = Date.parse(input.expiresAt);
   if (!Number.isFinite(expiresMs)) throw new TypeError("share expiry is not a date");
   const body = fromBase64Url(input.material.sealedEnvelope);
+  // One limit for every link, stored or full: a share over it has no link.
+  if (body.byteLength > LINK_BODY_MAX_BYTES) throw new ShareTooLargeForLink();
   const header = await buildHeader({ type: "share", issuer: input.signer.issuerDid, audience: input.apiOrigin, issuedAt: new Date(now), expiresAt: new Date(expiresMs), body });
   if (header.bodyCid !== input.material.shareCid) throw new Error("sealed share does not match its content id");
   const signature = await signObject(HEADER_DOMAIN, header, input.signer.sign);
   const choice = chooseLink((expiresMs - now) / 1000);
   const full = (notice: string | undefined): LinkPublication => {
     const url = buildFullLink({ origin: input.shareOrigin, key: input.material.envelopeKey, record: { body: toBase64Url(body), header, signature } });
-    if (url.length - url.indexOf("#") > MAX_FULL_LINK_FRAGMENT) throw new RangeError("sealed share is too large for a link");
+    if (url.length - url.indexOf("#") > MAX_FULL_LINK_FRAGMENT) throw new ShareTooLargeForLink();
     return { url, form: "full", ...(notice === undefined ? {} : { notice }) };
   };
   if (choice.form === "full") return full(choice.warning ? LINK_LONG_LIFE_NOTICE : undefined);
-  // A body over the one stored-link limit never goes to the API: the full link carries it.
-  if (body.byteLength > LINK_BODY_MAX_BYTES) return full(SHORT_LINK_UNAVAILABLE_NOTICE);
   try {
     const created = await createLink({ header, signature, body }, input);
     return { url: buildShortLink({ origin: input.shareOrigin, type: "share", id: created.id, key: input.material.envelopeKey, cid: header.bodyCid }), form: "short" };

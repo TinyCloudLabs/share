@@ -5,6 +5,7 @@
  */
 import { sha256 } from "@noble/hashes/sha256";
 import { canonicalize, computeCid, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
+import { LINK_BODY_MAX_BYTES } from "../../src/short-links/limits.js";
 import { checkHeader, DELETE_DOMAIN, HEADER_DOMAIN, issuerKey, LINK_TYPES, MIN_BODY_BYTES, MIN_LIFE_SECONDS, verifySignature, type LinkHeader } from "../../src/short-links/record.js";
 
 const WINDOW_MS = 120_000;
@@ -12,9 +13,8 @@ const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const ID = /^[a-z2-7]{26}$/;
 const NONCE = /^[A-Za-z0-9_-]{22}$/;
 const SERVICE_ISSUER = /^service:[a-z0-9][a-z0-9-]{0,31}$/;
-const REQUEST_CAP_BYTES = 177_835;
-/** Body caps of the pinned vectors (per type). The service moves to one limit when the vectors do. */
-const VECTOR_BODY_CAPS: Readonly<Record<string, number>> = { "openkey-login": 16_384, courier: 32_768, share: 131_072 };
+/** ceil(65536 * 4 / 3) + 3072: the one body limit in base64url plus room for header and signature. */
+const REQUEST_CAP_BYTES = 90_454;
 
 export interface MockApiKey {
   readonly keyId: string;
@@ -143,7 +143,7 @@ export function createMockLinksApi(options: MockLinksOptions) {
     if (h.audience !== options.audience) return error(400, "invalid_request");
     const bytes = strictBytes(body);
     if (bytes === undefined || bytes.byteLength !== h.size) return error(400, "invalid_request");
-    if (bytes.byteLength > VECTOR_BODY_CAPS[h.type]!) return error(413, "too_large");
+    if (bytes.byteLength > LINK_BODY_MAX_BYTES) return error(413, "too_large");
     if (bytes.byteLength < MIN_BODY_BYTES || (await computeCid(bytes)) !== h.bodyCid) return error(400, "invalid_request");
     const issued = timestamp(h.issuedAt)!;
     const expires = timestamp(h.expiresAt)!;

@@ -14,6 +14,9 @@ export const SHORT_LINK_UNAVAILABLE_NOTICE = "Short link unavailable: using the 
 /** Shown instead of an email send when the share has only a full link (contract 7.7). */
 export const FULL_LINK_NO_EMAIL = "Invitation emails need a short link, and this share has only the full link. Copy the link above to send it yourself.";
 
+/** Shown when the sealed share is over the one link size limit; nothing is uploaded or registered. */
+export const SHARE_TOO_LARGE_FOR_LINK = "This share is too large to send as a link, so nothing was shared. Use a shorter path or fewer folders.";
+
 /** The viewer asks for a click before it fetches or opens anything (contract 7.5, step 0). */
 export const OPEN_CONFIRM_TITLE = "Open this link";
 export const OPEN_CONFIRM_DETAIL = "Nothing is fetched or opened until you press the button.";

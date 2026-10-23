@@ -12,8 +12,10 @@ import { failIfSpaceNotReady } from "./space-not-ready.js";
 import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 import { publishLink } from "../short-links/publish.js";
+import { ShareTooLargeForLink } from "../short-links/errors.js";
+import { assertSealedBodyFits, maxContentSource } from "./link-size.js";
 import { linksApiOrigin } from "../short-links/config.js";
-import { FULL_LINK_NO_EMAIL, SEND_AGAIN_ATTACH_HINT, sendAgainAttachNamedHint } from "../short-links/strings.js";
+import { FULL_LINK_NO_EMAIL, SEND_AGAIN_ATTACH_HINT, SHARE_TOO_LARGE_FOR_LINK, sendAgainAttachNamedHint } from "../short-links/strings.js";
 import type { ComposerPrefill } from "./send-again.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
@@ -397,6 +399,18 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   }
   const byteLength = plaintext.byteLength;
   const encryptionNetwork = ownerEncryptionNetwork(options.openKeyAddress);
+  // Everything the sealed envelope is built from that the sender controls, fixed before the first write.
+  const publishInput = {
+    shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
+    ...addressedRequest, resource: { kind: resourceKind, path: resourcePath },
+    ...(credentialRequirement === undefined ? {} : { credentialRequirement }),
+    mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
+  };
+  // A share too large for any link is refused here, before the upload and the registration.
+  await assertSealedBodyFits(
+    { ...publishInput, contentSource: maxContentSource({ shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork }) },
+    { ownerDid: tinycloud.credentialHolderDid, createOwnerRoot: (input) => tinycloud.createUnifiedOwnerRoot(input), sign: (bytes) => tinycloud.signSessionBytes(bytes) },
+  );
   const encrypted = await tinycloud.encryption.encryptToNetwork(encryptionNetwork, plaintext, { metadata: { contentType: plaintextType } });
   plaintext.fill(0);
   if (!encrypted.ok) throw fail("upload", "owner file encryption was rejected");
@@ -416,10 +430,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   };
   let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
-    shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
-    ...addressedRequest, resource: { kind: resourceKind, path: resourcePath }, contentSource: unifiedSource,
-    ...(credentialRequirement === undefined ? {} : { credentialRequirement }),
-    mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
+    ...publishInput, contentSource: unifiedSource,
     // The SDK seals the signed policy envelope into the fragment-only
     // invitation. The only content bytes are encrypted and stored on the
     // owner's TinyCloud node.
@@ -1150,7 +1161,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
         console.debug("tinycloud share: sender request failed");
         const approval = options.tinycloud === undefined ? undefined : takeWalletApprovalFailure(options.tinycloud);
         if (approval === "cancelled" || approval === "timeout") setStatus(status, approval === "cancelled" ? "Approval cancelled" : "Approval timed out", SENDER_FAILURE[approval === "cancelled" ? "approvalCancelled" : "approvalTimeout"], "error-approval", true);
-        else setStatus(status, "Check the sharing details", senderFailureMessage(error), "error-invalid", true);
+        else setStatus(status, "Check the sharing details", error instanceof ShareTooLargeForLink ? SHARE_TOO_LARGE_FOR_LINK : senderFailureMessage(error), "error-invalid", true);
       }
       finally { stopApprovalWatch(); submit.disabled = false; }
     })();
