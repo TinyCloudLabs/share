@@ -1,0 +1,26 @@
+# PLANNED: nothing in this file has been created, deployed or bound. The operator creates the Worker,
+# the D1 database, the secret and the api.tinycloud.xyz custom domain after review.
+name = "links-api"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+workers_dev = false
+
+# No routes and no custom domain are declared here. PLANNED: api.tinycloud.xyz.
+
+[[d1_databases]]
+binding = "DB"
+# PLANNED database name and id (placeholders; the real id is set when the operator creates the database).
+database_name = "links-api"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+LINKS_AUDIENCE = "https://api.tinycloud.xyz"
+LINKS_CORS_ORIGINS = "https://share.tinycloud.xyz"
+# ADDRESS_SALT is a secret (16+ characters), set by the operator. Never committed.
+
+[observability]
+enabled = false
