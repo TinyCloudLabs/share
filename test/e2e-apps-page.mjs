@@ -88,6 +88,18 @@ async function shoot(page, name) {
 
 const sheetOpen = (page) => page.$eval("#apps-sheet", (node) => node.open);
 
+// The unavailable notice keeps its full height and sits above the description, never over it.
+async function assertNoticeClear(page, label) {
+  const box = await page.$eval("#apps-sheet", (sheet) => {
+    const notice = sheet.querySelector(".apps-notice");
+    const noticeRect = notice.getBoundingClientRect();
+    const ledeRect = sheet.querySelector(".apps-sheet__lede").getBoundingClientRect();
+    return { noticeBottom: noticeRect.bottom, noticeHeight: noticeRect.height, ledeTop: ledeRect.top, contentHeight: notice.scrollHeight };
+  });
+  assert.ok(box.noticeBottom <= box.ledeTop, `${label}: notice sits above the description (bottom ${box.noticeBottom}, description top ${box.ledeTop})`);
+  assert.ok(box.noticeHeight >= box.contentHeight - 1, `${label}: notice keeps its full height (${box.noticeHeight} of ${box.contentHeight})`);
+}
+
 let browser;
 try {
   browser = await puppeteer.launch({ headless: true });
@@ -99,9 +111,9 @@ try {
       assert.equal(await page.title(), "Apps · TinyCloud Sharing");
       assert.equal(await page.$eval("h1", (node) => node.textContent), "Apps for your TinyCloud");
 
-      const cards = await page.$$eval(".apps-card", (nodes) => nodes.map((node) => ({ name: node.querySelector("h2").textContent, open: node.querySelector(".apps-card__actions a")?.getAttribute("href") ?? null, detailsDisabled: node.querySelector(".apps-card__actions button")?.disabled ?? true })));
+      const cards = await page.$$eval(".apps-card", (nodes) => nodes.map((node) => ({ name: node.querySelector("h2").textContent, open: node.querySelector(".apps-card__actions a")?.getAttribute("href") ?? null, detailsDisabled: node.querySelector('.apps-card__actions button[aria-label^="Details for"]')?.disabled ?? true })));
       assert.deepEqual(cards.map((card) => card.name), catalog.apps.map((app) => app.name), `${label}: one card per catalog entry`);
-      assert.deepEqual(cards.map((card) => card.open), catalog.apps.map((app) => `/apps/run#${app.app_id}`), `${label}: each card's primary action opens the runner`);
+      assert.deepEqual(cards.map((card) => card.open), catalog.apps.map((app) => (app.app_id === "com.example.notes" ? null : `/apps/run#${app.app_id}`)), `${label}: each card with code opens the runner; Notes has none`);
       assert.ok(cards.every((card) => !card.detailsDisabled), `${label}: Details is enabled`);
       assert.equal(await page.$eval("html", (node) => getComputedStyle(node).colorScheme), scheme, `${label}: follows the OS scheme`);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
@@ -116,7 +128,7 @@ try {
       assert.deepEqual(before.filter((url) => url.pathname.startsWith("/apps/b/")), [], `${label}: no manifest fetched until Details opens`);
 
       // Details: sheet with the manifest's own words.
-      await page.focus(".apps-card__actions button");
+      await page.focus('.apps-card__actions button[aria-label^="Details for"]');
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
       assert.equal(await sheetOpen(page), true, `${label}: sheet opens`);
@@ -124,7 +136,9 @@ try {
       for (const expected of ["It can read", "It can change", "Everything the app has stored in its own folder (default grant).", "com.example.notes/*", "See which permissions it has been given", "Where it comes from", catalog.apps[0].bundle.digest]) {
         assert.ok(sheetText.includes(expected), `${label}: sheet shows "${expected}"`);
       }
-      assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${catalog.apps[0].app_id}`, `${label}: the sheet's Open goes to the runner`);
+      assert.equal(await page.$eval("#apps-sheet footer button[aria-label^='Open']", (node) => node.disabled), true, `${label}: the sheet's Open is disabled (Notes has no code)`);
+      assert.equal(await page.$eval("#apps-sheet .apps-unavailable strong", (node) => node.textContent), "Unavailable", `${label}: the heading says Unavailable`);
+      await assertNoticeClear(page, label);
       assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label}: sheet has no horizontal scroll`);
       assert.deepEqual(await axeViolations(page), [], `${label}: sheet axe AA`);
       await shoot(page, `apps-sheet-${width}-${scheme}`);
@@ -152,7 +166,7 @@ try {
       assert.equal(await sheetOpen(page), false, `${label}: Escape closes the sheet`);
       assert.equal(await page.evaluate(() => document.activeElement?.textContent), "Details", `${label}: focus returns to Details`);
 
-      // First open, per app: the details sheet shows an Open link to the runner. Opening it signs nothing in and loads no SDK.
+      // First open, per app: the details sheet's Open is a link to the runner, or disabled for an app with no code (Notes). A link signs nothing in and loads no SDK.
       const detailsCases = [
         { app: catalog.apps.find((app) => app.app_id === "com.example.notes"), tag: "notes", expect: [], absent: [] },
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.healthlog"), tag: "sample", expect: [], absent: [] },
@@ -160,7 +174,7 @@ try {
       ];
       for (const { app, tag, expect: wanted, absent } of detailsCases) {
         const index = catalog.apps.indexOf(app);
-        await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector(".apps-card__actions button").click(), index);
+        await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector('.apps-card__actions button[aria-label^="Details for"]').click(), index);
         await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null).catch(async (error) => {
           throw new Error(`${label} ${tag}: the details sheet never became ready: ${(await page.$eval("#apps-sheet", (node) => node.innerText).catch(() => "no sheet")).slice(0, 300)} | errors ${JSON.stringify(page.report.errors)} | violations ${JSON.stringify(await page.evaluate(() => globalThis.__violations))}`, { cause: error });
         });
@@ -168,7 +182,8 @@ try {
         assert.ok(sheet.includes(app.name), `${label} ${tag}: titled`);
         for (const expected of wanted) assert.ok(sheet.includes(expected), `${label} ${tag}: shows "${expected}"`);
         for (const unexpected of absent) assert.ok(!sheet.includes(unexpected), `${label} ${tag}: does not show "${unexpected}"`);
-        assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${app.app_id}`, `${label} ${tag}: Open goes to the runner`);
+        if (app.app_id === "com.example.notes") assert.equal(await page.$eval("#apps-sheet footer button[aria-label^='Open']", (node) => node.disabled), true, `${label} ${tag}: Open is disabled (no code)`);
+        else assert.equal(await page.$eval("#apps-sheet footer a", (node) => node.getAttribute("href")), `/apps/run#${app.app_id}`, `${label} ${tag}: Open goes to the runner`);
         assert.equal(await page.$$eval("#apps-sheet button", (nodes) => nodes.some((node) => /^install/i.test(node.textContent.trim()))), false, `${label} ${tag}: no Install button`);
         assert.ok(await page.evaluate(() => { const s = document.querySelector("#apps-sheet"); return s.scrollWidth <= s.clientWidth; }), `${label} ${tag}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label} ${tag}: details sheet axe AA`);
@@ -207,7 +222,7 @@ try {
       } else request.continue();
     });
     await page.goto(`${origin}/apps`, { waitUntil: "networkidle0" });
-    await page.click(".apps-card__actions button");
+    await page.click('.apps-card__actions button[aria-label^="Details for"]');
     await page.waitForSelector("#apps-sheet [role=alert]");
     const text = await page.$eval("#apps-sheet", (node) => node.innerText);
     assert.ok(text.includes("doesn't match the catalog"), "mismatch is stated");
@@ -234,14 +249,16 @@ try {
         assert.equal(card.open, null, `${label}: a disabled card has no runner link`);
         assert.equal(card.openDisabled, true, `${label}: a disabled card's Open is a disabled button`);
         assert.equal(card.details, false, `${label}: Details still opens`);
-        assert.equal(await page.$$eval(".apps-card", (nodes) => nodes.filter((node) => node.textContent.includes("Temporarily unavailable")).length), 1, `${label}: only that card is off`);
+        const offCards = await page.$$eval(".apps-card", (nodes) => nodes.filter((node) => node.querySelector(".apps-unavailable") !== null).map((node) => node.querySelector("h2")?.textContent ?? ""));
+        assert.deepEqual(offCards.sort(), [target.name, switched.apps.find((app) => app.app_id === "com.example.notes").name].sort(), `${label}: only that card and the one without code are off`);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
         assert.deepEqual(await axeViolations(page), [], `${label}: card axe AA`);
         await shoot(page, `kill-switch-list-${width}-${scheme}`);
         await page.evaluate((position) => [...document.querySelectorAll(".apps-card")[position].querySelectorAll(".apps-card__actions button")].find((button) => button.textContent === "Details").click(), index);
         await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null);
         const detail = await page.$eval("#apps-sheet", (node) => ({ text: node.innerText }));
-        assert.ok(detail.text.includes("Temporarily unavailable") && detail.text.includes("Opening is switched off for this app."), `${label}: the details sheet says so`);
+        assert.ok(detail.text.includes("Temporarily unavailable"), `${label}: the details sheet says so`);
+        await assertNoticeClear(page, label);
         assert.deepEqual(await axeViolations(page), [], `${label}: details sheet axe AA`);
         await shoot(page, `kill-switch-sheet-${width}-${scheme}`);
         assert.ok(page.report.requests.every((url) => !/sdk|openkey|wasm/i.test(new URL(url).pathname)), `${label}: no SDK chunk loaded`);
