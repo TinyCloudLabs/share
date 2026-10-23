@@ -79,10 +79,8 @@ describe.each(ADAPTER_FACTORIES)("free plan 70% alert: $name adapter", ({ create
     expect(alertLines(lines)[1]).toEqual({ alert: "free_plan_70", metric: "d1_rows_written", pct: 70, day: "2026-10-25" });
   });
 
-  it("each metric alerts once on its own: requests from the outcome counters, rows read, and the database size gauge", async () => {
-    await deps.storage.count("creates.share", 40_000);
-    await deps.storage.count("reads.hit", 20_000);
-    await deps.storage.count("rejects.rate_limited", 10_000);
+  it("each metric alerts once on its own: requests, rows read, and the database size gauge", async () => {
+    await deps.storage.count("requests", 70_000);
     await deps.storage.count("usage.d1_rows_read", 3_500_000);
     tally.record({ size_after: 350_000_000 });
     await runScheduled(deps);
@@ -116,7 +114,7 @@ describe("self-host: the same counters, no Cloudflare limits", () => {
       now: () => DAY_ONE,
       log: (line) => lines.push(line),
     };
-    await deps.storage.count("creates.share", 500_000);
+    await deps.storage.count("requests", 500_000);
     await runScheduled(deps);
     expect(alertLines(lines)).toEqual([]);
     expect(healthLine(lines).usage.requests).toEqual({ used: 500_000, limit: null, pct: null });

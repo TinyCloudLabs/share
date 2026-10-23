@@ -48,6 +48,7 @@ export function buildHealthLine(
     reads: pick(counts, "reads", ["hit", "miss"] as const),
     deletes: pick(counts, "deletes", ["ok", "miss"] as const),
     rejects: pick(counts, "rejects", REJECT_CODES),
+    errors: { internal: counts["errors.internal"] ?? 0 },
     capacityRefusals: pick(counts, "capacity", CAPACITY_REASONS),
     blockedIssuers: counts["blocked.issuer"] ?? 0,
     blockedAddresses: counts["blocked.address"] ?? 0,

@@ -22,9 +22,12 @@ Nothing below has been done. Every name is PLANNED until the operator creates it
 
 ## Alerts
 
-- [ ] Log alert on the line `"alert":"free_plan_70"` (one line per metric per UTC day: `requests`, `d1_rows_read`, `d1_rows_written`, `d1_database_bytes`).
-- [ ] Log alert on `"event":"links.health"` with a non-empty `highWater` (a type at 80 % of its quota).
-- [ ] Check that the `links.health` line arrives every minute.
+Log sink: Workers Logs, enabled in `wrangler.toml` with invocation logs off (README, "Where the lines go"). Do not turn invocation logs on: they carry the request URL and so the link id. If a different sink is wanted, use a Tail Worker or Logpush job that forwards only objects with an `event` or `alert` field.
+
+- [ ] After deploy, open the Worker's Observability page and confirm one `links.health` object arrives each minute and that no line shows a request URL.
+- [ ] Alert on `alert = "free_plan_70"` (one line per metric per UTC day: `requests`, `d1_rows_read`, `d1_rows_written`, `d1_database_bytes`). In Workers Logs, save a query on the field `alert` equal to `free_plan_70`; if the alerting tool is Better Stack, forward the Worker's logs to it (Logpush or OpenTelemetry export, with a filter on the `alert` and `event` fields) and alert on the same field.
+- [ ] Alert on `event = "links.health"` with a non-empty `highWater` (a type at 80 % of its quota).
+- [ ] **One end-to-end alert proof before public launch.** Temporarily lower `alertPercent` in `WORKERS_FREE_PLAN` (for example to 0.01) in a throwaway deploy, or send enough requests to a non-production deploy, wait one minute, and confirm the `free_plan_70` object reaches the alerting tool and notifies the on-call contact. Revert, redeploy, and record the date and the notification in the launch ticket.
 
 ## Plan
 

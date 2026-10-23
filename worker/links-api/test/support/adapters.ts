@@ -12,6 +12,8 @@ const TABLES = ["links", "rl", "nonces", "blocked", "api_keys", "metrics", "usag
 export interface Adapter {
   readonly name: "d1" | "sqlite";
   readonly driver: SqlDriver;
+  /** The D1 binding (miniflare) for the D1 adapter; null for SQLite. */
+  readonly d1: D1Database | null;
   storage(rules?: Admission): LinkStorage;
   /** Empties every table. */
   reset(): Promise<void>;
@@ -33,6 +35,7 @@ export async function createSqliteAdapter(): Promise<Adapter> {
   return {
     name: "sqlite",
     driver,
+    d1: null,
     storage: (rules = DEFAULT_ADMISSION) => new SqlStorage(driver, rules),
     reset: async () => {
       for (const table of TABLES) {
@@ -57,6 +60,7 @@ export async function createD1Adapter(): Promise<Adapter> {
   return {
     name: "d1",
     driver,
+    d1: db,
     storage: (rules = DEFAULT_ADMISSION) => new SqlStorage(driver, rules),
     reset: async () => {
       await db.batch(TABLES.map((table) => db.prepare(`DELETE FROM ${table}`)));

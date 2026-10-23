@@ -1,4 +1,4 @@
-import { FREE_PLAN_METRICS, LINK_TYPES, type FreePlan, type FreePlanMetric } from "./config.ts";
+import { FREE_PLAN_METRICS, type FreePlan, type FreePlanMetric } from "./config.ts";
 import type { LinkStorage } from "./storage.ts";
 
 /** UTC calendar day, `YYYY-MM-DD`; the Free plan daily limits reset at 00:00 UTC. */
@@ -56,25 +56,6 @@ export async function flushTally(storage: LinkStorage, tally: UsageTally): Promi
   }
 }
 
-/**
- * Requests the service answered in a window: every outcome counter, once each. Requests for routes the
- * service does not serve, and CORS preflights, are not counted.
- */
-export function requestsIn(counts: Readonly<Record<string, number>>): number {
-  const names = [
-    ...LINK_TYPES.map((t) => `creates.${t}`),
-    "reads.hit",
-    "reads.miss",
-    "deletes.ok",
-    "deletes.miss",
-    "errors.internal",
-  ];
-  const rejects = Object.entries(counts)
-    .filter(([name]) => name.startsWith("rejects."))
-    .reduce((sum, [, n]) => sum + n, 0);
-  return names.reduce((sum, name) => sum + (counts[name] ?? 0), 0) + rejects;
-}
-
 export interface MetricUsage {
   readonly used: number;
   /** null without a plan (self-host). */
@@ -106,7 +87,7 @@ const pct = (used: number, limit: number) => Math.round((used * 1000) / limit) /
 export async function accumulateUsage(storage: LinkStorage, input: UsageInput): Promise<UsageReport> {
   const day = utcDay(input.nowSeconds);
   const totals = await storage.addUsage(day, {
-    requests: requestsIn(input.counts),
+    requests: input.counts["requests"] ?? 0,
     d1_rows_read: input.counts["usage.d1_rows_read"] ?? 0,
     d1_rows_written: input.counts["usage.d1_rows_written"] ?? 0,
   });

@@ -22,5 +22,12 @@ LINKS_AUDIENCE = "https://api.tinycloud.xyz"
 LINKS_CORS_ORIGINS = "https://share.tinycloud.xyz"
 # ADDRESS_SALT is a secret (16+ characters), set by the operator. Never committed.
 
+# Workers Logs, with invocation logs off: the only log lines are the structured console lines of the scheduled
+# run (links.health and free_plan_70). Request URLs and link ids are not logged.
+# Keys: https://developers.cloudflare.com/workers/observability/logs/workers-logs/ (page dated 2026-10-12, read 2026-10-23).
 [observability]
-enabled = false
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+invocation_logs = false

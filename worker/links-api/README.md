@@ -47,9 +47,24 @@ The Worker build compares the day's usage with the Workers Free limits in `WORKE
 {"alert":"free_plan_70","metric":"requests","pct":70,"day":"2026-10-24"}
 ```
 
-`metric` is `requests`, `d1_rows_read`, `d1_rows_written` or `d1_database_bytes`. The `usage` field of `links.health` carries `used`, `limit` and `pct` for each. Requests are counted from the service's own outcome counters (requests for routes the service does not serve, and CORS preflights, are not counted); D1 rows read and written and the database size come from the `meta` of each D1 result. The self-host build keeps the same counters, reports `limit` and `pct` as `null`, and never alerts.
+`metric` is `requests`, `d1_rows_read`, `d1_rows_written` or `d1_database_bytes`. The `usage` field of `links.health` carries `used`, `limit` and `pct` for each. Every request is counted once, at the top of the handler (including preflights, unknown routes and 404s); D1 rows read and written and the database size come from the `meta` of each D1 result. The self-host build keeps the same counters, reports `limit` and `pct` as `null`, and never alerts.
 
-In the local run of `scripts/local-smoke.ts` (19 counted requests) the counters reported 185 D1 rows written and 148 rows read.
+### Where the lines go
+
+`wrangler.toml` turns Workers Logs on with invocation logs off:
+
+```
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+invocation_logs = false
+```
+
+Keys as documented at https://developers.cloudflare.com/workers/observability/logs/workers-logs/ (page dated 2026-10-12, read 2026-10-23). Invocation logs would carry `<Method> <URL>` for each request, and the path holds the link id, so they stay off. The request handler writes no console line; the only console output is the scheduled run's `links.health` and `free_plan_70` objects, which Workers Logs indexes by field. `test/observability.test.ts` sends requests with a sentinel id, query and path (and a failing database and a missing salt) through the Worker entry, runs the scheduled handler, and asserts that no console line contains any of them. Workers Free keeps 200,000 log events a day for 3 days; the scheduled run writes about 1,440 a day.
+
+In the local run of `scripts/local-smoke.ts` the counters reported D1 rows written and read per request; read the figures from the `usage` field of the health line.
 
 ## Tests
 

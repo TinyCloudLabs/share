@@ -607,8 +607,9 @@ function preflight(request: Request, allowed: readonly string[]): Response {
   });
 }
 
-/** Routes one request. The clock and storage come from `deps`. */
+/** Routes one request. The clock and storage come from `deps`. Every request is counted once, here, before routing. */
 export async function handleRequestWithReason(request: Request, deps: ServiceDeps): Promise<Outcome> {
+  await countMetric(deps, "requests");
   const url = new URL(request.url);
   const { pathname } = url;
   const method = request.method;

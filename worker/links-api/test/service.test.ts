@@ -251,4 +251,30 @@ describe("links API service", () => {
       expect(JSON.parse(logs.at(-1) ?? "{}").creates.share).toBe(0);
     });
   });
+
+  describe("request counting", () => {
+    const counted = async () => (await deps.storage.readCounts())["requests"] ?? 0;
+
+    it("counts a preflight, an unknown route and a 404 once each", async () => {
+      await handleRequest(new Request(`${AUDIENCE}/v1/links`, { method: "OPTIONS", headers: { Origin: "https://share.tinycloud.xyz" } }), deps);
+      expect(await counted()).toBe(1);
+      await handleRequest(new Request(`${AUDIENCE}/no/such/route`), deps);
+      expect(await counted()).toBe(1);
+      expect((await handleRequest(get("c".repeat(26)), deps)).status).toBe(404);
+      expect(await counted()).toBe(1);
+    });
+
+    it("counts a create, a read, a take and a delete once each, with no double count", async () => {
+      const { id, issuer } = await create("courier");
+      expect(await counted()).toBe(1);
+      await handleRequest(get(id), deps);
+      expect(await counted()).toBe(1);
+      await handleRequest(take(id), deps);
+      expect(await counted()).toBe(1);
+      await handleRequest(await signedDelete({ issuer, id, nowMs }), deps);
+      expect(await counted()).toBe(1);
+      await handleRequest(await signedCreate({ issuer, nowMs, headers: { Origin: "https://evil.example" } }), deps);
+      expect(await counted()).toBe(1);
+    });
+  });
 });
