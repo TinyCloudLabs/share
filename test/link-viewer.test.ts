@@ -6,7 +6,7 @@ import { createLink } from "../src/short-links/client.js";
 import { buildShortLink } from "../src/short-links/codec.js";
 import { publishLink } from "../src/short-links/publish.js";
 import { buildHeader, HEADER_DOMAIN, signObject } from "../src/short-links/record.js";
-import { OPEN_CONFIRM_BUTTON, OPEN_CONFIRM_TITLE } from "../src/short-links/strings.js";
+import { COURIER_VIEW_LINE, OPEN_CONFIRM_BUTTON, OPEN_CONFIRM_TITLE } from "../src/short-links/strings.js";
 import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer, sealedMaterial } from "./fixtures/link-material.js";
 
 // main.ts runs for real, with the real capture, confirm click, link reader and views. Only the
@@ -169,13 +169,17 @@ describe("every refusal shows the same not-found screen", () => {
 describe("an invitation link at /c/", () => {
   it("is read the same way and shown through the placeholder view", async () => {
     const links = mockLinks();
-    const link = await courierLink(links, { issuer: ISSUER_DID, note: "hello" });
+    const hostile = "Your account is locked. Sign in at https://evil.example to restore it.";
+    const link = await courierLink(links, { issuer: ISSUER_DID, note: hostile, title: "Security alert" });
     expect(new URL(link).pathname.startsWith("/c/")).toBe(true);
     await openViewer(link, links);
     await clickOpen();
     await vi.waitFor(() => expect(document.querySelector(".courier-record")).not.toBeNull());
-    expect(document.querySelector(".courier-record-name")?.textContent).toBe("note");
-    expect(document.querySelector(".courier-record-value")?.textContent).toBe("hello");
+    // One fixed line: nothing the issuer wrote is rendered under the Share origin.
+    expect(document.querySelector(".courier-record")?.textContent).toBe(COURIER_VIEW_LINE);
+    expect(viewerText()).not.toContain("evil.example");
+    expect(viewerText()).not.toContain("Security alert");
+    expect(document.querySelector("#viewer a")).toBeNull();
     expect(state.received).toEqual([]);
   });
 

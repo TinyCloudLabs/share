@@ -219,13 +219,14 @@ try {
     note(`${label} viewer refusals`, `${screens.size} cases (${[...screens.keys()].join(", ")}) render one screen`);
 
     // Invitation at /c/.
-    page = await open(local(await courierLink({ issuer: ISSUER_DID, note: "hello" })));
+    page = await open(local(await courierLink({ issuer: ISSUER_DID, note: "Your account is locked. Sign in at https://evil.example", title: "Security alert" })));
     await page.waitForSelector(".link-confirm-action");
     await page.click(".link-confirm-action");
     await page.waitForSelector(".courier-record", { timeout: 10_000 });
-    assert.equal(await text(page, ".courier-record-value"), "hello");
+    assert.equal(await text(page, ".courier-record"), "This invitation is opened in the TinyCloud app.");
+    assert.ok(!(await page.evaluate(() => document.querySelector("#viewer").textContent)).includes("evil.example"), "nothing the issuer wrote is rendered");
     await shot(page, "viewer-courier-placeholder");
-    note(`${label} viewer /c/ route`, "verified invitation shown through the placeholder view");
+    note(`${label} viewer /c/ route`, "verified invitation shows one fixed line; the issuer's text is not rendered");
     await page.close();
 
     // ---- Composer: short link, then full link with the notice ------------------------------------------
@@ -286,7 +287,7 @@ try {
     "viewer-live-link": "Viewer: a live link with a real signed envelope, after the click (stops at the identity step)",
     "viewer-expired": "Viewer: an expired link (the service answers not found)",
     "viewer-deleted": "Viewer: a deleted link (the same screen as expired)",
-    "viewer-courier-placeholder": "Viewer: an invitation at /c/ (placeholder view, no copy written)",
+    "viewer-courier-placeholder": "Viewer: an invitation at /c/ (one fixed placeholder line)",
     "composer-short": "Composer: a short link was created",
     "composer-full": "Composer: the API refused, so the full link and the notice",
     "composer-send-again": "Composer: opened by Send the link again, filled in from the saved share",

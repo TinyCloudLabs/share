@@ -31,8 +31,6 @@ export class LinkReadError extends Error {
 export interface ResolvedLink {
   readonly type: "share" | "courier";
   readonly header: LinkHeader;
-  /** The opened plaintext, a JSON object whose issuer binding was checked. Shape beyond that is the type owner's. */
-  readonly plaintext: Record<string, unknown>;
   /** The sealed body bytes and the key that opened them, for the existing receive pipeline. */
   readonly sealedBody: Uint8Array;
   readonly key: Uint8Array;
@@ -90,7 +88,7 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
   const key = fromBase64Url(link.key);
   const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key, maxBodyBytes: LINK_BODY_MAX_BYTES });
   if ("refusal" in checked) throw notFound(checked.refusal);
-  const { header, plaintext } = checked;
+  const { header } = checked;
   if (link.form === "short") {
     if (link.pathType !== header.type) throw notFound("type_path_mismatch");
     if (link.cid !== header.bodyCid) throw notFound("link_cid_mismatch");
@@ -98,5 +96,5 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
     throw notFound("full_non_share");
   }
   if (header.type === "openkey-login") throw notFound("not_viewable");
-  return { type: header.type, header, plaintext, sealedBody: record.body, key };
+  return { type: header.type, header, sealedBody: record.body, key };
 }

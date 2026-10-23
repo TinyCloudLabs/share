@@ -62,11 +62,12 @@ function mount(fetchFn: typeof fetch) {
   const saved: { link?: string }[] = [];
   const encryptToNetwork = vi.fn(async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AAAA", nonce: "AAAA" } }));
   const registerPolicy = vi.fn();
+  const publishActiveNodeLocation = vi.fn(async () => undefined);
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
-    publishActiveNodeLocation: async () => undefined,
+    publishActiveNodeLocation,
     encryption: { encryptToNetwork },
     kvForSpace: () => ({ put }),
     signSessionBytes: signWithIssuer,
@@ -80,7 +81,7 @@ function mount(fetchFn: typeof fetch) {
     openKeyAddress: "0x1234567890abcdef", origin: SHARE_ORIGIN, onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud, fetchFn, copyText,
     persistShare: async ({ share }) => { saved.push(share.record as { link?: string }); },
   });
-  return { root, puts, copyText, authorize, saved, encryptToNetwork, registerPolicy, put };
+  return { root, puts, copyText, authorize, saved, encryptToNetwork, registerPolicy, put, publishActiveNodeLocation };
 }
 
 async function submit(root: HTMLElement): Promise<void> {
@@ -116,11 +117,14 @@ describe("composer link for an addressed share", () => {
   it("creates a short link through the API with an issuer-signed header, and the key never reaches the API", async () => {
     const links = mockLinks();
     const { fetchFn, calls } = spy(links.fetchFn);
-    const { root, copyText, saved, puts } = mount(fetchFn);
+    const { root, copyText, saved, puts, put, publishActiveNodeLocation } = mount(fetchFn);
 
     await submit(root);
     clickCopy(root);
     await vi.waitFor(() => expect(copyText).toHaveBeenCalled());
+    // The registry write happens once, after the size check and before the upload.
+    expect(publishActiveNodeLocation).toHaveBeenCalledTimes(1);
+    expect(publishActiveNodeLocation.mock.invocationCallOrder[0]!).toBeLessThan(put.mock.invocationCallOrder[0]!);
 
     const link = copyText.mock.calls[0]![0];
     const parsed = parseLink(link, [SHARE_ORIGIN]);
@@ -268,7 +272,7 @@ describe("a share too large for any link", () => {
   it("is refused before anything is uploaded or registered, with no request to any service, and shows the message", async () => {
     state.pad = 70_000;
     const { fetchFn, calls } = spy(mockLinks().fetchFn);
-    const { root, put, puts, encryptToNetwork, registerPolicy, saved, authorize } = mount(fetchFn);
+    const { root, put, puts, encryptToNetwork, registerPolicy, saved, authorize, publishActiveNodeLocation } = mount(fetchFn);
 
     root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!.click();
     const value = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
@@ -282,7 +286,8 @@ describe("a share too large for any link", () => {
     await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".composer-status")?.dataset.state).toBe("error-invalid"));
     expect(root.querySelector(".composer-status")?.textContent).toContain(SHARE_TOO_LARGE_FOR_LINK);
     expect(SHARE_TOO_LARGE_FOR_LINK).toBe("This share is too large to send as a link, so nothing was shared. Use a shorter path or fewer folders.");
-    // Nothing written: no encryption request, no upload, no registration, no history, no link, no delivery.
+    // Nothing written: no registry write, no encryption request, no upload, no registration, no history, no link, no delivery.
+    expect(publishActiveNodeLocation).not.toHaveBeenCalled();
     expect(encryptToNetwork).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
     expect(puts).toEqual([]);

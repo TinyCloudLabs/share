@@ -338,10 +338,6 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   const spaceId = tinycloud.spaceId;
   if (spaceId === undefined || spaceId.length === 0) throw fail("storage", "owner share has no storage space");
   const node = await resolveOwnerShareNode(tinycloud);
-  // The recipient SDK verifies this signed discovery record before contacting
-  // the owner node. Publish it before
-  // content storage so a registry failure cannot leave an orphaned object.
-  await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
   const shareId = crypto.randomUUID();
   const selectedSource = contentSource(model.content)?.kind === "kv" ? contentSource(model.content) as Extract<NonNullable<ReturnType<typeof contentSource>>, { kind: "kv" }> : undefined;
   const sourcePath = selectedSource?.path.replace(/\/+$/, "");
@@ -411,6 +407,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     { ...publishInput, encryptionNetwork },
     { ownerDid: tinycloud.credentialHolderDid, createOwnerRoot: (input) => tinycloud.createUnifiedOwnerRoot(input), sign: (bytes) => tinycloud.signSessionBytes(bytes) },
   );
+  // The recipient SDK verifies this signed discovery record before contacting the owner node.
+  // It is published after the size check, so a refused share writes nothing, and before content
+  // storage, so a registry failure cannot leave an orphaned object.
+  await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
   const encrypted = await tinycloud.encryption.encryptToNetwork(encryptionNetwork, plaintext, { metadata: { contentType: plaintextType } });
   plaintext.fill(0);
   if (!encrypted.ok) throw fail("upload", "owner file encryption was rejected");

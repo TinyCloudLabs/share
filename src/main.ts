@@ -93,7 +93,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const link = await resolveLink(shareHref, { trustedOrigins: [shareConfig.shareOrigin], apiOrigin: linksApiOrigin() });
     if (link.type === "courier") {
       const { renderCourierRecord } = await import("./short-links/views.js");
-      renderCourierRecord(root, link.plaintext);
+      renderCourierRecord(root);
       return;
     }
     const { sdkReceiveLink } = await import("./short-links/sdk-bridge.js");

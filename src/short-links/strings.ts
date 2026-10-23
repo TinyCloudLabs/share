@@ -29,3 +29,6 @@ export const SEND_AGAIN_ATTACH_HINT = "Attach the file again to send the link ag
 export const sendAgainAttachNamedHint = (filename: string): string => `Attach ${filename} again to send the link again.`;
 /** Shown when the saved share could not be read to open the composer. */
 export const SEND_AGAIN_FAILED = "We couldn't open this share to send it again. Try again.";
+
+/** PLACEHOLDER, wording for Sam/Monica: the one fixed line the invitation page shows. Nothing from the invitation is rendered. */
+export const COURIER_VIEW_LINE = "This invitation is opened in the TinyCloud app.";
