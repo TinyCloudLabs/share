@@ -11,7 +11,8 @@ import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL } from "./artifact-kind.js";
 import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
-import { revokeStoredShortLink, SHORT_LINK_KEPT_NOTICE } from "../short-links/publish.js";
+import { deleteShortLinkFor, SHORT_LINK_KEPT_NOTICE } from "../short-links/publish.js";
+import { linksApiOrigin } from "../short-links/config.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
@@ -332,13 +333,16 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       },
     });
     if (result.state !== "revoked") throw new Error("revoke-unsupported");
-    // The node revoke above is the authority. The short-link delete is best
-    // effort: a failed delete keeps its record, so the next revoke attempt retries it.
-    const spaceId = options.tinycloud.spaceId;
-    if (spaceId !== undefined && spaceId.length > 0) {
-      const shortLink = await revokeStoredShortLink({ shareId, kv: options.tinycloud.kvForSpace(spaceId) });
-      if (shortLink === "kept") flight.note = SHORT_LINK_KEPT_NOTICE;
-    }
+    // The node revoke above is the authority. Removing the stored link is best effort: it is an
+    // issuer-signed delete of the link kept in this share's history, and a failure only leaves the
+    // link until the share expires.
+    const removed = await deleteShortLinkFor({
+      link: current.link,
+      signer: { issuerDid: options.tinycloud.credentialHolderDid, sign: (digest) => options.tinycloud.signSessionBytes(digest) },
+      shareOrigin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
+      apiOrigin: linksApiOrigin(),
+    });
+    if (removed === "kept") flight.note = SHORT_LINK_KEPT_NOTICE;
   };
   /**
    * TC-721. Revoke is confirmed in the page, never with `window.confirm`: a

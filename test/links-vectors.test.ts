@@ -15,7 +15,7 @@ const FIXTURE = "test/fixtures/links-api-vectors.json";
  * SHA-256 of the shared vector file (contract Appendix B). The copy is byte-identical to the
  * canonical one in tinycloud-dev `docs/specs/`; a change there changes this pin.
  */
-const VECTORS_SHA256 = "cd7358c6d187c44a2d97cc44eae4df2f5611ac32814778689e125af554cd9146";
+const VECTORS_SHA256 = "4b7c95e9bd0e5a489ab17c0b28bd334f06f2c17dd8ac982eedee04df2fab6bdd";
 const bytes = readFileSync(FIXTURE);
 const vectors = JSON.parse(bytes.toString("utf8"));
 const NOW = Date.parse(vectors.meta.now);

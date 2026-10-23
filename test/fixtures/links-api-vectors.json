@@ -6839,22 +6839,134 @@
     {
       "address": "fe80::1%eth0",
       "expect": {
-        "rateKey": "fe80:0:0:0::/64",
-        "liveKey": "fe80:0:0::/48"
+        "rateKey": "fe80::/64",
+        "liveKey": "fe80::/48"
+      }
+    },
+    {
+      "address": "2001:0:0:1::5",
+      "expect": {
+        "rateKey": "2001:0:0:1::/64",
+        "liveKey": "2001::/48"
+      }
+    },
+    {
+      "address": "2001:db8:0:1::1",
+      "expect": {
+        "rateKey": "2001:db8:0:1::/64",
+        "liveKey": "2001:db8::/48"
+      }
+    },
+    {
+      "address": "2001:db8:0:0:0:0:0:1",
+      "expect": {
+        "rateKey": "2001:db8::/64",
+        "liveKey": "2001:db8::/48"
+      }
+    },
+    {
+      "address": "::1",
+      "expect": {
+        "rateKey": "::/64",
+        "liveKey": "::/48"
+      }
+    },
+    {
+      "address": "::",
+      "expect": {
+        "rateKey": "::/64",
+        "liveKey": "::/48"
       }
     },
     {
       "address": "not-an-ip",
       "expect": {
-        "rateKey": "not-an-ip",
-        "liveKey": "not-an-ip"
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
       }
     },
     {
       "address": "1:2:3",
       "expect": {
-        "rateKey": "1:2:3",
-        "liveKey": "1:2:3"
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "unknown",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "999.1.1.1",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2.1.5",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2.010",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "0x7f.0.0.1",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "::ffff:192.0.2.010",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "2001:db8::g",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "2001:db8::1::2",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "client-set-header-value-4f9a1c",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
       }
     }
   ],

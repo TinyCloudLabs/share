@@ -18,3 +18,11 @@ export const FULL_LINK_NO_EMAIL = "Invitation emails need a short link, and this
 export const OPEN_CONFIRM_TITLE = "Open this link";
 export const OPEN_CONFIRM_DETAIL = "Nothing is fetched or opened until you press the button.";
 export const OPEN_CONFIRM_BUTTON = "Open";
+
+/** The sender's button on a share whose link has expired. The label is Sam's wording. */
+export const SEND_AGAIN_LABEL = "Send the link again";
+/** Shown at the top of the composer opened by that button; the file is not kept, so it is attached again. */
+export const SEND_AGAIN_ATTACH_HINT = "Attach the file again to send the link again.";
+export const sendAgainAttachNamedHint = (filename: string): string => `Attach ${filename} again to send the link again.`;
+/** Shown when the saved share could not be read to open the composer. */
+export const SEND_AGAIN_FAILED = "We couldn't open this share to send it again. Try again.";

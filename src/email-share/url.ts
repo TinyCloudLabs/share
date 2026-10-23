@@ -1,26 +1,23 @@
-import { parseShortLink, type ShortLinkParts } from "../short-links/codec.js";
-
 export interface CapturedLaunch {
   shareHref: string;
-  readonly kind: "bearer" | "addressed" | "short";
-  /** Present when kind is "short": the key and CID that verify the fetched bytes. */
-  readonly shortLink?: ShortLinkParts;
+  /** `bearer`: a native `#tc1` capability. `link`: a `/s/…` or `/c/…` link that the link reader checks. */
+  readonly kind: "bearer" | "link";
 }
 
 const NATIVE_LAUNCH = /^#tc1=([^&]+)$/;
-const SEALED_POLICY_FRAGMENT = /^#v=2&p=([A-Za-z0-9_-]+)$/;
-const MAX_POLICY_FRAGMENT = 700_000;
+const LINK_PATH = /^\/(?:s|c)\/[A-Za-z0-9]+$/;
+/** The largest fragment the reader is given: a full link carries a 128 KiB sealed body, base64url twice over. */
+const MAX_LINK_FRAGMENT = 700_000;
 
 /**
- * Capture the two cutover link forms, then remove their material from browser
- * history before configuration loading or network work:
+ * Capture the launch link, then remove its material from browser history before configuration
+ * loading or network work:
  *
  * - `#tc1` is a secret bearer capability.
- * - `/s/inline#v=2&p=…` is a locally decrypted addressed-policy envelope.
- * - `/s/<id>#v=3&k=…&c=…` is a short link. Its sealed bytes are fetched and then received as the inline form.
+ * - `/s/<id>`, `/c/<id>` and `/s/full` with a `#v=…` fragment are links for the link reader, which
+ *   accepts the `v=4` grammar and refuses everything else.
  *
- * No plaintext `?tc2`, unresolved compact `/s/<cid>`, claim-secret, or
- * reload-cache form is accepted.
+ * No plaintext `?tc2`, unresolved compact `/s/<cid>`, claim-secret, or reload-cache form is accepted.
  */
 export function captureAndScrubLaunch(loc: Location, history: History): CapturedLaunch | undefined {
   const href = loc.href;
@@ -28,13 +25,10 @@ export function captureAndScrubLaunch(loc: Location, history: History): Captured
   const search = loc.search;
   const hash = loc.hash;
   history.replaceState(null, "", "/viewer");
-  const shortLink = parseShortLink(href);
-  if (shortLink !== undefined) return { shareHref: href, kind: "short", shortLink };
-
   if (pathname === "/viewer" && search === "") {
     return NATIVE_LAUNCH.test(hash) ? { shareHref: href, kind: "bearer" } : undefined;
   }
-  return pathname === "/s/inline" && search === "" && hash.length <= MAX_POLICY_FRAGMENT && SEALED_POLICY_FRAGMENT.test(hash)
-    ? { shareHref: href, kind: "addressed" }
-    : undefined;
+  if (!LINK_PATH.test(pathname) && pathname !== "/s/full") return undefined;
+  // A fragment past the bound is passed on without it, so the reader refuses it without holding it.
+  return { shareHref: hash.length > MAX_LINK_FRAGMENT ? `${loc.origin}${pathname}` : href, kind: "link" };
 }
