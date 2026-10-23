@@ -16,6 +16,9 @@ import { createShareReceiverClient } from "../share/receiver.js";
 /** Minimum time between two code emails the recipient can trigger. */
 const RESEND_COOLDOWN_MS = 30_000;
 
+/** Wait used when the issuer rate-limits without saying how long. */
+const RATE_LIMIT_FALLBACK_MS = 60 * 60_000;
+
 /** Signed invitation facts the host may show next to the mailbox check. */
 export interface AccountlessInvitationSummary {
   readonly filename?: string;
@@ -29,14 +32,52 @@ export interface AccountlessInvitationSummary {
  * propagates to the caller's generic failure screen.
  */
 export function claimRecoveryFor(error: unknown): RecipientClaimRecovery | undefined {
-  if (typeof error !== "object" || error === null || (error as { name?: unknown }).name !== "CredentialError") return undefined;
-  const { code, details } = error as { code?: unknown; details?: { state?: unknown } };
+  const failure = credentialFailure(error);
+  if (failure === undefined) return undefined;
+  const { code } = failure;
+  const details = detailsOf(failure.details);
   if (code === "CANCELED") return { title: "Verification canceled", detail: "Nothing was opened. Send a new code when you’re ready.", action: "Send a new code" };
   if (code === "REQUEST_EXPIRED") return { title: "That code expired", detail: "Codes work for a few minutes and only once. Send a new code to try again.", action: "Send a new code" };
   if (code === "VERIFICATION_FAILED" && details?.state === "proof_attempts_exhausted") return { title: "Too many incorrect codes", detail: "For your security, that code no longer works. Send a new code to try again.", action: "Send a new code" };
-  if (code === "ISSUER_UNREADY" && details?.state === "rate_limited") return { title: "Too many codes requested", detail: "Too many verification codes were requested recently. Nothing was opened. Wait a while, then try again.", action: "Try again" };
+  if (rateLimitedIssuer(failure) !== undefined) return { title: "Too many codes requested", detail: "Too many verification codes were requested recently. Nothing was opened.", action: "Try again" };
   if (code === "OFFLINE" || code === "ISSUER_UNREADY") return { title: "Email verification is unavailable", detail: "Nothing was opened. Check your connection, then try again.", action: "Try again" };
   return undefined;
+}
+
+/** A CredentialError's code and details, or undefined for any other value. */
+function credentialFailure(error: unknown): { code: unknown; details: unknown } | undefined {
+  if (typeof error !== "object" || error === null || !("name" in error) || error.name !== "CredentialError") return undefined;
+  return { code: "code" in error ? error.code : undefined, details: "details" in error ? error.details : undefined };
+}
+
+/** The `state` and `retryAfterMs` fields of a CredentialError's details, when present. */
+function detailsOf(details: unknown): { state?: unknown; retryAfterMs?: unknown } | undefined {
+  if (typeof details !== "object" || details === null) return undefined;
+  return { state: "state" in details ? details.state : undefined, retryAfterMs: "retryAfterMs" in details ? details.retryAfterMs : undefined };
+}
+
+/** The issuer's rate-limit refusal, when that is what stopped the acquisition. */
+function rateLimitedIssuer(failure: { code: unknown; details: unknown }): { retryAfterMs?: unknown } | undefined {
+  const details = detailsOf(failure.details);
+  return failure.code === "ISSUER_UNREADY" && details?.state === "rate_limited" ? details : undefined;
+}
+
+/** The Retry-After the issuer sent, in ms; undefined when it sent none. */
+function issuerRetryAfterMs(details: { retryAfterMs?: unknown }): number | undefined {
+  return typeof details.retryAfterMs === "number" && details.retryAfterMs > 0 ? details.retryAfterMs : undefined;
+}
+
+/**
+ * When a recovery's retry becomes available, in epoch ms. A rate limit's wait
+ * runs from arrival: the issuer's Retry-After clock starts after the request
+ * is sent, so arrival is never early. Every other stop keeps the cooldown from
+ * the request.
+ */
+export function resendAvailableAt(error: unknown, requestedAt: number, arrivedAt: number): number {
+  const failure = credentialFailure(error);
+  const limited = failure === undefined ? undefined : rateLimitedIssuer(failure);
+  if (limited === undefined) return requestedAt + RESEND_COOLDOWN_MS;
+  return arrivedAt + (issuerRetryAfterMs(limited) ?? RATE_LIMIT_FALLBACK_MS);
 }
 
 /**
@@ -104,7 +145,7 @@ export async function receiveWithSdk(input: {
       const recovery = claimRecoveryFor(error);
       if (recovery === undefined) throw error;
       // Retrying starts a new acquisition, so OpenCredentials emails a new code.
-      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, requestedAt + RESEND_COOLDOWN_MS));
+      await new Promise<void>((resolve) => renderRecipientClaimRecovery(claim, recovery, resolve, resendAvailableAt(error, requestedAt, Date.now())));
     }
     if (await closed()) return;
   }

@@ -11,6 +11,7 @@ import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.
 import { failIfSpaceNotReady } from "./space-not-ready.js";
 import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.js";
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
+import { publishShortLinkOrInline, shortLinkRecordPath } from "../short-links/publish.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { createAnnouncer } from "./announcer.js";
@@ -50,6 +51,16 @@ export const OWNER_LIBRARY_LIMIT = 1000;
  * exclusion is stated once and testable.
  */
 export const OWNER_LIBRARY_RESERVED_PREFIXES = Object.freeze(["vault/"]);
+/**
+ * The per-share short-link delete record (see `shortLinkRecordPath`). The
+ * listing may return keys with or without the application prefix, so both
+ * forms are matched. Only this exact record name is excluded.
+ *
+ * The record is written to the owner's `applications` space. The CLI writes
+ * its record to `default` until the shared share index lands (TC-1739); each
+ * client reads back only the records it wrote.
+ */
+const SHORT_LINK_RECORD_KEY = /^(?:xyz\.tinycloud\.share\/)?shares\/[^/]+\/\.short-link\.json$/;
 
 /** Control characters, DEL, and backslash — none can appear in an addressable KV key. */
 function unsafeLibraryKey(value: string): boolean {
@@ -90,6 +101,7 @@ export function ownerLibraryEntries(keys: readonly string[]): readonly { readonl
     if (trimmed.length === 0 || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) continue;
     if (unsafeLibraryKey(trimmed)) continue;
     if (OWNER_LIBRARY_RESERVED_PREFIXES.some((prefix) => trimmed === prefix.replace(/\/$/, "") || trimmed.startsWith(prefix))) continue;
+    if (SHORT_LINK_RECORD_KEY.test(trimmed)) continue;
     add(trimmed);
   }
   return entries;
@@ -155,6 +167,8 @@ export interface ComposerShareResult {
   readonly record?: SenderShareRecord;
   /** The revocable delegation CID backing this share. */
   readonly delegationCid?: string;
+  /** Shown when the short link could not be created and the long inline link is used. */
+  readonly notice?: string;
   /** Explicit, post-link delivery action. The link is already stable before this is called. */
   readonly notify?: () => Promise<void>;
 }
@@ -411,12 +425,24 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       registerPolicy: (input) => tinycloud.registerPolicy(input),
     },
   });
-  const record = historyRecordForPublishedShare(published);
+  const publication = await publishShortLinkOrInline({
+    inlineUrl: published.url,
+    material: deliveryMaterial,
+    expiresAt: published.metadata.expiresAt,
+    storeRecord: async (shortRecord) => {
+      const stored = await tinycloud.kvForSpace(spaceId).put(shortLinkRecordPath(shareId), new TextEncoder().encode(JSON.stringify(shortRecord)), { contentType: "application/json" });
+      failIfSpaceNotReady(stored);
+      if (!stored.ok) throw new Error("short link record was not stored");
+    },
+    ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }),
+  });
+  const url = publication.url;
+  const record = { ...historyRecordForPublishedShare(published), link: url };
   return {
-    url: published.url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record,
+    url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record,
+    ...(publication.notice === undefined ? {} : { notice: publication.notice }),
     ...(published.metadata.ownerDelegationCid === undefined ? {} : { delegationCid: published.metadata.ownerDelegationCid }),
     ...(deliveryRecipients.length === 0 ? {} : { notify: async () => {
-      const share = { url: published.url, cid: published.link.cid, expiresAt: published.metadata.expiresAt, record } as ComposerShareResult;
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
       if (deliveryMaterial === undefined) throw new Error("We couldn't send that email. The link above still works.");
       const material = deliveryMaterial;
@@ -446,7 +472,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
             shareCid: material.shareCid,
             resourcePath,
             recipientEmail,
-            shareUrl: share.url,
+            // The node and OpenCredentials accept only the inline link here, never the short one.
+            shareUrl: published.url,
             documentName: filename,
             expiresAt: delivery.expiresAt,
             idempotencyKey: deliveryKey(recipientEmail, delivery.attempt),
@@ -454,7 +481,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
             // generic credential-invitation endpoint.
             deliveryAudience: config.credentialsOrigin,
           });
-          await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: share.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
+          await requestAddressedDelivery({ credentialsOrigin: config.credentialsOrigin, shareUrl: published.url, deliveryAuthorization: authorization, ...(options.fetchFn === undefined ? {} : { fetchFn: options.fetchFn }) });
           delivery.sent = true;
         } catch {
           failed += 1;
@@ -1046,6 +1073,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           ? `Encrypted in your browser and saved to your TinyCloud. Anyone who confirms an @${model.recipient.value} address can open it. ${canNotify(model) ? "Copy the link, or have us email it to the addresses you listed." : "Copy the link and send it to people at that domain."}`
           : model.encryption ? "Encrypted in your browser and saved to your TinyCloud. Copy it now, or find it again any time." : "Saved to your TinyCloud. Copy it now, or find it again any time."));
         status.append(el(doc, "span", "sender-status-detail result-expiry", `Works until ${shortDate(created.expiresAt ?? model.expiresAt)}. Revoke it any time from All shares. Anyone who already saved or copied the file keeps their copy.`));
+        if (created.notice !== undefined) status.append(el(doc, "span", "sender-status-detail result-notice", created.notice));
         const actions = el(doc, "div", "result-actions");
         const copy = el(doc, "button", "button button-primary", "Copy link") as HTMLButtonElement; copy.type = "button";
         const another = el(doc, "button", "button button-secondary", "Share another") as HTMLButtonElement; another.type = "button";
