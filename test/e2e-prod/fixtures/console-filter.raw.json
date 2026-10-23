@@ -1,0 +1,106 @@
+[
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+    "url": "https://registry.tinycloud.xyz/v1/locations/did%3Apkh%3Aeip155%3A1%3A0xe1fAE9b4fAB2F5726677ECfA912d96b0B683e6a9",
+    "lineNumber": null
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "warning",
+    "text": "Error with Permissions-Policy header: Unrecognized feature: 'web-share'.",
+    "url": null,
+    "lineNumber": null
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 22
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/fetch' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 22
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Fetch API cannot load http://127.0.0.1:43949/fetch. Refused to connect because it violates the document's Content Security Policy.",
+    "url": null,
+    "lineNumber": 22
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/xhr' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 306
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/xhr' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 306
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'wss://beacon.invalid/ws' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 307
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'wss://beacon.invalid/ws' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": null,
+    "lineNumber": 307
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/sse' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": "about:srcdoc",
+    "lineNumber": null
+  },
+  {
+    "phase": "open-xyz.tinycloud.e2e.hostile",
+    "via": "Log.entryAdded",
+    "level": "error",
+    "text": "Connecting to 'http://127.0.0.1:43949/sse' violates the following Content Security Policy directive: \"connect-src 'none'\". The action has been blocked.",
+    "url": "about:srcdoc",
+    "lineNumber": null
+  },
+  {
+    "phase": "run-health",
+    "via": "Log.entryAdded",
+    "level": "warning",
+    "text": "Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('https://share.tinycloud.xyz') does not match the recipient window's origin ('null')",
+    "url": "pptr:evaluate;captureState%20(file%3A%2F%2F%2Fhome%2Ftinycloud%2Fscratch%2Fclarissa-qa%2Fshare147%2Fsrc-diag%2Ftest%2Fe2e-prod%2Frunner-gate.mjs%3A324%3A16)",
+    "lineNumber": 11
+  },
+  {
+    "phase": "run-health",
+    "via": "Log.entryAdded",
+    "level": "warning",
+    "text": "Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('https://share.tinycloud.xyz') does not match the recipient window's origin ('null')",
+    "url": "pptr:evaluate;captureState%20(file%3A%2F%2F%2Fhome%2Ftinycloud%2Fscratch%2Fclarissa-qa%2Fshare147%2Fsrc-diag%2Ftest%2Fe2e-prod%2Frunner-gate.mjs%3A324%3A16)",
+    "lineNumber": 11
+  }
+]
