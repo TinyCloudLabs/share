@@ -6,11 +6,11 @@ import { classifyPublicKey, verifyStrict } from "./ed25519.js";
 export const HEADER_DOMAIN = "xyz.tinycloud.links/header/v1\0";
 export const DELETE_DOMAIN = "xyz.tinycloud.links/delete/v1\0";
 
-/** Per-type body caps (decoded bytes) and life caps (seconds). */
-export const LINK_TYPES: Readonly<Record<LinkType, { readonly maxBody: number; readonly maxLifeSeconds: number }>> = Object.freeze({
-  "openkey-login": { maxBody: 16_384, maxLifeSeconds: 600 },
-  courier: { maxBody: 32_768, maxLifeSeconds: 604_800 },
-  share: { maxBody: 131_072, maxLifeSeconds: 2_592_000 },
+/** Life caps per type, in seconds. */
+export const LINK_TYPES: Readonly<Record<LinkType, { readonly maxLifeSeconds: number }>> = Object.freeze({
+  "openkey-login": { maxLifeSeconds: 600 },
+  courier: { maxLifeSeconds: 604_800 },
+  share: { maxLifeSeconds: 2_592_000 },
 });
 export const MIN_BODY_BYTES = 30;
 export const MIN_LIFE_SECONDS = 120;
@@ -43,7 +43,7 @@ export type RecordRefusal =
   | "record_shape" | "record_fields" | "header_shape" | "header_fields" | "header_version" | "unknown_type"
   | "issuer_format" | "issuer_method_not_allowed" | "issuer_key_type" | "issuer_key_noncanonical" | "issuer_key_invalid" | "issuer_weak_key" | "issuer_service_format"
   | "audience_format" | "timestamp_format" | "nonce_format" | "size_format" | "body_cid_format"
-  | "unsigned_not_allowed" | "body_encoding" | "size_mismatch" | "body_over_type_cap" | "body_too_small" | "body_hash_mismatch"
+  | "unsigned_not_allowed" | "body_encoding" | "size_mismatch" | "body_over_cap" | "body_too_small" | "body_hash_mismatch"
   | "bad_signature" | "expired" | "body_open_failed" | "plaintext_schema" | "issuer_binding_mismatch"
   | "type_path_mismatch" | "link_cid_mismatch" | "full_non_share";
 
@@ -188,7 +188,7 @@ export function buildDeleteRequest(input: { readonly id: string; readonly issuer
  */
 export async function checkRecord(
   record: { readonly header: unknown; readonly signature?: unknown; readonly body: Uint8Array },
-  options: { readonly now: number; readonly key: Uint8Array },
+  options: { readonly now: number; readonly key: Uint8Array; readonly maxBodyBytes: number },
 ): Promise<{ readonly header: LinkHeader; readonly plaintext: Record<string, unknown> } | { readonly refusal: RecordRefusal }> {
   const signed = record.signature !== undefined;
   const checked = checkHeader(record.header, signed);
@@ -197,7 +197,7 @@ export async function checkRecord(
   if (!signed && header.type !== "openkey-login") return { refusal: "unsigned_not_allowed" };
   const { body } = record;
   if (body.byteLength !== header.size) return { refusal: "size_mismatch" };
-  if (body.byteLength > LINK_TYPES[header.type].maxBody) return { refusal: "body_over_type_cap" };
+  if (body.byteLength > options.maxBodyBytes) return { refusal: "body_over_cap" };
   if (body.byteLength < MIN_BODY_BYTES) return { refusal: "body_too_small" };
   if ((await computeCid(body)) !== header.bodyCid) return { refusal: "body_hash_mismatch" };
   if (signed && !verifySignature(HEADER_DOMAIN, header, header.issuer, record.signature)) return { refusal: "bad_signature" };

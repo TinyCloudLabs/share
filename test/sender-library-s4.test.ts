@@ -113,7 +113,7 @@ async function mount(records: readonly SenderShareRecord[], statusReader: NodeSt
   const history = new SenderHistoryRepository(vault(), () => Date.parse("2026-10-20T04:00:00.000Z"));
   for (const record of records) await history.save(record);
   const tinycloud = extra.tinycloud ?? fakeTinyCloud([]).tinycloud;
-  mountSenderHome(root, { session: extra.session ?? ({ address: ADDRESS, openkey: { disconnect: vi.fn() } } as unknown as OpenKeyShareSession), tinycloud, history, onNavigate: () => undefined, ...(statusReader === undefined ? {} : { statusReader }) });
+  mountSenderHome(root, { session: extra.session ?? ({ address: ADDRESS, openkey: { disconnect: vi.fn() } } as unknown as OpenKeyShareSession), tinycloud, history, onNavigate: () => undefined, onSendAgain: () => undefined, ...(statusReader === undefined ? {} : { statusReader }) });
   await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row").length).toBe(records.length));
   return { root, history, tinycloud };
 }
@@ -178,7 +178,7 @@ describe("TC-1584 library status comes from the node, not only from this browser
     await vi.waitFor(() => expect(first).toHaveBeenCalledTimes(1));
     const second = vi.fn<NodeStatusReader>(async (records) => statesOf({})(records));
     const history = new SenderHistoryRepository(vault(), () => Date.now()); await history.save(bearer("a", "a.md"));
-    mountSenderHome(root, { session: { address: ADDRESS, openkey: {} } as unknown as OpenKeyShareSession, tinycloud: fakeTinyCloud([]).tinycloud, history, onNavigate: () => undefined, statusReader: second });
+    mountSenderHome(root, { session: { address: ADDRESS, openkey: {} } as unknown as OpenKeyShareSession, tinycloud: fakeTinyCloud([]).tinycloud, history, onNavigate: () => undefined, onSendAgain: () => undefined, statusReader: second });
     await vi.waitFor(() => expect(second).toHaveBeenCalledTimes(1));
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
     window.dispatchEvent(new Event("focus"));

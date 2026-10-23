@@ -13,6 +13,8 @@ const ID = /^[a-z2-7]{26}$/;
 const NONCE = /^[A-Za-z0-9_-]{22}$/;
 const SERVICE_ISSUER = /^service:[a-z0-9][a-z0-9-]{0,31}$/;
 const REQUEST_CAP_BYTES = 177_835;
+/** Body caps of the pinned vectors (per type). The service moves to one limit when the vectors do. */
+const VECTOR_BODY_CAPS: Readonly<Record<string, number>> = { "openkey-login": 16_384, courier: 32_768, share: 131_072 };
 
 export interface MockApiKey {
   readonly keyId: string;
@@ -141,7 +143,7 @@ export function createMockLinksApi(options: MockLinksOptions) {
     if (h.audience !== options.audience) return error(400, "invalid_request");
     const bytes = strictBytes(body);
     if (bytes === undefined || bytes.byteLength !== h.size) return error(400, "invalid_request");
-    if (bytes.byteLength > LINK_TYPES[h.type].maxBody) return error(413, "too_large");
+    if (bytes.byteLength > VECTOR_BODY_CAPS[h.type]!) return error(413, "too_large");
     if (bytes.byteLength < MIN_BODY_BYTES || (await computeCid(bytes)) !== h.bodyCid) return error(400, "invalid_request");
     const issued = timestamp(h.issuedAt)!;
     const expires = timestamp(h.expiresAt)!;

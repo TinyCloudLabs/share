@@ -35,7 +35,7 @@ function shareRouteRewrite(): Plugin {
     if (path === "/apps") return "/apps/index.html";
     if (path === "/apps/run") return "/apps/run/index.html";
     if (path === "/courier") return "/courier/index.html";
-    if (path.startsWith("/s/")) return "/viewer/index.html";
+    if (path.startsWith("/s/") || path.startsWith("/c/")) return "/viewer/index.html";
     if (path === "/how-it-works" || path === "/how-it-works/") return "/how-it-works.html";
     return undefined;
   };

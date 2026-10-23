@@ -13,6 +13,8 @@ import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
 import { deleteShortLinkFor, SHORT_LINK_KEPT_NOTICE } from "../short-links/publish.js";
 import { linksApiOrigin } from "../short-links/config.js";
+import { SEND_AGAIN_FAILED, SEND_AGAIN_LABEL } from "../short-links/strings.js";
+import { canSendAgain, prefillFromRecord, type ComposerPrefill } from "./send-again.js";
 
 const APPROVAL_HINT = "Approve in the OpenKey window to revoke";
 
@@ -22,6 +24,8 @@ export interface SenderHomeOptions {
   readonly history: SenderHistoryRepository;
   /** Hands control back to the router. The library never mounts another screen itself (P0-1). */
   readonly onNavigate: (route: string) => void;
+  /** Opens the composer for a share whose link expired, filled in from what the saved share holds. */
+  readonly onSendAgain: (prefill: ComposerPrefill) => void;
   /** TC-1584. Asks the owner's node for each share's state. Without it the library shows only what was saved here. */
   readonly statusReader?: NodeStatusReader;
 }
@@ -98,6 +102,9 @@ function paintStatus(status: HTMLElement, kind: RowKind, expiresAt: string, ende
   if (label !== null) { label.className = `status-label tc-status tc-status--${TONE[kind]}`; label.textContent = KIND_LABEL[kind]; }
   const ended = status.dataset.endedOn;
   const expiredText = ended === "none" ? "Expired" : `Expired ${new Date(ended ?? expiresAt).toLocaleDateString()}`;
+  // "Send the link again" is offered for an expired share only.
+  const again = status.closest("tr")?.querySelector<HTMLElement>(".sender-send-again");
+  if (again !== null && again !== undefined) again.hidden = kind !== "expired" || again.dataset["available"] !== "true";
   if (detail !== null) detail.textContent = kind === "revoked" ? "Access ended" : kind === "expired" ? expiredText : `Expires ${new Date(expiresAt).toLocaleDateString()}`;
 }
 
@@ -384,6 +391,21 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const copy = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Copy link") as HTMLButtonElement; copy.type = "button"; copy.setAttribute("aria-label", `Copy link for ${safeName(item.record)}`); copy.addEventListener("click", () => { copy.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); return copyWithFallback(view.link); }).then(() => { live.textContent = "Link copied."; }).catch(() => { live.textContent = "Copy failed. Try again after allowing clipboard access."; }).finally(() => { copy.disabled = false; }); });
     const open = node(doc, "button", "button button-secondary tc-button tc-button--compact", "Open") as HTMLButtonElement; open.type = "button"; open.setAttribute("aria-label", `Open ${safeName(item.record)}`); open.addEventListener("click", () => { open.disabled = true; void options.history.show(item.record.shareId, true).then((view) => { if (view.link === undefined) throw new Error("share-link-unavailable"); openSenderViewer(view.link, live); }).catch(() => { live.textContent = "The share link could not be opened. Try again."; }).finally(() => { open.disabled = false; }); });
     itemCell.dataset.label = "Item"; controls.dataset.label = "Actions"; row.tabIndex = -1; controls.append(open, copy);
+    if (item.state !== "revoked") {
+      const available = canSendAgain(item.record);
+      const sendAgain = node(doc, "button", "button button-secondary tc-button tc-button--compact sender-send-again", SEND_AGAIN_LABEL) as HTMLButtonElement;
+      sendAgain.type = "button"; sendAgain.dataset["available"] = String(available); sendAgain.hidden = item.state !== "expired" || !available;
+      sendAgain.setAttribute("aria-label", `${SEND_AGAIN_LABEL}: ${safeName(item.record)}`);
+      // The saved share is read when clicked; only who it was for, how long it lasted and its file name go to the composer.
+      sendAgain.addEventListener("click", () => {
+        sendAgain.disabled = true;
+        void options.history.records.get(item.record.shareId).then((record) => {
+          if (record === undefined) throw new Error("share-not-found");
+          options.onSendAgain(prefillFromRecord(record));
+        }).catch(() => { live.textContent = SEND_AGAIN_FAILED; }).finally(() => { sendAgain.disabled = false; });
+      });
+      controls.append(sendAgain);
+    }
     const handle: RowHandle = { item, status, controls };
     rows.set(item.record.shareId, handle);
     if (item.state !== "revoked") {

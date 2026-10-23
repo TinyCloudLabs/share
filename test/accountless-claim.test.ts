@@ -47,7 +47,7 @@ beforeEach(() => {
 async function start(onComplete = vi.fn(async () => undefined), { requestCode = true } = {}) {
   const { receiveWithSdk } = await import("../src/viewer/sdk-accountless-receiver.js");
   const root = document.getElementById("viewer")!;
-  const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test", config, invitation: { filename: "Q3 report.pdf", expiresAt: "2030-01-02T03:04:00Z", actions: ["read"] }, onComplete });
+  const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid", config, invitation: { filename: "Q3 report.pdf", expiresAt: "2030-01-02T03:04:00Z", actions: ["read"] }, onComplete });
   if (requestCode) {
     await vi.waitFor(() => expect(root.querySelector(".claim-request-code")).not.toBeNull());
     root.querySelector<HTMLButtonElement>(".claim-request-code")!.click();
@@ -485,7 +485,7 @@ describe("share availability before a code is offered or sent", () => {
     const { receiveWithSdk } = await import("../src/viewer/sdk-accountless-receiver.js");
     const root = document.getElementById("viewer")!;
     const onComplete = vi.fn(async () => undefined);
-    const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test", config, invitation: { filename: "Q3 report.pdf" }, onComplete, ...extra });
+    const done = receiveWithSdk({ root, shareUrl: "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid", config, invitation: { filename: "Q3 report.pdf" }, onComplete, ...extra });
     return { root, done, onComplete };
   }
 

@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IDataVaultService } from "@tinycloud/web-sdk";
 import { mountSenderHome, nodeReproducibleRevocationTime } from "../src/share/sender-home.js";
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
-import { shortLinkRecordPath } from "../src/short-links/publish.js";
-import type { ShortLinkKv } from "../src/short-links/publish.js";
+import { buildShortLink } from "../src/short-links/codec.js";
+import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer } from "./fixtures/link-material.js";
 
 const { getPolicyRootStatusV3, revokePolicyRootV3 } = vi.hoisted(() => ({
   getPolicyRootStatusV3: vi.fn(async (): Promise<{ readonly state: "active" | "revoked" }> => ({ state: "active" })),
@@ -93,7 +93,7 @@ describe("sender home canonical lifecycle adapters", () => {
       credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
       activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
       signSessionBytes: async () => new Uint8Array(64),
-    } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    } as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(root.querySelectorAll(".sender-history-row")).toHaveLength(2));
     // Revoke at a millisecond ending in 0, which the Node would refuse as is.
     // waitFor's 50 ms ticks keep the last digit 0, so the nudge always runs.
@@ -123,7 +123,7 @@ describe("sender home canonical lifecycle adapters", () => {
     const root = document.createElement("div"); document.body.append(root);
     const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
     await history.save(record("bearer", { kind: "bearer" }));
-    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(root.querySelector("button.sender-revoke")).not.toBeNull());
     expect(root.querySelector<HTMLButtonElement>("button.sender-revoke")?.disabled).toBe(true);
     expect(root.querySelector<HTMLButtonElement>("button.sender-revoke")?.title).toContain("can't be revoked");
@@ -133,7 +133,7 @@ describe("sender home canonical lifecycle adapters", () => {
     const root = document.createElement("div"); document.body.append(root);
     const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
     const onNavigate = vi.fn();
-    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate });
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(root.querySelector<HTMLElement>(".sender-empty-state")?.hidden).toBe(false));
     root.querySelector<HTMLButtonElement>('button:not(.sender-empty-import)')?.click();
     expect(onNavigate).toHaveBeenCalledWith("#/new");
@@ -145,7 +145,7 @@ describe("sender home canonical lifecycle adapters", () => {
     const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
     await history.save(record("open-me", { kind: "bearer" }));
     vi.spyOn(window, "open").mockReturnValue(window);
-    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')).not.toBeNull());
     root.querySelector<HTMLButtonElement>('button[aria-label="Open open-me.md"]')!.click();
     await vi.waitFor(() => expect(window.open).toHaveBeenCalled());
@@ -153,41 +153,42 @@ describe("sender home canonical lifecycle adapters", () => {
   });
 });
 
-/** Owner KV holding the short-link record for `shareId`, the only key the revoke reads. */
-function shortLinkStore(shareId: string): ShortLinkKv {
-  const path = shortLinkRecordPath(shareId);
-  const data = { id: "lqdw5iopqq2tkkvjj6gbbi5vbv", deleteToken: "tok" };
-  return { get: async (key: string) => (key === path ? { ok: true, data: { data } } : { ok: false }), put: async () => ({ ok: true }) };
+const LINK_ID = "lqdw5iopqq2tkkvjj6gbbi5vbv";
+const SHORT_LINK = buildShortLink({ origin: SHARE_ORIGIN, type: "share", id: LINK_ID, key: "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo", cid: "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u" });
+/** The requests the sender page sent to the links API, in order. */
+function linkDeletes(spy: { readonly mock: { readonly calls: ReadonlyArray<Parameters<typeof fetch>> } }) {
+  return spy.mock.calls.filter(([url]) => String(url) === `${API_ORIGIN}/v1/links/${LINK_ID}/delete`);
 }
-const noShortLink: ShortLinkKv = { get: async () => ({ ok: false }), put: async () => ({ ok: true }) };
-/** The DELETE calls to the short-link API, in order. */
-function shortLinkDeletes(spy: { readonly mock: { readonly calls: ReadonlyArray<Parameters<typeof fetch>> } }) {
-  return spy.mock.calls.filter(([url, init]) => String(url).includes("/api/share-links/") && init?.method === "DELETE");
+/** Routes the page's fetch to a mock links API that holds this share's link. */
+function linksApiFor(spy: { mockImplementation(fn: typeof fetch): unknown }) {
+  const links = mockLinks();
+  links.api.state.records.set(LINK_ID, { type: "share", issuer: ISSUER_DID, expiresAt: new Date(Date.now() + 86_400_000).toISOString() });
+  spy.mockImplementation(links.fetchFn);
+  return links;
 }
 
 /** Mounts the library with one revocable email share. Native `confirm` is dismissed, as automation and embedded webviews do. */
-async function mountRevoke(shortLinks: ShortLinkKv = noShortLink) {
+async function mountRevoke(link: string | undefined = undefined) {
   getPolicyRootStatusV3.mockClear(); revokePolicyRootV3.mockClear();
   const root = document.createElement("div"); document.body.append(root);
   const history = new SenderHistoryRepository(fakeVault(), () => Date.parse("2026-07-27T00:00:00.000Z"));
-  await history.save(record("retry-me"));
+  await history.save({ ...record("retry-me"), ownerDid: ISSUER_DID, ...(link === undefined ? {} : { link }) });
   const nativeConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   mountSenderHome(root, { session, tinycloud: {
     revokeDelegation: vi.fn(),
-    credentialHolderDid: "did:pkh:eip155:1:0x1234567890abcdef",
+    credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://share.example.invalid", nodeDid: "did:web:node.example.invalid" }),
-    signSessionBytes: async () => new Uint8Array(64),
+    signSessionBytes: signWithIssuer,
     spaceId: "space-1",
-    kvForSpace: () => shortLinks,
-  } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+  } as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
   await vi.waitFor(() => expect(root.querySelector('button[aria-label="Revoke retry-me.md"]')).not.toBeNull());
   const live = root.querySelector<HTMLElement>(".sender-live")!; const messages: string[] = [];
   new MutationObserver(() => messages.push(live.textContent ?? "")).observe(live, { childList: true, characterData: true, subtree: true });
   return { root, history, live, messages, nativeConfirm };
 }
 
-async function clickRevoke(shortLinks?: ShortLinkKv) {
-  const mounted = await mountRevoke(shortLinks);
+async function clickRevoke(link?: string) {
+  const mounted = await mountRevoke(link);
   mounted.root.querySelector<HTMLButtonElement>('button[aria-label="Revoke retry-me.md"]')!.click();
   confirmInPage(mounted.root);
   return mounted;
@@ -227,45 +228,62 @@ describe("TC-657 revoke retry after a lost response", () => {
   });
 });
 
-describe("TC-1737 short-link revoke order and notice", () => {
-  it("sends no short-link DELETE when the node revoke is refused", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
+describe("TC-1737 revoke removes the stored link with a signed delete", () => {
+  beforeEach(() => { vi.stubEnv("VITE_SHARE_ORIGIN", SHARE_ORIGIN); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("sends no link delete when the node revoke is refused", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    linksApiFor(fetchSpy);
     revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 }));
-    const { root, history } = await clickRevoke(shortLinkStore("retry-me"));
+    const { root, history } = await clickRevoke(SHORT_LINK);
     await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
-    expect(shortLinkDeletes(fetchSpy)).toEqual([]);
+    expect(linkDeletes(fetchSpy)).toEqual([]);
     expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
     expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
+  });
+
+  it("deletes the link with an issuer-signed request that carries no key and no token", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const links = linksApiFor(fetchSpy);
+    const { root, messages } = await clickRevoke(SHORT_LINK);
+    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+    await vi.waitFor(() => expect(links.api.state.records.has(LINK_ID)).toBe(false));
+    expect(messages).toContain("Share revoked.");
+    expect(root.querySelector(".sender-row-note")).toBeNull();
+    const [, init] = linkDeletes(fetchSpy)[0]!;
+    const body = JSON.parse(String(init!.body));
+    expect(Object.keys(body).sort()).toEqual(["request", "signature"]);
+    expect(body.request).toMatchObject({ op: "delete", id: LINK_ID, issuer: ISSUER_DID, audience: API_ORIGIN });
+    expect(String(init!.body)).not.toContain("WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo");
+    expect(new Headers(init!.headers).has("authorization")).toBe(false);
   });
 
   it.each([
     ["a 500", (): Response => new Response(null, { status: 500 })],
     ["a network error", (): Response => { throw new TypeError("Failed to fetch"); }],
-  ])("keeps the record and shows a note when the short-link DELETE fails with %s", async (_name, respond) => {
+  ])("revokes the share and shows a note when the link delete fails with %s", async (_name, respond) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => respond());
-    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+    const { root, messages } = await clickRevoke(SHORT_LINK);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(messages).toContain("Share revoked.");
     expect(root.querySelector(".sender-row-note")?.textContent).toBe("The short link stops resolving when the share expires.");
-    const deletes = shortLinkDeletes(fetchSpy);
-    expect(deletes).toHaveLength(1);
-    expect(new Headers(deletes[0]![1]!.headers).get("authorization")).toBe("Bearer tok");
+    expect(linkDeletes(fetchSpy)).toHaveLength(1);
   });
 
-  it("shows no note when the short link is already gone (DELETE answers 404)", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 404 }));
-    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+  it("shows no note when the link is already gone (the delete answers 404)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ error: "not_found" }), { status: 404 }));
+    const { root, messages } = await clickRevoke(SHORT_LINK);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
     expect(messages).toContain("Share revoked.");
     expect(root.querySelector(".sender-row-note")).toBeNull();
   });
 
-  it("shows no note when the short-link DELETE succeeds", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 204 }));
-    const { root, messages } = await clickRevoke(shortLinkStore("retry-me"));
+  it("sends nothing for a share whose history holds a full link or an older link form", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 204 }));
+    const { root } = await clickRevoke(`${SHARE_ORIGIN}/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=e30`);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(messages).toContain("Share revoked.");
-    expect(root.querySelector(".sender-row-note")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -357,7 +375,7 @@ describe("sender home load states", () => {
   const NOW = () => Date.parse("2026-07-27T00:00:00.000Z");
   const mount = (history: SenderHistoryRepository) => {
     const root = document.createElement("div"); document.body.append(root);
-    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     return root;
   };
   const failingListing = () => ({ ok: false as const });
@@ -467,5 +485,59 @@ describe("sender home load states", () => {
     expect(root.querySelector(".sender-skeleton-row")).toBeNull();
     expect(root.querySelector("table")?.hidden).toBe(true);
     expect(root.querySelector("[aria-busy]")).toBeNull();
+  });
+});
+
+describe("Send the link again", () => {
+  const BEFORE_EXPIRY = Date.parse("2026-07-27T00:00:00.000Z");
+  const AFTER_EXPIRY = Date.parse("2026-08-05T00:00:00.000Z");
+  const button = (root: HTMLElement): HTMLButtonElement | null => root.querySelector<HTMLButtonElement>(".sender-send-again");
+
+  async function mountWith(saved: SenderShareRecord, now: number, onSendAgain = vi.fn()) {
+    const root = document.createElement("div"); document.body.append(root);
+    const history = new SenderHistoryRepository(fakeVault(), () => now);
+    await history.save(saved);
+    mountSenderHome(root, { session, tinycloud: {} as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain });
+    await vi.waitFor(() => expect(root.querySelector(".sender-history-row")).not.toBeNull());
+    return { root, onSendAgain, history };
+  }
+
+  it("is shown, with Sam's wording, on a share that has expired", async () => {
+    const { root } = await mountWith(record("old"), AFTER_EXPIRY);
+    expect(button(root)?.hidden).toBe(false);
+    expect(button(root)?.textContent).toBe("Send the link again");
+  });
+
+  it("is hidden on a share that is still live", async () => {
+    const { root } = await mountWith(record("live"), BEFORE_EXPIRY);
+    expect(button(root)).not.toBeNull();
+    expect(button(root)?.hidden).toBe(true);
+  });
+
+  it("is not offered on a revoked share, or on one made for a single OpenKey device", async () => {
+    const revoked = await mountWith({ ...record("gone"), revokedAt: "2026-07-26T00:00:00.000Z" }, AFTER_EXPIRY);
+    expect(button(revoked.root)).toBeNull();
+    document.body.replaceChildren();
+    const device = await mountWith(record("device", { kind: "recipientDid", value: "did:key:z6MkDevice" }), AFTER_EXPIRY);
+    expect(button(device.root)?.hidden).toBe(true);
+  });
+
+  it("opens the composer with who it was for, how long it lasted and the file name, and nothing else", async () => {
+    const saved: SenderShareRecord = { ...record("old"), deliveryMaterial: { envelope: { version: 3 }, sealedEnvelope: "SEALED", envelopeKey: "KEY", shareCid: "bafy" }, deliveredRecipients: ["person@example.invalid"] };
+    const { root, onSendAgain } = await mountWith(saved, AFTER_EXPIRY);
+    button(root)!.click();
+    await vi.waitFor(() => expect(onSendAgain).toHaveBeenCalledTimes(1));
+    const prefill = onSendAgain.mock.calls[0]![0];
+    expect(prefill).toEqual({ recipient: { kind: "exactEmail", value: "person@example.invalid" }, deliveryEmails: ["person@example.invalid"], expiry: "7d", filename: "old.md" });
+    expect(JSON.stringify(prefill)).not.toMatch(/SEALED|KEY|bafy/);
+  });
+
+  it("says so when the saved share cannot be read", async () => {
+    const { root, onSendAgain, history } = await mountWith(record("old"), AFTER_EXPIRY);
+    const failing = vi.spyOn(history.records, "get").mockRejectedValue(new Error("vault down"));
+    button(root)!.click();
+    await vi.waitFor(() => expect(root.querySelector(".sender-live")?.textContent).toBe("We couldn't open this share to send it again. Try again."));
+    expect(onSendAgain).not.toHaveBeenCalled();
+    failing.mockRestore();
   });
 });

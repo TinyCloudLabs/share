@@ -278,7 +278,7 @@ that output and in `test/e2e-html-share.mjs`, not hidden.
 
 ## Opening a link again
 
-The private part of a link (`#tc1=…` for bearer links, `#v=2&p=…` for addressed
+The private part of a link (`#tc1=…` for bearer links, `#v=4&…` for addressed
 links) is removed from the address bar the moment the viewer opens, and the
 viewer does not store it. Reloading a share, or opening `/viewer` without the
 fragment, therefore cannot re-read it: the page asks the recipient to open the

@@ -600,7 +600,7 @@ async function verifyDomainJourney({ browser, sender, stack }) {
   const copied = await sender.evaluate(() => window.__tc500Clipboard.length);
   await clickText(sender, "Copy link");
   const domainUrl = await waitUntil(() => sender.evaluate((count) => window.__tc500Clipboard.length > count ? window.__tc500Clipboard.at(-1) : undefined, copied), 10_000);
-  assert.match(domainUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/, "domain share did not produce a sealed inline link");
+  assert.match(domainUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=/, "domain share did not produce a short link");
   const mailBefore = stack.mail.length;
 
   // Look-alike and subdomain mailboxes are refused before any acquisition.
@@ -687,7 +687,7 @@ async function verifyDomainDelivery({ browser, sender, stack }) {
   await clickText(sender, "Notify 2 recipients");
   const invitedTo = (recipient) => stack.mail.slice(mailBefore).find((message) => {
     const to = Array.isArray(message?.payload?.to) ? message.payload.to : [message?.payload?.to];
-    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("/s/inline#"));
+    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("#v=4&k="));
   });
   const invitations = await waitUntil(() => recipients.every((recipient) => invitedTo(recipient) !== undefined) ? recipients.map(invitedTo) : undefined, 90_000);
   assert(invitations, "each domain address was not emailed an invitation");
@@ -971,7 +971,7 @@ async function verifyCliSenderJourney({ browser, stack, temporary }) {
   assert.deepEqual(cliDiagnostic.credentialInvitations, [202], "OpenCredentials did not accept exactly one CLI invitation");
   const invitationMail = await waitUntil(() => stack.mail.slice(mailBefore).find((message) => {
     const to = Array.isArray(message?.payload?.to) ? message.payload.to : [message?.payload?.to];
-    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("/s/inline#"));
+    return to.includes(recipient) && stringsIn(message.payload).some((value) => value.includes("#v=4&k="));
   }), 60_000);
   const link = invitationFromMail(invitationMail);
   assert.equal(typeof link, "string", "the CLI invitation was not mailed to the recipient");
@@ -1130,10 +1130,10 @@ try {
   await sender.waitForFunction(() => document.querySelector(".composer-status")?.dataset.state === "created", { timeout: 300_000 });
   await clickText(sender, "Copy link");
   const shareUrl = await sender.evaluate(() => window.__tc500Clipboard.at(-1));
-  assert.match(shareUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/inline#v=2&p=/);
+  assert.match(shareUrl ?? "", /^https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=/);
   journeyStage = "sender-delivery";
   await clickText(sender, "Notify recipient");
-  const invitationMail = await waitUntil(() => findMail(stack.mail, (values) => values.some((value) => value.includes("/s/inline#"))), 60_000);
+  const invitationMail = await waitUntil(() => findMail(stack.mail, (values) => values.some((value) => value.includes("#v=4&k="))), 60_000);
   const invitation = invitationFromMail(invitationMail); assert.equal(typeof invitation, "string");
 
   phase = "recipient";

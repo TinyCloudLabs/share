@@ -67,7 +67,7 @@ describe("records vectors (reader checks)", () => {
   for (const vector of vectors.records) {
     it(vector.name, async () => {
       const record = { header: vector.record.header, ...(vector.record.signature === undefined ? {} : { signature: vector.record.signature }), body: fromBase64Url(vector.record.body) };
-      const result = await checkRecord(record, { now: Date.parse(vector.now), key: fromBase64Url(vector.contentKeyB64u) });
+      const result = await checkRecord(record, { now: Date.parse(vector.now), key: fromBase64Url(vector.contentKeyB64u), maxBodyBytes: Number.POSITIVE_INFINITY });
       if (vector.expect.status === 200) expect("refusal" in result).toBe(false);
       else expect("refusal" in result ? result.refusal : undefined).toBe(vector.expect.reason);
     });

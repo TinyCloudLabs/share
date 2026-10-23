@@ -13,7 +13,8 @@ import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 import { publishLink } from "../short-links/publish.js";
 import { linksApiOrigin } from "../short-links/config.js";
-import { FULL_LINK_NO_EMAIL } from "../short-links/strings.js";
+import { FULL_LINK_NO_EMAIL, SEND_AGAIN_ATTACH_HINT, sendAgainAttachNamedHint } from "../short-links/strings.js";
+import type { ComposerPrefill } from "./send-again.js";
 
 import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { createAnnouncer } from "./announcer.js";
@@ -112,6 +113,11 @@ export interface ShareDeliveryAuthorizationReceipt {
 }
 
 /** Not every address was emailed; trying again sends only `unsent`. */
+/** The share has only a full link, which an invitation email cannot carry. */
+export class FullLinkNoEmail extends Error {
+  constructor() { super("invitation email needs a short link"); }
+}
+
 export class ShareDeliveryIncomplete extends Error {
   constructor(readonly sent: number, readonly total: number, readonly unsent: readonly string[] = []) {
     super("share delivery incomplete");
@@ -183,6 +189,8 @@ export interface ShareComposerOptions {
   readonly createShare?: (input: { readonly file: File | undefined; readonly files: readonly File[]; readonly model: ShareComposerModel }) => Promise<ComposerShareResult>;
   readonly notify?: (input: { readonly share: ComposerShareResult; readonly recipient: string; readonly matcher: RecipientKind; readonly deliveryAuthorization?: ShareDeliveryAuthorizationReceipt }) => Promise<void>;
   readonly tinycloud?: ShareTinyCloud;
+  /** Set when the composer is opened by "Send the link again". */
+  readonly prefill?: ComposerPrefill;
   readonly persistShare?: (input: { readonly share: ComposerShareResult; readonly model: ShareComposerModel; readonly file: File | undefined; readonly files: readonly File[] }) => Promise<void>;
 }
 
@@ -443,7 +451,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       if (missingTinyCloudMethods(tinycloud, OWNER_TINYCLOUD_DELIVERY_METHODS).length > 0) throw new Error("We couldn't send that email. The link above still works.");
       if (deliveryMaterial === undefined) throw new Error("We couldn't send that email. The link above still works.");
       // Invitation emails carry the short link only.
-      if (publication.form !== "short") throw new Error(FULL_LINK_NO_EMAIL);
+      if (publication.form !== "short") throw new FullLinkNoEmail();
       const material = deliveryMaterial;
       // The owner's Node authorizes each mailbox separately and names it in
       // its signed admission; OpenCredentials sends one invitation per address.
@@ -831,6 +839,17 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   form.querySelectorAll<HTMLInputElement>("input[name=expiry]").forEach((input) => input.addEventListener("change", refreshNote));
   delivery.addEventListener("input", () => { deliveryTouched = true; });
   refreshRecipient();
+  if (options.prefill !== undefined) {
+    const { prefill } = options;
+    const radio = form.querySelector<HTMLInputElement>(`input[name=recipient][value="${prefill.recipient.kind}"]`);
+    if (radio !== null && !radio.disabled) { radio.checked = true; recipientInput.value = prefill.recipient.value ?? ""; }
+    const expiry = form.querySelector<HTMLInputElement>(`input[name=expiry][value="${prefill.expiry}"]`);
+    if (expiry !== null) expiry.checked = true;
+    refreshRecipient();
+    if (selectedKind() === "emailDomain") domainDelivery.value = prefill.deliveryEmails.join(", ");
+    const hint = el(doc, "p", "tc-help send-again-hint", prefill.filename === undefined ? SEND_AGAIN_ATTACH_HINT : sendAgainAttachNamedHint(prefill.filename));
+    contentSection.prepend(hint);
+  }
 
   const showDropzone = (): void => {
     contentKind = "empty"; chosenFiles = []; fileInput.value = ""; saveAsLabel.hidden = false;
@@ -1123,7 +1142,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
           // How many addresses earlier attempts emailed, so "Keep link-only"
           // never claims that none were.
           let sent = 0;
-          confirm.addEventListener("click", () => { confirm.disabled = true; cancel.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = many ? "Requesting invitations…" : "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = many ? "Invitations requested." : "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch((error: unknown) => { confirm.disabled = false; cancel.disabled = false; if (error instanceof ShareDeliveryIncomplete) sent = error.sent; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = error instanceof ShareDeliveryIncomplete && error.sent > 0 ? `Sent ${error.sent} of ${error.total}.${error.unsent.length > 0 ? ` Not sent to ${someAddresses(error.unsent)}.` : ""} The link above still works; try again to send the rest.` : "Invitation request failed. The link above still works; try again when ready."; }); });
+          confirm.addEventListener("click", () => { confirm.disabled = true; cancel.disabled = true; deliveryStatus.dataset.state = "loading"; deliveryStatus.textContent = many ? "Requesting invitations…" : "Requesting invitation…"; void notifyAction().then(() => { deliveryStatus.dataset.state = "success"; deliveryStatus.textContent = many ? "Invitations requested." : "Invitation requested."; confirm.hidden = true; cancel.hidden = true; }).catch((error: unknown) => { confirm.disabled = false; cancel.disabled = false; if (error instanceof ShareDeliveryIncomplete) sent = error.sent; deliveryStatus.dataset.state = "error"; deliveryStatus.textContent = error instanceof FullLinkNoEmail ? FULL_LINK_NO_EMAIL : error instanceof ShareDeliveryIncomplete && error.sent > 0 ? `Sent ${error.sent} of ${error.total}.${error.unsent.length > 0 ? ` Not sent to ${someAddresses(error.unsent)}.` : ""} The link above still works; try again to send the rest.` : "Invitation request failed. The link above still works; try again when ready."; }); });
           cancel.addEventListener("click", () => { confirm.hidden = true; cancel.hidden = true; delete deliveryStatus.dataset.state; deliveryStatus.textContent = sent === 0 ? "No email was sent." : `Sent ${sent} of ${recipients.length}. The rest weren't emailed.`; }); status.append(el(doc, "p", "notify-help", "The link is already yours. Send it from here only if you want us to email it."), confirm, cancel, deliveryStatus);
         }
         copy.focus();

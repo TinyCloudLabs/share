@@ -781,7 +781,7 @@ describe("share composer sender failures", () => {
     const root = document.createElement("div"); document.body.append(root);
     const notify = vi.fn(async (_input: { readonly recipient: string; readonly matcher: string }) => undefined);
     let created: ShareComposerModel | undefined;
-    mountShareComposer(root, { ...baseOptions(), notify, createShare: async ({ model }) => { created = model; return { url: "https://share.tinycloud.xyz/s/inline#v=2&p=opaque", cid: "cid" }; } });
+    mountShareComposer(root, { ...baseOptions(), notify, createShare: async ({ model }) => { created = model; return { url: "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid", cid: "cid" }; } });
     const domain = root.querySelector<HTMLInputElement>("input[name=recipient][value=emailDomain]")!;
     domain.checked = true;
     domain.dispatchEvent(new Event("change", { bubbles: true }));

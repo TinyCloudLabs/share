@@ -55,7 +55,7 @@ describe("Share public routing config", () => {
     const viewer = readFileSync("viewer/index.html", "utf8");
     const product = readFileSync("PRODUCT.md", "utf8");
     for (const copy of [viewer, product]) {
-      expect(copy).toContain("/s/inline#v=2");
+      expect(copy).toContain("#v=4");
       expect(copy).not.toContain("/viewer?tc2");
       expect(copy).not.toContain("policy-v3-tc2");
     }

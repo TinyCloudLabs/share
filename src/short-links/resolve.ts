@@ -9,7 +9,8 @@
 import { fromBase64Url } from "@tinycloud/share-envelope";
 import { LinkApiError, readLinkRecord, type LinkApiOptions } from "./client.js";
 import { parseLink, type LinkRefusal } from "./codec.js";
-import { checkRecord, LINK_TYPES, type LinkHeader, type RecordRefusal } from "./record.js";
+import { LINK_BODY_MAX_BYTES } from "./limits.js";
+import { checkRecord, type LinkHeader, type RecordRefusal } from "./record.js";
 
 export type ReadRefusal = LinkRefusal | RecordRefusal | "gone" | "not_viewable";
 
@@ -74,7 +75,7 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
   let record: { readonly header: unknown; readonly signature?: unknown; readonly body: Uint8Array };
   if (link.form === "short") {
     try {
-      const fetched = await readLinkRecord(link.id, LINK_TYPES[link.pathType].maxBody, options);
+      const fetched = await readLinkRecord(link.id, LINK_BODY_MAX_BYTES, options);
       if (fetched === undefined) throw notFound("gone");
       record = fetched;
     } catch (error) {
@@ -87,7 +88,8 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
     record = embeddedRecord(link.record);
   }
   const key = fromBase64Url(link.key);
-  const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key });
+  // A full link is not stored; the fragment bound in the link grammar limits it instead of the stored-link size.
+  const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key, maxBodyBytes: link.form === "short" ? LINK_BODY_MAX_BYTES : Number.POSITIVE_INFINITY });
   if ("refusal" in checked) throw notFound(checked.refusal);
   const { header, plaintext } = checked;
   if (link.form === "short") {

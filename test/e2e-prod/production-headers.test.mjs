@@ -7,7 +7,7 @@ import { parseProductionHeaders, productionHeadersForPath } from "./production-h
 const rules = parseProductionHeaders(readFileSync(new URL("../../public/_headers", import.meta.url), "utf8"));
 
 test("production-origin viewer reproduces the deployed CSP and browser isolation headers", () => {
-  const headers = productionHeadersForPath(rules, "/s/inline");
+  const headers = productionHeadersForPath(rules, "/s/lqdw5iopqq2tkkvjj6gbbi5vbv");
   assert.match(headers["content-security-policy"], /require-trusted-types-for 'script'/);
   assert.match(headers["content-security-policy"], /trusted-types share-viewer-html dompurify 'allow-duplicates'/);
   assert.match(headers["content-security-policy"], /frame-ancestors 'none'/);

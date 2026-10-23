@@ -146,7 +146,7 @@ async function library(): Promise<void> {
     void signal;
     return Promise.resolve(new Map(records.map((item) => [item.shareId, kind === "expired" && item.shareId === "html" ? { state: "expired" as const } : { state: "active" as const }])));
   };
-  const options: SenderHomeOptions = { session, tinycloud, history, onNavigate: () => undefined, statusReader: reader };
+  const options: SenderHomeOptions = { session, tinycloud, history, onNavigate: () => undefined, onSendAgain: () => undefined, statusReader: reader };
   mountSenderHome(view, options);
 }
 

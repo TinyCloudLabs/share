@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
+import { ISSUER_DID, mockLinks, signWithIssuer } from "./fixtures/link-material.js";
 
 // The owner-share path runs for real; only the SDK publish call, the public
 // config, the Node's delivery authorization and the OpenCredentials request
@@ -23,8 +24,9 @@ vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   prepareAddressedShare: vi.fn((await importOriginal<typeof import("@tinycloud/share-sdk")>()).prepareAddressedShare),
   publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly onDeliveryMaterial: (material: unknown) => void }) => {
     state.published.push(options);
-    options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope: "sealed", envelopeKey: "key", shareCid: "bafy-share" });
-    return { url: "https://share.tinycloud.xyz/s/inline#v=2&p=opaque", link: { cid: "bafy-share" }, metadata: { expiresAt: "2030-01-01T00:00:00Z" } };
+    const { sealedEnvelope, envelopeKey, shareCid } = await (await import("./fixtures/link-material.js")).sealedMaterial();
+    options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope, envelopeKey, shareCid });
+    return { url: "unused", link: { cid: shareCid }, metadata: { expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } };
   }),
   historyRecordForPublishedShare: vi.fn(() => ({ id: "record" })),
 }));
@@ -58,19 +60,19 @@ function owner() {
   const encryptToNetwork = vi.fn(async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }));
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
-    credentialHolderDid: "did:key:z6MkOwnerSession",
+    credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
     encryption: { encryptToNetwork },
     kvForSpace: () => ({ put }),
-    signSessionBytes: async () => new Uint8Array(64),
+    signSessionBytes: signWithIssuer,
     createUnifiedOwnerRoot: vi.fn(),
     registerPolicy: vi.fn(),
     authorizeShareDeliveryV3,
   } as unknown as ShareTinyCloud;
   const root = document.createElement("div");
   document.body.append(root);
-  mountShareComposer(root, { openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
+  mountShareComposer(root, { fetchFn: mockLinks().fetchFn, openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
   const status = () => root.querySelector(".notification-status")?.textContent;
   return { root, authorizeShareDeliveryV3, status, encryptToNetwork, put };
 }

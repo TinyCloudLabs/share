@@ -11,7 +11,7 @@ test("recipient gate never prints invitation or mailbox when a dependency fails"
     env: {
       ...process.env,
       TC500_E2E_RUN: "1",
-      TC500_E2E_SHARE_URL: `https://share.tinycloud.xyz/s/inline#v=2&p=${secrets[0]}`,
+      TC500_E2E_SHARE_URL: `https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=${secrets[0]}&c=cid`,
       TC500_E2E_RECIPIENT_EMAIL: secrets[1],
       TC500_E2E_EXPECTED_FILE: "/deliberately-missing-tc500-input",
     },

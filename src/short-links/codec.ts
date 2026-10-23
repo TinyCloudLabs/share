@@ -1,3 +1,4 @@
+import { MAX_FULL_LINK_FRAGMENT } from "./limits.js";
 import { canonicalize, fromBase64Url, isCanonicalRawCid, toBase64Url } from "@tinycloud/share-envelope";
 
 export type LinkType = "openkey-login" | "courier" | "share";
@@ -62,7 +63,7 @@ export function parseLink(href: string, trustedOrigins: readonly string[]): Link
     return { ok: true, link: { form: "short", origin: url.origin, pathType: TYPE_BY_LETTER[short[1]!]!, id: short[2]!.toLowerCase(), key: fragment[1]!, cid: fragment[2]! } };
   }
   const fragment = FULL_FRAGMENT.exec(url.hash);
-  if (fragment === null) return no("fragment_grammar");
+  if (fragment === null || url.hash.length > MAX_FULL_LINK_FRAGMENT) return no("fragment_grammar");
   if (strictBytes(fragment[1]!)?.length !== 32) return no("key_noncanonical");
   const raw = strictBytes(fragment[2]!);
   if (raw === undefined) return no("record_encoding");

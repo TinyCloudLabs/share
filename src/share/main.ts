@@ -1,5 +1,6 @@
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import type { SenderHistoryRepository } from "./sender-history.js";
+import type { ComposerPrefill } from "./send-again.js";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
@@ -77,6 +78,9 @@ let renderToken = 0;
 /** How each screen that was mounted this session lets go of what it listens to; run at sign-out. */
 const screenEnds = new Set<() => void>();
 
+/** Held between the library and the composer for one "Send the link again"; read once by the composer. */
+let pendingPrefill: ComposerPrefill | undefined;
+
 function navigate(route: string): void {
   if (window.location.hash === route) { render(); return; }
   window.location.hash = route;
@@ -86,7 +90,7 @@ function renderLibrary(current: SenderApp, token: number): void {
   void Promise.all([import("./sender-home.js"), import("./node-status.js")]).then(([{ mountSenderHome, endSenderLibrary }, { createNodeStatusReader }]) => {
     if (token !== renderToken) return;
     screenEnds.add(endSenderLibrary);
-    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
+    mountSenderHome(view, { session: current.session, tinycloud: current.tinycloud, history: current.history, onNavigate: navigate, onSendAgain: (prefill) => { pendingPrefill = prefill; navigate(COMPOSER_ROUTE); }, statusReader: createNodeStatusReader(current.tinycloud, current.session.address) });
   });
 }
 
@@ -94,7 +98,10 @@ function renderComposer(current: SenderApp, token: number): void {
   void import("./composer.js").then(({ mountShareComposer, endShareComposer }) => {
     if (token !== renderToken) return;
     screenEnds.add(endShareComposer);
+    const prefill = pendingPrefill;
+    pendingPrefill = undefined;
     mountShareComposer(view, {
+      ...(prefill === undefined ? {} : { prefill }),
       origin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
       openKeyAddress: current.session.address,
       session: current.session,
