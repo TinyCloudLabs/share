@@ -29,6 +29,11 @@ async function entryFor(manifestText: string, overrides: Partial<CatalogEntry> =
   };
 }
 
+/** A bundle that includes app.jsx, as the catalog lists for an app that has code. */
+const WITH_CODE: Partial<CatalogEntry> = {
+  bundle: { root: `/apps/b/${digest}/`, files: [{ path: "app.jsx", sha256: "e".repeat(64), size: 1 }, { path: "manifest.json", sha256: "d".repeat(64), size: 1 }], digest },
+};
+
 const settle = async (): Promise<void> => { await vi.waitFor(() => expect(document.querySelector("#sheet [aria-busy]")).toBeNull()); };
 
 let list: HTMLElement;
@@ -99,7 +104,7 @@ describe("apps page rendering", () => {
   it("makes Open the card's primary action, Details secondary, and offers no Install button anywhere", async () => {
     const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
     vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
-    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app." });
+    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app.", ...WITH_CODE });
     mountApps(list, sheet, [entry]);
     const installButtons = (root: ParentNode): HTMLButtonElement[] => [...root.querySelectorAll("button")].filter((button) => button.textContent === "Install");
     const openLink = list.querySelector<HTMLAnchorElement>(`a[href="${runnerHref(entry.app_id)}"]`);
@@ -123,5 +128,21 @@ describe("apps page rendering", () => {
     expect(open?.disabled).toBe(true);
     expect(list.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
     expect(list.textContent).toContain("Paused for maintenance.");
+    expect(list.querySelector(".apps-unavailable strong")?.textContent).toBe("Temporarily unavailable");
+  });
+
+  it("an entry the catalog lists without its code shows Open disabled with the reason, on the card and in its sheet", async () => {
+    const manifest = JSON.stringify({ app_id: "t.app", name: "T", defaults: false });
+    vi.stubGlobal("fetch", vi.fn(async () => reply(manifest)));
+    const entry = await entryFor(manifest, { name: "Plain", description: "Plain app." });
+    mountApps(list, sheet, [entry]);
+    expect(list.querySelector<HTMLButtonElement>("button[aria-label='Open Plain']")?.disabled).toBe(true);
+    expect(list.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
+    expect(list.querySelector(".apps-unavailable strong")?.textContent).toBe("Unavailable");
+    expect(list.textContent).toContain("This app isn't available right now.");
+    list.querySelector<HTMLButtonElement>("button[aria-label='Details for Plain']")!.click();
+    await settle();
+    expect(sheet.querySelector<HTMLButtonElement>("footer button[aria-label='Open Plain']")?.disabled).toBe(true);
+    expect(sheet.querySelector(`a[href="${runnerHref(entry.app_id)}"]`)).toBeNull();
   });
 });

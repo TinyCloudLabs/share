@@ -269,6 +269,8 @@ body {
   display: grid;
   flex: 1;
   align-content: start;
+  /* Rows take their content's height, so a notice in this scrolling body keeps its full height. */
+  grid-auto-rows: max-content;
   gap: var(--tc-space-5);
   padding: var(--tc-space-5);
   overflow-y: auto;

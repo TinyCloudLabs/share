@@ -74,11 +74,14 @@ describe("JSX sandbox frame policy", () => {
       }
     };
     walk("src");
+    const escapeTokens = "same-origin|top-navigation|forms|modals|downloads";
     for (const path of files) {
       const text = readFileSync(path, "utf8");
       // Comments may name the forbidden tokens; only attribute assignments count.
-      expect(text, path).not.toMatch(/setAttribute\(\s*["']sandbox["']\s*,\s*["'][^"']*allow-(same-origin|popups|top-navigation|forms|modals|downloads)/);
-      expect(text, path).not.toMatch(/sandbox\s*=\s*["'][^"']*allow-(same-origin|popups|top-navigation|forms|modals|downloads)/);
+      // allow-popups is granted only by the markdown preview frame; no other source file may grant it.
+      const forbidden = path === join("src", "viewer", "preview-frame.ts") ? escapeTokens : `popups|${escapeTokens}`;
+      expect(text, path).not.toMatch(new RegExp(`setAttribute\\(\\s*["']sandbox["']\\s*,\\s*["'][^"']*allow-(${forbidden})`));
+      expect(text, path).not.toMatch(new RegExp(`sandbox\\s*=\\s*["'][^"']*allow-(${forbidden})`));
     }
     const bridge = buildJsxSandboxHtml("");
     expect(bridge).not.toContain("allow-same-origin");

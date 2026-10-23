@@ -9,8 +9,9 @@
  * allow-scripts bootstrap frame (option "b"):
  *
  *   The final sanitized document is delivered DECLARATIVELY via the iframe's
- *   `srcdoc` attribute into a frame whose sandbox attribute grants NOTHING
- *   (`sandbox=""`): no `allow-scripts`, no `allow-same-origin`. That means
+ *   `srcdoc` attribute into a frame whose sandbox attribute grants only
+ *   popups (`allow-popups allow-popups-to-escape-sandbox`, for links): no
+ *   `allow-scripts`, no `allow-same-origin`. That means
  *   - the frame's origin is OPAQUE — it holds none of the viewer origin's
  *     powers (no DOM access to the parent, no storage, no credentialed
  *     fetches), and
@@ -46,10 +47,11 @@
  * Residual behaviors, considered and accepted:
  *   - The frame cannot self-report its content height (no script), so the
  *     parent styles it as a fixed-height scrolling region (viewer.css).
- *   - A safe (sanitizer-allowed https) link clicked inside the frame
- *     navigates the FRAME, not the top-level viewer — and the navigated
- *     document keeps the sandbox flags (still no script, still opaque).
- *     Hostile content can no longer navigate the privileged document at all.
+ *   - A link clicked inside the frame never navigates the frame. http(s) and
+ *     mailto links carry target="_blank" rel="noopener noreferrer" and open in
+ *     a new tab (render.ts rehypeExternalLinks); every other destination is
+ *     rendered as inert text. The frame itself keeps every sandbox flag it
+ *     was created with except allow-popups.
  */
 import tokensCss from "@tinycloud/styles/tokens.css?raw";
 import baseCss from "@tinycloud/styles/base.css?raw";
@@ -62,7 +64,7 @@ export const PREVIEW_FRAME_CLASS = "viewer-preview-frame";
 /**
  * The srcdoc document's own CSP (additive to the inherited viewer CSP —
  * see module doc). Deliberately NO script-src directive: it falls back to
- * default-src 'none'. Script inertness itself comes from sandbox="", not
+ * default-src 'none'. Script inertness itself comes from the sandbox (no allow-scripts), not
  * from this policy. VIEWER PRIVACY: a Markdown document makes no request and
  * no connection to any host, so its author cannot tell who opened it or when:
  * images are data:/blob: only; fonts, media, connections, frames and scripts
@@ -133,7 +135,8 @@ body { margin: 0; }
  * Build the complete srcdoc document around the sanitized content HTML.
  * The content string has been through the FULL pipeline already; it is
  * embedded in body context as-is. Even if it somehow carried markup that
- * breaks document structure, nothing in this frame can execute (sandbox=""),
+ * breaks document structure, nothing in this frame can execute (no allow-scripts;
+ * sandbox="allow-popups allow-popups-to-escape-sandbox"),
  * so the failure mode is cosmetic, never privileged. `diagramCount` (the
  * rendered Mermaid diagrams in it) splits the print height budget; it is a
  * number the viewer counted, never document text.
@@ -168,10 +171,11 @@ export function createPreviewFrame(
   diagramCount: number,
 ): HTMLIFrameElement {
   const iframe = doc.createElement("iframe");
-  // Grant NOTHING: empty sandbox = opaque origin AND parser-level script
-  // blocking. Never add allow-scripts or allow-same-origin here — either
-  // token would collapse the last boundary of the pipeline.
-  iframe.setAttribute("sandbox", "");
+  // Grant only what a link needs: a target=_blank popup, and the popup
+  // escapes the sandbox so the page it opens runs normally. Never add
+  // allow-scripts, allow-same-origin, allow-top-navigation or allow-forms
+  // here: any of them collapses the last boundary of the pipeline.
+  iframe.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
   iframe.className = PREVIEW_FRAME_CLASS;
   iframe.setAttribute("title", "shared document (isolated preview)");
   iframe.setAttribute("referrerpolicy", "no-referrer");
