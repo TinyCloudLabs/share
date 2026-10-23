@@ -37,8 +37,9 @@ describe("share target phrases", () => {
     mountHero(false);
     expect(shown()).toBe(SHARE_TARGETS[0]);
     expect(document.querySelector("h1")!.textContent!.replace(/\s+/g, " ").trim()).toBe(
-      `Share what your agent makes with ${SHARE_TARGETS[0]}.`,
+      `Share what your agent makes with ${SHARE_TARGETS[0]}`,
     );
+    expect(document.querySelectorAll("h1 br")).toHaveLength(2);
   });
 
   it("gives screen readers the whole sentence once and hides the typed part", () => {

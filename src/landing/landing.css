@@ -289,19 +289,19 @@ h1 {
 }
 
 /*
- * One line at any width: the typed phrase never wraps, and its size shrinks below the headline's
- * when the column can't fit the longest phrase ("an email address|.", about 7.4em) at full size.
- * Raise the 7.6 if a longer phrase is added.
+ * The hero headline is exactly three lines: "Share what your" / "agent makes with" / the typed
+ * recipient. The lines are set by <br>s and never wrap; the whole headline scales down so its
+ * longest line ("an email address" plus the cursor, about 7.7em) fits the column. Raise the 7.9 if
+ * a longer phrase is added. The id outranks the mobile `h1` size and max-width rules.
  */
-.share-target {
-  display: inline-block;
-  color: var(--accent);
-  font-size: min(1em, calc(100cqi / 7.6));
+#hero-title {
+  max-width: none;
+  font-size: min(clamp(2.9rem, 8vw, 6rem), calc(100cqi / 7.9));
   white-space: nowrap;
 }
 
-.share-target-end {
-  color: var(--ink);
+.share-target {
+  color: var(--accent);
 }
 
 .share-target-cursor {
