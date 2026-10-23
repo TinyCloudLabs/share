@@ -19,6 +19,7 @@
   --grid-dot: rgb(42 86 246 / 12%);
   --mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --content-column: 46rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -239,10 +240,15 @@ h3 {
   display: grid;
   align-items: end;
   width: 100%;
+  max-width: var(--content-column);
+  margin-inline: auto;
+  container-type: inline-size;
   padding: clamp(2.5rem, 5vw, 3.5rem) 0;
   animation: page-enter 650ms var(--ease) both;
-  grid-template-columns: minmax(0, 1.1fr) minmax(20rem, 0.9fr);
-  grid-template-areas: "title intro";
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "title"
+    "intro";
   gap: 1.5rem 3rem;
 }
 
@@ -280,6 +286,32 @@ h1 {
   line-height: 1.65;
   text-wrap: pretty;
   grid-area: intro;
+}
+
+/*
+ * The hero headline is exactly three lines: "Share what your" / "agent makes with" / the typed
+ * recipient. The lines are set by <br>s and never wrap; the whole headline scales down so its
+ * longest line ("an email address" plus the cursor, about 7.7em) fits the column. Raise the 7.9 if
+ * a longer phrase is added. The id outranks the mobile `h1` size and max-width rules.
+ */
+#hero-title {
+  max-width: none;
+  font-size: min(clamp(2.9rem, 8vw, 6rem), calc(100cqi / 7.9));
+  white-space: nowrap;
+}
+
+.share-target {
+  color: var(--accent);
+}
+
+.share-target-cursor {
+  animation: share-target-blink 1s step-end infinite;
+}
+
+@keyframes share-target-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .hero-actions,
@@ -539,6 +571,12 @@ h1 {
   line-height: 1.05;
 }
 
+/* Same centered column as the hero; padding (not width) keeps the section's full-width rule. */
+.agent-cta,
+.copy-section {
+  padding-inline: max(0px, calc((100% - var(--content-column)) / 2));
+}
+
 .agent-cta {
   padding-top: clamp(2.25rem, 4vw, 3.5rem);
 }
@@ -552,9 +590,9 @@ h1 {
   display: flex;
   align-items: center;
   max-width: 40rem;
-  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+  padding: 0.5rem 0.5rem 0.5rem 1.25rem;
   border: 1px solid var(--accent-line);
-  border-radius: 10px;
+  border-radius: 18px;
   background: var(--bg-raised);
   gap: 1rem;
 }
@@ -572,9 +610,13 @@ h1 {
 
 .copy-button {
   flex: 0 0 auto;
-  min-width: 6rem;
+  min-width: 84px;
+  min-height: 46px;
+  padding: 0 1.25rem;
+  border-radius: 12px;
   cursor: pointer;
   font-family: inherit;
+  font-size: 0.94rem;
 }
 
 .copy-button:focus-visible {
@@ -591,8 +633,137 @@ h1 {
   text-wrap: pretty;
 }
 
-.agent-box + .visually-hidden + .agent-note {
-  margin-top: 1.5rem;
+/* "Open your agent" icon row, copied from slop.date: each tile opens an agent with the prompt. */
+.agent-links {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 40rem;
+  margin-top: 14px;
+  gap: 8px;
+}
+
+.agent-link {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--ink);
+  background: none;
+  cursor: pointer;
+  transition:
+    background-color 180ms ease-out,
+    color 180ms ease-out,
+    border-color 180ms ease-out,
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.agent-link[hidden],
+[data-device="mobile"] .agent-link[data-only="desktop"] {
+  display: none;
+}
+
+.agent-link svg {
+  display: block;
+  width: 22px;
+  height: 22px;
+}
+
+.agent-link:active {
+  transform: scale(0.94);
+}
+
+.agent-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (hover: hover) {
+  .agent-link:hover {
+    border-color: var(--ink);
+    color: var(--bg);
+    background: var(--ink);
+    transform: translateY(-2px);
+  }
+
+  .agent-link::after {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 50%;
+    color: var(--ink-soft);
+    content: attr(data-tip);
+    font-size: 13px;
+    line-height: 1;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      opacity 160ms ease-out,
+      translate 260ms cubic-bezier(0.22, 1, 0.36, 1);
+    translate: -50% -4px;
+  }
+
+  .agent-link:hover::after,
+  .agent-link:focus-visible::after {
+    opacity: 1;
+    translate: -50% 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-link {
+    animation: agent-link-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  }
+
+  .agent-link:nth-child(2) {
+    animation-delay: 40ms;
+  }
+
+  .agent-link:nth-child(3) {
+    animation-delay: 80ms;
+  }
+
+  .agent-link:nth-child(4) {
+    animation-delay: 120ms;
+  }
+
+  .agent-link:nth-child(5) {
+    animation-delay: 160ms;
+  }
+
+  .agent-link:nth-child(6) {
+    animation-delay: 200ms;
+  }
+
+  .agent-link:nth-child(7) {
+    animation-delay: 240ms;
+  }
+
+  .agent-link:nth-child(8) {
+    animation-delay: 280ms;
+  }
+
+  .agent-link:nth-child(9) {
+    animation-delay: 320ms;
+  }
+}
+
+@keyframes agent-link-rise {
+  from {
+    opacity: 0.001;
+    transform: translateY(10px);
+  }
+}
+
+.agent-status {
+  min-height: 1.5em;
+  margin: 22px 0 0;
+  color: var(--ink-soft);
+  font-size: 14px;
 }
 
 .agent-signin {
@@ -640,6 +811,22 @@ h1 {
   list-style: none;
   border-top: 1px dotted var(--line);
   border-bottom: 0;
+}
+
+/* In the landing's narrow column each step stacks: number and heading, then the text under the heading. */
+.copy-section .how-step {
+  min-height: 0;
+  padding: 1.75rem 0;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: 0.75rem 1rem;
+}
+
+.copy-section .how-step h3 {
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+}
+
+.copy-section .how-step p {
+  grid-column: 2;
 }
 
 .signin-line {

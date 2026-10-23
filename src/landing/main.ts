@@ -1,5 +1,6 @@
 import "./landing.css";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { startShareTargetRotation } from "./share-targets.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -47,3 +48,24 @@ function wireCopyButton(button: HTMLButtonElement): void {
 }
 
 document.querySelectorAll<HTMLButtonElement>("button[data-copy-target]").forEach(wireCopyButton);
+
+// "Open your agent" row (as on slop.date): every tile also copies the prompt and says what happened.
+// Muse has no link, so its button only works with JS and stays hidden without it. Desktop-only
+// tiles (Cursor) hide on phones and tablets.
+const agentPrompt = document.getElementById("agent-prompt");
+const agentStatus = document.getElementById("agent-status");
+const ua = navigator.userAgent;
+const mobile = /Android|iPhone|iPad|iPod/.test(ua) || (/Macintosh|Mac OS X/.test(ua) && navigator.maxTouchPoints > 1);
+document.documentElement.dataset.device = mobile ? "mobile" : "desktop";
+
+document.querySelectorAll<HTMLElement>("[data-agent][data-toast]").forEach((agent) => {
+  agent.hidden = false;
+  agent.addEventListener("click", async () => {
+    if (!agentPrompt) return;
+    const ok = await copyText(agentPrompt.textContent ?? "", agentPrompt);
+    if (agentStatus) agentStatus.textContent = ok ? (agent.dataset.toast ?? "") : "Copy the prompt, then paste it into your agent.";
+  });
+});
+
+const shareTarget = document.querySelector<HTMLElement>(".share-target");
+if (shareTarget) startShareTargetRotation(shareTarget);

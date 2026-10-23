@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Paste one prompt into your agent. It publishes from your own TinyCloud and gives you a link to share."
+      content="Share what your agent makes, with the people you choose."
     />
     <meta name="color-scheme" content="light dark" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'" />
@@ -40,11 +40,15 @@
       <main id="main">
         <section class="hero" aria-labelledby="hero-title">
           <div class="hero-copy">
-            <h1 id="hero-title">Share what your agent makes.</h1>
+            <h1 id="hero-title" aria-label="{{HEADLINE_LABEL}}">
+              Share what your<br />
+              agent makes with<br />
+              <span class="share-target" aria-hidden="true"><span class="share-target-text">a person</span></span>
+            </h1>
 
             <p class="hero-intro">
-              Paste one prompt into your agent. It publishes a document, page or small app from
-              your own TinyCloud and gives you a link. You choose who can open it.
+              Give your agent a prompt, and it publishes from your own TinyCloud and gives you a
+              link. You choose who can open it. No one else can access it.
             </p>
           </div>
         </section>
@@ -62,7 +66,9 @@
               data-copy-target="agent-prompt"
             >Copy</button>
           </div>
+{{AGENT_LINKS}}
           <p class="visually-hidden" id="copy-status" role="status" aria-live="polite"></p>
+          <p class="agent-status" id="agent-status" role="status"></p>
 
           <p class="agent-note">
             Works with coding agents like Claude Code, Codex and OpenCode. Chat apps through
@@ -70,9 +76,8 @@
           </p>
 
           <p class="agent-signin">
-            Already have a TinyCloud account?
+            Accessing content you've shared, or that's been shared with you?
             <a class="agent-signin-link" href="/share">Sign in</a>
-            to create a share yourself.
           </p>
         </section>
 
@@ -100,9 +105,8 @@
 
         <section class="final-cta" aria-label="Sign in">
           <p class="signin-line">
-            Already have a TinyCloud account?
+            Accessing content you've shared, or that's been shared with you?
             <a class="signin-link" href="/share">Sign in</a>
-            to create a share yourself.
           </p>
         </section>
       </main>

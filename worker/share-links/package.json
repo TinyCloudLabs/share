@@ -1,0 +1,10 @@
+{
+  "name": "share-links-worker",
+  "private": true,
+  "type": "module",
+  "description": "Short-link store for share.tinycloud.xyz (Worker + D1 + hourly cron)",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts"
+  }
+}
