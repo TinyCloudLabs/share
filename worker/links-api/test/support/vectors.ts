@@ -6,7 +6,7 @@ import {
   ADDRESS_LIVE_CAP,
   LIMITS,
   LINK_TYPES,
-  MAX_BODY_BYTES,
+  MAX_LINK_BODY_BYTES,
   MIN_BODY_BYTES,
   MIN_LIFE_SECONDS,
   NONCE_TTL_SECONDS,
@@ -39,14 +39,11 @@ const VECTORS_FILE = new URL("../vectors/short-links-api-vectors.json", import.m
  * SHA-256 of the committed copy of `docs/specs/short-links-api-vectors.json` (contract Appendix B).
  * Updating the copy is a change of this one line plus the file.
  */
-export const VECTORS_SHA256 = "cd7358c6d187c44a2d97cc44eae4df2f5611ac32814778689e125af554cd9146";
+export const VECTORS_SHA256 = "72db4cd91ba0ae9c530d541ad0f7b1a05c76b8de942b0fe247f1356ff5899d25";
 
 export function vectorsPath(): URL {
   return VECTORS_FILE;
 }
-
-/** Expectations replaced by later decisions (below) apply only to this exact copy of the file. */
-export const SUPERSEDED_COPY_SHA256 = "cd7358c6d187c44a2d97cc44eae4df2f5611ac32814778689e125af554cd9146";
 
 export function fileSha256(path: URL | string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -121,11 +118,21 @@ export interface Vectors {
     readonly minLifeSeconds: number;
     readonly minBodyBytes: number;
     readonly requestBodyCapBytes: number;
+    readonly maxLinkBodyBytes: number;
     readonly domains: Record<"header" | "delete", string>;
     readonly statusByError: Record<string, number>;
     readonly corsPostOrigins: string[];
-    readonly types: Record<string, { readonly maxBody: number; readonly maxLifeS: number; readonly readOnce: boolean }>;
+    readonly types: Record<string, { readonly maxLifeS: number; readonly readOnce: boolean }>;
   };
+  readonly sizes: { readonly maxLinkBodyBytes: number; readonly requestBodyCapBytes: number };
+  readonly records: {
+    readonly name: string;
+    readonly now: string;
+    readonly contentKeyB64u: string | null;
+    readonly record: unknown;
+    readonly expect: WireExpect;
+    readonly bodySynthesized?: { readonly length: number; readonly fillByte: number; readonly firstByte: number };
+  }[];
   readonly apiKeys: ApiKeyVector[];
   readonly ids: { readonly name: string; readonly id: string; readonly expect: { readonly valid: boolean; readonly normalized?: string } }[];
   readonly bodyHash: {
@@ -182,29 +189,6 @@ export interface VectorResult {
 /** Groups that describe reader-side behaviour (viewer, CLI, node, witness), which the service does not implement. */
 export const READER_SIDE_GROUPS = ["records", "resolve", "links", "linkChoice", "deliveryAdmission"] as const;
 
-// ---------------------------------------------------------------------------------------------
-// Expectations that decisions made after the committed vector copy replace. They apply only to a
-// copy with the committed pin, and are removed when the copy is updated.
-// ---------------------------------------------------------------------------------------------
-
-const NOTE_ADDRESS = "expectation superseded by the contract follow-up (shared bucket, RFC 5952 prefixes)";
-const NOTE_SIZE = "expectation superseded by the one 64 KiB body limit";
-
-const SUPERSEDED_ADDRESS_BUCKETS: Record<string, { rateKey: string; liveKey: string }> = {
-  "fe80::1%eth0": { rateKey: "fe80::/64", liveKey: "fe80::/48" },
-  "not-an-ip": { rateKey: "unparseable", liveKey: "unparseable" },
-  "1:2:3": { rateKey: "unparseable", liveKey: "unparseable" },
-};
-
-/** Create vectors whose outcome changes with one 64 KiB limit; the wire result only (the HTTP cap may answer first). */
-const SUPERSEDED_CREATE: Record<string, WireExpect> = {
-  "openkey-login body one byte over the cap (16385 bytes)": { status: 201 },
-  "courier body one byte over the cap (32769 bytes)": { status: 201 },
-  "share body at the cap (131072 bytes)": { status: 413, error: "too_large" },
-  "share body one byte over the cap (131073 bytes)": { status: 413, error: "too_large" },
-  "openkey-login body at the courier size": { status: 201 },
-};
-
 const CLIENT_ADDRESS = "192.0.2.77";
 const BASE = "https://api.tinycloud.xyz";
 
@@ -221,7 +205,6 @@ interface Run {
   readonly vectors: Vectors;
   readonly adapter: Adapter;
   readonly nowMs: number;
-  readonly supersede: boolean;
   readonly results: VectorResult[];
 }
 
@@ -363,13 +346,11 @@ async function runCreate(run: Run, apiKey: ApiKeyVector): Promise<void> {
       await seedRows(run.adapter.driver, { idPrefix: "addr", type: "courier", count: ADDRESS_LIVE_CAP.rows, size: 0, address: hashes.liveHash, expiresAt: nowSeconds + 3600 });
     }
     const { got, json, reason } = await wireOutcome(deps, createRequest(vector, apiKey));
-    const replaced = run.supersede ? SUPERSEDED_CREATE[vector.name] : undefined;
-    const expect = replaced ?? vector.expect;
-    let ok = matches(expect, got, replaced ? null : reason);
+    let ok = matches(vector.expect, got, reason);
     if (ok && got.status === 201) {
       ok = /^[a-z2-7]{26}$/.test(stringField(json, "id") ?? "") && stringField(json, "expiresAt") === header?.expiresAt && Object.keys(asObject(json) ?? {}).length === 2;
     }
-    record(run, "create", vector.name, ok, expect, { ...got, reason }, replaced ? NOTE_SIZE : undefined);
+    record(run, "create", vector.name, ok, vector.expect, { ...got, reason });
   }
 }
 
@@ -485,10 +466,7 @@ async function runSmallGroups(run: Run): Promise<void> {
   }
   for (const vec of run.vectors.addressBuckets) {
     const got = addressBuckets(vec.address);
-    const override = run.supersede ? SUPERSEDED_ADDRESS_BUCKETS[vec.address] : undefined;
-    const expected = override ?? vec.expect;
-    const changed = override !== undefined && !sameJson(override, vec.expect);
-    record(run, "addressBuckets", JSON.stringify(vec.address), got.rateKey === expected.rateKey && got.liveKey === expected.liveKey, expected, got, changed ? NOTE_ADDRESS : undefined);
+    record(run, "addressBuckets", JSON.stringify(vec.address), got.rateKey === vec.expect.rateKey && got.liveKey === vec.expect.liveKey, vec.expect, got);
   }
 }
 
@@ -571,11 +549,11 @@ function runConstants(run: Run): void {
     ["api key create", rateLimits.perApiKey.create, shaped([LIMITS.apiKeyCreate])],
     ["api key delete", rateLimits.perApiKey.delete, shaped([LIMITS.apiKeyDelete])],
   ];
-  // The request cap is derived from the one body limit; the committed copy still states the old number.
   checks.push(
-    run.supersede
-      ? ["requestBodyCapBytes", 90_454, REQUEST_BODY_CAP_BYTES, NOTE_SIZE]
-      : ["requestBodyCapBytes", constants.requestBodyCapBytes, REQUEST_BODY_CAP_BYTES],
+    ["maxLinkBodyBytes", constants.maxLinkBodyBytes, MAX_LINK_BODY_BYTES],
+    ["requestBodyCapBytes", constants.requestBodyCapBytes, REQUEST_BODY_CAP_BYTES],
+    ["sizes.maxLinkBodyBytes", run.vectors.sizes.maxLinkBodyBytes, MAX_LINK_BODY_BYTES],
+    ["sizes.requestBodyCapBytes", run.vectors.sizes.requestBodyCapBytes, REQUEST_BODY_CAP_BYTES],
   );
   for (const [type, spec] of Object.entries(constants.types)) {
     const config = LINK_TYPES.find((t) => t === type);
@@ -583,7 +561,6 @@ function runConstants(run: Run): void {
       continue;
     }
     checks.push(
-      run.supersede ? [`${type} maxBody`, MAX_BODY_BYTES, MAX_BODY_BYTES, NOTE_SIZE] : [`${type} maxBody`, spec.maxBody, MAX_BODY_BYTES],
       [`${type} maxLife`, spec.maxLifeS, TYPE_CONFIG[config].maxLifeSeconds],
       [`${type} readOnce`, spec.readOnce, TYPE_CONFIG[config].readOnce],
       [`${type} quota`, rateLimits.globalQuotaPerType[config], { rows: TYPE_CONFIG[config].quotaRows, bytes: TYPE_CONFIG[config].quotaBytes }],
@@ -594,19 +571,59 @@ function runConstants(run: Run): void {
   }
 }
 
-export interface RunOptions {
-  /** Apply the expectations that later decisions replace; true only for the committed vector copy. */
-  readonly supersede: boolean;
+/**
+ * The reader-side `records` vectors that need no sealed-body opening (the body-size boundaries): the checks the
+ * service shares with readers (header, size, limit, minimum, CID, signature, expiry). Issuer binding and the other
+ * vectors that open the seal belong to the readers.
+ */
+async function runRecordBoundaries(run: Run): Promise<void> {
+  for (const vec of run.vectors.records) {
+    if (vec.contentKeyB64u !== null || !vec.bodySynthesized) {
+      continue;
+    }
+    const record_ = asObject(vec.record);
+    const signed = record_ !== null && "signature" in record_;
+    const parsed = parseHeader(record_?.["header"], signed ? "signed" : "service", run.vectors.meta.audience);
+    let got: WireExpect = { status: 200 };
+    if (!parsed.ok) {
+      got = { status: 400, error: "invalid_request", reason: parsed.reason };
+    } else {
+      const header = parsed.header;
+      const body = synthesizedBody(vec.bodySynthesized);
+      if (!signed && header.type !== "openkey-login") {
+        got = { status: 400, error: "invalid_request", reason: "unsigned_not_allowed" };
+      } else if (body.length !== header.size) {
+        got = { status: 400, error: "invalid_request", reason: "size_mismatch" };
+      } else if (body.length > MAX_LINK_BODY_BYTES) {
+        got = { status: 413, error: "too_large", reason: "body_over_cap" };
+      } else if (body.length < MIN_BODY_BYTES) {
+        got = { status: 400, error: "invalid_request", reason: "body_too_small" };
+      } else if ((await cidForBytes(body)) !== header.bodyCid) {
+        got = { status: 400, error: "invalid_request", reason: "body_hash_mismatch" };
+      } else if (signed && !(await verifyHeaderSignature(header, record_?.["signature"], parsed.issuerKey, run.vectors.constants.domains.header))) {
+        got = { status: 401, error: "invalid_signature", reason: "bad_signature" };
+      } else if (Date.parse(header.expiresAt) <= Date.parse(vec.now)) {
+        got = { status: 404, error: "not_found", reason: "expired" };
+      }
+    }
+    record(run, "records (size boundaries)", vec.name, sameJson(vec.expect, got), vec.expect, got);
+  }
+}
+
+async function verifyHeaderSignature(header: unknown, signature: unknown, key: Uint8Array | null, domain: string): Promise<boolean> {
+  const bytes = parseSignature(signature);
+  return bytes !== null && key !== null && verifyStrict(key, await sha256(utf8(domain + jcs(header))), bytes);
 }
 
 /** Runs every service-level vector group on one adapter. Reader-side groups are not run here. */
-export async function runServiceVectors(vectors: Vectors, adapter: Adapter, options: RunOptions): Promise<VectorResult[]> {
-  const run: Run = { vectors, adapter, nowMs: Date.parse(vectors.meta.now), supersede: options.supersede, results: [] };
+export async function runServiceVectors(vectors: Vectors, adapter: Adapter): Promise<VectorResult[]> {
+  const run: Run = { vectors, adapter, nowMs: Date.parse(vectors.meta.now), results: [] };
   const apiKey = vectors.apiKeys[0];
   if (!apiKey) {
     throw new Error("vectors: apiKeys[0] missing");
   }
   runHeaders(run);
+  await runRecordBoundaries(run);
   await runSignatures(run);
   runEd25519(run);
   await runSmallGroups(run);

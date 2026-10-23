@@ -1,7 +1,7 @@
 // Exercises a running local Worker (wrangler dev --local, local D1; nothing is deployed):
 //   node scripts/local-smoke.ts http://127.0.0.1:8799
 // Prints one line per check; exit code 1 when any check fails.
-import { MAX_BODY_BYTES } from "../src/config.ts";
+import { MAX_LINK_BODY_BYTES } from "../src/config.ts";
 import { AUDIENCE, filler, makeIssuer, signedCreate, signedDelete } from "../test/support/client.ts";
 
 const base = process.argv[2] ?? "http://127.0.0.1:8799";
@@ -48,9 +48,9 @@ const first = await send(request.clone());
 const replay = await send(request.clone());
 check("replayed create -> 409", first.status === 201 && replay.status === 409, [first.status, replay.status]);
 
-const atLimit = await send(await signedCreate({ issuer: makeIssuer(), body: filler(MAX_BODY_BYTES), nowMs: Date.now() }));
-const overLimit = await send(await signedCreate({ issuer: makeIssuer(), body: filler(MAX_BODY_BYTES + 1), nowMs: Date.now() }));
-check(`body ${MAX_BODY_BYTES} -> 201, ${MAX_BODY_BYTES + 1} -> 413`, atLimit.status === 201 && overLimit.status === 413, [atLimit.status, overLimit.status]);
+const atLimit = await send(await signedCreate({ issuer: makeIssuer(), body: filler(MAX_LINK_BODY_BYTES), nowMs: Date.now() }));
+const overLimit = await send(await signedCreate({ issuer: makeIssuer(), body: filler(MAX_LINK_BODY_BYTES + 1), nowMs: Date.now() }));
+check(`body ${MAX_LINK_BODY_BYTES} -> 201, ${MAX_LINK_BODY_BYTES + 1} -> 413`, atLimit.status === 201 && overLimit.status === 413, [atLimit.status, overLimit.status]);
 
 const badSig = await signedCreate({ issuer: makeIssuer(), nowMs: Date.now() });
 const parsed = JSON.parse(await badSig.text()) as { header: { type: string } };

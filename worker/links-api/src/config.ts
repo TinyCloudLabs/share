@@ -1,6 +1,6 @@
 /**
  * Every number the service enforces lives in this file. The per-type table holds the lives and
- * quotas (contract sections 3 and 4.9); `MAX_BODY_BYTES` is the one body size limit for all types.
+ * quotas (contract sections 3 and 4.9); `MAX_LINK_BODY_BYTES` is the one body size limit for all types.
  */
 
 export const LINK_TYPES = ["openkey-login", "courier", "share"] as const;
@@ -45,14 +45,14 @@ export const MIN_LIFE_SECONDS = 120;
  * The one size limit for every link type: the largest decoded (sealed) body, in bytes (64 KiB).
  * Every other size limit, including the HTTP request cap below, is derived from this constant.
  */
-export const MAX_BODY_BYTES = 65_536;
+export const MAX_LINK_BODY_BYTES = 65_536;
 export const MIN_BODY_BYTES = 30;
 export const NONCE_TTL_SECONDS = 300;
 export const ID_BYTES = 17;
 export const ID_ATTEMPTS = 5;
 
 /** The sealed body in base64url (4 characters per 3 bytes) plus 3 KiB for the header and signature. */
-export const REQUEST_BODY_CAP_BYTES = Math.ceil((MAX_BODY_BYTES * 4) / 3) + 3_072;
+export const REQUEST_BODY_CAP_BYTES = Math.ceil((MAX_LINK_BODY_BYTES * 4) / 3) + 3_072;
 
 export interface WindowLimit {
   readonly limit: number;

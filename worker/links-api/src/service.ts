@@ -6,7 +6,7 @@ import {
   MIN_BODY_BYTES,
   NONCE_TTL_SECONDS,
   REQUEST_BODY_CAP_BYTES,
-  MAX_BODY_BYTES,
+  MAX_LINK_BODY_BYTES,
   WINDOW_SECONDS,
   type FreePlan,
   type ServiceConfig,
@@ -335,8 +335,8 @@ async function handleCreate(request: Request, ctx: RequestContext): Promise<Outc
   if (body.length !== header.size) {
     return earlyRefuse(ctx, "invalid_request", "size_mismatch");
   }
-  if (body.length > MAX_BODY_BYTES) {
-    return earlyRefuse(ctx, "too_large", "body_over_type_cap");
+  if (body.length > MAX_LINK_BODY_BYTES) {
+    return earlyRefuse(ctx, "too_large", "body_over_cap");
   }
   if (body.length < MIN_BODY_BYTES) {
     return earlyRefuse(ctx, "invalid_request", "body_too_small");

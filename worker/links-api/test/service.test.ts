@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { base64UrlDecode, base64UrlEncode, sha256, utf8 } from "../src/bytes.ts";
-import { MAX_BODY_BYTES, REQUEST_BODY_CAP_BYTES, WORKERS_FREE_PLAN, type LinkType, type ServiceConfig } from "../src/config.ts";
+import { MAX_LINK_BODY_BYTES, REQUEST_BODY_CAP_BYTES, WORKERS_FREE_PLAN, type LinkType, type ServiceConfig } from "../src/config.ts";
 import { runScheduled } from "../src/health.ts";
 import { handleRequest, handleRequestWithReason, type ServiceDeps } from "../src/service.ts";
 import { createSqliteAdapter, type Adapter } from "./support/adapters.ts";
@@ -50,19 +50,19 @@ describe("links API service", () => {
   });
 
   describe("one body limit for every type", () => {
-    it("derives the HTTP request cap from MAX_BODY_BYTES", () => {
-      expect(MAX_BODY_BYTES).toBe(65_536);
-      expect(REQUEST_BODY_CAP_BYTES).toBe(Math.ceil((65_536 * 4) / 3) + 3_072);
+    it("derives the HTTP request cap from MAX_LINK_BODY_BYTES", () => {
+      expect(MAX_LINK_BODY_BYTES).toBe(65_536);
+      expect(REQUEST_BODY_CAP_BYTES).toBe(90_454);
     });
 
     it.each(["openkey-login", "courier", "share"] as const)("%s: 65,536 bytes is accepted and 65,537 is refused by the body check", async (type) => {
       const issuer = makeIssuer();
-      const at = await handleRequestWithReason(await signedCreate({ type, issuer, body: filler(MAX_BODY_BYTES), nowMs }), deps);
+      const at = await handleRequestWithReason(await signedCreate({ type, issuer, body: filler(MAX_LINK_BODY_BYTES), nowMs }), deps);
       expect(at.response.status).toBe(201);
-      const over = await handleRequestWithReason(await signedCreate({ type, issuer: makeIssuer(), body: filler(MAX_BODY_BYTES + 1), nowMs }), deps);
+      const over = await handleRequestWithReason(await signedCreate({ type, issuer: makeIssuer(), body: filler(MAX_LINK_BODY_BYTES + 1), nowMs }), deps);
       expect(over.response.status).toBe(413);
       expect(await over.response.json()).toEqual({ error: "too_large" });
-      expect(over.reason).toBe("body_over_type_cap");
+      expect(over.reason).toBe("body_over_cap");
     });
 
     it("cuts off an HTTP body over the derived cap before parsing it", async () => {

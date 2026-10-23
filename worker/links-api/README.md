@@ -17,7 +17,7 @@ Errors are `{"error": "<code>"}` with the statuses of contract 4.8. Unknown, exp
 
 ## Limits
 
-- One body limit for every type: `MAX_BODY_BYTES = 65536` (sealed bytes) in `src/config.ts`. The HTTP request cap is derived from it (`ceil(MAX_BODY_BYTES * 4 / 3) + 3072`).
+- One body limit for every type: `MAX_LINK_BODY_BYTES = 65536` (sealed bytes) in `src/config.ts`. The HTTP request cap is derived from it (`ceil(MAX_LINK_BODY_BYTES * 4 / 3) + 3072` = 90,454).
 - Lives, quotas, rate limits, the per-address live cap and the type reserve are the tables in `src/config.ts`.
 - Browser origins for `POST`: `LINKS_CORS_ORIGINS` (default `https://share.tinycloud.xyz`); `GET` answers any origin without credentials.
 
@@ -62,7 +62,7 @@ npm run vectors          # every service-level vector on both adapters; checks t
 
 - `test/conformance.test.ts` runs storage conformance 1 to 21 against the D1 adapter (a local D1 from miniflare) and the SQLite adapter. Conformance 22 is `test/vectors.test.ts`.
 - `test/vectors/short-links-api-vectors.json` is a byte-identical copy of the contract's vector file; its SHA-256 is pinned in `test/support/vectors.ts` (`VECTORS_SHA256`). Updating the file is a change of that file and that one line.
-- Reader-side vector groups (`records`, `resolve`, `links`, `linkChoice`, `deliveryAdmission`) belong to the viewer, CLI, node and witness and are not run here.
+- Reader-side vector groups (`records`, `resolve`, `links`, `linkChoice`, `deliveryAdmission`) belong to the viewer, CLI, node and witness. Only the six `records` body-size boundary vectors (at the limit and one byte over it, for each type) are run here, against the checks the service shares with readers.
 
 ## Local run (no deploy)
 

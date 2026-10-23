@@ -24,23 +24,21 @@
     "windowSeconds": 120,
     "minLifeSeconds": 120,
     "minBodyBytes": 30,
+    "maxLinkBodyBytes": 65536,
     "types": {
       "openkey-login": {
-        "maxBody": 16384,
         "maxLifeS": 600,
         "defaultLifeS": 600,
         "path": "l",
         "readOnce": true
       },
       "courier": {
-        "maxBody": 32768,
         "maxLifeS": 604800,
         "defaultLifeS": 86400,
         "path": "c",
         "readOnce": false
       },
       "share": {
-        "maxBody": 131072,
         "maxLifeS": 2592000,
         "defaultLifeS": 2592000,
         "path": "s",
@@ -62,7 +60,7 @@
     "idGrammar": "^[a-z2-7]{26}$ (lowercase); uppercase accepted on input and lowercased",
     "ocReturnLinkMaxBytes": 512,
     "warningUrl": "https://tinycloud.xyz/delegations?from=link-expiry",
-    "requestBodyCapBytes": 177835,
+    "requestBodyCapBytes": 90454,
     "corsPostOrigins": [
       "https://share.tinycloud.xyz"
     ],
@@ -3269,7 +3267,7 @@
       }
     },
     {
-      "name": "openkey-login body at the cap (16384 bytes)",
+      "name": "openkey-login body at the limit (65536 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3287,17 +3285,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-10-24T12:10:00.000Z",
-          "size": 16384,
-          "bodyCid": "bafkreiaorn426uromeaogkg245ksbbe6vhunvsdbiw3vp325fpuu7dsd5i",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
           "nonce": "6QgGz3zBRGw2xJR-rzSvBA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "d6Ay4zVmSQXLUh7s7EiHy6vT0vBr8WxqXbJi42Y0GJ9cG6vI1hIoDsO53VnIYAxkoY0m0wwwr12qpStQgUusDA"
+          "value": "W0UfGR1oTxZv1IzGGPQ28TP5B5hBdZrYBkA13Xmgf6GC5nrXoaCpPKW-qNUzSoCW98HOQBwepXddgLYiqITjAw"
         }
       },
       "bodySynthesized": {
-        "length": 16384,
+        "length": 65536,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3307,7 +3305,7 @@
       }
     },
     {
-      "name": "openkey-login body one byte over the cap (16385 bytes)",
+      "name": "openkey-login body one byte over the limit (65537 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3325,17 +3323,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-10-24T12:10:00.000Z",
-          "size": 16385,
-          "bodyCid": "bafkreiffmmhd5m3jvnz5nr4s26xa2xrkhflyqrmhrxl5uxm6zpbwfw7x3u",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
           "nonce": "noSTpQ3IDHzessIU31BPBA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "CCkvPuo1Am5ZoT7wdmakwKd1uDntfe01cTIPMwyHA5iz0Ras-k-vih-M-FZIidDohXWYFQ6d3d6jnIDYrUHgBw"
+          "value": "6s3i68DZw7DSNdU-Fqia-LW7He_0Pk5TVEGID0jvi8IVAVmhywzb0Q0OuQOzvuZOniQlXsCmOsnx6Bw3zshCAQ"
         }
       },
       "bodySynthesized": {
-        "length": 16385,
+        "length": 65537,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3343,11 +3341,11 @@
       "expect": {
         "status": 413,
         "error": "too_large",
-        "reason": "body_over_type_cap"
+        "reason": "body_over_cap"
       }
     },
     {
-      "name": "courier body at the cap (32768 bytes)",
+      "name": "courier body at the limit (65536 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3365,17 +3363,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-10-25T12:00:00.000Z",
-          "size": 32768,
-          "bodyCid": "bafkreibkvpqweyztnfyx4al5rmlaenz2ky5ntoxeaz6nu3yn4dc3y6ur24",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
           "nonce": "dvDX5ceCx5By7qV02PMY5A"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "Slvq2bvZXkgZ-aNgKmE3XwTff3jPdsubIFwNLDrWCQsi6exalxJ0_wmcx8-1K35m1F0YnuBnmMgQ-7ew-jZtDg"
+          "value": "OTSgsO26jjT6nffyVO5DYNtQ7rMb20e3OTvqmj_P7FgIpl2nvpLWy3c5630k4XPBQBk5wAFxdMkZDHMxJhqwCg"
         }
       },
       "bodySynthesized": {
-        "length": 32768,
+        "length": 65536,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3385,7 +3383,7 @@
       }
     },
     {
-      "name": "courier body one byte over the cap (32769 bytes)",
+      "name": "courier body one byte over the limit (65537 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3403,17 +3401,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-10-25T12:00:00.000Z",
-          "size": 32769,
-          "bodyCid": "bafkreiho2t4vd2wc6j2774c4vyqsy622famvwmurvi3ifzwrmpv5crcxg4",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
           "nonce": "etvw7WofDtGjkeHP0yHeuA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "2yqarxZJEIwwHqjS-NeAzJgahg0Ti4fdPjlPGplJafhsQvH8ZePrSb1EhR8zUMNnZFhh30g66RHt_nTByEhSDw"
+          "value": "Hqa1MLCxNamR8MN9sMkROB8Z-4iu6twrfivFYCbe_fBogKiHTvX-0j3mtwXO1VsEv0oJAMBrd7rIzyo8kHflCg"
         }
       },
       "bodySynthesized": {
-        "length": 32769,
+        "length": 65537,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3421,11 +3419,11 @@
       "expect": {
         "status": 413,
         "error": "too_large",
-        "reason": "body_over_type_cap"
+        "reason": "body_over_cap"
       }
     },
     {
-      "name": "share body at the cap (131072 bytes)",
+      "name": "share body at the limit (65536 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3443,17 +3441,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-11-23T12:00:00.000Z",
-          "size": 131072,
-          "bodyCid": "bafkreig7jizclfaeqnoeu3gilosfcwoffpww5vbscva7ddcpq2za3sjcbm",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
           "nonce": "TBKdUDeb2RE2tToP4ngGNA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "NfDzc6U9ouv9bf0VROal3waqkAt5iCTdROkXJIL2vR2wEEHjpfS0y1EHwGYvoCBeivnE8Cvwb4XyfR6Nd7-1Aw"
+          "value": "iHu8FH_wbY9eKHcnNNSkLfkE3enfM4cd14JLr-SYqw7lMDtNIvUUJERQr7FsAsw0kmnjp63XhpfWEBdVPWooDg"
         }
       },
       "bodySynthesized": {
-        "length": 131072,
+        "length": 65536,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3463,7 +3461,7 @@
       }
     },
     {
-      "name": "share body one byte over the cap (131073 bytes)",
+      "name": "share body one byte over the limit (65537 bytes)",
       "state": {
         "seenNonces": [],
         "blocked": [],
@@ -3481,17 +3479,17 @@
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
           "expiresAt": "2026-11-23T12:00:00.000Z",
-          "size": 131073,
-          "bodyCid": "bafkreietablixvvnymzlvxlaguhlfphwyksmvc5aivqeudnwdl7gdsaj3u",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
           "nonce": "VsoqJh50o_PNQIX-BHZE1w"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "n2ixDwJyqlvZGeoL9Wewjyny4Wwvyvmt7iRERQRP1teEUo7AtjDpPVNUsYcyizGGSN3SRPF-5J8ylV9BTKK-CA"
+          "value": "W5VoBs0Ug6nsJMFDlmSot-pl6eL0YNR6sfaaY_znTf2uAsWeAkPWLYQKoRptqMldtQYe5wFvrZjgeM1hfrH2Cg"
         }
       },
       "bodySynthesized": {
-        "length": 131073,
+        "length": 65537,
         "fillByte": 66,
         "firstByte": 1,
         "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
@@ -3499,85 +3497,7 @@
       "expect": {
         "status": 413,
         "error": "too_large",
-        "reason": "body_over_type_cap"
-      }
-    },
-    {
-      "name": "share body at the openkey-login cap plus one is fine for share",
-      "state": {
-        "seenNonces": [],
-        "blocked": [],
-        "issuerRateLimited": false,
-        "capacityFull": false,
-        "addressBlocked": false,
-        "addressRateLimited": false,
-        "addressLiveFull": false
-      },
-      "request": {
-        "header": {
-          "version": 1,
-          "type": "share",
-          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
-          "audience": "https://api.tinycloud.xyz",
-          "issuedAt": "2026-10-24T12:00:00.000Z",
-          "expiresAt": "2026-11-23T12:00:00.000Z",
-          "size": 16385,
-          "bodyCid": "bafkreiffmmhd5m3jvnz5nr4s26xa2xrkhflyqrmhrxl5uxm6zpbwfw7x3u",
-          "nonce": "x8kn_Yapo4W3gy95I62FkA"
-        },
-        "signature": {
-          "algorithm": "Ed25519",
-          "value": "ZEo01WWlZl3z5syCIK5QQXfo6wpUhaZzKqGnrdx2ppUlaFlwH44m4YWTIL52qGaw32Z-vzbiOioLmM3Tc6wmAg"
-        }
-      },
-      "bodySynthesized": {
-        "length": 16385,
-        "fillByte": 66,
-        "firstByte": 1,
-        "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
-      },
-      "expect": {
-        "status": 201
-      }
-    },
-    {
-      "name": "openkey-login body at the courier size",
-      "state": {
-        "seenNonces": [],
-        "blocked": [],
-        "issuerRateLimited": false,
-        "capacityFull": false,
-        "addressBlocked": false,
-        "addressRateLimited": false,
-        "addressLiveFull": false
-      },
-      "request": {
-        "header": {
-          "version": 1,
-          "type": "openkey-login",
-          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
-          "audience": "https://api.tinycloud.xyz",
-          "issuedAt": "2026-10-24T12:00:00.000Z",
-          "expiresAt": "2026-10-24T12:10:00.000Z",
-          "size": 17000,
-          "bodyCid": "bafkreihaaovmbi3h2wjktyhbetenikx23yp5rk4m6vaetnos4q6os5ilyy",
-          "nonce": "K6jj6pKhTfZzGm_odsRtBg"
-        },
-        "signature": {
-          "algorithm": "Ed25519",
-          "value": "5mKQUhyRnch2Br5gC2WWiVV_tORkdfmHjo6MltrcwIwA72Eff6ttjIJnvOBKZKT9m7DVOxqG1xYrQnf-RwHeDQ"
-        }
-      },
-      "bodySynthesized": {
-        "length": 17000,
-        "fillByte": 66,
-        "firstByte": 1,
-        "note": "body = length bytes of fillByte with byte 0 = 0x01; `request.body` is omitted and the implementation synthesizes it"
-      },
-      "expect": {
-        "status": 413,
-        "error": "too_large",
-        "reason": "body_over_type_cap"
+        "reason": "body_over_cap"
       }
     },
     {
@@ -3602,7 +3522,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "GzmVWpJgrwWBANYNtKVCPQ"
+          "nonce": "x8kn_Yapo4W3gy95I62FkA"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -3637,7 +3557,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "pZb8NJywQAOOdp0YL3Ix8g"
+          "nonce": "K6jj6pKhTfZzGm_odsRtBg"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -3672,7 +3592,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "SHteZ5hYyj5AgbDCf6N4MQ"
+          "nonce": "GzmVWpJgrwWBANYNtKVCPQ"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -3707,7 +3627,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "kCPQv6Q_hWiRzeXCRb12Ow"
+          "nonce": "pZb8NJywQAOOdp0YL3Ix8g"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -3742,7 +3662,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "4kKohI28WxRaoXfOhbtXhA"
+          "nonce": "SHteZ5hYyj5AgbDCf6N4MQ"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -3778,11 +3698,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "Kt0k3kYFEIFXRC34VYPdeA"
+          "nonce": "kCPQv6Q_hWiRzeXCRb12Ow"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "pwKPET0Cksomn4gTf5XaUffWKtqgYtYx4kw_BOJHmezGrrQtOLpRHHmT81bO-qSXWk_hY8ZnKbzY3g0EfyW6DA"
+          "value": "L9bAzPQ2AseoFvh3mSrmKAPQ1OZoY1mCeDDDwY7EDQC8GJVe5VzsfkZXYH1IkP9JtXEKjUfEtNdnN0Fwo8mAAg"
         }
       },
       "expect": {
@@ -3814,11 +3734,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "63JUSfDN8KKpTgbcsb7bYQ"
+          "nonce": "4kKohI28WxRaoXfOhbtXhA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "tYYrAKgGvyvinYxWBrAgFDHXd7LWIEwTofebOiH_kioF-ou-p9iVb2F5TdbKhgnXC-fIcFkmZUDGi6of2W5PBQ"
+          "value": "75sbWUTneQ3IOQXKOeeE8uon7eo1ZatTBLQyECUC2mUMMLU6iiRLFm2HekZw6uT9Tzd35cveT-Jw0-wTGh-lCw"
         }
       },
       "expect": {
@@ -3847,11 +3767,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "hi-cACs8axJvWar8AYTh0Q"
+          "nonce": "Kt0k3kYFEIFXRC34VYPdeA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y4z649pIVjjDsgrLDG_AriKYxis-j1Q3YflaUBfla7QSyP_yK82z-qjBU-B51Qq4LgOAQZmuHTbhjy8xpc-uAA"
+          "value": "pwKPET0Cksomn4gTf5XaUffWKtqgYtYx4kw_BOJHmezGrrQtOLpRHHmT81bO-qSXWk_hY8ZnKbzY3g0EfyW6DA"
         }
       },
       "expect": {
@@ -3881,11 +3801,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "dn7F5vT-yxB4ISs911wpJw"
+          "nonce": "63JUSfDN8KKpTgbcsb7bYQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "TrSQ9uuY4BoMbLLS3bLkPR8I2DAmHkSDkbQPRz98dKAVVYV4CiDOV5WarZ2Md8WRTlyiR2OXTsCy1XCa70YeBA"
+          "value": "E7pxhKyqmmr_017QowWwSpJd3BwSj4-PcRGCQgb4Xsa8Dp7CkDEKy_4k_9UOpG6O1XadsB1RBrymWkSojioJCg"
         }
       },
       "expect": {
@@ -3917,11 +3837,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "hHTjdWWR7xNVDTfJLr_Rog"
+          "nonce": "hi-cACs8axJvWar8AYTh0Q"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "1sT30HkdatHAEVUwKUuyQK7rbIT8iv6GDdEf3TU2PV4GHEm6acwn6mIKnjgfslWbdNNuj6Nc1J4JxxeNxZoDCA"
+          "value": "y4z649pIVjjDsgrLDG_AriKYxis-j1Q3YflaUBfla7QSyP_yK82z-qjBU-B51Qq4LgOAQZmuHTbhjy8xpc-uAA"
         }
       },
       "expect": {
@@ -3952,11 +3872,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "zyJ75-NTkoAm1JgObG2xrw"
+          "nonce": "dn7F5vT-yxB4ISs911wpJw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "GeLNHisShj6TcKtXVys0O-H1rKTvii0vwk_frgfCfNO3fFt4xnxj_TKRQ-r3vsLTViHYE-p-9xdcknvZfNFuBA"
+          "value": "TrSQ9uuY4BoMbLLS3bLkPR8I2DAmHkSDkbQPRz98dKAVVYV4CiDOV5WarZ2Md8WRTlyiR2OXTsCy1XCa70YeBA"
         }
       },
       "expect": {
@@ -3987,11 +3907,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "NTUIgokmipgiY6lENJUPMQ"
+          "nonce": "hHTjdWWR7xNVDTfJLr_Rog"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "a2WdCuTy0tggkhs61cme6AIKqi9FsNTNVBrh1kfMVwYXwp1m8wCC4OdeKnAx5w9XVw019FQ7odSVgAnj8KhjBA"
+          "value": "1sT30HkdatHAEVUwKUuyQK7rbIT8iv6GDdEf3TU2PV4GHEm6acwn6mIKnjgfslWbdNNuj6Nc1J4JxxeNxZoDCA"
         }
       },
       "expect": {
@@ -4022,11 +3942,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "N3_Tsp5QSSezaxHdZVBCSw"
+          "nonce": "zyJ75-NTkoAm1JgObG2xrw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "Vc1H96qoTOE5QQu4z0TdBiq8UU0Ky8oDKbApfl2JTDok2Xs5Skvs-vfp3qTNmFK81ZI9bH-5LrjX0U1u-WVtCw"
+          "value": "E_dFDTkTeaA9IO-jJW6EruZzylXJkPYnJ0Qzz2HxmBEZTJ4f8X14iDH-mSU8v_mjppUTj3b0nFQPge2F1a0ODQ"
         }
       },
       "expect": {
@@ -4057,11 +3977,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "fuOuK9CtNACvJJLYheXmfQ"
+          "nonce": "NTUIgokmipgiY6lENJUPMQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "rodwD7G0ofH0qzscBRqxAuNlYnH6MUM0SLZupc0Hf5K8CxNXFBhuG8CmqhqZLTUiMOd34Lc-CHrOdka9cZApCw"
+          "value": "a2WdCuTy0tggkhs61cme6AIKqi9FsNTNVBrh1kfMVwYXwp1m8wCC4OdeKnAx5w9XVw019FQ7odSVgAnj8KhjBA"
         }
       },
       "expect": {
@@ -4092,11 +4012,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "7dD-vuhLygC4XUIbErXV0A"
+          "nonce": "N3_Tsp5QSSezaxHdZVBCSw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "3t7LQlz9ayCSljBBfRgi-MCu3h3QJT24m8dxLaniQyIN6-Bjys74ix5TL_Jmr26rVYEowE9Zr4hBBT6qCewSBA"
+          "value": "Vc1H96qoTOE5QQu4z0TdBiq8UU0Ky8oDKbApfl2JTDok2Xs5Skvs-vfp3qTNmFK81ZI9bH-5LrjX0U1u-WVtCw"
         }
       },
       "expect": {
@@ -4151,11 +4071,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "2fhjEdItV2nXeG-yiQ37oA"
+          "nonce": "fuOuK9CtNACvJJLYheXmfQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "KrBw064ShdeScTlc7slgvuMMZ935icqG1eQV8MNO0RWPiem_g2zxpTtTdF_CedpEI46ykrfZLMaQ_1U9Y7QFAQ"
+          "value": "_O0FXcHS2929Pn6MhOInSEOTMEsDoBErIT85TcrS9HF8JQvRWXHYbOxZbJAa8GgDfmerMExuKIxIsG4qWmkXCw"
         }
       },
       "expect": {
@@ -4191,11 +4111,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "IABZXnOztDx5A-qf9OwygQ"
+          "nonce": "7dD-vuhLygC4XUIbErXV0A"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "dZkA3lq_umrP3zutz-S46ZunVM6S8SUukUqwTWJbjAsZP2MYGd_lH3qXoVwLB3kjTRzcUFGZcy8KHa-nd_mJCQ"
+          "value": "8gCHUOZY6yqP_17QrSOI_1fJ1ju4dzrR3LkUPFpVE-rMbCqwBtX96HYY75r3HTXlzkd3hZ_55uL2Ut7S19AdAg"
         }
       },
       "expect": {
@@ -4232,7 +4152,7 @@
           "issuer": "service:openkey",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "nAASDN6kQPUvtdaMp6pR5g"
+          "nonce": "2fhjEdItV2nXeG-yiQ37oA"
         }
       },
       "expect": {
@@ -4268,11 +4188,11 @@
           "issuer": "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "SDaldmfjSTn1xTGWvCdGtw"
+          "nonce": "IABZXnOztDx5A-qf9OwygQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "20fobjaMzh0fNEUCo8x-8FOHwfArPDRZ6wzrVoMT-ErjnCDPWc2z1k_t2Ev9y_wNUfxeLIq50zfaubo9XiIuDg"
+          "value": "1rFFXBDkHzEeGvnuMknmIdsTz1gBHihBSzXfCNIfUp4o00ZdIhGfSwV-Zswo6pO9mcSUGiU0bUsmylcF_zhBDA"
         }
       },
       "expect": {
@@ -4310,11 +4230,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "Afg9StBaqmJ6XbpGlAnu1g"
+          "nonce": "nAASDN6kQPUvtdaMp6pR5g"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "ARECOgqs9yQ6FwY_EmDKwZxBP4esxrPp6U5C8w69pS8LR8yE_6S487O9yKCDq_r8AzuePosbdIOMdteszwuuAQ"
+          "value": "_WrnuN4WdAZeNULEHRwXogxkB32sJsf-SGu59Jrs7B-w0JEO2TCrItdnBkysC8YF110CYiR3DCz8B9HV7zsmAg"
         }
       },
       "expect": {
@@ -4352,11 +4272,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "eYIwh5ms7liIj0J4bBaVfQ"
+          "nonce": "SDaldmfjSTn1xTGWvCdGtw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "4clqPdIxA9phVD2YZrkD4wulu5bQdT3hJmnihx7DmY3LQ7WSLMQGbBhqglyuAMYgxdjJWB1v7w5P84GLXvmOBQ"
+          "value": "gyQIZm0_Ae2VGPZB5xUBpBJ6uWScQ9IypegI4vnhbOd7XM56AQPtq6lyP9AO56ij0d2iYXpy1TM6IOTfgFXbDg"
         }
       },
       "expect": {
@@ -4394,11 +4314,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "8OccceDhLqV5REQAkVnNQw"
+          "nonce": "Afg9StBaqmJ6XbpGlAnu1g"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "S8vBrZGdrrgMBmsn1OsHs2QRuJEHqIFGkjgylQ9EMlbmSzzHp8F0vvimRtoC_aJUq4UCP4m3U99OieTJP5NWAQ"
+          "value": "i5vBFmAzUtfgFIzfptDe41C7vaUaJdFrtKTu3JjCLFIXYa410dhr3kNDC8QoDVJWOhU5IvbXqH8ej2b86stzBQ"
         }
       },
       "expect": {
@@ -4436,11 +4356,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "sR4PuKx7A9T34_cV4rK9iA"
+          "nonce": "eYIwh5ms7liIj0J4bBaVfQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "M1K_Sh8gS44jLyq1JOtYvQuWPb9j2xJClt6TeXgKY7U6uDH_SzwmwskOnouFnnkmFbDCX9bfeyTe4D1eb7ifAQ"
+          "value": "DipxuHw04zMB3oY4UG15mA7_lJEXAZE_kCJGnojUBdC4gmQlYQ0TRwEgU7CiREAXpfZH50rIi4o33OY3ui5hCQ"
         }
       },
       "expect": {
@@ -4478,11 +4398,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "wYyNWyBqt3lYZ5xxIPwZbA"
+          "nonce": "8OccceDhLqV5REQAkVnNQw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "tIEe4Eud6E5JYHCeWyVlqWRxGsAVPGo7NZGUUuRKozTRqsG1dzD6VKZbG0DyxeK3I6uQhX-FtDQWruhqUQVpCQ"
+          "value": "0nEiz7fKZHQKWNPyVtW04Bfjgdy1kVDS8IYhTFpLzmlHpJMQlH-J-S0qDKhdM7ySXH1UWuCNl6SCLpDXdXUMAg"
         }
       },
       "expect": {
@@ -4564,11 +4484,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T11:57:59.000Z",
-          "nonce": "DyZyt-loLIPZzRGS4N_h-g"
+          "nonce": "sR4PuKx7A9T34_cV4rK9iA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "DDtfGsxcqbJyBb8cxcD9B9L3j9vtOBdDSN48DtrHQMrJhSJ8gJweWhmEyyOoBbWM4p03hg93IAxDqIxPq_2QCA"
+          "value": "xuQ1h3ghGc4268CuW2fsFZWYAVGpzE-pIZliXwFgBt2r_kdQ5dg2FrQNoW8gjiLGF2ETwZCo_TnM6eD886k6BQ"
         }
       },
       "expect": {
@@ -4606,11 +4526,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:02:00.000Z",
-          "nonce": "IAhD3CeInKi5J9NVgdYmuw"
+          "nonce": "wYyNWyBqt3lYZ5xxIPwZbA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "dDSetNt4fx_uBfMkGKafhdKxQSJsNSMfC6k-aHJ8HfwlyxQX8WAABID-z5uKugqnT1oyoPU_lE_jVQFeh6SLAw"
+          "value": "vEe_oUnfDqGzCQgGYlg7KS1Q4RhLmGtDvWN2Ug6P2GKIm4-0gXN0vbNYUUn20YI9A3FoyDg0VtwMZsFh3PDwAQ"
         }
       },
       "expect": {
@@ -4646,11 +4566,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:02:01.000Z",
-          "nonce": "BSPZE2SKlkM8FJUnWMcu2Q"
+          "nonce": "DyZyt-loLIPZzRGS4N_h-g"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "i69htRWrjXxsgakw-ZtGEAtOSMGD1pNKY4bsUtTnsw38cyP6SRTffG6orqaub91NSrmu5aIJNDFXmC6qCpwZBA"
+          "value": "pylzFO7TD4nNfA8PXW-_VXfqq3-GcpWrRyEG4-oNxbmxZ3XdIVr0o9C_vKKb85JOi7us3gbCtPUiEFbAhpfCDw"
         }
       },
       "expect": {
@@ -4688,11 +4608,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "xPoFy8WWq9pC9EUA2ZMmpQ"
+          "nonce": "IAhD3CeInKi5J9NVgdYmuw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "bU5_u_d2e9B0bFpxss6-J0dwJk1ZIsn4_a6mt9xqwh-vc9eaAPoBWjpkzknCGXWG_cZkZfm2yV1lnfbZ9U2KAw"
+          "value": "b479JH8k8Wi8BE1HHvwdA8DK3sSJVxSfjO-rW1I5AML4maYF4K5xOlxSGUjyhzkbmJ7B2RlWbH5ZksgQa0a_BQ"
         }
       },
       "expect": {
@@ -4730,11 +4650,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "WE1brFtlIscnjHo6HKRYfA"
+          "nonce": "BSPZE2SKlkM8FJUnWMcu2Q"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "oDDjTYpfaxge7zQ5UPUvFTLukyH-6XBN_30NvMEc6NF-Xe-UFPFCsSuPh0--YJoA7cVGF_y3JcxmuOgd1-suDw"
+          "value": "b6ej_5cOOmgFJM6L496BBiqkIFlYUG3O08uu9d7WqYsuaVPdqCjffEhCCS1IV0NLjIZzI9KKYjp31yS7v0h-AQ"
         }
       },
       "expect": {
@@ -4772,11 +4692,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.example.org",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "AEA-92he1x3WhH0WLFXbiQ"
+          "nonce": "xPoFy8WWq9pC9EUA2ZMmpQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "me7ylCjT825f1HvdEFLxYVQUOOuUX4TZYM4ODIWNxjGySiJz28rRfk8zi7QE7OI6mINV6ash9N4CA8BB8a-uAQ"
+          "value": "m-NxZkoS7UpgXfJcrRpNpSXaXCfjI0rlv8q_MrUWn6NSb9iwrhcugwgL0bYI3Xwm61281fsguWJgLFzjngfyBQ"
         }
       },
       "expect": {
@@ -4814,11 +4734,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "EKyvT1FrJ25oFP7QjaKibw"
+          "nonce": "WE1brFtlIscnjHo6HKRYfA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "AFwNREgnASUj9Ov3-IbZvf4B7t0_zYLO7-uKoxv51qXZPGEdjEnkDcxNg6-cKVNP_kkXVkY3R7sKgnLz3WD6AA"
+          "value": "Urh25LbPuTmU-5JAnDkT15WQQIXaQnIPZMTqUu7F8wLInUSR8JVcEJJ3LCBocYS-YyDDLjPM5bTTi6FSdgQGAg"
         }
       },
       "expect": {
@@ -4856,12 +4776,12 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "eKkAqOtGttPsmeLyYjkhZg",
+          "nonce": "AEA-92he1x3WhH0WLFXbiQ",
           "extra": 1
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "hnCG-NnprwTdkguXkTu-_dQH7MK9FObVrQwDaj-0SgpTfG6Fe6-YXV3YcuCFLDfgOXBn66QPyB5ITLyFxGyLDQ"
+          "value": "N7tAK1GtSc3zXfl21BnIXShQ8Zl5krLhAlgXQi_kiu3nJeCyGRuJ08SkTP4bnIkUDG40Lj7HK2WjXcOJ2kANDQ"
         }
       },
       "expect": {
@@ -4899,7 +4819,7 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "AHnJllwD1iwFTK92tIZbUg"
+          "nonce": "EKyvT1FrJ25oFP7QjaKibw"
         }
       },
       "expect": {
@@ -4938,7 +4858,7 @@
           "issuer": "service:openkey",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "jZZnd8c2qQxFoDKUtfslOA"
+          "nonce": "eKkAqOtGttPsmeLyYjkhZg"
         }
       },
       "expect": {
@@ -4977,7 +4897,7 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "pMSZtMl1XF85xEdSGRofHA"
+          "nonce": "AHnJllwD1iwFTK92tIZbUg"
         }
       },
       "expect": {
@@ -5016,7 +4936,7 @@
           "issuer": "service:courier",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "AOiVD5Ved-KvByC43eT9CA"
+          "nonce": "jZZnd8c2qQxFoDKUtfslOA"
         }
       },
       "expect": {
@@ -5054,7 +4974,7 @@
           "issuer": "did:key:z6MkeXATEjyXENzBXBxgC5EHk2JE5aqd7qMGGtDpLUH1e2Sj",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "HTjLrJUf4lsFl0QTzy6_2w"
+          "nonce": "pMSZtMl1XF85xEdSGRofHA"
         },
         "signature": {
           "algorithm": "Ed25519",
@@ -5097,11 +5017,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "5FtMn5Q1eZQ3hS7K091LLA"
+          "nonce": "AOiVD5Ved-KvByC43eT9CA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "i2DO-d9ZRW1VCK2oxQRoGy0Ucyfbx0nvccvOKuy11HPZVUW9a5rEc9F_vCKbjKb_kQkMwKigQzgqZD9mdIHyCQ"
+          "value": "ON9f4xX_WDhurmXuB4Uq3TlNXULkLHog5FZoHTkyQp0lY7jybOx6slmPXI-T9-fwozjd2AoOWWGF82r9CeGdDQ"
         }
       },
       "expect": {
@@ -5140,11 +5060,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "dU4kT9PLlzWSJa2LJxrkEg"
+          "nonce": "HTjLrJUf4lsFl0QTzy6_2w"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "S4tz0arj2HEEPA2zAAuNcUWiG2TLibxDTl53I5kiwVM0cLbR15PAlAWUWthp9YihOpTmizo2lSd69sTb35AQAQ"
+          "value": "f3oDco3Hy0ZzkzLWRM8oyKBHQbQmTiXLiMunWNpu1EkhKH1D3pecPiiKppQXokSh3ZDBvXEQ3Y1tcGCvgxoLAQ"
         }
       },
       "expect": {
@@ -5180,11 +5100,11 @@
           "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
           "audience": "https://api.tinycloud.xyz",
           "issuedAt": "2026-10-24T12:00:00.000Z",
-          "nonce": "phtk1MNacLSZlZrSDluskQ"
+          "nonce": "5FtMn5Q1eZQ3hS7K091LLA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "ghUK_aTHdVRIzIzZ237V6z7bCgwwmmcXvRD6UoILuXT3VaTKylnOQpZPD4GwZb70cD0-ie0x2qSOjAjVW2zeBw"
+          "value": "i2DO-d9ZRW1VCK2oxQRoGy0Ucyfbx0nvccvOKuy11HPZVUW9a5rEc9F_vCKbjKb_kQkMwKigQzgqZD9mdIHyCQ"
         }
       },
       "expect": {
@@ -5210,11 +5130,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 182,
           "bodyCid": "bafkreia2a2r36os6e5f44r336qxrufkiadw776sv2gxz5mt45yaefqmrl4",
-          "nonce": "h7sS8DmG5g-oYvi2ASXEKg"
+          "nonce": "phtk1MNacLSZlZrSDluskQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "u-FM_9561KEwmdkR-fZA4GGOBFbZZ_XEOGfKirCEjoSBjpn_3tWgVTXqp94cIAp6AyUFrjp0UC53l8wq3kUWAQ"
+          "value": "V5NcnJvoRBzMRXYv1VXegnmm5m6mNRE_hf6jddX_YtWvuLvp93zVc79K83z8jRiqc35945u0jB_BuA9C_0iBCw"
         }
       },
       "expect": {
@@ -5236,11 +5156,11 @@
           "expiresAt": "2026-10-25T12:00:00.000Z",
           "size": 175,
           "bodyCid": "bafkreie3nxr36mwl2jprkro4mr42bdkcvvvrwbvbxur2qe6iq4mxhvdrfq",
-          "nonce": "sR2_Kg-sX83FaAQdyNa6-Q"
+          "nonce": "h7sS8DmG5g-oYvi2ASXEKg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "JngfmyfEmww67jCaioBGPXOxpSBstbvM5QjOf0PDppoLPY3pUtsFRt48QZJNS6c3k_wYMdBkzwhcU6v_tfEnCw"
+          "value": "qi7a5c1zLscKVW_XP1Sqy6MNmQoi4ytpX5a8JYWHGNtEop6uTjrxxnpIb6Wel_7NSEzjZ7HecGVcuryvfnL9Bw"
         }
       },
       "expect": {
@@ -5262,11 +5182,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "XGZusZS0RQn5gn8ppE-Gew"
+          "nonce": "sR2_Kg-sX83FaAQdyNa6-Q"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "insUCIxQKBek9Hn8pdTWnNXwbSI-DY-BSsQkQFXzWFTWZTbzSn8cUBsiXGm49LHuOA-Ufn3hXEI4U_v03I9VBA"
+          "value": "h9n7AHMq7RPz-N3xhvYtVlI56Uxd2ulU-1g53uYECSDINZvCAsTl6uhMwlmuJiRpyxEpPUpDShZijR2HwZf3Dg"
         }
       },
       "expect": {
@@ -5288,7 +5208,7 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 142,
           "bodyCid": "bafkreib7llg4zcdyxjedci2b7deiaepxyiwb6kkpmkgxnt5l3vrzyhaiby",
-          "nonce": "J3u39edBhbznoKnTxUVWPw"
+          "nonce": "Szv_pTwxvGN2piNfwT8RjA"
         }
       },
       "expect": {
@@ -5310,7 +5230,7 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "r9QVfyFDQbKu8auwknDhrQ"
+          "nonce": "XGZusZS0RQn5gn8ppE-Gew"
         }
       },
       "expect": {
@@ -5334,7 +5254,7 @@
           "expiresAt": "2026-10-25T12:00:00.000Z",
           "size": 175,
           "bodyCid": "bafkreie3nxr36mwl2jprkro4mr42bdkcvvvrwbvbxur2qe6iq4mxhvdrfq",
-          "nonce": "fP7TBl8Nf2l5bfbmXFrNjw"
+          "nonce": "J3u39edBhbznoKnTxUVWPw"
         }
       },
       "expect": {
@@ -5358,11 +5278,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "m_AxUq-deKADU33aEnB1Qg"
+          "nonce": "r9QVfyFDQbKu8auwknDhrQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "VxhS5MU200fHdad-MxELN5fUXXbJrPVKDLRFf3LzgsV__RuXadnrIVBatqDxqqA6oNPhmugenGq6_yVngQjEAg"
+          "value": "UsiFybUjk3HE7YeH89mEqv7NC_jORxv6u0-2WELvx9HZYHQZ-J9D2c367om0BGOOQfUnM4EweCz_wCDfIwCRBQ"
         }
       },
       "expect": {
@@ -5386,11 +5306,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "00rYgEmI_FBicIJIxzRM5Q"
+          "nonce": "fP7TBl8Nf2l5bfbmXFrNjw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "R356q_Jw3PdBR6XE7Ov74-vq7MRQtOhYlQsqcJ-Lyncg8fc6IUsCz2ti0S8XCNrushazHEFl4Huxrdt9_VMrAg"
+          "value": "yC6ONTlH3L2ECCRoBvhdx-xeHR35VHSOHYBzq0xgJ6gEsbt7tqBS3nL2Izbkka3bksQJOIt0CQp0C0ymX80ABQ"
         }
       },
       "expect": {
@@ -5414,11 +5334,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "KGn119NWlmOm9zxzOuxNVg"
+          "nonce": "m_AxUq-deKADU33aEnB1Qg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "uzwtxHzs7y5AlBqSgXMDUpHltHRZxuqd9agUV3HwTkyO0TxVfdTC86kZ-KpyPlq-Gl2ez8IeU3DzAKNy8XCjAg"
+          "value": "t6gLYd6_gZyJ3dPwVZMCvGfTeWiDZUWXNMbsuWL8Wr_I_ILdlqydLmSQXEfPTKX2MCpVowDw7j7lfv95-uXUCw"
         }
       },
       "expect": {
@@ -5440,11 +5360,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "KGn119NWlmOm9zxzOuxNVg"
+          "nonce": "m_AxUq-deKADU33aEnB1Qg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "uzwtxHzs7y5AlBqSgXMDUpHltHRZxuqd9agUV3HwTkyO0TxVfdTC86kZ-KpyPlq-Gl2ez8IeU3DzAKNy8XCjAg"
+          "value": "t6gLYd6_gZyJ3dPwVZMCvGfTeWiDZUWXNMbsuWL8Wr_I_ILdlqydLmSQXEfPTKX2MCpVowDw7j7lfv95-uXUCw"
         }
       },
       "expect": {
@@ -5468,11 +5388,11 @@
           "expiresAt": "2027-01-22T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "oabZHdXKRoxq6lzY8oHASQ"
+          "nonce": "00rYgEmI_FBicIJIxzRM5Q"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "aS5cmuZ7XxkyqzMMqT5RHMro0rP83WBYDsxqrJKPTMp3c48sc_tymDwUC08heFBXjd6fY-L6Jxk1Vd8jD1i_BA"
+          "value": "Uaf5TQM4SjIuBI81qMCYqJE1_t6QuwEriTVACAVAZn-UGanBWQnHKcinJtuBzRYx_X_5rssc_7nLj3-uELuwDg"
         }
       },
       "expect": {
@@ -5494,11 +5414,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "PDOSJcXfhuIRz5NUxP7CYg"
+          "nonce": "KGn119NWlmOm9zxzOuxNVg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "HIsTdVIK3lS8zKPa8ZP8ELX5_o6byoXeCNwTlnhORi8w8H64PO6CDJ_GKI9_DWtEYaEbuWcn36GcjfdUrImrDQ"
+          "value": "sZLf_FVUiPKsQCDFJsUMXdOrwYAAIAUess4oMb84cDDPgtF1W_BZX6_Bf-tgJkSX-rgZ_sD8-haJb0I_mNxXBA"
         }
       },
       "expect": {
@@ -5520,11 +5440,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "JzTRxQwsCyPMbYeJXXayDg"
+          "nonce": "oabZHdXKRoxq6lzY8oHASQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "Zr9-qTUv2GLARL_QxJ1TlCpykX0ZvIWLwhtNLYsClV-34vHDWZvYOOexg6cKgSCkyqr1CeC5odUX9r_KDp0RBQ"
+          "value": "tgPadl5lFVLwFY7atq9ERiLEnjXAo3P4ME0bbD0ZQd1I2W9Zu3UvKGzWVyafIzS-oBLqmiN9UYJH8gBA80A8AQ"
         }
       },
       "expect": {
@@ -5548,17 +5468,209 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 246,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "foFHRJVfrfWQriSefz_Qhw"
+          "nonce": "PDOSJcXfhuIRz5NUxP7CYg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "srbA3QCcbPlMVtU7pJQMzZrvsfdPosgiklOz2dTPr7krU6b_I0oLWu0a5pU8lIO5vVah1tBtlZyrkbPSAR9ZAA"
+          "value": "Zu5tlvjnUp2Hp614ShsT1ZKoFM2maFjVDomr-ry-31KRimBmqCGSWRZQDDhXHQ-c_D3sf5foM1ZpJe2sIEF6Aw"
         }
       },
       "expect": {
         "status": 400,
         "error": "invalid_request",
         "reason": "size_mismatch"
+      }
+    },
+    {
+      "name": "reader: openkey-login body at the limit (65536 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "openkey-login",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
+          "nonce": "JzTRxQwsCyPMbYeJXXayDg"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "P2uyII_wZ-OUE645QIztoMUNxzqLPNVtS3uP_NYJYnVO_N8QAqmh9i_2m6R_jSXh6VpogknSCxscQPfe84AbAw"
+        }
+      },
+      "expect": {
+        "status": 200
+      },
+      "bodySynthesized": {
+        "length": 65536,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
+      }
+    },
+    {
+      "name": "reader: openkey-login body one byte over the limit (65537 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "openkey-login",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
+          "nonce": "foFHRJVfrfWQriSefz_Qhw"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "tmhruzToIIbcZbuG32Kdj_pNHI6FPGZOBcPuBXvm2E4lrdQ_3c-TQd-rey66IuuQP68sQIrI0tKV1eSS14xFDQ"
+        }
+      },
+      "expect": {
+        "status": 413,
+        "error": "too_large",
+        "reason": "body_over_cap"
+      },
+      "bodySynthesized": {
+        "length": 65537,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
+      }
+    },
+    {
+      "name": "reader: courier body at the limit (65536 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "courier",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
+          "nonce": "eK-VBtUnqGLUXtoMUAm18w"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "zARStKCmYC7GAAphwMLVXpIfw3gZrs4xK7ygo0s1U0zQvepAfrvOT8fBUGSix3XmzfLOkzEpVmki56-iGoq2Cw"
+        }
+      },
+      "expect": {
+        "status": 200
+      },
+      "bodySynthesized": {
+        "length": 65536,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
+      }
+    },
+    {
+      "name": "reader: courier body one byte over the limit (65537 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "courier",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
+          "nonce": "fh9nRnzbLcd8-AiU0PPlMQ"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "std1urjMcgUEl8vL-3BJBTVzQovFuoKepndv7JuAHLWADiHCNtCere-zduEuybRtBlZ6vPSCHd4JoabFVNU7Cg"
+        }
+      },
+      "expect": {
+        "status": 413,
+        "error": "too_large",
+        "reason": "body_over_cap"
+      },
+      "bodySynthesized": {
+        "length": 65537,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
+      }
+    },
+    {
+      "name": "reader: share body at the limit (65536 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "share",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65536,
+          "bodyCid": "bafkreidj7cgoktwjphjgzazrglbvo5c2apry4buqoscyu7upkwopk2w7tm",
+          "nonce": "H5e-k3DzNUCAIEriyDCCsw"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "Xr5Ggjn9npLsiMQ9j1cb4-EaHJk-T-XJejRX0g-VpAQ1Zv8gHlwkBnhVXtIVCn-x9E0Vi9fu4Lmm3hBcBmI5Cg"
+        }
+      },
+      "expect": {
+        "status": 200
+      },
+      "bodySynthesized": {
+        "length": 65536,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
+      }
+    },
+    {
+      "name": "reader: share body one byte over the limit (65537 bytes)",
+      "now": "2026-10-24T12:00:00.000Z",
+      "contentKeyB64u": null,
+      "record": {
+        "header": {
+          "version": 1,
+          "type": "share",
+          "issuer": "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S",
+          "audience": "https://api.tinycloud.xyz",
+          "issuedAt": "2026-10-24T12:00:00.000Z",
+          "expiresAt": "2026-10-24T12:10:00.000Z",
+          "size": 65537,
+          "bodyCid": "bafkreidx2qc6eiy2rkquye2rkbuih3rjr7uzeosbsvqe2iav756gm3xd4a",
+          "nonce": "O4oDB1Hd28ls4Jo0xlpCkA"
+        },
+        "signature": {
+          "algorithm": "Ed25519",
+          "value": "LKouMsa-TbinS9p700ZYlDBmoWeeGyazFHOGLbIlxwL3fuEH6UyMX8N_X-0-NNpjR-MJ4RkiH3cKTU-mcaReCA"
+        }
+      },
+      "expect": {
+        "status": 413,
+        "error": "too_large",
+        "reason": "body_over_cap"
+      },
+      "bodySynthesized": {
+        "length": 65537,
+        "fillByte": 66,
+        "firstByte": 1,
+        "note": "body = length bytes of fillByte with byte 0 = 0x01; `record.body` is omitted and the implementation synthesizes it; no content key is given, so the body is not opened"
       }
     },
     {
@@ -5576,7 +5688,7 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 182,
           "bodyCid": "bafkreia2a2r36os6e5f44r336qxrufkiadw776sv2gxz5mt45yaefqmrl4",
-          "nonce": "eK-VBtUnqGLUXtoMUAm18w"
+          "nonce": "yew7ZaYR9GGpKtZvbLS-kQ"
         }
       },
       "expect": {
@@ -5600,11 +5712,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 142,
           "bodyCid": "bafkreib7llg4zcdyxjedci2b7deiaepxyiwb6kkpmkgxnt5l3vrzyhaiby",
-          "nonce": "fh9nRnzbLcd8-AiU0PPlMQ"
+          "nonce": "1Fimsv0xk5llqBw6fetDyg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "W4K3eP-_sjvsVmK7fMv8mTlU__fNOsj8d7nPuU_R1PRG3Rx9ae7Pp5NXTp6Wl-EhnsrkCQ39SWqyhx06c_-8Dg"
+          "value": "oWXvaX9wwsPI7T1lK2Ygr5C482WitWHlPXnZIprLBvRVuGAorEUhuSyDE9WuCVgIsCFCZh7gsdRl3jicn8hJBA"
         }
       },
       "expect": {
@@ -5628,11 +5740,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 225,
           "bodyCid": "bafkreiazyunw7zejsqmpypefrk322q5fn4zf7drttoidsxzqqcfrrrycsa",
-          "nonce": "H5e-k3DzNUCAIEriyDCCsw"
+          "nonce": "KHPdekf3Hcw-5nbEaZbc9Q"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "2wf-WHWzgA4p-CHXGVfd9cVo3Ehhvt1D2ou7SBl6_ysle6RG6qhtPrtpU1CVMWZJpNWY5QnMtFBEnOGyw32gBQ"
+          "value": "PWYjvIWwxAIYqfncImg3bZM6gncXZyFp5p8j-FJgijyn7WsfMU5DRTXSexwIpqAClYWtX4c1H5xfSsAB8ax4DA"
         }
       },
       "expect": {
@@ -5656,11 +5768,11 @@
           "expiresAt": "2026-10-25T12:00:00.000Z",
           "size": 180,
           "bodyCid": "bafkreiewng2vdprpsbbzm2qloiqcplxxjavqsghpafdyke5t6sli3bkubu",
-          "nonce": "O4oDB1Hd28ls4Jo0xlpCkA"
+          "nonce": "ZyPK8iJSThX90addU-IddA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "Z_XkbC_i2WC4p1L-zt_jBZcJ3gHgTE1Qg6ZliGNiKqH2rM0DRv2fWvY0fDH7j2vPGIRMlu8Ecb4OQb9EHVEqAw"
+          "value": "wx8TP6eksS_GGFV0yaxn51Hx-TtBgQHkfTtbHTsSfCb9fdz_nomgIdCFMDDt-NOB75HOrL-2Cuo3dU913hAiCQ"
         }
       },
       "expect": {
@@ -5684,11 +5796,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 142,
           "bodyCid": "bafkreib7llg4zcdyxjedci2b7deiaepxyiwb6kkpmkgxnt5l3vrzyhaiby",
-          "nonce": "yew7ZaYR9GGpKtZvbLS-kQ"
+          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "I2zbKND23S2Ex2caJ5UPIOawsVIdgJAFCLiRdt0APDZ-6ilg_jxldz_ysb9sfKCla_1bRLEoRx1fwt5xWjpgDg"
+          "value": "uLfC4htMy92jjVMwssOh9DZHObFdbJZVmTJ_o521aBylgQDXGFW7jC_wByeOaDSW6gYlk0ay1e8p23D5v_rlBA"
         }
       },
       "expect": {
@@ -5712,7 +5824,7 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 142,
           "bodyCid": "bafkreib7llg4zcdyxjedci2b7deiaepxyiwb6kkpmkgxnt5l3vrzyhaiby",
-          "nonce": "1Fimsv0xk5llqBw6fetDyg"
+          "nonce": "VI5vfBseA2cV435w00RltQ"
         }
       },
       "expect": {
@@ -5734,11 +5846,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 36,
           "bodyCid": "bafkreidtsgwowfu2pghfcrllgsympylex2otkcggpibu7wsxxfjqjrrchq",
-          "nonce": "KHPdekf3Hcw-5nbEaZbc9Q"
+          "nonce": "EPmb6kTQoLA3I9k0kYFtBw"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "6rAOLgJvHE2iLPhk6TNARUziIYWT5AMMCpVgfDXdfZC_kiR6i_uZG1Vi2aa9LzxTKmCfimaxoxJ3UPcbmEzBCw"
+          "value": "91PuAJsYc4S7jZ9dxmGiFYMY6BW5BFY5jXI-o9R57m8TigpGhqcrpmBPyy-pKLr1p1KyLwWiDQ6y1IAbnRKFBw"
         }
       },
       "expect": {
@@ -5762,11 +5874,11 @@
           "expiresAt": "2026-11-23T12:00:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "ZyPK8iJSThX90addU-IddA"
+          "nonce": "WVsYZY4_Pe3CL4E1mPVlLg"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "ezfIG3jwnNi_aD8z7Km_B9bi5TpNdODodvmyRp2BokTW4DYZnOMacKY_SBOFjZJAjGZ-ZigKy8bFVr7icNMuCw"
+          "value": "fHgqYRs-PcPqbinwtI4jFFPCLSRfU_3GUDOzHHiOcigC9TFznk36emflAa6wDO4FYmTknRrUBgnWKs0fkRhCAQ"
         }
       },
       "expect": {
@@ -5792,11 +5904,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -5819,11 +5931,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 175,
           "bodyCid": "bafkreie3nxr36mwl2jprkro4mr42bdkcvvvrwbvbxur2qe6iq4mxhvdrfq",
-          "nonce": "VI5vfBseA2cV435w00RltQ"
+          "nonce": "hmqZGSBIRk7DKvtuJTk7IA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "pGyYmp7MnQSG8yNwmwyVAN4flEWdMxashJly2xHCiK7TbuTj_3_8AUcX8Ai72_feuWqXwfBDiDf6v3cJjXyOCQ"
+          "value": "5FQEgFdDOKhdFd7X2bUTsdPOS_AoDymJlVZwepoiu_Svfov8bcKUz2nBnlAyOGN6FqNjVnrrXmk49ELJyywuBA"
         }
       },
       "expect": {
@@ -5846,7 +5958,7 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 142,
           "bodyCid": "bafkreib7llg4zcdyxjedci2b7deiaepxyiwb6kkpmkgxnt5l3vrzyhaiby",
-          "nonce": "EPmb6kTQoLA3I9k0kYFtBw"
+          "nonce": "pskmSCmvpie6hjP6Kw5abQ"
         }
       },
       "expect": {
@@ -5857,7 +5969,7 @@
     {
       "name": "valid full share link",
       "now": "2026-10-24T12:00:00.000Z",
-      "link": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTAtMjRUMTI6MTA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6Inc2R3VTbkVWU25GX1JFSTRLWmdWWkEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoieTloOXNtZ1NkR0lHRnpsOHZWNWFjZGNhM3FWSnlKeVpBRkxpbndqUmREaE1vcTlDWXdtbTE2RzNFaXIzS0RMdnpldnZ2MW9UMUI5VksycmxGUHAyQ1EifX0",
+      "link": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTAtMjRUMTI6MTA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6IllEelRWajAwUDNpNWZtVnYxTXo3QlEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoieFZ4bGJaMGoyU3FncnJMV0hVYXY2QURod3o4T0hFbUZsZFh1dzBsaGxsZ2oxOS1UbmlvN0dneWZTM3NTVVktVFFITlRIc3JsOTU1Y3d1cTFhWUZRQkEifX0",
       "serverRecord": null,
       "expect": {
         "status": 200,
@@ -5879,11 +5991,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 175,
           "bodyCid": "bafkreie3nxr36mwl2jprkro4mr42bdkcvvvrwbvbxur2qe6iq4mxhvdrfq",
-          "nonce": "VI5vfBseA2cV435w00RltQ"
+          "nonce": "hmqZGSBIRk7DKvtuJTk7IA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "pGyYmp7MnQSG8yNwmwyVAN4flEWdMxashJly2xHCiK7TbuTj_3_8AUcX8Ai72_feuWqXwfBDiDf6v3cJjXyOCQ"
+          "value": "5FQEgFdDOKhdFd7X2bUTsdPOS_AoDymJlVZwepoiu_Svfov8bcKUz2nBnlAyOGN6FqNjVnrrXmk49ELJyywuBA"
         }
       },
       "expect": {
@@ -5907,11 +6019,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -5935,11 +6047,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -5951,7 +6063,7 @@
     {
       "name": "full link whose record is not a share",
       "now": "2026-10-24T12:00:00.000Z",
-      "link": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFJQ0FnSUNBZ0lDQWdJQ0Fra2h6cHNQUmMyRkxOVkxPTnNQdDRmcXhIdlRqbC1hZmY1anphaVNnQ1Q1cURIVHRKS0VJblBfdjVwdk5JN1lvOG9zN3N3cFlrb1hobUVRM0hyUjQwNEdMWE1oMm1haDVBS20tOExTSVV1TnJIRlp3dnlDM01ZaU1kNTYwUW9ab1NiVU9JRzlJNk5aOXI1NU9wemhWWUVMcTk4ZG9NZHZ2TjBEdWc3T3o5S2hETEZEcEJSODRmY1VWZHNWUi1RQmp1Mmp1NlFtZG9fZlZrVnpqLUFDUnlHbDZBIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZTNueHIzNm13bDJqcHJrcm80bXI0MmJka2N2dnZyd2J2Ynh1cjJxZTZpcTRteGh2ZHJmcSIsImV4cGlyZXNBdCI6IjIwMjYtMTAtMjRUMTI6MTA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6IlZJNXZmQnNlQTJjVjQzNXcwMFJsdFEiLCJzaXplIjoxNzUsInR5cGUiOiJjb3VyaWVyIiwidmVyc2lvbiI6MX0sInNpZ25hdHVyZSI6eyJhbGdvcml0aG0iOiJFZDI1NTE5IiwidmFsdWUiOiJwR3lZbXA3TW5RU0c4eU53bXd5VkFONGZsRVdkTXhhc2hKbHkyeEhDaUs3VGJ1VGpfM184QVVjWDhBaTcyX2ZldVdxWHdmQkRpRGY2djNjSmpYeU9DUSJ9fQ",
+      "link": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFJQ0FnSUNBZ0lDQWdJQ0Fra2h6cHNQUmMyRkxOVkxPTnNQdDRmcXhIdlRqbC1hZmY1anphaVNnQ1Q1cURIVHRKS0VJblBfdjVwdk5JN1lvOG9zN3N3cFlrb1hobUVRM0hyUjQwNEdMWE1oMm1haDVBS20tOExTSVV1TnJIRlp3dnlDM01ZaU1kNTYwUW9ab1NiVU9JRzlJNk5aOXI1NU9wemhWWUVMcTk4ZG9NZHZ2TjBEdWc3T3o5S2hETEZEcEJSODRmY1VWZHNWUi1RQmp1Mmp1NlFtZG9fZlZrVnpqLUFDUnlHbDZBIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZTNueHIzNm13bDJqcHJrcm80bXI0MmJka2N2dnZyd2J2Ynh1cjJxZTZpcTRteGh2ZHJmcSIsImV4cGlyZXNBdCI6IjIwMjYtMTAtMjRUMTI6MTA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoxNzUsInR5cGUiOiJjb3VyaWVyIiwidmVyc2lvbiI6MX0sInNpZ25hdHVyZSI6eyJhbGdvcml0aG0iOiJFZDI1NTE5IiwidmFsdWUiOiI1RlFFZ0ZkRE9LaGRGZDdYMmJVVHNkUE9TX0FvRHltSmxWWndlcG9pdV9TdmZvdjhiY0tVejJuQm5sQXlPR042RnFOalZucnJYbWs0OUVMSnl5d3VCQSJ9fQ",
       "serverRecord": null,
       "expect": {
         "status": 400,
@@ -5974,11 +6086,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 225,
           "bodyCid": "bafkreiazyunw7zejsqmpypefrk322q5fn4zf7drttoidsxzqqcfrrrycsa",
-          "nonce": "WVsYZY4_Pe3CL4E1mPVlLg"
+          "nonce": "MfYVA-_iL11QRA4eR1HOLQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "XD21Wrq8GDcYNtxkNeAq57Ig38hZdq4nmjAzZM1kRHVSlY37B18oCG7zJ5JeOGEDT-gG8zOz0odm3zQQlg5VCg"
+          "value": "xeznBrBn2yVxSEoNfhorZnxMoPezTG9nSd87_rGBovG_sMrkSTxWZCX2SEgputINLdZIU0eHFR1smYl74KTBBg"
         }
       },
       "expect": {
@@ -6002,11 +6114,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 180,
           "bodyCid": "bafkreiewng2vdprpsbbzm2qloiqcplxxjavqsghpafdyke5t6sli3bkubu",
-          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
+          "nonce": "LG6-6627U6swQN40pmVsZA"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "sCb3_ADrWmCZYfIqvwrvxCYgbVpgPzSwlC-eTryG19YNJk3z05Wnco76sbXEqcrObmPLDtCK-I_svEZxhPLDBw"
+          "value": "dfM2SND2LxfO6HO3AmH14QO1yM1_iEzBgidIgVHVx0ShvbYvK588j3U63Kx9vTFkiAKCq1v9B9jDSTz4MZvnBg"
         }
       },
       "expect": {
@@ -6030,11 +6142,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -6069,11 +6181,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -6097,11 +6209,11 @@
           "expiresAt": "2026-10-24T12:10:00.000Z",
           "size": 245,
           "bodyCid": "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u",
-          "nonce": "w6GuSnEVSnF_REI4KZgVZA"
+          "nonce": "YDzTVj00P3i5fmVv1Mz7BQ"
         },
         "signature": {
           "algorithm": "Ed25519",
-          "value": "y9h9smgSdGIGFzl8vV5acdca3qVJyJyZAFLinwjRdDhMoq9CYwmm16G3Eir3KDLvzevvv1oT1B9VK2rlFPp2CQ"
+          "value": "xVxlbZ0j2SqgrrLWHUav6ADhwz8OHEmFldXuw0lhllgj19-Tnio7GgyfS3sSUY-TQHNTHsrl955cwuq1aYFQBA"
         }
       },
       "expect": {
@@ -6162,7 +6274,7 @@
     },
     {
       "name": "valid full link",
-      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiS3RWVHVMajNGT2w5WVJIa2k4dzlZZlRoTWNpX01MVDZyRTEwYnFVcDg1X21ERnU0RzNNRnBiMFNzek9BOWl4ODJjbng1b2NSM1lMejI5bkExRnFRQkEifX0",
+      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6InVrd3RmVFMzZHBzbHUxVGhkM0o5QnciLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiUlJXaUM5UGliamdNUlhJSG53TURkejlBODdYeVdqT1J6SUV1Z3VsZ1N3eXBBMm42OFQ4bnVLcmFCS2hmeVdtR1pvMzBLUEp6NnZfTDcwYktwMHJfQkEifX0",
       "expect": {
         "valid": true,
         "form": "full",
@@ -6171,16 +6283,16 @@
     },
     {
       "name": "full link payload decodes to the record the create request would carry",
-      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiS3RWVHVMajNGT2w5WVJIa2k4dzlZZlRoTWNpX01MVDZyRTEwYnFVcDg1X21ERnU0RzNNRnBiMFNzek9BOWl4ODJjbng1b2NSM1lMejI5bkExRnFRQkEifX0",
+      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6InVrd3RmVFMzZHBzbHUxVGhkM0o5QnciLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiUlJXaUM5UGliamdNUlhJSG53TURkejlBODdYeVdqT1J6SUV1Z3VsZ1N3eXBBMm42OFQ4bnVLcmFCS2hmeVdtR1pvMzBLUEp6NnZfTDcwYktwMHJfQkEifX0",
       "expect": {
-        "recordJcs": "{\"body\":\"AQEBAQEBAQEBAQEBAdi9Na27wyynfI-lk9GY0nhA0Yy9tnQSepEZCGiSo5FxXJgwOqmaDSYjvWqtBNfvbY8c3-iu1T4DTD9waLbgRPcw3iZNCEhsUDcdAk4YzbgDgM-06ufk80qlRbXO6E8TZo5VFVFBTLd_lENHvyiH2qLxKAASoH9UHXVhk40Uqr0e4qSEkzW99SnXJV2HPmesMQ_UA1MknsEQxILc29Mn9LjdAhJ01TtErEgMIU0gX4JQ-UbDEryDG5JOkPTCZKrzEbMHxevzID7iPy_6CL_Pmh_rtLeQvh6uffIs4QpFo9ahma__Ynq5Wqo\",\"header\":{\"audience\":\"https://api.tinycloud.xyz\",\"bodyCid\":\"bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u\",\"expiresAt\":\"2026-11-23T12:00:00.000Z\",\"issuedAt\":\"2026-10-24T12:00:00.000Z\",\"issuer\":\"did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S\",\"nonce\":\"hmqZGSBIRk7DKvtuJTk7IA\",\"size\":245,\"type\":\"share\",\"version\":1},\"signature\":{\"algorithm\":\"Ed25519\",\"value\":\"KtVTuLj3FOl9YRHki8w9YfThMci_MLT6rE10bqUp85_mDFu4G3MFpb0SszOA9ix82cnx5ocR3YLz29nA1FqQBA\"}}",
+        "recordJcs": "{\"body\":\"AQEBAQEBAQEBAQEBAdi9Na27wyynfI-lk9GY0nhA0Yy9tnQSepEZCGiSo5FxXJgwOqmaDSYjvWqtBNfvbY8c3-iu1T4DTD9waLbgRPcw3iZNCEhsUDcdAk4YzbgDgM-06ufk80qlRbXO6E8TZo5VFVFBTLd_lENHvyiH2qLxKAASoH9UHXVhk40Uqr0e4qSEkzW99SnXJV2HPmesMQ_UA1MknsEQxILc29Mn9LjdAhJ01TtErEgMIU0gX4JQ-UbDEryDG5JOkPTCZKrzEbMHxevzID7iPy_6CL_Pmh_rtLeQvh6uffIs4QpFo9ahma__Ynq5Wqo\",\"header\":{\"audience\":\"https://api.tinycloud.xyz\",\"bodyCid\":\"bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u\",\"expiresAt\":\"2026-11-23T12:00:00.000Z\",\"issuedAt\":\"2026-10-24T12:00:00.000Z\",\"issuer\":\"did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S\",\"nonce\":\"ukwtfTS3dpslu1Thd3J9Bw\",\"size\":245,\"type\":\"share\",\"version\":1},\"signature\":{\"algorithm\":\"Ed25519\",\"value\":\"RRWiC9PibjgMRXIHnwMDdz9A87XyWjORzIEugulgSwypA2n68T8nuKraBKhfyWmGZo30KPJz6v_L70bKp0r_BA\"}}",
         "recordBytes": 809,
         "linkChars": 1166
       }
     },
     {
       "name": "full link whose JSON is not canonical",
-      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=ewogImJvZHkiOiAiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwKICJoZWFkZXIiOiB7CiAgInZlcnNpb24iOiAxLAogICJ0eXBlIjogInNoYXJlIiwKICAiaXNzdWVyIjogImRpZDprZXk6ejZNa3RVTHVkVHRBc0FoUmVnWVBpWjY2MzFSVjN2aXYxMnFkNEdRRjh6MXhCMjJTIiwKICAiYXVkaWVuY2UiOiAiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsCiAgImlzc3VlZEF0IjogIjIwMjYtMTAtMjRUMTI6MDA6MDAuMDAwWiIsCiAgImV4cGlyZXNBdCI6ICIyMDI2LTExLTIzVDEyOjAwOjAwLjAwMFoiLAogICJzaXplIjogMjQ1LAogICJib2R5Q2lkIjogImJhZmtyZWlld2l4bXQ1bndnaTN5Y2g2ZHVyY3NoZWFxbDN5YnN3YnBscGptcGJkaGZrdmRraWR6dDV1IiwKICAibm9uY2UiOiAiaG1xWkdTQklSazdES3Z0dUpUazdJQSIKIH0sCiAic2lnbmF0dXJlIjogewogICJhbGdvcml0aG0iOiAiRWQyNTUxOSIsCiAgInZhbHVlIjogIkt0VlR1TGozRk9sOVlSSGtpOHc5WWZUaE1jaV9NTFQ2ckUxMGJxVXA4NV9tREZ1NEczTUZwYjBTc3pPQTlpeDgyY254NW9jUjNZTHoyOW5BMUZxUUJBIgogfQp9",
+      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=ewogImJvZHkiOiAiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwKICJoZWFkZXIiOiB7CiAgInZlcnNpb24iOiAxLAogICJ0eXBlIjogInNoYXJlIiwKICAiaXNzdWVyIjogImRpZDprZXk6ejZNa3RVTHVkVHRBc0FoUmVnWVBpWjY2MzFSVjN2aXYxMnFkNEdRRjh6MXhCMjJTIiwKICAiYXVkaWVuY2UiOiAiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsCiAgImlzc3VlZEF0IjogIjIwMjYtMTAtMjRUMTI6MDA6MDAuMDAwWiIsCiAgImV4cGlyZXNBdCI6ICIyMDI2LTExLTIzVDEyOjAwOjAwLjAwMFoiLAogICJzaXplIjogMjQ1LAogICJib2R5Q2lkIjogImJhZmtyZWlld2l4bXQ1bndnaTN5Y2g2ZHVyY3NoZWFxbDN5YnN3YnBscGptcGJkaGZrdmRraWR6dDV1IiwKICAibm9uY2UiOiAidWt3dGZUUzNkcHNsdTFUaGQzSjlCdyIKIH0sCiAic2lnbmF0dXJlIjogewogICJhbGdvcml0aG0iOiAiRWQyNTUxOSIsCiAgInZhbHVlIjogIlJSV2lDOVBpYmpnTVJYSUhud01EZHo5QTg3WHlXak9SeklFdWd1bGdTd3lwQTJuNjhUOG51S3JhQktoZnlXbUdabzMwS1BKejZ2X0w3MGJLcDByX0JBIgogfQp9",
       "expect": {
         "valid": false,
         "reason": "record_not_canonical"
@@ -6188,7 +6300,7 @@
     },
     {
       "name": "full link with padded payload",
-      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiS3RWVHVMajNGT2w5WVJIa2k4dzlZZlRoTWNpX01MVDZyRTEwYnFVcDg1X21ERnU0RzNNRnBiMFNzek9BOWl4ODJjbng1b2NSM1lMejI5bkExRnFRQkEifX0=",
+      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6InVrd3RmVFMzZHBzbHUxVGhkM0o5QnciLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiUlJXaUM5UGliamdNUlhJSG53TURkejlBODdYeVdqT1J6SUV1Z3VsZ1N3eXBBMm42OFQ4bnVLcmFCS2hmeVdtR1pvMzBLUEp6NnZfTDcwYktwMHJfQkEifX0=",
       "expect": {
         "valid": false,
         "reason": "fragment_grammar"
@@ -6204,7 +6316,7 @@
     },
     {
       "name": "full link payload with a non-canonical tail",
-      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiS3RWVHVMajNGT2w5WVJIa2k4dzlZZlRoTWNpX01MVDZyRTEwYnFVcDg1X21ERnU0RzNNRnBiMFNzek9BOWl4ODJjbng1b2NSM1lMejI5bkExRnFRQkEifXA",
+      "href": "https://share.tinycloud.xyz/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6InVrd3RmVFMzZHBzbHUxVGhkM0o5QnciLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiUlJXaUM5UGliamdNUlhJSG53TURkejlBODdYeVdqT1J6SUV1Z3VsZ1N3eXBBMm42OFQ4bnVLcmFCS2hmeVdtR1pvMzBLUEp6NnZfTDcwYktwMHJfQkEifXA",
       "expect": {
         "valid": false,
         "reason": "record_json"
@@ -6212,7 +6324,7 @@
     },
     {
       "name": "full form only exists at /s/full",
-      "href": "https://share.tinycloud.xyz/c/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6ImhtcVpHU0JJUms3REt2dHVKVGs3SUEiLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiS3RWVHVMajNGT2w5WVJIa2k4dzlZZlRoTWNpX01MVDZyRTEwYnFVcDg1X21ERnU0RzNNRnBiMFNzek9BOWl4ODJjbng1b2NSM1lMejI5bkExRnFRQkEifX0",
+      "href": "https://share.tinycloud.xyz/c/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=eyJib2R5IjoiQVFFQkFRRUJBUUVCQVFFQkFkaTlOYTI3d3l5bmZJLWxrOUdZMG5oQTBZeTl0blFTZXBFWkNHaVNvNUZ4WEpnd09xbWFEU1lqdldxdEJOZnZiWThjMy1pdTFUNERURDl3YUxiZ1JQY3czaVpOQ0Voc1VEY2RBazRZemJnRGdNLTA2dWZrODBxbFJiWE82RThUWm81VkZWRkJUTGRfbEVOSHZ5aUgycUx4S0FBU29IOVVIWFZoazQwVXFyMGU0cVNFa3pXOTlTblhKVjJIUG1lc01RX1VBMU1rbnNFUXhJTGMyOU1uOUxqZEFoSjAxVHRFckVnTUlVMGdYNEpRLVViREVyeURHNUpPa1BUQ1pLcnpFYk1IeGV2eklEN2lQeV82Q0xfUG1oX3J0TGVRdmg2dWZmSXM0UXBGbzlhaG1hX19ZbnE1V3FvIiwiaGVhZGVyIjp7ImF1ZGllbmNlIjoiaHR0cHM6Ly9hcGkudGlueWNsb3VkLnh5eiIsImJvZHlDaWQiOiJiYWZrcmVpZXdpeG10NW53Z2kzeWNoNmR1cmNzaGVhcWwzeWJzd2JwbHBqbXBiZGhma3Zka2lkenQ1dSIsImV4cGlyZXNBdCI6IjIwMjYtMTEtMjNUMTI6MDA6MDAuMDAwWiIsImlzc3VlZEF0IjoiMjAyNi0xMC0yNFQxMjowMDowMC4wMDBaIiwiaXNzdWVyIjoiZGlkOmtleTp6Nk1rdFVMdWRUdEFzQWhSZWdZUGlaNjYzMVJWM3ZpdjEycWQ0R1FGOHoxeEIyMlMiLCJub25jZSI6InVrd3RmVFMzZHBzbHUxVGhkM0o5QnciLCJzaXplIjoyNDUsInR5cGUiOiJzaGFyZSIsInZlcnNpb24iOjF9LCJzaWduYXR1cmUiOnsiYWxnb3JpdGhtIjoiRWQyNTUxOSIsInZhbHVlIjoiUlJXaUM5UGliamdNUlhJSG53TURkejlBODdYeVdqT1J6SUV1Z3VsZ1N3eXBBMm42OFQ4bnVLcmFCS2hmeVdtR1pvMzBLUEp6NnZfTDcwYktwMHJfQkEifX0",
       "expect": {
         "valid": false,
         "reason": "path_grammar"
@@ -6839,22 +6951,134 @@
     {
       "address": "fe80::1%eth0",
       "expect": {
-        "rateKey": "fe80:0:0:0::/64",
-        "liveKey": "fe80:0:0::/48"
+        "rateKey": "fe80::/64",
+        "liveKey": "fe80::/48"
+      }
+    },
+    {
+      "address": "2001:0:0:1::5",
+      "expect": {
+        "rateKey": "2001:0:0:1::/64",
+        "liveKey": "2001::/48"
+      }
+    },
+    {
+      "address": "2001:db8:0:1::1",
+      "expect": {
+        "rateKey": "2001:db8:0:1::/64",
+        "liveKey": "2001:db8::/48"
+      }
+    },
+    {
+      "address": "2001:db8:0:0:0:0:0:1",
+      "expect": {
+        "rateKey": "2001:db8::/64",
+        "liveKey": "2001:db8::/48"
+      }
+    },
+    {
+      "address": "::1",
+      "expect": {
+        "rateKey": "::/64",
+        "liveKey": "::/48"
+      }
+    },
+    {
+      "address": "::",
+      "expect": {
+        "rateKey": "::/64",
+        "liveKey": "::/48"
       }
     },
     {
       "address": "not-an-ip",
       "expect": {
-        "rateKey": "not-an-ip",
-        "liveKey": "not-an-ip"
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
       }
     },
     {
       "address": "1:2:3",
       "expect": {
-        "rateKey": "1:2:3",
-        "liveKey": "1:2:3"
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "unknown",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "999.1.1.1",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2.1.5",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "192.0.2.010",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "0x7f.0.0.1",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "::ffff:192.0.2.010",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "2001:db8::g",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "2001:db8::1::2",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
+      }
+    },
+    {
+      "address": "client-set-header-value-4f9a1c",
+      "expect": {
+        "rateKey": "unparseable",
+        "liveKey": "unparseable"
       }
     }
   ],
@@ -7132,17 +7356,13 @@
     }
   ],
   "sizes": {
-    "bodyCapBytes": {
-      "openkey-login": 16384,
-      "courier": 32768,
-      "share": 131072
-    },
-    "proposalNotice": "PROPOSED, Sam's card pending: openkey-login 16 KiB, courier 32 KiB, share 128 KiB.",
-    "requestBodyCapBytes": 177835,
-    "requestBodyCapFormula": "ceil(131072 * 4 / 3) + 3072; the largest type cap in base64url plus 3 KiB for header and signature. Larger HTTP bodies are cut off while streaming and answered 413 too_large.",
+    "maxLinkBodyBytes": 65536,
+    "proposalNotice": "Decided (Sam): one size limit for every link type, MAX_LINK_BODY_BYTES = 64 KiB = 65,536 bytes of sealed body (chosen by the Artifacts lead).",
+    "requestBodyCapBytes": 90454,
+    "requestBodyCapFormula": "ceil(65536 * 4 / 3) + 3072 = 90,454; the limit in base64url plus 3 KiB for header and signature. Larger HTTP bodies are cut off while streaming and answered 413 too_large.",
     "emailLinkMaxBytes": 512,
     "nodeFetch": {
-      "maxBodyBytes": 131072,
+      "maxBodyBytes": 65536,
       "maxRecordHeaderBytes": 2048,
       "connectTimeoutMs": 2000,
       "totalTimeoutMs": 5000,
@@ -7150,8 +7370,8 @@
       "retries": 0
     },
     "fullLink": {
-      "bodyCapBytes": 131072,
-      "note": "A full link carries the same record; its body obeys the share cap."
+      "bodyCapBytes": 65536,
+      "note": "A full link carries the same record; its body obeys the same limit."
     }
   },
   "rateLimits": {

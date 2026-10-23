@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createD1Adapter, createSqliteAdapter, type Adapter } from "./support/adapters.ts";
 import {
-  SUPERSEDED_COPY_SHA256,
   VECTORS_SHA256,
   fileSha256,
   loadVectors,
@@ -23,11 +22,10 @@ describe("service-level vectors, both adapters (conformance 22)", () => {
 
   beforeAll(async () => {
     const vectors = loadVectors();
-    const supersede = fileSha256(vectorsPath()) === SUPERSEDED_COPY_SHA256;
     for (const create of [createSqliteAdapter, createD1Adapter]) {
       const adapter = await create();
       adapters.push(adapter);
-      results[adapter.name] = await runServiceVectors(vectors, adapter, { supersede });
+      results[adapter.name] = await runServiceVectors(vectors, adapter);
     }
   }, 280_000);
   afterAll(async () => {
@@ -45,7 +43,7 @@ describe("service-level vectors, both adapters (conformance 22)", () => {
     expect(Object.keys(summarize(results["sqlite"] ?? [])).sort()).toEqual(
       [
         "addressBuckets", "admission", "bodyHash", "constants", "create", "delete", "ed25519Strict", "headers", "ids",
-        "nonceStore", "nonceSweep", "rateLimits.windowSequences", "read", "signatures",
+        "nonceStore", "nonceSweep", "rateLimits.windowSequences", "read", "records (size boundaries)", "signatures",
       ].sort(),
     );
   });
