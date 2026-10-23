@@ -155,10 +155,6 @@ describe("sender home canonical lifecycle adapters", () => {
 
 const LINK_ID = "lqdw5iopqq2tkkvjj6gbbi5vbv";
 const SHORT_LINK = buildShortLink({ origin: SHARE_ORIGIN, type: "share", id: LINK_ID, key: "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo", cid: "bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u" });
-/** The requests the sender page sent to the links API, in order. */
-function linkDeletes(spy: { readonly mock: { readonly calls: ReadonlyArray<Parameters<typeof fetch>> } }) {
-  return spy.mock.calls.filter(([url]) => String(url) === `${API_ORIGIN}/v1/links/${LINK_ID}/delete`);
-}
 /** Routes the page's fetch to a mock links API that holds this share's link. */
 function linksApiFor(spy: { mockImplementation(fn: typeof fetch): unknown }) {
   const links = mockLinks();
@@ -228,61 +224,23 @@ describe("TC-657 revoke retry after a lost response", () => {
   });
 });
 
-describe("TC-1737 revoke removes the stored link with a signed delete", () => {
-  beforeEach(() => { vi.stubEnv("VITE_SHARE_ORIGIN", SHARE_ORIGIN); });
-  afterEach(() => { vi.unstubAllEnvs(); });
-
-  it("sends no link delete when the node revoke is refused", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
-    linksApiFor(fetchSpy);
-    revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 }));
-    const { root, history } = await clickRevoke(SHORT_LINK);
-    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
-    expect(linkDeletes(fetchSpy)).toEqual([]);
-    expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
-    expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
-  });
-
-  it("deletes the link with an issuer-signed request that carries no key and no token", async () => {
+describe("TC-1737 revoke leaves the stored link alone", () => {
+  it("sends no request to the links API and leaves the link record in place when a share is revoked", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const links = linksApiFor(fetchSpy);
     const { root, messages } = await clickRevoke(SHORT_LINK);
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
-    await vi.waitFor(() => expect(links.api.state.records.has(LINK_ID)).toBe(false));
     expect(messages).toContain("Share revoked.");
     expect(root.querySelector(".sender-row-note")).toBeNull();
-    const [, init] = linkDeletes(fetchSpy)[0]!;
-    const body = JSON.parse(String(init!.body));
-    expect(Object.keys(body).sort()).toEqual(["request", "signature"]);
-    expect(body.request).toMatchObject({ op: "delete", id: LINK_ID, issuer: ISSUER_DID, audience: API_ORIGIN });
-    expect(String(init!.body)).not.toContain("WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo");
-    expect(new Headers(init!.headers).has("authorization")).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(links.api.state.records.has(LINK_ID)).toBe(true);
   });
 
-  it.each([
-    ["a 500", (): Response => new Response(null, { status: 500 })],
-    ["a network error", (): Response => { throw new TypeError("Failed to fetch"); }],
-  ])("revokes the share and shows a note when the link delete fails with %s", async (_name, respond) => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => respond());
-    const { root, messages } = await clickRevoke(SHORT_LINK);
-    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(messages).toContain("Share revoked.");
-    expect(root.querySelector(".sender-row-note")?.textContent).toBe("The short link stops resolving when the share expires.");
-    expect(linkDeletes(fetchSpy)).toHaveLength(1);
-  });
-
-  it("shows no note when the link is already gone (the delete answers 404)", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ error: "not_found" }), { status: 404 }));
-    const { root, messages } = await clickRevoke(SHORT_LINK);
-    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(messages).toContain("Share revoked.");
-    expect(root.querySelector(".sender-row-note")).toBeNull();
-  });
-
-  it("sends nothing for a share whose history holds a full link or an older link form", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 204 }));
-    const { root } = await clickRevoke(`${SHARE_ORIGIN}/s/full#v=4&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&r=e30`);
-    await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull());
+  it("sends no request when the revoke is refused either", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 }));
+    const { root } = await clickRevoke(SHORT_LINK);
+    await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

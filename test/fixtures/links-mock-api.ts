@@ -6,9 +6,11 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { canonicalize, computeCid, fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
 import { LINK_BODY_MAX_BYTES } from "../../src/short-links/limits.js";
-import { checkHeader, DELETE_DOMAIN, HEADER_DOMAIN, issuerKey, LINK_TYPES, MIN_BODY_BYTES, MIN_LIFE_SECONDS, verifySignature, type LinkHeader } from "../../src/short-links/record.js";
+import { checkHeader, HEADER_DOMAIN, issuerKey, LINK_TYPES, MIN_BODY_BYTES, MIN_LIFE_SECONDS, verifySignature, type LinkHeader } from "../../src/short-links/record.js";
 
 const WINDOW_MS = 120_000;
+/** The signing domain of a delete request (contract 2.5); only the service mock verifies deletes. */
+const DELETE_DOMAIN = "xyz.tinycloud.links/delete/v1\0";
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const ID = /^[a-z2-7]{26}$/;
 const NONCE = /^[A-Za-z0-9_-]{22}$/;

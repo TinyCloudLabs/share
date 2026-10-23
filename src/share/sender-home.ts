@@ -11,8 +11,6 @@ import { showApprovalHint, type ApprovalHint } from "./approval-hint.js";
 import { artifactKindOf, ARTIFACT_KIND_LABEL } from "./artifact-kind.js";
 import { createAnnouncer } from "./announcer.js";
 import type { NodeShareStatus, NodeStatusReader } from "./node-status.js";
-import { deleteShortLinkFor, SHORT_LINK_KEPT_NOTICE } from "../short-links/publish.js";
-import { linksApiOrigin } from "../short-links/config.js";
 import { SEND_AGAIN_FAILED, SEND_AGAIN_LABEL } from "../short-links/strings.js";
 import { canSendAgain, prefillFromRecord, type ComposerPrefill } from "./send-again.js";
 
@@ -240,7 +238,6 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
         revoke.remove();
         live.textContent = "Share revoked.";
         say("Share revoked.");
-        if (flight.note !== undefined) controls.append(node(doc, "p", "sender-row-note", flight.note));
         return;
       }
       // Only a status code or a fixed reason is shown; the error text can carry a response body.
@@ -340,16 +337,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       },
     });
     if (result.state !== "revoked") throw new Error("revoke-unsupported");
-    // The node revoke above is the authority. Removing the stored link is best effort: it is an
-    // issuer-signed delete of the link kept in this share's history, and a failure only leaves the
-    // link until the share expires.
-    const removed = await deleteShortLinkFor({
-      link: current.link,
-      signer: { issuerDid: options.tinycloud.credentialHolderDid, sign: (digest) => options.tinycloud.signSessionBytes(digest) },
-      shareOrigin: import.meta.env.VITE_SHARE_ORIGIN ?? window.location.origin,
-      apiOrigin: linksApiOrigin(),
-    });
-    if (removed === "kept") flight.note = SHORT_LINK_KEPT_NOTICE;
+    // Revoking a share does not touch its stored link; the link record expires with its life (contract 6.3).
   };
   /**
    * TC-721. Revoke is confirmed in the page, never with `window.confirm`: a

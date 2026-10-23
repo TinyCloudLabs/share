@@ -1,13 +1,10 @@
 import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
-import { createLink, deleteLink, type LinkApiOptions } from "./client.js";
-import { buildFullLink, buildShortLink, shortLinkId } from "./codec.js";
+import { createLink, type LinkApiOptions } from "./client.js";
+import { buildFullLink, buildShortLink } from "./codec.js";
 import { ShareTooLargeForLink } from "./errors.js";
 import { LINK_BODY_MAX_BYTES, MAX_FULL_LINK_FRAGMENT } from "./limits.js";
-import { buildDeleteRequest, buildHeader, DELETE_DOMAIN, HEADER_DOMAIN, LINK_TYPES, MIN_LIFE_SECONDS, signObject } from "./record.js";
+import { buildHeader, HEADER_DOMAIN, LINK_TYPES, MIN_LIFE_SECONDS, signObject } from "./record.js";
 import { LINK_LONG_LIFE_NOTICE, SHORT_LINK_UNAVAILABLE_NOTICE } from "./strings.js";
-
-/** Shown when the delete after a revoke could not be completed. The link stops working when the share expires. */
-export const SHORT_LINK_KEPT_NOTICE = "The short link stops resolving when the share expires.";
 
 export interface LinkChoice {
   readonly form: "short" | "full";
@@ -79,26 +76,5 @@ export async function publishLink(input: {
     return { url: buildShortLink({ origin: input.shareOrigin, type: "share", id: created.id, key: input.material.envelopeKey, cid: header.bodyCid }), form: "short" };
   } catch {
     return full(SHORT_LINK_UNAVAILABLE_NOTICE);
-  }
-}
-
-/**
- * Deletes the short link behind `link` with an issuer-signed request. `none` when the text is not a short
- * link (a full link has nothing stored); `kept` when the service could not be reached or refused.
- */
-export async function deleteShortLinkFor(input: {
-  readonly link: string | undefined;
-  readonly signer: LinkSigner;
-  readonly shareOrigin: string;
-  readonly now?: () => number;
-} & LinkApiOptions): Promise<"none" | "deleted" | "absent" | "kept"> {
-  const id = input.link === undefined ? undefined : shortLinkId(input.link, [input.shareOrigin]);
-  if (id === undefined) return "none";
-  try {
-    const request = buildDeleteRequest({ id, issuer: input.signer.issuerDid, audience: input.apiOrigin, issuedAt: new Date((input.now ?? Date.now)()) });
-    const signature = await signObject(DELETE_DOMAIN, request, input.signer.sign);
-    return await deleteLink({ request, signature }, input);
-  } catch {
-    return "kept";
   }
 }

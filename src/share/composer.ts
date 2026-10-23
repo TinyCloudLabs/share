@@ -13,7 +13,7 @@ import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 import { publishLink } from "../short-links/publish.js";
 import { ShareTooLargeForLink } from "../short-links/errors.js";
-import { assertSealedBodyFits, maxContentSource } from "./link-size.js";
+import { assertShareFitsLink } from "./link-size.js";
 import { linksApiOrigin } from "../short-links/config.js";
 import { FULL_LINK_NO_EMAIL, SEND_AGAIN_ATTACH_HINT, SHARE_TOO_LARGE_FOR_LINK, sendAgainAttachNamedHint } from "../short-links/strings.js";
 import type { ComposerPrefill } from "./send-again.js";
@@ -407,8 +407,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
   };
   // A share too large for any link is refused here, before the upload and the registration.
-  await assertSealedBodyFits(
-    { ...publishInput, contentSource: maxContentSource({ shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind, encryptionNetwork }) },
+  await assertShareFitsLink(
+    { ...publishInput, encryptionNetwork },
     { ownerDid: tinycloud.credentialHolderDid, createOwnerRoot: (input) => tinycloud.createUnifiedOwnerRoot(input), sign: (bytes) => tinycloud.signSessionBytes(bytes) },
   );
   const encrypted = await tinycloud.encryption.encryptToNetwork(encryptionNetwork, plaintext, { metadata: { contentType: plaintextType } });

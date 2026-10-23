@@ -4,7 +4,7 @@
  * Nothing here logs a body, a signature or a URL.
  */
 import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
-import type { DeleteRequest, LinkHeader, LinkSignature } from "./record.js";
+import type { LinkHeader, LinkSignature } from "./record.js";
 
 export const LINK_API_TIMEOUT_MS = 15_000;
 /** The `X-Link-Record` header is at most 2 KiB (contract 5.2). */
@@ -77,25 +77,6 @@ export async function createLink(
       throw new LinkApiError("invalid_response");
     }
     return { id: created["id"], expiresAt: created["expiresAt"] };
-  } finally {
-    exchange.done();
-  }
-}
-
-/**
- * Deletes a link with an issuer-signed request. `deleted` is a 204; `absent` is the uniform 404
- * (unknown, expired, already deleted, or not this issuer's). Anything else throws.
- */
-export async function deleteLink(
-  signed: { readonly request: DeleteRequest; readonly signature: LinkSignature },
-  options: LinkApiOptions,
-): Promise<"deleted" | "absent"> {
-  if (!ID.test(signed.request.id)) throw new LinkApiError("rejected");
-  const exchange = await send(`${options.apiOrigin}/v1/links/${signed.request.id}/delete`, jsonPost(signed), options);
-  try {
-    if (exchange.response.status === 204) return "deleted";
-    if (exchange.response.status === 404) return "absent";
-    throw new LinkApiError(failureFor(exchange.response.status));
   } finally {
     exchange.done();
   }

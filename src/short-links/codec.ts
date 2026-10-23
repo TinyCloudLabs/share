@@ -89,9 +89,3 @@ export function buildShortLink(parts: { readonly origin: string; readonly type: 
 export function buildFullLink(parts: { readonly origin: string; readonly key: string; readonly record: unknown }): string {
   return `${parts.origin}/s/full#v=4&k=${parts.key}&r=${toBase64Url(new TextEncoder().encode(canonicalize(parts.record)))}`;
 }
-
-/** The id of a short link, or undefined for a full link or any other text. */
-export function shortLinkId(href: string, trustedOrigins: readonly string[]): string | undefined {
-  const parsed = parseLink(href, trustedOrigins);
-  return parsed.ok && parsed.link.form === "short" ? parsed.link.id : undefined;
-}

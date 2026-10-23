@@ -10,17 +10,23 @@
  *  - the composer creates a short link with a signed header, and the full link with the notice when
  *    the API refuses;
  *  - "Send the link again" is shown for an expired share and hidden for a live one.
- * LINKS_E2E_SCREENSHOT_DIR sets where screenshots go.
+ * LINKS_E2E_SCREENSHOT_DIR sets where screenshots and the index page go. LINKS_E2E_VIEWER_DIST names a
+ * production build made with VITE_SHARE_VIEWER_HERMETIC=true; the viewer screens are then served by
+ * `vite preview` from it (the composer and library screens need the dev-only harness pages).
  */
 import assert from "node:assert/strict";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer as httpServer } from "node:http";
 import { join } from "node:path";
 
 import puppeteer from "puppeteer";
-import { createServer } from "vite";
+import { createServer, preview } from "vite";
+import { ed25519 } from "@noble/curves/ed25519";
+import { sha256 } from "@noble/hashes/sha256";
+import { TinyCloudNode } from "@tinycloud/node-sdk";
+import { prepareAddressedShare, publishAddressedShare } from "@tinycloud/share-sdk";
 
-import { generateKey, seal, toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, generateKey, seal, toBase64Url } from "@tinycloud/share-envelope";
 import { createLink } from "../src/short-links/client.ts";
 import { buildShortLink } from "../src/short-links/codec.ts";
 import { publishLink } from "../src/short-links/publish.ts";
@@ -45,8 +51,15 @@ const origin = `http://127.0.0.1:${port}`;
 process.env.VITE_SHARE_VIEWER_HERMETIC = "true";
 const server = await createServer({ configFile: "vite.config.ts", logLevel: "error", server: { host: "127.0.0.1", port, strictPort: true, hmr: false } });
 await server.listen();
+let previewServer;
+let viewerOrigin = origin;
+if (process.env.LINKS_E2E_VIEWER_DIST !== undefined) {
+  const previewPort = await freePort();
+  previewServer = await preview({ configFile: "vite.config.ts", logLevel: "error", build: { outDir: process.env.LINKS_E2E_VIEWER_DIST }, preview: { host: "127.0.0.1", port: previewPort, strictPort: true } });
+  viewerOrigin = `http://127.0.0.1:${previewPort}`;
+}
 
-const links = createMockLinksApi({ now: Date.now, audience: API, corsOrigins: [origin] });
+const links = createMockLinksApi({ now: Date.now, audience: API, corsOrigins: [origin, viewerOrigin] });
 const fetchForNode = links.fetchFor(API);
 const external = [];
 const apiLog = [];
@@ -56,7 +69,12 @@ async function wire(page) {
   await page.setRequestInterception(true);
   page.on("request", async (request) => {
     const url = request.url();
-    if (url.startsWith(origin) || url.startsWith("data:") || url.startsWith("blob:")) return request.continue();
+    if (url.endsWith("/.well-known/tinycloud-share/config.json")) {
+      // The receive step after the link reader needs the identity ceremony; the run stops at the screen that asks for it.
+      const config = await fetch(url);
+      return request.respond({ status: 200, headers: { "content-type": "application/json", "x-tinycloud-share-accountless-receiver": "disabled", "cache-control": "no-store" }, body: Buffer.from(await config.arrayBuffer()) });
+    }
+    if (url.startsWith(origin) || url.startsWith(viewerOrigin) || url.startsWith("data:") || url.startsWith("blob:")) return request.continue();
     if (url.startsWith(API)) {
       const headers = request.headers();
       apiLog.push({ method: request.method(), url, headers, body: request.postData() ?? "" });
@@ -79,6 +97,43 @@ async function shareLink() {
   return { link: published.url, key: material.envelopeKey };
 }
 
+/** A real signed Policy/v3 envelope sealed by the SDK's own builder, with a local stand-in for the node's registration. */
+async function realShareMaterial() {
+  const NODE_DID = "did:key:z6MkqGC3nWZhYieEVTVDKW5v588CiGfsDSmRVG9ZwwWTvLSK";
+  const SPACE = "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications";
+  const NETWORK = "urn:tinycloud:encryption:did:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:default";
+  const request = { target: { kind: "email", address: "reader@example.com" }, actions: ["read"], policyActions: ["tinycloud.kv/get", "tinycloud.kv/metadata"], filename: "report.md" };
+  const { credentialRequirement } = prepareAddressedShare(request);
+  let material;
+  await publishAddressedShare({
+    shareId: "abcdefghijklmnopqrstuvwxyz234567", shareOrigin: SHARE, nodeOrigin: "https://node.example.invalid", nodeAudience: NODE_DID, enforcerDid: NODE_DID, spaceId: SPACE,
+    ...request, resource: { kind: "exact", path: "xyz.tinycloud.share/shares/abcdefghijklmnopqrstuvwxyz234567/report.md" }, credentialRequirement,
+    mediaType: "text/markdown", byteLength: 1234, expiresAt: new Date(Date.now() + 86_400_000),
+    contentSource: { shareId: "abcdefghijklmnopqrstuvwxyz234567", kvResource: `${SPACE}/kv/xyz.tinycloud.share/shares/abcdefghijklmnopqrstuvwxyz234567/report.md`, selector: "exact", encryptionNetwork: NETWORK, encryptedSymmetricKeyDigestHex: "a".repeat(64), keyVersion: 1, mode: "immutable", initialCiphertextDigestHex: "b".repeat(64) },
+    onDeliveryMaterial: (value) => { material = value; },
+    authority: {
+      ownerDid: ISSUER_DID, sign: signWithIssuer,
+      // The SDK's own root builder, with the owner's session key as the only dependency.
+      createOwnerRoot: (input) => TinyCloudNode.prototype.createUnifiedOwnerRoot.call({ credentialHolderDid: ISSUER_DID, signSessionBytes: signWithIssuer }, input),
+      // The node's attestation, signed by a test node key (the vectors' second identity).
+      registerPolicy: async (registration) => {
+        const nodeSeed = new Uint8Array(32).fill(0x22);
+        const unsigned = {
+          schema: "xyz.tinycloud.policy/attested-enforcer/v2", enforcerDid: NODE_DID, nodeAudience: NODE_DID,
+          attestationBindingDigestHex: Buffer.from(sha256(new TextEncoder().encode(canonicalize({ enforcerDid: NODE_DID, nodeAudience: NODE_DID })))).toString("hex"),
+          issuedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 40 * 86_400_000).toISOString(),
+        };
+        const digest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
+        return {
+          policyCid: registration.policyCid, policyRootCid: registration.policyRoot.cid, enforcementRootCid: registration.enforcementRoot.cid,
+          attestedEnforcerBinding: { ...unsigned, signature: { suite: "Ed25519", signerDid: NODE_DID, value: toBase64Url(ed25519.sign(digest, nodeSeed)) } },
+        };
+      },
+    },
+  });
+  return material;
+}
+
 async function courierLink(plaintext) {
   const key = generateKey();
   const sealed = await seal(new TextEncoder().encode(JSON.stringify(plaintext)), key);
@@ -88,7 +143,7 @@ async function courierLink(plaintext) {
   return buildShortLink({ origin: SHARE, type: "courier", id: created.id, key: toBase64Url(key), cid: header.bodyCid });
 }
 
-const local = (link) => { const url = new URL(link); return `${origin}${url.pathname}${url.hash}`; };
+const local = (link) => { const url = new URL(link); return `${viewerOrigin}${url.pathname}${url.hash}`; };
 const browser = await puppeteer.launch({ headless: true, args: ["--no-sandbox"] });
 const results = [];
 const note = (name, detail = "") => { results.push(`PASS ${name}${detail === "" ? "" : `: ${detail}`}`); };
@@ -124,10 +179,23 @@ try {
     note(`${label} viewer confirm gate`, `0 requests before the click, 1 read after, key absent`);
     await page.close();
 
+    // A live link with a real signed envelope: the reader verifies it and the existing receive path runs.
+    const liveMaterial = await realShareMaterial();
+    const liveShare = await publishLink({ material: liveMaterial, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), signer: { issuerDid: ISSUER_DID, sign: signWithIssuer }, shareOrigin: SHARE, apiOrigin: API, fetchFn: fetchForNode });
+    assert.equal(liveShare.form, "short");
+    page = await open(local(liveShare.url));
+    await page.waitForSelector(".link-confirm-action");
+    await page.click(".link-confirm-action");
+    await page.waitForFunction(() => document.querySelector("#viewer")?.textContent?.includes("Confirm your identity to open this"), { timeout: 15_000 });
+    await shot(page, "viewer-live-link");
+    note(`${label} viewer live link`, "real envelope verified by the reader and the SDK; stops at the identity step");
+    await page.close();
+
     // The same screen for every refusal.
     const screens = new Map();
     const tampered = {
       "deleted": async () => { const fresh = await shareLink(); links.state.records.clear(); return fresh.link; },
+      "expired": async () => { const fresh = await shareLink(); for (const [id, record] of links.state.records) links.state.records.set(id, { ...record, expiresAt: new Date(Date.now() - 1000).toISOString() }); return fresh.link; },
       "wrong key": async () => { const fresh = await shareLink(); return fresh.link.replace(/k=[A-Za-z0-9_-]{43}/, `k=${"A".repeat(43)}`); },
       "cid mismatch": async () => { const fresh = await shareLink(); return fresh.link.replace(/c=bafkrei[a-z2-7]{52}/, "c=bafkreie3nxr36mwl2jprkro4mr42bdkcvvvrwbvbxur2qe6iq4mxhvdrfq"); },
       "truncated": async () => { const fresh = await shareLink(); return fresh.link.slice(0, -14); },
@@ -144,7 +212,7 @@ try {
       await page.click(".link-confirm-action");
       await page.waitForFunction(() => document.querySelector("#viewer")?.textContent?.includes("This share isn't available"), { timeout: 10_000 });
       screens.set(name, await page.$eval("#viewer", (node) => node.innerHTML));
-      if (name === "deleted") await shot(page, "viewer-not-found");
+      if (name === "deleted" || name === "expired") await shot(page, `viewer-${name}`);
       await page.close();
     }
     assert.equal(new Set(screens.values()).size, 1, "every refusal renders the same screen");
@@ -211,9 +279,29 @@ try {
   }
   assert.deepEqual(external, [], "no external request other than the API");
   results.push("PASS no external requests outside the API mock");
+
+  // Index page for the screenshots, then a link check of every reference in it.
+  const captions = {
+    "viewer-confirm": "Viewer: the click screen before anything is fetched",
+    "viewer-live-link": "Viewer: a live link with a real signed envelope, after the click (stops at the identity step)",
+    "viewer-expired": "Viewer: an expired link (the service answers not found)",
+    "viewer-deleted": "Viewer: a deleted link (the same screen as expired)",
+    "viewer-courier-placeholder": "Viewer: an invitation at /c/ (placeholder view, no copy written)",
+    "composer-short": "Composer: a short link was created",
+    "composer-full": "Composer: the API refused, so the full link and the notice",
+    "composer-send-again": "Composer: opened by Send the link again, filled in from the saved share",
+    "library-send-again-states": "Library: Send the link again shown on the expired row, hidden on live rows",
+  };
+  const figures = Object.entries(captions).map(([name, caption]) => `<figure><figcaption>${caption}</figcaption>${["phone-390", "desktop-1440"].map((label) => `<a href="${label}-${name}.png"><img src="${label}-${name}.png" alt="${caption} (${label})" loading="lazy"></a>`).join("")}</figure>`).join("\n");
+  const index = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Share v4 preview</title><style>body{font:15px system-ui;margin:24px;max-width:1500px}figure{margin:0 0 32px}img{max-width:46%;vertical-align:top;margin-right:12px;border:1px solid #ccc}figcaption{font-weight:600;margin-bottom:8px}</style><h1>Share web, v=4 links (private preview, local run)</h1><p>Local build run against a local mock of the links API. Phone is 390 px, desktop is 1440 px. Composer and library screens use the dev-only harness pages.</p>${figures}</html>`;
+  await writeFile(join(screenshotDir, "index.html"), index);
+  const refs = [...index.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
+  for (const ref of refs) assert.ok((await stat(join(screenshotDir, ref))).size > 0, `index.html references a missing file: ${ref}`);
+  results.push(`PASS link check: index.html and its ${refs.length} references resolve to non-empty files`);
 } finally {
   await browser.close();
   await server.close();
+  previewServer?.httpServer.close();
 }
 console.log(results.join("\n"));
 console.log(`screenshots: ${screenshotDir}`);

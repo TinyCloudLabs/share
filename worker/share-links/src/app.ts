@@ -1,17 +1,13 @@
 import {
   base64UrlEncode,
-  cidForBytes,
   constantTimeEqual,
   hashDeleteToken,
-  newDeleteToken,
-  newShareId,
   sha256,
 } from "./encoding";
 import { toBytes, type D1Database, type Env } from "./d1";
 import { hitRateLimit } from "./ratelimit";
 import { COMMON_HEADERS, jsonResponse, notFound, rateLimited, rawSealedResponse } from "./responses";
-import { insertLink, readLiveDeleteHash, readLiveLink, runCleanup, tombstoneLink } from "./store";
-import { MAX_BODY_CHARS, parseCreateBody } from "./validate";
+import { readLiveDeleteHash, readLiveLink, runCleanup, tombstoneLink } from "./store";
 
 const PREFIX = "/api/share-links";
 const ID_RE = /^[a-z2-7]{26}$/;
@@ -95,85 +91,6 @@ async function clientIpHash(request: Request): Promise<string> {
   return base64UrlEncode(digest).slice(0, 16);
 }
 
-/** Reads the body and returns null as soon as it exceeds maxBytes, so oversized bodies are never fully buffered. */
-async function readCappedBody(request: Request, maxBytes: number): Promise<string | null> {
-  const declared = request.headers.get("Content-Length");
-  if (declared !== null && Number(declared) > maxBytes) {
-    return null;
-  }
-  if (request.body === null) {
-    return "";
-  }
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(joined);
-}
-
-async function handleCreate(request: Request, db: D1Database, nowMs: number): Promise<Response> {
-  const nowSeconds = nowSecondsOf(nowMs);
-  const ipHash = await clientIpHash(request);
-  const minute = await hitRateLimit(db, "c", ipHash, 10, 60, nowSeconds);
-  if (!minute.allowed) {
-    return rateLimited(minute.retryAfterSeconds);
-  }
-  const day = await hitRateLimit(db, "d", ipHash, 200, 86_400, nowSeconds);
-  if (!day.allowed) {
-    return rateLimited(day.retryAfterSeconds);
-  }
-
-  const text = await readCappedBody(request, MAX_BODY_CHARS);
-  if (text === null) {
-    return jsonResponse(400, { error: "invalid" });
-  }
-  const input = parseCreateBody(text, nowMs);
-  if (input === null) {
-    return jsonResponse(400, { error: "invalid" });
-  }
-
-  const cid = await cidForBytes(input.bytes);
-  const deleteToken = newDeleteToken();
-  const deleteHash = await hashDeleteToken(deleteToken);
-  const expiresAtSeconds = Math.floor(input.expiresAtMs / 1000);
-
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const id = newShareId();
-    const outcome = await insertLink(db, {
-      id,
-      ciphertext: input.bytes,
-      cid,
-      expiresAtSeconds,
-      deleteHash,
-      nowSeconds,
-    });
-    if (outcome === "ok") {
-      return jsonResponse(201, { id, cid, deleteToken });
-    }
-    if (outcome === "capacity") {
-      return jsonResponse(503, { error: "capacity" }, { "Retry-After": "3600" });
-    }
-  }
-  return jsonResponse(500, { error: "internal" });
-}
-
 async function handleRead(request: Request, db: D1Database, id: string, nowMs: number): Promise<Response> {
   const nowSeconds = nowSecondsOf(nowMs);
   const decision = await hitRateLimit(db, "r", await clientIpHash(request), 120, 60, nowSeconds);
@@ -231,7 +148,8 @@ async function handleDelete(request: Request, db: D1Database, id: string, nowMs:
 async function route(request: Request, env: Env, nowMs: number): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === PREFIX) {
-    return request.method === "POST" ? handleCreate(request, env.DB, nowMs) : notFound();
+    // Creating links moved to the links API (api.tinycloud.xyz); this route only answers existing links until it is retired.
+    return request.method === "POST" ? jsonResponse(410, { error: "gone" }) : notFound();
   }
   if (!pathname.startsWith(PREFIX + "/")) {
     return notFound();

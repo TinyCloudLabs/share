@@ -12,7 +12,7 @@ const MAX_SIGNATURE = "A".repeat(86);
 const MAX_TIMESTAMP = "9999-12-31T23:59:59.999999999+00:00";
 
 /** Receipt values that exist only after the registration write, at their longest. */
-export const MAX_KEY_VERSION = 4_294_967_295;
+const MAX_KEY_VERSION = 4_294_967_295;
 
 /**
  * The size in bytes of the sealed body a share would have, before anything is written.
@@ -23,7 +23,7 @@ export const MAX_KEY_VERSION = 4_294_967_295;
  * their longest form, so the size measured is at least the size of the real sealed body.
  * The caller builds `options.contentSource` with `maxContentSource`. Makes no request and writes nothing.
  */
-export async function measureSealedBody(
+async function measureSealedBody(
   options: Omit<AddressedSharePublishOptions, "authority" | "onDeliveryMaterial">,
   authority: SealingAuthority,
 ): Promise<number> {
@@ -52,16 +52,27 @@ export async function measureSealedBody(
   return sealedBytes;
 }
 
-/** Refuses a share whose sealed body would be over the link size limit, before anything is written. */
-export async function assertSealedBodyFits(
-  options: Omit<AddressedSharePublishOptions, "authority" | "onDeliveryMaterial">,
-  authority: SealingAuthority,
-): Promise<void> {
-  if ((await measureSealedBody(options, authority)) > LINK_BODY_MAX_BYTES) throw new ShareTooLargeForLink();
+/** What the composer knows before the first write: the publish inputs without the content source, plus the encryption network. */
+export type ShareSizeInput = Omit<AddressedSharePublishOptions, "authority" | "onDeliveryMaterial" | "contentSource"> & { readonly encryptionNetwork: string };
+
+/**
+ * The one call the composer makes before it uploads or registers anything: refuses (throws
+ * `ShareTooLargeForLink`) a share whose sealed body would be over the link size limit.
+ * When share-sdk ships the shared check, only this function changes.
+ */
+export async function assertShareFitsLink(input: ShareSizeInput, authority: SealingAuthority): Promise<void> {
+  if ((await sealedBytesUpperBound(input, authority)) > LINK_BODY_MAX_BYTES) throw new ShareTooLargeForLink();
+}
+
+/** The measured size, exported for the test that pins it against the real publish. */
+export async function sealedBytesUpperBound(input: ShareSizeInput, authority: SealingAuthority): Promise<number> {
+  const { encryptionNetwork, ...options } = input;
+  const contentSource = maxContentSource({ shareId: options.shareId, kvResource: `${options.spaceId}/kv/${options.resource.path}`, selector: options.resource.kind, encryptionNetwork });
+  return measureSealedBody({ ...options, contentSource }, authority);
 }
 
 /** The content source with the values that exist only after the upload at their longest form. */
-export function maxContentSource(base: { readonly shareId: string; readonly kvResource: string; readonly selector: "exact" | "prefix"; readonly encryptionNetwork: string }): AddressedSharePublishOptions["contentSource"] {
+function maxContentSource(base: { readonly shareId: string; readonly kvResource: string; readonly selector: "exact" | "prefix"; readonly encryptionNetwork: string }): AddressedSharePublishOptions["contentSource"] {
   return {
     ...base,
     encryptedSymmetricKeyDigestHex: MAX_DIGEST_HEX,

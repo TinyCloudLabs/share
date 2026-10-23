@@ -4,7 +4,6 @@ import type { LinkType } from "./codec.js";
 import { classifyPublicKey, verifyStrict } from "./ed25519.js";
 
 export const HEADER_DOMAIN = "xyz.tinycloud.links/header/v1\0";
-export const DELETE_DOMAIN = "xyz.tinycloud.links/delete/v1\0";
 
 /** Life caps per type, in seconds. */
 export const LINK_TYPES: Readonly<Record<LinkType, { readonly maxLifeSeconds: number }>> = Object.freeze({
@@ -161,25 +160,6 @@ export function verifySignature(domain: string, object: unknown, issuer: string,
   if ("refusal" in key) return false;
   const bytes = strictDecode(signature["value"]);
   return bytes !== undefined && bytes.length === 64 && verifyStrict(key.key, signingDigest(domain, object), bytes);
-}
-
-/** A signed delete request (contract 6.1). */
-export interface DeleteRequest {
-  readonly version: 1;
-  readonly op: "delete";
-  readonly id: string;
-  readonly issuer: string;
-  readonly audience: string;
-  readonly issuedAt: string;
-  readonly nonce: string;
-}
-
-export function buildDeleteRequest(input: { readonly id: string; readonly issuer: string; readonly audience: string; readonly issuedAt: Date }): DeleteRequest {
-  if (!ID.test(input.id)) throw new TypeError("link id is malformed");
-  return {
-    version: 1, op: "delete", id: input.id, issuer: input.issuer, audience: input.audience,
-    issuedAt: input.issuedAt.toISOString(), nonce: toBase64Url(crypto.getRandomValues(new Uint8Array(16))),
-  };
 }
 
 /**
