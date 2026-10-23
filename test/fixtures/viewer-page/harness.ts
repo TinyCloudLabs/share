@@ -14,9 +14,12 @@ import report from "./report.md?raw";
 import page from "./page.html?raw";
 import gaps from "./gaps.html?raw";
 import app from "./app.jsx?raw";
+import links from "./links.md?raw";
 
 const params = new URLSearchParams(location.search);
 const kind = params.get("kind") ?? "md";
+// The loopback page a links-fixture click opens: a real popup target the e2e can inspect.
+const landing = params.get("landing") ?? "http://127.0.0.1:9/landing";
 const probe = params.get("probe") ?? "http://127.0.0.1:9";
 // Plant a recognisable fake link secret the way main.ts receives a real one: it
 // arrives in the fragment, is scrubbed at once, and then lives only in the
@@ -48,12 +51,12 @@ try {
   } else if (state === "revoked" || state === "expired" || state === "unavailable") {
     renderShareUnavailable(root, state, state === "expired" ? "2026-10-12T00:00:00.000Z" : undefined, () => undefined);
   } else {
-    const filename = kind === "md" ? "q3-agent-report.md" : kind === "gaps" ? "gaps.html" : kind === "jsx" ? "counter.jsx" : "q3-agent-report.html";
-    const source = (kind === "md" ? report : kind === "gaps" ? gaps : kind === "jsx" ? app : page).replaceAll("__PROBE__", probe);
+    const filename = kind === "md" ? "q3-agent-report.md" : kind === "links" ? "q3-links.md" : kind === "gaps" ? "gaps.html" : kind === "jsx" ? "counter.jsx" : "q3-agent-report.html";
+    const source = (kind === "md" ? report : kind === "links" ? links.replaceAll("__LANDING__", landing) : kind === "gaps" ? gaps : kind === "jsx" ? app : page).replaceAll("__PROBE__", probe);
     const path = `xyz.tinycloud.share/shares/viewer-page/${filename}`;
     await presentShare(root, {
       state: "ok",
-      access: "bearer",
+      access: params.get("access") === "policy" ? "policy" : "bearer",
       senderVerified: false,
       contentBytes: new TextEncoder().encode(source),
       envelope: presentationEnvelope({
