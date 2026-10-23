@@ -1,100 +1,101 @@
-import { encodeSealedInlineShareUrl, fromBase64Url, verifyCid } from "@tinycloud/share-envelope";
-import { parseShortLink } from "./codec.js";
-import { ShortLinkError } from "./errors.js";
-
-/** Sealed bytes above this size are refused. The contract cap is 128 KiB; the SDK inline limit is 256 KiB. */
-export const MAX_SEALED_BYTES = 128 * 1024;
-const TIMEOUT_MS = 15_000;
-
 /**
- * Fetch the sealed bytes for a short link and return the equivalent inline `v=2` link.
+ * The reader pipeline for a `v=4` link (contract 7.5): parse, fetch (short form), check the record,
+ * open the body, check the bindings between link, path, record and seal.
  *
- * The request carries only the lowercased id in its path. The content key and CID never
- * leave the browser: the CID is checked locally against the fetched bytes.
+ * The key stays in this module's memory: it is never sent in a request and never logged.
+ * Every outcome the link or the record decides is `not-found`; only a failed or unusable
+ * exchange with the API is `unavailable`.
  */
-export async function inlineHrefForShortLink(
-  shortHref: string,
-  shareOrigin: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<string> {
-  const parts = parseShortLink(shortHref);
-  if (parts === undefined) throw new ShortLinkError("unavailable", "short link is malformed");
-  const url = new URL(`/api/share-links/${parts.id}`, shareOrigin);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    let response: Response;
-    try {
-      response = await fetchImpl(url, {
-        credentials: "omit",
-        redirect: "error",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } catch {
-      throw new ShortLinkError("unavailable", "short link lookup failed");
-    }
-    if (response.status === 404) throw new ShortLinkError("gone", "share is no longer available");
-    if (response.status !== 200) throw new ShortLinkError("unavailable", "short link lookup returned an unexpected status");
-    const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
-    if (contentType !== "application/octet-stream") {
-      throw new ShortLinkError("unavailable", "short link response has an unexpected content type");
-    }
-    const declared = response.headers.get("content-length");
-    if (declared !== null && Number(declared) > MAX_SEALED_BYTES) {
-      throw new ShortLinkError("unavailable", "short link response is too large");
-    }
-    const bytes = await readCapped(response, controller.signal);
-    if (bytes.byteLength === 0) throw new ShortLinkError("unavailable", "short link response is empty");
-    if (!(await verifyCid(bytes, parts.cid))) {
-      throw new ShortLinkError("unavailable", "short link response does not match its content id");
-    }
-    return encodeSealedInlineShareUrl({
-      origin: shareOrigin,
-      ciphertext: bytes,
-      key32: fromBase64Url(parts.key),
-    });
-  } catch (error) {
-    if (error instanceof ShortLinkError) throw error;
-    throw new ShortLinkError("unavailable", "short link lookup failed");
-  } finally {
-    clearTimeout(timer);
+import { fromBase64Url } from "@tinycloud/share-envelope";
+import { LinkApiError, readLinkRecord, type LinkApiOptions } from "./client.js";
+import { parseLink, type LinkRefusal } from "./codec.js";
+import { checkRecord, LINK_TYPES, type LinkHeader, type RecordRefusal } from "./record.js";
+
+export type ReadRefusal = LinkRefusal | RecordRefusal | "gone" | "not_viewable";
+
+export class LinkReadError extends Error {
+  /** `not-found`: the link or the record says there is nothing to open. `unavailable`: the lookup could not be completed. */
+  readonly kind: "not-found" | "unavailable";
+  /** A label for tests. It is never shown and never logged. */
+  readonly reason: ReadRefusal | "transport";
+
+  constructor(kind: "not-found" | "unavailable", reason: ReadRefusal | "transport") {
+    super(kind);
+    this.name = "LinkReadError";
+    this.kind = kind;
+    this.reason = reason;
   }
 }
 
-async function readCapped(response: Response, signal: AbortSignal): Promise<Uint8Array> {
-  if (response.body === null) return new Uint8Array(0);
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let aborted = false;
-  const onAbort = (): void => {
-    aborted = true;
-    void reader.cancel();
-  };
-  signal.addEventListener("abort", onAbort, { once: true });
+export interface ResolvedLink {
+  readonly type: "share" | "courier";
+  readonly header: LinkHeader;
+  /** The opened plaintext, a JSON object whose issuer binding was checked. Shape beyond that is the type owner's. */
+  readonly plaintext: Record<string, unknown>;
+  /** The sealed body bytes and the key that opened them, for the existing receive pipeline. */
+  readonly sealedBody: Uint8Array;
+  readonly key: Uint8Array;
+}
+
+export interface ResolveOptions extends LinkApiOptions {
+  /** Viewer origins this reader trusts, from configuration. */
+  readonly trustedOrigins: readonly string[];
+  readonly now?: () => number;
+}
+
+const notFound = (reason: ReadRefusal): LinkReadError => new LinkReadError("not-found", reason);
+
+function strictBody(text: unknown): Uint8Array | undefined {
+  if (typeof text !== "string") return undefined;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_SEALED_BYTES) {
-        await reader.cancel();
-        throw new ShortLinkError("unavailable", "short link response is too large");
-      }
-      chunks.push(value);
+    return fromBase64Url(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A full link's record: exactly `body`, `header` and optionally `signature`. */
+function embeddedRecord(value: unknown): { readonly header: unknown; readonly signature?: unknown; readonly body: Uint8Array } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw notFound("record_shape");
+  const fields = Object.keys(value).sort().join(",");
+  if (fields !== "body,header" && fields !== "body,header,signature") throw notFound("record_fields");
+  const { header, signature, body } = value as { header: unknown; signature?: unknown; body: unknown };
+  const bytes = strictBody(body);
+  if (bytes === undefined) throw notFound("body_encoding");
+  return signature === undefined ? { header, body: bytes } : { header, signature, body: bytes };
+}
+
+export async function resolveLink(href: string, options: ResolveOptions): Promise<ResolvedLink> {
+  const parsed = parseLink(href, options.trustedOrigins);
+  if (!parsed.ok) throw notFound(parsed.reason);
+  const { link } = parsed;
+  // The login page never fetches; the Share viewer serves shares and invitations only.
+  if (link.form === "short" && link.pathType === "openkey-login") throw notFound("not_viewable");
+  let record: { readonly header: unknown; readonly signature?: unknown; readonly body: Uint8Array };
+  if (link.form === "short") {
+    try {
+      const fetched = await readLinkRecord(link.id, LINK_TYPES[link.pathType].maxBody, options);
+      if (fetched === undefined) throw notFound("gone");
+      record = fetched;
+    } catch (error) {
+      if (error instanceof LinkReadError) throw error;
+      // A body over the cap or an unreadable response is a record the link cannot use.
+      if (error instanceof LinkApiError && error.reason === "invalid_response") throw notFound("record_shape");
+      throw new LinkReadError("unavailable", "transport");
     }
-  } catch (error) {
-    if (error instanceof ShortLinkError) throw error;
-    throw new ShortLinkError("unavailable", aborted ? "short link lookup timed out" : "short link response could not be read");
-  } finally {
-    signal.removeEventListener("abort", onAbort);
+  } else {
+    record = embeddedRecord(link.record);
   }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
+  const key = fromBase64Url(link.key);
+  const checked = await checkRecord(record, { now: (options.now ?? Date.now)(), key });
+  if ("refusal" in checked) throw notFound(checked.refusal);
+  const { header, plaintext } = checked;
+  if (link.form === "short") {
+    if (link.pathType !== header.type) throw notFound("type_path_mismatch");
+    if (link.cid !== header.bodyCid) throw notFound("link_cid_mismatch");
+  } else if (header.type !== "share") {
+    throw notFound("full_non_share");
   }
-  return out;
+  if (header.type === "openkey-login") throw notFound("not_viewable");
+  return { type: header.type, header, plaintext, sealedBody: record.body, key };
 }
