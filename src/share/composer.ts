@@ -493,12 +493,10 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
         try {
           const authorization = await tinycloud.authorizeShareDeliveryV3({
             envelope: material.envelope as ShareEnvelopeV3,
-            sealedEnvelope: material.sealedEnvelope,
-            envelopeKey: material.envelopeKey,
-            shareCid: material.shareCid,
             resourcePath,
             recipientEmail,
             shareUrl: url,
+            trustedOrigins: [config.shareOrigin],
             documentName: filename,
             expiresAt: delivery.expiresAt,
             idempotencyKey: deliveryKey(recipientEmail, delivery.attempt),

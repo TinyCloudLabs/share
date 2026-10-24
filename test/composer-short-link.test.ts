@@ -218,6 +218,10 @@ describe("composer link and Notify", () => {
     const witnessUrl = "https://witness.example/v1/credential-invitations";
     await vi.waitFor(() => expect(calls.some((call) => call.url === witnessUrl)).toBe(true));
     expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ shareUrl: link }));
+    // The delivery input carries the short link and the origin it may be on; the sealed material is not part of it.
+    const delivery = authorize.mock.calls[0]![0] as Record<string, unknown>;
+    expect(delivery.trustedOrigins).toEqual([SHARE_ORIGIN]);
+    for (const field of ["sealedEnvelope", "envelopeKey", "shareCid"]) expect(delivery).not.toHaveProperty(field);
     expect(JSON.parse(String(calls.find((call) => call.url === witnessUrl)!.init.body)).request.returnLink).toBe(link);
   });
 
