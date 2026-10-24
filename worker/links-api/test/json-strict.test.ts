@@ -55,31 +55,65 @@ describe("hasDuplicateKey", () => {
     expect(() => JSON.parse('{"a\\q":1,"a\\q":2}')).toThrow();
   });
 
-  it("is linear: eight times the keys takes about eight times as long, and deep nesting needs no recursion", () => {
-    const keys = (n: number) => `{${Array.from({ length: n }, (_, i) => `"key${i}":${i}`).join(",")}}`;
-    const timeOf = (text: string) => {
-      let best = Infinity;
-      for (let run = 0; run < 3; run++) {
-        const start = performance.now();
-        hasDuplicateKey(text);
-        best = Math.min(best, performance.now() - start);
-      }
-      return best;
-    };
-    const small = keys(20_000);
+  const work = (text: string): { visits: number; keyChars: number; found: boolean } => {
+    const counter = { visits: 0, keyChars: 0 };
+    const found = hasDuplicateKey(text, counter);
+    return { ...counter, found };
+  };
+  const keys = (n: number) => `{${Array.from({ length: n }, (_, i) => `"key${i}":${i}`).join(",")}}`;
+
+  it("is linear: every character is looked at at most once, so the work grows with the text and no faster", () => {
+    const sizes = [1_000, 8_000, 64_000];
+    const counts = sizes.map((n) => {
+      const text = keys(n);
+      const w = work(text);
+      expect(w.found).toBe(false);
+      expect(w.visits).toBeLessThanOrEqual(text.length);
+      expect(w.keyChars).toBeLessThanOrEqual(text.length);
+      return { length: text.length, visits: w.visits };
+    });
+    // Eight times the keys: the work grows by the same factor as the text (within 1 %), not by its square.
+    for (let i = 1; i < counts.length; i++) {
+      const previous = counts[i - 1];
+      const current = counts[i];
+      expect(previous && current && current.visits / previous.visits / (current.length / previous.length)).toBeGreaterThan(0.99);
+      expect(previous && current && current.visits / previous.visits / (current.length / previous.length)).toBeLessThan(1.01);
+    }
+  });
+
+  it("looks at each character once for long strings, many escapes and deep nesting", () => {
+    const texts = [
+      `{"a":"${"x".repeat(100_000)}","b":"${'\\"'.repeat(50_000)}"}`,
+      `{${Array.from({ length: 20_000 }, (_, i) => `"k\\u0041${i}":${i}`).join(",")}}`,
+      `{"${"\\\\".repeat(50_000)}":1,"${"\\u0061".repeat(20_000)}":2}`,
+      "[".repeat(200_000) + "]".repeat(200_000),
+      '{"a":'.repeat(100_000) + "1" + "}".repeat(100_000),
+      `[${Array.from({ length: 30_000 }, (_, i) => `{"id":${i},"tags":["a","b"]}`).join(",")}]`,
+    ];
+    for (const text of texts) {
+      const w = work(text);
+      expect(w.found).toBe(false);
+      expect(w.visits).toBeLessThanOrEqual(text.length);
+      expect(w.keyChars).toBeLessThanOrEqual(text.length);
+    }
+  });
+
+  it("stops at the first repeat: the work is the text up to that point, however much follows", () => {
+    const w = work(`{"a":1,"a":2}${" ".repeat(1_000_000)}`);
+    expect(w.found).toBe(true);
+    expect(w.visits).toBeLessThan(20);
+    const late = `${keys(5_000).slice(0, -1)},"key0":0}`;
+    const found = work(late);
+    expect(found.found).toBe(true);
+    expect(found.visits).toBeLessThanOrEqual(late.length);
+  });
+
+  it("deep nesting and a duplicate at the end of a large object need no recursion", () => {
     const large = keys(160_000);
-    expect(hasDuplicateKey(small)).toBe(false);
-    expect(hasDuplicateKey(large)).toBe(false);
-    // Linear is about 8; a quadratic scan would be about 64.
-    expect(timeOf(large) / Math.max(timeOf(small), 0.05)).toBeLessThan(30);
-    // The last key repeats the first: found at the end of a large object.
     expect(hasDuplicateKey(`${large.slice(0, -1)},"key0":0}`)).toBe(true);
-    // 200,000 nested arrays and objects: an explicit stack, so no stack overflow.
     expect(hasDuplicateKey("[".repeat(200_000) + "]".repeat(200_000))).toBe(false);
     expect(hasDuplicateKey('{"a":'.repeat(100_000) + "1" + "}".repeat(100_000))).toBe(false);
-    // Many escapes: each key is unescaped once.
-    const escaped = `{${Array.from({ length: 20_000 }, (_, i) => `"k\\u0041${i}":${i}`).join(",")}}`;
-    expect(hasDuplicateKey(escaped)).toBe(false);
+    expect(hasDuplicateKey(`${'{"d":'.repeat(100_000)}{"a":1,"a":2}${"}".repeat(100_000)}`)).toBe(true);
   });
 });
 
@@ -172,6 +206,34 @@ describe("create and delete requests refuse a repeated key", () => {
     expect(response.status).toBe(400);
     expect((await adapter.driver.first<{ n: number }>("SELECT count(*) AS n FROM links", []))?.n).toBe(0);
     expect((await deps.storage.readCounts())["errors.internal"] ?? 0).toBe(0);
+  });
+
+  it("the scan runs before the block lists, the nonce set, the API key lookup, the signature check and any record write: a refused body costs only the refusal counters", async () => {
+    const calls: string[] = [];
+    const inner = deps.storage;
+    const watched = new Proxy(inner, {
+      get(target, name, receiver) {
+        const value: unknown = Reflect.get(target, name, receiver);
+        if (typeof value !== "function") {
+          return value;
+        }
+        return (...args: unknown[]) => {
+          calls.push(`${String(name)}${name === "hit" ? `:${String(args[0]).slice(0, 2)}` : ""}`);
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const text = replaceOnce(await createText(), '"type":"share"', '"type":"share","type":"courier"');
+    const outcome = await handleRequestWithReason(
+      new Request(`${AUDIENCE}/v1/links`, { method: "POST", headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip() }, body: text }),
+      { ...deps, storage: watched },
+    );
+    expect(outcome.reason).toBe("request_shape");
+    // Only the per-address refusal counter and the health counters are touched.
+    expect(calls.sort()).toEqual(["count", "count", "hit:ar"]);
+    for (const forbidden of ["isBlocked", "claimNonce", "apiKey", "put", "get", "take", "delete"]) {
+      expect(calls).not.toContain(forbidden);
+    }
   });
 
   it("keys that only look alike are not repeats: a Cyrillic letter in a key is an unknown field, not a repeated one", async () => {

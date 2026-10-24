@@ -15,9 +15,20 @@ interface Frame {
   expectKey: boolean;
 }
 
+/** The work of one scan, for tests: every character is looked at once and each key literal is unescaped once. */
+export interface ScanWork {
+  /** Characters examined by the scan (an escape and the character it escapes count once). */
+  visits: number;
+  /** Characters in the string literals that were read as keys. */
+  keyChars: number;
+}
+
 /** The index just past the string that opens at `start` (a `"`), or -1 when it never closes. */
-function endOfString(text: string, start: number): number {
+function endOfString(text: string, start: number, work: ScanWork | null): number {
   for (let i = start + 1; i < text.length; i++) {
+    if (work) {
+      work.visits += 1;
+    }
     const ch = text.charCodeAt(i);
     if (ch === 0x5c) {
       i += 1;
@@ -29,7 +40,10 @@ function endOfString(text: string, start: number): number {
 }
 
 /** The characters of the string literal `text.slice(start, end)`, unescaped; null when an escape is not valid. */
-function unescape(text: string, start: number, end: number): string | null {
+function unescape(text: string, start: number, end: number, work: ScanWork | null): string | null {
+  if (work) {
+    work.keyChars += end - start;
+  }
   const literal = text.slice(start, end);
   if (!literal.includes("\\")) {
     return literal.slice(1, -1);
@@ -41,20 +55,23 @@ function unescape(text: string, start: number, end: number): string | null {
   }
 }
 
-/** True when some object in `text` repeats a key. */
-export function hasDuplicateKey(text: string): boolean {
+/** True when some object in `text` repeats a key. `work`, when given, receives the work done (tests only). */
+export function hasDuplicateKey(text: string, work: ScanWork | null = null): boolean {
   const stack: Frame[] = [];
   let i = 0;
   while (i < text.length) {
+    if (work) {
+      work.visits += 1;
+    }
     const ch = text.charCodeAt(i);
     const top = stack[stack.length - 1];
     if (ch === 0x22) {
-      const end = endOfString(text, i);
+      const end = endOfString(text, i, work);
       if (end < 0) {
         return false;
       }
       if (top?.keys && top.expectKey) {
-        const key = unescape(text, i, end);
+        const key = unescape(text, i, end, work);
         if (key === null) {
           return false;
         }
