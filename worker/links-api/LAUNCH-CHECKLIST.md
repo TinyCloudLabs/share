@@ -1,6 +1,6 @@
 # links-api launch checklist (operator)
 
-State at launch: the Worker `links-api` is live at `https://api.tinycloud.xyz` (version `bba05bcd`); the D1 database `links-api` has id `c26a26cc-7595-42a4-95ae-0f9aec08a228` and `migrations/0001_init.sql` is applied; the smoke of step 7 passed against the live API. With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §11.7). Order follows contract 7.9: the API goes first.
+State at launch: the Worker `links-api` is live at `https://api.tinycloud.xyz` (version `bba05bcd`); the D1 database `links-api` has id `c26a26cc-7595-42a4-95ae-0f9aec08a228` and `migrations/0001_init.sql` is applied; the smoke of step 7 passed against the live API. With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §4.11). Order follows contract 7.9: the API goes first.
 
 ## Before create
 

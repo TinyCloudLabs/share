@@ -8,7 +8,7 @@ Contract: `docs/specs/short-links-api-contract.md` in tinycloud-dev (sections 1 
 
 - Worker `links-api`, version `bba05bcd` at launch, at `https://api.tinycloud.xyz`. The hostname is attached to the Worker in Cloudflare; `wrangler.toml` declares no route or custom domain.
 - D1 database `links-api`, id `c26a26cc-7595-42a4-95ae-0f9aec08a228`, with `migrations/0001_init.sql` applied. The id is in `wrangler.toml`.
-- With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §11.7).
+- With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §4.11).
 - The launch checklist is `LAUNCH-CHECKLIST.md`; the live smoke it names passed against the API.
 
 ## Routes
