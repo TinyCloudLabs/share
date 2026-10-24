@@ -101,9 +101,8 @@ describe("the viewer opens a v=4 link only after a click", () => {
     const key = new URLSearchParams(new URL(link).hash.slice(1)).get("k")!;
     expect(JSON.stringify(requests)).not.toContain(key);
     expect(JSON.stringify(requests)).not.toContain("#");
-    // The verified bytes reach the existing receive path.
-    expect(state.received).toHaveLength(1);
-    expect(state.received[0]).not.toBe(link);
+    // The same link reaches the receive path.
+    expect(state.received).toEqual([link]);
   });
 
   it("opens a full link without any API request", async () => {

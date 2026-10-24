@@ -18,6 +18,8 @@ export type ResolveResult =
 
 export interface ResolveShareOptions {
   readonly expectedOrigin?: string;
+  /** The links API origin a short link is read from. */
+  readonly apiOrigin?: string;
   readonly now?: () => number;
 }
 
@@ -28,6 +30,7 @@ export async function resolveShare(href: string, options: ResolveShareOptions = 
   try {
     await receiveShare(href, {
       expectedOrigin: options.expectedOrigin ?? "https://share.tinycloud.xyz",
+      ...(options.apiOrigin === undefined ? {} : { apiOrigin: options.apiOrigin }),
       ...(options.now === undefined ? {} : { now: options.now }),
       onResolvedAddressedEnvelope: (value, cid) => { envelope = value; shareCid = cid; },
     });

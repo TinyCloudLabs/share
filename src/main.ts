@@ -88,7 +88,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       }, { shareUrl: shareHref, saveToTinyCloud });
       return;
     }
-    // The link reader checks the record and opens the body; a share then goes through the existing receive path.
+    // The link reader checks the record; a share is then received from the same link.
     const { resolveLink } = await import("./short-links/resolve.js");
     const link = await resolveLink(shareHref, { trustedOrigins: [shareConfig.shareOrigin], apiOrigin: linksApiOrigin() });
     if (link.type === "courier") {
@@ -96,10 +96,8 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       renderCourierRecord(root);
       return;
     }
-    const { sdkReceiveLink } = await import("./short-links/sdk-bridge.js");
-    const receivableHref = await sdkReceiveLink(link, shareConfig.shareOrigin);
     const { resolveShare } = await import("./viewer/resolve.js");
-    const resolved: ResolveResult = await resolveShare(receivableHref, { expectedOrigin: shareConfig.shareOrigin });
+    const resolved: ResolveResult = await resolveShare(shareHref, { expectedOrigin: shareConfig.shareOrigin, apiOrigin: linksApiOrigin() });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
     // policy admission followed by generic /delegate and /invoke.
@@ -109,7 +107,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       const accountlessEnvelope = resolved.envelope;
       await receiveWithSdk({
         root,
-        shareUrl: receivableHref,
+        shareUrl: shareHref,
         config: shareConfig,
         availability: availabilityTarget(accountlessEnvelope),
         invitation: {

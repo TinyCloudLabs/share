@@ -31,7 +31,6 @@ vi.mock("../src/short-links/resolve.js", () => ({
   LinkReadError: class extends Error { kind = "not-found"; },
   resolveLink: async () => ({ type: "share", plaintext: {}, header: {}, sealedBody: new Uint8Array(0), key: new Uint8Array(0) }),
 }));
-vi.mock("../src/short-links/sdk-bridge.js", () => ({ sdkReceiveLink: async () => "sdk-receive-link" }));
 vi.mock("../src/short-links/views.js", () => ({ renderOpenConfirm: async () => undefined, renderCourierRecord: () => undefined }));
 
 vi.mock("../src/email-share/view.js", () => ({
@@ -190,7 +189,7 @@ describe("first-class accountless receiver", () => {
     expect(state.receiveWithSdk).toHaveBeenCalledWith(
       expect.objectContaining({
         root: document.getElementById("viewer"),
-        shareUrl: "sdk-receive-link",
+        shareUrl: "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid",
       }),
     );
     expect(state.receive).not.toHaveBeenCalled();

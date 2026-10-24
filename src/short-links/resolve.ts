@@ -31,9 +31,6 @@ export class LinkReadError extends Error {
 export interface ResolvedLink {
   readonly type: "share" | "courier";
   readonly header: LinkHeader;
-  /** The sealed body bytes and the key that opened them, for the existing receive pipeline. */
-  readonly sealedBody: Uint8Array;
-  readonly key: Uint8Array;
 }
 
 export interface ResolveOptions extends LinkApiOptions {
@@ -96,5 +93,5 @@ export async function resolveLink(href: string, options: ResolveOptions): Promis
     throw notFound("full_non_share");
   }
   if (header.type === "openkey-login") throw notFound("not_viewable");
-  return { type: header.type, header, sealedBody: record.body, key };
+  return { type: header.type, header };
 }
