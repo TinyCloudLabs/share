@@ -21,7 +21,7 @@ Nothing below has been done. Every name is PLANNED until the operator creates it
 5. **Worker.** `npx wrangler deploy` (the cron trigger `* * * * *` runs the sweep and the health line every minute).
 6. **Custom domain and DNS.** Attach `api.tinycloud.xyz` to the Worker as a custom domain (this creates the DNS record). No other route is declared.
 7. **Smoke.** `node scripts/local-smoke.ts https://api.tinycloud.xyz` (creates, reads, takes and deletes test records that expire on their own).
-8. **Post-deploy smokes for the node read.** (a) After the node has made a signed read, the next `links.health` line shows `reads.authenticated` above 0 (no response field says whether the header was recognised). (b) A response from the API carries a `Date` header (for example `curl -sI https://api.tinycloud.xyz/v1/links/<any 26-character id>`).
+8. **Post-deploy smokes for the node read.** (a) After the node has made a signed read, the next `links.health` line shows `reads.authenticated` above 0 (no response field says whether the header was recognised). A node that sends a header that is not the canonical JSON of the contract is served as an ordinary read under the per-address limit, so after the node ships its signing commit this smoke must show `reads.authenticated` increasing; if it stays at 0, the node's header is not being recognised. (b) A response from the API carries a `Date` header (for example `curl -sI https://api.tinycloud.xyz/v1/links/<any 26-character id>`).
 
 ## Alerts
 

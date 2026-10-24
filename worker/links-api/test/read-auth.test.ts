@@ -359,6 +359,25 @@ describe.each(ADAPTER_FACTORIES)("authenticated read: $name adapter", ({ create 
         expect(response.headers.get("Date"), `${request.method} ${new URL(request.url).pathname}`).toBe(new Date(NOW).toUTCString());
       }
     });
+
+    it("the explicit Date header is present on a hit, a miss, a 429 and a 404", async () => {
+      const id = await makeLink();
+      const expected = new Date(NOW).toUTCString();
+      const hit = await handleRequest(get(id, "198.51.100.40"), deps);
+      const miss = await handleRequest(get("c".repeat(26), "198.51.100.41"), deps);
+      const route = await handleRequest(new Request(`${AUDIENCE}/no/such/route`), deps);
+      for (let i = 0; i < LIMITS.addressRead.limit; i++) {
+        await handleRequest(get(id, "198.51.100.42"), deps);
+      }
+      const limited = await handleRequest(get(id, "198.51.100.42"), deps);
+      const labelLimited = build(configWith(NODE_LIST, { readAuthLimit: 1 }));
+      await handleRequest(await authenticatedGet({ key: testNodeKey, id, nowMs: NOW, ip: "198.51.100.43" }), labelLimited);
+      const labelRefused = await handleRequest(await authenticatedGet({ key: testNodeKey, id, nowMs: NOW, ip: "198.51.100.43" }), labelLimited);
+      expect([hit.status, miss.status, route.status, limited.status, labelRefused.status]).toEqual([200, 404, 404, 429, 429]);
+      for (const response of [hit, miss, route, limited, labelRefused]) {
+        expect(response.headers.get("Date")).toBe(expected);
+      }
+    });
   });
 
   describe("rotation", () => {
