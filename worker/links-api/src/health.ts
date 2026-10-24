@@ -45,7 +45,7 @@ export function buildHealthLine(
     event: "links.health",
     windowSeconds: HEALTH_WINDOW_SECONDS,
     creates: pick(counts, "creates", LINK_TYPES),
-    reads: pick(counts, "reads", ["hit", "miss"] as const),
+    reads: pick(counts, "reads", ["hit", "miss", "authenticated"] as const),
     deletes: pick(counts, "deletes", ["ok", "miss"] as const),
     rejects: pick(counts, "rejects", REJECT_CODES),
     errors: { internal: counts["errors.internal"] ?? 0 },

@@ -13,6 +13,7 @@ import {
   type WindowLimit,
 } from "./config.ts";
 import { verifyStrict } from "./ed25519.ts";
+import { READ_AUTH_HEADER, evaluateReadAuth } from "./read-auth.ts";
 import {
   emptyResponse,
   isJsonContentType,
@@ -99,6 +100,7 @@ export interface Outcome {
 
 /** Rate-limit key builders; the keys carry no raw address. */
 export const rateKeys = {
+  labelRead: (label: string) => `rn:${label}`,
   issuerCreate: (issuer: string, windowSeconds: number) => `ic:${issuer}:${windowSeconds}`,
   issuerDelete: (issuer: string, windowSeconds: number) => `id:${issuer}:${windowSeconds}`,
   addressCreate: (rateHash: string, windowSeconds: number) => `ac:${rateHash}:${windowSeconds}`,
@@ -449,12 +451,36 @@ function notFound(ctx: RequestContext): Promise<Outcome> {
   return refuse(ctx, "not_found", "not_found");
 }
 
-async function handleRead(id: string, ctx: RequestContext, op: "read" | "take"): Promise<Outcome> {
+/** The read limit of one request: the label's own bucket for an authenticated read, else the per-address limit. */
+async function readLimit(ctx: RequestContext, label: string | null): Promise<Outcome | null> {
+  if (label === null) {
+    return addressLimits(ctx, [LIMITS.addressRead], (hash) => rateKeys.addressRead(hash), false);
+  }
+  const { limit, windowSeconds } = LIMITS.authenticatedRead;
+  const bucket = await ctx.deps.storage.hit(rateKeys.labelRead(label), ctx.deps.config.readAuthLimit ?? limit, windowSeconds, ctx.nowSeconds);
+  return bucket.allowed ? null : refuse(ctx, "rate_limited", "label_rate", retryAfter(bucket.retryAfter));
+}
+
+async function handleRead(id: string, request: Request, ctx: RequestContext, op: "read" | "take"): Promise<Outcome> {
   const { storage, config } = ctx.deps;
   if (config.kill[op]) {
     return refuse(ctx, "capacity", `kill_${op}`, retryAfter(3600));
   }
-  const limited = await addressLimits(ctx, [LIMITS.addressRead], (hash) => rateKeys.addressRead(hash), false);
+  let label: string | null = null;
+  if (op === "read" && (config.readSigners?.length ?? 0) > 0) {
+    const url = new URL(request.url);
+    const auth = await evaluateReadAuth({
+      headerValue: request.headers.get(READ_AUTH_HEADER),
+      method: request.method,
+      pathname: url.pathname,
+      search: url.search,
+      audience: config.audience,
+      nowMs: ctx.nowMs,
+      signers: config.readSigners ?? [],
+    });
+    label = auth.authenticated ? auth.label : null;
+  }
+  const limited = await readLimit(ctx, label);
   if (limited !== null) {
     return limited;
   }
@@ -465,6 +491,9 @@ async function handleRead(id: string, ctx: RequestContext, op: "read" | "take"):
       ? await storage.get(lower, ctx.nowSeconds)
       : await storage.take(lower, ctx.nowSeconds)
     : null;
+  if (label !== null) {
+    await countMetric(ctx.deps, "reads.authenticated");
+  }
   if (record === null) {
     await countMetric(ctx.deps, "reads.miss");
     return notFound(ctx);
@@ -660,10 +689,10 @@ export async function handleRequestWithReason(request: Request, deps: ServiceDep
     return handleCreate(request, ctx);
   }
   if (method === "GET" && isRead && id !== undefined) {
-    return handleRead(id, ctx, "read");
+    return handleRead(id, request, ctx, "read");
   }
   if (method === "POST" && isTake && id !== undefined) {
-    return handleRead(id, ctx, "take");
+    return handleRead(id, request, ctx, "take");
   }
   if (method === "POST" && isDelete && id !== undefined) {
     return handleDelete(id, request, ctx);
@@ -671,12 +700,18 @@ export async function handleRequestWithReason(request: Request, deps: ServiceDep
   return miss();
 }
 
+/** Every response carries the standard `Date` header, taken from the service clock. */
+function withDate(response: Response, deps: ServiceDeps): Response {
+  response.headers.set("Date", new Date(deps.now()).toUTCString());
+  return response;
+}
+
 export async function handleRequest(request: Request, deps: ServiceDeps): Promise<Response> {
   try {
-    return (await handleRequestWithReason(request, deps)).response;
+    return withDate((await handleRequestWithReason(request, deps)).response, deps);
   } catch (err) {
     deps.log(`links.internal ${err instanceof Error ? err.name : "unknown"}`);
     await countMetric(deps, "errors.internal");
-    return jsonResponse(500, errorBody("internal"), { kind: "none" });
+    return withDate(jsonResponse(500, errorBody("internal"), { kind: "none" }), deps);
   }
 }
