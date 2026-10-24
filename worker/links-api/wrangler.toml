@@ -1,0 +1,33 @@
+# The links API Worker, live at https://api.tinycloud.xyz (Worker version bba05bcd at launch).
+# The hostname is attached to the Worker in Cloudflare. The D1 database and the secrets below are set up in Cloudflare.
+name = "links-api"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+workers_dev = false
+
+# No routes or custom domain are declared in this file.
+
+[[d1_databases]]
+binding = "DB"
+# The production D1 database `links-api` (id below) with migrations/0001_init.sql applied.
+database_name = "links-api"
+database_id = "c26a26cc-7595-42a4-95ae-0f9aec08a228"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+LINKS_AUDIENCE = "https://api.tinycloud.xyz"
+LINKS_CORS_ORIGINS = "https://share.tinycloud.xyz"
+# ADDRESS_SALT is a secret (16+ characters), set by the operator. Never committed.
+
+# Workers Logs, with invocation logs off: the only log lines are the structured console lines of the scheduled
+# run (links.health and free_plan_70). Request URLs and link ids are not logged.
+# Keys: https://developers.cloudflare.com/workers/observability/logs/workers-logs/ (page dated 2026-10-12, read 2026-10-23).
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+invocation_logs = false

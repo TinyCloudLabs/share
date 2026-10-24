@@ -1,0 +1,26 @@
+{
+  "name": "links-api",
+  "private": true,
+  "type": "module",
+  "description": "TinyCloud links API: typed, issuer-signed link records with a D1 adapter and a single-file SQLite adapter",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts",
+    "vectors": "node scripts/run-vectors.ts",
+    "selfhost": "node src/selfhost.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "1.9.7",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "miniflare": "4.20260611.0",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7",
+    "wrangler": "4.100.0"
+  }
+}
