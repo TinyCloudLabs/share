@@ -1,7 +1,8 @@
 import { captureAndScrubLaunch, type CapturedLaunch } from "./email-share/url.js";
 import { purgeLegacyReceiverStorage } from "./email-share/receiver-storage.js";
 import type { ResolveResult } from "./viewer/resolve.js";
-import { ShortLinkError } from "./short-links/errors.js";
+import { LinkReadError } from "./short-links/resolve.js";
+import { linksApiOrigin } from "./short-links/config.js";
 
 // viewer.html is the ONLY page that loads this module, and it always declares
 // <div id="viewer">. There is no non-viewer branch here on purpose: the
@@ -32,14 +33,20 @@ if (viewerRoot !== null) {
   void bootRecipient(viewerRoot, captured);
 }
 
-async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined): Promise<void> {
+async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined, confirmed = false): Promise<void> {
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
-  renderRecipientLoading(root);
   if (launch === undefined) {
+    renderRecipientLoading(root);
     const { renderLinkNeeded } = await import("./viewer/ui.js");
     renderLinkNeeded(root);
     return;
   }
+  // A link is read only after a click: nothing is fetched or opened before it.
+  if (launch.kind === "link" && !confirmed) {
+    const { renderOpenConfirm } = await import("./short-links/views.js");
+    await renderOpenConfirm(root);
+  }
+  renderRecipientLoading(root);
 
   // The launch URL is scrubbed from the address bar and kept in memory only, so
   // "Try again" must re-run the receive from this copy rather than reload the page.
@@ -81,14 +88,16 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       }, { shareUrl: shareHref, saveToTinyCloud });
       return;
     }
-    // A short link's sealed bytes are fetched from the share origin and then
-    // received as the inline form, which the existing receive path verifies.
-    let receivableHref = shareHref;
-    if (launch.shortLink !== undefined) {
-      // Lazy like every viewer module here, so the SDK loads only for short links.
-      const { inlineHrefForShortLink } = await import("./short-links/resolve.js");
-      receivableHref = await inlineHrefForShortLink(shareHref, shareConfig.shareOrigin);
+    // The link reader checks the record and opens the body; a share then goes through the existing receive path.
+    const { resolveLink } = await import("./short-links/resolve.js");
+    const link = await resolveLink(shareHref, { trustedOrigins: [shareConfig.shareOrigin], apiOrigin: linksApiOrigin() });
+    if (link.type === "courier") {
+      const { renderCourierRecord } = await import("./short-links/views.js");
+      renderCourierRecord(root);
+      return;
     }
+    const { sdkReceiveLink } = await import("./short-links/sdk-bridge.js");
+    const receivableHref = await sdkReceiveLink(link, shareConfig.shareOrigin);
     const { resolveShare } = await import("./viewer/resolve.js");
     const resolved: ResolveResult = await resolveShare(receivableHref, { expectedOrigin: shareConfig.shareOrigin });
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
@@ -126,7 +135,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // Bearer links fail with a typed reason; revoked, expired and unavailable
     // each get their own screen, and nothing from the share is ever shown.
     const href = retryHref;
-    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }); };
+    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }, true); };
     const { NativeBearerError } = await import("./viewer/native-bearer.js");
     if (error instanceof NativeBearerError && error.reason !== "unverified") {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
@@ -141,13 +150,13 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       renderRecipientInvalid(root, "Your verification on this page has ended. Open the link from your email again and verify again.");
       return;
     }
-    if (error instanceof ShortLinkError && error.reason === "gone") {
-      // Same lazy-load pattern as the other viewer modules in this file.
+    if (error instanceof LinkReadError && error.kind === "not-found") {
+      // One screen for every refusal the link or its record decides.
       const { renderViewerState } = await import("./viewer/ui.js");
       renderViewerState(root, { state: "fetch-failed", detail: "share unavailable" });
       return;
     }
-    if (error instanceof ShortLinkError) {
+    if (error instanceof LinkReadError) {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
       renderShareUnavailable(root, "unavailable", undefined, retry);
       return;

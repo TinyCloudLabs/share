@@ -22,9 +22,17 @@ const state = vi.hoisted(() => ({
 vi.mock("../src/email-share/url.js", () => ({
   captureAndScrubLaunch: () => {
     state.events.push("scrub");
-    return { shareHref: state.kind === "bearer" ? "https://share.tinycloud.xyz/viewer#tc1=test" : "https://share.tinycloud.xyz/s/inline#v=2&p=test", kind: state.kind };
+    return { shareHref: state.kind === "bearer" ? "https://share.tinycloud.xyz/viewer#tc1=test" : "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid", kind: state.kind === "bearer" ? "bearer" : "link" };
   },
 }));
+
+// The link reader and the confirm click are covered in link-viewer.test.ts; here the receive path after them is under test.
+vi.mock("../src/short-links/resolve.js", () => ({
+  LinkReadError: class extends Error { kind = "not-found"; },
+  resolveLink: async () => ({ type: "share", plaintext: {}, header: {}, sealedBody: new Uint8Array(0), key: new Uint8Array(0) }),
+}));
+vi.mock("../src/short-links/sdk-bridge.js", () => ({ sdkReceiveLink: async () => "sdk-receive-link" }));
+vi.mock("../src/short-links/views.js", () => ({ renderOpenConfirm: async () => undefined, renderCourierRecord: () => undefined }));
 
 vi.mock("../src/email-share/view.js", () => ({
   renderRecipientInvalid: (...args: unknown[]) => state.invalid(...args),
@@ -182,7 +190,7 @@ describe("first-class accountless receiver", () => {
     expect(state.receiveWithSdk).toHaveBeenCalledWith(
       expect.objectContaining({
         root: document.getElementById("viewer"),
-        shareUrl: "https://share.tinycloud.xyz/s/inline#v=2&p=test",
+        shareUrl: "sdk-receive-link",
       }),
     );
     expect(state.receive).not.toHaveBeenCalled();

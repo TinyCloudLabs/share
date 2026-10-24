@@ -5,7 +5,7 @@ TinyCloud Share is a UX over TinyCloud-native delegation and invocation. Content
 Supported links are exactly:
 
 - `https://share.tinycloud.xyz/viewer#tc1=…` — secret bearer delegation. Anyone holding the complete link can invoke the owner's node until expiry or revocation.
-- `https://share.tinycloud.xyz/s/inline#v=2&p=…` — sealed signed Policy/v3 invitation. The browser decrypts it locally, then the recipient must prove the matching identity.
+- `https://share.tinycloud.xyz/s/<id>#v=4&k=…&c=…` (or `/s/full#v=4&k=…&r=…`) — sealed signed Policy/v3 invitation. The browser fetches the sealed bytes, checks them against the link, and decrypts them locally, then the recipient must prove the matching identity. The key never leaves the fragment.
 
 Both complete link forms carry fragment secrets. Never log or render them, and transmit an addressed link only through the exact Node-authorized OpenCredentials delivery. To stream a native bearer share without writing a file, use an authenticated matching TinyCloud CLI and pass the URL on stdin:
 

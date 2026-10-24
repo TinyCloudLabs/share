@@ -15,16 +15,28 @@ describe("native share launch cutover", () => {
     expect(replaceState).toHaveBeenCalledWith(null, "", "/viewer");
   });
 
-  it("captures and scrubs the sealed addressed invitation fragment", () => {
-    const href = "https://share.tinycloud.xyz/s/inline#v=2&p=sealed_policy_and_key";
+  it("captures and scrubs a v=4 link for the link reader, without looking inside it", () => {
+    const href = "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid";
     const { result, replaceState } = capture(href);
-    expect(result).toEqual({ shareHref: href, kind: "addressed" });
+    expect(result).toEqual({ shareHref: href, kind: "link" });
     expect(replaceState).toHaveBeenCalledWith(null, "", "/viewer");
+  });
+
+  it("captures the invitation path the same way, and passes a removed version to the reader to refuse", () => {
+    expect(capture("https://share.tinycloud.xyz/c/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid").result).toMatchObject({ kind: "link" });
+    expect(capture("https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=3&k=key&c=cid").result).toMatchObject({ kind: "link" });
+  });
+
+  it("passes a link whose fragment is past the bound on without it", () => {
+    const { result } = capture(`https://share.tinycloud.xyz/s/full#v=4&k=key&r=${"A".repeat(700_001)}`);
+    expect(result).toEqual({ shareHref: "https://share.tinycloud.xyz/s/full", kind: "link" });
   });
 
   it.each([
     "https://share.tinycloud.xyz/s/bafkreiold#k=secret",
-    "https://share.tinycloud.xyz/s/inline?recipient=reader@example.com#v=2&p=sealed",
+    "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv?x=1#v=4&k=key&c=cid",
+    "https://share.tinycloud.xyz/l/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid",
+    "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv",
     "https://share.tinycloud.xyz/viewer#tc2=old_encrypted_policy",
     "https://share.tinycloud.xyz/viewer?tc2=plaintext_policy",
     "https://share.tinycloud.xyz/viewer?tc2=public#k=secret",

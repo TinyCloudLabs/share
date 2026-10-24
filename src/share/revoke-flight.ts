@@ -42,8 +42,6 @@ export class RevokeFlight {
   readonly done: Promise<FlightOutcome>;
   /** The sign-in this revoke belongs to. */
   readonly session = session;
-  /** Set by a revoke that succeeded but kept its short-link record for the next attempt. Shown once to the sender. */
-  note?: string;
 
   constructor(key: string, run: (flight: RevokeFlight) => Promise<void>) {
     flights.set(key, this);

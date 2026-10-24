@@ -4,10 +4,10 @@ import { requestAddressedDelivery } from "../src/share/delivery.js";
 describe("addressed delivery boundary", () => {
   it("posts the unchanged node-authorized invitation only to OpenCredentials delivery", async () => {
     const credentialsOrigin = "https://credentials.example";
-    const request = Object.freeze({ returnLink: "https://share.example/s/inline#v=2&p=sealed-policy" });
+    const request = Object.freeze({ returnLink: "https://share.example/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid" });
     const admission = Object.freeze({ schema: "xyz.tinycloud.policy/delivery-admission/v0" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "test-signature" });
-    const shareUrl = "https://share.example/s/inline#v=2&p=sealed-policy";
+    const shareUrl = "https://share.example/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid";
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
@@ -33,14 +33,14 @@ describe("addressed delivery boundary", () => {
   });
 
   it("posts a v3 policy receipt to the existing delivery service without rewriting its root bindings", async () => {
-    const request = Object.freeze({ returnLink: "https://share.example/s/inline#v=2&p=sealed-policy" });
+    const request = Object.freeze({ returnLink: "https://share.example/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid" });
     const admission = Object.freeze({ schema: "xyz.tinycloud.policy/delivery-admission/v0", policyId: "policy" });
     const proof = Object.freeze({ alg: "EdDSA", kid: "did:web:node.example#key", signature: "signature" });
     const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
 
     await requestAddressedDelivery({
       credentialsOrigin: "https://credentials.example",
-      shareUrl: "https://share.example/s/inline#v=2&p=sealed-policy",
+      shareUrl: "https://share.example/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid",
       deliveryAuthorization: { request, admission, proof },
       fetchFn,
     });

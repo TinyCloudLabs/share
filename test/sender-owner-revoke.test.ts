@@ -155,7 +155,7 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
     },
   };
   const mount = async (): Promise<void> => {
-    mountSenderHome(root, { session: { address: options.address ?? ADDRESS } as unknown as OpenKeyShareSession, tinycloud: tinycloud as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session: { address: options.address ?? ADDRESS } as unknown as OpenKeyShareSession, tinycloud: tinycloud as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(root.querySelector(".sender-history-row")).not.toBeNull());
   };
   await mount();
@@ -177,7 +177,7 @@ describe("revoking a share made in an earlier sign-in (same account, new session
     const history = new SenderHistoryRepository(vault(), () => Date.parse("2026-10-20T04:00:00.000Z"));
     await history.save(addressedRecord());
     const revokeDelegation = vi.fn();
-    mountSenderHome(root, { session: { address: ADDRESS } as unknown as OpenKeyShareSession, tinycloud: { revokeDelegation, credentialHolderDid: K1, activeNodeIdentity: async () => NODE, signSessionBytes: async () => new Uint8Array(64) } as unknown as ShareTinyCloud, history, onNavigate: () => undefined });
+    mountSenderHome(root, { session: { address: ADDRESS } as unknown as OpenKeyShareSession, tinycloud: { revokeDelegation, credentialHolderDid: K1, activeNodeIdentity: async () => NODE, signSessionBytes: async () => new Uint8Array(64) } as unknown as ShareTinyCloud, history, onNavigate: () => undefined, onSendAgain: () => undefined });
     await vi.waitFor(() => expect(revokeButton(root)).not.toBeNull());
     await revoke(root); await settled(root);
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
