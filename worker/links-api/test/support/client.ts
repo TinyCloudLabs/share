@@ -36,6 +36,21 @@ export function makeIssuer(): Issuer {
 export const AUDIENCE = "https://api.tinycloud.xyz";
 export const CLIENT_IP = "198.51.100.23";
 
+/**
+ * The client-address header the Worker keys its per-address limits on. In-process tests and runs against a local
+ * Worker send it. A Cloudflare hostname answers a client-sent `CF-Connecting-IP` with a 403 from its edge (the edge
+ * sets that header itself), so a run against one passes `null` and nothing is sent.
+ */
+export function addressHeader(ip: string | null): Record<string, string> {
+  return ip === null ? {} : { "CF-Connecting-IP": ip };
+}
+
+/** The address to send for a base URL: `CLIENT_IP` for localhost, 127.0.0.1 and [::1]; `null` (send none) for any other host. */
+export function clientAddressFor(baseUrl: string): string | null {
+  const host = new URL(baseUrl).hostname;
+  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" ? CLIENT_IP : null;
+}
+
 /** `0x01 || nonce(12) || AES-256-GCM(plaintext) || tag(16)` with the share-envelope AAD, as js-sdk `aead.ts`. */
 export function sealBody(plaintext: string, key: Uint8Array): Uint8Array {
   const nonce = randomBytes(12);
@@ -58,7 +73,8 @@ export interface CreateOptions {
   readonly nowMs: number;
   readonly lifeSeconds?: number;
   readonly headers?: Record<string, string>;
-  readonly ip?: string;
+  /** The client address to send; `null` sends no address header. Default: `CLIENT_IP`. */
+  readonly ip?: string | null;
 }
 
 const DEFAULT_LIFE: Record<LinkType, number> = { "openkey-login": 600, courier: 86_400, share: 2_592_000 };
@@ -82,12 +98,12 @@ export async function signedCreate(options: CreateOptions): Promise<Request> {
   const request = { header, signature: { algorithm: "Ed25519", value: options.issuer.signDigest(digest) }, body: base64UrlEncode(body) };
   return new Request(`${AUDIENCE}/v1/links`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "CF-Connecting-IP": options.ip ?? CLIENT_IP, ...options.headers },
+    headers: { "Content-Type": "application/json", ...addressHeader(options.ip === undefined ? CLIENT_IP : options.ip), ...options.headers },
     body: JSON.stringify(request),
   });
 }
 
-export async function signedDelete(options: { issuer: Issuer; id: string; nowMs: number; ip?: string; headers?: Record<string, string> }): Promise<Request> {
+export async function signedDelete(options: { issuer: Issuer; id: string; nowMs: number; ip?: string | null; headers?: Record<string, string> }): Promise<Request> {
   const request = {
     version: 1,
     op: "delete",
@@ -101,15 +117,15 @@ export async function signedDelete(options: { issuer: Issuer; id: string; nowMs:
   const body = { request, signature: { algorithm: "Ed25519", value: options.issuer.signDigest(digest) } };
   return new Request(`${AUDIENCE}/v1/links/${options.id}/delete`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "CF-Connecting-IP": options.ip ?? CLIENT_IP, ...options.headers },
+    headers: { "Content-Type": "application/json", ...addressHeader(options.ip === undefined ? CLIENT_IP : options.ip), ...options.headers },
     body: JSON.stringify(body),
   });
 }
 
-export function get(id: string, ip = CLIENT_IP, headers: Record<string, string> = {}): Request {
-  return new Request(`${AUDIENCE}/v1/links/${id}`, { headers: { "CF-Connecting-IP": ip, ...headers } });
+export function get(id: string, ip: string | null = CLIENT_IP, headers: Record<string, string> = {}): Request {
+  return new Request(`${AUDIENCE}/v1/links/${id}`, { headers: { ...addressHeader(ip), ...headers } });
 }
 
-export function take(id: string, ip = CLIENT_IP, headers: Record<string, string> = {}): Request {
-  return new Request(`${AUDIENCE}/v1/links/${id}/take`, { method: "POST", headers: { "CF-Connecting-IP": ip, ...headers } });
+export function take(id: string, ip: string | null = CLIENT_IP, headers: Record<string, string> = {}): Request {
+  return new Request(`${AUDIENCE}/v1/links/${id}/take`, { method: "POST", headers: { ...addressHeader(ip), ...headers } });
 }
