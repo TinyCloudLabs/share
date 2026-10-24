@@ -11,7 +11,7 @@ workers_dev = false
 binding = "DB"
 # PLANNED database name and id (placeholders; the real id is set when the operator creates the database).
 database_name = "links-api"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "c26a26cc-7595-42a4-95ae-0f9aec08a228"
 migrations_dir = "migrations"
 
 [triggers]
