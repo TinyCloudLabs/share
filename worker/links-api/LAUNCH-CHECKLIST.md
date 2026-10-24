@@ -1,6 +1,6 @@
 # links-api launch checklist (operator)
 
-Nothing below has been done. Every name is PLANNED until the operator creates it. Order follows contract 7.9: the API goes first.
+State at launch: the Worker `links-api` is live at `https://api.tinycloud.xyz` (version `bba05bcd`); the D1 database `links-api` has id `c26a26cc-7595-42a4-95ae-0f9aec08a228` and `migrations/0001_init.sql` is applied; the smoke of step 7 passed against the live API. With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §11.7). Order follows contract 7.9: the API goes first.
 
 ## Before create
 
@@ -10,7 +10,7 @@ Nothing below has been done. Every name is PLANNED until the operator creates it
 
 ## Create and deploy
 
-1. **D1 database.** Create it (PLANNED name `links-api`); put its id in `wrangler.toml` (`database_id`).
+1. **D1 database.** Created as `links-api`; its id is in `wrangler.toml` (`database_id`).
 2. **Migration.** `npx wrangler d1 migrations apply links-api --remote` (applies `migrations/0001_init.sql`).
 3. **Secret and variables.** `npx wrangler secret put ADDRESS_SALT` (16 or more random characters). Check `LINKS_AUDIENCE` (`https://api.tinycloud.xyz`) and `LINKS_CORS_ORIGINS` (`https://share.tinycloud.xyz`) in `wrangler.toml`.
    **Node read allow-list.** Set `LINKS_READ_SIGNERS` as a Worker secret or dashboard variable (not in `wrangler.toml`, not in the repository): `[{"label":"service:node","did":"<the nodeId field of https://node.tinycloud.xyz/info>"}]`. Never list a test seed. `LINKS_READ_AUTH_LIMIT` is optional (default 6,000 a minute). A list that does not validate stops the Worker from serving (every request answers 500). Set `LINKS_READ_SIGNERS` only with an immediate smoke (one read of any 26-character id: 404 is healthy): a 500 on every request means the variable is malformed, and the first action is to unset it.

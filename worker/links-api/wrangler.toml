@@ -1,15 +1,15 @@
-# PLANNED: nothing in this file has been created, deployed or bound. The operator creates the Worker,
-# the D1 database, the secret and the api.tinycloud.xyz custom domain after review.
+# The links API Worker, live at https://api.tinycloud.xyz (Worker version bba05bcd at launch).
+# The hostname is attached to the Worker in Cloudflare. The D1 database and the secrets below are set up in Cloudflare.
 name = "links-api"
 main = "src/worker.ts"
 compatibility_date = "2025-09-01"
 workers_dev = false
 
-# No routes and no custom domain are declared here. PLANNED: api.tinycloud.xyz.
+# No routes or custom domain are declared in this file.
 
 [[d1_databases]]
 binding = "DB"
-# PLANNED database name and id (placeholders; the real id is set when the operator creates the database).
+# The production D1 database `links-api` (id below) with migrations/0001_init.sql applied.
 database_name = "links-api"
 database_id = "c26a26cc-7595-42a4-95ae-0f9aec08a228"
 migrations_dir = "migrations"
