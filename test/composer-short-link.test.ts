@@ -21,19 +21,23 @@ const state = vi.hoisted(() => ({
   registrations: 0,
 }));
 
-vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof SdkModule>()),
-  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly contentSource: unknown; readonly onDeliveryMaterial: (material: unknown) => void }) => {
-    // The size check runs the builder first, with the longest stand-in key version; only the real publish is recorded.
-    if ((options.contentSource as { keyVersion?: number }).keyVersion !== 4_294_967_295) state.published.push(options);
-    // vi.mock factories run before static imports exist, so this module is loaded here.
-    const { sealedMaterial } = await import("./fixtures/link-material.js");
-    state.material = await sealedMaterial({ version: 3, signature: { signerDid: "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S", algorithm: "Ed25519", value: "TEST ONLY" }, pad: "x".repeat(state.pad) });
-    options.onDeliveryMaterial({ envelope: { version: 3 }, ...state.material });
-    return { url: "unused", link: { cid: state.material.shareCid }, metadata: { expiresAt: state.expiresAt } };
-  }),
-  historyRecordForPublishedShare: vi.fn(() => ({ id: "record" })),
-}));
+vi.mock("@tinycloud/share-sdk", async (importOriginal) => {
+  const sdk = await importOriginal<typeof SdkModule>();
+  return {
+    ...sdk,
+    // The SDK's size check, answered by the size the test sets: over the limit when `pad` is set.
+    assertAddressedShareFits: vi.fn(async () => { if (state.pad > 0) throw new sdk.SharePublishError("max-bytes-exceeded", sdk.ADDRESSED_SHARE_TOO_LARGE_MESSAGE); }),
+    publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly contentSource: unknown; readonly onDeliveryMaterial: (material: unknown) => void }) => {
+      state.published.push(options);
+      // vi.mock factories run before static imports exist, so this module is loaded here.
+      const { sealedMaterial } = await import("./fixtures/link-material.js");
+      state.material = await sealedMaterial({ version: 3, signature: { signerDid: "did:key:z6MktULudTtAsAhRegYPiZ6631RV3viv12qd4GQF8z1xB22S", algorithm: "Ed25519", value: "TEST ONLY" }, pad: "x".repeat(state.pad) });
+      options.onDeliveryMaterial({ envelope: { version: 3 }, ...state.material });
+      return { url: "unused", link: { cid: state.material.shareCid }, metadata: { expiresAt: state.expiresAt } };
+    }),
+    historyRecordForPublishedShare: vi.fn(() => ({ id: "record" })),
+  };
+});
 vi.mock("../src/email-share/config.js", () => ({
   loadSharePublicConfig: async () => ({ shareOrigin: "https://share.tinycloud.xyz", registryOrigin: "https://registry.example", credentialsOrigin: "https://witness.example" }),
 }));

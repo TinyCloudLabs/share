@@ -5,7 +5,7 @@ import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX,
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
 import { sha256 } from "@noble/hashes/sha256";
-import { historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
+import { assertAddressedShareFits, historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { failIfSpaceNotReady } from "./space-not-ready.js";
@@ -13,7 +13,6 @@ import { storageFilenameFor, uniqueStoragePaths } from "./composer-storage-name.
 import { canonicalShareFilename, hasUnsafeFilenameCodePoint } from "../filename-policy.js";
 import { publishLink } from "../short-links/publish.js";
 import { ShareTooLargeForLink } from "../short-links/errors.js";
-import { assertShareFitsLink } from "./link-size.js";
 import { linksApiOrigin } from "../short-links/config.js";
 import { FULL_LINK_NO_EMAIL, SEND_AGAIN_ATTACH_HINT, SHARE_TOO_LARGE_FOR_LINK, sendAgainAttachNamedHint } from "../short-links/strings.js";
 import type { ComposerPrefill } from "./send-again.js";
@@ -403,10 +402,16 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
   };
   // A share too large for any link is refused here, before the upload and the registration.
-  await assertShareFitsLink(
-    { ...publishInput, encryptionNetwork },
-    { ownerDid: tinycloud.credentialHolderDid, createOwnerRoot: (input) => tinycloud.createUnifiedOwnerRoot(input), sign: (bytes) => tinycloud.signSessionBytes(bytes) },
-  );
+  try {
+    await assertAddressedShareFits({
+      shareId, ownerDid: tinycloud.credentialHolderDid, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
+      ...addressedRequest, resource: { kind: resourceKind }, storage: { path: resourcePath }, encryptionNetwork,
+      mediaType: plaintextType, byteLength, expiresAt: new Date(model.expiresAt),
+    });
+  } catch (error) {
+    if (error instanceof SharePublishError && error.code === "max-bytes-exceeded") throw new ShareTooLargeForLink();
+    throw error;
+  }
   // The recipient SDK verifies this signed discovery record before contacting the owner node.
   // It is published after the size check, so a refused share writes nothing, and before content
   // storage, so a registry failure cannot leave an orphaned object.
@@ -430,7 +435,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   };
   let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
-    ...publishInput, contentSource: unifiedSource,
+    ...publishInput, contentSource: unifiedSource, apiOrigin: linksApiOrigin(),
     // The SDK seals the signed policy envelope into the fragment-only
     // invitation. The only content bytes are encrypted and stored on the
     // owner's TinyCloud node.
@@ -441,6 +446,9 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
       sign: (bytes) => tinycloud.signSessionBytes(bytes),
       registerPolicy: (input) => tinycloud.registerPolicy(input),
     },
+  }).catch((error: unknown) => {
+    if (error instanceof SharePublishError && error.code === "max-bytes-exceeded") throw new ShareTooLargeForLink();
+    throw error;
   });
   if (deliveryMaterial === undefined) throw fail("rejected", "share publisher returned no delivery material");
   const publication = await publishLink({
