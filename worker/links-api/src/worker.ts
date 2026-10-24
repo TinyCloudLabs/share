@@ -46,7 +46,9 @@ export default {
     try {
       deps = depsFor(env, () => undefined);
     } catch {
-      return jsonResponse(500, { error: "internal" }, { kind: "none" });
+      const failed = jsonResponse(500, { error: "internal" }, { kind: "none" });
+      failed.headers.set("Date", new Date().toUTCString());
+      return failed;
     }
     const response = await handleRequest(request, deps);
     ctx.waitUntil(flushTally(deps.storage, tally).catch(() => undefined));
