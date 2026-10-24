@@ -1,8 +1,15 @@
 # links-api
 
-The TinyCloud links API (`api.tinycloud.xyz`, PLANNED): typed, issuer-signed records that return a random opaque id. A Cloudflare Worker with a D1 adapter, and a self-host build on one SQLite file. Both run the same service code over one storage interface.
+The TinyCloud links API, live at `https://api.tinycloud.xyz`: typed, issuer-signed records that return a random opaque id. A Cloudflare Worker with a D1 adapter, and a self-host build on one SQLite file. Both run the same service code over one storage interface.
 
-Contract: `docs/specs/short-links-api-contract.md` in tinycloud-dev (sections 1 to 10 and Appendix B). Nothing in this directory is deployed, created or bound; `wrangler.toml` marks every name PLANNED.
+Contract: `docs/specs/short-links-api-contract.md` in tinycloud-dev (sections 1 to 10 and Appendix B).
+
+## Live state
+
+- Worker `links-api`, version `bba05bcd` at launch, at `https://api.tinycloud.xyz`. The hostname is attached to the Worker in Cloudflare; `wrangler.toml` declares no route or custom domain.
+- D1 database `links-api`, id `c26a26cc-7595-42a4-95ae-0f9aec08a228`, with `migrations/0001_init.sql` applied. The id is in `wrangler.toml`.
+- With `LINKS_READ_SIGNERS` unset, the Worker accepts no signer on the authenticated read path, so every read counts against the per-address read limit. The allow-list is set when a node signer is registered (contract §4.11).
+- The launch checklist is `LAUNCH-CHECKLIST.md`; the live smoke it names passed against the API.
 
 ## Routes
 
