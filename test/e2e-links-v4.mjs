@@ -172,11 +172,12 @@ try {
     await page.waitForFunction(() => !document.querySelector(".link-confirm-action"), { timeout: 10_000 });
     await sleep(500);
     const reads = apiLog.filter((entry) => entry.method === "GET");
-    assert.equal(reads.length, 1, "one read after the click");
+    assert.equal(reads.length, 2, "two reads after the click: the viewer's reader and the share SDK each read the link once");
+    assert.equal(new Set(reads.map((entry) => entry.url)).size, 1, "both reads are of the same link id");
     assert.ok(!JSON.stringify(apiLog).includes(key), "the key is in no API request");
     assert.ok(!JSON.stringify(apiLog).includes("#v=4"), "no link fragment is sent");
     assert.equal(reads[0].url.includes("?"), false, "no query string");
-    note(`${label} viewer confirm gate`, `0 requests before the click, 1 read after, key absent`);
+    note(`${label} viewer confirm gate`, `0 requests before the click, 2 reads after (reader and SDK), key absent`);
     await page.close();
 
     // A live link with a real signed envelope: the reader verifies it and the existing receive path runs.
