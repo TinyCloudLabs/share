@@ -1,3 +1,5 @@
+import { READ_SIGNERS_ENV, parseReadSigners, type ReadSigner } from "./read-signers.ts";
+
 /**
  * Every number the service enforces lives in this file. The per-type table holds the lives and
  * quotas (contract sections 3 and 4.9); `MAX_LINK_BODY_BYTES` is the one body size limit for all types.
@@ -74,6 +76,8 @@ export const LIMITS = {
   addressDelete: { limit: 120, windowSeconds: 60 },
   apiKeyCreate: { limit: 120, windowSeconds: 60 },
   apiKeyDelete: { limit: 120, windowSeconds: 60 },
+  /** Per allow-listed label (contract 4.11); `LINKS_READ_AUTH_LIMIT` overrides the number. */
+  authenticatedRead: { limit: 6_000, windowSeconds: 60 },
 } as const;
 
 export const ADDRESS_LIVE_CAP = { rows: 100, bytes: 16 * 1024 * 1024 } as const;
@@ -95,6 +99,10 @@ export interface ServiceConfig {
   readonly kill: Readonly<Record<"create" | "read" | "take" | "delete", boolean>>;
   /** Header that carries the client address; Cloudflare sets CF-Connecting-IP. */
   readonly clientAddressHeader: string;
+  /** Keys whose signed reads use the label's own bucket (contract 4.11); none when absent. */
+  readonly readSigners?: readonly ReadSigner[];
+  /** Reads a minute per label for those keys; the default is `LIMITS.authenticatedRead.limit`. */
+  readonly readAuthLimit?: number;
 }
 
 export const DEFAULT_CORS_ORIGINS: readonly string[] = ["https://share.tinycloud.xyz"];
@@ -126,6 +134,11 @@ export function configFromEnv(env: EnvLike): ServiceConfig {
   }
   const audience = typeof env["LINKS_AUDIENCE"] === "string" ? env["LINKS_AUDIENCE"] : DEFAULT_AUDIENCE;
   const header = typeof env["CLIENT_ADDRESS_HEADER"] === "string" ? env["CLIENT_ADDRESS_HEADER"] : "CF-Connecting-IP";
+  const readSigners = parseReadSigners(env[READ_SIGNERS_ENV]);
+  const authLimit = Number(env["LINKS_READ_AUTH_LIMIT"] ?? LIMITS.authenticatedRead.limit);
+  if (!Number.isSafeInteger(authLimit) || authLimit < 1) {
+    throw new Error("config: LINKS_READ_AUTH_LIMIT must be a positive integer");
+  }
   return {
     audience,
     corsOrigins: list(env["LINKS_CORS_ORIGINS"], DEFAULT_CORS_ORIGINS),
@@ -138,6 +151,8 @@ export function configFromEnv(env: EnvLike): ServiceConfig {
       delete: flag(env["KILL_DELETE"]),
     },
     clientAddressHeader: header,
+    readSigners,
+    readAuthLimit: authLimit,
   };
 }
 

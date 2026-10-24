@@ -243,7 +243,7 @@ describe("links API service", () => {
       const first = JSON.parse(logs.at(-1) ?? "{}");
       expect(first.event).toBe("links.health");
       expect(first.creates.share).toBe(1);
-      expect(first.reads).toEqual({ hit: 1, miss: 1 });
+      expect(first.reads).toEqual({ hit: 1, miss: 1, authenticated: 0 });
       expect(first.live.share.rows).toBe(1);
       expect(first.usage.requests.used).toBe(3);
       expect(logs.join("\n")).not.toContain(id);
