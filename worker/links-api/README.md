@@ -15,6 +15,8 @@ Contract: `docs/specs/short-links-api-contract.md` in tinycloud-dev (sections 1 
 
 Errors are `{"error": "<code>"}` with the statuses of contract 4.8. Unknown, expired, deleted, malformed and already-read ids answer one `404`.
 
+Create and delete request bodies must be JSON objects in which no object, at any depth, repeats a key. Keys are compared after unescaping, so `"a"` and `"\u0061"` are the same key. A body that repeats a key is refused as `400 invalid_request` (`src/json-strict.ts`, one pass over the text: linear time, no recursion).
+
 ## Limits
 
 - One body limit for every type: `MAX_LINK_BODY_BYTES = 65536` (sealed bytes) in `src/config.ts`. The HTTP request cap is derived from it (`ceil(MAX_LINK_BODY_BYTES * 4 / 3) + 3072` = 90,454).

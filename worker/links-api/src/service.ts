@@ -23,6 +23,7 @@ import {
   type CorsMode,
 } from "./http.ts";
 import { jcs } from "./jcs.ts";
+import { hasDuplicateKey } from "./json-strict.ts";
 import {
   DELETE_REQUEST_KEYS,
   LINK_ID_RE,
@@ -223,9 +224,14 @@ function corsForPost(origin: string | null, allowed: readonly string[]): CorsMod
   return origin !== null && allowed.includes(origin) ? { kind: "origin", origin } : { kind: "none" };
 }
 
+/** The request body as a JSON object; null for text that is not JSON, not an object, or repeats a key at any depth. */
 function parseJsonObject(bytes: Uint8Array): Record<string, unknown> | null {
   try {
-    const parsed: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (hasDuplicateKey(text)) {
+      return null;
+    }
+    const parsed: unknown = JSON.parse(text);
     return isPlainObject(parsed) ? parsed : null;
   } catch {
     return null;
