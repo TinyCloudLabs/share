@@ -13,7 +13,7 @@ Nothing below has been done. Every name is PLANNED until the operator creates it
 1. **D1 database.** Create it (PLANNED name `links-api`); put its id in `wrangler.toml` (`database_id`).
 2. **Migration.** `npx wrangler d1 migrations apply links-api --remote` (applies `migrations/0001_init.sql`).
 3. **Secret and variables.** `npx wrangler secret put ADDRESS_SALT` (16 or more random characters). Check `LINKS_AUDIENCE` (`https://api.tinycloud.xyz`) and `LINKS_CORS_ORIGINS` (`https://share.tinycloud.xyz`) in `wrangler.toml`.
-   **Node read allow-list.** Set `LINKS_READ_SIGNERS` as a Worker secret or dashboard variable (not in `wrangler.toml`, not in the repository): `[{"label":"service:node","did":"<the nodeId field of https://node.tinycloud.xyz/info>"}]`. Never list a test seed. `LINKS_READ_AUTH_LIMIT` is optional (default 6,000 a minute). A list that does not validate stops the Worker from serving (every request answers 500), so check the first request after setting it.
+   **Node read allow-list.** Set `LINKS_READ_SIGNERS` as a Worker secret or dashboard variable (not in `wrangler.toml`, not in the repository): `[{"label":"service:node","did":"<the nodeId field of https://node.tinycloud.xyz/info>"}]`. Never list a test seed. `LINKS_READ_AUTH_LIMIT` is optional (default 6,000 a minute). A list that does not validate stops the Worker from serving (every request answers 500). Set `LINKS_READ_SIGNERS` only with an immediate smoke (one read of any 26-character id: 404 is healthy): a 500 on every request means the variable is malformed, and the first action is to unset it.
    **Rotation.** Set the list to the old and the new key (two at once), deploy the node with the new key, confirm `reads.authenticated` still counts, then set the list to the new key only.
 4. **OpenKey API key.** Generate 32 random bytes, base64url, as the secret; store only `base64url(SHA-256(secret))`. Insert the row (`key_id` is 8 alphanumeric characters):
    `INSERT INTO api_keys (key_id, service, allowed_types, secret_sha256, created_at) VALUES ('<keyId>', 'openkey', '["openkey-login"]', '<hash>', <epoch seconds>);`
@@ -31,6 +31,10 @@ Log sink: Workers Logs, enabled in `wrangler.toml` with invocation logs off (REA
 - [ ] Alert on `alert = "free_plan_70"` (one line per metric per UTC day: `requests`, `d1_rows_read`, `d1_rows_written`, `d1_database_bytes`). In Workers Logs, save a query on the field `alert` equal to `free_plan_70`; if the alerting tool is Better Stack, forward the Worker's logs to it (Logpush or OpenTelemetry export, with a filter on the `alert` and `event` fields) and alert on the same field.
 - [ ] Alert on `event = "links.health"` with a non-empty `highWater` (a type at 80 % of its quota).
 - [ ] **One end-to-end alert proof before public launch.** Temporarily lower `alertPercent` in `WORKERS_FREE_PLAN` (for example to 0.01) in a throwaway deploy, or send enough requests to a non-production deploy, wait one minute, and confirm the `free_plan_70` object reaches the alerting tool and notifies the on-call contact. Revert, redeploy, and record the date and the notification in the launch ticket.
+
+Before email is enabled:
+
+- [ ] An alert on a missing `links.health` line (no line for several minutes) and an alert on any 5xx rate above zero exist and have been shown to fire in a test (for example against a throwaway deploy with an invalid `LINKS_READ_SIGNERS`, which answers 500 and writes no health line), BEFORE email is enabled. A malformed allow-list is noticed through these two alerts, not through a log line from the request handler.
 
 ## Plan
 
