@@ -9,7 +9,7 @@ Contract: `docs/specs/short-links-api-contract.md` in tinycloud-dev (sections 1 
 | Method and path | Result |
 | --- | --- |
 | `POST /v1/links` | `201 {"id","expiresAt"}`. Body `{header, signature?, body}`; `signature` is absent when the request carries `Authorization: Bearer tlk_<keyId>_<secret>` (API key, `openkey-login` only). |
-| `GET /v1/links/{id}` | `200` raw sealed bytes; the signed record is in `X-Link-Record`. `openkey-login` ids answer the uniform `404`. |
+| `GET /v1/links/{id}` | `200` raw sealed bytes; the signed record is in `X-Link-Record`. `openkey-login` ids answer the uniform `404`. May carry `TinyCloud-Read-Auth` (see "Authenticated node read"). |
 | `POST /v1/links/{id}/take` | `200` as `GET`, once, for `openkey-login` only; the uniform `404` for every other type. |
 | `POST /v1/links/{id}/delete` | `204`. Body `{request, signature?}`; only the issuer removes a record. |
 
@@ -30,8 +30,18 @@ Errors are `{"error": "<code>"}` with the statuses of contract 4.8. Unknown, exp
 | `LINKS_CORS_ORIGINS`, `LINKS_TAKE_ORIGINS` | Comma lists of browser origins for create and delete, and for take (default none). |
 | `KILL_CREATE`, `KILL_READ`, `KILL_TAKE`, `KILL_DELETE` | `1` answers that operation `503 capacity`. |
 | `CLIENT_ADDRESS_HEADER` | Header that carries the client address (default `CF-Connecting-IP`). |
+| `LINKS_READ_SIGNERS` | JSON list `[{"label":"service:node","did":"did:key:z6Mk..."}]`: the keys whose signed reads use the label's own bucket. At most two keys per label; validated at load (an invalid list stops the service from serving). Default: none. The production DID is configuration and is not kept in this repository. |
+| `LINKS_READ_AUTH_LIMIT` | Reads a minute per label for those keys (default 6,000; a positive integer). |
 
 The client address maps to a bucket: IPv4 the address, IPv4-mapped IPv6 its IPv4 address, IPv6 the /64 for rate limits and the /48 for the live cap, in RFC 5952 form. An address that does not parse falls into the one bucket `unparseable`.
+
+## Authenticated node read
+
+`GET /v1/links/{id}` may carry `TinyCloud-Read-Auth: <value>`: unpadded base64url of the canonical JSON (RFC 8785) `{"issuedAt","signature","signerDid"}`, at most 512 bytes. The signature is Ed25519 over `SHA-256(utf8("xyz.tinycloud.links/read-auth/v1\0") || utf8(JCS({audience, issuedAt, method:"GET", path:"/v1/links/<id>", signerDid})))`, verified with the strict rule of the contract (section 2.5). The Worker builds `method`, `path` and `audience` from the request it received and from its configuration, so the header does not carry them. The header is read only on `GET /v1/links/{id}` with a lower-case 26-character id and no query string.
+
+A read is served from the label's own bucket (`LINKS_READ_AUTH_LIMIT`, default 6,000 a minute; the per-address read limit is not used for it) when the signer is on `LINKS_READ_SIGNERS` and `issuedAt` is within 120 seconds of the service clock (inclusive). Any other read, with or without the header, is an ordinary read under the per-address limit and gets the same status, body and headers: the response never says whether the header was recognised. The only operator-visible trace is `reads.authenticated` in the `links.health` line. Every response carries a `Date` header from the service clock.
+
+Rotation: the list holds up to two keys for a label. Add the new key (two keys listed), deploy the node with the new key, then remove the old key from the list. A removed key is an ordinary reader from the next request. A key used in a test must not be listed in production.
 
 ## Storage
 

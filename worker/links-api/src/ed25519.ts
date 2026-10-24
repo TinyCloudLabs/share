@@ -48,6 +48,11 @@ export function pointProblem(encoded: Uint8Array): KeyProblem | null {
   return null;
 }
 
+/** True when the scalar half S of a signature is below the group order (contract 2.5, rule 1). */
+export function signatureScalarCanonical(signature: Uint8Array): boolean {
+  return signature.length === 64 && littleEndian(signature.subarray(32)) < ORDER_L;
+}
+
 /** Strict verification of `signature` over `message` (the SHA-256 digest of the signed bytes). */
 export function verifyStrict(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array): boolean {
   if (publicKey.length !== 32 || signature.length !== 64) {

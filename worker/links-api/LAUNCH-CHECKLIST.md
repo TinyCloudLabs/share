@@ -13,12 +13,15 @@ Nothing below has been done. Every name is PLANNED until the operator creates it
 1. **D1 database.** Create it (PLANNED name `links-api`); put its id in `wrangler.toml` (`database_id`).
 2. **Migration.** `npx wrangler d1 migrations apply links-api --remote` (applies `migrations/0001_init.sql`).
 3. **Secret and variables.** `npx wrangler secret put ADDRESS_SALT` (16 or more random characters). Check `LINKS_AUDIENCE` (`https://api.tinycloud.xyz`) and `LINKS_CORS_ORIGINS` (`https://share.tinycloud.xyz`) in `wrangler.toml`.
+   **Node read allow-list.** Set `LINKS_READ_SIGNERS` as a Worker secret or dashboard variable (not in `wrangler.toml`, not in the repository): `[{"label":"service:node","did":"<the nodeId field of https://node.tinycloud.xyz/info>"}]`. Never list a test seed. `LINKS_READ_AUTH_LIMIT` is optional (default 6,000 a minute). A list that does not validate stops the Worker from serving (every request answers 500), so check the first request after setting it.
+   **Rotation.** Set the list to the old and the new key (two at once), deploy the node with the new key, confirm `reads.authenticated` still counts, then set the list to the new key only.
 4. **OpenKey API key.** Generate 32 random bytes, base64url, as the secret; store only `base64url(SHA-256(secret))`. Insert the row (`key_id` is 8 alphanumeric characters):
    `INSERT INTO api_keys (key_id, service, allowed_types, secret_sha256, created_at) VALUES ('<keyId>', 'openkey', '["openkey-login"]', '<hash>', <epoch seconds>);`
    Give OpenKey `tlk_<keyId>_<secret>` out of band. Rotation: add the second key, deploy it to OpenKey, then `UPDATE api_keys SET revoked_at = <epoch seconds> WHERE key_id = '<old>';`.
 5. **Worker.** `npx wrangler deploy` (the cron trigger `* * * * *` runs the sweep and the health line every minute).
 6. **Custom domain and DNS.** Attach `api.tinycloud.xyz` to the Worker as a custom domain (this creates the DNS record). No other route is declared.
 7. **Smoke.** `node scripts/local-smoke.ts https://api.tinycloud.xyz` (creates, reads, takes and deletes test records that expire on their own).
+8. **Post-deploy smokes for the node read.** (a) After the node has made a signed read, the next `links.health` line shows `reads.authenticated` above 0 (no response field says whether the header was recognised). (b) A response from the API carries a `Date` header (for example `curl -sI https://api.tinycloud.xyz/v1/links/<any 26-character id>`).
 
 ## Alerts
 

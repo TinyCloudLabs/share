@@ -39,7 +39,7 @@ const VECTORS_FILE = new URL("../vectors/short-links-api-vectors.json", import.m
  * SHA-256 of the committed copy of `docs/specs/short-links-api-vectors.json` (contract Appendix B).
  * Updating the copy is a change of this one line plus the file.
  */
-export const VECTORS_SHA256 = "72db4cd91ba0ae9c530d541ad0f7b1a05c76b8de942b0fe247f1356ff5899d25";
+export const VECTORS_SHA256 = "59641c44536e5f53d7230205ff7d277bd5441cc8ddac10b7bee63f1d2358f3e6";
 
 export function vectorsPath(): URL {
   return VECTORS_FILE;
