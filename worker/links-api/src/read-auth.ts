@@ -53,7 +53,11 @@ function refuse(reason: ReadAuthRefusal): ReadAuthResult {
   return { authenticated: false, reason };
 }
 
-/** The decoded header object, or null when the value is not exactly the canonical three-field object. */
+/**
+ * The decoded header object, or null when the value is not exactly the canonical three-field object. The value must
+ * decode to the JCS bytes of its own parsed value (contract 2.2 rule (d), 4.11): `ignoreBOM: true` keeps a leading
+ * U+FEFF in the decoded text, so a value that starts with a byte order mark is not JCS and is refused.
+ */
 function decodeHeader(value: string): { issuedAt: string; signature: string; signerDid: string } | null {
   if (value.length > READ_AUTH_MAX_BYTES) {
     return null;
@@ -65,7 +69,7 @@ function decodeHeader(value: string): { issuedAt: string; signature: string; sig
   let text: string;
   let parsed: unknown;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     parsed = JSON.parse(text);
   } catch {
     return null;
