@@ -22,7 +22,7 @@ describe("native share launch cutover", () => {
     expect(replaceState).toHaveBeenCalledWith(null, "", "/viewer");
   });
 
-  it("captures the invitation path the same way, and passes a removed version to the reader to refuse", () => {
+  it("captures an invitation path link and a removed-version link as link launches, leaving any refusal to the reader", () => {
     expect(capture("https://share.tinycloud.xyz/c/lqdw5iopqq2tkkvjj6gbbi5vbv#v=4&k=key&c=cid").result).toMatchObject({ kind: "link" });
     expect(capture("https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=3&k=key&c=cid").result).toMatchObject({ kind: "link" });
   });

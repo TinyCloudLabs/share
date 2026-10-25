@@ -117,6 +117,9 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
+/** The whole full-link form the grammar accepts: `/s/full#v=4&k=<43 base64url>&r=<base64url record>`. */
+const FULL_LINK = new RegExp(`^${SHARE_ORIGIN.replace(/\./g, "\\.")}/s/full#v=4&k=[A-Za-z0-9_-]{43}&r=[A-Za-z0-9_-]+$`);
+
 describe("composer link for an addressed share", () => {
   it("creates a short link through the API with an issuer-signed header, and the key never reaches the API", async () => {
     const links = mockLinks();
@@ -143,6 +146,15 @@ describe("composer link for an addressed share", () => {
     const body = String(post.init.body);
     expect(Object.keys(JSON.parse(body)).sort()).toEqual(["body", "header", "signature"]);
     expect(body).not.toContain(state.material!.envelopeKey);
+    // The body is exactly the signed record: the header the viewer checks, its signature and the sealed bytes.
+    expect(JSON.parse(body)).toEqual({
+      header: {
+        version: 1, type: "share", issuer: ISSUER_DID, audience: API_ORIGIN, issuedAt: expect.any(String), expiresAt: state.expiresAt,
+        size: Buffer.from(state.material!.sealedEnvelope, "base64url").byteLength, bodyCid: state.material!.shareCid, nonce: expect.stringMatching(/^[A-Za-z0-9_-]{22}$/),
+      },
+      signature: { algorithm: "Ed25519", value: expect.stringMatching(/^[A-Za-z0-9_-]{86}$/) },
+      body: state.material!.sealedEnvelope,
+    });
     expect(post.init.credentials).toBe("omit");
     expect(post.init.redirect).toBe("error");
     // The stored record opens in the viewer's reader.
@@ -163,7 +175,7 @@ describe("composer link for an addressed share", () => {
     await vi.waitFor(() => expect(copyText).toHaveBeenCalled());
 
     const link = copyText.mock.calls[0]![0];
-    expect(link.startsWith(`${SHARE_ORIGIN}/s/full#v=4&k=`)).toBe(true);
+    expect(link).toMatch(FULL_LINK);
     expect(root.querySelector(".result-notice")?.textContent).toBe(SHORT_LINK_UNAVAILABLE_NOTICE);
     expect(saved[0]!.link).toBe(link);
     // The full link opens through the same reader, with no API call.
@@ -179,7 +191,7 @@ describe("composer link for an addressed share", () => {
     clickCopy(root);
     await vi.waitFor(() => expect(copyText).toHaveBeenCalled());
 
-    expect(copyText.mock.calls[0]![0].startsWith(`${SHARE_ORIGIN}/s/full#v=4`)).toBe(true);
+    expect(copyText.mock.calls[0]![0]).toMatch(FULL_LINK);
     expect(root.querySelector(".result-notice")?.textContent).toBe(SHORT_LINK_UNAVAILABLE_NOTICE);
   });
 
@@ -192,10 +204,10 @@ describe("composer link for an addressed share", () => {
     clickCopy(root);
     await vi.waitFor(() => expect(copyText).toHaveBeenCalled());
 
-    expect(copyText.mock.calls[0]![0].startsWith(`${SHARE_ORIGIN}/s/full#v=4`)).toBe(true);
+    expect(copyText.mock.calls[0]![0]).toMatch(FULL_LINK);
     expect(root.querySelector(".result-notice")?.textContent).toBe(LINK_LONG_LIFE_NOTICE);
     expect(LINK_LONG_LIFE_NOTICE).toContain("https://tinycloud.xyz/delegations?from=link-expiry");
-    expect(calls.some((call) => call.url.startsWith(API_ORIGIN))).toBe(false);
+    expect(calls).toHaveLength(0);
   });
 });
 

@@ -54,8 +54,10 @@ describe("Share public routing config", () => {
   it("advertises only the sealed addressed-link form in browser-visible protocol copy", () => {
     const viewer = readFileSync("viewer/index.html", "utf8");
     const product = readFileSync("PRODUCT.md", "utf8");
+    // The copy names the whole short-link form: path `/s/<id>`, version, key and CID (HTML-escaped in the viewer page).
+    const shortLinkForm = /\/s\/(?:<id>|&lt;id&gt;)#v=4(?:&|&amp;)k=…(?:&|&amp;)c=…/;
     for (const copy of [viewer, product]) {
-      expect(copy).toContain("#v=4");
+      expect(copy).toMatch(shortLinkForm);
       expect(copy).not.toContain("/viewer?tc2");
       expect(copy).not.toContain("policy-v3-tc2");
     }

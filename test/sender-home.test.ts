@@ -239,9 +239,11 @@ describe("TC-1737 revoke leaves the stored link alone", () => {
   it("sends no request when the revoke is refused either", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     revokePolicyRootV3.mockRejectedValueOnce(Object.assign(new Error("policy root revocation rejected: HTTP 403"), { status: 403 }));
-    const { root } = await clickRevoke(SHORT_LINK);
+    const { root, history } = await clickRevoke(SHORT_LINK);
     await vi.waitFor(() => expect(root.querySelector(".sender-row-error")).not.toBeNull());
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
+    expect((await history.records.get("retry-me"))?.revokedAt).toBeUndefined();
   });
 });
 
