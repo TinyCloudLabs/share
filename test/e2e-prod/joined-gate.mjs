@@ -103,7 +103,7 @@ function findMail(messages, predicate) {
 }
 
 function invitationFromMail(message) {
-  return stringsIn(message?.payload).flatMap((value) => [...value.matchAll(/https:\/\/share\.tinycloud\.xyz\/s\/inline#[^\s"'<>]+/g)].map((match) => match[0].replaceAll("&amp;", "&")))[0];
+  return stringsIn(message?.payload).flatMap((value) => [...value.matchAll(/https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&[^\s"'<>]+/g)].map((match) => match[0].replaceAll("&amp;", "&")))[0];
 }
 
 async function waitUntil(check, timeout = 180_000) {
