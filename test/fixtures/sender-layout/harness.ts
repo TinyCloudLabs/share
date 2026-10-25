@@ -19,6 +19,7 @@ import { mountSenderChrome } from "../../../src/share/sender-chrome.js";
 import { registerWalletApprovalObserver, type ObservedOpenKeyProvider, type OpenKeyShareSession, type ShareTinyCloud } from "../../../src/share/openkey-session.js";
 import { SenderHistoryRepository } from "../../../src/share/sender-history.js";
 import type { NodeStatusReader } from "../../../src/share/node-status.js";
+import type { ComposerPrefill } from "../../../src/share/send-again.js";
 import { fail } from "../../../src/share/sender-failure.js";
 import { trackWalletApproval } from "../../../src/share/wallet-approval.js";
 
@@ -146,11 +147,11 @@ async function library(): Promise<void> {
     void signal;
     return Promise.resolve(new Map(records.map((item) => [item.shareId, kind === "expired" && item.shareId === "html" ? { state: "expired" as const } : { state: "active" as const }])));
   };
-  const options: SenderHomeOptions = { session, tinycloud, history, onNavigate: () => undefined, statusReader: reader };
+  const options: SenderHomeOptions = { session, tinycloud, history, onNavigate: () => undefined, onSendAgain: (prefill) => composer(prefill), statusReader: reader };
   mountSenderHome(view, options);
 }
 
-function composer(): void {
+function composer(prefill?: ComposerPrefill): void {
   // The approval observer is registered above, for both screens.
   mountShareComposer(view, {
     origin: "https://share.tinycloud.xyz",
@@ -158,6 +159,7 @@ function composer(): void {
     session,
     tinycloud,
     onBack: () => undefined,
+    ...(prefill === undefined ? {} : { prefill }),
     createShare: async (): Promise<ComposerShareResult> => {
       const create = params.get("create") ?? "ok";
       if (create === "hang") await trackWalletApproval(() => hold());

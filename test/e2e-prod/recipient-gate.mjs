@@ -51,8 +51,8 @@ if (expected.length === 0 || ![...expected].some((byte) => byte === 0 || byte > 
 }
 
 const parsedInvitation = new URL(invitation);
-if (parsedInvitation.origin !== "https://share.tinycloud.xyz" || parsedInvitation.pathname !== "/s/inline" || !parsedInvitation.hash.includes("p=")) {
-  throw new Error("expected an addressed https://share.tinycloud.xyz/s/inline#… invitation");
+if (parsedInvitation.origin !== "https://share.tinycloud.xyz" || !/^\/s\/[a-z2-7]{26}$/.test(parsedInvitation.pathname) || !parsedInvitation.hash.startsWith("#v=4&k=")) {
+  throw new Error("expected an addressed https://share.tinycloud.xyz/s/<id>#v=4&k=… invitation");
 }
 
 const productionConfig = JSON.parse(readFileSync(resolve("dist/.well-known/tinycloud-share/config.json"), "utf8"));

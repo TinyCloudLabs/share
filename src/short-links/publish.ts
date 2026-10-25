@@ -1,135 +1,80 @@
-import { SHARE_APPLICATION_PREFIX } from "../share/openkey-session.js";
-import { createShortLink, deleteShortLink, ShortLinkError, type ShortLinkCreated } from "./client.js";
-import { splitInlineToShort } from "./codec.js";
+import { fromBase64Url, toBase64Url } from "@tinycloud/share-envelope";
+import { createLink, type LinkApiOptions } from "./client.js";
+import { buildFullLink, buildShortLink } from "./codec.js";
+import { ShareTooLargeForLink } from "./errors.js";
+import { LINK_BODY_MAX_BYTES, MAX_FULL_LINK_FRAGMENT } from "./limits.js";
+import { buildHeader, HEADER_DOMAIN, LINK_TYPES, MIN_LIFE_SECONDS, signObject } from "./record.js";
+import { LINK_LONG_LIFE_NOTICE, SHORT_LINK_UNAVAILABLE_NOTICE } from "./strings.js";
 
-export const SHORT_LINK_UNAVAILABLE_NOTICE = "Short link unavailable: this link is long. Try again later for a shorter one.";
-
-const MIN_TTL_MS = 120_000;
-const MAX_TTL_MS = 400 * 24 * 60 * 60 * 1000;
-
-/** The delete record the creator keeps so revoke can delete the short link later. */
-export interface ShortLinkRecord {
-  readonly id: string;
-  readonly deleteToken: string;
+export interface LinkChoice {
+  readonly form: "short" | "full";
+  /** True when the share is longer than the service keeps a link, so the sender is told why the link is long. */
+  readonly warning: boolean;
 }
 
-/** The sealed bytes of the share, as the SDK reports them at publish time. */
-export interface ShortLinkMaterial {
-  /** base64url of the sealed bytes. Equal to the inline link's `c`. */
+/** Contract 8.1: which link a share of this life (expiry minus now, in seconds) gets. */
+export function chooseLink(lifetimeSeconds: number): LinkChoice {
+  if (lifetimeSeconds > LINK_TYPES.share.maxLifeSeconds) return { form: "full", warning: true };
+  if (lifetimeSeconds < MIN_LIFE_SECONDS) return { form: "full", warning: false };
+  return { form: "short", warning: false };
+}
+
+/** What the SDK reports at publish time about the sealed bytes it made. */
+export interface LinkMaterial {
+  /** base64url of the sealed bytes. */
   readonly sealedEnvelope: string;
-  /** CID of the sealed bytes. Equal to the inline link's `cid`. */
+  /** base64url of the 32-byte key. It goes only into the link fragment. */
+  readonly envelopeKey: string;
+  /** CID of the sealed bytes. */
   readonly shareCid: string;
 }
 
-export interface ShortLinkPublication {
-  /** The short link when the service accepted it, otherwise the inline link. */
+export interface LinkPublication {
   readonly url: string;
-  /** Set only when the inline link is used because the short link failed. */
+  readonly form: "short" | "full";
+  /** Set when the sender should be told why the link is the full one. */
   readonly notice?: string;
 }
 
-export interface ShortLinkKv {
-  get(key: string): Promise<{ readonly ok: boolean; readonly data?: { readonly data?: unknown } }>;
-  put(key: string, value: Uint8Array, options: { readonly contentType: string }): Promise<unknown>;
-}
-
-interface ServiceOptions {
-  readonly fetchFn?: typeof fetch | undefined;
-  readonly timeoutMs?: number | undefined;
-}
-
-export function shortLinkRecordPath(shareId: string): string {
-  // The leading dot keeps the record out of the user-file namespace: stored file names never start with a dot.
-  return `${SHARE_APPLICATION_PREFIX}shares/${shareId}/.short-link.json`;
-}
-
-/** Shown when a revoke could not delete the short link. The link stops resolving when the share expires. */
-export const SHORT_LINK_KEPT_NOTICE = "The short link stops resolving when the share expires.";
-
-/** Canonical UTC milliseconds, at least 120 s and at most 400 days away. */
-export function canonicalShortLinkExpiry(expiresAt: string | undefined, now: number = Date.now()): string {
-  if (expiresAt === undefined) throw new ShortLinkError("rejected");
-  const ms = Date.parse(expiresAt);
-  if (!Number.isFinite(ms) || ms - now < MIN_TTL_MS || ms - now > MAX_TTL_MS) throw new ShortLinkError("rejected");
-  return new Date(ms).toISOString();
+export interface LinkSigner {
+  /** The issuer's did:key: the same key that signs the share envelope. */
+  readonly issuerDid: string;
+  readonly sign: (digest: Uint8Array) => Promise<Uint8Array>;
 }
 
 /**
- * Creates the short link for an addressed share and stores its delete record.
- * Any failure (service, CID mismatch, record write) deletes a link that was
- * already created and returns the inline link with a notice. Never throws.
+ * Makes the link for a published share: a short link through the API when the share's life allows it,
+ * otherwise (or when the API refuses or cannot be reached) the full link, with a visible notice.
+ * Only a failure to build or sign the link itself throws; the link service never fails a publish.
  */
-export async function publishShortLinkOrInline(input: {
-  readonly inlineUrl: string;
-  readonly material: ShortLinkMaterial | undefined;
-  readonly expiresAt: string | undefined;
-  readonly storeRecord: (record: ShortLinkRecord) => Promise<void>;
-} & ServiceOptions): Promise<ShortLinkPublication> {
-  const service: ServiceOptions = { fetchFn: input.fetchFn, timeoutMs: input.timeoutMs };
-  let created: ShortLinkCreated | undefined;
+export async function publishLink(input: {
+  readonly material: LinkMaterial;
+  /** The share's own expiry. */
+  readonly expiresAt: string;
+  readonly signer: LinkSigner;
+  readonly shareOrigin: string;
+  readonly now?: () => number;
+} & LinkApiOptions): Promise<LinkPublication> {
+  const now = (input.now ?? Date.now)();
+  const expiresMs = Date.parse(input.expiresAt);
+  if (!Number.isFinite(expiresMs)) throw new TypeError("share expiry is not a date");
+  const body = fromBase64Url(input.material.sealedEnvelope);
+  // One limit for every link, stored or full: a share over it has no link.
+  if (body.byteLength > LINK_BODY_MAX_BYTES) throw new ShareTooLargeForLink();
+  const header = await buildHeader({ type: "share", issuer: input.signer.issuerDid, audience: input.apiOrigin, issuedAt: new Date(now), expiresAt: new Date(expiresMs), body });
+  if (header.bodyCid !== input.material.shareCid) throw new Error("sealed share does not match its content id");
+  const signature = await signObject(HEADER_DOMAIN, header, input.signer.sign);
+  const choice = chooseLink((expiresMs - now) / 1000);
+  const full = (notice: string | undefined): LinkPublication => {
+    const url = buildFullLink({ origin: input.shareOrigin, key: input.material.envelopeKey, record: { body: toBase64Url(body), header, signature } });
+    if (url.length - url.indexOf("#") > MAX_FULL_LINK_FRAGMENT) throw new ShareTooLargeForLink();
+    return { url, form: "full", ...(notice === undefined ? {} : { notice }) };
+  };
+  if (choice.form === "full") return full(choice.warning ? LINK_LONG_LIFE_NOTICE : undefined);
   try {
-    if (input.material === undefined) throw new ShortLinkError("rejected");
-    const expiresAt = canonicalShortLinkExpiry(input.expiresAt);
-    created = await createShortLink({ ciphertext: input.material.sealedEnvelope, expiresAt }, service);
-    if (created.cid !== input.material.shareCid) throw new ShortLinkError("cid_mismatch");
-    const url = splitInlineToShort(input.inlineUrl, created.id);
-    if (url === undefined) throw new ShortLinkError("invalid_response");
-    // The `c` the short link resolves with must be the CID the server stored.
-    if (new URLSearchParams(new URL(url).hash.slice(1)).get("c") !== created.cid) throw new ShortLinkError("cid_mismatch");
-    await input.storeRecord({ id: created.id, deleteToken: created.deleteToken });
-    return { url };
+    const created = await createLink({ header, signature, body }, input);
+    return { url: buildShortLink({ origin: input.shareOrigin, type: "share", id: created.id, key: input.material.envelopeKey, cid: header.bodyCid }), form: "short" };
   } catch {
-    if (created !== undefined) await deleteShortLink(created.id, created.deleteToken, service).catch(() => undefined);
-    return { url: input.inlineUrl, notice: SHORT_LINK_UNAVAILABLE_NOTICE };
+    return full(SHORT_LINK_UNAVAILABLE_NOTICE);
   }
-}
-
-function readRecord(value: unknown): ShortLinkRecord | undefined {
-  let parsed: unknown = value;
-  if (value instanceof ArrayBuffer) parsed = new TextDecoder().decode(value);
-  else if (ArrayBuffer.isView(value)) parsed = new TextDecoder().decode(value);
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      return undefined;
-    }
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const { id, deleteToken } = parsed as Partial<Record<keyof ShortLinkRecord, unknown>>;
-  return typeof id === "string" && typeof deleteToken === "string" ? { id, deleteToken } : undefined;
-}
-
-/**
- * Deletes a share's short link after the node revoke has succeeded. A 204 and a
- * 404 both mean the link is gone (a 404 is a lost 204 or an expired link), so the
- * record is cleared. A 5xx, rate limit, or network error keeps the record and
- * returns "kept". A KV read error also returns "kept", since the token cannot be read.
- */
-export async function revokeStoredShortLink(input: {
-  readonly shareId: string;
-  readonly kv: ShortLinkKv;
-} & ServiceOptions): Promise<"none" | "deleted" | "kept"> {
-  const path = shortLinkRecordPath(input.shareId);
-  const stored = await input.kv.get(path).catch(() => undefined);
-  if (stored === undefined) return "kept";
-  if (!stored.ok) return "none";
-  const record = readRecord(stored.data?.data);
-  if (record === undefined) return "none";
-  try {
-    await deleteShortLink(record.id, record.deleteToken, { fetchFn: input.fetchFn, timeoutMs: input.timeoutMs });
-  } catch {
-    return "kept";
-  }
-  await clearRecord(input.kv, path);
-  return "deleted";
-}
-
-/**
- * The owner session grants KV put under shares/ but no delete, so the record is
- * overwritten with an empty object. A failed write leaves the old token, which
- * can only re-delete a link that is already gone (404).
- */
-async function clearRecord(kv: ShortLinkKv, path: string): Promise<void> {
-  await kv.put(path, new TextEncoder().encode("{}"), { contentType: "application/json" }).catch(() => undefined);
 }

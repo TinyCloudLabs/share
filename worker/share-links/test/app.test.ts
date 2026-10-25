@@ -1,43 +1,44 @@
 import { describe, expect, it } from "vitest";
 import { handleRequest, handleScheduled } from "../src/app";
-import { base64UrlEncode } from "../src/encoding";
+import { base64UrlEncode, cidForBytes, hashDeleteToken, newDeleteToken, newShareId } from "../src/encoding";
 import type { Env } from "../src/d1";
+import { insertLink } from "../src/store";
 import { makeTestDb, type TestDb } from "./helpers/d1";
 
 const NOW = Date.UTC(2026, 0, 1, 0, 0, 0);
 const BASE = "https://share.tinycloud.xyz/api/share-links";
 const TTL = 3_600_000;
 const NOT_FOUND_BODY = '{"error":"not_found"}';
+const GONE_BODY = '{"error":"gone"}';
 
 function envFor(test: TestDb): Env {
   return { DB: test.db };
 }
 
-function ciphertext(length = 64): string {
-  return base64UrlEncode(new Uint8Array(length).fill(9));
-}
-
-function createRequest(ip: string, body: unknown): Request {
-  return new Request(BASE, {
+function createRequest(ip: string, body: unknown, url = BASE): Request {
+  return new Request(url, {
     method: "POST",
     headers: { "CF-Connecting-IP": ip, "Content-Type": "application/json" },
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
 }
 
-function validBody(ttlMs = TTL, nowMs = NOW): { ciphertext: string; expiresAt: string } {
-  return { ciphertext: ciphertext(), expiresAt: new Date(nowMs + ttlMs).toISOString() };
-}
-
+/** Seeds a live link directly: the create route no longer exists, but earlier links are still read and deleted here. */
 async function create(
   test: TestDb,
-  ip = "198.51.100.1",
+  _ip = "198.51.100.1",
   nowMs = NOW,
-  body = validBody(TTL, nowMs),
+  ttlMs = TTL,
 ): Promise<{ id: string; cid: string; deleteToken: string }> {
-  const response = await handleRequest(createRequest(ip, body), envFor(test), nowMs);
-  expect(response.status).toBe(201);
-  return (await response.json()) as { id: string; cid: string; deleteToken: string };
+  const bytes = new Uint8Array(64).fill(9);
+  const id = newShareId();
+  const deleteToken = newDeleteToken();
+  const cid = await cidForBytes(bytes);
+  const outcome = await insertLink(test.db, {
+    id, ciphertext: bytes, cid, expiresAtSeconds: Math.floor((nowMs + ttlMs) / 1000), deleteHash: await hashDeleteToken(deleteToken), nowSeconds: Math.floor(nowMs / 1000),
+  });
+  expect(outcome).toBe("ok");
+  return { id, cid, deleteToken };
 }
 
 function getRequest(id: string, ip = "198.51.100.2"): Request {
@@ -52,123 +53,39 @@ function deleteRequest(id: string, token: string | null): Request {
   return new Request(`${BASE}/${id}`, { method: "DELETE", headers });
 }
 
-describe("POST /api/share-links", () => {
-  it("routes only the exact collection path to create", async () => {
+describe("POST /api/share-links (retired: links are created through the links API)", () => {
+  it("answers 410 gone with no other field, stores nothing, and sets no CORS headers", async () => {
     const test = makeTestDb();
-    const exact = await handleRequest(createRequest("198.51.100.30", validBody()), envFor(test), NOW);
-    expect(exact.status).toBe(201);
-    const longer = new Request(`${BASE}X`, {
-      method: "POST",
-      headers: { "CF-Connecting-IP": "198.51.100.31", "Content-Type": "application/json" },
-      body: JSON.stringify(validBody()),
-    });
-    const response = await handleRequest(longer, envFor(test), NOW);
+    const response = await handleRequest(createRequest("198.51.100.1", { ciphertext: base64UrlEncode(new Uint8Array(64).fill(9)), expiresAt: new Date(NOW + TTL).toISOString() }), envFor(test), NOW);
+    expect(response.status).toBe(410);
+    expect(await response.text()).toBe(GONE_BODY);
+    expect(response.headers.get("Content-Type")).toMatch(/application\/json/);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(test.raw.prepare("SELECT count(*) AS n FROM links").get()).toEqual({ n: 0 });
+  });
+
+  it("answers any body, and a query string, the same way", async () => {
+    const test = makeTestDb();
+    for (const [body, url] of [["{not json", BASE], ["", BASE], ["{}", `${BASE}?x=1`]] as const) {
+      const response = await handleRequest(createRequest("198.51.100.5", body, url), envFor(test), NOW);
+      expect(response.status).toBe(410);
+      expect(await response.text()).toBe(GONE_BODY);
+    }
+  });
+
+  it("does not answer a sibling path with 410", async () => {
+    const test = makeTestDb();
+    const response = await handleRequest(createRequest("198.51.100.6", "{}", `${BASE}X`), envFor(test), NOW);
     expect(response.status).toBe(404);
     expect(await response.text()).toBe(NOT_FOUND_BODY);
   });
 
-  it("returns 201 with id, CID, and delete token, and no-store caching", async () => {
-    const test = makeTestDb();
-    const response = await handleRequest(createRequest("198.51.100.1", validBody()), envFor(test), NOW);
-    expect(response.status).toBe(201);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    const body = (await response.json()) as { id: string; cid: string; deleteToken: string };
-    expect(body.id).toMatch(/^[a-z2-7]{26}$/);
-    expect(body.cid).toMatch(/^bafkrei[a-z2-7]{52}$/);
-    expect(body.deleteToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  });
-
-  it("stores only the hash of the delete token, not the token", async () => {
+  it("leaves reading and deleting an earlier link working", async () => {
     const test = makeTestDb();
     const created = await create(test);
-    const row = test.raw.prepare("SELECT delete_hash FROM links WHERE id = ?").get(created.id) as { delete_hash: string };
-    expect(row.delete_hash).not.toBe(created.deleteToken);
-    expect(row.delete_hash).toMatch(/^[A-Za-z0-9_-]{43}$/);
-  });
-
-  it("answers any invalid body with the uniform 400", async () => {
-    const test = makeTestDb();
-    const response = await handleRequest(createRequest("198.51.100.1", "{not json"), envFor(test), NOW);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "invalid" });
-  });
-
-  it("stops reading an oversized streamed body and answers the uniform 400", async () => {
-    const test = makeTestDb();
-    let pulls = 0;
-    const stream = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        pulls += 1;
-        if (pulls > 8) {
-          controller.close();
-          return;
-        }
-        controller.enqueue(new Uint8Array(65536).fill(32));
-      },
-    });
-    const request = new Request(BASE, {
-      method: "POST",
-      headers: { "CF-Connecting-IP": "198.51.100.1", "Content-Type": "application/json" },
-      body: stream,
-      duplex: "half",
-    } as RequestInit);
-    const response = await handleRequest(request, envFor(test), NOW);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "invalid" });
-    expect(pulls).toBeLessThan(8);
-  });
-
-  it("rate-limits creates to 10 per minute per client", async () => {
-    const test = makeTestDb();
-    for (let i = 0; i < 10; i++) {
-      await create(test, "198.51.100.9");
-    }
-    const response = await handleRequest(createRequest("198.51.100.9", validBody()), envFor(test), NOW);
-    expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({ error: "rate_limited" });
-    expect(Number(response.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
-  });
-
-  it("shares one create bucket across IPv6 addresses in the same /64", async () => {
-    const test = makeTestDb();
-    for (let i = 1; i <= 10; i++) {
-      await create(test, `2001:db8:1:2::${i.toString(16)}`);
-    }
-    const sameSubnet = await handleRequest(createRequest("2001:db8:1:2:ffff::1", validBody()), envFor(test), NOW);
-    expect(sameSubnet.status).toBe(429);
-    const otherSubnet = await handleRequest(createRequest("2001:db8:1:3::1", validBody()), envFor(test), NOW);
-    expect(otherSubnet.status).toBe(201);
-  });
-
-  it("keys IPv4-mapped IPv6 as the IPv4 address and keeps neighbouring IPv4 addresses separate", async () => {
-    const test = makeTestDb();
-    for (let i = 0; i < 10; i++) {
-      await create(test, "::ffff:198.51.100.7");
-    }
-    const mapped = await handleRequest(createRequest("198.51.100.7", validBody()), envFor(test), NOW);
-    expect(mapped.status).toBe(429);
-    const neighbour = await handleRequest(createRequest("198.51.100.8", validBody()), envFor(test), NOW);
-    expect(neighbour.status).toBe(201);
-  });
-
-  it("returns 503 capacity when the live-byte cap would be exceeded", async () => {
-    const test = makeTestDb();
-    test.raw
-      .prepare(
-        "INSERT INTO links (id, ciphertext, cid, expires_at, delete_hash, size, created_at, deleted_at) VALUES (?, x'', ?, ?, ?, ?, ?, NULL)",
-      )
-      .run(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "bafkreiexisting",
-        Math.floor(NOW / 1000) + 3600,
-        "h",
-        2 * 1024 * 1024 * 1024 - 10,
-        Math.floor(NOW / 1000),
-      );
-    const response = await handleRequest(createRequest("198.51.100.20", validBody()), envFor(test), NOW);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "capacity" });
-    expect(response.headers.get("Retry-After")).toBe("3600");
+    expect((await handleRequest(getRequest(created.id), envFor(test), NOW + 1000)).status).toBe(200);
+    expect((await handleRequest(deleteRequest(created.id, created.deleteToken), envFor(test), NOW + 1000)).status).toBe(204);
   });
 });
 
@@ -260,8 +177,8 @@ describe("DELETE /api/share-links/<id>", () => {
 describe("scheduled cleanup", () => {
   it("removes expired rows and keeps live rows", async () => {
     const test = makeTestDb();
-    const live = await create(test, "198.51.100.1", NOW, validBody(TTL, NOW));
-    await create(test, "198.51.100.4", NOW, validBody(120_000, NOW));
+    const live = await create(test, "198.51.100.1", NOW, TTL);
+    await create(test, "198.51.100.4", NOW, 120_000);
     await handleScheduled(envFor(test), NOW + 200_000);
     const remaining = test.raw.prepare("SELECT id FROM links").all() as { id: string }[];
     expect(remaining.map((row) => row.id)).toEqual([live.id]);
@@ -297,35 +214,5 @@ describe("query strings and sibling paths", () => {
       expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
       expect(await response.text()).toBe(NOT_FOUND_BODY);
     }
-  });
-
-  it("creates a link on POST with a query string, as on POST without one", async () => {
-    const test = makeTestDb();
-    const request = new Request(`${BASE}?x=1`, {
-      method: "POST",
-      headers: { "CF-Connecting-IP": "198.51.100.43", "Content-Type": "application/json" },
-      body: JSON.stringify(validBody()),
-    });
-    const response = await handleRequest(request, envFor(test), NOW);
-    expect(response.status).toBe(201);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
-    const body = (await response.json()) as { id: string; cid: string; deleteToken: string };
-    expect(body.id).toMatch(/^[a-z2-7]{26}$/);
-  });
-
-  it("answers an invalid POST with a query string exactly as without one", async () => {
-    const test = makeTestDb();
-    const plain = await handleRequest(createRequest("198.51.100.44", "{not json"), envFor(test), NOW);
-    const request = new Request(`${BASE}?x=1`, {
-      method: "POST",
-      headers: { "CF-Connecting-IP": "198.51.100.45", "Content-Type": "application/json" },
-      body: "{not json",
-    });
-    const withQuery = await handleRequest(request, envFor(test), NOW);
-    expect(withQuery.status).toBe(400);
-    expect(withQuery.status).toBe(plain.status);
-    expect(await withQuery.text()).toBe(await plain.text());
-    expect(withQuery.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 });

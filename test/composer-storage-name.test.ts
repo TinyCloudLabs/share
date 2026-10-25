@@ -10,14 +10,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import { safeStorageFilename, storageFilenameFor, uniqueStoragePaths } from "../src/share/composer-storage-name.js";
 import { SENDER_FAILURE } from "../src/share/sender-failure.js";
+import { ISSUER_DID, mockLinks, signWithIssuer } from "./fixtures/link-material.js";
 
 const state = vi.hoisted(() => ({ published: [] as Array<Record<string, unknown>> }));
 vi.mock("@tinycloud/share-sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tinycloud/share-sdk")>()),
-  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly onDeliveryMaterial: (material: unknown) => void }) => {
-    state.published.push(options);
-    options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope: "sealed", envelopeKey: "key", shareCid: "bafy-share" });
-    return { url: "https://share.tinycloud.xyz/s/inline#v=2&p=opaque", link: { cid: "bafy-share" }, metadata: { expiresAt: "2030-01-01T00:00:00Z" } };
+  publishAddressedShare: vi.fn(async (options: Record<string, unknown> & { readonly contentSource: unknown; readonly onDeliveryMaterial: (material: unknown) => void }) => {
+    // The size check runs the builder first, with the longest stand-in key version; only the real publish is recorded.
+    if ((options.contentSource as { keyVersion?: number }).keyVersion !== 4_294_967_295) state.published.push(options);
+    const { sealedEnvelope, envelopeKey, shareCid } = await (await import("./fixtures/link-material.js")).sealedMaterial();
+    options.onDeliveryMaterial({ envelope: { version: 3 }, sealedEnvelope, envelopeKey, shareCid });
+    return { url: "unused", link: { cid: shareCid }, metadata: { expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() } };
   }),
   historyRecordForPublishedShare: vi.fn(() => ({ id: "record" })),
 }));
@@ -37,13 +40,13 @@ function owner() {
   const generate = vi.fn(async () => ({ ok: true as const, data: { token: "tc1:bearer", delegation: { cid: "bafy-delegation" }, expiresAt: new Date("2030-01-01T00:00:00.000Z") } }));
   const tinycloud = {
     spaceId: SPACE_ID,
-    credentialHolderDid: "did:key:z6MkOwnerSession",
+    credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
     encryption: { encryptToNetwork: async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }) },
     kvForSpace: () => ({ put }),
     sharing: { generate, decodeLink: () => ({ path: "p", spaceId: SPACE_ID }), receive: async () => ({ ok: false as const, error: { message: "unused" } }) },
-    signSessionBytes: async () => new Uint8Array(64),
+    signSessionBytes: signWithIssuer,
     createUnifiedOwnerRoot: vi.fn(),
     registerPolicy: vi.fn(),
   } as unknown as ShareTinyCloud;
@@ -56,6 +59,7 @@ async function create(name: string, audience: "bearer" | "exactEmail") {
   const saved: Array<{ readonly record?: { readonly filename?: string; readonly resource: { readonly path: string } } }> = [];
   const root = document.createElement("div"); document.body.append(root);
   mountShareComposer(root, {
+    fetchFn: mockLinks().fetchFn,
     openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud,
     persistShare: async ({ share }) => { saved.push(share as never); },
   });

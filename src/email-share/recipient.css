@@ -115,3 +115,5 @@ button, input { font: inherit; touch-action: manipulation; }
 }
 @media (max-width: 360px) { #viewer { width: min(100% - 1.5rem, 1040px); } .recipient-title { font-size: 2rem; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } .claim-spinner { animation: claim-spin 1.6s linear infinite !important; } }
+
+.recipient-shell.link-confirm .link-confirm-action { display: block; margin: 20px 0 0; }

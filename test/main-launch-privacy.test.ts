@@ -39,7 +39,7 @@ describe("viewer launch privacy", () => {
     window.history.replaceState(
       null,
       "",
-      "/s/inline?recipient=reader@example.com#v=2&p=sealed-policy-and-key",
+      "/s/lqdw5iopqq2tkkvjj6gbbi5vbv?recipient=reader@example.com#v=4&k=key&c=cid",
     );
 
     await import("../src/main.js");

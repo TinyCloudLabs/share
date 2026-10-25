@@ -1,15 +1,7 @@
-/**
- * `gone`: the server has no live link for this id (404 for unknown, expired, and deleted alike).
- * `unavailable`: the lookup could not be completed, or the response is not usable.
- */
-export type ShortLinkFailure = "gone" | "unavailable";
-
-export class ShortLinkError extends Error {
-  readonly reason: ShortLinkFailure;
-
-  constructor(reason: ShortLinkFailure, message: string) {
-    super(message);
-    this.name = "ShortLinkError";
-    this.reason = reason;
+/** The sealed share is over the one size limit for a link, so no link of any form can carry it. */
+export class ShareTooLargeForLink extends Error {
+  constructor() {
+    super("sealed share is too large for a link");
+    this.name = "ShareTooLargeForLink";
   }
 }

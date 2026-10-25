@@ -8,13 +8,13 @@ Base path: `/api/share-links` on `share.tinycloud.xyz`.
 
 | Method | Path | Success | Notes |
 | --- | --- | --- | --- |
-| POST | `/api/share-links` | 201 `{id, cid, deleteToken}` | Body `{ciphertext, expiresAt}`. `ciphertext` is unpadded base64url, 1..131072 decoded bytes. `expiresAt` is canonical UTC with milliseconds and `Z`. TTL 120 s to 400 days. |
+| POST | `/api/share-links` | 410 `{"error":"gone"}` | Links are created through the links API (`api.tinycloud.xyz`). This route answers existing links until it is retired. |
 | GET | `/api/share-links/<id>` | 200 raw bytes | `application/octet-stream`, `Content-Disposition: attachment; filename="share.bin"`, `X-Share-Cid`, `X-Share-Expires`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox`, `Cross-Origin-Resource-Policy: same-origin`. No CORS headers. |
 | DELETE | `/api/share-links/<id>` | 204 | Requires `Authorization: Bearer <deleteToken>`. Rate-limited. |
 
 Errors:
 
-- 400 `{"error":"invalid"}` for any malformed create body.
+- 410 `{"error":"gone"}` for every POST to the collection path.
 - 404 `{"error":"not_found"}` for unknown, expired, deleted, malformed, or wrong-token requests. These are indistinguishable by design.
 - 429 `{"error":"rate_limited"}` with `Retry-After`.
 - 503 `{"error":"capacity"}` with `Retry-After: 3600` when the global cap is reached.
@@ -60,7 +60,7 @@ Request bodies are read with a running byte cap (184,320 bytes) and rejected bef
 - `src/ratelimit.ts`: fixed-window counters.
 - `src/responses.ts`: response helpers and common headers.
 - `src/d1.ts`: D1 binding types.
-- `smoke.sh`: post-deploy smoke check (POST, GET headers and bytes, DELETE, uniform 404).
+- `smoke.sh`: post-deploy smoke check (POST answers 410, unknown id answers the uniform 404).
 
 ## Tests
 

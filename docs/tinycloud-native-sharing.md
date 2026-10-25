@@ -9,12 +9,12 @@ This document is the cutover architecture. Older Share registry/blob and claim-l
 3. The public SDK asks TinyCloud for exactly one delegation or policy over that owner-space resource.
 4. Share constructs one of two links:
    - bearer: `https://share.tinycloud.xyz/viewer#tc1=<opaque TinyCloud delegation>`;
-   - addressed: `https://share.tinycloud.xyz/s/inline#v=2&p=<sealed Policy/v3 envelope and local key>`.
+   - addressed: `https://share.tinycloud.xyz/s/<id>#v=4&k=<local key>&c=<CID>` (the sealed Policy/v3 envelope is fetched from the links API and checked against the CID), or `https://share.tinycloud.xyz/s/full#v=4&k=<local key>&r=<record>` when the record rides in the fragment.
 5. The recipient resolves the owner's node through `registry.tinycloud.xyz`, proves any required DID or email policy, and invokes that node.
    For an addressed link the page first asks the owner's node whether the share was revoked or has expired (the node's public status route for the envelope's two policy roots). If so, it says so and sends nothing: no key is created and no code is requested. If the node cannot be reached or answers anything else, it carries on as before and the node's own decision applies. The check runs again after the recipient clicks "Email me a code". A share whose content object was deleted is only visible after sign-in, so the page still offers a code for it.
 6. The owner node authorizes the encrypted-KV and decrypt capabilities. The browser verifies the signed ciphertext digest, invokes the generic decrypt capability, and decrypts/renders locally. Revocation makes later invocation fail.
 
-The addressed envelope is authorization metadata sealed by the sender SDK. Its sealed bytes and key stay in the URL fragment, so they never appear in the browser's HTTP request. The encrypted document never passes through Share or OpenCredentials.
+The addressed envelope is authorization metadata sealed by the sender SDK. Its key stays in the URL fragment. The key is never sent to the links API. The encrypted document never passes through Share or OpenCredentials.
 
 ## Service boundaries
 
