@@ -126,6 +126,33 @@ describe("resolve vectors (the whole viewer reader)", () => {
   }
 });
 
+// The removed `#v=2` forms, from the grammar vectors "REMOVED #v=2 inline link is refused" and
+// "REMOVED #v=2 on a short path is refused", taken through the whole reader with a fetch spy.
+// The vector file itself is the canonical copy and is not extended.
+describe("removed #v=2 links through the whole viewer reader", () => {
+  const removed: readonly [string, string][] = [
+    ["a REMOVED #v=2 inline link never reaches a fetch", "https://share.tinycloud.xyz/s/inline#v=2&p=eyJjIjoiQVEiLCJjaWQiOiJjaWQiLCJrIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJ2IjoyfQ"],
+    ["a REMOVED #v=2 short-path link never reaches a fetch", "https://share.tinycloud.xyz/s/lqdw5iopqq2tkkvjj6gbbi5vbv#v=2&k=WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo&c=bafkreiewixmt5nwgi3ych6durcsheaql3ybswbplpjmpbdhfkvdkidzt5u"],
+  ];
+  for (const [name, link] of removed) {
+    it(name, async () => {
+      const calls: string[] = [];
+      const fetchFn = (async (input: RequestInfo | URL) => { calls.push(String(input)); return new Response(null, { status: 404 }); }) as typeof fetch;
+      const outcome = await resolveLink(link, { trustedOrigins: ["https://share.tinycloud.xyz"], apiOrigin: AUDIENCE, fetchFn, now: () => NOW }).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) {
+        expect(outcome.error).toBeInstanceOf(LinkReadError);
+        expect((outcome.error as LinkReadError).kind).toBe("not-found");
+        expect((outcome.error as LinkReadError).reason).toBe("removed_version");
+      }
+      expect(calls).toEqual([]);
+    });
+  }
+});
+
 describe("linkChoice vectors (the 30-day rule)", () => {
   for (const vector of vectors.linkChoice) {
     it(`lifetime ${vector.shareLifetimeSeconds} s`, () => {
