@@ -30,7 +30,7 @@
     "test:e2e:jsx-usercontent": "tsx test/e2e-jsx-usercontent.mjs"
   },
   "dependencies": {
-    "@openkey/sdk": "0.12.0",
+    "@openkey/sdk": "0.12.1",
     "@tailwindcss/browser": "4.3.3",
     "@tinycloud/bootstrap": "2.8.0",
     "@tinycloud/node-sdk": "3.7.0-beta.1",
