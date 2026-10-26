@@ -56,7 +56,8 @@ export async function publishLink(input: {
   readonly now?: () => number;
 } & LinkApiOptions): Promise<LinkPublication> {
   const now = (input.now ?? Date.now)();
-  const expiresMs = Date.parse(input.expiresAt);
+  // The link's expiry is the share's, in whole seconds: never a fraction of a second later than the share's own.
+  const expiresMs = Math.floor(Date.parse(input.expiresAt) / 1000) * 1000;
   if (!Number.isFinite(expiresMs)) throw new TypeError("share expiry is not a date");
   const body = fromBase64Url(input.material.sealedEnvelope);
   // One limit for every link, stored or full: a share over it has no link.
