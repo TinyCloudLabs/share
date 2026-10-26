@@ -109,7 +109,7 @@ function clickCopy(root: HTMLElement): void {
 beforeEach(() => {
   state.published.length = 0;
   state.pad = 0;
-  state.expiresAt = new Date(Date.now() + 7 * DAY_MS).toISOString();
+  state.expiresAt = new Date(Math.floor((Date.now() + 7 * DAY_MS) / 1000) * 1000).toISOString();
 });
 
 afterEach(() => {
