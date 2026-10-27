@@ -19,6 +19,12 @@ See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the
 
 The Vite output in `dist/` is a static Cloudflare Pages site. Share deploys no server-side package.
 
+### Production sender smoke
+
+`npm run test:e2e:sender-signin` creates a fresh throwaway OpenKey account and verifies sign-in, link-only sharing, and recipient read-back against production services. `SHARE_SMOKE_CANDIDATE=dist` serves a local Share build inside the runner's browser; OpenKey and TinyCloud remain real.
+
+Use Puppeteer element clicks for approval, not DOM `.click()` inside `evaluate()`: OpenKey intentionally rejects untrusted approval events in iframes. Keep that security guard and the approval-count limits intact.
+
 ## Landing page: recipients
 
 The landing headline is three lines with no period: "Share what your" / "agent makes with" / a recipient typed from `SHARE_TARGETS` (`src/landing/share-targets.ts`), one after another. The headline scales so its longest line fits the column. If you add a phrase longer than "an email address", raise the divisor in `#hero-title` (`src/landing/landing.css`).

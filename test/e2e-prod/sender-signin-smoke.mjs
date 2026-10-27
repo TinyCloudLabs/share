@@ -132,11 +132,18 @@ async function until(probe, timeout, what) {
 }
 
 async function clickButton(frame, label) {
-  return frame.evaluate((text) => {
-    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled);
-    button?.click();
-    return button !== undefined;
+  const handle = await frame.evaluateHandle((text) => {
+    return [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null;
   }, label);
+  try {
+    const button = handle.asElement();
+    if (!button) return false;
+    // DOM .click() is untrusted; OpenKey refuses it inside an iframe.
+    await button.click();
+    return true;
+  } finally {
+    await handle.dispose();
+  }
 }
 
 /** Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait. */
