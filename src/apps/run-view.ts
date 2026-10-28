@@ -169,7 +169,8 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   let live = false;
   let destroyed = false;
 
-  const stopFrame = (): void => {
+  /** Stops the app: the frame, its bridge and the expiry timer go away. The session is untouched. */
+  const dropFrame = (): void => {
     live = false;
     view.clearTimeout(expiryTimer);
     expiryTimer = undefined;
@@ -178,11 +179,24 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     frameCleanup?.();
     frameCleanup = undefined;
     stage.replaceChildren();
+    signOut.disabled = true;
+  };
+
+  /** Stops the app and ends its session for good: only sign-out and expiry call this. */
+  const stopFrame = (): void => {
     const ended = running;
     running = undefined;
-    signOut.disabled = true;
+    dropFrame();
     // The session ends with the frame. Fire and forget: the sign-out has its own short wait.
     if (ended !== undefined) void ended.session.end().catch(() => undefined);
+  };
+
+  /** Stops the app but keeps its saved session: unload and navigation are not a sign-out. */
+  const detachFrame = (): void => {
+    const leaving = running;
+    running = undefined;
+    dropFrame();
+    if (leaving !== undefined) void leaving.session.detach().catch(() => undefined);
   };
 
   const showScreen = (screen: Screen, onRetry?: () => void): void => {
@@ -224,9 +238,19 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     showScreen({ title: "Signed out of this app", lines: ["Its session is over. Nothing was changed in your TinyCloud."], retry: OPEN_AGAIN(name) }, begin);
   };
   signOut.addEventListener("click", signOutNow);
-  // The tab is going away (or into the back/forward cache): the session ends with it, and a restored page says so.
-  const onPageHide = (): void => { if (running !== undefined) signOutNow(); };
+  // The tab is going away (or into the back/forward cache): the app stops, but its session
+  // stays saved — a reload or a cached page reopens it without a new approval.
+  let hiddenWhileRunning = false;
+  const onPageHide = (): void => {
+    hiddenWhileRunning = running !== undefined;
+    detachFrame();
+  };
+  const onPageShow = (event: PageTransitionEvent): void => {
+    if (event.persisted && hiddenWhileRunning) begin();
+    hiddenWhileRunning = false;
+  };
   view.addEventListener("pagehide", onPageHide);
+  view.addEventListener("pageshow", onPageShow);
 
   /** Ends the approval wait: its timer and its watch for the OpenKey window. */
   const clearApprovalWait = (): void => {
@@ -265,7 +289,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   function begin(): void {
     if (entry === undefined || appId === null) return;
-    stopFrame();
+    detachFrame();
     const mine = ++attempt;
     const abort = new AbortController();
     openAbort = abort;
@@ -379,12 +403,14 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   return {
     destroy(): void {
       view.removeEventListener("pagehide", onPageHide);
+      view.removeEventListener("pageshow", onPageShow);
       destroyed = true;
       openAbort?.abort();
       openAbort = undefined;
       attempt += 1;
       clearApprovalWait();
-      stopFrame();
+      // Another app or a page teardown is not a sign-out: the session stays saved.
+      detachFrame();
     },
   };
 }

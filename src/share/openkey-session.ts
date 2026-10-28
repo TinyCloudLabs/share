@@ -231,8 +231,15 @@ export interface SignInWithManifestOptions extends ManifestScope {
   readonly appName?: string;
   /** The SIWE domain, a host name. Default: the host of `config.shareOrigin`. */
   readonly domain?: string;
-  /** Prefix of the SDK's session storage keys. The session is never persisted, so this only names the SDK instance. Default "tinycloud-share". */
+  /** Prefix of the SDK's session storage keys. Without `persistSession` this only names the SDK instance; with it, it is the boundary that keeps one caller's persisted session from another's. Default "tinycloud-share". */
   readonly sessionPrefix?: string;
+  /**
+   * Let the SDK persist the signed session (localStorage, under `sessionPrefix`) so a later sign-in
+   * restores it while it is still valid and covers the manifest, with no new approval. Default false:
+   * the session lives only in memory. Restore is bound to the connected account and to the prefix the
+   * caller picks, and `dispose()` still signs out (clearing what was persisted).
+   */
+  readonly persistSession?: boolean;
   /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000). Default one hour. */
   readonly expiry?: number;
   /**
@@ -250,7 +257,11 @@ export interface ManifestSignIn {
   readonly session: OpenKeyShareSession;
   /** Space name to the id `ensureOwnedSpaceHosted` returned, for any requested hosting. */
   readonly spaces: Readonly<Record<string, string>>;
-  /** Clears the SDK's in-memory session and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
+  /** Epoch ms the signed session ends at: the SIWE's Expiration Time, or the requested expiry when the message carries none. A restored session keeps its own remaining time. */
+  readonly sessionExpiresAt: number;
+  /** Closes the OpenKey connection this call opened without signing out: a persisted session stays usable by the next open. Safe to call more than once; never rejects. */
+  detach(): Promise<void>;
+  /** Signs the client out (clearing any persisted session) and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
   dispose(): Promise<void>;
 }
 
@@ -309,8 +320,12 @@ function checkManifest(options: SignInWithManifestOptions, manifest: Manifest, a
 /**
  * The one sign-in: OpenKey, then a `TinyCloudWeb` session that holds `manifest`
  * plus the SDK's account-registry permissions by default (below), then the owned
- * spaces hosted. The session lives in memory only (`persistSession: false`);
- * nothing is written to storage. Share's library and the viewer's "Save a
+ * spaces hosted. By default the session lives in memory only
+ * (`persistSession: false`); nothing is written to storage. With
+ * `persistSession: true` the SDK persists it under `sessionPrefix` and a later
+ * `signIn()` restores it while it is still valid for the same account and
+ * covers the manifest — a reload of that caller asks for no new approval.
+ * Share's library and the viewer's "Save a
  * copy" sign in here, each with its own manifest and scope, and an app-install
  * flow does the same with an app's manifest.
  *
@@ -382,7 +397,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
       sessionStorageKeyPrefix: options.sessionPrefix ?? DEFAULT_SESSION_PREFIX,
       sessionExpirationMs: options.expiry ?? MAX_SESSION_MS,
-      persistSession: false,
+      persistSession: options.persistSession === true,
       siweConfig: { statement: `Sign in to ${appName}.` },
       manifest,
       notifications: { popups: false },
@@ -398,7 +413,10 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
-    await tinycloud.signIn();
+    const signedSession = await tinycloud.signIn();
+    // A persisted session may be restored without a signature; it must still be the connected account's.
+    if (signedSession.address.toLowerCase() !== session.address.toLowerCase()) throw new Error("sign-in-owner-mismatch");
+    const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
       spaces[name] = await tinycloud.ensureOwnedSpaceHosted(name);
@@ -407,12 +425,27 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       const wait = options.waitForAccountRegistrySync;
       await settleAccountRegistrySync(tinycloud, typeof wait === "object" ? wait.timeoutMs ?? REGISTRY_SYNC_WAIT_MS : REGISTRY_SYNC_WAIT_MS);
     }
-    return { tinycloud, session, spaces, dispose };
+    let detaching: Promise<void> | undefined;
+    // Leaves the session where it is (in memory, and in storage when the caller persisted it):
+    // only the OpenKey connection this call opened is closed. A later open restores the session.
+    const detach = (): Promise<void> => {
+      detaching ??= (async () => { if (opened) closeOpenKeyFlows(session.openkey); })();
+      return detaching;
+    };
+    return { tinycloud, session, spaces, sessionExpiresAt, detach, dispose };
   } catch (error) {
     if (dispose !== undefined) await dispose();
     else if (opened) closeOpenKeyFlows(session.openkey);
     throw error;
   }
+}
+
+/** Epoch ms the signed SIWE ends at (`Expiration Time:`), or undefined when the message carries none or it cannot be read. */
+function signedSessionExpiry(siwe: string | undefined): number | undefined {
+  const value = siwe?.match(/^Expiration Time: (.+)$/m)?.[1];
+  if (value === undefined) return undefined;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : undefined;
 }
 
 const runUnguarded: ApprovalGuard = (wait) => wait();

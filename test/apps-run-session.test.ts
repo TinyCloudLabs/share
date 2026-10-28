@@ -9,7 +9,7 @@ import { catalog } from "../src/apps/catalog.ts";
 import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
 import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName } from "../src/apps/run-session.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -22,6 +22,8 @@ interface FakeSignIn {
   tinycloud: { kvForSpace: () => unknown; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn> };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
+  sessionExpiresAt: number;
+  detach: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 }
 
@@ -57,6 +59,8 @@ vi.mock("../src/share/openkey-session.js", () => ({
       },
       session: { address: "0x0", openkey: {} },
       spaces,
+      sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
+      detach: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
     };
     const guard = options["guardApproval"] as SignInCall["guard"];
@@ -301,6 +305,8 @@ describe("opening an installed app: one sign-in per open", () => {
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
     expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
+    expect(options["persistSession"]).toBe(true);
+    expect(options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
   });
 
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
@@ -323,6 +329,20 @@ describe("opening an installed app: one sign-in per open", () => {
     await app.session.end();
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
+  it("ends the app's runtime at the sign-in's own expiry, not a fresh hour from the open", async () => {
+    const app = await open();
+    expect(app.session.expiresAt).toBe(calls[0]!.fake.sessionExpiresAt - 60_000);
+  });
+
+  it("detaching for a page unload keeps the sign-in: OpenKey is closed without a sign-out", async () => {
+    const app = await open();
+    await app.session.detach();
+    await app.session.detach();
+    expect(calls[0]!.fake.detach).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
+    expect(calls[0]!.fake.tinycloud.signOut).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("runnerAppName", () => {
