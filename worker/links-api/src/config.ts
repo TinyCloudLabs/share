@@ -5,7 +5,7 @@ import { READ_SIGNERS_ENV, parseReadSigners, type ReadSigner } from "./read-sign
  * quotas (contract sections 3 and 4.9); `MAX_LINK_BODY_BYTES` is the one body size limit for all types.
  */
 
-export const LINK_TYPES = ["openkey-login", "courier", "share"] as const;
+export const LINK_TYPES = ["openkey-login", "openkey-approval-request", "courier", "share"] as const;
 export type LinkType = (typeof LINK_TYPES)[number];
 
 export interface TypeConfig {
@@ -22,6 +22,12 @@ export const TYPE_CONFIG: Readonly<Record<LinkType, TypeConfig>> = {
   "openkey-login": {
     maxLifeSeconds: 600,
     readOnce: true,
+    quotaRows: 4_000,
+    quotaBytes: 134_217_728,
+  },
+  "openkey-approval-request": {
+    maxLifeSeconds: 86_400,
+    readOnce: false,
     quotaRows: 4_000,
     quotaBytes: 134_217_728,
   },

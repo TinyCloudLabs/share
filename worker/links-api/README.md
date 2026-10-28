@@ -28,6 +28,10 @@ Create and delete request bodies must be JSON objects in which no object, at any
 
 - One body limit for every type: `MAX_LINK_BODY_BYTES = 65536` (sealed bytes) in `src/config.ts`. The HTTP request cap is derived from it (`ceil(MAX_LINK_BODY_BYTES * 4 / 3) + 3072` = 90,454).
 - Lives, quotas, rate limits, the per-address live cap and the type reserve are the tables in `src/config.ts`.
+- `openkey-approval-request` v1 is signed-only (Ed25519 `did:key`), with a maximum request life of 86,400 seconds. The SDK's default is 3,600 seconds; the Worker requires explicit signed `issuedAt` and `expiresAt` and never supplies or changes them. `audience` is this API instance's configured origin, not OpenKey.
+- Approval requests use repeatable, non-consuming `GET /v1/links/{id}`. Prefetch does not consume them; `/take` returns `404` without removing them. Reads at or after request expiry return the uniform `404`. Existing `openkey-login` remains 600 seconds maximum and explicit single-use `/take`.
+- The returned opaque `id` is the request id. `bodyCid` hashes the actual sealed bytes; the Worker stores and returns those bytes and the signed header without parsing request plaintext. Consumers must verify the signed record, CID, AEAD and sealed issuer/target bindings. Result discovery, approval-time expiry checks, result retention and durable-save-before-ACK belong to OpenKey/CLI, not this request store.
+- Approval-request admission uses the existing per-type quota mechanism: 4,000 live rows and 134,217,728 live sealed bytes, with unchanged address caps, reserve, nonce and rate limits. This request quota and request lifetime do not set grant lifetime or approved-result retention.
 - Browser origins for `POST`: `LINKS_CORS_ORIGINS` (default `https://share.tinycloud.xyz`); `GET` answers any origin without credentials.
 
 ## Configuration
@@ -96,6 +100,7 @@ npm run vectors          # every service-level vector on both adapters; checks t
 
 - `test/conformance.test.ts` runs storage conformance 1 to 21 against the D1 adapter (a local D1 from miniflare) and the SQLite adapter. Conformance 22 is `test/vectors.test.ts`.
 - `test/vectors/short-links-api-vectors.json` is a byte-identical copy of the contract's vector file; its SHA-256 is pinned in `test/support/vectors.ts` (`VECTORS_SHA256`). Updating the file is a change of that file and that one line.
+- `test/approval-request.test.ts` exercises signed approval-request creation and repeatable prefetch/GET with the existing SQLite and local D1 adapters.
 - Reader-side vector groups (`records`, `resolve`, `links`, `linkChoice`, `deliveryAdmission`) belong to the viewer, CLI, node and witness. Only the six `records` body-size boundary vectors (at the limit and one byte over it, for each type) are run here, against the checks the service shares with readers.
 
 ## Local run (no deploy)
@@ -117,4 +122,4 @@ LINKS_DB_PATH=links.sqlite ADDRESS_SALT=<16+ characters> node src/selfhost.ts
 
 Node 22.18 or newer. The server sets the client address from the socket; behind a proxy, set `CLIENT_ADDRESS_HEADER` to the header the proxy sets.
 
-Details: TC-1737
+Details: TC-1737, TC-2212

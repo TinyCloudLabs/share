@@ -77,7 +77,7 @@ export interface CreateOptions {
   readonly ip?: string | null;
 }
 
-const DEFAULT_LIFE: Record<LinkType, number> = { "openkey-login": 600, courier: 86_400, share: 2_592_000 };
+const DEFAULT_LIFE: Record<LinkType, number> = { "openkey-login": 600, "openkey-approval-request": 3_600, courier: 86_400, share: 2_592_000 };
 
 export async function signedCreate(options: CreateOptions): Promise<Request> {
   const type = options.type ?? "share";
