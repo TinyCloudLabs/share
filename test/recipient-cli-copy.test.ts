@@ -19,7 +19,7 @@ describe("recipient CLI guidance", () => {
     expect(html).not.toContain("Until then");
     expect(llms).toContain("This CLI receive command is for bearer links only");
     expect(llms).not.toContain("TC-1757's");
-    expect(llms).toContain("TC-1757 proof flow");
+    expect(llms).toContain("email-proof flow");
     expect(llms).toContain("not yet published and wired");
     expect(llms).toContain("`completeEmailProof`");
     expect(llms).toContain("`HolderSigner` backed by the recipient agent's session key");
