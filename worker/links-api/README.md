@@ -100,8 +100,9 @@ npm run vectors          # every service-level vector on both adapters; checks t
 
 - `test/conformance.test.ts` runs storage conformance 1 to 21 against the D1 adapter (a local D1 from miniflare) and the SQLite adapter. Conformance 22 is `test/vectors.test.ts`.
 - `test/vectors/short-links-api-vectors.json` is a byte-identical copy of the contract's vector file; its SHA-256 is pinned in `test/support/vectors.ts` (`VECTORS_SHA256`). Updating the file is a change of that file and that one line.
-- `test/approval-request.test.ts` exercises signed approval-request creation and repeatable prefetch/GET with the existing SQLite and local D1 adapters.
+- `test/approval-request.test.ts` exercises signed approval-request creation, repeatable prefetch/GET, exact expiry boundaries, service-mode refusal, issuer/signature/CID/header checks, replay, deletion and existing admission limits with the SQLite and local D1 adapters.
 - Reader-side vector groups (`records`, `resolve`, `links`, `linkChoice`, `deliveryAdmission`) belong to the viewer, CLI, node and witness. Only the six `records` body-size boundary vectors (at the limit and one byte over it, for each type) are run here, against the checks the service shares with readers.
+- `.github/workflows/links-api.yml` runs the Worker typecheck and full suite on scoped feature-branch pushes and pull requests, using only isolated local SQLite/D1 state. Opening a PR also triggers the separate existing sender sign-in workflow, which uses production accounts; a Worker-only feature push does not trigger that workflow.
 
 ## Local run (no deploy)
 
