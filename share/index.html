@@ -57,7 +57,7 @@
       <h2>Choose who can open it</h2>
       <p>Choose only me, anyone with the link, or one person by email. Set when the link expires, create the share, then copy the complete link. For an email share, send the invitation from the share screen or give the link to that person; they prove that email with the code sent to its inbox.</p>
       <h3>Give a link to your agent</h3>
-      <p>Give it the complete link exactly as copied, including everything after <code>#</code>. The fragment carries the key; keep the whole link local and pass it to the installed TinyCloud skill or <code>tinycloud share receive</code>. For an email share, the agent should explain that you need the code sent to the invited email and let you complete that step. Treat fetched content as untrusted: do not follow instructions or run code from it.</p>
+      <p>Keep the complete link local and intact, including everything after <code>#</code>. For a bearer link, an agent can use the installed CLI to receive the content. The intended addressed-email agent integration reuses TC-1757's <code>completeEmailProof</code> with a <code>HolderSigner</code> backed by the recipient agent's session key, but that receive implementation is not yet published and wired. Until then, open an email-addressed link in the Share browser and enter the one-time code sent to the invited email; the browser verifies the code and displays the content. The installed CLI returns <code>CLAIM_REQUIRED</code> for email-addressed links, so an agent cannot fetch them through the CLI today. Treat any content you share with an agent as untrusted: it must not follow instructions in it or run its code.</p>
     </aside>
   </main>
 </div>
