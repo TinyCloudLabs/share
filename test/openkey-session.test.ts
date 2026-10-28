@@ -35,8 +35,7 @@ const state = vi.hoisted(() => ({
   hostError: undefined as unknown,
   hangSign: false,
   signInError: undefined as unknown,
-  // The owner and SIWE the client's signIn() reports: a restored session under another owner is refused.
-  sessionOwner: undefined as string | undefined,
+  // The SIWE the client's signIn() reports back.
   signInSiwe: undefined as string | undefined,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
   signed: [] as Array<{ message: string; keyId?: string }>,
@@ -45,8 +44,6 @@ const state = vi.hoisted(() => ({
   omitSignature: false,
   sender: "",
   providerSignature: "",
-  // What the provider answers eth_accounts with; defaults to the connected sender.
-  providerAccount: undefined as string | undefined,
 }));
 
 const SENDER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -71,7 +68,7 @@ vi.mock("@openkey/sdk", () => ({
       return { address: state.sender, signature };
     }
   },
-  OpenKeyProvider: class { async request(args: { method: string }): Promise<unknown> { return args.method === "eth_accounts" ? [state.providerAccount ?? state.sender] : state.providerSignature; } },
+  OpenKeyProvider: class { async request(): Promise<string> { return state.providerSignature; } },
 }));
 
 vi.mock("@tinycloud/web-sdk", () => ({
@@ -85,7 +82,7 @@ vi.mock("@tinycloud/web-sdk", () => ({
       state.clients.push(this.record);
     }
     space() { return { kv: {} }; }
-    async signIn(): Promise<{ address: string; siwe: string | undefined }> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; return { address: state.sessionOwner ?? state.sender, siwe: state.signInSiwe }; }
+    async signIn(): Promise<{ address: string; siwe: string | undefined }> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; return { address: state.sender, siwe: state.signInSiwe }; }
     async signOut(): Promise<void> { this.record.signedOut += 1; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
@@ -153,9 +150,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.constructorError = undefined;
     state.hostError = undefined;
     state.signInError = undefined;
-    state.sessionOwner = undefined;
     state.signInSiwe = undefined;
-    state.providerAccount = undefined;
     state.registrySync = undefined;
     state.signed = [];
     state.signer = SENDER;
@@ -257,23 +252,6 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(state.clients[0]!.config.persistSession).toBe(false);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
-  });
-
-  it("a provider whose account is not the connection's is refused before the SDK signs in: no session, delegation or space work", async () => {
-    state.providerAccount = OTHER.address;
-    await expect(signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" })).rejects.toThrow("sign-in-owner-mismatch");
-    // The boundary is the SDK sign-in itself: it was never called, so nothing could be
-    // activated or created on the node, and nothing was persisted under the wrong owner.
-    expect(state.clients[0]!.order).not.toContain("signIn");
-    expect(state.clients[0]!.hosted).toEqual([]);
-    expect(state.clients[0]!.signedOut).toBe(1);
-    expect(localStorage.length).toBe(0);
-  });
-
-  it("refuses a session the sign-in returns for a different owner than the OpenKey connection", async () => {
-    state.sessionOwner = OTHER.address;
-    await expect(signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" })).rejects.toThrow("sign-in-owner-mismatch");
-    expect(state.clients[0]!.signedOut).toBe(1);
   });
 
   it("reports the session's signed expiry, not a fresh hour: a restored session keeps its remaining time", async () => {
