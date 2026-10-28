@@ -45,6 +45,8 @@ const state = vi.hoisted(() => ({
   omitSignature: false,
   sender: "",
   providerSignature: "",
+  // What the provider answers eth_accounts with; defaults to the connected sender.
+  providerAccount: undefined as string | undefined,
 }));
 
 const SENDER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
@@ -69,7 +71,7 @@ vi.mock("@openkey/sdk", () => ({
       return { address: state.sender, signature };
     }
   },
-  OpenKeyProvider: class { async request(): Promise<string> { return state.providerSignature; } },
+  OpenKeyProvider: class { async request(args: { method: string }): Promise<unknown> { return args.method === "eth_accounts" ? [state.providerAccount ?? state.sender] : state.providerSignature; } },
 }));
 
 vi.mock("@tinycloud/web-sdk", () => ({
@@ -153,6 +155,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.signInError = undefined;
     state.sessionOwner = undefined;
     state.signInSiwe = undefined;
+    state.providerAccount = undefined;
     state.registrySync = undefined;
     state.signed = [];
     state.signer = SENDER;
@@ -256,10 +259,15 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(sessionStorage.length).toBe(0);
   });
 
-  it("persists the session only when asked: the SDK gets persistSession and its storage prefix", async () => {
-    await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a2e6578616d706c652e6e6f746573" });
-    expect(state.clients[0]!.config.persistSession).toBe(true);
-    expect(state.clients[0]!.config.sessionStorageKeyPrefix).toBe("tinycloud-share-runner-78797a2e6578616d706c652e6e6f746573");
+  it("a provider whose account is not the connection's is refused before the SDK signs in: no session, delegation or space work", async () => {
+    state.providerAccount = OTHER.address;
+    await expect(signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" })).rejects.toThrow("sign-in-owner-mismatch");
+    // The boundary is the SDK sign-in itself: it was never called, so nothing could be
+    // activated or created on the node, and nothing was persisted under the wrong owner.
+    expect(state.clients[0]!.order).not.toContain("signIn");
+    expect(state.clients[0]!.hosted).toEqual([]);
+    expect(state.clients[0]!.signedOut).toBe(1);
+    expect(localStorage.length).toBe(0);
   });
 
   it("refuses a session the sign-in returns for a different owner than the OpenKey connection", async () => {

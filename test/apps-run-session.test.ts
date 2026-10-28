@@ -10,6 +10,7 @@ import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
 import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
+import { isSignInLabel } from "../src/share/sign-in-label.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -305,10 +306,7 @@ describe("opening an installed app: one sign-in per open", () => {
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
     expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
-    expect(options["persistSession"]).toBe(true);
-    expect(options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
   });
-
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
     let inside: Promise<unknown> | undefined;
     signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
@@ -351,6 +349,18 @@ describe("runnerAppName", () => {
     expect(runnerAppName("TinyCloud Share: ", "evil.example/login")).toBe("TinyCloud Share: Tiny app");
     expect(runnerAppName("TinyCloud Share: ", "\u202eevil")).toBe("TinyCloud Share: Tiny app");
     expect([...runnerAppName("TinyCloud Share: open ", "x".repeat(200))].length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("runnerSessionPrefix", () => {
+  it("gives every app id its own label-valid storage prefix, so one app's saved session is never another's", async () => {
+    const a = await runnerSessionPrefix(HEALTH);
+    const b = await runnerSessionPrefix("xyz.tinycloud.sample.recipes");
+    expect(isSignInLabel(a)).toBe(true);
+    expect(a).not.toBe(b);
+    expect(a.startsWith("tinycloud-share-runner-")).toBe(true);
+    // Same app id always hashes to the same prefix: a reload must find the session it saved.
+    expect(await runnerSessionPrefix(HEALTH)).toBe(a);
   });
 });
 

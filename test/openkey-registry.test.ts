@@ -5,7 +5,7 @@ const state = vi.hoisted(() => ({ config: undefined as Record<string, unknown> |
 
 vi.mock("@openkey/sdk", () => ({
   OpenKey: class {},
-  OpenKeyProvider: class { constructor(..._args: unknown[]) {} },
+  OpenKeyProvider: class { constructor(..._args: unknown[]) {} async request(args: { method: string }): Promise<unknown> { return args.method === "eth_accounts" ? ["0x1234567890abcdef1234567890abcdef12345678"] : undefined; } },
 }));
 
 vi.mock("@tinycloud/web-sdk", () => ({

@@ -413,6 +413,11 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
+    // The SDK resolves the signing account through the provider; bind it to this connection's
+    // account BEFORE signIn so a mismatch refuses without any session, delegation or space work.
+    const connected: unknown = await provider.request({ method: "eth_accounts", params: [] });
+    const account = Array.isArray(connected) && typeof connected[0] === "string" ? connected[0] : undefined;
+    if (account === undefined || account.toLowerCase() !== session.address.toLowerCase()) throw new Error("sign-in-owner-mismatch");
     const signedSession = await tinycloud.signIn();
     // A persisted session may be restored without a signature; it must still be the connected account's.
     if (signedSession.address.toLowerCase() !== session.address.toLowerCase()) throw new Error("sign-in-owner-mismatch");
