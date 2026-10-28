@@ -35,6 +35,8 @@ const state = vi.hoisted(() => ({
   hostError: undefined as unknown,
   hangSign: false,
   signInError: undefined as unknown,
+  // The SIWE the client's signIn() reports back.
+  signInSiwe: undefined as string | undefined,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
   signed: [] as Array<{ message: string; keyId?: string }>,
   // Who actually signs, and whether the widget answers with a signature at all.
@@ -80,7 +82,7 @@ vi.mock("@tinycloud/web-sdk", () => ({
       state.clients.push(this.record);
     }
     space() { return { kv: {} }; }
-    async signIn(): Promise<void> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; }
+    async signIn(): Promise<{ address: string; siwe: string | undefined }> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; return { address: state.sender, siwe: state.signInSiwe }; }
     async signOut(): Promise<void> { this.record.signedOut += 1; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
@@ -148,6 +150,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.constructorError = undefined;
     state.hostError = undefined;
     state.signInError = undefined;
+    state.signInSiwe = undefined;
     state.registrySync = undefined;
     state.signed = [];
     state.signer = SENDER;
@@ -249,6 +252,29 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     expect(state.clients[0]!.config.persistSession).toBe(false);
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
+  });
+
+  it("reports the session's signed expiry, not a fresh hour: a restored session keeps its remaining time", async () => {
+    const expiring = new Date(Date.now() + 10 * 60 * 1000);
+    state.signInSiwe = `share.example wants you to sign in\nExpiration Time: ${expiring.toISOString()}`;
+    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-runner-78797a" });
+    expect(signedIn.sessionExpiresAt).toBe(expiring.getTime());
+  });
+
+  it("reports a full session when the sign-in's SIWE carries no expiry", async () => {
+    state.signInSiwe = "share.example wants you to sign in";
+    const before = Date.now();
+    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, expiry: 60_000 });
+    expect(signedIn.sessionExpiresAt).toBeGreaterThanOrEqual(before + 60_000);
+    expect(signedIn.sessionExpiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+  });
+
+  it("detach closes the OpenKey connection it opened without signing out: a persisted session survives page unload", async () => {
+    const signedIn = await signInWithManifest({ manifest: APP_MANIFEST, config: CONFIG, persistSession: true });
+    await signedIn.detach();
+    await signedIn.detach();
+    expect(state.openKeys[0]!.disconnects).toBe(1);
+    expect(state.clients[0]!.signedOut).toBe(0);
   });
 
   it("reuses an OpenKey connection that already exists instead of opening OpenKey again", async () => {

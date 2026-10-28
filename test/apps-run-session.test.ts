@@ -9,7 +9,8 @@ import { catalog } from "../src/apps/catalog.ts";
 import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
 import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
-import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName } from "../src/apps/run-session.ts";
+import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
+import { isSignInLabel } from "../src/share/sign-in-label.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -22,6 +23,8 @@ interface FakeSignIn {
   tinycloud: { kvForSpace: () => unknown; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn> };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
+  sessionExpiresAt: number;
+  detach: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
 }
 
@@ -57,6 +60,8 @@ vi.mock("../src/share/openkey-session.js", () => ({
       },
       session: { address: "0x0", openkey: {} },
       spaces,
+      sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
+      detach: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
     };
     const guard = options["guardApproval"] as SignInCall["guard"];
@@ -302,7 +307,6 @@ describe("opening an installed app: one sign-in per open", () => {
     expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
   });
-
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
     let inside: Promise<unknown> | undefined;
     signInBehaviour = (_n, options) => { inside = (options["guardApproval"] as SignInCall["guard"])(async () => "signed"); };
@@ -323,6 +327,20 @@ describe("opening an installed app: one sign-in per open", () => {
     await app.session.end();
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
+  it("ends the app's runtime at the sign-in's own expiry, not a fresh hour from the open", async () => {
+    const app = await open();
+    expect(app.session.expiresAt).toBe(calls[0]!.fake.sessionExpiresAt - 60_000);
+  });
+
+  it("detaching for a page unload keeps the sign-in: OpenKey is closed without a sign-out", async () => {
+    const app = await open();
+    await app.session.detach();
+    await app.session.detach();
+    expect(calls[0]!.fake.detach).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
+    expect(calls[0]!.fake.tinycloud.signOut).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("runnerAppName", () => {
@@ -331,6 +349,18 @@ describe("runnerAppName", () => {
     expect(runnerAppName("TinyCloud Share: ", "evil.example/login")).toBe("TinyCloud Share: Tiny app");
     expect(runnerAppName("TinyCloud Share: ", "\u202eevil")).toBe("TinyCloud Share: Tiny app");
     expect([...runnerAppName("TinyCloud Share: open ", "x".repeat(200))].length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("runnerSessionPrefix", () => {
+  it("gives every app id its own label-valid storage prefix, so one app's saved session is never another's", async () => {
+    const a = await runnerSessionPrefix(HEALTH);
+    const b = await runnerSessionPrefix("xyz.tinycloud.sample.recipes");
+    expect(isSignInLabel(a)).toBe(true);
+    expect(a).not.toBe(b);
+    expect(a.startsWith("tinycloud-share-runner-")).toBe(true);
+    // Same app id always hashes to the same prefix: a reload must find the session it saved.
+    expect(await runnerSessionPrefix(HEALTH)).toBe(a);
   });
 });
 

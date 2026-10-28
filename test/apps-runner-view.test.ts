@@ -37,13 +37,15 @@ interface Fake {
   reads: number;
   runtimes: number;
   ended: { runtime: number };
+  detached: { runtime: number };
   calls: string[];
   release(): void;
   disclosedAtSignIn: boolean | undefined;
 }
 
+
 function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
-  const fake: Fake = { reads: 0, runtimes: 0, ended: { runtime: 0 }, calls: [], release: () => undefined, disclosedAtSignIn: undefined, ports: undefined as unknown as RunPorts };
+  const fake: Fake = { reads: 0, runtimes: 0, ended: { runtime: 0 }, detached: { runtime: 0 }, calls: [], release: () => undefined, disclosedAtSignIn: undefined, ports: undefined as unknown as RunPorts };
   const data: AppData = {
     kvGet: async (path) => { fake.calls.push(`kv.get ${path}`); return { ok: true, data: { bytes: new TextEncoder().encode("hi"), contentType: "text/plain" } }; },
     kvPut: async () => ({ ok: true, data: undefined }),
@@ -68,7 +70,7 @@ function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; 
       hooks.approval(false);
       if (overrides.readError !== undefined) throw overrides.readError;
       fake.runtimes += 1;
-      const runtime: RuntimeSession = { data, expiresAt: Date.now() + (overrides.expiresIn ?? 3_600_000), end: async () => { fake.runtimes -= 1; fake.ended.runtime += 1; } };
+      const runtime: RuntimeSession = { data, expiresAt: Date.now() + (overrides.expiresIn ?? 3_600_000), end: async () => { fake.runtimes -= 1; fake.ended.runtime += 1; }, detach: async () => { fake.detached.runtime += 1; } };
       return { files: storedFiles(entry, overrides.stored), put: async () => "created" as const, runtime };
     },
   };
@@ -254,13 +256,14 @@ describe("opening an app", () => {
     expect((button("Sign out of this app") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("destroying the page (another app's address) ends the session and removes the frame", async () => {
+  it("destroying the page (another app's address) stops the app and removes the frame, keeping its session", async () => {
     const fake = fakePorts();
     const runner = await open(fake);
     await vi.waitFor(() => expect(frame()).toBeTruthy());
     runner.destroy();
     expect(root.querySelector("iframe")).toBeNull();
-    expect(fake.ended.runtime).toBe(1);
+    expect(fake.detached.runtime).toBe(1);
+    expect(fake.ended.runtime).toBe(0);
   });
 
   it("destroying the page while the approval is pending aborts the open: the sign-in is ended and nothing starts", async () => {
@@ -474,7 +477,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     expect(fake.reads).toBe(0);
   });
 
-  it("pagehide ends the session, removes the frame, and a restored page says so", async () => {
+  it("pagehide stops the app but keeps its session: a reload reuses it, only sign-out ends it", async () => {
     const fake = fakePorts();
     await open(fake);
     await vi.waitFor(() => expect(frame()).toBeTruthy());
@@ -483,8 +486,25 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     await vi.waitFor(() => expect(status()).toContain("is running"));
     window.dispatchEvent(new Event("pagehide"));
     expect(root.querySelector("iframe")).toBeNull();
-    expect(fake.ended.runtime).toBe(1);
-    expect(root.querySelector(".run-screen__title")?.textContent).toBe("Signed out of this app");
+    // The app stopped, but nothing signed out: the saved session survives the unload.
+    expect(fake.detached.runtime).toBe(1);
+    expect(fake.ended.runtime).toBe(0);
+    expect(root.querySelector(".run-screen__title")).toBeNull();
+  });
+
+  it("a back-forward-cache restore opens the app again on the kept session", async () => {
+    const fake = fakePorts();
+    await open(fake);
+    await vi.waitFor(() => expect(frame()).toBeTruthy());
+    fromFrame(frame(), { type: "bridge-ready" });
+    fromFrame(frame(), { type: "ready" });
+    await vi.waitFor(() => expect(status()).toContain("is running"));
+    window.dispatchEvent(new Event("pagehide"));
+    expect(fake.detached.runtime).toBe(1);
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.waitFor(() => expect(frame()).toBeTruthy());
+    expect(fake.reads).toBe(2);
+    expect(fake.ended.runtime).toBe(0);
   });
 
   it("the page does not claim there is no network access, and says what to do", async () => {
