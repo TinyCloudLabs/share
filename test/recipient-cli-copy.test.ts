@@ -17,6 +17,7 @@ describe("recipient CLI guidance", () => {
     }
     expect(html).toContain("For a bearer link, an agent can use the installed CLI");
     expect(llms).toContain("This CLI receive command is for bearer links only");
+    expect(html).toMatch(/<\/div>\s*<aside class="sender-form share-instructions"/);
   });
 
   it("uses the tinycloud executable in published share examples", () => {
