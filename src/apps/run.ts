@@ -1,7 +1,26 @@
 /**
- * Opening uses the app's own session to read install.json, select the pinned catalog version,
- * and request only that version's grant. Existing code is never replaced; missing files are
- * saved create-only before the verified app runs on the same session.
+ * Opening an app: check it, sign in once, save any missing files, verify the saved copy, and hand back what the page needs to run it.
+ *
+ * Order is the safety argument:
+ *  1. The app must be in the catalog (the page's own copy of it) and not switched
+ *     off (`assertAvailable`), and its catalog entry must carry the code it runs
+ *     (`app.jsx`). Nothing is signed for an id the catalog does not list, has
+ *     disabled, or cannot run.
+ *  2. The catalog bundle is fetched and every file is checked against the catalog's
+ *     sha256 and size, and the catalog manifest is loaded (`prepare`). A failure
+ *     here refuses the open before any approval is asked.
+ *  3. ONE sign-in (`signIn`) for the union grant set built from the catalog manifest
+ *     (`signInPlan`, grants.ts): the catalog's runtime grants, plus create-only writes
+ *     for the app's folder and notes. Missing files are saved under this same approval,
+ *     and the app runs on the same session.
+ *  4. Missing files are saved, create-only, in order: app files, then `install.json`,
+ *     then the notes with `knowledge/index.md` last. A folder with `install.json` and
+ *     every app file is complete. Existing files are never replaced.
+ *  5. The saved copy is verified (stored-app.ts): every code file is hashed and compared
+ *     with the catalog's pins for the installed digest (an edited, extra or missing file
+ *     refuses the open), and the manifest is re-validated and capped against the catalog
+ *     manifest. Nothing runs until this has passed.
+ * The sign-in, the node, the SDK and the clock are ports so tests can drive each step.
  */
 import type { Manifest } from "@tinycloud/sdk-core";
 
@@ -61,13 +80,9 @@ export interface PreparedApp {
 export interface RunPorts {
   /** Step 2: fetch and verify the catalog bundle, and load the catalog manifest. No approval happens here. */
   prepare(entry: CatalogEntry): Promise<PreparedApp>;
-  /** Whether this app has a persisted grant which may cover the saved installation. */
-  hasPersistedSession?(appId: string): Promise<boolean>;
-  /** The app's own session reads install.json, saves and runs the app. */
+  /** Step 3: one approval. The sign-in carries the union grants from `plan`, and the same session saves and runs the app. */
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
-  /** Loads the exact version's pinned manifest when an existing install names an older bundle. */
-  loadCatalogManifest(entry: CatalogEntry): Promise<ManifestResult>;
-  /** Lazily loads the SDK after the entry has passed availability checks. */
+  /** The SDK's manifest functions; loaded when the open starts, before the sign-in. */
   sdk(): Promise<ManifestSdk>;
   readonly catalog?: readonly CatalogEntry[];
 }
@@ -131,7 +146,6 @@ export type RunProgress =
   | { readonly phase: "reading"; readonly approval: boolean }
   | { readonly phase: "saving"; readonly done: number; readonly total: number }
   | { readonly phase: "verifying" }
-  | { readonly phase: "disclosing"; readonly entry: CatalogEntry; readonly manifest: unknown }
   | { readonly phase: "starting" };
 
 export interface RunningApp {
@@ -218,29 +232,22 @@ async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: S
 
 export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void, signal?: AbortSignal): Promise<RunningApp> {
   const entries = ports.catalog ?? bundledCatalog.apps;
-  const currentEntry = catalogEntryFor(appId, entries);
-  if (currentEntry === undefined) throw new RunError("unknown-app");
+  const entry = catalogEntryFor(appId, entries);
+  if (entry === undefined) throw new RunError("unknown-app");
+  try { assertAvailable(entry); } catch (error) {
+    if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
+    throw error;
+  }
   report({ phase: "checking" });
-  if (signal?.aborted) throw new RunError("cancelled");
-
-  const hasPersistedSession = await ports.hasPersistedSession?.(appId).catch((cause: unknown) => { throw new RunError("failed", { cause }); }) ?? false;
-  if (!hasPersistedSession) {
-    try { assertAvailable(currentEntry); } catch (error) {
-      if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
-      throw error;
-    }
-  }
-
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
-  let prepared: PreparedApp | undefined;
-  let initialPlan: SignInPlan;
-  if (hasPersistedSession) {
-    initialPlan = installRecordPlan(currentEntry);
-  } else {
-    prepared = await ports.prepare(currentEntry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
-    try { initialPlan = signInPlan(prepared.manifest, sdk); } catch (cause) { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); }
-    if (prepared.manifest.ok) report({ phase: "disclosing", entry: currentEntry, manifest: prepared.manifest.manifest });
+  const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
+  let plan: SignInPlan;
+  try {
+    plan = signInPlan(prepared.manifest, sdk);
+  } catch (cause) {
+    throw cause instanceof RunError ? cause : new RunError("failed", { cause });
   }
+  // Cancel before any approval window opens: nothing is signed or written.
   if (signal?.aborted) throw new RunError("cancelled");
 
   report({ phase: "reading", approval: false });
@@ -249,33 +256,12 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   });
   let app: RunnableApp;
   try {
+    // Cancel while OpenKey was asking: nothing is written and the session is closed below.
     if (signal?.aborted) throw new RunError("cancelled");
-    const installBytes = session.files.entries.get(INSTALL_RECORD_PATH);
-    const sessionDigest = installBytes === undefined ? null : parseInstallRecord(installBytes)?.digest ?? null;
-    let entry = currentEntry;
-    if (sessionDigest !== null) {
-      const installedEntry = entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === sessionDigest);
-      if (installedEntry === undefined) throw new RunError("not-listed");
-      entry = installedEntry;
-    }
-    try { assertAvailable(entry); } catch (error) {
-      if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
-      throw error;
-    }
-    if (prepared === undefined || entry.bundle.digest !== currentEntry.bundle.digest) {
-      prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
-    }
-    const plan = signInPlan(prepared.manifest, sdk);
-    if (prepared.manifest.ok) report({ phase: "disclosing", entry, manifest: prepared.manifest.manifest });
-    await session.authorize(entry, plan, sdk);
     const files = await saveMissing(entry, prepared.bundle, session.files, session.put, report, signal);
     if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
-    const verified = await verifyStoredApp(appId, files, {
-      catalog: entries,
-      loadCatalogManifest: async (candidate) => candidate.bundle.digest === entry.bundle.digest ? prepared!.manifest : ports.loadCatalogManifest(candidate),
-      sdk,
-    });
+    const verified = await verifyStoredApp(appId, files, { catalog: entries, loadCatalogManifest: async () => prepared.manifest, sdk });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });
     app = verified.app;
   } catch (error) {
