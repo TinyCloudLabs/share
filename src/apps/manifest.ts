@@ -27,16 +27,15 @@ async function load(entry: CatalogEntry): Promise<ManifestResult> {
   }
 }
 
-/** Fetches each app version's manifest once and checks it against that version's sha256. */
+/** Fetches an app's manifest once and checks it against the catalog's sha256 before anything is shown. */
 export function loadManifest(entry: CatalogEntry): Promise<ManifestResult> {
-  const key = `${entry.app_id}:${entry.bundle.digest}`;
-  const cached = cache.get(key);
+  const cached = cache.get(entry.app_id);
   if (cached !== undefined) return cached;
   const pending = load(entry).then((result) => {
     // A failure may be transient: let the next open retry it.
-    if (!result.ok) cache.delete(key);
+    if (!result.ok) cache.delete(entry.app_id);
     return result;
   });
-  cache.set(key, pending);
+  cache.set(entry.app_id, pending);
   return pending;
 }

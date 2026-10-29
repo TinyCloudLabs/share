@@ -8,7 +8,6 @@ import { mountApps } from "../src/apps/view.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH)!;
-const previousEntry = catalog.apps.find((candidate) => candidate.app_id === HEALTH && candidate.bundle.digest === "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014");
 const nodeBuffer = (bytes: Uint8Array): ArrayBuffer => { const copy = Buffer.from(bytes); return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer; };
 
 let list: HTMLElement;
@@ -27,12 +26,10 @@ afterEach(() => { vi.unstubAllGlobals(); });
 const panelButtons = (label: string): HTMLButtonElement[] => [...list.querySelectorAll(".apps-install-panel button")].filter((node) => node.textContent === label) as HTMLButtonElement[];
 const line = (): string => list.querySelector(".apps-install-panel .apps-install-line")?.textContent ?? "";
 
-function ports(options: { fail?: RepairError; hold?: boolean; digest?: string } = {}): { ports: RepairPorts; puts: string[]; sessions: number; disposed: number; sheetOpenAtSignIn: boolean[]; release: () => void } {
+function ports(options: { fail?: RepairError; hold?: boolean } = {}): { ports: RepairPorts; puts: string[]; sessions: number; disposed: number; sheetOpenAtSignIn: boolean[]; release: () => void } {
   let release: () => void = () => undefined;
-  const digest = options.digest ?? entry.bundle.digest;
   const state = { puts: [] as string[], sessions: 0, disposed: 0, sheetOpenAtSignIn: [] as boolean[], release: () => release(), ports: undefined as unknown as RepairPorts };
   state.ports = {
-    readInstallDigest: async () => digest,
     async openSession(_manifest, hooks): Promise<RepairSession> {
       state.sessions += 1;
       state.sheetOpenAtSignIn.push(sheet.hasAttribute("open"));
@@ -40,7 +37,7 @@ function ports(options: { fail?: RepairError; hold?: boolean; digest?: string } 
       hooks.approval(true);
       if (options.hold === true) await new Promise<void>((resolve) => { release = resolve; });
       hooks.approval(false);
-      return { readInstallDigest: async () => digest, put: async (key) => { state.puts.push(key); }, list: async () => [], del: async () => undefined, dispose: () => { state.disposed += 1; } };
+      return { put: async (key) => { state.puts.push(key); }, list: async () => [], del: async () => undefined, dispose: () => { state.disposed += 1; } };
     },
   };
   return state;
@@ -60,7 +57,6 @@ describe("repair from the inline panel", () => {
   });
 
   it("Repair signs in with the sheet closed, reports inline, then offers Open (a link to the runner)", async () => {
-
     const node = ports();
     const mounted = mountApps(list, sheet, catalog.apps, { repairPorts: () => node.ports });
     mounted.openRepair(HEALTH);
@@ -76,25 +72,6 @@ describe("repair from the inline panel", () => {
     expect(list.querySelector(".apps-install-panel")).toBeNull();
   });
 
-  it("offers Repair for an enabled retained install when the current version is disabled", async () => {
-    expect(previousEntry).toBeDefined();
-    if (previousEntry === undefined) return;
-    const disabledCurrent = { ...entry, disabled: true as const, disabledReason: "Current version is paused." };
-    const node = ports({ digest: previousEntry.bundle.digest });
-    const requests: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      requests.push(url);
-      return { ok: true, arrayBuffer: async () => nodeBuffer(new Uint8Array(readFileSync(join("public", url)))) };
-    }));
-    const mounted = mountApps(list, sheet, [disabledCurrent, previousEntry], { repairPorts: () => node.ports });
-    expect(mounted.openRepair(HEALTH)).toBe(true);
-    expect(panelButtons("Repair")).toHaveLength(1);
-    panelButtons("Repair")[0]!.click();
-    await vi.waitFor(() => expect(line()).toMatch(/^Repaired\./));
-    expect(requests.length).toBeGreaterThan(0);
-    expect(requests.every((url) => url.startsWith(previousEntry.bundle.root))).toBe(true);
-    expect(node.sessions).toBe(1);
-  });
   it("Cancel while the OpenKey window is open stops the repair: nothing is written and the late session is closed", async () => {
     const node = ports({ hold: true });
     const mounted = mountApps(list, sheet, catalog.apps, { repairPorts: () => node.ports });
@@ -121,16 +98,12 @@ describe("repair from the inline panel", () => {
     expect(node.puts).toEqual([]);
   });
 
-  it("refuses Repair when the installed version is disabled", async () => {
-    expect(previousEntry).toBeDefined();
-    if (previousEntry === undefined) return;
-    const disabledOld = { ...previousEntry, disabled: true as const, disabledReason: "Paused." };
-    const node = ports({ digest: disabledOld.bundle.digest });
-    const mounted = mountApps(list, sheet, [entry, disabledOld], { repairPorts: () => node.ports });
+  it("a disabled app shows its reason with Dismiss only: there is no Repair action", () => {
+    const off = { ...entry, disabled: true as const, disabledReason: "Paused." };
+    const mounted = mountApps(list, sheet, [off], { repairPorts: () => ports().ports });
     expect(mounted.openRepair(HEALTH)).toBe(true);
-    panelButtons("Repair")[0]!.click();
-    expect(node.sessions).toBe(0);
-    expect(node.puts).toEqual([]);
-    await vi.waitFor(() => expect(panelButtons("Try again")).toHaveLength(1));
+    expect(panelButtons("Repair")).toHaveLength(0);
+    expect(panelButtons("Dismiss")).toHaveLength(1);
+    expect(list.querySelector(".apps-install-panel")?.textContent).toContain("Paused.");
   });
 });

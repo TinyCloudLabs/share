@@ -1,8 +1,8 @@
 /**
  * The real ports for Repair: OpenKey, the Web SDK and the node. Loaded only when the person clicks Repair in the
  * repair panel (dynamic imports), like the open flow's. The sign-in is the shared `signInWithManifest` with Repair's own
- * scope (`repairScope`), so the helper refuses a manifest that asks for more than an exact install-record read and
- * `put`/`del`/`list` on the one app's `app/` folder before OpenKey opens.
+ * scope (`repairScope`), so the helper refuses a manifest that asks for more than `put`/`del`/`list` on the one
+ * app's `app/` folder before OpenKey opens.
  */
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
@@ -11,11 +11,10 @@ import type { ApprovalGuard, ManifestSignIn, WalletApprovalFailure } from "../sh
 import { withWalletApproval } from "../share/revoke-flight.js";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { RepairError, type RepairFailure, type RepairPorts, type RepairSession, repairScope } from "./repair.ts";
-import { readInstallRecordDigest, readInstalledDigest, runnerAppName } from "./run-session.ts";
+import { runnerAppName } from "./run-session.ts";
 
 export function createRepairPorts(): RepairPorts {
   return {
-    readInstallDigest(entry, hooks) { return readInstalledDigest(entry, hooks); },
     async openSession(manifest, hooks): Promise<RepairSession> {
       // Dynamic on purpose: the SDK, OpenKey and the shared sign-in load only on the click.
       const openkey = await import("../share/openkey-session.js");
@@ -53,7 +52,6 @@ export function createRepairPorts(): RepairPorts {
       if (space === undefined) { await signedIn.dispose(); throw new RepairError("failed", { cause: new Error("repair-space-not-hosted") }); }
       const kv = tinycloud.kvForSpace(space);
       return {
-        readInstallDigest: () => readInstallRecordDigest(kv, manifest.app_id),
         async put(key, bytes, contentType) {
           const written = await kv.put(key, bytes, { contentType });
           if (!written.ok) throw new Error(`repair-write-failed:${written.error.code}`);

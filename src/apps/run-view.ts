@@ -15,11 +15,12 @@
  * dismissable; the privacy limits of the sandbox (what a sandboxed page can still
  * reveal) are one click away in the same words the viewer uses.
  */
-import { type CatalogEntry, catalog, versionLabel } from "./catalog.ts";
+import { type CatalogEntry, availabilityOf, catalog, versionLabel } from "./catalog.ts";
 import { consentFor } from "./consent.ts";
 import { createCapabilityBridge, type CapabilityBridge } from "./bridge.ts";
 import { type RunFailure, type RunPorts, type RunProgress, type RunningApp, RunError, openApp, catalogEntryFor, APP_ID } from "./run.ts";
 import { createRunPorts } from "./run-session.ts";
+import { loadManifest } from "./manifest.ts";
 import { accessSection, el, noticeList } from "./view.ts";
 import { firstOpenLines } from "./first-open.ts";
 import { runnerHref } from "./install-plan.ts";
@@ -90,7 +91,6 @@ export function progressText(progress: RunProgress, name: string): string {
     case "reading": return progress.approval ? `Approve in the OpenKey window so Share can open ${name} from your TinyCloud` : `Opening ${name}…`;
     case "saving": return `Opening ${name}…`;
     case "verifying": return `Opening ${name}…`;
-    case "disclosing": return `Opening ${name}…`;
     case "starting": return `Opening ${name}…`;
   }
 }
@@ -127,7 +127,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   // ---- chrome (always visible, outside the frame)
   const title = el("h1", "run-title", [entry?.name ?? "Open an app"], { tabindex: "-1" });
-  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : "Checking which version is installed before opening this app."]);
+  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : provenanceText(entry)]);
   const openAnother = el("a", "tc-button apps-button", ["Open another app"], { href: APPS_HREF });
   const signOut = el("button", "tc-button apps-button", ["Sign out of this app"], { type: "button" });
   signOut.disabled = true;
@@ -261,12 +261,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   };
   const paint = (mine: number, progress: RunProgress): void => {
     if (mine !== attempt || entry === undefined) return;
-    if (progress.phase === "disclosing") {
-      disclose(progress.entry, progress.manifest);
-      setStatus(progressText(progress, progress.entry.name), "info");
-      clearApprovalWait();
-      return;
-    }
     const approval = progress.phase === "reading" && progress.approval;
     const base = progressText(progress, entry.name);
     setStatus(base, "info");
@@ -295,10 +289,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   function begin(): void {
     if (entry === undefined || appId === null) return;
-    disclosure = openingDisclosure(entry);
-    provenance.textContent = "Checking which version is installed before opening this app.";
-    access.hidden = true;
-    access.open = false;
     detachFrame();
     const mine = ++attempt;
     const abort = new AbortController();
@@ -369,41 +359,44 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
     expiryTimer = view.setTimeout(expire, Math.max(0, Math.min(result.session.expiresAt - now(), 2 ** 31 - 1)));
   }
 
-  let disclosure: Node[] = entry === undefined ? [] : openingDisclosure(entry);
-  function openingDisclosure(forEntry: CatalogEntry): Node[] {
-    return [
-      el("p", null, [forEntry.description]),
-      el("ul", "apps-notes", firstOpenLines(forEntry).map((line) => el("li", null, [line]))),
-      el("p", "run-caution", [CAUTION]),
-    ];
-  }
-
-  /** Replace the preliminary version-check note with the selected version's permission disclosure before its approval. */
-  function disclose(forEntry: CatalogEntry, manifest: unknown): void {
-    const consent = consentFor(forEntry, manifest, ports.catalog ?? catalog.apps);
-    disclosure = [
-      el("p", null, [forEntry.description]),
-      el("ul", "apps-notes", firstOpenLines(forEntry).map((line) => el("li", null, [line]))),
-      ...noticeList(consent.notices),
-      el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
-      el("p", "run-caution", [CAUTION]),
-    ];
-    provenance.textContent = provenanceText(forEntry);
-    stage.setAttribute("aria-label", forEntry.name);
-    accessLists(manifest, forEntry);
-    access.open = true;
-    stage.querySelector<HTMLElement>(".run-working")?.replaceChildren(
-      el("div", "tc-skeleton run-working__bar", [], { "aria-hidden": "true" }),
-      el("p", null, ["Opening…"]),
-      ...disclosure,
-    );
-  }
-
   // ---- first screen
   if (appId === null || !APP_ID.test(appId) || entry === undefined) {
     setStatus("");
     showScreen(failureScreen("unknown-app", appId ?? ""));
+  } else if (!availabilityOf(entry).available) {
+    // A switched-off entry and one without code open nothing, and say why.
+    const availability = availabilityOf(entry);
+    setStatus("");
+    showScreen(failureScreen(availability.available || availability.temporary ? "unavailable" : "no-code", entry.name, availability.available ? undefined : availability.reason, appId));
   } else {
+    const start0 = el("section", "run-screen tc-panel", [], { "aria-busy": "true" });
+    stage.replaceChildren(start0);
+    void loadManifest(entry).then((loaded) => {
+      if (destroyed || attempt !== 0) return;
+      start0.removeAttribute("aria-busy");
+      if (!loaded.ok) {
+        showScreen({ title: "Couldn't check this app against the catalog", lines: [loaded.reason === "mismatch" ? "Its manifest doesn't match the catalog, so it can't be opened." : "Check your connection and try again."], retry: loaded.reason === "mismatch" ? undefined : "Try again", tone: "danger" }, () => { window.location.reload(); });
+        return;
+      }
+      accessLists(loaded.manifest, entry);
+      disclose(loaded.manifest);
+    });
+  }
+
+  /** The disclosure for this app, shown inline while the open runs. There is no separate step before OpenKey. */
+  let disclosure: Node[] = [];
+  function disclose(manifest: unknown): void {
+    if (entry === undefined) return;
+    // The plain statements (changes to its own tables, reads of another app) come first; the full lists are below.
+    const consent = consentFor(entry, manifest, ports.catalog ?? catalog.apps);
+    disclosure = [
+      el("p", null, [entry.description]),
+      el("ul", "apps-notes", firstOpenLines(entry).map((line) => el("li", null, [line]))),
+      ...noticeList(consent.notices),
+      el("p", null, ["It runs in a sandbox. It can use only what's listed under “What this app can do” below, and only while this page is open, for one hour at most."]),
+      el("p", "run-caution", [CAUTION]),
+    ];
+    access.open = true;
     begin();
   }
 
