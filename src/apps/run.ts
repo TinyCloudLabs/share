@@ -78,6 +78,8 @@ export interface PreparedApp {
 export interface RunPorts {
   /** Step 2: fetch and verify the catalog bundle, and load the catalog manifest. No approval happens here. */
   prepare(entry: CatalogEntry): Promise<PreparedApp>;
+  /** Reads only the saved install record so the approval plan can match its pinned version. */
+  readInstallDigest(entry: CatalogEntry, hooks: RunHooks): Promise<string | null>;
   /** Step 3: one approval. The sign-in carries the union grants from `plan`, and the same session saves and runs the app. */
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
   /** Loads the exact version's pinned manifest when an existing install names an older bundle. */
@@ -205,13 +207,26 @@ async function saveMissing(entry: CatalogEntry, bundle: VerifiedBundle, files: S
 
 export async function openApp(appId: string, ports: RunPorts, report: (progress: RunProgress) => void, signal?: AbortSignal): Promise<RunningApp> {
   const entries = ports.catalog ?? bundledCatalog.apps;
-  const entry = catalogEntryFor(appId, entries);
-  if (entry === undefined) throw new RunError("unknown-app");
+  const currentEntry = catalogEntryFor(appId, entries);
+  if (currentEntry === undefined) throw new RunError("unknown-app");
+  report({ phase: "checking" });
+
+  let installedDigest: string | null;
+  try {
+    installedDigest = await ports.readInstallDigest(currentEntry, { approval: (open) => report({ phase: "reading", approval: open }) });
+  } catch (cause) {
+    throw cause instanceof RunError ? cause : new RunError("failed", { cause });
+  }
+  const entry = installedDigest === null
+    ? currentEntry
+    : entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === installedDigest);
+  if (entry === undefined) throw new RunError("not-listed");
   try { assertAvailable(entry); } catch (error) {
     if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
     throw error;
   }
-  report({ phase: "checking" });
+  if (signal?.aborted) throw new RunError("cancelled");
+
   const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
   const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
   let plan: SignInPlan;
@@ -220,7 +235,6 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   } catch (cause) {
     throw cause instanceof RunError ? cause : new RunError("failed", { cause });
   }
-  // Cancel before any approval window opens: nothing is signed or written.
   if (signal?.aborted) throw new RunError("cancelled");
 
   report({ phase: "reading", approval: false });
@@ -229,20 +243,16 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   });
   let app: RunnableApp;
   try {
-    // Cancel while OpenKey was asking: nothing is written and the session is closed below.
     if (signal?.aborted) throw new RunError("cancelled");
+    const installBytes = session.files.entries.get(INSTALL_RECORD_PATH);
+    const sessionDigest = installBytes === undefined ? null : parseInstallRecord(installBytes)?.digest ?? null;
+    if (sessionDigest !== installedDigest) throw new RunError("failed", { detail: "the saved version changed while opening" });
     const files = await saveMissing(entry, prepared.bundle, session.files, session.put, report, signal);
     if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
-    const installBytes = files.entries.get(INSTALL_RECORD_PATH);
-    const savedInstall = installBytes === undefined ? null : parseInstallRecord(installBytes);
-    const installedEntry = savedInstall === null ? undefined : entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === savedInstall.digest);
-    const catalogManifest = installedEntry === undefined || installedEntry.bundle.digest === entry.bundle.digest
-      ? prepared.manifest
-      : await ports.loadCatalogManifest(installedEntry);
     const verified = await verifyStoredApp(appId, files, {
       catalog: entries,
-      loadCatalogManifest: async (candidate) => candidate.bundle.digest === installedEntry?.bundle.digest ? catalogManifest : prepared.manifest,
+      loadCatalogManifest: async (candidate) => candidate.bundle.digest === entry.bundle.digest ? prepared.manifest : ports.loadCatalogManifest(candidate),
       sdk,
     });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });

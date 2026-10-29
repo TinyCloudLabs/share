@@ -166,6 +166,7 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
 function repairProgressText(entry: CatalogEntry, progress: RepairProgress): string {
   switch (progress.phase) {
     case "checking": return `Checking ${possessive(entry.name)} files against the catalog…`;
+    case "checking-version": return `Checking which version of ${entry.name} is installed…`;
     case "signing-in": return "Opening OpenKey…";
     case "approval": return `Approve in the OpenKey window to repair ${entry.name}`;
     case "repairing": return `Repairing ${entry.name}… ${progress.done} of ${progress.total} files`;
@@ -243,6 +244,12 @@ export interface MountedApps {
 function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): RepairPorts {
   return {
     ...ports,
+    readInstallDigest: async (entry, hooks) => {
+      if (cancelled()) throw new RepairError("cancelled");
+      const digest = await ports.readInstallDigest(entry, hooks);
+      if (cancelled()) throw new RepairError("cancelled");
+      return digest;
+    },
     openSession: async (manifest, hooks) => {
       if (cancelled()) throw new RepairError("cancelled");
       const session = await ports.openSession(manifest, hooks);
@@ -338,9 +345,9 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       panel.onEscape = cancel;
       panel.say(message, "info", { actions: [{ label: "Cancel", onClick: cancel }] });
     };
-    working(repairProgressText(entry, { phase: "checking" }));
+    working(repairProgressText(entry, { phase: "checking-version" }));
     panel.focus();
-    void runRepair(entry, guardedRepairPorts(repairPorts(), () => cancelled), (progress) => working(repairProgressText(entry, progress))).then(
+    void runRepair(entry, guardedRepairPorts(repairPorts(), () => cancelled), (progress) => working(repairProgressText(entry, progress)), entries.filter((candidate) => candidate.app_id === entry.app_id)).then(
       (outcome: RepairOutcome) => {
         if (cancelled) return;
         running = false;

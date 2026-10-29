@@ -30,6 +30,7 @@ function ports(options: { fail?: RepairError; hold?: boolean } = {}): { ports: R
   let release: () => void = () => undefined;
   const state = { puts: [] as string[], sessions: 0, disposed: 0, sheetOpenAtSignIn: [] as boolean[], release: () => release(), ports: undefined as unknown as RepairPorts };
   state.ports = {
+    readInstallDigest: async () => entry.bundle.digest,
     async openSession(_manifest, hooks): Promise<RepairSession> {
       state.sessions += 1;
       state.sheetOpenAtSignIn.push(sheet.hasAttribute("open"));

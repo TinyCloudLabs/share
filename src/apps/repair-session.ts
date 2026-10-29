@@ -11,10 +11,11 @@ import type { ApprovalGuard, ManifestSignIn, WalletApprovalFailure } from "../sh
 import { withWalletApproval } from "../share/revoke-flight.js";
 import { INSTALL_EXPIRY_MS, INSTALL_SPACE } from "./install-plan.ts";
 import { RepairError, type RepairFailure, type RepairPorts, type RepairSession, repairScope } from "./repair.ts";
-import { runnerAppName } from "./run-session.ts";
+import { readInstalledDigest, runnerAppName } from "./run-session.ts";
 
 export function createRepairPorts(): RepairPorts {
   return {
+    readInstallDigest(entry, hooks) { return readInstalledDigest(entry, hooks); },
     async openSession(manifest, hooks): Promise<RepairSession> {
       // Dynamic on purpose: the SDK, OpenKey and the shared sign-in load only on the click.
       const openkey = await import("../share/openkey-session.js");

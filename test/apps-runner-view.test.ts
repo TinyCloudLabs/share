@@ -9,6 +9,7 @@ import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type RunPorts, type RunSession, type RuntimeSession, signInPlan } from "../src/apps/run.ts";
 import { CAUTION } from "../src/apps/limits.ts";
 import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
+import { parseInstallRecord } from "../src/apps/stored-app.ts";
 import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
@@ -62,6 +63,10 @@ function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; 
       const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
       return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
     },
+    readInstallDigest: async (candidate) => {
+      const bytes = storedFiles(candidate, overrides.stored).entries.get("install.json");
+      return bytes === undefined ? null : parseInstallRecord(bytes)?.digest ?? null;
+    },
     loadCatalogManifest: async (candidate) => ({
       ok: true,
       manifest: JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")),
@@ -100,7 +105,7 @@ const fromFrame = (iframe: HTMLIFrameElement, data: Record<string, unknown>): vo
 
 async function open(fake: Fake, id: string | null = HEALTH): Promise<ReturnType<typeof mountRunner>> {
   const runner = mountRunner(root, { appId: id, ports: fake.ports, frame: { manifest: frameManifest, fetch: frameFetch } });
-  if (id === HEALTH) await vi.waitFor(() => expect(fake.reads).toBe(1));
+  if (id === HEALTH) await vi.waitFor(() => expect(fake.reads === 1 || root.querySelector(".run-screen__title") !== null).toBe(true));
   return runner;
 }
 
@@ -434,13 +439,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     const other = { ...entry, bundle: { ...entry.bundle, digest: "f".repeat(64) } };
     const fake = fakePorts({ catalog: [entry] });
     // The install recorded a digest the catalog no longer lists.
-    const original = fake.ports.signIn;
-    fake.ports.signIn = async (candidate, plan, hooks) => {
-      const session = await original(candidate, plan, hooks);
-      const files = { entries: new Map(session.files.entries) };
-      files.entries.set("install.json", new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: other.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" })));
-      return { ...session, files };
-    };
+    fake.ports.readInstallDigest = async () => other.bundle.digest;
     await open(fake);
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This version of the app isn't in the catalog any more"));
     expect(root.querySelector("a[href*='repair']")).toBeNull();
