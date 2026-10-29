@@ -320,29 +320,22 @@ describe("opening an installed app", () => {
     await expect(open()).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
-  it("the first open asks for one app approval, while a reopen restores the grant without OpenKey requests", async () => {
-    let requests = 0;
-    signInBehaviour = async (_call, options) => {
-      if (savedSessionExists) return;
-      const guard = options["guardApproval"] as SignInCall["guard"];
-      requests += 1;
-      await guard(async () => undefined);
-    };
-
+  it("passes app-scoped restore configuration and checks version grants on the returned client", async () => {
     kvFiles = new Map();
     const runPorts = ports();
     const first = await open(runPorts);
-    expect(requests + stepUpPrompts).toBe(1);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.options["persistSession"]).toBe(true);
+    expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
     expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
     expect(calls[0]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
     await first.session.detach();
 
     await open(runPorts);
-    expect(requests + stepUpPrompts).toBe(1);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
+    expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[1]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
     expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
   });
 

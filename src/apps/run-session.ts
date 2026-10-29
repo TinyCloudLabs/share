@@ -266,6 +266,7 @@ export function createRunPorts(): RunPorts {
           // The session is persisted under this app's own prefix: a reload while it still lives
           // (same owner, same origin, permissions still covered) restores it without a new
           // approval, and it can never stand in for another app's or another account's session.
+          restoreBeforeOpenKey: true,
           sessionPrefix: await runnerSessionPrefix(entry.app_id),
           persistSession: true,
           expiry: RUNTIME_SESSION_MS,

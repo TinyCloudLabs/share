@@ -96,11 +96,13 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
     });
     const kv = signedIn.tinycloud.space(COURIER_SPACE).kv;
     const connected = signedIn;
+    const session = connected.session;
+    if (session === undefined) throw new Error("courier-openkey-session-missing");
     return {
-      address: connected.session.address,
+      address: session.address,
       store: createKvStore(kv),
       dispose: connected.dispose,
-      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }),
+      signOut: () => endSenderSession({ session, tinycloud: connected.tinycloud }),
     };
   } catch (error) {
     await signedIn?.dispose();
