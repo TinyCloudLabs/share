@@ -368,7 +368,7 @@ describe("opening an installed app", () => {
     expect(puts).toEqual([]);
   });
 
-  it("auto-creates a missing applications space during the single initial sign-in", async () => {
+  it("auto-creates a missing applications space through the SDK bootstrap", async () => {
     applicationSpaceExists = false;
     kvListResult = { ok: false, error: { code: "NETWORK_ERROR", message: "space not found", meta: { status: 404 } } };
 
@@ -376,8 +376,8 @@ describe("opening an installed app", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
-    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(true);
-    expect(calls[0]!.options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
     expect(calls[0]!.fake.spaces).toEqual({ [INSTALL_SPACE]: "space-id" });
     expect(spaceCreations).toEqual([INSTALL_SPACE]);
     expect(app.app.entry.bundle.digest).toBe(entry.bundle.digest);
@@ -388,8 +388,8 @@ describe("opening an installed app", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
-    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(true);
-    expect(calls[0]!.options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
     expect(spaceCreations).toEqual([]);
   });
 
@@ -398,9 +398,9 @@ describe("opening an installed app", () => {
     savedGrantManifest = openManifest(manifestFor(entry));
     await open();
     const { options } = calls[0]!;
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["hostSpaces"]).toBeUndefined();
     expect(options["autoCreateSpace"]).toBe(true);
-    expect(options["includeAccountRegistryPermissions"]).toBe(true);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
     expect(spaceCreations).toEqual([]);
   });
 
@@ -471,7 +471,7 @@ describe("opening an installed app", () => {
     expect(savedSessionExists).toBe(true);
   });
 
-  it("the sign-in uses the app manifest, registry bootstrap and one-hour expiry", async () => {
+  it("the sign-in uses the app manifest and one-hour expiry", async () => {
     await open();
     const catalogManifest = sdkCore.validateManifest(manifestJson());
     const { options } = calls[0]!;
@@ -479,9 +479,9 @@ describe("opening an installed app", () => {
     expect(options["allowedActions"]).toEqual(openScope(catalogManifest, sdkCore).allowedActions);
     expect(options["allowedPathPrefixes"]).toEqual(openScope(catalogManifest, sdkCore).allowedPathPrefixes);
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["hostSpaces"]).toBeUndefined();
     expect(options["autoCreateSpace"]).toBe(true);
-    expect(options["includeAccountRegistryPermissions"]).toBe(true);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
   });
   it("lets the approvals of the sign-in itself through, one at a time", async () => {

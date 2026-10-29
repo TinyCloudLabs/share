@@ -4,12 +4,27 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Manifest } from "@tinycloud/web-sdk";
 import { signInWithManifest } from "../src/share/openkey-session.js";
 import type { SharePublicConfig } from "../src/email-share/config.js";
+import { catalog } from "../src/apps/catalog.ts";
+import { installRecordPlan } from "../src/apps/run.ts";
+import { createRunPorts } from "../src/apps/run-session.ts";
+
+vi.mock("../src/email-share/config.js", () => ({
+  loadSharePublicConfig: async () => ({
+    version: "tinycloud.share/config-v2",
+    shareOrigin: "https://share.tinycloud.xyz",
+    senderBootstrapNodeOrigin: "https://node.tinycloud.xyz",
+    registryOrigin: "https://registry.tinycloud.xyz",
+    credentialsOrigin: "https://credentials.tinycloud.xyz",
+    accountlessReceiverEnabled: false,
+  }),
+}));
 
 let persisted = false;
 let covered = true;
 let walletAttached = false;
 const SIGNER = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
 let signFreshManifest = false;
+let applicationSpaceExists = true;
 const permissionRequests: unknown[] = [];
 const hostedSpaces: string[] = [];
 const clientConfigs: Array<Record<string, unknown>> = [];
@@ -23,13 +38,20 @@ vi.mock("@tinycloud/web-sdk", () => ({
     }
     connectWallet(): void { walletAttached = true; }
     hasPermissions(): boolean { return covered; }
-    space(): { kv: object } { return { kv: {} }; }
+    space(name: string): { id: string; kv: object } {
+      return { id: name, kv: { list: async () => ({ ok: true, data: { keys: [] } }), createSignedReadUrl: async () => ({ ok: false, error: { code: "KV_NOT_FOUND" } }) } };
+    }
+    sqlForSpace(): object { return {}; }
     private async approve(message: string, purpose: string): Promise<void> {
       const strategy = this.config["signStrategy"] as { handler: (request: { message: string; purpose: string }) => Promise<unknown> };
       await strategy.handler({ message, purpose });
     }
     async signIn(): Promise<{ address: string; siwe: string }> {
       if (!persisted && signFreshManifest) await this.approve("Health Log manifest", "sign-in");
+      if (!applicationSpaceExists && this.config["autoCreateSpace"] === true) {
+        await this.approve("Create applications space", "space-host");
+        applicationSpaceExists = true;
+      }
       persisted = true;
       return { address: ADDRESS, siwe: "" };
     }
@@ -39,7 +61,11 @@ vi.mock("@tinycloud/web-sdk", () => ({
       return { approved: true };
     }
     async signOut(): Promise<void> { persisted = false; }
-    async ensureOwnedSpaceHosted(name: string): Promise<string> { hostedSpaces.push(name); return name; }
+    async ensureOwnedSpaceHosted(name: string): Promise<string> {
+      if (!walletAttached) throw new Error("Not signed in. Call signIn() first.");
+      hostedSpaces.push(name);
+      return name;
+    }
   },
 }));
 
@@ -115,6 +141,7 @@ describe("persisted runner session OpenKey boundary", () => {
     covered = true;
     walletAttached = false;
     signFreshManifest = false;
+    applicationSpaceExists = true;
     permissionRequests.length = 0;
     hostedSpaces.length = 0;
     clientConfigs.length = 0;
@@ -163,22 +190,74 @@ describe("persisted runner session OpenKey boundary", () => {
       config: CONFIG,
       persistSession: true,
       restoreBeforeOpenKey: true,
-      includeAccountRegistryPermissions: true,
-      hostSpaces: ["applications"],
+      includeAccountRegistryPermissions: false,
       autoCreateSpace: true,
     };
 
     const first = await signInWithManifest(options);
     expect(SIGNER.address).toBe(ADDRESS);
-    expect(clientConfigs[0]).toMatchObject({ autoCreateSpace: true, includeAccountRegistryPermissions: true });
+    expect(clientConfigs[0]).toMatchObject({ autoCreateSpace: true, includeAccountRegistryPermissions: false });
     expect(transport.authRequests()).toBe(1);
     expect(transport.signRequests()).toBe(1);
-    expect(hostedSpaces).toEqual(["account", "applications"]);
+    expect(hostedSpaces).toEqual([]);
     await first.detach();
 
+    walletAttached = false;
     const reopened = await signInWithManifest(options);
     expect(transport.authRequests()).toBe(1);
     expect(transport.signRequests()).toBe(1);
+    expect(hostedSpaces).toEqual([]);
+    expect(persisted).toBe(true);
+    await reopened.detach();
+  });
+  it("the real runner restores its app session before any space-host call", async () => {
+    signFreshManifest = true;
+    const transport = installOpenKeyFrameResponder();
+    const entry = catalog.apps.find((candidate) => candidate.app_id === "xyz.tinycloud.sample.healthlog");
+    if (entry === undefined) throw new Error("Health Log catalog entry is missing");
+    const ports = createRunPorts();
+    const plan = installRecordPlan(entry);
+    const hooks = { approval: () => undefined };
+
+    const first = await ports.signIn(entry, plan, hooks);
+    expect(transport.authRequests()).toBe(1);
+    expect(transport.signRequests()).toBe(1);
+    await first.runtime.detach();
+
+    walletAttached = false;
+    hostedSpaces.length = 0;
+    const reopened = await ports.signIn(entry, plan, hooks);
+    expect(transport.authRequests()).toBe(1);
+    expect(transport.signRequests()).toBe(1);
+    expect(hostedSpaces).toEqual([]);
+    expect(persisted).toBe(true);
+    await reopened.runtime.detach();
+  });
+
+  it("a fresh account with no applications space needs the production space-creation approval once", async () => {
+    signFreshManifest = true;
+    applicationSpaceExists = false;
+    const transport = installOpenKeyFrameResponder();
+    const options = {
+      manifest: MANIFEST,
+      config: CONFIG,
+      persistSession: true,
+      restoreBeforeOpenKey: true,
+      includeAccountRegistryPermissions: false,
+      autoCreateSpace: true,
+    };
+
+    const first = await signInWithManifest(options);
+    expect(applicationSpaceExists).toBe(true);
+    expect(transport.authRequests()).toBe(1);
+    expect(transport.signRequests()).toBe(2);
+    await first.detach();
+
+    walletAttached = false;
+    const reopened = await signInWithManifest(options);
+    expect(transport.authRequests()).toBe(1);
+    expect(transport.signRequests()).toBe(2);
+    expect(persisted).toBe(true);
     await reopened.detach();
   });
 

@@ -2,8 +2,8 @@
  * The real ports for opening an installed app: the Web SDK, OpenKey and the node.
  *
  * Existing app grants use a narrow same-session read of install.json, then authorize
- * only the saved version's resources. First opens use the production sign-in, including
- * account-registry grants and primary applications-space setup.
+ * only the saved version's resources. First opens request the app grant; the SDK's
+ * primary-space bootstrap asks separately only when the applications space is missing.
  *
  * The signature guard is closed after the installed version's grant is resolved.
  */
@@ -284,8 +284,7 @@ export function createRunPorts(): RunPorts {
             manifest: plan.manifest,
             ...plan.scope,
             config,
-            includeAccountRegistryPermissions: true,
-            hostSpaces: [INSTALL_SPACE],
+            includeAccountRegistryPermissions: false,
             autoCreateSpace: true,
             guardApproval: approvals.guard,
             onClient: (created) => { client = created; },
