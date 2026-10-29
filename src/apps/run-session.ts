@@ -5,30 +5,22 @@
  * only the saved version's resources. New installs sign the current version once.
  * Space creation and hosting are disabled on this path.
  *
- * One sign-in per open (`signIn`, which calls the shared `signInWithManifest` in
- * src/share/openkey-session.ts). The session is persisted under the app's own storage
- * prefix, so a later open inside its lifetime restores it — same owner, same origin,
- * permissions still covered — with no new approval. The requested manifest is the union built in grants.ts:
- * the catalog's runtime grants, plus `get`, `list` and create-only `put` on `<app_id>/app/`,
- * and create-only `put` on `<app_id>/knowledge/`. The same session reads the saved copy,
- * saves what is missing and runs the app.
- *
- * Signing is closed once the sign-in completes: the approval guard refuses any further
- * signature request (`runner-signing-closed`).
+ * The signature guard is closed after the installed version's grant is resolved.
  */
-import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { CatalogEntry } from "./catalog.ts";
+import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
-import { INSTALL_SPACE } from "./install-plan.ts";
+import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SPACE, installRecordKey } from "./install-plan.ts";
 import { isSignInLabel } from "../share/sign-in-label.js";
 import { RunError, type PreparedApp, type PutResult, type RunFailure, type RunHooks, type RunPorts, type RunSession, type SignInPlan } from "./run.ts";
 import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
-import { BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
+import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
-import type { StoredFiles } from "./stored-app.ts";
+import { parseInstallRecord, type StoredFiles } from "./stored-app.ts";
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -156,6 +148,77 @@ export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: Read
   return { entries, incomplete };
 }
 
+const installLookupScope = (entry: CatalogEntry) => ({
+  allowedSpaces: [INSTALL_SPACE],
+  allowedServices: ["kv"],
+  allowedActions: ["get", "list"],
+  allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: installRecordKey(entry.app_id) }],
+});
+
+function installLookupManifest(entry: CatalogEntry): Manifest {
+  const key = installRecordKey(entry.app_id);
+  return {
+    manifest_version: 1,
+    app_id: entry.app_id,
+    name: entry.name,
+    space: INSTALL_SPACE,
+    defaults: false,
+    includePublicSpace: false,
+    expiry: INSTALL_EXPIRY,
+    permissions: [{ service: "tinycloud.kv", path: key, actions: ["get", "list"], skipPrefix: true, description: "Check the saved app version before opening it." }],
+  };
+}
+
+export async function readInstallRecordDigest(kv: ReaderKv, appId: string): Promise<string | null> {
+  const key = installRecordKey(appId);
+  const prefix = `${appId}/app/`;
+  const files = await readSavedFiles({
+    list: async () => {
+      const listed = await kv.list({ prefix: key });
+      if (!listed.ok) return listed;
+      return { ok: true, data: { keys: listed.data.keys.filter((candidate) => candidate === key), ...(listed.data.truncated === undefined ? {} : { truncated: listed.data.truncated }) } };
+    },
+    createSignedReadUrl: (path, options) => kv.createSignedReadUrl(path, options),
+  }, prefix);
+  if (files.incomplete) throw new RunError("damaged", { detail: "install.json could not be read completely" });
+  const bytes = files.entries.get(INSTALL_RECORD_PATH);
+  if (bytes === undefined) return null;
+  const install = parseInstallRecord(bytes);
+  if (install === null) throw new RunError("damaged", { detail: "install.json is not a valid install record" });
+  return install.digest;
+}
+export async function readInstalledDigest(entry: CatalogEntry, hooks: RunHooks): Promise<string | null> {
+  const openkey = await import("../share/openkey-session.js");
+  const config = await loadSharePublicConfig();
+  const approvals = approvalGuard(hooks);
+  let client: TinyCloudWeb | undefined;
+  let signedIn: ManifestSignIn;
+  try {
+    signedIn = await openkey.signInWithManifest({
+      manifest: installLookupManifest(entry),
+      ...installLookupScope(entry),
+      config,
+      includeAccountRegistryPermissions: false,
+      hostSpaces: [INSTALL_SPACE],
+      guardApproval: approvals.guard,
+      onClient: (created) => { client = created; },
+      appName: runnerAppName("TinyCloud Share: check version ", entry.name),
+      expiry: INSTALL_EXPIRY_MS,
+    });
+  } catch (error) {
+    const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
+    throw new RunError(reason ?? "failed", { cause: error });
+  }
+  try {
+    const space = signedIn.spaces[INSTALL_SPACE];
+    if (space === undefined) throw new RunError("failed", { detail: "the applications space is not hosted" });
+    return await readInstallRecordDigest(signedIn.tinycloud.kvForSpace(space), entry.app_id);
+  } catch (error) {
+    throw error instanceof RunError ? error : new RunError("failed", { cause: error });
+  } finally {
+    await signedIn.dispose().catch(() => undefined);
+  }
+}
 
 export function createRunPorts(): RunPorts {
   return {
@@ -165,7 +228,7 @@ export function createRunPorts(): RunPorts {
       return new BrowserSessionStorage({ keyPrefix }).activeAddress() !== undefined;
     },
     async prepare(entry): Promise<PreparedApp> {
-      // Before any approval: every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
+      // Before the app's permissions are signed, every catalog file is fetched and checked against its pin, and the manifest is loaded and checked.
       const bundle = await fetchVerifiedBundle(entry).catch((error: unknown) => {
         if (error instanceof BundleRefusal && error.reason !== "unavailable") throw new RunError("catalog-unavailable", { cause: error, detail: "The catalog copy of this app did not match the catalog." });
         throw new RunError("failed", { cause: error, detail: "The app's files could not be downloaded. Check the connection and try again." });
@@ -175,6 +238,7 @@ export function createRunPorts(): RunPorts {
       if (!manifest.ok) throw new RunError("failed", { detail: "The app's manifest could not be downloaded. Check the connection and try again." });
       return { bundle, manifest };
     },
+    loadCatalogManifest(entry) { return loadManifest(entry); },
 
 
     async sdk(): Promise<ManifestSdk> {

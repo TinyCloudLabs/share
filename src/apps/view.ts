@@ -166,6 +166,7 @@ function repairFailureText(entry: CatalogEntry, error: RepairError): string {
 function repairProgressText(entry: CatalogEntry, progress: RepairProgress): string {
   switch (progress.phase) {
     case "checking": return `Checking ${possessive(entry.name)} files against the catalog…`;
+    case "checking-version": return `Checking which version of ${entry.name} is installed…`;
     case "signing-in": return "Opening OpenKey…";
     case "approval": return `Approve in the OpenKey window to repair ${entry.name}`;
     case "repairing": return `Repairing ${entry.name}… ${progress.done} of ${progress.total} files`;
@@ -243,6 +244,12 @@ export interface MountedApps {
 function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): RepairPorts {
   return {
     ...ports,
+    readInstallDigest: async (entry, hooks) => {
+      if (cancelled()) throw new RepairError("cancelled");
+      const digest = await ports.readInstallDigest(entry, hooks);
+      if (cancelled()) throw new RepairError("cancelled");
+      return digest;
+    },
     openSession: async (manifest, hooks) => {
       if (cancelled()) throw new RepairError("cancelled");
       const session = await ports.openSession(manifest, hooks);
@@ -252,6 +259,7 @@ function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): Repai
       }
       const refuse = (): void => { if (cancelled()) throw new RepairError("cancelled"); };
       return {
+        readInstallDigest: async () => { refuse(); const digest = await session.readInstallDigest(); refuse(); return digest; },
         put: async (key, bytes, contentType) => { refuse(); return session.put(key, bytes, contentType); },
         list: async (prefix) => { refuse(); return session.list(prefix); },
         del: async (key) => { refuse(); return session.del(key); },
@@ -263,6 +271,13 @@ function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): Repai
 
 export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): MountedApps {
   const repairPorts = options.repairPorts ?? createRepairPorts;
+  const currentEntries: CatalogEntry[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of entries) {
+    if (seenIds.has(entry.app_id)) continue;
+    seenIds.add(entry.app_id);
+    currentEntries.push(entry);
+  }
   const uninstallPortsFor = options.uninstallPorts ?? createUninstallPorts;
   let opener: HTMLElement | null = null;
   const cards = new Map<string, HTMLElement>();
@@ -331,9 +346,9 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       panel.onEscape = cancel;
       panel.say(message, "info", { actions: [{ label: "Cancel", onClick: cancel }] });
     };
-    working(repairProgressText(entry, { phase: "checking" }));
+    working(repairProgressText(entry, { phase: "checking-version" }));
     panel.focus();
-    void runRepair(entry, guardedRepairPorts(repairPorts(), () => cancelled), (progress) => working(repairProgressText(entry, progress))).then(
+    void runRepair(entry, guardedRepairPorts(repairPorts(), () => cancelled), (progress) => working(repairProgressText(entry, progress)), entries.filter((candidate) => candidate.app_id === entry.app_id)).then(
       (outcome: RepairOutcome) => {
         if (cancelled) return;
         running = false;
@@ -358,13 +373,8 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       panels.get(entry.app_id)?.panel.focus();
       return;
     }
-    const availability = availabilityOf(entry);
     const panel = freshPanel(entry.app_id, `Repair ${entry.name}`);
-    if (availability.available) {
-      panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
-    } else {
-      panel.say(availability.reason, "danger", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
-    }
+    panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
     panel.focus();
   };
 
@@ -429,23 +439,23 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
 
   const mounted: MountedApps = {
     openRepair(appId): boolean {
-      const entry = entries.find((candidate) => candidate.app_id === appId);
+      const entry = currentEntries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
       offerRepair(entry);
       return true;
     },
     openUninstall(appId): boolean {
-      const entry = entries.find((candidate) => candidate.app_id === appId);
+      const entry = currentEntries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
       show(entry);
       return true;
     },
   };
-  if (entries.length === 0) {
+  if (currentEntries.length === 0) {
     list.replaceWith(el("p", "apps-empty", ["No apps are listed yet."]));
     return mounted;
   }
-  for (const entry of entries) {
+  for (const entry of currentEntries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);

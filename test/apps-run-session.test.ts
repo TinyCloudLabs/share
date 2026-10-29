@@ -6,7 +6,6 @@ import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalog } from "../src/apps/catalog.ts";
-import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
 import { type PreparedApp, type RunPorts, installRecordPlan, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
@@ -229,7 +228,7 @@ describe("readSavedFiles: bounded, never silently cut", () => {
   });
 });
 
-describe("opening an installed app: one sign-in per open", () => {
+describe("opening an installed app", () => {
   it("a repeat open signs in once, reads the saved copy, and writes no app file", async () => {
     const app = await open();
     expect(calls).toHaveLength(1);
@@ -321,7 +320,24 @@ describe("opening an installed app: one sign-in per open", () => {
     await expect(open()).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
+  it("passes app-scoped restore configuration and checks version grants on the returned client", async () => {
+    kvFiles = new Map();
+    const runPorts = ports();
+    const first = await open(runPorts);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options["persistSession"]).toBe(true);
+    expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
+    expect(calls[0]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
+    await first.session.detach();
 
+    await open(runPorts);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
+    expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[1]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
+    expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
+  });
 
   it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {
     await open();

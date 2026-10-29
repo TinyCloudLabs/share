@@ -27,6 +27,7 @@ import { parseProductionHeaders, productionHeadersForPath } from "./e2e-prod/pro
 const screenshotDir = process.env.APPS_SCREENSHOT_DIR ?? ".context/apps-page";
 const axeSource = await readFile(new URL("../node_modules/axe-core/axe.min.js", import.meta.url), "utf8");
 const catalog = JSON.parse(await readFile(new URL("../apps/catalog.json", import.meta.url), "utf8"));
+const currentApps = catalog.apps.filter((app, index, entries) => entries.findIndex((candidate) => candidate.app_id === app.app_id) === index);
 const rules = parseProductionHeaders(await readFile(new URL("../public/_headers", import.meta.url), "utf8"));
 const redirects = (await readFile(new URL("../public/_redirects", import.meta.url), "utf8")).split("\n").filter(Boolean).map((line) => line.split(/\s+/));
 
@@ -112,8 +113,8 @@ try {
       assert.equal(await page.$eval("h1", (node) => node.textContent), "Apps for your TinyCloud");
 
       const cards = await page.$$eval(".apps-card", (nodes) => nodes.map((node) => ({ name: node.querySelector("h2").textContent, open: node.querySelector(".apps-card__actions a")?.getAttribute("href") ?? null, detailsDisabled: node.querySelector('.apps-card__actions button[aria-label^="Details for"]')?.disabled ?? true })));
-      assert.deepEqual(cards.map((card) => card.name), catalog.apps.map((app) => app.name), `${label}: one card per catalog entry`);
-      assert.deepEqual(cards.map((card) => card.open), catalog.apps.map((app) => (app.app_id === "com.example.notes" ? null : `/apps/run#${app.app_id}`)), `${label}: each card with code opens the runner; Notes has none`);
+      assert.deepEqual(cards.map((card) => card.name), currentApps.map((app) => app.name), `${label}: one card per app, showing its current version`);
+      assert.deepEqual(cards.map((card) => card.open), currentApps.map((app) => (app.app_id === "com.example.notes" ? null : `/apps/run#${app.app_id}`)), `${label}: each card with code opens the runner; Notes has none`);
       assert.ok(cards.every((card) => !card.detailsDisabled), `${label}: Details is enabled`);
       assert.equal(await page.$eval("html", (node) => getComputedStyle(node).colorScheme), scheme, `${label}: follows the OS scheme`);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${label}: no horizontal scroll`);
@@ -173,7 +174,7 @@ try {
         { app: catalog.apps.find((app) => app.app_id === "xyz.tinycloud.sample.recipes"), tag: "cross-app", expect: ["'s database ("], absent: [] },
       ];
       for (const { app, tag, expect: wanted, absent } of detailsCases) {
-        const index = catalog.apps.indexOf(app);
+        const index = currentApps.indexOf(app);
         await page.evaluate((position) => document.querySelectorAll(".apps-card")[position].querySelector('.apps-card__actions button[aria-label^="Details for"]').click(), index);
         await page.waitForFunction(() => document.querySelector("#apps-sheet [aria-busy]") === null && document.querySelector("#apps-sheet h3") !== null).catch(async (error) => {
           throw new Error(`${label} ${tag}: the details sheet never became ready: ${(await page.$eval("#apps-sheet", (node) => node.innerText).catch(() => "no sheet")).slice(0, 300)} | errors ${JSON.stringify(page.report.errors)} | violations ${JSON.stringify(await page.evaluate(() => globalThis.__violations))}`, { cause: error });
