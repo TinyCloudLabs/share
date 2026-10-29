@@ -24,7 +24,9 @@ The runner is a Vite page (`apps/run/index.html`, `src/apps/run-*.ts`). The open
    answer in time, another request waiting, wrong account).
 
 The session lasts one hour. At its end the frame is removed and the page says so. "Sign out of
-this app" ends it earlier. Only the app-scoped session is persisted in browser storage until expiry; app files and notes remain in TinyCloud.
+this app" ends it earlier. The app-scoped session and any signed runtime grants for the selected
+app version are stored in browser storage; the SDK validates them on restore. App files and notes
+remain in TinyCloud.
 
 ### Why not the share viewer's notice
 

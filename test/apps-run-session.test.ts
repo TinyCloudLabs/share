@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { PortableDelegation } from "@tinycloud/web-sdk";
 import type { Manifest } from "@tinycloud/sdk-core";
 import type { ScopedPrefix } from "../src/share/manifest-policy.ts";
 import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 import { catalog } from "../src/apps/catalog.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
@@ -20,7 +22,17 @@ const appFiles = entry.bundle.files.filter((file) => !file.path.startsWith("know
 
 interface SignInCall { options: Record<string, unknown>; guard: (wait: () => Promise<unknown>) => Promise<unknown>; fake: FakeSignIn }
 interface FakeSignIn {
-  tinycloud: { kvForSpace: () => unknown; space: (name: string) => { id: string; kv: unknown }; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn>; hasPermissions: ReturnType<typeof vi.fn>; requestPermissions: ReturnType<typeof vi.fn> };
+  tinycloud: {
+    kvForSpace: () => unknown;
+    space: (name: string) => { id: string; kv: unknown };
+    sqlForSpace: () => unknown;
+    signOut: ReturnType<typeof vi.fn>;
+    hasPermissions: ReturnType<typeof vi.fn>;
+    requestPermissions: ReturnType<typeof vi.fn>;
+    getRuntimePermissionDelegations: ReturnType<typeof vi.fn>;
+    useRuntimeDelegation: ReturnType<typeof vi.fn>;
+    address: ReturnType<typeof vi.fn>;
+  };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
   sessionExpiresAt: number;
@@ -41,17 +53,33 @@ let fetchStatus: number;
 let savedSessionExists: boolean;
 let savedGrantManifest: Manifest | undefined;
 let stepUpPrompts: number;
+let acceptStepUp: boolean;
+const stepUpEvents: string[] = [];
 const stepUpRequests: Array<Array<{ service: string; space: string; path: string; actions: string[] }>> = [];
-
+const stepUpDelegation: PortableDelegation = {
+  cid: "bafy-step-up",
+  delegateDID: "did:key:z6Mkhp7CE4S8DUWvC6D5RXNNu3bA6PJyfd",
+  spaceId: "applications",
+  path: `${HEALTH}/settings/`,
+  actions: ["tinycloud.kv/get", "tinycloud.kv/put"],
+  expiry: new Date(Date.now() + RUNTIME_SESSION_MS),
+  delegationHeader: { Authorization: "Bearer step-up" },
+  ownerAddress: "0x0000000000000000000000000000000000000000",
+  chainId: 1,
+};
 
 vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async () => ({ shareOrigin: "https://share.example" }) }));
-vi.mock("@tinycloud/web-sdk", () => ({
-  BrowserSessionStorage: class {
-    activeAddress(): string | undefined {
-      return savedSessionExists ? "0x0" : undefined;
-    }
-  },
-}));
+vi.mock("@tinycloud/web-sdk", async () => {
+  const actual = await vi.importActual<WebSdkModule>("@tinycloud/web-sdk");
+  return {
+    ...actual,
+    BrowserSessionStorage: class {
+      activeAddress(): string | undefined {
+        return savedSessionExists ? "0x0" : undefined;
+      }
+    },
+  };
+});
 vi.mock("../src/share/openkey-session.js", () => ({
   takeWalletApprovalFailure: () => undefined,
   signInWithManifest: async (options: Record<string, unknown>) => {
@@ -65,6 +93,7 @@ vi.mock("../src/share/openkey-session.js", () => ({
       },
       createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
     };
+    const runtimeGrants: PortableDelegation[] = [];
     const fake: FakeSignIn = {
       tinycloud: {
         kvForSpace: () => kv,
@@ -73,29 +102,35 @@ vi.mock("../src/share/openkey-session.js", () => ({
         signOut: vi.fn(async () => undefined),
         hasPermissions: vi.fn((permissions: Array<{ service: string; space: string; path: string; actions: string[] }>) => {
           const saved = savedGrantManifest === undefined ? [] : sdkCore.resolveManifest(savedGrantManifest).resources;
-          return permissions.every((requested) => requested.actions.every((action) => saved.some((grant) =>
+          const runtime = runtimeGrants.map((grant) => ({ service: "tinycloud.kv", space: grant.spaceId, path: grant.path, actions: grant.actions }));
+          const grants = [...saved, ...runtime];
+          return permissions.every((requested) => requested.actions.every((action) => grants.some((grant) =>
             grant.service === requested.service && grant.space === requested.space && grant.actions.includes(action) &&
             (grant.path === requested.path || (grant.path.endsWith("/") && requested.path.startsWith(grant.path))),
           )));
         }),
         requestPermissions: vi.fn(async (permissions: Array<{ service: string; space: string; path: string; actions: string[] }>) => {
-          const saved = savedGrantManifest === undefined ? [] : sdkCore.resolveManifest(savedGrantManifest).resources;
-          const additional = permissions.flatMap((requested) => {
-            const actions = requested.actions.filter((action) => !saved.some((grant) =>
-              grant.service === requested.service && grant.space === requested.space && grant.actions.includes(action) &&
-              (grant.path === requested.path || (grant.path.endsWith("/") && requested.path.startsWith(grant.path))),
-            ));
-            return actions.length === 0 ? [] : [{ ...requested, actions }];
-          });
-          if (additional.length > 0) {
-            stepUpPrompts += 1;
-            stepUpRequests.push(additional);
+          stepUpPrompts += 1;
+          stepUpRequests.push(permissions.map((permission) => ({ ...permission, actions: [...permission.actions] })));
+          stepUpEvents.push("dialog");
+          const hooks = Reflect.get(fake.tinycloud, "_testHooks");
+          const showModal = typeof hooks === "object" && hooks !== null ? Reflect.get(hooks, "showModal") : undefined;
+          if (typeof showModal === "function") {
+            const result = showModal({ appName: "Health Log", additional: permissions });
+            if (acceptStepUp) document.querySelector<HTMLButtonElement>("[data-permission-allow]")?.click();
+            else document.querySelector<HTMLButtonElement>("dialog button:not([data-permission-allow])")?.click();
+            const decision = await result as { approved: boolean };
+            if (!decision.approved) return { approved: false };
           }
-          return { approved: true };
+          runtimeGrants.push(stepUpDelegation);
+          return { approved: true, delegations: [stepUpDelegation] };
         }),
+        address: vi.fn(() => "0x0000000000000000000000000000000000000000"),
+        getRuntimePermissionDelegations: vi.fn(() => runtimeGrants),
+        useRuntimeDelegation: vi.fn(async (delegation: PortableDelegation) => { runtimeGrants.push(delegation); }),
       },
-      preparePermissionRequest: vi.fn(async () => undefined),
-      session: { address: "0x0", openkey: {} },
+      preparePermissionRequest: vi.fn(async () => { stepUpEvents.push("openkey"); }),
+      session: { address: "0x0000000000000000000000000000000000000000", openkey: {} },
       spaces: {},
       sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
       detach: vi.fn(async () => undefined),
@@ -140,9 +175,12 @@ beforeEach(() => {
   signInBehaviour = () => undefined;
   fetchStatus = 200;
   savedSessionExists = false;
+  localStorage.clear();
   savedGrantManifest = undefined;
   stepUpPrompts = 0;
+  acceptStepUp = true;
   stepUpRequests.length = 0;
+  stepUpEvents.length = 0;
   seedSaved();
   vi.stubGlobal("fetch", async (url: string) => {
     const key = decodeURIComponent(String(url).slice("https://node.example/signed/".length));
@@ -150,7 +188,7 @@ beforeEach(() => {
     return value === undefined || fetchStatus !== 200 ? new Response("no", { status: fetchStatus === 200 ? 404 : fetchStatus }) : new Response(value.slice().buffer);
   });
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); });
 
 
 describe("readSavedFiles: bounded, never silently cut", () => {
@@ -339,7 +377,7 @@ describe("opening an installed app", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
     expect(calls[0]!.options["autoCreateSpace"]).toBe(false);
-    expect(calls[1]!.options["hostSpaces"]).toEqual(["applications"]);
+    expect(calls[1]!.options["hostSpaces"]).toBeUndefined();
     expect(calls[1]!.options["autoCreateSpace"]).toBe(true);
     expect(calls[1]!.options["includeAccountRegistryPermissions"]).toBe(true);
   });
@@ -363,17 +401,17 @@ describe("opening an installed app", () => {
     expect(calls[0]!.options["persistSession"]).toBe(true);
     expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
     expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
-    expect(calls[0]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
     await first.session.detach();
 
     await open(runPorts);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
     expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
-    expect(calls[1]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
+    expect(calls[1]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
     expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
   });
-  it("steps up once for only the new version permission", async () => {
+  it("requests only the uncovered version permission and restores its runtime grant on reopen", async () => {
     savedSessionExists = true;
     savedGrantManifest = openManifest(manifestFor(previousEntry));
 
@@ -387,10 +425,26 @@ describe("opening an installed app", () => {
     )).map((resource) => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
     expect(stepUpPrompts).toBe(1);
     expect(stepUpRequests).toEqual([added]);
-    const hooks = Reflect.get(calls[0]!.fake.tinycloud, "_testHooks");
-    expect(typeof hooks).toBe("object");
-    if (typeof hooks !== "object" || hooks === null) throw new Error("permission modal hook was not installed");
-    expect(Reflect.get(hooks, "showModal")).toBeTypeOf("function");
+    expect(stepUpEvents).toEqual(["dialog", "openkey"]);
+
+    await open();
+
+    expect(calls[1]!.fake.tinycloud.useRuntimeDelegation).toHaveBeenCalledTimes(1);
+    expect(stepUpRequests).toEqual([added]);
+    expect(stepUpPrompts).toBe(1);
+    expect(stepUpEvents).toEqual(["dialog", "openkey"]);
+  });
+  it("does not open OpenKey or clear the saved session when added-permission approval is cancelled", async () => {
+    savedSessionExists = true;
+    savedGrantManifest = openManifest(manifestFor(previousEntry));
+    acceptStepUp = false;
+
+    await expect(open()).rejects.toMatchObject({ reason: "cancelled" });
+
+    expect(stepUpEvents).toEqual(["dialog"]);
+    expect(calls[0]!.fake.dispose).not.toHaveBeenCalled();
+    expect(calls[0]!.fake.detach).toHaveBeenCalledTimes(1);
+    expect(savedSessionExists).toBe(true);
   });
 
   it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {

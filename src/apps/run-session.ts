@@ -8,7 +8,7 @@
  * The signature guard is closed after the installed version's grant is resolved.
  */
 import type { CatalogEntry } from "./catalog.ts";
-import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { Manifest, PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
@@ -23,6 +23,7 @@ import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundl
 import { loadManifest } from "./manifest.ts";
 import { parseInstallRecord, type StoredFiles } from "./stored-app.ts";
 import { showRuntimePermissionDialog } from "./permission-dialog.ts";
+import { restoreRuntimeGrants, saveRuntimeGrants } from "./runtime-grants.ts";
 
 class AppSpaceNotHostedError extends Error {
   constructor() {
@@ -38,15 +39,27 @@ const APP_NAME_MAX_CHARS = 64;
 export const MAX_STORED_FILES = 64;
 export const MAX_STORED_BYTES = 8 * 1024 * 1024;
 
-function installSafePermissionDialog(tinycloud: TinyCloudWeb): void {
-  // The pinned Web SDK's modal writes its template through innerHTML. Its
-  // private showModal hook is the only renderer seam; keep the replacement
-  // local to this runner and use DOM text nodes under production Trusted Types.
+function installSafePermissionDialog(tinycloud: TinyCloudWeb, preparePermissionRequest: (permissions: PermissionEntry[]) => Promise<void>): void {
+  // @tinycloud/web-sdk 3.7.0-beta.1 exposes only this private renderer seam; keep the exact version pinned in package.json.
   const previous = Reflect.get(tinycloud, "_testHooks");
   const hooks = typeof previous === "object" && previous !== null ? previous : {};
-  if (!Reflect.set(tinycloud, "_testHooks", { ...hooks, showModal: showRuntimePermissionDialog })) {
+  const showModal = async (options: Parameters<typeof showRuntimePermissionDialog>[0]) => {
+    const result = await showRuntimePermissionDialog(options);
+    if (result.approved) await preparePermissionRequest(options.additional);
+    return result;
+  };
+  if (!Reflect.set(tinycloud, "_testHooks", { ...hooks, showModal })) {
     throw new Error("runner-permission-dialog-unavailable");
   }
+}
+
+function uncoveredPermissions(tinycloud: Pick<TinyCloudWeb, "hasPermissions">, permissions: PermissionEntry[]): PermissionEntry[] {
+  const uncovered: PermissionEntry[] = [];
+  for (const permission of permissions) {
+    const actions = permission.actions.filter((action) => !tinycloud.hasPermissions([{ ...permission, actions: [action] }]));
+    if (actions.length > 0) uncovered.push({ ...permission, actions });
+  }
+  return uncovered;
 }
 /**
  * The name OpenKey shows. DISPLAY ONLY (the app id and the grants never come from it): the catalog's name goes in only
@@ -283,7 +296,7 @@ export function createRunPorts(): RunPorts {
             config,
             includeAccountRegistryPermissions: createMissingSpace,
             autoCreateSpace: createMissingSpace,
-            ...(createMissingSpace ? { hostSpaces: [INSTALL_SPACE] } : {}),
+
             guardApproval: approvals.guard,
             onClient: (created) => { client = created; },
             appName: runnerAppName("TinyCloud Share: ", entry.name),
@@ -305,19 +318,26 @@ export function createRunPorts(): RunPorts {
       let space = tinycloud.space(INSTALL_SPACE);
       let kv = space.kv;
       // The persisted grant is deliberately minimal on reopen; resolve install.json
-      // first, then request only this saved version's resources on the same client.
+      // first, then request only uncovered permissions for the saved version.
+      const runtimeGrantKey = `${sessionPrefix}-runtime-grants`;
       let authorized = false;
       const authorize = async (selectedEntry: CatalogEntry, selectedPlan: SignInPlan, sdk: ManifestSdk): Promise<void> => {
         if (authorized) throw new RunError("failed", { detail: "the app grant was already resolved" });
         if (selectedPlan.manifest.app_id !== selectedEntry.app_id) throw new RunError("failed", { detail: "the app grant names a different app" });
-        const permissions = sdk.resolveManifest(selectedPlan.manifest).resources
-          .filter((resource) => resource.space === INSTALL_SPACE && (resource.service === "tinycloud.kv" || resource.service === "tinycloud.sql"))
-          .map((resource) => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
         try {
-          if (!tinycloud.hasPermissions(permissions)) installSafePermissionDialog(tinycloud);
-          await signedIn.preparePermissionRequest(permissions);
-          const result = await tinycloud.requestPermissions(permissions, { expiryMs: RUNTIME_SESSION_MS });
-          if (!result.approved) throw new RunError("cancelled");
+          await restoreRuntimeGrants(tinycloud, runtimeGrantKey, selectedEntry.app_id, selectedEntry.bundle.digest);
+          const permissions = sdk.resolveManifest(selectedPlan.manifest).resources
+            .filter((resource) => resource.space === INSTALL_SPACE && (resource.service === "tinycloud.kv" || resource.service === "tinycloud.sql"))
+            .map((resource) => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
+          const uncovered = uncoveredPermissions(tinycloud, permissions);
+          if (uncovered.length > 0) {
+            installSafePermissionDialog(tinycloud, signedIn.preparePermissionRequest);
+            const result = await tinycloud.requestPermissions(uncovered, { expiryMs: RUNTIME_SESSION_MS });
+            if (!result.approved) throw new RunError("cancelled", { detail: "permission-declined" });
+            const delegations = result.delegations ?? tinycloud.getRuntimePermissionDelegations(uncovered);
+            const ownerAddress = tinycloud.address();
+            if (ownerAddress !== undefined) await saveRuntimeGrants(runtimeGrantKey, selectedEntry.app_id, selectedEntry.bundle.digest, ownerAddress, delegations);
+          }
           authorized = true;
         } finally {
           approvals.lock();

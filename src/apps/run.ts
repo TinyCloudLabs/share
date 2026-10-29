@@ -88,7 +88,7 @@ export function installRecordPlan(entry: CatalogEntry): SignInPlan {
       space: "applications",
       defaults: false,
       includePublicSpace: false,
-      permissions: [{ service: "tinycloud.kv", path: key, actions: ["get"], skipPrefix: true, description: "Check which saved app version is installed." }],
+      permissions: [{ service: "tinycloud.kv", path: key, actions: ["get"], skipPrefix: true }],
     },
     scope: {
       allowedSpaces: ["applications"],
@@ -279,8 +279,9 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });
     app = verified.app;
   } catch (error) {
-    await session.runtime.end().catch(() => undefined);
-    throw error instanceof RunError ? error : new RunError("failed", { cause: error });
+    const failure = error instanceof RunError ? error : new RunError("failed", { cause: error });
+    await (failure.reason === "cancelled" && failure.detail === "permission-declined" ? session.runtime.detach() : session.runtime.end()).catch(() => undefined);
+    throw failure;
   }
 
   if (signal?.aborted) {
