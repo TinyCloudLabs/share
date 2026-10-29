@@ -351,35 +351,33 @@ describe("opening an installed app", () => {
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("a sign-in that fails is a plain failure, and nothing is written", async () => {
-    signInBehaviour = () => { throw new Error("approval closed"); };
-    await expect(open()).rejects.toMatchObject({ reason: "failed" });
+  it("preserves the underlying error when OpenKey sign-in fails", async () => {
+    signInBehaviour = () => { throw new Error("widget rejected the sign request"); };
+    await expect(open()).rejects.toMatchObject({ reason: "failed", detail: "widget rejected the sign request" });
     expect(calls).toHaveLength(1);
     expect(puts).toEqual([]);
   });
 
-  it("does not create or host a space during Health Log open", async () => {
+  it("does not create spaces during a covered reopen", async () => {
+    savedSessionExists = true;
+    savedGrantManifest = openManifest(manifestFor(entry));
     await open();
     const { options } = calls[0]!;
     expect(options["hostSpaces"]).toBeUndefined();
     expect(options["autoCreateSpace"]).toBe(false);
     expect(options["includeAccountRegistryPermissions"]).toBe(false);
   });
-  it("uses the existing space-hosting path only after an applications-space 404", async () => {
-    signInBehaviour = (call) => {
-      kvListResult = call === 1
-        ? { ok: false, error: { code: "SPACE_NOT_FOUND", message: "404 - Space not found", meta: { status: 404 } } }
-        : undefined;
-    };
+  it("refuses a missing applications space without creating or hosting one", async () => {
+    kvListResult = { ok: false, error: { code: "SPACE_NOT_FOUND", message: "404 - Space not found", meta: { status: 404 } } };
 
-    await open();
+    await expect(open()).rejects.toMatchObject({ reason: "failed", detail: expect.stringContaining("SPACE_NOT_FOUND") });
 
-    expect(calls).toHaveLength(2);
-    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(calls).toHaveLength(1);
     expect(calls[0]!.options["autoCreateSpace"]).toBe(false);
-    expect(calls[1]!.options["hostSpaces"]).toBeUndefined();
-    expect(calls[1]!.options["autoCreateSpace"]).toBe(true);
-    expect(calls[1]!.options["includeAccountRegistryPermissions"]).toBe(true);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+    expect(puts).toEqual([]);
   });
 
   it("a listing that fails ends the sign-in and fails", async () => {
@@ -402,12 +400,14 @@ describe("opening an installed app", () => {
     expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
     expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
     expect(calls[0]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(false);
     await first.session.detach();
 
     await open(runPorts);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
     expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
+    expect(calls[1]!.options["autoCreateSpace"]).toBe(false);
     expect(calls[1]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
     expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
   });

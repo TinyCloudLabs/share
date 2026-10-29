@@ -245,7 +245,9 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
 
   report({ phase: "reading", approval: false });
   const session = await ports.signIn(currentEntry, initialPlan, { approval: (open) => report({ phase: "reading", approval: open }) }).catch((cause: unknown) => {
-    throw cause instanceof RunError ? cause : new RunError("failed", { cause });
+    if (cause instanceof RunError) throw cause;
+    const detail = cause instanceof Error && cause.message.length > 0 ? cause.message : undefined;
+    throw new RunError("failed", { cause, ...(detail === undefined ? {} : { detail }) });
   });
   let app: RunnableApp;
   try {

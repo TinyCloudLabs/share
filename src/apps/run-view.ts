@@ -79,7 +79,7 @@ export function failureScreen(reason: RunFailure, name: string, detail?: string,
     case "timeout": return { title: "OpenKey didn't answer in time", lines: ["Nothing was started. Try again."], retry: OPEN_AGAIN(name) };
     case "busy": return { title: "Another OpenKey request is waiting", lines: ["Finish or cancel it, then try again."], retry: OPEN_AGAIN(name) };
     case "wrong-account": return { title: "That approval came from a different account", lines: ["It wasn't the account that signed in, so nothing was started."], retry: OPEN_AGAIN(name), tone: "danger" };
-    case "failed": return { title: "We couldn't open this app", lines: ["Nothing was started. Try again."], retry: OPEN_AGAIN(name) };
+    case "failed": return { title: "We couldn't open this app", lines: ["Nothing was started. Try again."], retry: OPEN_AGAIN(name), detail };
   }
 }
 

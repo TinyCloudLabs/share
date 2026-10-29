@@ -380,6 +380,15 @@ describe("opening an app that cannot run", () => {
     expect(root.querySelector("iframe")).toBeNull();
     expect(fake.runtimes).toBe(0);
   });
+  it("shows the underlying sign-in error on the failure screen", async () => {
+    const fake = fakePorts();
+    fake.ports.signIn = async () => { throw new Error("widget rejected the sign request"); };
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__detail code")?.textContent).toBe("widget rejected the sign request"));
+    expect(root.querySelector(".run-screen__title")?.textContent).toBe("We couldn't open this app");
+    expect(fake.runtimes).toBe(0);
+  });
+
 
 });
 
