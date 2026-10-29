@@ -118,6 +118,7 @@ describe("TC-1740 sender pagination", () => {
       return new Map(records.map((record) => [record.shareId, { state: record.shareId === id(43) ? "revoked" as const : "active" as const }]));
     };
     const { root, page, onGet } = await library(44, statusReader);
+    const style = document.createElement("style"); style.textContent = readFileSync("src/email-share/sender.css", "utf8"); root.prepend(style);
     const kept = rows(root);
     await vi.waitFor(() => expect(kept[0]!.querySelector(".status-label")?.textContent).toBe("Revoked"));
     const selected = kept[2]!.querySelector<HTMLButtonElement>("button")!;
@@ -125,6 +126,7 @@ describe("TC-1740 sender pagination", () => {
     onGet(async () => { throw new Error("synthetic history unavailable"); });
     more(root).click();
     await vi.waitFor(() => expect(alert(root).hidden).toBe(false));
+    expect(getComputedStyle(alert(root)).display).toBe("grid");
     expect(rowNames(root)).toEqual(names(44).slice(0, 25));
     expect(document.activeElement).toBe(selected);
     expect(root.querySelector("[aria-busy]")).toBeNull();
@@ -135,6 +137,7 @@ describe("TC-1740 sender pagination", () => {
     expect(rows(root)).toEqual(kept);
     expect(document.activeElement).toBe(selected);
     expect(alert(root).hidden).toBe(true);
+    expect(getComputedStyle(alert(root)).display).toBe("none");
     expect(root.querySelector(".sender-skeleton-row")).toBeNull();
     held.release();
     await vi.waitFor(() => expect(rowNames(root)).toEqual(names(44)));
@@ -144,7 +147,9 @@ describe("TC-1740 sender pagination", () => {
     expect(kept[0]!.querySelector(".sender-revoke")).toBeNull();
     expect(more(root).hidden).toBe(true);
     expect(alert(root).hidden).toBe(true);
+    expect(getComputedStyle(alert(root)).display).toBe("none");
     await vi.waitFor(() => expect(root.querySelector(".sender-freshness")?.textContent).toBe("Some statuses may be out of date."));
+    expect(getComputedStyle(root.querySelector<HTMLElement>(".sender-freshness")!).display).not.toBe("none");
     expect(root.textContent).not.toContain(FRESHNESS_UNCONFIRMED);
   });
 });
