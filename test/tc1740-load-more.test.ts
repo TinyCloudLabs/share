@@ -5,6 +5,7 @@ import { endSenderLibrary, FRESHNESS_UNCONFIRMED, mountSenderHome } from "../src
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { NodeStatusReader } from "../src/share/node-status.js";
+import { readFileSync } from "node:fs";
 
 afterEach(() => { endSenderLibrary(); document.body.replaceChildren(); vi.restoreAllMocks(); });
 
@@ -64,6 +65,15 @@ function gate() {
 }
 
 describe("TC-1740 sender pagination", () => {
+  it("renders Load more only while a next page remains", async () => {
+    const { root } = await library(44);
+    const style = document.createElement("style"); style.textContent = readFileSync("src/email-share/sender.css", "utf8"); root.prepend(style);
+    expect(getComputedStyle(more(root)).display).not.toBe("none");
+    more(root).click();
+    await vi.waitFor(() => expect(rowNames(root)).toEqual(names(44)));
+    expect(getComputedStyle(more(root)).display).toBe("none");
+  });
+
   it.each([1, 25, 44, 51])("exhausts %i canonical shares without repeating a page", async (count) => {
     const { root } = await library(count);
     while (!more(root).hidden) {

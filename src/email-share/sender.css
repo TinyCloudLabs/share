@@ -210,6 +210,7 @@ pre.scope-note { padding: 16px; border-top: 1px dotted var(--tc-color-border); b
 .sender-skeleton-cell { color: transparent !important; background: linear-gradient(90deg, var(--tc-color-surface-subtle), var(--tc-color-surface), var(--tc-color-surface-subtle)); background-size: 200% 100%; animation: sender-skeleton 1.2s var(--tc-ease-out) infinite; }
 .sender-skeleton-row td { height: 64px; }
 .sender-load-more { margin-top: 1.25rem; }
+.sender-load-more[hidden] { display: none; }
 @keyframes sender-skeleton { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
 
