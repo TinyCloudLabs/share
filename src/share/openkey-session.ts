@@ -1,6 +1,7 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
+import type { EIP1193Provider } from "viem";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
@@ -153,6 +154,16 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
     return failure;
   }
 }
+function walletProvider(provider: ObservedOpenKeyProvider): EIP1193Provider {
+  return {
+    request: (args) => {
+      if (!Array.isArray(args.params)) return provider.request({ method: args.method });
+      return provider.request({ method: args.method, params: args.params });
+    },
+    on: () => undefined,
+    removeListener: () => undefined,
+  };
+}
 
 const approvalObservers = new WeakMap<object, ObservedOpenKeyProvider>();
 
@@ -240,6 +251,8 @@ export interface SignInWithManifestOptions extends ManifestScope {
    * caller picks, and `dispose()` still signs out (clearing what was persisted).
    */
   readonly persistSession?: boolean;
+  /** Restore a persisted TinyCloud session before opening OpenKey; OpenKey is then opened only if a later signature is needed. */
+  readonly restoreBeforeOpenKey?: boolean;
   /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000). Default one hour. */
   readonly expiry?: number;
   /**
@@ -254,11 +267,13 @@ export interface SignInWithManifestOptions extends ManifestScope {
 
 export interface ManifestSignIn {
   readonly tinycloud: ShareTinyCloud;
-  readonly session: OpenKeyShareSession;
+  readonly session: OpenKeyShareSession | undefined;
   /** Space name to the id `ensureOwnedSpaceHosted` returned, for any requested hosting. */
   readonly spaces: Readonly<Record<string, string>>;
   /** Epoch ms the signed session ends at: the SIWE's Expiration Time, or the requested expiry when the message carries none. A restored session keeps its own remaining time. */
   readonly sessionExpiresAt: number;
+  /** Attach the lazy wallet only when the existing session does not cover a runtime permission request. */
+  preparePermissionRequest(permissions: PermissionEntry[]): Promise<void>;
   /** Closes the OpenKey connection this call opened without signing out: a persisted session stays usable by the next open. Safe to call more than once; never rejects. */
   detach(): Promise<void>;
   /** Signs the client out (clearing any persisted session) and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
@@ -347,8 +362,6 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
   const { config, hostSpaces = [], includeAccountRegistryPermissions = true, autoCreateSpace = true } = options;
   const onStatus = options.onStatus ?? (() => undefined);
   checkOptions(options);
-  // The manifest that is checked is a frozen private copy, and that copy is what gets signed: nothing the caller holds can
-  // change it during the OpenKey waits in between. A manifest given as an object is checked before OpenKey opens.
   const given = options.manifest;
   const freezeChecked = (candidate: Manifest, address: string): Manifest => {
     const copy = deepFreeze(structuredClone(candidate));
@@ -356,42 +369,63 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     return copy;
   };
   const checked = typeof given === "function" ? undefined : freezeChecked(given, MANIFEST_CHECK_ADDRESS);
-  // A function manifest needs the address: its shape is checked first with a placeholder, then the real one is checked and used.
   if (typeof given === "function") freezeChecked(given(MANIFEST_CHECK_ADDRESS), MANIFEST_CHECK_ADDRESS);
   const appName = options.appName ?? DEFAULT_APP_NAME;
-  const opened = options.session === undefined;
-  const session = options.session ?? await authenticateWithOpenKey(onStatus, options.guardApproval, appName);
-  // From here on the connection is open. ANY throw (a function manifest, a refusal, a bad origin, an `onClient` that throws,
-  // the SDK's constructor, the sign-in itself) ends it: a connection this call opened is closed, and so is a client that was made.
-  // A connection the caller handed in is not this call's to close.
+  const restoreFirst = options.restoreBeforeOpenKey === true && options.session === undefined;
+  if (restoreFirst && (!options.persistSession || typeof given === "function")) throw new Error("restore-before-openkey-requires-persisted-object-manifest");
+  let session = options.session;
+  let opened = false;
+  let tinycloud: TinyCloudWeb | undefined;
+  let provider: ObservedOpenKeyProvider | undefined;
   let dispose: (() => Promise<void>) | undefined;
+  const guardedApproval: ApprovalGuard = async (wait, info) => {
+    try {
+      return await (options.guardApproval ?? runUnguarded)(wait, info);
+    } catch (error) {
+      if (session !== undefined) closeOpenKeyFlows(session.openkey);
+      throw error;
+    }
+  };
+  const ensureOpenKey = async (): Promise<OpenKeyShareSession> => {
+    if (session !== undefined) return session;
+    session = await authenticateWithOpenKey(onStatus, options.guardApproval, appName);
+    opened = true;
+    if (tinycloud !== undefined) {
+      provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardedApproval);
+      tinycloud.connectWallet(walletProvider(provider));
+      registerWalletApprovalObserver(tinycloud, provider);
+    }
+    return session;
+  };
+  const approveSignature = async (request: SignRequest): Promise<SignResponse> => {
+    const owner = await ensureOpenKey();
+    return guardedApproval(() => explicitOpenKeyApproval(owner, request), { kind: "sign", purpose: request.purpose });
+  };
+  const preparePermissionRequest = async (permissions: PermissionEntry[]): Promise<void> => {
+    if (permissions.length === 0 || tinycloud!.hasPermissions(permissions)) return;
+    await ensureOpenKey();
+  };
   try {
-    const manifest = typeof given === "function" ? freezeChecked(given(session.address), session.address) : checked;
+    const restoreFirst = options.restoreBeforeOpenKey === true && session === undefined;
+    let manifest: Manifest;
+    if (restoreFirst) {
+      manifest = checked!;
+    } else {
+      const owner = await ensureOpenKey();
+      provider = new ObservedOpenKeyProvider(owner.openkey, owner.auth, owner.address, verifyEip191MessageSignature, guardedApproval);
+      manifest = typeof given === "function" ? freezeChecked(given(owner.address), owner.address) : checked!;
+    }
     if (manifest === undefined) throw new Error("sign-in-no-manifest");
-    const guardApproval: ApprovalGuard = async (wait, info) => {
-      try {
-        return await (options.guardApproval ?? runUnguarded)(wait, info);
-      } catch (error) {
-        // A cancel, a refusal or the guard giving up: do not leave a window open that nothing is waiting on.
-        closeOpenKeyFlows(session.openkey);
-        throw error;
-      }
-    };
     const hermeticNodeHost = import.meta.env.VITE_SHARE_HERMETIC === "true" ? window.location.origin : undefined;
-    const provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardApproval);
-    const tinycloud = new TinyCloudWeb({
-      provider,
-      signStrategy: { type: "callback", handler: (request: SignRequest) => guardApproval(() => explicitOpenKeyApproval(session, request), { kind: "sign", purpose: request.purpose }) },
+    const clientConfig = {
+      ...(provider === undefined ? {} : { provider }),
+      signStrategy: { type: "callback" as const, handler: approveSignature },
       ...(hermeticNodeHost === undefined ? {} : { tinycloudHosts: [hermeticNodeHost] }),
-      // A new sender cannot resolve a signed location record before its first
-      // session exists. Use the explicitly configured owner-node choice only
-      // for that bootstrap; addressed recipients never receive this fallback.
       tinycloudFallbackHosts: hermeticNodeHost === undefined ? [config.senderBootstrapNodeOrigin] : null,
       tinycloudRegistryUrl: hermeticNodeHost === undefined ? config.registryOrigin : null,
       autoDiscoverLocalNode: false,
       autoCreateSpace,
       autoBootstrapAccount: false,
-      // Opting out also suppresses the SDK's registry sync and this helper's account hosting.
       includeAccountRegistryPermissions,
       domain: options.domain ?? new URL(config.shareOrigin).hostname,
       spacePrefix: manifest.space ?? SHARE_APPLICATION_SPACE,
@@ -401,22 +435,28 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       siweConfig: { statement: `Sign in to ${appName}.` },
       manifest,
       notifications: { popups: false },
-    });
+    };
+    tinycloud = new TinyCloudWeb(clientConfig);
     let disposing: Promise<void> | undefined;
     dispose = (): Promise<void> => {
       disposing ??= (async () => {
-        if (opened) closeOpenKeyFlows(session.openkey);
-        try { await tinycloud.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
+        if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);
+        try { await tinycloud!.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
       })();
       return disposing;
     };
-    registerWalletApprovalObserver(tinycloud, provider);
+    if (provider !== undefined) registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
-    // The provider is constructed from this connection's auth and answers account and signing
-    // calls only as that address, so the SDK can only ever sign in as this connection's owner;
-    // a persisted session is address-keyed and validated before any network work. No owner
-    // check is needed here: the binding was made when the provider was built above.
+    if (restoreFirst) {
+      const result = await tinycloud.restoreSession();
+      if (result.status !== "restored") await ensureOpenKey();
+    }
+    if (provider === undefined && session !== undefined) {
+      provider = new ObservedOpenKeyProvider(session.openkey, session.auth, session.address, verifyEip191MessageSignature, guardedApproval);
+      tinycloud.connectWallet(walletProvider(provider));
+      registerWalletApprovalObserver(tinycloud, provider);
+    }
     const signedSession = await tinycloud.signIn();
     const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
     const spaces: Record<string, string> = {};
@@ -428,16 +468,14 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       await settleAccountRegistrySync(tinycloud, typeof wait === "object" ? wait.timeoutMs ?? REGISTRY_SYNC_WAIT_MS : REGISTRY_SYNC_WAIT_MS);
     }
     let detaching: Promise<void> | undefined;
-    // Leaves the session where it is (in memory, and in storage when the caller persisted it):
-    // only the OpenKey connection this call opened is closed. A later open restores the session.
     const detach = (): Promise<void> => {
-      detaching ??= (async () => { if (opened) closeOpenKeyFlows(session.openkey); })();
+      detaching ??= (async () => { if (opened && session !== undefined) closeOpenKeyFlows(session.openkey); })();
       return detaching;
     };
-    return { tinycloud, session, spaces, sessionExpiresAt, detach, dispose };
+    return { tinycloud, session, spaces, sessionExpiresAt, preparePermissionRequest, detach, dispose };
   } catch (error) {
     if (dispose !== undefined) await dispose();
-    else if (opened) closeOpenKeyFlows(session.openkey);
+    else if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);
     throw error;
   }
 }

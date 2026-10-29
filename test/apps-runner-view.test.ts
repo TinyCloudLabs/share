@@ -9,7 +9,7 @@ import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RunError, type RunPorts, type RunSession, type RuntimeSession, signInPlan } from "../src/apps/run.ts";
 import { CAUTION } from "../src/apps/limits.ts";
 import { failureScreen, mountRunner, progressText, provenanceText } from "../src/apps/run-view.ts";
-import { type StoredOverrides, storedFiles } from "./stored-fixtures.ts";
+import { type StoredOverrides, installRecordBytes, storedFiles } from "./stored-fixtures.ts";
 import { ManifestRejectedError, assertManifestInScope, MANIFEST_CHECK_ADDRESS } from "../src/share/manifest-policy.ts";
 import { APPS_HREF } from "../src/apps/run-view.ts";
 import type { JsxManifest } from "../src/artifact/jsx-runtime/files.ts";
@@ -21,6 +21,7 @@ Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: tr
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const RECIPES_ID = "xyz.tinycloud.sample.recipes";
 const entry = catalog.apps.find((candidate) => candidate.app_id === HEALTH) as CatalogEntry;
+const previousEntry = catalog.apps.find((candidate) => candidate.app_id === HEALTH && candidate.bundle.digest === "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014");
 const bundleFile = (path: string): Uint8Array => new Uint8Array(readFileSync(join("public", entry.bundle.root, path)));
 const nodeBuffer = (bytes: Uint8Array): ArrayBuffer => { const copy = Buffer.from(bytes); return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer; };
 
@@ -39,13 +40,14 @@ interface Fake {
   ended: { runtime: number };
   detached: { runtime: number };
   calls: string[];
-  release(): void;
   disclosedAtSignIn: boolean | undefined;
+  release(): void;
+  signedDigest: string | undefined;
 }
 
 
-function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
-  const fake: Fake = { reads: 0, runtimes: 0, ended: { runtime: 0 }, detached: { runtime: 0 }, calls: [], release: () => undefined, disclosedAtSignIn: undefined, ports: undefined as unknown as RunPorts };
+function fakePorts(overrides: { stored?: StoredOverrides; installedEntry?: CatalogEntry; readError?: RunError; expiresIn?: number; hold?: boolean; catalog?: readonly CatalogEntry[] } = {}): Fake {
+  const fake: Fake = { reads: 0, runtimes: 0, ended: { runtime: 0 }, detached: { runtime: 0 }, calls: [], release: () => undefined, disclosedAtSignIn: undefined, signedDigest: undefined, ports: undefined as unknown as RunPorts };
   const data: AppData = {
     kvGet: async (path) => { fake.calls.push(`kv.get ${path}`); return { ok: true, data: { bytes: new TextEncoder().encode("hi"), contentType: "text/plain" } }; },
     kvPut: async () => ({ ok: true, data: undefined }),
@@ -57,21 +59,32 @@ function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; 
   const gate = new Promise<void>((resolve) => { fake.release = resolve; });
   fake.ports = {
     ...(overrides.catalog === undefined ? {} : { catalog: overrides.catalog }),
+    hasPersistedSession: async () => overrides.installedEntry !== undefined || overrides.stored !== undefined,
     sdk: async () => sdkCore,
     prepare: async (candidate) => {
       const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
       return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
     },
-    async signIn(_entry, _plan, hooks): Promise<RunSession> {
+    loadCatalogManifest: async (candidate) => ({
+      ok: true,
+      manifest: JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")),
+    }),
+    async signIn(candidate, _plan, hooks): Promise<RunSession> {
       fake.reads += 1;
-      fake.disclosedAtSignIn = (root.textContent ?? "").includes(entry.description);
+      fake.signedDigest = candidate.bundle.digest;
+      fake.disclosedAtSignIn = (root.textContent ?? "").includes(candidate.description);
       hooks.approval(true);
       if (overrides.hold === true) await gate;
       hooks.approval(false);
       if (overrides.readError !== undefined) throw overrides.readError;
       fake.runtimes += 1;
       const runtime: RuntimeSession = { data, expiresAt: Date.now() + (overrides.expiresIn ?? 3_600_000), end: async () => { fake.runtimes -= 1; fake.ended.runtime += 1; }, detach: async () => { fake.detached.runtime += 1; } };
-      return { files: storedFiles(entry, overrides.stored), put: async () => "created" as const, runtime };
+      return {
+        files: storedFiles(overrides.installedEntry ?? candidate, overrides.stored),
+        authorize: async (installed) => { fake.signedDigest = installed.bundle.digest; },
+        put: async () => "created" as const,
+        runtime,
+      };
     },
   };
   return fake;
@@ -96,7 +109,7 @@ const fromFrame = (iframe: HTMLIFrameElement, data: Record<string, unknown>): vo
 
 async function open(fake: Fake, id: string | null = HEALTH): Promise<ReturnType<typeof mountRunner>> {
   const runner = mountRunner(root, { appId: id, ports: fake.ports, frame: { manifest: frameManifest, fetch: frameFetch } });
-  if (id === HEALTH) await vi.waitFor(() => expect(fake.reads).toBe(1));
+  if (id === HEALTH) await vi.waitFor(() => expect(fake.reads === 1 || root.querySelector(".run-screen__title") !== null).toBe(true));
   return runner;
 }
 
@@ -367,6 +380,15 @@ describe("opening an app that cannot run", () => {
     expect(root.querySelector("iframe")).toBeNull();
     expect(fake.runtimes).toBe(0);
   });
+  it("shows the underlying sign-in error on the failure screen", async () => {
+    const fake = fakePorts();
+    fake.ports.signIn = async () => { throw new Error("widget rejected the sign request"); };
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector(".run-screen__detail code")?.textContent).toBe("widget rejected the sign request"));
+    expect(root.querySelector(".run-screen__title")?.textContent).toBe("We couldn't open this app");
+    expect(fake.runtimes).toBe(0);
+  });
+
 
 });
 
@@ -426,17 +448,21 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     }
   });
 
+  it("opens an enabled installed version when the current version is disabled", async () => {
+    expect(previousEntry).toBeDefined();
+    if (previousEntry === undefined) return;
+    const disabledCurrent = { ...entry, disabled: true as const, disabledReason: "Current version is paused." };
+    const fake = fakePorts({ catalog: [disabledCurrent, previousEntry], installedEntry: previousEntry });
+    await open(fake);
+    await vi.waitFor(() => expect(root.querySelector("iframe")).not.toBeNull());
+    expect(fake.reads).toBe(1);
+    expect(fake.signedDigest).toBe(previousEntry.bundle.digest);
+    expect(root.querySelector(".run-provenance")?.textContent).toContain(previousEntry.bundle.digest.slice(0, 12));
+  });
+
   it("an installed version that has left the catalog gets the honest message and an Uninstall link, not a Repair", async () => {
     const other = { ...entry, bundle: { ...entry.bundle, digest: "f".repeat(64) } };
-    const fake = fakePorts({ catalog: [entry] });
-    // The install recorded a digest the catalog no longer lists.
-    const original = fake.ports.signIn;
-    fake.ports.signIn = async (candidate, plan, hooks) => {
-      const session = await original(candidate, plan, hooks);
-      const files = { entries: new Map(session.files.entries) };
-      files.entries.set("install.json", new TextEncoder().encode(JSON.stringify({ source: entry.source, digest: other.bundle.digest, installed_at: "2026-10-20T10:00:00.000Z" })));
-      return { ...session, files };
-    };
+    const fake = fakePorts({ catalog: [entry], stored: { files: { "install.json": installRecordBytes(other) } } });
     await open(fake);
     await vi.waitFor(() => expect(root.querySelector(".run-screen__title")?.textContent).toBe("This version of the app isn't in the catalog any more"));
     expect(root.querySelector("a[href*='repair']")).toBeNull();
@@ -446,7 +472,7 @@ describe("the pin, the kill switch, Repair and pagehide", () => {
     expect(fake.runtimes).toBe(0);
   });
 
-  it("a disabled catalog entry opens nothing and calls nothing: the kill switch", async () => {
+  it("a disabled current entry refuses a fresh install before a sign-in", async () => {
     const off = { ...entry, disabled: true as const, disabledReason: "A problem was found in this app." };
     const fake = fakePorts({ catalog: [off] });
     mountRunner(root, { appId: HEALTH, ports: fake.ports });

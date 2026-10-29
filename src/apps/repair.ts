@@ -4,7 +4,7 @@
  * The runner refuses to open an app whose saved code is not the pinned version (stored-app.ts). Repair is the way
  * back: it re-installs the catalog's code files for the installed digest, overwriting what is stored, and removes
  * any other file in `<app_id>/app/`. It touches nothing else: not `knowledge/`, not the app's databases or settings,
- * not `install.json`. One OpenKey approval, for `put`, `del` and `list` on `<app_id>/app/` only, 15 minutes.
+ * not `install.json`. One OpenKey approval, for `get` on that exact record and `put`, `del` and `list` on `<app_id>/app/`, 15 minutes.
  *
  * Order, as for the install: every file is fetched from the entry's own `/apps/b/<digest>/` and checked against the
  * catalog BEFORE OpenKey opens (a tampered file: zero writes, zero approvals); a disabled entry is refused before
@@ -15,6 +15,7 @@
  * what to delete instead.
  */
 import type { Manifest } from "@tinycloud/web-sdk";
+import { RunError } from "./run.ts";
 
 import type { ManifestScope } from "../share/manifest-policy.js";
 import { type BundleFetch, BundleRefusal, fetchVerifiedBundle } from "./bundle.ts";
@@ -34,9 +35,16 @@ export class RepairError extends Error {
   }
 }
 
-/** What Repair may ask OpenKey for: `put`, `del` and `list` on the one app's `app/` folder. The helper refuses anything else before OpenKey opens. */
+/** What Repair may ask OpenKey for: `get` on one install record plus code operations on the one app's `app/` folder. */
 export function repairScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["put", "del", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  const record = installRecordKey(appId);
+  return {
+    allowedSpaces: [INSTALL_SPACE],
+    allowedServices: ["kv"],
+    allowedActions: ["get", "put", "del", "list"],
+    allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }],
+    allowedActionPathPrefixes: [{ service: "kv", action: "get", prefixes: [{ space: INSTALL_SPACE, prefix: record }] }],
+  };
 }
 
 export function repairManifest(app: { app_id: string; name: string }): Manifest {
@@ -48,7 +56,10 @@ export function repairManifest(app: { app_id: string; name: string }): Manifest 
     defaults: false,
     includePublicSpace: false,
     expiry: INSTALL_EXPIRY,
-    permissions: [{ service: "tinycloud.kv", path: "app/", actions: ["put", "del", "list"], description: "Replace the app's code files with the pinned version and remove any other file in that folder. Your data and notes are not touched." }],
+    permissions: [
+      { service: "tinycloud.kv", path: "app/", actions: ["put", "del", "list"], description: "Replace the app's code files with the pinned version and remove any other file in that folder. Your data and notes are not touched." },
+      { service: "tinycloud.kv", path: "app/install.json", actions: ["get"], description: "Confirm the installed version has not changed." },
+    ],
   };
 }
 
@@ -61,6 +72,8 @@ export function repairWrites(entry: CatalogEntry): readonly { path: string; key:
 }
 
 export interface RepairSession {
+  /** Reads the install record through the same session that will write, after Repair approval. */
+  readInstallDigest(): Promise<string | null>;
   /** Overwrites `key`. */
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   /** Every key under `prefix`. */
@@ -70,6 +83,7 @@ export interface RepairSession {
 }
 
 export interface RepairPorts {
+  readInstallDigest(entry: CatalogEntry, hooks: { approval(open: boolean): void }): Promise<string | null>;
   openSession(manifest: Manifest, hooks: { approval(open: boolean): void }): Promise<RepairSession>;
   fetch?: BundleFetch;
 }
@@ -80,38 +94,65 @@ export interface RepairOutcome {
 }
 
 export type RepairProgress =
+  | { phase: "checking-version" }
   | { phase: "checking" }
   | { phase: "signing-in" }
   | { phase: "approval" }
   | { phase: "repairing"; done: number; total: number };
 
-export async function runRepair(entry: CatalogEntry, ports: RepairPorts, report: (progress: RepairProgress) => void): Promise<RepairOutcome> {
-  try { assertAvailable(entry); } catch (error) {
+function throwLookupFailure(error: unknown): never {
+  if (error instanceof RepairError) throw error;
+  if (error instanceof RunError) {
+    switch (error.reason) {
+      case "cancelled": case "timeout": case "busy": case "wrong-account": throw new RepairError(error.reason, { cause: error });
+      case "damaged": case "not-listed": case "catalog-unavailable": throw new RepairError("catalog", { cause: error });
+      default: throw new RepairError("failed", { cause: error });
+    }
+  }
+  throw new RepairError("failed", { cause: error });
+}
+
+export async function runRepair(entry: CatalogEntry, ports: RepairPorts, report: (progress: RepairProgress) => void, versions: readonly CatalogEntry[] = [entry]): Promise<RepairOutcome> {
+  report({ phase: "checking-version" });
+  let digest: string | null;
+  try {
+    report({ phase: "signing-in" });
+    digest = await ports.readInstallDigest(entry, { approval: (open) => report({ phase: open ? "approval" : "signing-in" }) });
+  } catch (error) {
+    throwLookupFailure(error);
+  }
+  if (digest === null) throw new RepairError("catalog");
+  const installedEntry = versions.find((candidate) => candidate.app_id === entry.app_id && candidate.bundle.digest === digest);
+  if (installedEntry === undefined) throw new RepairError("catalog");
+  try { assertAvailable(installedEntry); } catch (error) {
     if (error instanceof EntryDisabledError) throw new RepairError("disabled");
     throw error;
   }
   report({ phase: "checking" });
   let bundle;
   try {
-    bundle = await fetchVerifiedBundle(entry, ports.fetch);
+    bundle = await fetchVerifiedBundle(installedEntry, ports.fetch);
   } catch (error) {
     if (error instanceof BundleRefusal) throw new RepairError(error.reason, { cause: error });
     throw new RepairError("failed", { cause: error });
   }
-  const wanted = repairWrites(entry);
-  const prefix = `${entry.app_id}/app/`;
+  const wanted = repairWrites(installedEntry);
+  const prefix = `${installedEntry.app_id}/app/`;
   const bytesOf = new Map(bundle.files.map((file) => [file.path, file.bytes]));
 
   report({ phase: "signing-in" });
   let session: RepairSession;
   try {
-    session = await ports.openSession(repairManifest({ app_id: entry.app_id, name: entry.name }), { approval: (open) => report({ phase: open ? "approval" : "signing-in" }) });
+    session = await ports.openSession(repairManifest({ app_id: installedEntry.app_id, name: installedEntry.name }), { approval: (open) => report({ phase: open ? "approval" : "signing-in" }) });
   } catch (error) {
     throw error instanceof RepairError ? error : new RepairError("failed", { cause: error });
   }
   const written: string[] = [];
   const removed: string[] = [];
   try {
+    let sessionDigest: string | null;
+    try { sessionDigest = await session.readInstallDigest(); } catch (error) { throw new RepairError("failed", { cause: error }); }
+    if (sessionDigest !== digest) throw new RepairError("failed", { cause: new Error("install version changed during repair approval") });
     for (const [index, write] of wanted.entries()) {
       report({ phase: "repairing", done: index, total: wanted.length });
       const bytes = bytesOf.get(write.path);
@@ -120,7 +161,7 @@ export async function runRepair(entry: CatalogEntry, ports: RepairPorts, report:
       written.push(write.key);
     }
     // Strays last: anything else under app/ except the install's own record.
-    const keep = new Set([...wanted.map((write) => write.key), installRecordKey(entry.app_id)]);
+    const keep = new Set([...wanted.map((write) => write.key), installRecordKey(installedEntry.app_id)]);
     let listed: readonly string[];
     try { listed = await session.list(prefix); } catch (error) { throw new RepairError("write-failed", { written, cause: error }); }
     for (const key of listed) {

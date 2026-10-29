@@ -7,7 +7,7 @@
 | Path | What |
 | --- | --- |
 | `apps/catalog.json` | The catalog, `schema: tinycloud.share.apps-catalog/v1`. Compiled into the page. |
-| `public/apps/b/<digest>/` | One vendored bundle per entry, served as `/apps/b/<digest>/`. Committed. |
+| `public/apps/b/<digest>/` | One vendored bundle per app version, served as `/apps/b/<digest>/`. Committed. |
 | `scripts/vendor-app.mjs` | Dev-time: copies a bundle from a git tag and pins it in the catalog. |
 | `scripts/apps-catalog.mjs` | Digest and verification logic shared by the script and the test. |
 | `apps/index.html`, `src/apps/` | The page. |
@@ -36,6 +36,8 @@
 - `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and opening refuses a bundle whose manifest differs.
 - `release` is present when the bundle ships a `release.json` (see "What the sheet says"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
 
+When an app has multiple versions, its entries share an `app_id` and are adjacent in `apps`. The first entry is current and supplies the bundle for new installs. Older entries retain their own source, release, manifest, bundle and permission cap. Opening an existing install resolves the exact digest in its saved `install.json`; a digest not in the catalog is refused.
+
 ## Kill switch
 
 An entry can be switched off without touching its bundle:
@@ -46,9 +48,9 @@ An entry can be switched off without touching its bundle:
 
 - `disabled` is `true` or absent; `disabledReason` (1 to 280 characters) is required with it and allowed only with it. `verifyCatalog` checks this.
 - The flag lives in the entry, not in the bundle, so no digest changes when it flips and the integrity checks stay valid. `vendor-app.mjs` keeps it when an app is updated.
-- The page shows the card with the reason (as text). A switched-off entry is headed "Temporarily unavailable"; an entry without `app.jsx` is headed "Unavailable". Open is a disabled button on the card and in the details sheet, with no runner link; Details shows the reason too. The card has no Install action. A deep link to `/apps/run#<app_id>` still reaches the runner, which refuses the entry before any sign-in and shows the same reason.
+- The page shows the card with the reason (as text). A switched-off entry is headed "Temporarily unavailable"; an entry without `app.jsx` is headed "Unavailable". Open is a disabled button on the card and in the details sheet, with no runner link; Details shows the reason too. The card has no Install action. A deep link to `/apps/run#<app_id>` still reaches the runner, which checks the saved version and refuses a switched-off installed version before requesting the app's permissions.
 - It takes effect when the site is deployed **and the page is reloaded**: the flag is compiled into the page's JavaScript (the headers are `no-store`, so a reload fetches the new build), and a tab that is already open keeps the catalog it loaded. Within one page load the card, the details sheet and the runner all refuse. The page cuts a `disabledReason` over `MAX_DISABLED_REASON_CHARS` (280) with a "…"; the catalog check refuses it.
-- The runner uses the same helpers from `src/apps/catalog.ts`: `availabilityOf(entry)` and `assertAvailable(entry)` (throws `EntryDisabledError`), so one flag stops opening.
+- The runner checks availability on the selected entry: the current version for a new install, or the saved digest for an existing install.
 
 ## Digest
 
@@ -72,7 +74,7 @@ node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] 
 - `<tag>` is a tag name or a full 40-hex commit id. Branches are refused because they move.
 - `--path` is the folder in the repo that holds the bundle (default `tinycloud/app`).
 - `--publisher` is required for a new app and kept for an existing one.
-- Updating an app replaces its entry and deletes the bundle folder it supersedes.
+- Existing app versions are kept in the catalog and on disk. The new version is placed first; the same digest is updated in place without duplicating it.
 - The script runs on a developer machine and its output is committed. The build and the site fetch nothing.
 
 `npm test` recomputes every digest and file hash (`test/apps-catalog.test.ts`).
@@ -101,18 +103,18 @@ screenshots (`APPS_SCREENSHOT_DIR`).
 
 ## Opening an app saves it
 
-Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)) when the entry can be opened; for an entry that is switched off, or has no `app.jsx`, it is a disabled button. Details is the secondary action and opens the details sheet, whose Open follows the same rule. The runner page starts the open as it loads: the catalog bundle is checked first, then the one OpenKey approval is requested. Nothing is written before that approval. The SDK loads before the bundle check; OpenKey loads only after it passes.
+Opening an app is the only way an app is added to a person's TinyCloud. The card's primary action is Open, which links to `/apps/run#<app_id>` ([tiny-app-runner.md](tiny-app-runner.md)) when the entry can be opened; for an entry that is switched off, or has no `app.jsx`, it is a disabled button. Details is the secondary action and opens the details sheet, whose Open follows the same rule. The runner checks the saved digest first, then verifies that exact catalog bundle before asking for the app's permissions. No app files are written before that approval.
 
-The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`). It says that the app runs with its own sign-in, that it can only read and change what its manifest asks for (the list is shown below), who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet.
+The open page shows the first-open disclosure inline before OpenKey (`src/apps/first-open.ts`). It says that Share checks the saved version, that the app runs with its own sign-in and can only read and change what its manifest asks for (the list is shown below), who publishes it, and that opening it saves its files when they are not in the person's TinyCloud yet.
 
 Each open runs these steps in order (`openApp` in `src/apps/run.ts`):
 
-1. **Refuse before any sign-in.** An unknown app, an entry switched off by the kill switch (`EntryDisabledError`, shown with its reason), or an entry without `app.jsx` is refused here, before OpenKey is contacted.
-2. **Verify the bundle, every open.** Every file is fetched from the entry's own `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size; the file list must hash to the digest; and the paths must pass the install rule (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`). A failure refuses the open before OpenKey.
-3. **One approval: one union session.** One OpenKey sign-in requests a single session for the app's folders: the catalog manifest's runtime grants for the installed digest, get, list and create-only `put` (`ifNoneMatch: "*"`) on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/`. Every open, first or repeat, takes exactly one approval. The same session reads the saved copy, writes any missing files, and starts the app. The bridge's allow-list is built from the capped saved manifest, which grants no `put` on `app/`, so the bridge refuses writes there; `knowledge/` writes are allowed only as the saved manifest grants them.
+1. **Resolve the saved version.** An unknown app is refused before sign-in. For a known app, a short read-only OpenKey sign-in reads only `<app_id>/app/install.json`. A new install uses the current catalog entry; an existing install uses the entry whose digest matches the saved record. A digest not listed in the catalog is refused, and a disabled selected entry is refused before app permissions are requested.
+2. **Verify the bundle, every open.** Every file is fetched from the selected entry's own `/apps/b/<digest>/` (same origin, no redirects) and must match the catalog's sha256 and size; the file list must hash to the digest; and the paths must pass the install rule (`src/apps/bundle.ts`, mirrored by `installPathProblem` in `scripts/apps-catalog.mjs`). A failure refuses the open before app permissions are requested.
+3. **Request the app permissions.** A second OpenKey sign-in requests a single runtime session for the selected version's manifest grants, plus get, list and create-only `put` (`ifNoneMatch: "*"`) on `<app_id>/app/`, and create-only `put` on `<app_id>/knowledge/`. This approval grants the app only its selected version's permissions. The same session reads the saved copy, writes any missing files, and starts the app. The bridge's allow-list is built from the capped saved manifest, which grants no `put` on `app/`, so the bridge refuses writes there; `knowledge/` writes are allowed only as the saved manifest grants them.
 4. **Save what is missing.** Each app file that is not in the person's TinyCloud is written create-only (`ifNoneMatch: "*"`), in catalog order. A file that is already there is kept as it is, and step 5 checks it before `install.json` is written. A file that appears between the read and its save stops the save ("saved files changed while opening"), and nothing more is written.
 5. **Write `install.json` after the app files.** `<app_id>/app/install.json` (`{ source, digest, installed_at }`) is written only when no record is saved and the saved code files pass the same check as the open: every code file present, no extra file, each with the catalog's sha256 and size. A failure stops the save with "`<reason>`, so install.json was not written". `manifest.json` is not pinned here; it is capped at verification (step 6). Notes are written after `install.json`, with `knowledge/index.md` last. A folder with `install.json` and every app file counts as installed; notes missing afterwards are written by the next open. The apps list is not used for that.
-6. **Verify the saved app.** The saved files are checked against the catalog version (`verifyStoredApp`), and the manifest is capped against the catalog manifest. A copy whose code files differ from the pins is refused on the "doesn't match the pinned version" screen, which offers Repair. A copy recorded for a digest that is not in the catalog is refused as not listed: the page cannot check or repair it, so it shows the steps to delete its files by hand. Nothing is upgraded silently.
+6. **Verify the saved app.** The saved files are checked against the selected catalog version (`verifyStoredApp`), and the manifest is capped against that version's catalog manifest. A copy whose code files differ from the pins is refused on the "doesn't match the pinned version" screen, which offers Repair. A copy recorded for a digest that is not in the catalog is refused and shows the steps to remove its files. Nothing is upgraded silently.
 7. **Start the app on the same session.** The union session is not reopened for the app frame. It lasts one hour. The bridge allow-list comes only from the capped copy of the saved manifest (`makeAuthorizer`), never from the session.
 
 ## Cancel, failure, and partial saves
@@ -121,7 +123,7 @@ While an open runs, the progress line shows the step, and a Cancel button sits b
 
 Every failure has a title and a plain sentence in the runner's result screen (`failureScreen` in `src/apps/run-view.ts`). A save that stops partway keeps the files already written. Opening the app again keeps them and writes the rest; `install.json` is written once the code files pass the pin check.
 
-Repair (`src/apps/repair.ts`) replaces the app's saved code files with the catalog copy. It opens as an inline panel on the apps page, and one Repair click starts it. It takes one approval. The knowledge folder and `install.json` are left as they are.
+Repair (`src/apps/repair.ts`) resolves the installed digest before it fetches and verifies that version's code. It opens as an inline panel on the apps page. The lookup is read-only; the Repair action then takes one approval for reading the exact `install.json` key and replacing or listing files under `<app_id>/app/`. It reads the record again through that approved session before the first write; if the digest changed while approval was pending, Repair stops without writing. The knowledge folder and `install.json` are left as they are.
 
 `test/apps-open-install.test.ts` covers the open steps (verification before any sign-in, create-only writes, the order of `install.json`, cancel during the save, a saved listing that could not be read in full). `test/apps-runner-view.test.ts` and `test/apps-view.test.ts` cover the start screen, the result screens and the card actions. `test/e2e-apps-widget-layer.mjs` drives the real SDK against a stand-in OpenKey window at 390, 1100 and 1440 px and checks that nothing modal sits above the window, that a click reaches it, and that Cancel and Escape end the open. `test/e2e-prod/install-gate.mjs` and `test/e2e-prod/runner-gate.mjs` run the same flow against real OpenKey; they are run by QA, not in CI.
 
@@ -195,10 +197,10 @@ entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha25
 | App | Source | Pinned at |
 | --- | --- | --- |
 | `com.example.notes` | `TinyCloudLabs/tinycloud-app-kit` `examples/sqlite-app` | commit `5059c5b` |
-| `xyz.tinycloud.sample.healthlog` | same repository, `examples/sample-healthlog` | commit `58760311ff3af940761332c3460f1d9498b56c1f` (the repository has no tags) |
-| `xyz.tinycloud.sample.recipes` | same repository, `examples/sample-recipes` | commit `58760311ff3af940761332c3460f1d9498b56c1f` |
+| `xyz.tinycloud.sample.healthlog` (current) | same repository, `examples/sample-healthlog` | commit `37870ea92653224de38ea86551ef6bac29096d8f` (the repository has no tags) |
+| `xyz.tinycloud.sample.healthlog` (previous install) | same repository, `examples/sample-healthlog` | commit `58760311ff3af940761332c3460f1d9498b56c1f` |
 
 That repository is public and has no LICENSE file. Other apps (for example the TinyHealth and
 TinyRecipes forks) are not vendored until their licensing allows it.
 
-Details: TC-1422
+Details: TC-2174
