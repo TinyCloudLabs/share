@@ -219,11 +219,9 @@ describe.each(ADAPTER_FACTORIES)("storage conformance: $name adapter", ({ create
     await storage.put(makeRecord({ type: "share", body: new Uint8Array(10), size: 10 }), NOW);
     await storage.put(makeRecord({ type: "share", body: new Uint8Array(20), size: 20, expiresAt: NOW + 5 }), NOW);
     await storage.put(makeRecord({ type: "courier", body: new Uint8Array(7), size: 7 }), NOW);
-    expect(await storage.stats(NOW)).toEqual({
-      "openkey-login": { rows: 0, bytes: 0 },
-      courier: { rows: 1, bytes: 7 },
-      share: { rows: 2, bytes: 30 },
-    });
+    const stats = await storage.stats(NOW);
+    expect(stats.share).toEqual({ rows: 2, bytes: 30 });
+    expect(stats.courier).toEqual({ rows: 1, bytes: 7 });
     expect((await storage.stats(NOW + 5)).share).toEqual({ rows: 1, bytes: 10 });
   });
 

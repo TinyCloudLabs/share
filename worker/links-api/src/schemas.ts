@@ -155,6 +155,9 @@ export function parseHeader(raw: unknown, mode: HeaderMode, audience: string): H
     return { ok: false, reason: parsed.error.issues[0]?.message ?? "header_shape" };
   }
   const header = parsed.data as LinkHeader;
+  if (mode !== "signed" && header.type === "openkey-approval-request") {
+    return { ok: false, reason: "unsigned_not_allowed" };
+  }
   const issuer = checkIssuer(header.issuer, mode);
   return { ok: true, header, issuerKey: issuer.ok ? issuer.publicKey : null };
 }
