@@ -1,4 +1,5 @@
 import { createHash, webcrypto } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { CatalogEntry } from "../src/apps/catalog.ts";
@@ -30,7 +31,9 @@ describe("catalog manifests by installed version", () => {
     const newText = JSON.stringify({ version: "new" });
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const body = String(input).includes(oldDigest) ? oldText : newText;
-      return new Response(body, { status: 200 });
+      const bytes = Buffer.from(body);
+      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      return { ok: true, arrayBuffer: async () => buffer } as Response;
     });
     vi.stubGlobal("fetch", fetcher);
 
