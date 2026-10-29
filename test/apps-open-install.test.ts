@@ -33,6 +33,7 @@ const fullCopy = (): Map<string, Uint8Array> => savedCopy(health);
 interface HarnessOptions {
   prepareError?: RunError;
   catalog?: readonly CatalogEntry[];
+  hasPersistedSession?: boolean;
 }
 
 /** Ports over an in-memory saved copy. `puts` records every create-only write key in order. */
@@ -40,6 +41,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
   const puts: string[] = [];
   const reads = { count: 0 };
   const signedPlans: { digest: string; manifest: unknown }[] = [];
+  const initialPlans: { digest: string; manifest: unknown }[] = [];
   const counts = { prepares: 0, runtimes: 0 };
   const put = async (key: string, bytes: Uint8Array): Promise<PutResult> => {
     puts.push(key);
@@ -52,7 +54,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
   };
   const ports: RunPorts = {
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
-    hasPersistedSession: async () => initial.has(INSTALL_RECORD_PATH),
+    hasPersistedSession: async () => options.hasPersistedSession ?? initial.has(INSTALL_RECORD_PATH),
     prepare: async (candidate): Promise<PreparedApp> => {
       counts.prepares += 1;
       if (options.prepareError !== undefined) throw options.prepareError;
@@ -62,7 +64,8 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
     },
     loadCatalogManifest: async (candidate) => ({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8"))) }),
     // `counts.runtimes` is the number of runtime sessions signed in and not yet ended.
-    signIn: async (_candidate, _plan): Promise<RunSession> => {
+    signIn: async (candidate, plan): Promise<RunSession> => {
+      initialPlans.push({ digest: candidate.bundle.digest, manifest: plan.manifest });
       reads.count += 1;
       counts.runtimes += 1;
       let ended = false;
@@ -76,7 +79,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
     },
     sdk: async () => sdkCore,
   };
-  return { ports, puts, reads, signedPlans, counts };
+  return { ports, puts, reads, signedPlans, initialPlans, counts };
 }
 
 describe("installOrder", () => {
@@ -138,6 +141,14 @@ describe("openApp: install on open", () => {
       manifest: signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", previousHealth.bundle.root, previousHealth.manifest.path), "utf8"))) }, sdkCore).manifest,
     }]);
     expect(old.signedPlans[0]?.manifest).not.toEqual(signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", health.bundle.root, health.manifest.path), "utf8"))) }, sdkCore).manifest);
+    const freshBrowserOld = harness(savedCopy(previousHealth), { hasPersistedSession: false });
+    const openedFreshBrowserOld = await openApp(HEALTH, freshBrowserOld.ports, noop);
+    expect(openedFreshBrowserOld.app.entry.bundle.digest).toBe(previousHealth.bundle.digest);
+    expect(freshBrowserOld.initialPlans).toEqual([{
+      digest: health.bundle.digest,
+      manifest: signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", health.bundle.root, health.manifest.path), "utf8"))) }, sdkCore).manifest,
+    }]);
+    expect(freshBrowserOld.signedPlans).toEqual(old.signedPlans);
 
     const fresh = harness(new Map());
     const openedFresh = await openApp(HEALTH, fresh.ports, noop);

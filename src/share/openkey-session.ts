@@ -272,6 +272,8 @@ export interface ManifestSignIn {
   readonly spaces: Readonly<Record<string, string>>;
   /** Epoch ms the signed session ends at: the SIWE's Expiration Time, or the requested expiry when the message carries none. A restored session keeps its own remaining time. */
   readonly sessionExpiresAt: number;
+  /** Attach the lazy wallet only when the existing session does not cover a runtime permission request. */
+  preparePermissionRequest(permissions: PermissionEntry[]): Promise<void>;
   /** Closes the OpenKey connection this call opened without signing out: a persisted session stays usable by the next open. Safe to call more than once; never rejects. */
   detach(): Promise<void>;
   /** Signs the client out (clearing any persisted session) and, when this call opened the OpenKey connection, closes its windows and flows. Safe to call more than once; never rejects. */
@@ -399,6 +401,10 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     const owner = await ensureOpenKey();
     return guardedApproval(() => explicitOpenKeyApproval(owner, request), { kind: "sign", purpose: request.purpose });
   };
+  const preparePermissionRequest = async (permissions: PermissionEntry[]): Promise<void> => {
+    if (permissions.length === 0 || tinycloud!.hasPermissions(permissions)) return;
+    await ensureOpenKey();
+  };
   try {
     const restoreFirst = options.restoreBeforeOpenKey === true && session === undefined;
     let manifest: Manifest;
@@ -466,7 +472,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       detaching ??= (async () => { if (opened && session !== undefined) closeOpenKeyFlows(session.openkey); })();
       return detaching;
     };
-    return { tinycloud, session, spaces, sessionExpiresAt, detach, dispose };
+    return { tinycloud, session, spaces, sessionExpiresAt, preparePermissionRequest, detach, dispose };
   } catch (error) {
     if (dispose !== undefined) await dispose();
     else if (opened && session !== undefined) closeOpenKeyFlows(session.openkey);

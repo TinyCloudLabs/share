@@ -5,6 +5,8 @@ import { signInWithManifest } from "../src/share/openkey-session.js";
 import type { SharePublicConfig } from "../src/email-share/config.js";
 
 let persisted = false;
+let covered = true;
+let walletAttached = false;
 const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 vi.mock("@tinycloud/web-sdk", () => ({
@@ -13,7 +15,8 @@ vi.mock("@tinycloud/web-sdk", () => ({
     async restoreSession(): Promise<{ status: string }> {
       return { status: persisted ? "restored" : "missing" };
     }
-    connectWallet(): void {}
+    connectWallet(): void { walletAttached = true; }
+    hasPermissions(): boolean { return covered; }
     space(): { kv: object } { return { kv: {} }; }
     async signIn(): Promise<{ address: string; siwe: string }> {
       persisted = true;
@@ -75,6 +78,8 @@ function installOpenKeyFrameResponder(): { readonly count: () => number; readonl
 describe("persisted runner session OpenKey boundary", () => {
   beforeEach(() => {
     persisted = false;
+    covered = true;
+    walletAttached = false;
     document.body.replaceChildren();
     vi.stubGlobal("matchMedia", () => ({ matches: false, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined }));
   });
@@ -101,10 +106,37 @@ describe("persisted runner session OpenKey boundary", () => {
     expect(transport.requests).toHaveLength(1);
     expect(transport.requests[0]).toMatchObject({ type: "openkey:auth:request" });
     await first.detach();
+    const coveredPermission = [{ service: "tinycloud.kv", space: "applications", path: "xyz.example.restore-boundary/settings/", actions: ["put"] }];
+    await first.preparePermissionRequest(coveredPermission);
+    expect(transport.count()).toBe(1);
 
     const reopened = await signInWithManifest(options);
     expect(transport.count()).toBe(1);
     expect(transport.requests).toHaveLength(1);
+    await reopened.preparePermissionRequest(coveredPermission);
+    expect(transport.count()).toBe(1);
     await reopened.detach();
+  });
+  it("attaches OpenKey to the restored client before an uncovered grant", async () => {
+    persisted = true;
+    covered = false;
+    const transport = installOpenKeyFrameResponder();
+    const signedIn = await signInWithManifest({
+      manifest: MANIFEST,
+      config: CONFIG,
+      persistSession: true,
+      restoreBeforeOpenKey: true,
+      includeAccountRegistryPermissions: false,
+      autoCreateSpace: false,
+    });
+
+    expect(transport.count()).toBe(0);
+    await signedIn.preparePermissionRequest([
+      { service: "tinycloud.kv", space: "applications", path: "xyz.example.restore-boundary/settings/", actions: ["put"], skipPrefix: true },
+    ]);
+    expect(transport.requests).toHaveLength(1);
+    expect(transport.requests[0]).toMatchObject({ type: "openkey:auth:request" });
+    expect(walletAttached).toBe(true);
+    await signedIn.detach();
   });
 });

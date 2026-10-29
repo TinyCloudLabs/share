@@ -12,6 +12,7 @@ import type { Manifest, TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
+import { isSpaceNotFound } from "../share/space-not-ready.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
 import { INSTALL_EXPIRY, INSTALL_EXPIRY_MS, INSTALL_SPACE, installRecordKey } from "./install-plan.ts";
@@ -21,6 +22,14 @@ import { RUNTIME_SESSION_MS, type ManifestSdk } from "./grants.ts";
 import { BundleRefusal, INSTALL_RECORD_PATH, fetchVerifiedBundle } from "./bundle.ts";
 import { loadManifest } from "./manifest.ts";
 import { parseInstallRecord, type StoredFiles } from "./stored-app.ts";
+import { showRuntimePermissionDialog } from "./permission-dialog.ts";
+
+class AppSpaceNotHostedError extends Error {
+  constructor() {
+    super("applications-space-not-hosted");
+    this.name = "AppSpaceNotHostedError";
+  }
+}
 
 /** The session is treated as over this long before the SDK's own expiry, so a call is not sent into a dying session. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -29,6 +38,16 @@ const APP_NAME_MAX_CHARS = 64;
 export const MAX_STORED_FILES = 64;
 export const MAX_STORED_BYTES = 8 * 1024 * 1024;
 
+function installSafePermissionDialog(tinycloud: TinyCloudWeb): void {
+  // The pinned Web SDK's modal writes its template through innerHTML. Its
+  // private showModal hook is the only renderer seam; keep the replacement
+  // local to this runner and use DOM text nodes under production Trusted Types.
+  const previous = Reflect.get(tinycloud, "_testHooks");
+  const hooks = typeof previous === "object" && previous !== null ? previous : {};
+  if (!Reflect.set(tinycloud, "_testHooks", { ...hooks, showModal: showRuntimePermissionDialog })) {
+    throw new Error("runner-permission-dialog-unavailable");
+  }
+}
 /**
  * The name OpenKey shows. DISPLAY ONLY (the app id and the grants never come from it): the catalog's name goes in only
  * if the shared sign-in accepts it as a label, otherwise a fixed one stands in; the whole line is cut to 64 characters.
@@ -73,7 +92,7 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
 
 /** The parts of the SDK's key-value service the reader uses. */
 interface ReaderKv {
-  list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string } }>;
+  list(options: { prefix: string }): Promise<{ ok: true; data: { keys: string[]; truncated?: boolean } } | { ok: false; error: { code?: string; message?: string; meta?: { status?: unknown } } }>;
   /** A short-lived URL for one object (a `get` invocation): fetched below as a STREAM, so the read can stop at the cap. */
   createSignedReadUrl(key: string, options: { expiresInSeconds: number }): Promise<{ ok: true; data: { url: string } } | { ok: false; error: { code?: string } }>;
 }
@@ -102,7 +121,10 @@ export type ReaderFetch = (url: string, init: { signal: AbortSignal; credentials
  */
 export async function readSavedFiles(kv: ReaderKv, prefix: string, fetcher: ReaderFetch = (url, init) => fetch(url, init)): Promise<StoredFiles> {
   const listed = await kv.list({ prefix });
-  if (!listed.ok) throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}` });
+  if (!listed.ok) {
+    if (isSpaceNotFound(listed)) throw new AppSpaceNotHostedError();
+    throw new RunError("failed", { detail: `list ${prefix}: ${listed.error.code ?? "error"}`, cause: listed.error });
+  }
   const paths = listed.data.keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)).filter((path) => path !== "");
   const entries = new Map<string, Uint8Array>();
   let incomplete = listed.data.truncated === true || paths.length > MAX_STORED_FILES;
@@ -252,32 +274,36 @@ export function createRunPorts(): RunPorts {
       const config = await loadSharePublicConfig();
       const approvals = approvalGuard(hooks);
       let client: TinyCloudWeb | undefined;
-      let signedIn: ManifestSignIn;
-      try {
-        signedIn = await openkey.signInWithManifest({
-          manifest: plan.manifest,
-          ...plan.scope,
-          config,
-          includeAccountRegistryPermissions: false,
-          autoCreateSpace: false,
-          guardApproval: approvals.guard,
-          onClient: (created) => { client = created; },
-          appName: runnerAppName("TinyCloud Share: ", entry.name),
-          // The session is persisted under this app's own prefix: a reload while it still lives
-          // (same owner, same origin, permissions still covered) restores it without a new
-          // approval, and it can never stand in for another app's or another account's session.
-          restoreBeforeOpenKey: true,
-          sessionPrefix: await runnerSessionPrefix(entry.app_id),
-          persistSession: true,
-          expiry: RUNTIME_SESSION_MS,
-        });
-      } catch (error) {
-        const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
-        throw new RunError(reason ?? "failed", { cause: error });
-      }
-      const { tinycloud, detach, dispose } = signedIn;
-      const space = tinycloud.space(INSTALL_SPACE);
-      const kv = space.kv;
+      const sessionPrefix = await runnerSessionPrefix(entry.app_id);
+      const openSession = async (createMissingSpace: boolean): Promise<ManifestSignIn> => {
+        try {
+          return await openkey.signInWithManifest({
+            manifest: plan.manifest,
+            ...plan.scope,
+            config,
+            includeAccountRegistryPermissions: createMissingSpace,
+            autoCreateSpace: createMissingSpace,
+            ...(createMissingSpace ? { hostSpaces: [INSTALL_SPACE] } : {}),
+            guardApproval: approvals.guard,
+            onClient: (created) => { client = created; },
+            appName: runnerAppName("TinyCloud Share: ", entry.name),
+            // The session is persisted under this app's own prefix: a reload while it still lives
+            // (same owner, same origin, permissions still covered) restores it without a new
+            // approval, and it can never stand in for another app's or another account's session.
+            restoreBeforeOpenKey: true,
+            sessionPrefix,
+            persistSession: true,
+            expiry: RUNTIME_SESSION_MS,
+          });
+        } catch (error) {
+          const reason = approvals.observed() ?? (client === undefined ? undefined : openkey.takeWalletApprovalFailure(client));
+          throw new RunError(reason ?? "failed", { cause: error });
+        }
+      };
+      let signedIn = await openSession(false);
+      let { tinycloud, detach, dispose } = signedIn;
+      let space = tinycloud.space(INSTALL_SPACE);
+      let kv = space.kv;
       // The persisted grant is deliberately minimal on reopen; resolve install.json
       // first, then request only this saved version's resources on the same client.
       let authorized = false;
@@ -288,6 +314,8 @@ export function createRunPorts(): RunPorts {
           .filter((resource) => resource.space === INSTALL_SPACE && (resource.service === "tinycloud.kv" || resource.service === "tinycloud.sql"))
           .map((resource) => ({ service: resource.service, space: resource.space, path: resource.path, actions: [...resource.actions] }));
         try {
+          if (!tinycloud.hasPermissions(permissions)) installSafePermissionDialog(tinycloud);
+          await signedIn.preparePermissionRequest(permissions);
           const result = await tinycloud.requestPermissions(permissions, { expiryMs: RUNTIME_SESSION_MS });
           if (!result.approved) throw new RunError("cancelled");
           authorized = true;
@@ -299,9 +327,24 @@ export function createRunPorts(): RunPorts {
       try {
         files = await readSavedFiles(kv, `${entry.app_id}/app/`);
       } catch (error) {
-        approvals.lock();
-        await dispose();
-        throw error instanceof RunError ? error : new RunError("failed", { cause: error });
+        if (error instanceof AppSpaceNotHostedError) {
+          await dispose();
+          try {
+            signedIn = await openSession(true);
+            ({ tinycloud, detach, dispose } = signedIn);
+            space = tinycloud.space(INSTALL_SPACE);
+            kv = space.kv;
+            files = await readSavedFiles(kv, `${entry.app_id}/app/`);
+          } catch (fallbackError) {
+            approvals.lock();
+            await dispose();
+            throw fallbackError instanceof RunError ? fallbackError : new RunError("failed", { cause: fallbackError });
+          }
+        } else {
+          approvals.lock();
+          await dispose();
+          throw error instanceof RunError ? error : new RunError("failed", { cause: error });
+        }
       }
       let ending: Promise<void> | undefined;
       const end: () => Promise<void> = () => {

@@ -127,7 +127,7 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
 
   // ---- chrome (always visible, outside the frame)
   const title = el("h1", "run-title", [entry?.name ?? "Open an app"], { tabindex: "-1" });
-  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : "Checking which version is installed before opening this app."]);
+  const provenance = el("p", "run-provenance", [entry === undefined ? "Open an app from the apps page. Each one runs in a sandbox." : ""]);
   const openAnother = el("a", "tc-button apps-button", ["Open another app"], { href: APPS_HREF });
   const signOut = el("button", "tc-button apps-button", ["Sign out of this app"], { type: "button" });
   signOut.disabled = true;
@@ -296,7 +296,6 @@ export function mountRunner(root: HTMLElement, options: RunnerOptions): Runner {
   function begin(): void {
     if (entry === undefined || appId === null) return;
     disclosure = openingDisclosure(entry);
-    provenance.textContent = "Checking which version is installed before opening this app.";
     access.hidden = true;
     access.open = false;
     detachFrame();
