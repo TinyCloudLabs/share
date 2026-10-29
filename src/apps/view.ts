@@ -259,6 +259,7 @@ function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): Repai
       }
       const refuse = (): void => { if (cancelled()) throw new RepairError("cancelled"); };
       return {
+        readInstallDigest: async () => { refuse(); const digest = await session.readInstallDigest(); refuse(); return digest; },
         put: async (key, bytes, contentType) => { refuse(); return session.put(key, bytes, contentType); },
         list: async (prefix) => { refuse(); return session.list(prefix); },
         del: async (key) => { refuse(); return session.del(key); },
@@ -372,13 +373,8 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
       panels.get(entry.app_id)?.panel.focus();
       return;
     }
-    const availability = availabilityOf(entry);
     const panel = freshPanel(entry.app_id, `Repair ${entry.name}`);
-    if (availability.available) {
-      panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
-    } else {
-      panel.say(availability.reason, "danger", { actions: [{ label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
-    }
+    panel.say("This replaces your edited code. Your data is untouched.", "neutral", { actions: [{ label: "Repair", primary: true, onClick: () => runRepairInline(entry) }, { label: "Dismiss", onClick: () => dismiss(entry.app_id) }] });
     panel.focus();
   };
 

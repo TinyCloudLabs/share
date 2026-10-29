@@ -1,25 +1,8 @@
 /**
- * Opening an app: check it, sign in once, save any missing files, verify the saved copy, and hand back what the page needs to run it.
- *
- * Order is the safety argument:
- *  1. The app must be in the catalog (the page's own copy of it) and not switched
- *     off (`assertAvailable`), and its catalog entry must carry the code it runs
- *     (`app.jsx`). Nothing is signed for an id the catalog does not list, has
- *     disabled, or cannot run.
- *  2. The catalog bundle is fetched and every file is checked against the catalog's
- *     sha256 and size, and the catalog manifest is loaded (`prepare`). A failure
- *     here refuses the open before any approval is asked.
- *  3. ONE sign-in (`signIn`) for the union grant set built from the catalog manifest
- *     (`signInPlan`, grants.ts): the catalog's runtime grants, plus create-only writes
- *     for the app's folder and notes. Missing files are saved under this same approval,
- *     and the app runs on the same session.
- *  4. Missing files are saved, create-only, in order: app files, then `install.json`,
- *     then the notes with `knowledge/index.md` last. A folder with `install.json` and
- *     every app file is complete. Existing files are never replaced.
- *  5. The saved copy is verified (stored-app.ts): every code file is hashed and compared
- *     with the catalog's pins for the installed digest (an edited, extra or missing file
- *     refuses the open), and the manifest is re-validated and capped against the catalog
- *     manifest. Nothing runs until this has passed.
+ * Opening an app resolves the saved digest and checks the selected catalog version before it requests the app's permissions.
+ * The read-only version lookup is followed by one runtime sign-in, which combines the selected manifest's grants with
+ * create-only writes for the app's folder and notes. Missing files are saved under this session; the verified app runs
+ * on it. Existing files are never replaced, and the saved copy is checked against the same selected version before it runs.
  * The sign-in, the node, the SDK and the clock are ports so tests can drive each step.
  */
 import type { Manifest } from "@tinycloud/sdk-core";
@@ -121,6 +104,7 @@ export type RunProgress =
   | { readonly phase: "reading"; readonly approval: boolean }
   | { readonly phase: "saving"; readonly done: number; readonly total: number }
   | { readonly phase: "verifying" }
+  | { readonly phase: "disclosing"; readonly entry: CatalogEntry; readonly manifest: unknown }
   | { readonly phase: "starting" };
 
 export interface RunningApp {
@@ -235,6 +219,7 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   } catch (cause) {
     throw cause instanceof RunError ? cause : new RunError("failed", { cause });
   }
+  if (prepared.manifest.ok) report({ phase: "disclosing", entry, manifest: prepared.manifest.manifest });
   if (signal?.aborted) throw new RunError("cancelled");
 
   report({ phase: "reading", approval: false });

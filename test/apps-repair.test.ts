@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { type BundleFetch } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { RepairError, type RepairPorts, type RepairSession, repairManifest, repairScope, repairWrites, runRepair } from "../src/apps/repair.ts";
-import { installRecordKey, REGISTRY_RESOURCES } from "../src/apps/install-plan.ts";
+import { installRecord, installRecordKey, REGISTRY_RESOURCES } from "../src/apps/install-plan.ts";
 import { parseInstallRecord } from "../src/apps/stored-app.ts";
 import { ManifestRejectedError, MANIFEST_CHECK_ADDRESS, assertManifestInScope } from "../src/share/manifest-policy.ts";
 import { storedFiles } from "./stored-fixtures.ts";
@@ -45,6 +45,10 @@ function fakeNode(store: Map<string, Uint8Array>, options: { failPutAt?: number 
       state.manifests.push(manifest);
       state.hooks.push(hooks);
       return {
+        async readInstallDigest() {
+          const record = store.get(installRecordKey(HEALTH));
+          return record === undefined ? null : parseInstallRecord(record)?.digest ?? null;
+        },
         async put(key, bytes, contentType) {
           puts += 1;
           if (options.failPutAt === puts) throw new Error("node down");
@@ -110,6 +114,38 @@ describe("Repair puts the catalog's code files back over the saved ones", () => 
     const files = new Map<string, Uint8Array>();
     for (const [key, bytes] of store) if (key.startsWith(`${HEALTH}/app/`)) files.set(key.slice(`${HEALTH}/app/`.length), bytes);
     expect(await pinProblem(previousEntry, { entries: files })).toBeUndefined();
+  });
+
+  it("refuses writes when another install changes the saved digest during Repair approval", async () => {
+    expect(previousEntry).toBeDefined();
+    if (previousEntry === undefined) return;
+    const store = installedStore(previousEntry);
+    const oldCode = new TextEncoder().encode("tampered old code");
+    store.set(`${HEALTH}/app/app.jsx`, oldCode);
+    const newRecord = installRecord(entry, new Date("2026-10-21T10:00:00.000Z"));
+    const node = fakeNode(store);
+    let approvalOpened = (): void => undefined;
+    let approve = (): void => undefined;
+    const opened = new Promise<void>((resolve) => { approvalOpened = resolve; });
+    const pendingApproval = new Promise<void>((resolve) => { approve = resolve; });
+    const ports: RepairPorts = {
+      ...node.ports,
+      async openSession(manifest, hooks) {
+        hooks.approval(true);
+        approvalOpened();
+        await pendingApproval;
+        hooks.approval(false);
+        return node.ports.openSession(manifest, hooks);
+      },
+    };
+    const repair = runRepair(entry, { ...ports, fetch: bundleFetch({}, previousEntry).fetch }, () => undefined, catalog.apps.filter((candidate) => candidate.app_id === HEALTH));
+    await opened;
+    store.set(installRecordKey(HEALTH), newRecord);
+    approve();
+    await expect(repair).rejects.toMatchObject({ reason: "failed", written: [] });
+    expect(node.log).toEqual([]);
+    expect(store.get(`${HEALTH}/app/app.jsx`)).toEqual(oldCode);
+    expect(Buffer.from(store.get(installRecordKey(HEALTH))!).equals(Buffer.from(newRecord))).toBe(true);
   });
 
   it("writes only code files under <app_id>/app/ (never knowledge/, install.json, data), deletes only strays there, and in that order", async () => {
@@ -212,11 +248,14 @@ describe("Repair puts the catalog's code files back over the saved ones", () => 
 describe("what Repair asks OpenKey for", () => {
   const manifest = repairManifest({ app_id: HEALTH, name: entry.name });
 
-  it("is put, del and list on <app_id>/app/ only, and the SDK's registry grants: nothing about knowledge, data or SQL", () => {
+  it("grants code repair plus exact read of install.json, and the SDK's registry grants: nothing about knowledge, data or SQL", () => {
     const composed = sdkCore.composeManifestRequest([sdkCore.validateManifest(manifest)], { includeAccountRegistryPermissions: true });
     expect(composed.delegationTargets).toEqual([]);
     const own = composed.resources.filter((resource) => resource.space === "applications" && resource.service !== "tinycloud.capabilities");
-    expect(own.map((resource) => ({ service: resource.service, path: resource.path, actions: [...resource.actions].sort() }))).toEqual([{ service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/put"] }]);
+    expect(own.map((resource) => ({ service: resource.service, path: resource.path, actions: [...resource.actions].sort() })).sort((a, b) => a.path.localeCompare(b.path))).toEqual([
+      { service: "tinycloud.kv", path: `${HEALTH}/app/`, actions: ["tinycloud.kv/del", "tinycloud.kv/list", "tinycloud.kv/put"] },
+      { service: "tinycloud.kv", path: installRecordKey(HEALTH), actions: ["tinycloud.kv/get"] },
+    ]);
     const rest = composed.resources.filter((resource) => resource.space !== "applications");
     expect(rest.map((resource) => `${resource.service}|${resource.space}|${resource.path}`).sort()).toEqual(REGISTRY_RESOURCES.map((resource) => `${resource.service}|${resource.space}|${resource.path}`).sort());
     expect(manifest.expiry).toBe("15m");
@@ -228,7 +267,8 @@ describe("what Repair asks OpenKey for", () => {
     const widen = (permissions: sdkCore.PermissionEntry[]): unknown => { try { assertManifestInScope({ ...sdkCore.validateManifest(manifest), permissions }, scope, MANIFEST_CHECK_ADDRESS); return "accepted"; } catch (error) { return error instanceof ManifestRejectedError ? error.code : error; } };
     expect(widen([{ service: "tinycloud.kv", path: "knowledge/", actions: ["put"] }])).toBe("path-not-allowed");
     expect(widen([{ service: "tinycloud.kv", path: "prefs/", actions: ["put", "del"] }])).toBe("path-not-allowed");
-    expect(widen([{ service: "tinycloud.kv", path: "app/", actions: ["put", "get"] }])).toBe("action-not-allowed");
+    expect(widen([{ service: "tinycloud.kv", path: "app/", actions: ["put", "get"] }])).toBe("path-not-allowed");
+    expect(widen([{ service: "tinycloud.kv", path: "app/other.json", actions: ["get"] }])).toBe("path-not-allowed");
     expect(widen([{ service: "tinycloud.sql", path: "healthlog", actions: ["write"] }])).toBe("service-not-allowed");
   });
 

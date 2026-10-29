@@ -4,7 +4,7 @@
  * The runner refuses to open an app whose saved code is not the pinned version (stored-app.ts). Repair is the way
  * back: it re-installs the catalog's code files for the installed digest, overwriting what is stored, and removes
  * any other file in `<app_id>/app/`. It touches nothing else: not `knowledge/`, not the app's databases or settings,
- * not `install.json`. One OpenKey approval, for `put`, `del` and `list` on `<app_id>/app/` only, 15 minutes.
+ * not `install.json`. One OpenKey approval, for `get` on that exact record and `put`, `del` and `list` on `<app_id>/app/`, 15 minutes.
  *
  * Order, as for the install: every file is fetched from the entry's own `/apps/b/<digest>/` and checked against the
  * catalog BEFORE OpenKey opens (a tampered file: zero writes, zero approvals); a disabled entry is refused before
@@ -35,9 +35,16 @@ export class RepairError extends Error {
   }
 }
 
-/** What Repair may ask OpenKey for: `put`, `del` and `list` on the one app's `app/` folder. The helper refuses anything else before OpenKey opens. */
+/** What Repair may ask OpenKey for: `get` on one install record plus code operations on the one app's `app/` folder. */
 export function repairScope(appId: string): ManifestScope {
-  return { allowedSpaces: [INSTALL_SPACE], allowedServices: ["kv"], allowedActions: ["put", "del", "list"], allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }] };
+  const record = installRecordKey(appId);
+  return {
+    allowedSpaces: [INSTALL_SPACE],
+    allowedServices: ["kv"],
+    allowedActions: ["get", "put", "del", "list"],
+    allowedPathPrefixes: [{ space: INSTALL_SPACE, prefix: `${appId}/app/` }],
+    allowedActionPathPrefixes: [{ service: "kv", action: "get", prefixes: [{ space: INSTALL_SPACE, prefix: record }] }],
+  };
 }
 
 export function repairManifest(app: { app_id: string; name: string }): Manifest {
@@ -49,7 +56,10 @@ export function repairManifest(app: { app_id: string; name: string }): Manifest 
     defaults: false,
     includePublicSpace: false,
     expiry: INSTALL_EXPIRY,
-    permissions: [{ service: "tinycloud.kv", path: "app/", actions: ["put", "del", "list"], description: "Replace the app's code files with the pinned version and remove any other file in that folder. Your data and notes are not touched." }],
+    permissions: [
+      { service: "tinycloud.kv", path: "app/", actions: ["put", "del", "list"], description: "Replace the app's code files with the pinned version and remove any other file in that folder. Your data and notes are not touched." },
+      { service: "tinycloud.kv", path: "app/install.json", actions: ["get"], description: "Confirm the installed version has not changed." },
+    ],
   };
 }
 
@@ -62,6 +72,8 @@ export function repairWrites(entry: CatalogEntry): readonly { path: string; key:
 }
 
 export interface RepairSession {
+  /** Reads the install record through the same session that will write, after Repair approval. */
+  readInstallDigest(): Promise<string | null>;
   /** Overwrites `key`. */
   put(key: string, bytes: Uint8Array, contentType: string): Promise<void>;
   /** Every key under `prefix`. */
@@ -138,6 +150,9 @@ export async function runRepair(entry: CatalogEntry, ports: RepairPorts, report:
   const written: string[] = [];
   const removed: string[] = [];
   try {
+    let sessionDigest: string | null;
+    try { sessionDigest = await session.readInstallDigest(); } catch (error) { throw new RepairError("failed", { cause: error }); }
+    if (sessionDigest !== digest) throw new RepairError("failed", { cause: new Error("install version changed during repair approval") });
     for (const [index, write] of wanted.entries()) {
       report({ phase: "repairing", done: index, total: wanted.length });
       const bytes = bytesOf.get(write.path);

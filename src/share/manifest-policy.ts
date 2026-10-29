@@ -64,6 +64,8 @@ export interface ManifestScope {
    * metadata, head, read, write. `del`, `schema`, `admin`, `export` and the like must be named here.
    */
   readonly allowedActions?: readonly string[];
+  /** Additional path caps for an individual service/action pair, used when that action is narrower than the general path scope. */
+  readonly allowedActionPathPrefixes?: readonly { readonly service: string; readonly action: string; readonly prefixes: readonly ScopedPrefix[] }[];
   /** Paths the permissions must sit under. Omitted: the manifest's own non-empty `prefix` (default `app_id`). A manifest with an empty prefix must say. */
   readonly allowedPathPrefixes?: readonly ScopedPrefix[];
 }
@@ -193,6 +195,19 @@ export function assertManifestInScope(manifest: Manifest, scope: ManifestScope, 
       if (!actions.some((entry) => entry.name === name && (entry.namespace === service || (entry.namespace === undefined && !qualifiedOnly)))) {
         throw new ManifestRejectedError("action-not-allowed", `action ${action} not allowed in ${at}`);
       }
+    }
+    for (const action of resource.actions) {
+      const { name } = splitAction(action);
+      const rules = (scope.allowedActionPathPrefixes ?? []).filter((rule) => {
+        const qualified = splitAction(rule.action);
+        return shortName(rule.service) === service && qualified.name === name && (qualified.namespace === undefined || qualified.namespace === service);
+      });
+      if (rules.length === 0) continue;
+      const allowed = rules.some((rule) => rule.prefixes.some((entry) => {
+        const { space, prefix } = typeof entry === "string" ? { space: undefined, prefix: entry } : entry;
+        return (space === undefined || space === resource.space) && underPrefix(resource.path, prefix.replaceAll("{address}", address.toLowerCase()));
+      }));
+      if (!allowed) throw new ManifestRejectedError("path-not-allowed", `path outside the action's declared prefixes: ${at}`);
     }
     // An encryption network is not in a space: the SDK reports the pseudo-space "encryption" for it.
     if (service !== "encryption" && !spaces.includes(resource.space)) throw new ManifestRejectedError("space-not-allowed", `space not allowed: ${at}`);

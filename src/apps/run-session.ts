@@ -177,9 +177,9 @@ function installLookupManifest(entry: CatalogEntry): Manifest {
   };
 }
 
-async function readInstallRecordDigest(kv: ReaderKv, entry: CatalogEntry): Promise<string | null> {
-  const key = installRecordKey(entry.app_id);
-  const prefix = `${entry.app_id}/app/`;
+export async function readInstallRecordDigest(kv: ReaderKv, appId: string): Promise<string | null> {
+  const key = installRecordKey(appId);
+  const prefix = `${appId}/app/`;
   const files = await readSavedFiles({
     list: async () => {
       const listed = await kv.list({ prefix: key });
@@ -221,7 +221,7 @@ export async function readInstalledDigest(entry: CatalogEntry, hooks: RunHooks):
   try {
     const space = signedIn.spaces[INSTALL_SPACE];
     if (space === undefined) throw new RunError("failed", { detail: "the applications space is not hosted" });
-    return await readInstallRecordDigest(signedIn.tinycloud.kvForSpace(space), entry);
+    return await readInstallRecordDigest(signedIn.tinycloud.kvForSpace(space), entry.app_id);
   } catch (error) {
     throw error instanceof RunError ? error : new RunError("failed", { cause: error });
   } finally {
