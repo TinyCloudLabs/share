@@ -31,6 +31,15 @@
     },
     {
       "service": "tinycloud.kv",
+      "path": "settings/",
+      "actions": [
+        "get",
+        "put"
+      ],
+      "description": "Save your timezone when you open the app, so an agent logging meals for you uses your day."
+    },
+    {
+      "service": "tinycloud.kv",
       "path": "app/",
       "actions": [
         "get"

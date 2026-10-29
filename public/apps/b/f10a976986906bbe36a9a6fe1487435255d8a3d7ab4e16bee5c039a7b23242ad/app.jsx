@@ -30,6 +30,7 @@ export const DB = "healthlog";
 export const SLOTS = ["breakfast", "lunch", "dinner", "snack"];
 export const DEFAULT_GOALS = { kcal: 2000 };
 const GOALS_KEY = "prefs/goals.json";
+export const TIMEZONE_KEY = "settings/timezone";
 
 // The bridge allows 4 calls in flight and refuses the rest. The app keeps itself
 // under that: at most 3 at a time, the others wait their turn here.
@@ -215,6 +216,24 @@ export async function saveGoals(goals) {
   const kcal = typeof goals?.kcal === "number" ? goals.kcal : NaN;
   if (!isValidGoal(kcal)) return invalid(GOAL_MESSAGE);
   return kv.put(GOALS_KEY, JSON.stringify({ kcal }), { contentType: "application/json" });
+}
+
+/** The browser's IANA timezone (for example "Pacific/Kiritimati"), or null when it has none the runtime recognises. */
+export function browserTimeZone() {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (typeof zone !== "string" || !/^[A-Za-z_][A-Za-z0-9_+/-]*$/.test(zone)) return null;
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone });
+    return zone;
+  } catch {
+    return null;
+  }
+}
+
+/** Save the owner's timezone so an agent logging meals for them uses the owner's day, not its own machine's. */
+export async function saveTimezone(zone = browserTimeZone()) {
+  if (zone === null) return invalid("The browser has no usable timezone.");
+  return kv.put(TIMEZONE_KEY, zone, { contentType: "text/plain" });
 }
 
 const CARD_COLUMNS = "day, kcal, protein_g, carbs_g, fat_g, meals, weight_kg";
@@ -571,6 +590,7 @@ export default function App({ now = () => new Date() } = {}) {
       const schema = await ensureSchema();
       if (cancelled) return;
       if (!schema.ok) return setState({ status: "error", message: schema.error.message });
+      saveTimezone(); // best effort: a failed save changes nothing the owner sees
       await refresh();
     })();
     return () => {

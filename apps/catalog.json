@@ -73,33 +73,33 @@
       "source": {
         "repo": "https://github.com/TinyCloudLabs/tinycloud-app-kit",
         "tag": null,
-        "commit": "58760311ff3af940761332c3460f1d9498b56c1f"
+        "commit": "37870ea92653224de38ea86551ef6bac29096d8f"
       },
       "release": {
         "version": "0.1.0",
-        "digest": "828057515ba93e2736fc93d1b2e2729de16f826e2bb40dcdbdab3c297e5e5d40"
+        "digest": "2bc8ccd0c0a8c66175747adf234c5eb6ad2f0313076fb467e940704a7a273c51"
       },
       "manifest": {
         "path": "manifest.json",
-        "sha256": "7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802"
+        "sha256": "f0fc339e12747194fb420bcbda0d520d611697e3ea76c2db5d050ea075f51a9c"
       },
       "bundle": {
-        "root": "/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/",
+        "root": "/apps/b/f10a976986906bbe36a9a6fe1487435255d8a3d7ab4e16bee5c039a7b23242ad/",
         "files": [
           {
             "path": "app.jsx",
-            "sha256": "9e45ebdf5f5697a473c20558eaf3cfdb295ed954908119a970772fa0b6900b0c",
-            "size": 25450
+            "sha256": "cf3a43459d043f6b6f49135090d0082dab3d52e1581a5463db5b6a6ed1a4cae5",
+            "size": 26339
           },
           {
             "path": "knowledge/app.md",
-            "sha256": "74a65d0332ba06fe5f7fb47c67243ebc6ca80435f3388cb5201712287240f4c7",
-            "size": 3994
+            "sha256": "5eca5eb3bdfa73b2880a18cc48353b82a8e342e0702932012f45b5e928e96852",
+            "size": 4262
           },
           {
             "path": "knowledge/index.md",
-            "sha256": "06e54fa6a4f14ae13bdbcf2ad5ab22b6d561da90e04c27fc616787762e45811e",
-            "size": 945
+            "sha256": "5b8f246349596997f6a272c54d22e970a4bd5321e6d316ca900d0236c20fe545",
+            "size": 1068
           },
           {
             "path": "knowledge/kv/app.md",
@@ -117,9 +117,14 @@
             "size": 831
           },
           {
+            "path": "knowledge/kv/settings.md",
+            "sha256": "9dc28c56ddae8da595a34ae8aacb9f69d8b3e1e77d78c1936b12d1570e844d95",
+            "size": 852
+          },
+          {
             "path": "knowledge/log.md",
-            "sha256": "7753435d03afe51c36023c596330c7f04c597319586b5b39d4cf8a675512b1d0",
-            "size": 263
+            "sha256": "b539823b73d7b9b9817dbe16713dbad69a8d81e04a2e8348188ebfdc6818d8dd",
+            "size": 332
           },
           {
             "path": "knowledge/tables/meal.md",
@@ -143,13 +148,13 @@
           },
           {
             "path": "manifest.json",
-            "sha256": "7780a5ac59bba4ec63debe9c4e0f5b43d047c3a75e52efb195fa528fd04bb802",
-            "size": 1396
+            "sha256": "f0fc339e12747194fb420bcbda0d520d611697e3ea76c2db5d050ea075f51a9c",
+            "size": 1640
           },
           {
             "path": "release.json",
-            "sha256": "1c81933fb4eb3eb3a07b8df22df6739550b824709eb675ac4b2f7170785d5666",
-            "size": 2200
+            "sha256": "1b8ad5ab9d16f8246e41972c9e3f8a31ce77cf61577948447d9180698d4f3899",
+            "size": 2358
           },
           {
             "path": "schema.sql",
@@ -157,11 +162,11 @@
             "size": 4105
           }
         ],
-        "digest": "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014"
+        "digest": "f10a976986906bbe36a9a6fe1487435255d8a3d7ab4e16bee5c039a7b23242ad"
       },
       "knowledge": {
-        "root": "/apps/b/dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014/knowledge/",
-        "digest": "7970187161281c0399046bc742bba369f57379ba570d5d5d6ef4ffb40b131503"
+        "root": "/apps/b/f10a976986906bbe36a9a6fe1487435255d8a3d7ab4e16bee5c039a7b23242ad/knowledge/",
+        "digest": "1c7699d034a837318e350be23d54a978c0f652b6600bb936eff3ccfa2046f72b"
       }
     },
     {

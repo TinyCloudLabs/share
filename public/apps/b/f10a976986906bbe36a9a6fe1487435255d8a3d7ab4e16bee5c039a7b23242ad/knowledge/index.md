@@ -19,6 +19,7 @@ okf_version: "0.2"
 # KV prefixes
 
 * [prefs/](kv/prefs.md) - Read and change the app's settings (daily calorie target).
+* [settings/](kv/settings.md) - Save your timezone when you open the app, so an agent logging meals for you uses your day.
 * [app/](kv/app.md) - Read the installed copy of the app (schema).
 * [knowledge/](kv/knowledge.md) - Read and update the app's knowledge bundle so an agent can pick up where you left off.
 
