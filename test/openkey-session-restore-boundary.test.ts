@@ -164,12 +164,12 @@ describe("persisted runner session OpenKey boundary", () => {
       persistSession: true,
       restoreBeforeOpenKey: true,
       includeAccountRegistryPermissions: false,
-      autoCreateSpace: false,
+      autoCreateSpace: true,
     };
 
     const first = await signInWithManifest(options);
     expect(SIGNER.address).toBe(ADDRESS);
-    expect(clientConfigs[0]).toMatchObject({ autoCreateSpace: false, includeAccountRegistryPermissions: false });
+    expect(clientConfigs[0]).toMatchObject({ autoCreateSpace: true, includeAccountRegistryPermissions: false });
     expect(transport.authRequests()).toBe(1);
     expect(transport.signRequests()).toBe(1);
     expect(hostedSpaces).toEqual([]);

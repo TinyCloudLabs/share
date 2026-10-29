@@ -9,6 +9,7 @@ type WebSdkModule = typeof import("@tinycloud/web-sdk");
 
 import { catalog } from "../src/apps/catalog.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
+import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
 import { type PreparedApp, type RunPorts, installRecordPlan, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { isSignInLabel } from "../src/share/sign-in-label.ts";
@@ -48,6 +49,8 @@ let kvFiles: Map<string, Uint8Array>;
 /** When set, the listing answers this instead of the keys in `kvFiles`. */
 let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string; message?: string; meta?: { status?: unknown } } } | undefined;
 let signInBehaviour: (call: number, options: Record<string, unknown>) => Promise<void> | void;
+let applicationSpaceExists: boolean;
+const spaceCreations: string[] = [];
 /** The node's status for a signed read URL that has bytes (200 by default). */
 let fetchStatus: number;
 let savedSessionExists: boolean;
@@ -83,6 +86,11 @@ vi.mock("@tinycloud/web-sdk", async () => {
 vi.mock("../src/share/openkey-session.js", () => ({
   takeWalletApprovalFailure: () => undefined,
   signInWithManifest: async (options: Record<string, unknown>) => {
+    if (!applicationSpaceExists && options["autoCreateSpace"] === true) {
+      applicationSpaceExists = true;
+      spaceCreations.push(INSTALL_SPACE);
+      kvListResult = undefined;
+    }
     const kv = {
       list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
       put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
@@ -131,7 +139,7 @@ vi.mock("../src/share/openkey-session.js", () => ({
       },
       preparePermissionRequest: vi.fn(async () => { stepUpEvents.push("openkey"); }),
       session: { address: "0x0000000000000000000000000000000000000000", openkey: {} },
-      spaces: {},
+      spaces: applicationSpaceExists ? { [INSTALL_SPACE]: "space-id" } : {},
       sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
       detach: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
@@ -172,6 +180,8 @@ const open = (run: RunPorts = ports(), signal?: AbortSignal) => openApp(HEALTH, 
 beforeEach(() => {
   calls.length = 0;
   puts.length = 0;
+  applicationSpaceExists = true;
+  spaceCreations.length = 0;
   signInBehaviour = () => undefined;
   fetchStatus = 200;
   savedSessionExists = false;
@@ -358,26 +368,40 @@ describe("opening an installed app", () => {
     expect(puts).toEqual([]);
   });
 
+  it("auto-creates a missing applications space during the single initial sign-in", async () => {
+    applicationSpaceExists = false;
+    kvListResult = { ok: false, error: { code: "NETWORK_ERROR", message: "space not found", meta: { status: 404 } } };
+
+    const app = await open();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(calls[0]!.fake.spaces).toEqual({ [INSTALL_SPACE]: "space-id" });
+    expect(spaceCreations).toEqual([INSTALL_SPACE]);
+    expect(app.app.entry.bundle.digest).toBe(entry.bundle.digest);
+  });
+
+  it("uses an existing applications space without creating or hosting it", async () => {
+    await open();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
+    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
+    expect(spaceCreations).toEqual([]);
+  });
+
   it("does not create spaces during a covered reopen", async () => {
     savedSessionExists = true;
     savedGrantManifest = openManifest(manifestFor(entry));
     await open();
     const { options } = calls[0]!;
     expect(options["hostSpaces"]).toBeUndefined();
-    expect(options["autoCreateSpace"]).toBe(false);
+    expect(options["autoCreateSpace"]).toBe(true);
     expect(options["includeAccountRegistryPermissions"]).toBe(false);
-  });
-  it("refuses a missing applications space without creating or hosting one", async () => {
-    kvListResult = { ok: false, error: { code: "SPACE_NOT_FOUND", message: "404 - Space not found", meta: { status: 404 } } };
-
-    await expect(open()).rejects.toMatchObject({ reason: "failed", detail: expect.stringContaining("SPACE_NOT_FOUND") });
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.options["autoCreateSpace"]).toBe(false);
-    expect(calls[0]!.options["includeAccountRegistryPermissions"]).toBe(false);
-    expect(calls[0]!.options["hostSpaces"]).toBeUndefined();
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
-    expect(puts).toEqual([]);
+    expect(spaceCreations).toEqual([]);
   });
 
   it("a listing that fails ends the sign-in and fails", async () => {
@@ -400,14 +424,14 @@ describe("opening an installed app", () => {
     expect(calls[0]!.options["restoreBeforeOpenKey"]).toBe(true);
     expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
     expect(calls[0]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
-    expect(calls[0]!.options["autoCreateSpace"]).toBe(false);
+    expect(calls[0]!.options["autoCreateSpace"]).toBe(true);
     await first.session.detach();
 
     await open(runPorts);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
     expect(calls[1]!.options["restoreBeforeOpenKey"]).toBe(true);
-    expect(calls[1]!.options["autoCreateSpace"]).toBe(false);
+    expect(calls[1]!.options["autoCreateSpace"]).toBe(true);
     expect(calls[1]!.fake.tinycloud.requestPermissions).not.toHaveBeenCalled();
     expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
   });
@@ -456,7 +480,7 @@ describe("opening an installed app", () => {
     expect(options["allowedPathPrefixes"]).toEqual(openScope(catalogManifest, sdkCore).allowedPathPrefixes);
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
     expect(options["hostSpaces"]).toBeUndefined();
-    expect(options["autoCreateSpace"]).toBe(false);
+    expect(options["autoCreateSpace"]).toBe(true);
     expect(options["includeAccountRegistryPermissions"]).toBe(false);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
   });

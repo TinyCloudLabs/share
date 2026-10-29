@@ -3,7 +3,7 @@
  *
  * Existing app grants use a narrow same-session read of install.json, then authorize
  * only the saved version's resources. New installs sign the current version once.
- * App opens do not create or host spaces; OpenKey onboarding owns that setup.
+ * Account-registry sync and explicit hosting stay disabled. The SDK creates the primary applications space only when it is missing.
  *
  * The signature guard is closed after the installed version's grant is resolved.
  */
@@ -285,7 +285,7 @@ export function createRunPorts(): RunPorts {
             ...plan.scope,
             config,
             includeAccountRegistryPermissions: false,
-            autoCreateSpace: false,
+            autoCreateSpace: true,
 
             guardApproval: approvals.guard,
             onClient: (created) => { client = created; },
