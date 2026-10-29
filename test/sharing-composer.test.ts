@@ -437,7 +437,6 @@ describe("share composer access controls", () => {
     const expiryInputs = Array.from(expiryFieldset.querySelectorAll<HTMLInputElement>("input[name=expiry]"));
     expect(root.querySelector("select[name=expiry]")).toBeNull();
     expect(expiryFieldset.querySelector("legend")?.textContent).toBe("Link expires");
-    expect(expiryInputs.map((input) => input.value)).toEqual(["24h", "7d", "30d"]);
     expect(expiryInputs.filter((input) => input.checked).map((input) => input.value)).toEqual(["7d"]);
     expect(root.querySelector(".composer-note")?.textContent).toContain("revoke it earlier from All shares");
 

@@ -69,7 +69,23 @@ const EXPIRY_MS: Record<ExpiryChoice, number> = {
 export const DEFAULT_EXPIRY_CHOICE: ExpiryChoice = "7d";
 
 export function expiryFromChoice(choice: ExpiryChoice, now: number = Date.now()): string {
-  return new Date(now + EXPIRY_MS[choice]).toISOString();
+  return new Date(Math.floor((now + EXPIRY_MS[choice]) / 1000) * 1000).toISOString();
+}
+
+export function expiryFromLocalDateTime(value: string, now: number = Date.now()): string {
+  const match = /^(\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.0{1,3})?)?$/.exec(value);
+  if (match === null) throw validationFailure("expiry");
+  const [, year, month, day, hour, minute, second = "0"] = match;
+  const date = new Date(0);
+  date.setFullYear(Number(year), Number(month) - 1, Number(day));
+  date.setHours(Number(hour), Number(minute), Number(second), 0);
+  if (
+    Number(year) < 1 || !Number.isFinite(date.getTime()) || date.getTime() <= now
+    || date.getFullYear() !== Number(year) || date.getMonth() !== Number(month) - 1
+    || date.getDate() !== Number(day) || date.getHours() !== Number(hour)
+    || date.getMinutes() !== Number(minute) || date.getSeconds() !== Number(second)
+  ) throw validationFailure("expiry");
+  return date.toISOString();
 }
 
 /**

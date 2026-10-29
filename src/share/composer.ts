@@ -1,3 +1,4 @@
+import "./composer-expiry.css";
 import { armManualCopy, copyWithFallback, type ManualCopyHandle } from "./clipboard.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
@@ -150,6 +151,7 @@ import {
   defaultComposerModel,
   emailDomainOf,
   expiryFromChoice,
+  expiryFromLocalDateTime,
   normalizeEmail,
   normalizeRecipientDomain,
   normalizeRecipientDid,
@@ -730,15 +732,24 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   const expiryFieldset = el(doc, "fieldset", "expiry-field");
   expiryFieldset.append(el(doc, "legend", "field-legend", "Link expires"));
   const expiryOptions = el(doc, "div", "expiry-options");
-  for (const [value, copy] of EXPIRY_CHOICES) {
+  for (const [value, copy] of [...EXPIRY_CHOICES, ["custom", "Custom"]] as const) {
     const label = el(doc, "label", "expiry-option");
     const input = el(doc, "input", "") as HTMLInputElement;
     input.type = "radio"; input.name = "expiry"; input.value = value; input.checked = value === DEFAULT_EXPIRY_CHOICE;
     label.append(input, el(doc, "span", "expiry-option-copy", copy));
     expiryOptions.append(label);
   }
+  const customExpiryLabel = el(doc, "label", "field-label custom-expiry", "Expiry date and time (your local time)");
+  customExpiryLabel.hidden = true;
+  const customExpiry = el(doc, "input", "field-input") as HTMLInputElement;
+  customExpiry.type = "datetime-local"; customExpiry.name = "custom-expiry"; customExpiry.step = "1"; customExpiry.required = true; customExpiry.disabled = true;
+  customExpiry.setAttribute("aria-describedby", "custom-expiry-warning custom-expiry-error");
+  customExpiry.setAttribute("aria-errormessage", "custom-expiry-error");
+  customExpiryLabel.append(customExpiry);
+  const expiryWarning = el(doc, "p", "tc-help custom-expiry-message"); expiryWarning.id = "custom-expiry-warning"; expiryWarning.hidden = true;
+  const expiryError = el(doc, "p", "tc-help custom-expiry-message"); expiryError.id = "custom-expiry-error"; expiryError.hidden = true; expiryError.setAttribute("aria-live", "polite");
   const expiryHelp = el(doc, "p", "tc-help expiry-help");
-  expiryFieldset.append(expiryOptions, expiryHelp);
+  expiryFieldset.append(expiryOptions, customExpiryLabel, expiryWarning, expiryError, expiryHelp);
 
   const accessFieldset = el(doc, "fieldset", "composer-section access-section");
   accessFieldset.append(el(doc, "legend", "field-legend", "What can they do?"));
@@ -796,14 +807,29 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
 
   const expiryIso = (): string => {
     const choice = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value ?? DEFAULT_EXPIRY_CHOICE;
+    if (choice === "custom") return expiryFromLocalDateTime(customExpiry.value, options.now?.() ?? Date.now());
     return expiryFromChoice(choice as ExpiryChoice, options.now?.() ?? Date.now());
   };
   const refreshNote = (): void => {
     const kind = selectedKind();
     const typed = recipientInput.value.trim();
-    expiryHelp.textContent = `After ${shortDate(expiryIso())} the link stops working; your stored copy stays in your TinyCloud. Revoking the link ends access sooner. Anyone who already saved or copied the file keeps their copy.`;
+    const isCustom = form.querySelector<HTMLInputElement>("input[name=expiry]:checked")?.value === "custom";
+    customExpiryLabel.hidden = !isCustom; customExpiry.disabled = !isCustom;
+    expiryWarning.hidden = !isCustom;
+    expiryWarning.textContent = kind === "bearer"
+      ? "Longer expiry keeps content accessible until it expires."
+      : "Longer expiry keeps content accessible until it expires or you revoke access.";
+    let expiry: string | undefined;
+    try { expiry = expiryIso(); } catch { /* The field below presents the date validation. Details: TC-1741 */ }
+    const invalid = isCustom && expiry === undefined;
+    customExpiry.setAttribute("aria-invalid", String(invalid));
+    customExpiry.setCustomValidity(invalid ? "Choose a valid future date and time." : "");
+    expiryError.hidden = !invalid;
+    expiryError.textContent = invalid ? "Choose a valid future date and time." : "";
+    expiryHelp.hidden = expiry === undefined;
+    if (expiry !== undefined) expiryHelp.textContent = `After ${shortDate(expiry)} the link stops working; your stored copy stays in your TinyCloud. Revoking the link ends access sooner. Anyone who already saved or copied the file keeps their copy.`;
     note.textContent = kind === "bearer"
-      ? `Anyone who gets this link can open it until ${shortDate(expiryIso())}. You can revoke it earlier from All shares.`
+      ? expiry === undefined ? "" : `Anyone who gets this link can open it until ${shortDate(expiry)}. You can revoke it earlier from All shares.`
       : kind === "emailDomain"
         ? `Anyone with an @${typed.length === 0 ? "example.com" : typed.replace(/^@/, "").toLowerCase()} email address can open this after confirming it. Creating the link doesn't email anyone; list addresses at the domain if you want us to email it.`
         : kind === "recipientDid"
@@ -854,6 +880,7 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
   form.querySelectorAll<HTMLInputElement>("input[name=recipient]").forEach((input) => input.addEventListener("change", refreshRecipient));
   recipientInput.addEventListener("input", refreshRecipient);
   form.querySelectorAll<HTMLInputElement>("input[name=expiry]").forEach((input) => input.addEventListener("change", refreshNote));
+  customExpiry.addEventListener("input", refreshNote);
   delivery.addEventListener("input", () => { deliveryTouched = true; });
   refreshRecipient();
   if (options.prefill !== undefined) {
@@ -1041,6 +1068,8 @@ export function mountShareComposer(root: HTMLElement, options: ShareComposerOpti
       const startApprovalWatch = (): void => { unsubscribeApproval = subscribeWalletApproval(showApproval); showApproval(walletApprovalOpen()); };
       const stopApprovalWatch = (): void => { unsubscribeApproval?.(); showApproval(false); };
       try {
+        refreshNote();
+        if (!customExpiry.disabled && !customExpiry.validity.valid) { customExpiry.focus(); return; }
         const selectedOption = source.selectedOptions[0];
         const selectedPath = selectedOption?.value || source.value || undefined;
         const selectedResourceKind = selectedOption?.dataset.resourceKind === "prefix" || (selectedPath?.endsWith("/") ?? false) ? "prefix" : "exact";
