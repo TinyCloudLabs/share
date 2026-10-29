@@ -2,8 +2,8 @@
  * The real ports for opening an installed app: the Web SDK, OpenKey and the node.
  *
  * Existing app grants use a narrow same-session read of install.json, then authorize
- * only the saved version's resources. New installs sign the current version once.
- * Account-registry sync and explicit hosting stay disabled. The SDK creates the primary applications space only when it is missing.
+ * only the saved version's resources. First opens use the production sign-in, including
+ * account-registry grants and primary applications-space setup.
  *
  * The signature guard is closed after the installed version's grant is resolved.
  */
@@ -284,9 +284,9 @@ export function createRunPorts(): RunPorts {
             manifest: plan.manifest,
             ...plan.scope,
             config,
-            includeAccountRegistryPermissions: false,
+            includeAccountRegistryPermissions: true,
+            hostSpaces: [INSTALL_SPACE],
             autoCreateSpace: true,
-
             guardApproval: approvals.guard,
             onClient: (created) => { client = created; },
             appName: runnerAppName("TinyCloud Share: ", entry.name),
