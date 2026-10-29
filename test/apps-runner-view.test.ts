@@ -62,6 +62,10 @@ function fakePorts(overrides: { stored?: StoredOverrides; readError?: RunError; 
       const manifest = JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")) as unknown;
       return { bundle: { files: [], manifest }, manifest: { ok: true, manifest } };
     },
+    loadCatalogManifest: async (candidate) => ({
+      ok: true,
+      manifest: JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")),
+    }),
     async signIn(_entry, _plan, hooks): Promise<RunSession> {
       fake.reads += 1;
       fake.disclosedAtSignIn = (root.textContent ?? "").includes(entry.description);

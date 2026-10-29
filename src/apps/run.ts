@@ -80,8 +80,8 @@ export interface RunPorts {
   prepare(entry: CatalogEntry): Promise<PreparedApp>;
   /** Step 3: one approval. The sign-in carries the union grants from `plan`, and the same session saves and runs the app. */
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
-  /** The SDK's manifest functions; loaded when the open starts, before the sign-in. */
-  sdk(): Promise<ManifestSdk>;
+  /** Loads the exact version's pinned manifest when an existing install names an older bundle. */
+  loadCatalogManifest(entry: CatalogEntry): Promise<ManifestResult>;
   readonly catalog?: readonly CatalogEntry[];
 }
 
@@ -232,7 +232,17 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     const files = await saveMissing(entry, prepared.bundle, session.files, session.put, report, signal);
     if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
-    const verified = await verifyStoredApp(appId, files, { catalog: entries, loadCatalogManifest: async () => prepared.manifest, sdk });
+    const installBytes = files.entries.get(INSTALL_RECORD_PATH);
+    const savedInstall = installBytes === undefined ? null : parseInstallRecord(installBytes);
+    const installedEntry = savedInstall === null ? undefined : entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === savedInstall.digest);
+    const catalogManifest = installedEntry === undefined || installedEntry.bundle.digest === entry.bundle.digest
+      ? prepared.manifest
+      : await ports.loadCatalogManifest(installedEntry);
+    const verified = await verifyStoredApp(appId, files, {
+      catalog: entries,
+      loadCatalogManifest: async (candidate) => candidate.bundle.digest === installedEntry?.bundle.digest ? catalogManifest : prepared.manifest,
+      sdk,
+    });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });
     app = verified.app;
   } catch (error) {

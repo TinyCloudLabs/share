@@ -168,6 +168,8 @@ export function createRunPorts(): RunPorts {
       if (!manifest.ok) throw new RunError("failed", { detail: "The app's manifest could not be downloaded. Check the connection and try again." });
       return { bundle, manifest };
     },
+    loadCatalogManifest(entry) { return loadManifest(entry); },
+
 
     async sdk(): Promise<ManifestSdk> {
       // Lazy so the page itself loads no SDK until the person asks to open an app.

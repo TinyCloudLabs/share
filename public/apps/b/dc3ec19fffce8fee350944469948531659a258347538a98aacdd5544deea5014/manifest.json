@@ -1,0 +1,51 @@
+{
+  "manifest_version": 1,
+  "app_id": "xyz.tinycloud.sample.healthlog",
+  "name": "Health Log",
+  "description": "A small health log: meals with macros, body weight, a today card and a last-7-days chart.",
+  "appVersion": "0.1.0",
+  "space": "applications",
+  "defaults": false,
+  "includePublicSpace": false,
+  "expiry": "1h",
+  "knowledge": "knowledge/index.md",
+  "permissions": [
+    {
+      "service": "tinycloud.sql",
+      "path": "healthlog",
+      "actions": [
+        "read",
+        "write",
+        "schema"
+      ],
+      "description": "Read and change your meal and weight log (database xyz.tinycloud.sample.healthlog/healthlog). schema lets the app create its own tables on first open."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "prefs/",
+      "actions": [
+        "get",
+        "put"
+      ],
+      "description": "Read and change the app's settings (daily calorie target)."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "app/",
+      "actions": [
+        "get"
+      ],
+      "description": "Read the installed copy of the app (schema). The app cannot change its own code."
+    },
+    {
+      "service": "tinycloud.kv",
+      "path": "knowledge/",
+      "actions": [
+        "get",
+        "put",
+        "list"
+      ],
+      "description": "Read and update the app's knowledge bundle so an agent can pick up where you left off."
+    }
+  ]
+}

@@ -55,6 +55,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
       if (options.prepareError !== undefined) throw options.prepareError;
       return { bundle: { files: bundleFiles, manifest }, manifest: { ok: true, manifest: manifest as never } };
     },
+    loadCatalogManifest: async (entry) => ({ ok: true, manifest: JSON.parse(readFileSync(join("public", entry.bundle.root, entry.manifest.path), "utf8")) }),
     // `counts.runtimes` is the number of runtime sessions signed in and not yet ended.
     signIn: async (): Promise<RunSession> => {
       reads.count += 1;
@@ -95,7 +96,7 @@ describe("openApp: install on open", () => {
   it("first open of a missing copy: app files first, install.json last, then verifies and records the digest", async () => {
     const h = harness(new Map());
     const running = await openApp(HEALTH, h.ports, noop);
-    expect(running.app).toBeDefined();
+    expect(running.app.entry.bundle.digest).toBe(health.bundle.digest);
     expect(h.reads.count).toBe(1);
     const ordered = installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path));
     const appCount = bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).length;
@@ -103,6 +104,31 @@ describe("openApp: install on open", () => {
     expect(h.puts.at(-1)).toBe(installKey(HEALTH, KNOWLEDGE_INDEX));
     expect(h.counts.runtimes).toBe(1);
   });
+  it("opens an existing install at the retained bundle and enforces that version's grant cap", async () => {
+    const previous = catalog.apps.find((candidate) => candidate.bundle.digest === "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014");
+    expect(previous).toBeDefined();
+    if (previous === undefined) return;
+    const previousFiles = previous.bundle.files.filter((file) => !file.path.startsWith("knowledge/"));
+    const existing = new Map<string, Uint8Array>(previousFiles.map((file) => [
+      file.path,
+      new Uint8Array(readFileSync(join("public", previous.bundle.root, file.path))),
+    ]));
+    existing.set(INSTALL_RECORD_PATH, installRecord(previous, new Date("2026-10-20T10:00:00.000Z")));
+    const h = harness(existing);
+    const running = await openApp(HEALTH, h.ports, noop);
+    expect(running.app.entry.bundle.digest).toBe(previous.bundle.digest);
+    expect(running.app.signing.permissions).toEqual(JSON.parse(readFileSync(join("public", previous.bundle.root, previous.manifest.path), "utf8")).permissions);
+    expect(h.puts).toEqual([]);
+
+    const wider = new Map(existing);
+    const savedManifest = JSON.parse(new TextDecoder().decode(wider.get("manifest.json")!));
+    savedManifest.permissions.push({ service: "tinycloud.kv", path: "settings/", actions: ["get", "put"] });
+    wider.set("manifest.json", new TextEncoder().encode(JSON.stringify(savedManifest)));
+    const refused = harness(wider);
+    await expect(openApp(HEALTH, refused.ports, noop)).rejects.toMatchObject({ reason: "widened" });
+    expect(refused.puts).toEqual([]);
+  });
+
 
   it("complete saved copy: no app-file writes and no install.json rewrite; a missing note is still saved", async () => {
     const h = harness(fullCopy());
@@ -136,9 +162,10 @@ describe("openApp: install on open", () => {
 
   it("an install.json recorded for another digest: nothing is written and the open is refused", async () => {
     const other = { ...health, bundle: { ...health.bundle, digest: "0".repeat(64) } } as CatalogEntry;
-    const copy = new Map<string, Uint8Array>([[INSTALL_RECORD_PATH, installRecord(other, new Date("2026-10-20T10:00:00.000Z"))]]);
+    const copy = fullCopy();
+    copy.set(INSTALL_RECORD_PATH, installRecord(other, new Date("2026-10-20T10:00:00.000Z")));
     const h = harness(copy);
-    await expect(openApp(HEALTH, h.ports, noop)).rejects.toBeInstanceOf(RunError);
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "not-listed" });
     expect(h.puts).toEqual([]);
     expect(h.counts.runtimes).toBe(0);
   });

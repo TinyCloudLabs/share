@@ -7,7 +7,7 @@
 | Path | What |
 | --- | --- |
 | `apps/catalog.json` | The catalog, `schema: tinycloud.share.apps-catalog/v1`. Compiled into the page. |
-| `public/apps/b/<digest>/` | One vendored bundle per entry, served as `/apps/b/<digest>/`. Committed. |
+| `public/apps/b/<digest>/` | One vendored bundle per app version, served as `/apps/b/<digest>/`. Committed. |
 | `scripts/vendor-app.mjs` | Dev-time: copies a bundle from a git tag and pins it in the catalog. |
 | `scripts/apps-catalog.mjs` | Digest and verification logic shared by the script and the test. |
 | `apps/index.html`, `src/apps/` | The page. |
@@ -35,6 +35,8 @@
 - `knowledge` is `null` when the bundle has no `knowledge/` folder.
 - `name`, `description` and `app_id` repeat the bundle's `manifest.json`; the test checks they agree, and opening refuses a bundle whose manifest differs.
 - `release` is present when the bundle ships a `release.json` (see "What the sheet says"); `disabled` and `disabledReason` are the optional kill switch (see "Kill switch").
+
+When an app has multiple versions, its entries share an `app_id` and are adjacent in `apps`. The first entry is current and supplies the bundle for new installs. Older entries retain their own source, release, manifest, bundle and permission cap. Opening an existing install resolves the exact digest in its saved `install.json`; a digest not in the catalog is refused.
 
 ## Kill switch
 
@@ -72,7 +74,7 @@ node scripts/vendor-app.mjs <git-url>@<tag> [--path <dir>] [--publisher <name>] 
 - `<tag>` is a tag name or a full 40-hex commit id. Branches are refused because they move.
 - `--path` is the folder in the repo that holds the bundle (default `tinycloud/app`).
 - `--publisher` is required for a new app and kept for an existing one.
-- Updating an app replaces its entry and deletes the bundle folder it supersedes.
+- Existing app versions are kept in the catalog and on disk. The new version is placed first; the same digest is updated in place without duplicating it.
 - The script runs on a developer machine and its output is committed. The build and the site fetch nothing.
 
 `npm test` recomputes every digest and file hash (`test/apps-catalog.test.ts`).
@@ -195,8 +197,8 @@ entry. That digest is the kit's scheme (sha256 of the path-sorted `<path> <sha25
 | App | Source | Pinned at |
 | --- | --- | --- |
 | `com.example.notes` | `TinyCloudLabs/tinycloud-app-kit` `examples/sqlite-app` | commit `5059c5b` |
-| `xyz.tinycloud.sample.healthlog` | same repository, `examples/sample-healthlog` | commit `37870ea92653224de38ea86551ef6bac29096d8f` (the repository has no tags) |
-| `xyz.tinycloud.sample.recipes` | same repository, `examples/sample-recipes` | commit `58760311ff3af940761332c3460f1d9498b56c1f` |
+| `xyz.tinycloud.sample.healthlog` (current) | same repository, `examples/sample-healthlog` | commit `37870ea92653224de38ea86551ef6bac29096d8f` (the repository has no tags) |
+| `xyz.tinycloud.sample.healthlog` (previous install) | same repository, `examples/sample-healthlog` | commit `58760311ff3af940761332c3460f1d9498b56c1f` |
 
 That repository is public and has no LICENSE file. Other apps (for example the TinyHealth and
 TinyRecipes forks) are not vendored until their licensing allows it.

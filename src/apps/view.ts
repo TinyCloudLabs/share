@@ -263,6 +263,13 @@ function guardedRepairPorts(ports: RepairPorts, cancelled: () => boolean): Repai
 
 export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: CatalogEntry[], options: MountOptions = {}): MountedApps {
   const repairPorts = options.repairPorts ?? createRepairPorts;
+  const currentEntries: CatalogEntry[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of entries) {
+    if (seenIds.has(entry.app_id)) continue;
+    seenIds.add(entry.app_id);
+    currentEntries.push(entry);
+  }
   const uninstallPortsFor = options.uninstallPorts ?? createUninstallPorts;
   let opener: HTMLElement | null = null;
   const cards = new Map<string, HTMLElement>();
@@ -429,23 +436,23 @@ export function mountApps(list: HTMLElement, sheet: HTMLDialogElement, entries: 
 
   const mounted: MountedApps = {
     openRepair(appId): boolean {
-      const entry = entries.find((candidate) => candidate.app_id === appId);
+      const entry = currentEntries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
       offerRepair(entry);
       return true;
     },
     openUninstall(appId): boolean {
-      const entry = entries.find((candidate) => candidate.app_id === appId);
+      const entry = currentEntries.find((candidate) => candidate.app_id === appId);
       if (entry === undefined) return false;
       show(entry);
       return true;
     },
   };
-  if (entries.length === 0) {
+  if (currentEntries.length === 0) {
     list.replaceWith(el("p", "apps-empty", ["No apps are listed yet."]));
     return mounted;
   }
-  for (const entry of entries) {
+  for (const entry of currentEntries) {
     const details = el("button", "tc-button apps-button", ["Details"], { type: "button", "aria-label": `Details for ${entry.name}` });
     details.addEventListener("click", () => { opener = details; show(entry); });
     const availability = availabilityOf(entry);
