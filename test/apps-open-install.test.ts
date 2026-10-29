@@ -7,27 +7,29 @@ import { describe, expect, it } from "vitest";
 import { INSTALL_RECORD_PATH } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { KNOWLEDGE_INDEX, installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
-import { type PutResult, type PreparedApp, RunError, type RunPorts, type RunSession, type RuntimeSession, openApp } from "../src/apps/run.ts";
+import { type PutResult, type PreparedApp, RunError, type RunPorts, type RunSession, type RuntimeSession, openApp, signInPlan } from "../src/apps/run.ts";
+import { parseInstallRecord } from "../src/apps/stored-app.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
 const NOTES = "com.example.notes";
 const health = catalog.apps.find((candidate) => candidate.app_id === HEALTH) as CatalogEntry;
+const previousHealth = catalog.apps.find((candidate) => candidate.app_id === HEALTH && candidate.bundle.digest === "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014");
 const notes = catalog.apps.find((candidate) => candidate.app_id === NOTES) as CatalogEntry;
-const bytesOf = (path: string): Uint8Array => new Uint8Array(readFileSync(join("public", health.bundle.root, path)));
-const bundleFiles = health.bundle.files.map((file) => ({ ...file, bytes: bytesOf(file.path) }));
-const manifest = JSON.parse(readFileSync(join("public", health.bundle.root, health.manifest.path), "utf8")) as unknown;
+const bytesOf = (candidate: CatalogEntry, path: string): Uint8Array => new Uint8Array(readFileSync(join("public", candidate.bundle.root, path)));
+const bundleFiles = health.bundle.files.map((file) => ({ ...file, bytes: bytesOf(health, file.path) }));
 const recordKey = installRecordKey(HEALTH);
 const appKeys = bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).map((file) => installKey(HEALTH, file.path));
 const pathOf = new Map<string, string>([[recordKey, INSTALL_RECORD_PATH], ...bundleFiles.map((file) => [installKey(HEALTH, file.path), file.path] as [string, string])]);
 const noop = (): void => undefined;
 
-/** A complete saved copy as the read returns it: the code files under `app/` and install.json. Notes are outside the read scope. */
-const fullCopy = (): Map<string, Uint8Array> => new Map<string, Uint8Array>([
-  ...bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).map((file) => [file.path, file.bytes] as [string, Uint8Array]),
-  [INSTALL_RECORD_PATH, installRecord(health, new Date("2026-10-20T10:00:00.000Z"))],
+/** A complete saved copy for the selected version; notes are outside the runner read scope. */
+const savedCopy = (candidate: CatalogEntry): Map<string, Uint8Array> => new Map<string, Uint8Array>([
+  ...candidate.bundle.files.filter((file) => !file.path.startsWith("knowledge/")).map((file) => [file.path, bytesOf(candidate, file.path)] as [string, Uint8Array]),
+  [INSTALL_RECORD_PATH, installRecord(candidate, new Date("2026-10-20T10:00:00.000Z"))],
 ]);
+const fullCopy = (): Map<string, Uint8Array> => savedCopy(health);
 
 interface HarnessOptions {
   prepareError?: RunError;
@@ -38,6 +40,8 @@ interface HarnessOptions {
 function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {}) {
   const puts: string[] = [];
   const reads = { count: 0 };
+  const lookups = { count: 0 };
+  const signedPlans: { digest: string; manifest: unknown }[] = [];
   const counts = { prepares: 0, runtimes: 0 };
   const put = async (key: string, bytes: Uint8Array): Promise<PutResult> => {
     puts.push(key);
@@ -50,13 +54,22 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
   };
   const ports: RunPorts = {
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
-    prepare: async (): Promise<PreparedApp> => {
+    prepare: async (candidate): Promise<PreparedApp> => {
       counts.prepares += 1;
       if (options.prepareError !== undefined) throw options.prepareError;
-      return { bundle: { files: bundleFiles, manifest }, manifest: { ok: true, manifest: manifest as never } };
+      const preparedManifest = sdkCore.validateManifest(JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8")));
+      const files = candidate.bundle.files.map((file) => ({ ...file, bytes: bytesOf(candidate, file.path) }));
+      return { bundle: { files, manifest: preparedManifest }, manifest: { ok: true, manifest: preparedManifest } };
+    },
+    loadCatalogManifest: async (candidate) => ({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8"))) }),
+    readInstallDigest: async (_candidate) => {
+      lookups.count += 1;
+      const bytes = initial.get(INSTALL_RECORD_PATH);
+      return bytes === undefined ? null : parseInstallRecord(bytes)?.digest ?? null;
     },
     // `counts.runtimes` is the number of runtime sessions signed in and not yet ended.
-    signIn: async (): Promise<RunSession> => {
+    signIn: async (candidate, plan): Promise<RunSession> => {
+      signedPlans.push({ digest: candidate.bundle.digest, manifest: plan.manifest });
       reads.count += 1;
       counts.runtimes += 1;
       let ended = false;
@@ -65,7 +78,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
     },
     sdk: async () => sdkCore,
   };
-  return { ports, puts, reads, counts };
+  return { ports, puts, reads, lookups, signedPlans, counts };
 }
 
 describe("installOrder", () => {
@@ -75,15 +88,15 @@ describe("installOrder", () => {
   });
 });
 
-describe("openApp: refusals before any approval", () => {
-  it("refuses a catalog entry with no code, before the read approval", async () => {
+describe("openApp: refusals before app permission approval", () => {
+  it("refuses a catalog entry with no code before preparing or signing in", async () => {
     const h = harness(new Map(), { catalog: [notes] });
     await expect(openApp(NOTES, h.ports, noop)).rejects.toMatchObject({ reason: "no-code", detail: "This app isn't available right now." });
     expect(h.reads.count).toBe(0);
     expect(h.counts.prepares).toBe(0);
   });
 
-  it("a catalog bundle that fails verification refuses before the read approval", async () => {
+  it("a catalog bundle that fails verification refuses before app permission approval", async () => {
     const h = harness(new Map(), { prepareError: new RunError("catalog-unavailable") });
     await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "catalog-unavailable" });
     expect(h.reads.count).toBe(0);
@@ -95,7 +108,7 @@ describe("openApp: install on open", () => {
   it("first open of a missing copy: app files first, install.json last, then verifies and records the digest", async () => {
     const h = harness(new Map());
     const running = await openApp(HEALTH, h.ports, noop);
-    expect(running.app).toBeDefined();
+    expect(running.app.entry.bundle.digest).toBe(health.bundle.digest);
     expect(h.reads.count).toBe(1);
     const ordered = installOrder(bundleFiles).map((file) => installKey(HEALTH, file.path));
     const appCount = bundleFiles.filter((file) => !file.path.startsWith("knowledge/")).length;
@@ -103,6 +116,84 @@ describe("openApp: install on open", () => {
     expect(h.puts.at(-1)).toBe(installKey(HEALTH, KNOWLEDGE_INDEX));
     expect(h.counts.runtimes).toBe(1);
   });
+  it("uses each selected version's exact grants, for retained installs and fresh installs", async () => {
+    expect(previousHealth).toBeDefined();
+    if (previousHealth === undefined) return;
+    const old = harness(savedCopy(previousHealth));
+    const openedOld = await openApp(HEALTH, old.ports, noop);
+    expect(openedOld.app.entry.bundle.digest).toBe(previousHealth.bundle.digest);
+    expect(old.signedPlans).toEqual([{
+      digest: previousHealth.bundle.digest,
+      manifest: signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", previousHealth.bundle.root, previousHealth.manifest.path), "utf8"))) }, sdkCore).manifest,
+    }]);
+    expect(old.signedPlans[0]?.manifest).not.toEqual(signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", health.bundle.root, health.manifest.path), "utf8"))) }, sdkCore).manifest);
+
+    const fresh = harness(new Map());
+    const openedFresh = await openApp(HEALTH, fresh.ports, noop);
+    expect(openedFresh.app.entry.bundle.digest).toBe(health.bundle.digest);
+    expect(fresh.signedPlans).toEqual([{
+      digest: health.bundle.digest,
+      manifest: signInPlan({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", health.bundle.root, health.manifest.path), "utf8"))) }, sdkCore).manifest,
+    }]);
+  });
+
+  it("refuses a disabled retained version before writes while current installs still open", async () => {
+    expect(previousHealth).toBeDefined();
+    if (previousHealth === undefined) return;
+    const disabledOld = { ...previousHealth, disabled: true as const, disabledReason: "Old version disabled." };
+    const retained = harness(savedCopy(previousHealth), { catalog: [health, disabledOld] });
+    await expect(openApp(HEALTH, retained.ports, noop)).rejects.toMatchObject({ reason: "unavailable" });
+    expect(retained.puts).toEqual([]);
+    expect(retained.reads.count).toBe(0);
+    expect(retained.counts.prepares).toBe(0);
+
+    const fresh = harness(new Map(), { catalog: [health, disabledOld] });
+    const running = await openApp(HEALTH, fresh.ports, noop);
+    expect(running.app.entry.bundle.digest).toBe(health.bundle.digest);
+    expect(fresh.signedPlans[0]?.digest).toBe(health.bundle.digest);
+  });
+
+  it("refuses a disabled current version for new installs while enabled retained installs still open", async () => {
+    expect(previousHealth).toBeDefined();
+    if (previousHealth === undefined) return;
+    const disabledCurrent = { ...health, disabled: true as const, disabledReason: "Current version disabled." };
+    const fresh = harness(new Map(), { catalog: [disabledCurrent, previousHealth] });
+    await expect(openApp(HEALTH, fresh.ports, noop)).rejects.toMatchObject({ reason: "unavailable" });
+    expect(fresh.puts).toEqual([]);
+    expect(fresh.reads.count).toBe(0);
+    expect(fresh.counts.prepares).toBe(0);
+
+    const retained = harness(savedCopy(previousHealth), { catalog: [disabledCurrent, previousHealth] });
+    const running = await openApp(HEALTH, retained.ports, noop);
+    expect(running.app.entry.bundle.digest).toBe(previousHealth.bundle.digest);
+    expect(retained.signedPlans[0]?.digest).toBe(previousHealth.bundle.digest);
+    expect(retained.puts.filter((key) => !key.includes("/knowledge/"))).toEqual([]);
+  });
+  it("opens an existing install at the retained bundle and enforces that version's grant cap", async () => {
+    const previous = catalog.apps.find((candidate) => candidate.bundle.digest === "dc3ec19fffce8fee350944469948531659a258347538a98aacdd5544deea5014");
+    expect(previous).toBeDefined();
+    if (previous === undefined) return;
+    const previousFiles = previous.bundle.files.filter((file) => !file.path.startsWith("knowledge/"));
+    const existing = new Map<string, Uint8Array>(previousFiles.map((file) => [
+      file.path,
+      new Uint8Array(readFileSync(join("public", previous.bundle.root, file.path))),
+    ]));
+    existing.set(INSTALL_RECORD_PATH, installRecord(previous, new Date("2026-10-20T10:00:00.000Z")));
+    const h = harness(existing);
+    const running = await openApp(HEALTH, h.ports, noop);
+    expect(running.app.entry.bundle.digest).toBe(previous.bundle.digest);
+    expect(running.app.signing.permissions).toEqual(JSON.parse(readFileSync(join("public", previous.bundle.root, previous.manifest.path), "utf8")).permissions);
+    expect(h.puts.filter((key) => !key.includes("/knowledge/"))).toEqual([]);
+
+    const wider = new Map(existing);
+    const savedManifest = JSON.parse(new TextDecoder().decode(wider.get("manifest.json")!));
+    savedManifest.permissions.push({ service: "tinycloud.kv", path: "settings/", actions: ["get", "put"] });
+    wider.set("manifest.json", new TextEncoder().encode(JSON.stringify(savedManifest)));
+    const refused = harness(wider);
+    await expect(openApp(HEALTH, refused.ports, noop)).rejects.toMatchObject({ reason: "widened" });
+    expect(refused.puts.filter((key) => !key.includes("/knowledge/"))).toEqual([]);
+  });
+
 
   it("complete saved copy: no app-file writes and no install.json rewrite; a missing note is still saved", async () => {
     const h = harness(fullCopy());
@@ -136,9 +227,10 @@ describe("openApp: install on open", () => {
 
   it("an install.json recorded for another digest: nothing is written and the open is refused", async () => {
     const other = { ...health, bundle: { ...health.bundle, digest: "0".repeat(64) } } as CatalogEntry;
-    const copy = new Map<string, Uint8Array>([[INSTALL_RECORD_PATH, installRecord(other, new Date("2026-10-20T10:00:00.000Z"))]]);
+    const copy = fullCopy();
+    copy.set(INSTALL_RECORD_PATH, installRecord(other, new Date("2026-10-20T10:00:00.000Z")));
     const h = harness(copy);
-    await expect(openApp(HEALTH, h.ports, noop)).rejects.toBeInstanceOf(RunError);
+    await expect(openApp(HEALTH, h.ports, noop)).rejects.toMatchObject({ reason: "not-listed" });
     expect(h.puts).toEqual([]);
     expect(h.counts.runtimes).toBe(0);
   });

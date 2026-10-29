@@ -6,11 +6,12 @@ import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalog } from "../src/apps/catalog.ts";
-import { INSTALL_SPACE } from "../src/apps/install-plan.ts";
+import { INSTALL_SPACE, installRecordKey } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
 import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { isSignInLabel } from "../src/share/sign-in-label.ts";
+import { parseInstallRecord } from "../src/apps/stored-app.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -88,6 +89,10 @@ function ports(overrides: Partial<RunPorts> = {}): RunPorts {
       bundle: { files: entry.bundle.files.map((file) => ({ ...file, bytes: bundleBytes(entry, file.path) })), manifest: manifestJson() },
       manifest: { ok: true, manifest: manifestJson() },
     }),
+    readInstallDigest: async (candidate) => {
+      const bytes = kvFiles.get(`${candidate.app_id}/app/install.json`);
+      return bytes === undefined ? null : parseInstallRecord(bytes)?.digest ?? null;
+    },
     ...overrides,
   };
 }
@@ -204,7 +209,7 @@ describe("readSavedFiles: bounded, never silently cut", () => {
   });
 });
 
-describe("opening an installed app: one sign-in per open", () => {
+describe("opening an installed app", () => {
   it("a repeat open signs in once, reads the saved copy, and writes no app file", async () => {
     const app = await open();
     expect(calls).toHaveLength(1);
@@ -294,6 +299,26 @@ describe("opening an installed app: one sign-in per open", () => {
     fetchStatus = 500;
     await expect(open()).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  });
+  it("reads only the saved install digest with a narrow read-only approval", async () => {
+    const digest = await createRunPorts().readInstallDigest(entry, { approval: () => undefined });
+    expect(digest).toBe(entry.bundle.digest);
+    expect(calls).toHaveLength(1);
+    const { options, fake } = calls[0]!;
+    expect(options["manifest"]).toMatchObject({
+      manifest_version: 1,
+      app_id: HEALTH,
+      space: INSTALL_SPACE,
+      defaults: false,
+      permissions: [{ service: "tinycloud.kv", path: installRecordKey(HEALTH), actions: ["get", "list"], skipPrefix: true }],
+    });
+    expect(options["allowedSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["allowedServices"]).toEqual(["kv"]);
+    expect(options["allowedActions"]).toEqual(["get", "list"]);
+    expect(options["allowedPathPrefixes"]).toEqual([{ space: INSTALL_SPACE, prefix: installRecordKey(HEALTH) }]);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
+    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {
