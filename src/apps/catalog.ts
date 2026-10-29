@@ -1,6 +1,6 @@
 import catalogJson from "../../apps/catalog.json";
 
-/** One app version in `apps/catalog.json`; app versions share an id, with current first. */
+/** One `apps/catalog.json` entry (`tinycloud.share.apps-catalog/v1`). scripts/apps-catalog.mjs defines and checks the contract. */
 export interface CatalogEntry {
   app_id: string;
   name: string;

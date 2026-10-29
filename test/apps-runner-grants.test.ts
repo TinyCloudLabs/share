@@ -55,7 +55,6 @@ describe("the grant cap: the stored manifest can narrow what an app is signed fo
       `tinycloud.kv ${HEALTH}/app/ get`,
       `tinycloud.kv ${HEALTH}/knowledge/ get,put,list`,
       `tinycloud.kv ${HEALTH}/prefs/ get,put`,
-      `tinycloud.kv ${HEALTH}/settings/ get,put`,
       `tinycloud.sql ${HEALTH}/healthlog read,write,schema`,
     ]);
     expect(result.app.entry.bundle.digest).toBe(health.bundle.digest);
