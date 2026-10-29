@@ -82,6 +82,8 @@ export interface RunPorts {
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
   /** Loads the exact version's pinned manifest when an existing install names an older bundle. */
   loadCatalogManifest(entry: CatalogEntry): Promise<ManifestResult>;
+  /** Lazily loads the SDK after the entry has passed availability checks. */
+  sdk(): Promise<ManifestSdk>;
   readonly catalog?: readonly CatalogEntry[];
 }
 
