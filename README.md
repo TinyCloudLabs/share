@@ -13,6 +13,12 @@ TinyCloud Sharing is the browser UX for TinyCloud's native delegation and invoca
 
 See [docs/tinycloud-native-sharing.md](docs/tinycloud-native-sharing.md) for the protocol boundaries, [docs/html-artifact-sharing.md](docs/html-artifact-sharing.md) and [docs/jsx-artifact-sharing.md](docs/jsx-artifact-sharing.md) for artifact rendering, and [docs/user-content-origin.md](docs/user-content-origin.md) for serving the sandbox documents from a separate origin.
 
+## Composer expiry
+
+The web composer offers Custom alongside the 24-hour, 7-day, and 30-day presets. Enter a future date and time in your local timezone; the composer preserves that selection at whole-second precision and shows a short content-access notice. The seven-day default is unchanged. Details: TC-1741
+
+Custom selection does not extend signed authority. The currently pinned SDK permits addressed roots lasting at most 31 days and bearer roots lasting at most 3,650 days; OpenKey and the node still enforce the authority actually granted. The date picker does not silently shorten the selected expiry. Details: TC-1741
+
 ## Development
 
 `npm install`, then use `npm run dev`, `npm test`, `npm run typecheck`, and `npm run build`.
