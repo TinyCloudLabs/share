@@ -1,9 +1,7 @@
 /**
- * Opening an app resolves the saved digest and checks the selected catalog version before it requests the app's permissions.
- * The read-only version lookup is followed by one runtime sign-in, which combines the selected manifest's grants with
- * create-only writes for the app's folder and notes. Missing files are saved under this session; the verified app runs
- * on it. Existing files are never replaced, and the saved copy is checked against the same selected version before it runs.
- * The sign-in, the node, the SDK and the clock are ports so tests can drive each step.
+ * Opening uses the app's own session to read install.json, select the pinned catalog version,
+ * and request only that version's grant. Existing code is never replaced; missing files are
+ * saved create-only before the verified app runs on the same session.
  */
 import type { Manifest } from "@tinycloud/sdk-core";
 
@@ -44,9 +42,11 @@ export interface RuntimeSession {
   detach(): Promise<void>;
 }
 
-/** What the one sign-in yields: the saved files as read, a create-only write, and the runtime session the app runs on. */
+/** The one sign-in yields saved files, a create-only write, and the runtime session. */
 export interface RunSession {
   readonly files: StoredFiles;
+  /** Request this installed version's permissions on the same client session; covered grants require no prompt. */
+  readonly authorize: (entry: CatalogEntry, plan: SignInPlan, sdk: ManifestSdk) => Promise<void>;
   /** Create-only write under the app's folder and notes. */
   readonly put: (key: string, bytes: Uint8Array, contentType: string) => Promise<PutResult>;
   readonly runtime: RuntimeSession;
@@ -61,15 +61,42 @@ export interface PreparedApp {
 export interface RunPorts {
   /** Step 2: fetch and verify the catalog bundle, and load the catalog manifest. No approval happens here. */
   prepare(entry: CatalogEntry): Promise<PreparedApp>;
-  /** Reads only the saved install record so the approval plan can match its pinned version. */
-  readInstallDigest(entry: CatalogEntry, hooks: RunHooks): Promise<string | null>;
-  /** Step 3: one approval. The sign-in carries the union grants from `plan`, and the same session saves and runs the app. */
+  /** Whether this app has a persisted grant which may cover the saved installation. */
+  hasPersistedSession?(appId: string): Promise<boolean>;
+  /** The app's own session reads install.json, saves and runs the app. */
   signIn(entry: CatalogEntry, plan: SignInPlan, hooks: RunHooks): Promise<RunSession>;
   /** Loads the exact version's pinned manifest when an existing install names an older bundle. */
   loadCatalogManifest(entry: CatalogEntry): Promise<ManifestResult>;
   /** Lazily loads the SDK after the entry has passed availability checks. */
   sdk(): Promise<ManifestSdk>;
   readonly catalog?: readonly CatalogEntry[];
+}
+
+
+/**
+ * A restored app grant needs only this narrow plan to inspect install.json. After
+ * resolving the saved digest, the same TinyCloud session may request that version's
+ * exact grant; already-covered permissions do not trigger a new approval.
+ */
+export function installRecordPlan(entry: CatalogEntry): SignInPlan {
+  const key = installRecordKey(entry.app_id);
+  return {
+    manifest: {
+      manifest_version: 1,
+      app_id: entry.app_id,
+      name: entry.name,
+      space: "applications",
+      defaults: false,
+      includePublicSpace: false,
+      permissions: [{ service: "tinycloud.kv", path: key, actions: ["get"], skipPrefix: true, description: "Check which saved app version is installed." }],
+    },
+    scope: {
+      allowedSpaces: ["applications"],
+      allowedServices: ["kv"],
+      allowedActions: ["get"],
+      allowedPathPrefixes: [{ space: "applications", prefix: key }],
+    },
+  };
 }
 
 export type RunFailure =
@@ -194,36 +221,30 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
   const currentEntry = catalogEntryFor(appId, entries);
   if (currentEntry === undefined) throw new RunError("unknown-app");
   report({ phase: "checking" });
-
-  let installedDigest: string | null;
-  try {
-    installedDigest = await ports.readInstallDigest(currentEntry, { approval: (open) => report({ phase: "reading", approval: open }) });
-  } catch (cause) {
-    throw cause instanceof RunError ? cause : new RunError("failed", { cause });
-  }
-  const entry = installedDigest === null
-    ? currentEntry
-    : entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === installedDigest);
-  if (entry === undefined) throw new RunError("not-listed");
-  try { assertAvailable(entry); } catch (error) {
-    if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
-    throw error;
-  }
   if (signal?.aborted) throw new RunError("cancelled");
 
-  const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
-  const prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
-  let plan: SignInPlan;
-  try {
-    plan = signInPlan(prepared.manifest, sdk);
-  } catch (cause) {
-    throw cause instanceof RunError ? cause : new RunError("failed", { cause });
+  const hasPersistedSession = await ports.hasPersistedSession?.(appId).catch((cause: unknown) => { throw new RunError("failed", { cause }); }) ?? false;
+  if (!hasPersistedSession) {
+    try { assertAvailable(currentEntry); } catch (error) {
+      if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
+      throw error;
+    }
   }
-  if (prepared.manifest.ok) report({ phase: "disclosing", entry, manifest: prepared.manifest.manifest });
+
+  const sdk = await ports.sdk().catch((cause: unknown) => { throw new RunError("failed", { cause }); });
+  let prepared: PreparedApp | undefined;
+  let initialPlan: SignInPlan;
+  if (hasPersistedSession) {
+    initialPlan = installRecordPlan(currentEntry);
+  } else {
+    prepared = await ports.prepare(currentEntry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
+    try { initialPlan = signInPlan(prepared.manifest, sdk); } catch (cause) { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); }
+    if (prepared.manifest.ok) report({ phase: "disclosing", entry: currentEntry, manifest: prepared.manifest.manifest });
+  }
   if (signal?.aborted) throw new RunError("cancelled");
 
   report({ phase: "reading", approval: false });
-  const session = await ports.signIn(entry, plan, { approval: (open) => report({ phase: "reading", approval: open }) }).catch((cause: unknown) => {
+  const session = await ports.signIn(currentEntry, initialPlan, { approval: (open) => report({ phase: "reading", approval: open }) }).catch((cause: unknown) => {
     throw cause instanceof RunError ? cause : new RunError("failed", { cause });
   });
   let app: RunnableApp;
@@ -231,13 +252,28 @@ export async function openApp(appId: string, ports: RunPorts, report: (progress:
     if (signal?.aborted) throw new RunError("cancelled");
     const installBytes = session.files.entries.get(INSTALL_RECORD_PATH);
     const sessionDigest = installBytes === undefined ? null : parseInstallRecord(installBytes)?.digest ?? null;
-    if (sessionDigest !== installedDigest) throw new RunError("failed", { detail: "the saved version changed while opening" });
+    let entry = currentEntry;
+    if (sessionDigest !== null) {
+      const installedEntry = entries.find((candidate) => candidate.app_id === appId && candidate.bundle.digest === sessionDigest);
+      if (installedEntry === undefined) throw new RunError("not-listed");
+      entry = installedEntry;
+    }
+    try { assertAvailable(entry); } catch (error) {
+      if (error instanceof EntryDisabledError) throw new RunError(error.temporary ? "unavailable" : "no-code", { detail: error.reason });
+      throw error;
+    }
+    if (prepared === undefined || entry.bundle.digest !== currentEntry.bundle.digest) {
+      prepared = await ports.prepare(entry).catch((cause: unknown) => { throw cause instanceof RunError ? cause : new RunError("failed", { cause }); });
+    }
+    const plan = signInPlan(prepared.manifest, sdk);
+    if (prepared.manifest.ok) report({ phase: "disclosing", entry, manifest: prepared.manifest.manifest });
+    await session.authorize(entry, plan, sdk);
     const files = await saveMissing(entry, prepared.bundle, session.files, session.put, report, signal);
     if (signal?.aborted) throw new RunError("cancelled");
     report({ phase: "verifying" });
     const verified = await verifyStoredApp(appId, files, {
       catalog: entries,
-      loadCatalogManifest: async (candidate) => candidate.bundle.digest === entry.bundle.digest ? prepared.manifest : ports.loadCatalogManifest(candidate),
+      loadCatalogManifest: async (candidate) => candidate.bundle.digest === entry.bundle.digest ? prepared!.manifest : ports.loadCatalogManifest(candidate),
       sdk,
     });
     if (!verified.ok) throw new RunError(toFailure(verified.failure), { detail: verified.failure.detail });

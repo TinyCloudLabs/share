@@ -8,7 +8,6 @@ import { INSTALL_RECORD_PATH } from "../src/apps/bundle.ts";
 import { type CatalogEntry, catalog } from "../src/apps/catalog.ts";
 import { KNOWLEDGE_INDEX, installKey, installOrder, installRecord, installRecordKey } from "../src/apps/install-plan.ts";
 import { type PutResult, type PreparedApp, RunError, type RunPorts, type RunSession, type RuntimeSession, openApp, signInPlan } from "../src/apps/run.ts";
-import { parseInstallRecord } from "../src/apps/stored-app.ts";
 
 Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
 
@@ -40,7 +39,6 @@ interface HarnessOptions {
 function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {}) {
   const puts: string[] = [];
   const reads = { count: 0 };
-  const lookups = { count: 0 };
   const signedPlans: { digest: string; manifest: unknown }[] = [];
   const counts = { prepares: 0, runtimes: 0 };
   const put = async (key: string, bytes: Uint8Array): Promise<PutResult> => {
@@ -54,6 +52,7 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
   };
   const ports: RunPorts = {
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    hasPersistedSession: async () => initial.has(INSTALL_RECORD_PATH),
     prepare: async (candidate): Promise<PreparedApp> => {
       counts.prepares += 1;
       if (options.prepareError !== undefined) throw options.prepareError;
@@ -62,23 +61,22 @@ function harness(initial: Map<string, Uint8Array>, options: HarnessOptions = {})
       return { bundle: { files, manifest: preparedManifest }, manifest: { ok: true, manifest: preparedManifest } };
     },
     loadCatalogManifest: async (candidate) => ({ ok: true, manifest: sdkCore.validateManifest(JSON.parse(readFileSync(join("public", candidate.bundle.root, candidate.manifest.path), "utf8"))) }),
-    readInstallDigest: async (_candidate) => {
-      lookups.count += 1;
-      const bytes = initial.get(INSTALL_RECORD_PATH);
-      return bytes === undefined ? null : parseInstallRecord(bytes)?.digest ?? null;
-    },
     // `counts.runtimes` is the number of runtime sessions signed in and not yet ended.
-    signIn: async (candidate, plan): Promise<RunSession> => {
-      signedPlans.push({ digest: candidate.bundle.digest, manifest: plan.manifest });
+    signIn: async (_candidate, _plan): Promise<RunSession> => {
       reads.count += 1;
       counts.runtimes += 1;
       let ended = false;
-      const runtime = { data: {}, expiresAt: 0, end: async () => { if (!ended) { ended = true; counts.runtimes -= 1; } } };
-      return { files: { entries: new Map(initial) }, put, runtime: runtime as unknown as RuntimeSession };
+      const runtime = { data: {}, expiresAt: 0, end: async () => { if (!ended) { ended = true; counts.runtimes -= 1; } }, detach: async () => undefined };
+      return {
+        files: { entries: new Map(initial) },
+        authorize: async (candidate, plan) => { signedPlans.push({ digest: candidate.bundle.digest, manifest: plan.manifest }); },
+        put,
+        runtime: runtime as unknown as RuntimeSession,
+      };
     },
     sdk: async () => sdkCore,
   };
-  return { ports, puts, reads, lookups, signedPlans, counts };
+  return { ports, puts, reads, signedPlans, counts };
 }
 
 describe("installOrder", () => {
@@ -116,6 +114,19 @@ describe("openApp: install on open", () => {
     expect(h.puts.at(-1)).toBe(installKey(HEALTH, KNOWLEDGE_INDEX));
     expect(h.counts.runtimes).toBe(1);
   });
+  it("reopens through the persisted app grant without extra OpenKey approvals", async () => {
+    const h = harness(new Map());
+    const first = await openApp(HEALTH, h.ports, noop);
+    expect(first.app.entry.bundle.digest).toBe(health.bundle.digest);
+    expect(h.signedPlans).toHaveLength(1);
+    expect(h.reads.count).toBe(1);
+
+    await first.session.detach();
+    const reopened = await openApp(HEALTH, h.ports, noop);
+    expect(reopened.app.entry.bundle.digest).toBe(health.bundle.digest);
+    expect(h.signedPlans).toHaveLength(2);
+    expect(h.reads.count).toBe(2);
+  });
   it("uses each selected version's exact grants, for retained installs and fresh installs", async () => {
     expect(previousHealth).toBeDefined();
     if (previousHealth === undefined) return;
@@ -144,7 +155,7 @@ describe("openApp: install on open", () => {
     const retained = harness(savedCopy(previousHealth), { catalog: [health, disabledOld] });
     await expect(openApp(HEALTH, retained.ports, noop)).rejects.toMatchObject({ reason: "unavailable" });
     expect(retained.puts).toEqual([]);
-    expect(retained.reads.count).toBe(0);
+    expect(retained.reads.count).toBe(1);
     expect(retained.counts.prepares).toBe(0);
 
     const fresh = harness(new Map(), { catalog: [health, disabledOld] });

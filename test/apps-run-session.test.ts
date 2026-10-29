@@ -6,12 +6,10 @@ import * as sdkCore from "@tinycloud/sdk-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { catalog } from "../src/apps/catalog.ts";
-import { INSTALL_SPACE, installRecordKey } from "../src/apps/install-plan.ts";
 import { RUNTIME_SESSION_MS, openManifest, openScope } from "../src/apps/grants.ts";
-import { type PreparedApp, type RunPorts, openApp } from "../src/apps/run.ts";
+import { type PreparedApp, type RunPorts, installRecordPlan, openApp } from "../src/apps/run.ts";
 import { MAX_STORED_BYTES, MAX_STORED_FILES, type ReaderFetch, createRunPorts, putCreateOnly, readSavedFiles, runnerAppName, runnerSessionPrefix } from "../src/apps/run-session.ts";
 import { isSignInLabel } from "../src/share/sign-in-label.ts";
-import { parseInstallRecord } from "../src/apps/stored-app.ts";
 import { type StoredOverrides, bundleBytes, storedFiles } from "./stored-fixtures.ts";
 
 const HEALTH = "xyz.tinycloud.sample.healthlog";
@@ -21,7 +19,7 @@ const appFiles = entry.bundle.files.filter((file) => !file.path.startsWith("know
 
 interface SignInCall { options: Record<string, unknown>; guard: (wait: () => Promise<unknown>) => Promise<unknown>; fake: FakeSignIn }
 interface FakeSignIn {
-  tinycloud: { kvForSpace: () => unknown; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn> };
+  tinycloud: { kvForSpace: () => unknown; space: (name: string) => { id: string; kv: unknown }; sqlForSpace: () => unknown; signOut: ReturnType<typeof vi.fn>; requestPermissions: ReturnType<typeof vi.fn> };
   session: { address: string; openkey: object };
   spaces: Record<string, string>;
   sessionExpiresAt: number;
@@ -36,38 +34,61 @@ let kvFiles: Map<string, Uint8Array>;
 /** When set, the listing answers this instead of the keys in `kvFiles`. */
 let kvListResult: { ok: boolean; data?: { keys: string[]; truncated?: boolean }; error?: { code: string } } | undefined;
 let signInBehaviour: (call: number, options: Record<string, unknown>) => Promise<void> | void;
-let spaces: Record<string, string>;
 /** The node's status for a signed read URL that has bytes (200 by default). */
 let fetchStatus: number;
+let savedSessionExists: boolean;
+let savedGrantManifest: Manifest | undefined;
+let stepUpPrompts: number;
+
 
 vi.mock("../src/email-share/config.js", () => ({ loadSharePublicConfig: async () => ({ shareOrigin: "https://share.example" }) }));
+vi.mock("@tinycloud/web-sdk", () => ({
+  BrowserSessionStorage: class {
+    activeAddress(): string | undefined {
+      return savedSessionExists ? "0x0" : undefined;
+    }
+  },
+}));
 vi.mock("../src/share/openkey-session.js", () => ({
   takeWalletApprovalFailure: () => undefined,
   signInWithManifest: async (options: Record<string, unknown>) => {
+    const kv = {
+      list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
+      put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
+        puts.push(key);
+        if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
+        kvFiles.set(key, value);
+        return { ok: true };
+      },
+      createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
+    };
     const fake: FakeSignIn = {
       tinycloud: {
-        kvForSpace: () => ({
-          list: async () => kvListResult ?? { ok: true, data: { keys: [...kvFiles.keys()] } },
-          put: async (key: string, value: Uint8Array, write: { ifNoneMatch?: string }) => {
-            puts.push(key);
-            if (write.ifNoneMatch === "*" && kvFiles.has(key)) return { ok: false, error: { code: "KV_PRECONDITION_FAILED" } };
-            kvFiles.set(key, value);
-            return { ok: true };
-          },
-          createSignedReadUrl: async (key: string) => (kvFiles.has(key) ? { ok: true, data: { url: `https://node.example/signed/${encodeURIComponent(key)}` } } : { ok: false, error: { code: "KV_NOT_FOUND" } }),
-        }),
+        kvForSpace: () => kv,
+        space: (name) => ({ id: name, kv }),
         sqlForSpace: () => ({ db: () => ({}) }),
         signOut: vi.fn(async () => undefined),
+        requestPermissions: vi.fn(async (permissions: Array<{ service: string; space: string; path: string; actions: string[] }>) => {
+          const saved = savedGrantManifest === undefined ? [] : sdkCore.resolveManifest(savedGrantManifest).resources;
+          const covered = permissions.every((requested) => requested.actions.every((action) => saved.some((grant) =>
+            grant.service === requested.service && grant.space === requested.space && grant.actions.includes(action) &&
+            (grant.path === requested.path || (grant.path.endsWith("/") && requested.path.startsWith(grant.path))),
+          )));
+          if (!covered) stepUpPrompts += 1;
+          return { approved: true };
+        }),
       },
       session: { address: "0x0", openkey: {} },
-      spaces,
+      spaces: {},
       sessionExpiresAt: Date.now() + RUNTIME_SESSION_MS,
       detach: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
     };
     const guard = options["guardApproval"] as SignInCall["guard"];
     calls.push({ options, guard, fake });
+    if (!savedSessionExists && options["manifest"] !== undefined) savedGrantManifest = sdkCore.validateManifest(options["manifest"]);
     await signInBehaviour(calls.length, options);
+    if (options["persistSession"] === true) savedSessionExists = true;
     return fake;
   },
 }));
@@ -81,7 +102,7 @@ function seedSaved(overrides: StoredOverrides = {}): void {
   for (const [path, bytes] of storedFiles(entry, overrides).entries) kvFiles.set(`${HEALTH}/app/${path}`, bytes);
 }
 
-/** The real ports, with the catalog bundle read from `public/` in place of the network. */
+/** The real ports, with the catalog bundle and saved install record served from memory. */
 function ports(overrides: Partial<RunPorts> = {}): RunPorts {
   return {
     ...createRunPorts(),
@@ -89,10 +110,6 @@ function ports(overrides: Partial<RunPorts> = {}): RunPorts {
       bundle: { files: entry.bundle.files.map((file) => ({ ...file, bytes: bundleBytes(entry, file.path) })), manifest: manifestJson() },
       manifest: { ok: true, manifest: manifestJson() },
     }),
-    readInstallDigest: async (candidate) => {
-      const bytes = kvFiles.get(`${candidate.app_id}/app/install.json`);
-      return bytes === undefined ? null : parseInstallRecord(bytes)?.digest ?? null;
-    },
     ...overrides,
   };
 }
@@ -102,9 +119,11 @@ const open = (run: RunPorts = ports(), signal?: AbortSignal) => openApp(HEALTH, 
 beforeEach(() => {
   calls.length = 0;
   puts.length = 0;
-  spaces = { [INSTALL_SPACE]: "space-id" };
   signInBehaviour = () => undefined;
   fetchStatus = 200;
+  savedSessionExists = false;
+  savedGrantManifest = undefined;
+  stepUpPrompts = 0;
   seedSaved();
   vi.stubGlobal("fetch", async (url: string) => {
     const key = decodeURIComponent(String(url).slice("https://node.example/signed/".length));
@@ -282,11 +301,12 @@ describe("opening an installed app", () => {
     expect(puts).toEqual([]);
   });
 
-  it("an applications space that is not hosted ends the sign-in and fails", async () => {
-    spaces = {};
-    await expect(open()).rejects.toMatchObject({ reason: "failed" });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
+  it("does not create or host a space during Health Log open", async () => {
+    await open();
+    const { options } = calls[0]!;
+    expect(options["hostSpaces"]).toBeUndefined();
+    expect(options["autoCreateSpace"]).toBe(false);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
   });
 
   it("a listing that fails ends the sign-in and fails", async () => {
@@ -300,25 +320,30 @@ describe("opening an installed app", () => {
     await expect(open()).rejects.toMatchObject({ reason: "failed" });
     expect(calls[0]!.fake.dispose).toHaveBeenCalledTimes(1);
   });
-  it("reads only the saved install digest with a narrow read-only approval", async () => {
-    const digest = await createRunPorts().readInstallDigest(entry, { approval: () => undefined });
-    expect(digest).toBe(entry.bundle.digest);
+  it("the first open asks for one app approval, while a reopen restores the grant without OpenKey requests", async () => {
+    let requests = 0;
+    signInBehaviour = async (_call, options) => {
+      if (savedSessionExists) return;
+      const guard = options["guardApproval"] as SignInCall["guard"];
+      requests += 1;
+      await guard(async () => undefined);
+    };
+
+    kvFiles = new Map();
+    const runPorts = ports();
+    const first = await open(runPorts);
+    expect(requests + stepUpPrompts).toBe(1);
     expect(calls).toHaveLength(1);
-    const { options, fake } = calls[0]!;
-    expect(options["manifest"]).toMatchObject({
-      manifest_version: 1,
-      app_id: HEALTH,
-      space: INSTALL_SPACE,
-      defaults: false,
-      permissions: [{ service: "tinycloud.kv", path: installRecordKey(HEALTH), actions: ["get", "list"], skipPrefix: true }],
-    });
-    expect(options["allowedSpaces"]).toEqual([INSTALL_SPACE]);
-    expect(options["allowedServices"]).toEqual(["kv"]);
-    expect(options["allowedActions"]).toEqual(["get", "list"]);
-    expect(options["allowedPathPrefixes"]).toEqual([{ space: INSTALL_SPACE, prefix: installRecordKey(HEALTH) }]);
-    expect(options["includeAccountRegistryPermissions"]).toBe(false);
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
-    expect(fake.dispose).toHaveBeenCalledTimes(1);
+    expect(calls[0]!.options["persistSession"]).toBe(true);
+    expect(calls[0]!.options["sessionPrefix"]).toBe(await runnerSessionPrefix(HEALTH));
+    expect(calls[0]!.fake.tinycloud.requestPermissions).toHaveBeenCalledTimes(1);
+    await first.session.detach();
+
+    await open(runPorts);
+    expect(requests + stepUpPrompts).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.options["manifest"]).toEqual(installRecordPlan(entry).manifest);
+    expect(calls.slice(1).every((call) => call.options["sessionPrefix"] === calls[0]!.options["sessionPrefix"])).toBe(true);
   });
 
   it("the sign-in asks for exactly the union for this app, for one hour, under the reader's name", async () => {
@@ -329,7 +354,9 @@ describe("opening an installed app", () => {
     expect(options["allowedActions"]).toEqual(openScope(catalogManifest, sdkCore).allowedActions);
     expect(options["allowedPathPrefixes"]).toEqual(openScope(catalogManifest, sdkCore).allowedPathPrefixes);
     expect(options["expiry"]).toBe(RUNTIME_SESSION_MS);
-    expect(options["hostSpaces"]).toEqual([INSTALL_SPACE]);
+    expect(options["hostSpaces"]).toBeUndefined();
+    expect(options["autoCreateSpace"]).toBe(false);
+    expect(options["includeAccountRegistryPermissions"]).toBe(false);
     expect(options["appName"]).toBe(runnerAppName("TinyCloud Share: ", entry.name));
   });
   it("lets the approvals of the sign-in itself through, one at a time", async () => {
