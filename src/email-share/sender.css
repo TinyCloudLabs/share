@@ -47,6 +47,7 @@ button, input, select, textarea { touch-action: manipulation; }
   overflow-wrap: anywhere;
 }
 #share-app > .sender-form { width: min(100% - 3rem, 640px); margin: 64px auto; }
+.share-instructions { width: min(100% - 3rem, 900px); margin: 0 auto 64px; }
 .auth-shell { min-height: min(720px, calc(100svh - 5.4rem)); }
 .auth-form { max-width: 720px; }
 .auth-form h2 { margin: 32px 0 10px; font-size: 1.55rem; font-weight: 550; letter-spacing: -0.025em; }

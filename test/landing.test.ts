@@ -18,6 +18,12 @@ describe("landing template", () => {
     expect(rendered).toContain("<span>TinyCloud <b>Sharing</b></span>");
   });
 
+  it("has crawl-ready landing metadata for the public site", () => {
+    expect(rendered).toContain('<link rel="canonical" href="https://share.tinycloud.xyz/" />');
+    expect(rendered).toContain('<meta property="og:title" content="TinyCloud Sharing — Share what your agent makes." />');
+    expect(rendered).toContain('<meta name="twitter:card" content="summary" />');
+  });
+
   it("rejects an unknown token instead of rendering it", () => {
     expect(() => renderLandingTemplate("<p>{{NOPE}}</p>")).toThrow(/NOPE/);
   });
