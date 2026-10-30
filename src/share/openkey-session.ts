@@ -400,7 +400,7 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
       persistSession: options.persistSession === true,
       siweConfig: { statement: `Sign in to ${appName}.` },
       manifest,
-      notifications: { popups: false },
+      ui: false,
     });
     let disposing: Promise<void> | undefined;
     dispose = (): Promise<void> => {

@@ -20,7 +20,7 @@ export async function createShareReceiverClient(
     autoCreateSpace: false,
     domain: new URL(config.shareOrigin).hostname,
     sessionStorageKeyPrefix: "tinycloud-share",
-    notifications: { popups: false },
+    ui: false,
     shareReceiver: {
       origin: window.location.origin,
       expectedShareOrigin: config.shareOrigin,
