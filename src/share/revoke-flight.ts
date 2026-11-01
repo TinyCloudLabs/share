@@ -60,6 +60,9 @@ export class RevokeFlight {
 /** The owner wallet's revocation request is valid for this long from the moment the approval is asked for. */
 export const APPROVAL_WINDOW_MS = 60_000;
 
+/** Opening OpenKey (a login or a sign-up) is not a signature: it waits as long as the OpenKey SDK itself does, five minutes. */
+export const CONNECT_WINDOW_MS = 300_000;
+
 /** What `withWalletApproval` needs to know about its caller: where to report the open approval, and (for a revoke) the sign-in it belongs to. */
 export interface WalletApprovalSubject {
   setApproval(open: boolean): void;
@@ -78,14 +81,15 @@ export function isApprovalAbandoned(error: unknown): boolean {
  *
  * The lock is held for at most the approval window: the signed request is
  * dead after 60 seconds, and an external wallet or a closed window may never
- * answer. After that Share stops waiting (`revoke-approval-abandoned`), frees
+ * answer. Opening OpenKey (`info.kind === "connect"`, a login or sign-up) signs
+ * nothing and waits five minutes instead. After that Share stops waiting (`revoke-approval-abandoned`), frees
  * the lock and lets the sender try again. The abandoned request is told it is
  * no longer current (`current()` is false), so a late answer cannot touch the
  * state of a newer attempt; the row never turns Revoked from it. If it did
  * revoke the share, the next attempt's node check sees that and finishes with
  * no new approval.
  */
-export async function withWalletApproval<T>(flight: WalletApprovalSubject, task: (current: () => boolean) => Promise<T>): Promise<T> {
+export async function withWalletApproval<T>(flight: WalletApprovalSubject, task: (current: () => boolean) => Promise<T>, info?: { readonly kind: "connect" | "sign" }): Promise<T> {
   // A revoke that outlived its sign-in never reaches the wallet. (A caller that is not a revoke has no sign-in of its own to outlive.)
   if (flight.session !== undefined && flight.session !== session) throw new Error("revoke-session-ended");
   if (walletRequestOpen) throw new Error("revoke-another-approval");
@@ -95,7 +99,7 @@ export async function withWalletApproval<T>(flight: WalletApprovalSubject, task:
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abandon: () => void = () => undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, APPROVAL_WINDOW_MS);
+    timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, info?.kind === "connect" ? CONNECT_WINDOW_MS : APPROVAL_WINDOW_MS);
     abandon = () => { abandoned = true; reject(new Error("revoke-session-ended")); };
   });
   openRequests.add(abandon);
