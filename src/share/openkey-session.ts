@@ -484,6 +484,7 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
   allowedServices: ["kv", "vault", "encryption"],
+  // key.create is service-qualified. On the whole network it is refused earlier, by sdk-core's manifest resolution (invalid-manifest), not by this scope; test/share-manifest-key-path.test.ts pins that.
   allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.encryption/key.create"],
   allowedPathPrefixes: [
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
