@@ -2,6 +2,7 @@ import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
 import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
+import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
@@ -473,6 +474,8 @@ export function shareManifest(address: string): Manifest {
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
+      // Option M: one sign-in grant to create the keys of the shares this account publishes (decrypt + key.create on the share/ prefix), built by the SDK.
+      ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
     ],
   };
 }
@@ -481,12 +484,14 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
   allowedServices: ["kv", "vault", "encryption"],
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "key.create"],
   allowedPathPrefixes: [
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },
     { space: FILES_FOR_YOU_SPACE, prefix: FILES_FOR_YOU_PREFIX },
     { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{address}:default" },
+    // A key under a network is spelled with the owner's checksummed address: exactly the share/ prefix the SDK's sign-in entry names.
+    { space: "encryption", prefix: "urn:tinycloud:encryption:did:pkh:eip155:1:{checksumAddress}:default/share/" },
   ],
 };
 

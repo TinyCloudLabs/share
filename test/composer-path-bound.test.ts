@@ -6,7 +6,7 @@ import { sha256 } from "@noble/hashes/sha256";
 import { getAddress } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { signCompactUcanRootAuthorization } from "@tinycloud/sdk-core";
-import { toBase64Url } from "@tinycloud/share-envelope";
+import { canonicalize, toBase64Url } from "@tinycloud/share-envelope";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import { mountShareComposer } from "../src/share/composer.js";
 import { ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer } from "./fixtures/link-material.js";
@@ -27,7 +27,7 @@ const hex = (bytes: Uint8Array): string => [...bytes].map((byte) => byte.toStrin
 // envelope's own `encryptedSymmetricKeyHash` is a different value, so only a digest of the DECODED bytes matches.
 const WRAPPED_BYTES = Uint8Array.from({ length: 61 }, (_, index) => (index * 7 + 3) % 256);
 const WRAPPED_BASE64 = btoa(String.fromCharCode(...WRAPPED_BYTES));
-const ENVELOPE_CANONICAL_HASH = "e".repeat(64);
+const ENVELOPE_CANONICAL_HASH = hex(sha256(new TextEncoder().encode(canonicalize(WRAPPED_BASE64))));
 
 interface Registered {
   policy?: { contentSource: Record<string, unknown>; capabilityCeiling: { kind: string; resource: string; action?: string }[] };
@@ -43,22 +43,16 @@ function owner(seen: Registered): ShareTinyCloud {
     activeNodeIdentity: async () => ({ origin: "https://node.example.invalid", nodeDid: NODE_DID }),
     publishActiveNodeLocation: async () => undefined,
     signSessionBytes: signWithIssuer,
-    // The named-key client: the key is derived on the node, the symmetric key is wrapped to it, and the record is a v2 envelope that names the path.
+    // The named-key client the SDK helper drives: createKey, then a v2 envelope wrapped to that key.
     keys: {
-      encrypt: async (keyPath: string, _plaintext: Uint8Array, encryptOptions?: { networkId?: string; metadata?: Record<string, string> }) => {
-        seen.encryptCalls.push({ network: encryptOptions?.networkId ?? "", options: { keyPath } });
+      createKey: async (keyPath: string, createOptions: { networkId: string }) => ({ networkId: createOptions.networkId, keyPath, state: "active", keyVersion: 1 }),
+      encrypt: async (keyPath: string, _plaintext: Uint8Array, encryptOptions: { networkId: string; metadata?: Record<string, string> }) => {
+        seen.encryptCalls.push({ network: encryptOptions.networkId, options: { keyPath } });
         return {
-          v: 2, networkId: CANONICAL_NETWORK, keyPath, alg: "x25519-aes256gcm/v1", keyVersion: 1,
+          v: 2, networkId: encryptOptions.networkId, keyPath, alg: "x25519-aes256gcm/v1", keyVersion: 1,
           encryptedSymmetricKey: WRAPPED_BASE64, encryptedSymmetricKeyHash: ENVELOPE_CANONICAL_HASH, ciphertext: btoa("c".repeat(48)),
-          ...(encryptOptions?.metadata === undefined ? {} : { metadata: encryptOptions.metadata }),
+          ...(encryptOptions.metadata === undefined ? {} : { metadata: encryptOptions.metadata }),
         };
-      },
-    },
-    // Today's network encrypt, which has no key path: what the composer uses until the SDK's path-bound publisher is taken.
-    encryption: {
-      encryptToNetwork: async (network: string, _plaintext: Uint8Array, encryptOptions?: { keyPath?: string; metadata?: Record<string, string> }) => {
-        seen.encryptCalls.push({ network, options: encryptOptions?.keyPath === undefined ? undefined : { keyPath: encryptOptions.keyPath } });
-        return { ok: true, data: { v: 1, networkId: CANONICAL_NETWORK, alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: WRAPPED_BASE64, encryptedSymmetricKeyHash: ENVELOPE_CANONICAL_HASH, ciphertext: btoa("c".repeat(48)) } };
       },
     },
     kvForSpace: () => ({ put: async (_path: string, bytes: Uint8Array) => { seen.stored.push(bytes); return { ok: true }; } }),

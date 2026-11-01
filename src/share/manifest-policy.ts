@@ -16,6 +16,7 @@
  * permissions to every sign-in on top of it (see `signInWithManifest`).
  */
 import { resolveManifest, type Manifest, type ResourceCapability } from "@tinycloud/sdk-core";
+import { getAddress } from "viem";
 
 /** The delegation namespace, however it is cased. */
 const DELEGATION = /^(?:tinycloud\.)?delegation$/i;
@@ -131,7 +132,7 @@ function prefixesFor(scope: ManifestScope, manifest: Manifest, address: string):
   if (scope.allowedPathPrefixes !== undefined) {
     return scope.allowedPathPrefixes.map((entry) => {
       const { space, prefix } = typeof entry === "string" ? { space: undefined, prefix: entry } : entry;
-      return { space, prefix: prefix.replaceAll("{address}", address.toLowerCase()) };
+      return { space, prefix: prefix.replaceAll("{address}", address.toLowerCase()).replaceAll("{checksumAddress}", getAddress(address)) };
     });
   }
   const own = manifest.prefix ?? manifest.app_id;

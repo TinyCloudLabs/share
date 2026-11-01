@@ -7,6 +7,7 @@
  *
  * The pattern follows the node-sdk receive tests of TinyCloudLabs/js-sdk (share-receive.test.ts).
  */
+import { readFileSync } from "node:fs";
 import { ed25519, x25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha256";
 import { signLocationRecord, httpUrlToMultiaddr } from "@tinycloud/sdk-core";
@@ -32,16 +33,12 @@ const OWNER_DID = didKeyFromEd25519PublicKey(ed25519.getPublicKey(OWNER_KEY));
 const NODE_DID = didKeyFromEd25519PublicKey(ed25519.getPublicKey(NODE_KEY));
 const SYMMETRIC_KEY = seed(41);
 
-/** Which wrapped-key digest the owner registered, and for which kind of source. */
+/** Which wrapped-key digest the owner registered for a path-bound share the strict publisher can still build. Older no-path shares are recorded data: see buildRecordedLegacyWorld. */
 export type ShareKind =
-  /** An older share: no key path, the registered digest is the envelope's canonical hash. */
-  | "legacy"
-  /** A path-bound share: `share/<id>`, the registered digest is SHA-256 of the decoded wrapped key. */
+  /** `share/<id>`, the registered digest is SHA-256 of the decoded wrapped key. */
   | "path-bound"
   /** A path-bound source that registered the canonical hash. */
   | "path-bound-canonical-digest"
-  /** A no-path source that registered the raw digest. */
-  | "legacy-raw-digest"
   /** A path-bound source whose registered digest is not the digest of its wrapped key. */
   | "path-bound-tampered-digest";
 
@@ -72,85 +69,15 @@ export interface ShareReceiverWorld {
   readonly calls: string[];
   /** How many decrypt requests reached the node (a KV read is not one). */
   readonly decryptRequests: () => number;
+  /** Set for a recorded share: the share only verifies near this time, so a test sets the clock to it plus a day. */
+  readonly recordedAtMs?: number;
   /** The shape of the share's key as it was registered and stored. */
   readonly registered: { readonly keyPath: string | undefined; readonly digestHex: string };
 }
 
-export async function buildShareReceiverWorld(options: { readonly kind: ShareKind; readonly plaintext: string; readonly witness: WitnessStub }): Promise<ShareReceiverWorld> {
-  const pathBound = options.kind !== "legacy" && options.kind !== "legacy-raw-digest";
-  const shareId = `world-${options.kind}-0123456789`;
-  const keyPath = pathBound ? `share/${shareId}` : undefined;
-  const networkId = `urn:tinycloud:encryption:${OWNER_DID}:default`;
-  const spaceId = "tinycloud:test-space";
-  const resourcePath = `xyz.tinycloud.share/shares/${shareId}/report.md`;
-
-  const wrappedBytes = Uint8Array.from({ length: 93 }, (_, index) => (index * 5 + 7) % 256);
-  const encryptedSymmetricKey = base64(wrappedBytes);
-  const canonicalHash = hex(sha256(new TextEncoder().encode(canonicalize(encryptedSymmetricKey))));
-  const rawDigest = hex(sha256(wrappedBytes));
-  const registeredDigest = options.kind === "legacy" || options.kind === "path-bound-canonical-digest"
-    ? canonicalHash
-    : options.kind === "path-bound-tampered-digest"
-      ? rawDigest.replace(/^./, (character) => (character === "0" ? "1" : "0"))
-      : rawDigest;
-
-  const stored = new TextEncoder().encode(canonicalize({
-    v: pathBound ? 2 : 1, networkId, ...(keyPath === undefined ? {} : { keyPath }), alg: "x25519-aes256gcm/v1", keyVersion: 1,
-    encryptedSymmetricKey, encryptedSymmetricKeyHash: canonicalHash,
-    ciphertext: base64(await aesEncrypt(SYMMETRIC_KEY, new TextEncoder().encode(options.plaintext))),
-    metadata: { contentType: "text/markdown" },
-  }));
-
-  const now = Date.now();
-  const expiresAt = new Date(now + 30 * 86_400_000);
-  const request = { target: { kind: "email", address: RECIPIENT_EMAIL }, actions: ["read"], policyActions: ["tinycloud.kv/get", "tinycloud.kv/metadata"], filename: "report.md" } as const;
-  const { credentialRequirement } = prepareAddressedShare({ ...request, actions: [...request.actions], policyActions: [...request.policyActions] });
-  const sign = async (bytes: Uint8Array): Promise<Uint8Array> => ed25519.sign(bytes, OWNER_KEY);
-  // Only what `createUnifiedOwnerRoot` reads from `this`; the real class needs a signed-in session.
-  const ownerSigner: never = { credentialHolderDid: OWNER_DID, signSessionBytes: sign } as never;
-  let delivery: DeliveryMaterial | undefined;
-  await publishAddressedShare({
-    shareId, shareOrigin: SHARE_ORIGIN, nodeOrigin: NODE_ORIGIN, nodeAudience: NODE_DID, enforcerDid: NODE_DID, spaceId,
-    target: { ...request.target }, actions: [...request.actions], policyActions: [...request.policyActions], filename: request.filename,
-    resource: { kind: "exact", path: resourcePath }, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), mediaType: "text/markdown", byteLength: options.plaintext.length, expiresAt,
-    contentSource: {
-      shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: "exact", encryptionNetwork: networkId,
-      ...(keyPath === undefined ? {} : { encryptionKeyPath: keyPath }),
-      encryptedSymmetricKeyDigestHex: registeredDigest, keyVersion: 1, mode: "immutable", initialCiphertextDigestHex: hex(sha256(stored)),
-    },
-    // The SDK's material type is wider than what the fake node reads; narrowing it once, here.
-    onDeliveryMaterial: (material) => { delivery = material as unknown as DeliveryMaterial; },
-    authority: {
-      ownerDid: OWNER_DID, sign,
-      // The SDK's own root builder, with the owner's session key as its only dependency.
-      createOwnerRoot: (input) => TinyCloudNode.prototype.createUnifiedOwnerRoot.call(ownerSigner, input),
-      async registerPolicy(input) {
-        const unsigned = {
-          schema: "xyz.tinycloud.policy/attested-enforcer/v2" as const, enforcerDid: NODE_DID, nodeAudience: NODE_DID,
-          attestationBindingDigestHex: hex(sha256(new TextEncoder().encode(canonicalize({ enforcerDid: NODE_DID, nodeAudience: NODE_DID })))),
-          issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 40 * 86_400_000).toISOString(),
-        };
-        const digest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
-        return {
-          policyCid: input.policyCid, policyRootCid: input.policyRoot.cid, enforcementRootCid: input.enforcementRoot.cid,
-          attestedEnforcerBinding: { ...unsigned, signature: { suite: "Ed25519" as const, signerDid: NODE_DID, value: toBase64Url(ed25519.sign(digest, NODE_KEY)) } },
-        };
-      },
-    },
-  });
-  if (delivery === undefined) throw new Error("the publisher returned no delivery material");
-  const envelope = delivery.envelope;
-  const link = (await publishLink({
-    material: { sealedEnvelope: delivery.sealedEnvelope, envelopeKey: delivery.envelopeKey, shareCid: delivery.shareCid },
-    expiresAt: expiresAt.toISOString(), signer: { issuerDid: OWNER_DID, sign }, shareOrigin: SHARE_ORIGIN, apiOrigin: "https://api.tinycloud.xyz",
-    fetchFn: (async () => { throw new Error("no links service in this world"); }) as unknown as typeof fetch, now: () => now,
-  })).url;
-
-  const record = await signLocationRecord(
-    { version: 1, subject: OWNER_DID, multiaddrs: [httpUrlToMultiaddr(NODE_ORIGIN)], updated_at: new Date().toISOString(), sequence: 1 },
-    { type: "did:key", signBytes: sign },
-  );
-  const { witness } = options;
+/** The fake witness, registry and owner node behind one `fetch`, for one published share. */
+function createWorldFetch(parts: { readonly witness: WitnessStub; readonly envelope: PublishedEnvelope; readonly record: unknown; readonly stored: Uint8Array<ArrayBuffer>; readonly networkId: string; readonly canonicalHash: string; readonly now: number }): { readonly fetchFn: typeof fetch; readonly calls: string[]; readonly decryptRequests: () => number } {
+  const { witness, envelope, record, stored, networkId, canonicalHash, now } = parts;
   const rootFact = verifyCompactUcanAuthorization(envelope.policyRoot.authorization).payload as unknown as RootFacts;
   const fact = rootFact.fct[0]!;
   let holderDid = "";
@@ -206,6 +133,107 @@ export async function buildShareReceiverWorld(options: { readonly kind: ShareKin
     }
     throw new Error(`the world has no route for ${url.pathname}`);
   }) as typeof fetch;
+  return { fetchFn, calls, decryptRequests: () => decryptRequests };
+}
 
-  return { link, fetchFn, calls, decryptRequests: () => decryptRequests, registered: { keyPath, digestHex: registeredDigest } };
+export async function buildShareReceiverWorld(options: { readonly kind: ShareKind; readonly plaintext: string; readonly witness: WitnessStub }): Promise<ShareReceiverWorld> {
+  const shareId = `world-${options.kind}-0123456789`;
+  const keyPath = `share/${shareId}`;
+  const networkId = `urn:tinycloud:encryption:${OWNER_DID}:default`;
+  const spaceId = "tinycloud:test-space";
+  const resourcePath = `xyz.tinycloud.share/shares/${shareId}/report.md`;
+
+  const wrappedBytes = Uint8Array.from({ length: 93 }, (_, index) => (index * 5 + 7) % 256);
+  const encryptedSymmetricKey = base64(wrappedBytes);
+  const canonicalHash = hex(sha256(new TextEncoder().encode(canonicalize(encryptedSymmetricKey))));
+  const rawDigest = hex(sha256(wrappedBytes));
+  const registeredDigest = options.kind === "path-bound-canonical-digest"
+    ? canonicalHash
+    : options.kind === "path-bound-tampered-digest"
+      ? rawDigest.replace(/^./, (character) => (character === "0" ? "1" : "0"))
+      : rawDigest;
+
+  const stored = new TextEncoder().encode(canonicalize({
+    v: 2, networkId, keyPath, alg: "x25519-aes256gcm/v1", keyVersion: 1,
+    encryptedSymmetricKey, encryptedSymmetricKeyHash: canonicalHash,
+    ciphertext: base64(await aesEncrypt(SYMMETRIC_KEY, new TextEncoder().encode(options.plaintext))),
+    metadata: { contentType: "text/markdown" },
+  }));
+
+  const now = Date.now();
+  const expiresAt = new Date(now + 30 * 86_400_000);
+  const request = { target: { kind: "email", address: RECIPIENT_EMAIL }, actions: ["read"], policyActions: ["tinycloud.kv/get", "tinycloud.kv/metadata"], filename: "report.md" } as const;
+  const { credentialRequirement } = prepareAddressedShare({ ...request, actions: [...request.actions], policyActions: [...request.policyActions] });
+  const sign = async (bytes: Uint8Array): Promise<Uint8Array> => ed25519.sign(bytes, OWNER_KEY);
+  // Only what `createUnifiedOwnerRoot` reads from `this`; the real class needs a signed-in session.
+  const ownerSigner: never = { credentialHolderDid: OWNER_DID, signSessionBytes: sign } as never;
+  let delivery: DeliveryMaterial | undefined;
+  await publishAddressedShare({
+    shareId, shareOrigin: SHARE_ORIGIN, nodeOrigin: NODE_ORIGIN, nodeAudience: NODE_DID, enforcerDid: NODE_DID, spaceId,
+    target: { ...request.target }, actions: [...request.actions], policyActions: [...request.policyActions], filename: request.filename,
+    resource: { kind: "exact", path: resourcePath }, ...(credentialRequirement === undefined ? {} : { credentialRequirement }), mediaType: "text/markdown", byteLength: options.plaintext.length, expiresAt,
+    contentSource: {
+      shareId, kvResource: `${spaceId}/kv/${resourcePath}`, selector: "exact", encryptionNetwork: networkId,
+      encryptionKeyPath: keyPath,
+      encryptedSymmetricKeyDigestHex: registeredDigest, keyVersion: 1, mode: "immutable", initialCiphertextDigestHex: hex(sha256(stored)),
+    },
+    // The SDK's material type is wider than what the fake node reads; narrowing it once, here.
+    onDeliveryMaterial: (material) => { delivery = material as unknown as DeliveryMaterial; },
+    authority: {
+      ownerDid: OWNER_DID, sign,
+      // The SDK's own root builder, with the owner's session key as its only dependency.
+      createOwnerRoot: (input) => TinyCloudNode.prototype.createUnifiedOwnerRoot.call(ownerSigner, input),
+      async registerPolicy(input) {
+        const unsigned = {
+          schema: "xyz.tinycloud.policy/attested-enforcer/v2" as const, enforcerDid: NODE_DID, nodeAudience: NODE_DID,
+          attestationBindingDigestHex: hex(sha256(new TextEncoder().encode(canonicalize({ enforcerDid: NODE_DID, nodeAudience: NODE_DID })))),
+          issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 40 * 86_400_000).toISOString(),
+        };
+        const digest = sha256(new TextEncoder().encode(`xyz.tinycloud.policy/AttestedEnforcerBinding/v2\0${canonicalize(unsigned)}`));
+        return {
+          policyCid: input.policyCid, policyRootCid: input.policyRoot.cid, enforcementRootCid: input.enforcementRoot.cid,
+          attestedEnforcerBinding: { ...unsigned, signature: { suite: "Ed25519" as const, signerDid: NODE_DID, value: toBase64Url(ed25519.sign(digest, NODE_KEY)) } },
+        };
+      },
+    },
+  });
+  if (delivery === undefined) throw new Error("the publisher returned no delivery material");
+  const envelope = delivery.envelope;
+  const link = (await publishLink({
+    material: { sealedEnvelope: delivery.sealedEnvelope, envelopeKey: delivery.envelopeKey, shareCid: delivery.shareCid },
+    expiresAt: expiresAt.toISOString(), signer: { issuerDid: OWNER_DID, sign }, shareOrigin: SHARE_ORIGIN, apiOrigin: "https://api.tinycloud.xyz",
+    fetchFn: (async () => { throw new Error("no links service in this world"); }) as unknown as typeof fetch, now: () => now,
+  })).url;
+
+  const record = await signLocationRecord(
+    { version: 1, subject: OWNER_DID, multiaddrs: [httpUrlToMultiaddr(NODE_ORIGIN)], updated_at: new Date().toISOString(), sequence: 1 },
+    { type: "did:key", signBytes: sign },
+  );
+  const { fetchFn, calls, decryptRequests } = createWorldFetch({ witness: options.witness, envelope, record, stored, networkId, canonicalHash, now });
+
+  return { link, fetchFn, calls, decryptRequests, registered: { keyPath, digestHex: registeredDigest } };
+}
+
+interface RecordedLegacyWorld {
+  readonly recordedAtMs: number; readonly shareId: string; readonly plaintext: string; readonly link: string; readonly storedBase64: string;
+  readonly networkId: string; readonly canonicalHash: string; readonly registeredDigest: string; readonly envelope: PublishedEnvelope;
+}
+
+/**
+ * An older share (no key path) that was published ONCE with share-sdk 1.4.2 and committed as data (see `legacy-share-worlds.json`):
+ * the strict publisher can no longer build one. `legacy` registered the canonical hash of the wrapped key, `legacy-raw-digest` the raw digest.
+ * The share's roots live at most 31 days, so a test sets the clock to `recordedAtMs` plus a day.
+ */
+export async function buildRecordedLegacyWorld(options: { readonly kind: "legacy" | "legacy-raw-digest"; readonly witness: WitnessStub }): Promise<ShareReceiverWorld & { readonly plaintext: string }> {
+  const recorded = (JSON.parse(readFileSync("test/fixtures/legacy-share-worlds.json", "utf8")) as Record<string, RecordedLegacyWorld>)[options.kind]!;
+  const sign = async (bytes: Uint8Array): Promise<Uint8Array> => ed25519.sign(bytes, OWNER_KEY);
+  const record = await signLocationRecord(
+    { version: 1, subject: OWNER_DID, multiaddrs: [httpUrlToMultiaddr(NODE_ORIGIN)], updated_at: new Date(recorded.recordedAtMs).toISOString(), sequence: 1 },
+    { type: "did:key", signBytes: sign },
+  );
+  const { fetchFn, calls, decryptRequests } = createWorldFetch({
+    witness: options.witness, envelope: recorded.envelope, record, stored: Uint8Array.from(Buffer.from(recorded.storedBase64, "base64")),
+    networkId: recorded.networkId, canonicalHash: recorded.canonicalHash, now: recorded.recordedAtMs,
+  });
+  return { link: recorded.link, fetchFn, calls, decryptRequests, recordedAtMs: recorded.recordedAtMs, plaintext: recorded.plaintext, registered: { keyPath: undefined, digestHex: recorded.registeredDigest } };
 }
