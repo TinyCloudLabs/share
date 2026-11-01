@@ -51,11 +51,15 @@ describe("the library's sign-in manifest", () => {
 });
 
 describe("a scope without the checksum placeholder", () => {
-  it("never parses the address as one, so a malformed address is refused as a manifest, not thrown as an address error", () => {
-    const scope: ManifestScope = { allowedSpaces: ["s"], allowedServices: ["kv"], allowedActions: ["get"], allowedPathPrefixes: [{ space: "s", prefix: "app/" }] };
-    const manifest = { app_id: "app", permissions: [{ service: "tinycloud.kv", space: "s", path: "app/x", actions: ["get"] }] } as never;
+  it("never parses the address as one: a malformed address is not an address error", () => {
+    const scope: ManifestScope = { allowedSpaces: ["applications"], allowedServices: ["kv"], allowedActions: ["get"], allowedPathPrefixes: [{ space: "applications", prefix: "app/" }] };
+    const manifest = {
+      manifest_version: 1, app_id: "app", name: "App", space: "applications", prefix: "app/", defaults: false, includePublicSpace: false,
+      permissions: [{ service: "tinycloud.kv", space: "applications", path: "app/x", actions: ["tinycloud.kv/get"] }],
+    } as never;
     let thrown: unknown;
     try { assertManifestInScope(manifest, scope, "not-an-address"); } catch (error) { thrown = error; }
     expect(thrown === undefined || thrown instanceof ManifestRejectedError).toBe(true);
+    expect((thrown as { name?: string } | undefined)?.name).not.toBe("InvalidAddressError");
   });
 });

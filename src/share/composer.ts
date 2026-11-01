@@ -421,7 +421,7 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   try {
     encrypted = await encryptAddressedShareContent({ plan, keys: tinycloud.keys, plaintext, metadata: { contentType: plaintextType } });
   } catch (error) {
-    if (error instanceof AddressedContentSourceError && error.code === "key-not-authorized") throw fail("upload", "owner share key was not authorized");
+    if (error instanceof AddressedContentSourceError && error.code === "key-not-authorized") throw fail("shareKey", "owner share key was not authorized");
     throw fail("upload", "owner file encryption was rejected");
   } finally {
     plaintext.fill(0);
