@@ -8,6 +8,7 @@
 import { createAnnouncer } from "../share/announcer.js";
 import { confirmDialog } from "../share/confirm-dialog.js";
 import { showApprovalHint } from "../share/approval-hint.js";
+import { CONNECT_WINDOW_MS } from "../share/revoke-flight.js";
 import { el, status, type ViewContext } from "./dom.js";
 import { isDecidable, type ThreadRef } from "./model.js";
 import { renderNeeds } from "./screen-needs.js";
@@ -80,7 +81,7 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
         status: (message) => { line.textContent = message; },
         approval: (open) => {
           hint?.dispose(); hint = undefined;
-          if (open) hint = showApprovalHint(form, { text: "Approve in the OpenKey window to sign in", lineClass: "sender-approval-line", timeoutCopy: "OpenKey didn't answer in time. Try again." });
+          if (open) hint = showApprovalHint(form, { text: "Approve in the OpenKey window to sign in", lineClass: "sender-approval-line", timeoutCopy: "OpenKey didn't answer in time. Try again.", timeoutAfterMs: CONNECT_WINDOW_MS });
         },
       };
       deps.signIn(progress).then((signedIn) => {
