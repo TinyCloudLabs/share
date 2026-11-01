@@ -2,13 +2,21 @@ import type { AccountDelegationRecord } from "@tinycloud/sdk-core";
 import { defaultEncryptionNetworkForOwner, planPathBoundShare, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX, SHARE_APPLICATION_SPACE, type ShareTinyCloud } from "./openkey-session.js";
 
-/** `<network>/share/<shareId>` for this account, named by the SDK; undefined for an id the SDK would not plan (an older or imported record). */
+/** `<network>/share/<shareId>` for this account (the network's address is case-insensitive, the share id is not), named by the SDK; undefined for an id the SDK would not plan (an older or imported record). */
 function ownKeyResource(shareId: string, address: string): string | undefined {
   try {
-    return planPathBoundShare({ shareId, encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }).keyResource.toLowerCase();
+    return planPathBoundShare({ shareId, encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }).keyResource;
   } catch {
     return undefined;
   }
+}
+
+/** True when `resource` is `ownKey`: the network part compared without case, the `/share/<id>` tail exactly. */
+function isOwnKey(resource: string, ownKey: string): boolean {
+  const marker = "/share/";
+  const at = resource.indexOf(marker);
+  const ownAt = ownKey.indexOf(marker);
+  return at >= 0 && ownAt >= 0 && resource.slice(0, at).toLowerCase() === ownKey.slice(0, ownAt).toLowerCase() && resource.slice(at) === ownKey.slice(ownAt);
 }
 
 /**
@@ -60,7 +68,7 @@ function grantsOnlyThisShare(row: AccountDelegationRecord, record: SenderShareRe
   const ownKey = ownKeyResource(record.shareId, address);
   let objects = 0;
   for (const entry of row.resources) {
-    if (entry.resource.toLowerCase() === network || (ownKey !== undefined && entry.resource.toLowerCase() === ownKey)) continue;
+    if (entry.resource.toLowerCase() === network || (ownKey !== undefined && isOwnKey(entry.resource, ownKey))) continue;
     const marker = entry.resource.indexOf("/kv/");
     if (marker < 0 || entry.resource.slice(0, marker).toLowerCase() !== space) return false;
     const path = entry.resource.slice(marker + "/kv/".length);

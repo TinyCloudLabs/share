@@ -484,7 +484,7 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
   allowedServices: ["kv", "vault", "encryption"],
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "key.create"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.encryption/key.create"],
   allowedPathPrefixes: [
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },

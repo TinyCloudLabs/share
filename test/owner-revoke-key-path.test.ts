@@ -48,3 +48,12 @@ describe("the node check on a share's policy root", () => {
     await expect(verify(encryption)).rejects.toThrow("revoke-earlier-sign-in");
   });
 });
+
+describe("the share id in a key resource is compared exactly", () => {
+  it.each([
+    ["an upper-cased share id", `${checksummed(ADDRESS)}/share/${SHARE_ID.toUpperCase()}`],
+    ["the bare share/ prefix", `${checksummed(ADDRESS)}/share/`],
+  ])("refuses a root that also grants %s", async (_name, encryption) => {
+    await expect(verify(encryption)).rejects.toThrow("revoke-earlier-sign-in");
+  });
+});

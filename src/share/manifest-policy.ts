@@ -132,7 +132,8 @@ function prefixesFor(scope: ManifestScope, manifest: Manifest, address: string):
   if (scope.allowedPathPrefixes !== undefined) {
     return scope.allowedPathPrefixes.map((entry) => {
       const { space, prefix } = typeof entry === "string" ? { space: undefined, prefix: entry } : entry;
-      return { space, prefix: prefix.replaceAll("{address}", address.toLowerCase()).replaceAll("{checksumAddress}", getAddress(address)) };
+      const lowered = prefix.replaceAll("{address}", address.toLowerCase());
+      return { space, prefix: lowered.includes("{checksumAddress}") ? lowered.replaceAll("{checksumAddress}", getAddress(address)) : lowered };
     });
   }
   const own = manifest.prefix ?? manifest.app_id;
