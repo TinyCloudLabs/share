@@ -57,9 +57,9 @@ export function createUninstallPorts(): UninstallPorts {
       let client: TinyCloudWeb | undefined;
       let observed: UninstallFailure | undefined;
       // One approval at a time, for at most the 60-second window; the sheet shows the hint while it is open.
-      const guardApproval: ApprovalGuard = async (wait) => {
+      const guardApproval: ApprovalGuard = async (wait, info) => {
         try {
-          return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait());
+          return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info);
         } catch (error) {
           observed ??= guardFailure(error);
           throw error;

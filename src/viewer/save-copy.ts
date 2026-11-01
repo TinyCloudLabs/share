@@ -85,9 +85,9 @@ export function createSaveToTinyCloud(config: SharePublicConfig): SaveToTinyClou
     let observed: SaveFailureReason | undefined;
     let takeFailure: ((tinycloud: ShareTinyCloud) => WalletApprovalFailure | undefined) | undefined;
     // One approval at a time, for at most the 60-second window; the bar shows the hint while it is open.
-    const guardApproval: ApprovalGuard = async (wait) => {
+    const guardApproval: ApprovalGuard = async (wait, info) => {
       try {
-        return await withWalletApproval({ setApproval: (open) => progress.approval(open) }, () => wait());
+        return await withWalletApproval({ setApproval: (open) => progress.approval(open) }, () => wait(), info);
       } catch (error) {
         observed ??= guardReason(error);
         throw error;
