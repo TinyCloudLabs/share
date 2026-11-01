@@ -67,9 +67,9 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
   let client: ShareTinyCloud | undefined;
   let observed: SignInFailureReason | undefined;
   let takeFailure: ((tinycloud: ShareTinyCloud) => WalletApprovalFailure | undefined) | undefined;
-  const guardApproval: ApprovalGuard = async (wait) => {
+  const guardApproval: ApprovalGuard = async (wait, info) => {
     try {
-      return await withWalletApproval({ setApproval: (open) => progress.approval(open) }, () => wait());
+      return await withWalletApproval({ setApproval: (open) => progress.approval(open) }, () => wait(), info);
     } catch (error) {
       observed ??= guardReason(error);
       throw error;

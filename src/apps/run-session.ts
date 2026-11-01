@@ -63,10 +63,10 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
   let locked = false;
   let failure: RunFailure | undefined;
   return {
-    guard: async (wait) => {
+    guard: async (wait, info) => {
       if (locked) throw new Error("runner-signing-closed");
       try {
-        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait());
+        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info);
       } catch (error) {
         if (error instanceof Error && error.message === "revoke-approval-abandoned") failure ??= "timeout";
         else if (error instanceof Error && error.message === "revoke-another-approval") failure ??= "busy";
