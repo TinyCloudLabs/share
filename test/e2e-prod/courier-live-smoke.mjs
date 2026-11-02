@@ -1,10 +1,11 @@
 /**
  * Real /courier smoke (TC-712 G7).
  *
- * Signs a brand-new throwaway OpenKey account (email OTP through a public
- * Mailinator inbox) into the candidate /courier view, served at the production
+ * Signs a brand-new throwaway OpenKey account (email OTP through a private
+ * mail.tm inbox made for the run, deleted at its end) into the candidate /courier view, served at the production
  * origin, against production OpenKey and the production owner node. No real
- * person's account or key is involved: every run creates a new inbox.
+ * person's account or key is involved: every run creates a new inbox. Every click
+ * in OpenKey's widget is real browser input, as a person's is.
  *
  *   node test/e2e-prod/courier-live-smoke.mjs
  *
@@ -25,8 +26,16 @@
  *     and reads back.
  *
  * Output: one JSON line (and COURIER_SMOKE_ARTIFACT). The inbox, OTP, address,
- * keys and message text never leave process memory. COURIER_SMOKE_SHOT_DIR
- * keeps screenshots.
+ * keys and message text never leave process memory. Refused TinyCloud/OpenKey
+ * responses are reported with their status, error code and a scrubbed body.
+ * COURIER_SMOKE_SHOT_DIR keeps screenshots.
+ *
+ * COURIER_SMOKE_DID_FILE (off by default) appends the run's throwaway owners, one
+ * "<owner DID> <inbox email>" line each, to a 0600 file under /var/tmp for the QA
+ * exclusion list; the path is checked before the run starts and again before the
+ * write, which also happens when the run is stopped (before its inboxes are deleted).
+ * Its contents are never printed or reported: the report says only
+ * `didFile: written n/m` or `refused`.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -37,24 +46,31 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
+import { APPROVE_NAME, refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
+const MAIL_TM = "https://api.mail.tm";
 const shotDir = process.env.COURIER_SMOKE_SHOT_DIR;
 const AGENTS = "agents";
 const PREFIX = "xyz.tinycloud.courier/";
-const newInbox = () => `tc-courier-smoke-${randomBytes(8).toString("hex")}`;
-let inbox = newInbox();
+/** The current identity's private inbox (mail.tm); every inbox made in the run is deleted at its end. */
+const mailboxes = [];
+let mailbox;
+/** The opt-in owner record (COURIER_SMOKE_DID_FILE), checked at start; undefined when off. */
+let didFile;
+let ownersRecorded = false;
+// Synchronous, once: the owners go only to the opt-in 0600 file; the report says just whether it was written.
+function recordOwners() {
+  if (didFile === undefined || ownersRecorded) return;
+  ownersRecorded = true;
+  try { report.didFile = `written ${writeDidFile(didFile, mailboxes.map((entry) => ({ did: entry.did, email: entry.address })))}/${mailboxes.length}`; }
+  catch { report.didFile = "refused"; }
+}
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const scrub = (value) => String(value)
-  .replace(/#\S*/g, "#<fragment>")
-  .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
-  .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
-  .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
-  .replace(/\b\d{6,8}\b/g, "<digits>");
 
 const EXPECTED_VIEW_GRANT = [
   "agents/capabilities tinycloud.capabilities/read",
@@ -68,13 +84,71 @@ let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
 
-async function mailinator(path) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(`${MAILINATOR}/${inbox}${path}`, { headers: { "user-agent": "tinycloud-courier-smoke" } }).catch(() => undefined);
-    if (response?.ok) { const text = await response.text(); if (text.trim()) return JSON.parse(text); }
-    await sleep(2_000 * attempt);
+/** One mail.tm call; retries a timeout, a transport error, 429 and 5xx. Resolves to the last response, or undefined. */
+async function mailTm(path, { method = "GET", body, token, attempts = 4 } = {}) {
+  let response;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    response = await fetch(`${MAIL_TM}${path}`, {
+      method,
+      signal: AbortSignal.timeout(15_000),
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }).catch(() => undefined);
+    if (response && response.status !== 429 && response.status < 500) return response;
+    if (attempt < attempts) await sleep(3_000 * attempt);
   }
-  return {};
+  return response;
+}
+/** A mail.tm call's JSON, or undefined (a refused, failed or non-JSON reply). */
+const mailTmJson = async (path, options) => {
+  const response = await mailTm(path, options);
+  if (!response?.ok) return undefined;
+  return response.json().catch(() => undefined);
+};
+
+async function inboxToken(entry) {
+  for (let attempt = 1; attempt <= 4 && !entry.token; attempt++) {
+    entry.token = (await mailTmJson("/token", { method: "POST", body: { address: entry.address, password: entry.password } }))?.token ?? "";
+    if (!entry.token && attempt < 4) await sleep(3_000 * attempt);
+  }
+  return entry.token;
+}
+
+/** A new private mail.tm inbox ("qa" in the name) for the next identity; its password stays in memory. */
+async function newMailbox() {
+  const domains = await mailTmJson("/domains");
+  const domain = (domains?.["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
+  if (!domain) throw new Error("mail.tm offered no active domain");
+  const next = { address: `qa-courier-smoke-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "" };
+  mailboxes.push(next);
+  const created = await mailTm("/accounts", { method: "POST", body: { address: next.address, password: next.password } });
+  if (created?.status === 201) next.id = (await created.json().catch(() => ({}))).id ?? "";
+  // A retried create whose first reply was lost answers 422 (the address exists): it is still ours, with our password.
+  else if (created?.status !== 422) throw new Error(`mail.tm refused the inbox (HTTP ${created?.status ?? "no reply"})`);
+  if (!(await inboxToken(next))) throw new Error("mail.tm gave no inbox token");
+  if (!next.id) next.id = (await mailTmJson("/me", { token: next.token }))?.id ?? "";
+  if (!next.id) throw new Error("mail.tm did not say which inbox was created");
+  mailbox = next;
+}
+
+let deleting;
+function deleteMailboxes() {
+  deleting ??= (async () => {
+    const results = [];
+    for (const entry of mailboxes) {
+      if (!entry.token) await inboxToken(entry).catch(() => "");
+      if (!entry.id && entry.token) entry.id = (await mailTmJson("/me", { token: entry.token }))?.id ?? "";
+      const response = entry.id && entry.token ? await mailTm(`/accounts/${entry.id}`, { method: "DELETE", token: entry.token }) : undefined;
+      results.push(response?.status === 204);
+    }
+    report.inboxesDeleted = `${results.filter(Boolean).length}/${mailboxes.length}`;
+  })().catch(() => { report.inboxesDeleted = `unknown/${mailboxes.length}`; });
+  return deleting;
+}
+// A stopped run (Ctrl-C, kill) does not reach `finally`: still record the owners (first, while the
+// accounts are known), then delete the inboxes.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, () => { recordOwners(); void deleteMailboxes().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
 }
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
@@ -82,16 +156,20 @@ const usedMail = new Set();
 async function openKeyOtp(timeout = 150_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id)).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
+    // A failed or unreadable poll is retried until the deadline.
+    const list = await mailTmJson("/messages", { token: mailbox.token, attempts: 2 });
+    const codeMail = (list?.["hydra:member"] ?? []).filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id))
+      .sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
     for (const message of codeMail) {
-      const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
+      const full = await mailTmJson(`/messages/${message.id}`, { token: mailbox.token, attempts: 2 });
+      if (!full) continue;
+      const body = `${full.text ?? ""} ${[].concat(full.html ?? []).join(" ")}`.replace(/<[^>]+>/g, " ");
       const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
       if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
     }
     await sleep(4_000);
   }
-  throw new Error("no OpenKey code arrived in the Mailinator inbox");
+  throw new Error("no OpenKey code arrived in the test inbox");
 }
 
 const frameAt = (page, path) => page.frames().find((frame) => frame.url().startsWith(`${OPENKEY}${path}`));
@@ -104,11 +182,61 @@ async function until(probe, timeout, what) {
   }
   throw new Error(`timed out waiting for ${what}`);
 }
-const clickButton = (frame, label) => frame.evaluate((text) => {
-  const button = [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled);
-  button?.click();
-  return button !== undefined;
-}, label);
+// Every click in an OpenKey frame is real browser input (Puppeteer's element click), never a
+// script-made click: OpenKey ignores script-made clicks on a framed approval.
+async function clickHandle(handle) {
+  try {
+    const button = handle.asElement();
+    if (!button) return false;
+    await button.click();
+    return true;
+  } finally {
+    await handle.dispose();
+  }
+}
+const clickButton = async (frame, label) => clickHandle(await frame.evaluateHandle((text) =>
+  [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null, label));
+// The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
+// first), found by role and position, and only if its name is one of the approval's labels
+// (APPROVE_NAME: ready or signing). Anything else (Cancel, a copy button, an extra button) is "not
+// found", so the smoke keeps polling instead of clicking it, and the report lists each rejected
+// label once. Without a dialog: the button named Approve or Approve exact bytes. The pick and its
+// name check are one in-page read, and the element clicked (real browser input) is the one checked.
+const rejectedLabels = new Set();
+const clickApprove = async (frame) => {
+  const result = await frame.evaluateHandle((approveName) => {
+    const named = new RegExp(approveName);
+    const visible = (element) => element.getClientRects().length > 0;
+    const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+    const button = dialog
+      ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
+      : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
+    const name = button?.innerText.trim() ?? "";
+    if (button && !named.test(name)) return { button: null, rejected: name };
+    return { button: button && !button.disabled ? button : null, rejected: "" };
+  }, APPROVE_NAME.source);
+  try {
+    const rejected = await (await result.getProperty("rejected")).jsonValue();
+    if (rejected && rejectedLabels.size < 5) {
+      rejectedLabels.add(scrub(rejected).slice(0, 40));
+      report.approveLabelsRejected = [...rejectedLabels];
+    }
+    return await clickHandle(await result.getProperty("button"));
+  } finally {
+    await result.dispose();
+  }
+};
+// A click counts only once the approval took it: the review is gone, or its primary button (the
+// dialog's last button, or without a dialog the button named Approve) is gone, disabled or signing.
+// A click at the button's coordinates that something else swallowed does not; nor does a failed read.
+const approvalTaken = (frame) => frame.evaluate(() => {
+  const visible = (element) => element.getClientRects().length > 0;
+  const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+  const button = dialog
+    ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
+    : [...document.querySelectorAll("button")].filter(visible).find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
+  return !button || button.disabled || button.innerText.trim() === "Signing…";
+}).catch(() => false);
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -149,7 +277,7 @@ async function drive(page, done, counter, timeout = 240_000) {
     if (connect !== undefined && await clickButton(connect, "Continue with email").catch(() => false)) {
       setStage("openkey-email");
       const field = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
-      await field.type(`${inbox}@mailinator.com`);
+      await field.type(mailbox.address);
       await until(() => clickButton(connect, "Send code"), 10_000, "Send code");
       setStage("openkey-otp");
       const otp = await openKeyOtp();
@@ -163,19 +291,30 @@ async function drive(page, done, counter, timeout = 240_000) {
     const sign = frameAt(page, "/widget/embed/sign");
     if (sign !== undefined) {
       const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
-      for (const message of messages) if (!signedMessages.includes(message)) signedMessages.push(message);
-      if (await clickButton(sign, "Approve").catch(() => false)) {
-        report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
-        const message = messages.at(-1) ?? "";
-        let kind;
-        if (counter !== "seedSignIn") {
-          assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
-          kind = "courier-session";
+      for (const message of messages) {
+        if (signedMessages.includes(message)) continue;
+        signedMessages.push(message);
+        // The identity's owner, for the opt-in DID file only (never printed or reported).
+        if (mailbox !== undefined && mailbox.did === undefined) mailbox.did = didFromSiwe(message);
+      }
+      if (await clickApprove(sign).catch(() => false)) {
+        const taken = await until(async () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached() || await approvalTaken(sign), 5_000, "the approval to take the click").catch(() => false);
+        if (!taken) {
+          // Not counted: the next pass clicks again.
+          report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
         } else {
-          kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
+          report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
+          const message = messages.at(-1) ?? "";
+          let kind;
+          if (counter !== "seedSignIn") {
+            assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
+            kind = "courier-session";
+          } else {
+            kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
+          }
+          (report.approvalClicks[counter] ??= []).push(kind);
+          await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
         }
-        (report.approvalClicks[counter] ??= []).push(kind);
-        await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
     if (await page.evaluate(done).catch(() => false)) return;
@@ -194,6 +333,9 @@ const panelText = (page) => page.evaluate(() => (document.querySelector(".cr-pan
 const temporary = mkdtempSync(join(tmpdir(), "courier-smoke-"));
 let browser; let server;
 try {
+  // Checked before anything touches production: a bad path stops the run here.
+  setStage("options");
+  didFile = didFileTarget();
   if (shotDir !== undefined) mkdirSync(shotDir, { recursive: true });
   setStage("build");
   const dist = join(temporary, "dist");
@@ -217,11 +359,13 @@ try {
     await installSignCapture(page);
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
-    page.on("response", (response) => {
+    page.on("response", async (response) => {
       const url = new URL(response.url());
       if (response.status() >= 400 && /tinycloud|openkey/.test(url.origin)) {
         const path = url.pathname.startsWith("/v1/locations/") ? "/v1/locations/<owner-did>" : scrub(url.pathname).slice(0, 100);
-        (report.failedResponses ??= []).push({ method: response.request().method(), host: url.host, path, status: response.status() });
+        const entry = { method: response.request().method(), host: url.host, path, status: response.status() };
+        (report.failedResponses ??= []).push(entry);
+        Object.assign(entry, refusal(await response.text().catch(() => "")));
       }
     });
     await page.goto(`${SHARE}${path}`, { waitUntil: "domcontentloaded", timeout: 90_000 });
@@ -244,12 +388,15 @@ try {
   };
 
   // Fresh identity: signing in reads an absent space, and must not create it.
+  setStage("inbox");
+  await newMailbox();
   setStage("view-fresh");
   const freshStart = Date.now();
   const { page: fresh, grant: freshGrant } = await signInView("freshViewSignIn");
   report.timingsMs.firstSignIn = since(freshStart);
   report.recap = freshGrant;
-  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null) };
+  const freshFailure = await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null);
+  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: freshFailure === null ? null : scrub(freshFailure).slice(0, 200) };
   assert.equal(report.fresh.signInFailure, null);
   assert.match(report.fresh.panel, /No Courier space yet\./);
   assert.ok(report.fresh.panel.includes("Run tc courier init once on your machine, then reload this page."));
@@ -257,7 +404,8 @@ try {
   await context.close();
 
   // Separate identity/context: test tooling creates an existing mailbox before the view signs in.
-  inbox = newInbox();
+  setStage("inbox");
+  await newMailbox();
   usedMail.clear();
   context = await browser.createBrowserContext();
 
@@ -352,6 +500,8 @@ try {
   if (shotDir !== undefined && last !== undefined) await last.screenshot({ path: join(shotDir, "failure.png") }).catch(() => undefined);
 } finally {
   report.timingsMs.total = since();
+  recordOwners();
+  await deleteMailboxes();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });
