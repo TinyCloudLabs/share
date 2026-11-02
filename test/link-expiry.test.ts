@@ -6,6 +6,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-s
 import { mountShareComposer } from "../src/share/composer.js";
 import { publishLink } from "../src/short-links/publish.js";
 import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, sealedMaterial, signWithIssuer } from "./fixtures/link-material.js";
+import { pathBoundKeys } from "./fixtures/path-bound-keys.js";
 
 vi.mock("../src/email-share/config.js", () => ({
   loadSharePublicConfig: async () => ({ shareOrigin: "https://share.tinycloud.xyz", registryOrigin: "https://registry.example", credentialsOrigin: "https://witness.example" }),
@@ -66,7 +67,7 @@ function owner(registered: { policyExpiresAt?: string | undefined }): ShareTinyC
     activeNodeIdentity: async () => ({ origin: "https://node.example.invalid", nodeDid: NODE_DID }),
     publishActiveNodeLocation: async () => undefined,
     signSessionBytes: signWithIssuer,
-    encryption: { encryptToNetwork: async (network: string) => ({ ok: true, data: { v: 1, networkId: network, alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AAAA", nonce: "AAAA" } }) },
+    keys: pathBoundKeys(),
     kvForSpace: () => ({ put: async () => ({ ok: true }) }),
     createUnifiedOwnerRoot: async (input: { audienceDid: string; role: string; policyId: string; policyCid: string; nodeAudience: string; notBefore: Date; expiresAt: Date; capabilities: { kind: string; resource: string; selector: string }[] }) => {
       const kv = input.capabilities.find((capability) => capability.kind === "kv")!;

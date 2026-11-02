@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 import { ISSUER_DID, mockLinks, signWithIssuer } from "./fixtures/link-material.js";
+import { pathBoundKeys } from "./fixtures/path-bound-keys.js";
 
 // The owner-share path runs for real; only the SDK publish call, the public
 // config, the Node's delivery authorization and the OpenCredentials request
@@ -58,13 +59,13 @@ function owner() {
     return { request: { recipient: input.recipientEmail }, admission: { nonce: input.idempotencyKey, issuedAt } };
   });
   const put = vi.fn(async () => ({ ok: true }));
-  const encryptToNetwork = vi.fn(async () => ({ ok: true, data: { v: 1, networkId: "urn:tinycloud:encryption:owner:default", alg: "x25519-aes256gcm/v1", keyVersion: 1, encryptedSymmetricKey: "wrapped", encryptedSymmetricKeyHash: "a".repeat(64), ciphertext: "AA" } }));
+  const encrypt = vi.fn(pathBoundKeys().encrypt);
   const tinycloud = {
     spaceId: "tinycloud:pkh:eip155:1:0x1234567890abcdef1234567890abcdef12345678:applications",
     credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
-    encryption: { encryptToNetwork },
+    keys: { createKey: pathBoundKeys().createKey, encrypt },
     kvForSpace: () => ({ put }),
     signSessionBytes: signWithIssuer,
     createUnifiedOwnerRoot: vi.fn(),
@@ -73,9 +74,9 @@ function owner() {
   } as unknown as ShareTinyCloud;
   const root = document.createElement("div");
   document.body.append(root);
-  mountShareComposer(root, { fetchFn: mockLinks().fetchFn, openKeyAddress: "0x1234567890abcdef", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
+  mountShareComposer(root, { fetchFn: mockLinks().fetchFn, openKeyAddress: "0x1234567890abcdef1234567890abcdef12345678", origin: "https://share.tinycloud.xyz", onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud });
   const status = () => root.querySelector(".notification-status")?.textContent;
-  return { root, authorizeShareDeliveryV3, status, encryptToNetwork, put };
+  return { root, authorizeShareDeliveryV3, status, encrypt, put };
 }
 
 async function create(root: HTMLElement, kind: "exactEmail" | "emailDomain", recipient: string, delivery?: string, rejected = false): Promise<HTMLButtonElement> {
@@ -123,10 +124,10 @@ describe("TC-530 owner delivery", () => {
   });
 
   it.each(["ops#1@example.com", "sales&ops@example.com", "a=b@example.com", "user@example.xn--p1ai", "K@example.com"])("rejects %s with the real SDK before encrypting or uploading", async (address) => {
-    const { root, encryptToNetwork, put } = owner();
+    const { root, encrypt, put } = owner();
     await create(root, "exactEmail", address, undefined, true);
     expect(prepareAddressedShare).toHaveBeenCalled();
-    expect(encryptToNetwork).not.toHaveBeenCalled();
+    expect(encrypt).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
     expect(state.published).toHaveLength(0);
   });
@@ -142,20 +143,20 @@ describe("TC-530 owner delivery", () => {
 
   it("uses the existing composer error path when SDK preflight throws", async () => {
     vi.mocked(prepareAddressedShare).mockImplementationOnce(() => { throw new Error("preflight refused"); });
-    const { root, encryptToNetwork, put } = owner();
+    const { root, encrypt, put } = owner();
     await create(root, "exactEmail", "reader@example.com", undefined, true);
-    expect(encryptToNetwork).not.toHaveBeenCalled();
+    expect(encrypt).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
     expect(state.published).toHaveLength(0);
   });
 
   it.each(["exactEmail", "emailDomain"] as const)("prepares %s before encryption and passes the same request and SDK commitment to publish", async (kind) => {
-    const { root, encryptToNetwork, put } = owner();
+    const { root, encrypt, put } = owner();
     await create(root, kind, kind === "exactEmail" ? "reader@example.com" : "example.com", "reader@example.com");
     const preflight = vi.mocked(prepareAddressedShare);
     expect(preflight).toHaveBeenCalledTimes(1);
-    expect(preflight.mock.invocationCallOrder[0]).toBeLessThan(encryptToNetwork.mock.invocationCallOrder[0]!);
-    expect(encryptToNetwork.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]!);
+    expect(preflight.mock.invocationCallOrder[0]).toBeLessThan(encrypt.mock.invocationCallOrder[0]!);
+    expect(encrypt.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]!);
     expect(state.published[0]).toMatchObject(preflight.mock.calls[0]![0]);
     expect(state.published[0]!.credentialRequirement).toBe(preflight.mock.results[0]!.value.credentialRequirement);
   });

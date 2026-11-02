@@ -20,6 +20,7 @@ import {
   type ApprovalGuard,
 } from "../src/share/openkey-session.js";
 import { isSignInLabel } from "../src/share/sign-in-label.js";
+import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
 import { ManifestRejectedError, SDK_ACCOUNT_REGISTRY_RESOURCES, type ManifestScope } from "../src/share/manifest-policy.js";
 import { signInToCourier } from "../src/courier/session.ts";
 import { resetRevokeFlights, withWalletApproval } from "../src/share/revoke-flight.js";
@@ -687,7 +688,9 @@ describe("signInWithManifest refuses a manifest outside its scope: nothing signe
     await expect(signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG })).resolves.toBeDefined();
     // The library's decrypt grant is for the signed-in account's own network, not anyone's.
     const foreign = shareManifest(SENDER.address);
-    foreign.permissions = foreign.permissions!.map((entry) => entry.service === "tinycloud.encryption" ? { ...entry, path: ownerEncryptionNetwork(OTHER.address) } : entry);
+    // The share/ prefix row (option M) moves to the other account's checksummed prefix, the bare-network row to its bare network.
+    const otherPrefix = pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address: OTHER.address }) })[0]!.path;
+    foreign.permissions = foreign.permissions!.map((entry) => entry.service === "tinycloud.encryption" ? { ...entry, path: entry.path.endsWith("/share/") ? otherPrefix : ownerEncryptionNetwork(OTHER.address) } : entry);
     await expect(signInWithManifest({ manifest: () => foreign, ...SHARE_MANIFEST_SCOPE, config: CONFIG })).rejects.toMatchObject({ code: "path-not-allowed" });
   });
 

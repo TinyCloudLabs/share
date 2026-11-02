@@ -1,11 +1,10 @@
 import { armManualCopy, copyWithFallback, type ManualCopyHandle } from "./clipboard.js";
 import { canonicalArtifactPath, detectHtmlArtifact } from "../artifact/bundle.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
-import { MAX_SHARE_FILE_BYTES, ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
+import { MAX_SHARE_FILE_BYTES, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
-import { canonicalize, type ShareEnvelopeV3 } from "@tinycloud/share-envelope";
-import { sha256 } from "@noble/hashes/sha256";
-import { assertAddressedShareFits, historyRecordForPublishedShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
+import type { ShareEnvelopeV3 } from "@tinycloud/share-envelope";
+import { AddressedContentSourceError, assertAddressedShareFits, bindPathBoundContentSource, defaultEncryptionNetworkForOwner, encryptAddressedShareContent, historyRecordForPublishedShare, planPathBoundShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type EncryptedAddressedContent, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { failIfSpaceNotReady } from "./space-not-ready.js";
@@ -393,7 +392,8 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
     plaintextType = file.type.trim() || "application/octet-stream";
   }
   const byteLength = plaintext.byteLength;
-  const encryptionNetwork = ownerEncryptionNetwork(options.openKeyAddress);
+  const encryptionNetwork = defaultEncryptionNetworkForOwner({ address: options.openKeyAddress });
+  const plan = planPathBoundShare({ shareId, encryptionNetwork });
   // Everything the sealed envelope is built from that the sender controls, fixed before the first write.
   const publishInput = {
     shareId, shareOrigin: config.shareOrigin, nodeOrigin: node.origin, nodeAudience: node.nodeAudience, enforcerDid: node.enforcerDid, spaceId,
@@ -416,23 +416,20 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   // It is published after the size check, so a refused share writes nothing, and before content
   // storage, so a registry failure cannot leave an orphaned object.
   await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
-  const encrypted = await tinycloud.encryption.encryptToNetwork(encryptionNetwork, plaintext, { metadata: { contentType: plaintextType } });
-  plaintext.fill(0);
-  if (!encrypted.ok) throw fail("upload", "owner file encryption was rejected");
-  const storedBytes = new TextEncoder().encode(canonicalize(encrypted.data));
-  const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, storedBytes, { contentType: "application/vnd.tinycloud.encrypted-envelope+json" });
+  // The share's own key (`share/<shareId>`): the SDK creates it (the sign-in grant covers it, no prompt), encrypts under it and returns the exact bytes to store.
+  let encrypted: EncryptedAddressedContent;
+  try {
+    encrypted = await encryptAddressedShareContent({ plan, keys: tinycloud.keys, plaintext, metadata: { contentType: plaintextType } });
+  } catch (error) {
+    if (error instanceof AddressedContentSourceError && error.code === "key-not-authorized") throw fail("shareKey", "owner share key was not authorized");
+    throw fail("upload", "owner file encryption was rejected");
+  } finally {
+    plaintext.fill(0);
+  }
+  const storedContent = await tinycloud.kvForSpace(spaceId).put(resourcePath, encrypted.storedBytes, { contentType: "application/vnd.tinycloud.encrypted-envelope+json" });
   failIfSpaceNotReady(storedContent);
   if (!storedContent.ok) throw fail("upload", "encrypted owner file upload was rejected");
-  const unifiedSource = {
-    shareId,
-    kvResource: `${spaceId}/kv/${resourcePath}`,
-    selector: resourceKind,
-    encryptionNetwork: encrypted.data.networkId,
-    encryptedSymmetricKeyDigestHex: encrypted.data.encryptedSymmetricKeyHash,
-    keyVersion: encrypted.data.keyVersion,
-    mode: "immutable" as const,
-    initialCiphertextDigestHex: [...sha256(storedBytes)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-  };
+  const unifiedSource = bindPathBoundContentSource({ plan, envelope: encrypted.envelope, storedBytes: encrypted.storedBytes, kvResource: `${spaceId}/kv/${resourcePath}`, selector: resourceKind });
   let deliveryMaterial: PublishedShareDeliveryMaterial | undefined;
   const published = await publishAddressedShare({
     ...publishInput, contentSource: unifiedSource, apiOrigin: linksApiOrigin(),

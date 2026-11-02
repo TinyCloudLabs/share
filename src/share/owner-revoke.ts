@@ -1,6 +1,23 @@
 import type { AccountDelegationRecord } from "@tinycloud/sdk-core";
-import type { SenderShareRecord } from "@tinycloud/share-sdk";
+import { defaultEncryptionNetworkForOwner, planPathBoundShare, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { ownerEncryptionNetwork, SHARE_APPLICATION_PREFIX, SHARE_APPLICATION_SPACE, type ShareTinyCloud } from "./openkey-session.js";
+
+/** `<network>/share/<shareId>` for this account (the network's address is case-insensitive, the share id is not), named by the SDK; undefined for an id the SDK would not plan (an older or imported record). */
+function ownKeyResource(shareId: string, address: string): string | undefined {
+  try {
+    return planPathBoundShare({ shareId, encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }).keyResource;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `resource` is `ownKey`: the network part compared without case, the `/share/<id>` tail exactly. */
+function isOwnKey(resource: string, ownKey: string): boolean {
+  const marker = "/share/";
+  const at = resource.indexOf(marker);
+  const ownAt = ownKey.indexOf(marker);
+  return at >= 0 && ownAt >= 0 && resource.slice(0, at).toLowerCase() === ownKey.slice(0, ownAt).toLowerCase() && resource.slice(at) === ownKey.slice(ownAt);
+}
 
 /**
  * TC-721. Revoking a share with the owner's wallet when the session that
@@ -39,16 +56,19 @@ export function parseOwnedSpace(spaceId: string): { readonly address: string; re
 
 /**
  * Every resource of the listed delegation must be this share's own object
- * (`<space>/kv/<record path>`) or the signed-in account's own encryption
- * network, and at least one must be the object. A session delegation, a
- * delegation that also reaches other data, and another share's root all fail.
+ * (`<space>/kv/<record path>`), the signed-in account's own encryption
+ * network (a share made before the key path), or this share's own key
+ * (`<network>/share/<shareId>`, as the SDK names it), and at least one must
+ * be the object. A session delegation, a delegation that also reaches other
+ * data, and another share's root all fail.
  */
 function grantsOnlyThisShare(row: AccountDelegationRecord, record: SenderShareRecord, address: string): boolean {
   const space = record.target.spaceId.toLowerCase();
   const network = ownerEncryptionNetwork(address).toLowerCase();
+  const ownKey = ownKeyResource(record.shareId, address);
   let objects = 0;
   for (const entry of row.resources) {
-    if (entry.resource.toLowerCase() === network) continue;
+    if (entry.resource.toLowerCase() === network || (ownKey !== undefined && isOwnKey(entry.resource, ownKey))) continue;
     const marker = entry.resource.indexOf("/kv/");
     if (marker < 0 || entry.resource.slice(0, marker).toLowerCase() !== space) return false;
     const path = entry.resource.slice(marker + "/kv/".length);

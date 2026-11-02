@@ -5,11 +5,12 @@
 // fixtures/share-receiver-world.ts). The receiving side is real: the invitation, the owner/node binding, the mailbox code through
 // the SDK's own element, the credential, the policy session, and the decrypt. A share opens only when the digest its owner
 // registered is the one the SDK computes for that kind of share.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import legacyWorlds from "./fixtures/legacy-share-worlds.json";
 import { createShareReceiverClient } from "../src/share/receiver.js";
 import type { SharePublicConfig } from "../src/email-share/config.js";
 import { makeWitness } from "./fixtures/opencredentials-witness/witness-stub.mjs";
-import { buildShareReceiverWorld, NODE_ORIGIN, REGISTRY_ORIGIN, SHARE_ORIGIN, WITNESS_ORIGIN, type ShareKind } from "./fixtures/share-receiver-world.js";
+import { buildRecordedLegacyWorld, buildShareReceiverWorld, NODE_ORIGIN, REGISTRY_ORIGIN, SHARE_ORIGIN, WITNESS_ORIGIN, type ShareKind } from "./fixtures/share-receiver-world.js";
 
 const CONFIG: SharePublicConfig = {
   version: "tinycloud.share/config-v2", shareOrigin: SHARE_ORIGIN, senderBootstrapNodeOrigin: NODE_ORIGIN,
@@ -22,7 +23,13 @@ const OTP = "12345678";
 const witness = makeWitness({ code: OTP });
 const PLAINTEXT = "# Quarterly notes\n\nÜber-secret, byte for byte.\n";
 
+// The recorded older shares verify only near the time they were made (their roots live at most 31 days), so the whole file runs at that time.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"], now: legacyWorlds.legacy.recordedAtMs + 86_400_000 });
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
   sessionStorage.clear();
@@ -43,8 +50,13 @@ async function typeMailboxCode(mount: HTMLElement, finished: () => boolean): Pro
   if (submit !== null && submit !== undefined && !submit.disabled) submit.click();
 }
 
-async function open(kind: ShareKind) {
-  const world = await buildShareReceiverWorld({ kind, plaintext: PLAINTEXT, witness });
+type RecordedKind = "legacy" | "legacy-raw-digest";
+
+async function open(kind: ShareKind | RecordedKind) {
+  // An older share has no key path: the strict publisher cannot build one, so it is a recorded fixture, valid near the time it was recorded.
+  const world = kind === "legacy" || kind === "legacy-raw-digest"
+    ? await buildRecordedLegacyWorld({ kind, witness })
+    : await buildShareReceiverWorld({ kind, plaintext: PLAINTEXT, witness });
   vi.stubGlobal("fetch", world.fetchFn);
   const tinycloud = await createShareReceiverClient(CONFIG);
   const mount = document.createElement("div");
@@ -74,7 +86,7 @@ describe("the viewer's receive path opens a share only under the digest rule for
     expect(world.decryptRequests()).toBe(1);
   });
 
-  it.each<[string, ShareKind]>([
+  it.each<[string, ShareKind | RecordedKind]>([
     ["a path-bound share whose registered digest is not its key's", "path-bound-tampered-digest"],
     ["a path-bound share that registered the canonical hash", "path-bound-canonical-digest"],
     ["an older share that registered the raw digest", "legacy-raw-digest"],
