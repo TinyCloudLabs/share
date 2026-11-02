@@ -49,6 +49,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
 import { clickApprove, signatureMismatch, signaturesFor, signedSince, watchSignatures } from "./approval-click.mjs";
+import { bodySandboxOk } from "./body-frame.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
@@ -357,7 +358,11 @@ try {
   await sleep(800);
   const thread = await view.evaluate(() => ({ messages: document.querySelectorAll(".cr-message").length, tasks: document.querySelectorAll(".cr-task").length, state: document.querySelector(".cr-state")?.textContent, sandbox: [...document.querySelectorAll(".cr-body iframe")].map((frame) => frame.getAttribute("sandbox")) }));
   assert.deepEqual({ messages: thread.messages, tasks: thread.tasks, state: thread.state }, { messages: 2, tasks: 1, state: "Waiting for you to approve" });
-  assert.ok(thread.sandbox.every((value) => value === ""), "every body is in a fully sandboxed frame");
+  // Every body frame keeps the body inert: a sandbox attribute present, granting at most link popups
+  // (no scripts, no same origin; popups are intended since 50d96ed). body-frame.mjs, unit tested.
+  report.bodySandboxes = thread.sandbox.map((value) => (value === null ? null : String(value).slice(0, 80)));
+  assert.ok(thread.sandbox.length >= 1, "at least one message body frame was checked");
+  assert.ok(thread.sandbox.every(bodySandboxOk), `every body frame is sandboxed with at most popups (got ${JSON.stringify(report.bodySandboxes)})`);
   await shot(view, "03-thread");
 
   setStage("approve");
