@@ -39,6 +39,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { APPROVE_NAME, refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
@@ -52,29 +53,6 @@ let mailbox;
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const scrub = (value) => String(value)
-  .replace(/#\S*/g, "#<fragment>")
-  .replace(/(https?:\/\/[^\s"'?#]+)\?[^\s"']*/g, "$1<redacted>")
-  .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
-  .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
-  .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
-  .replace(/[A-Za-z0-9_-]{24,}/g, (match) => (/^[A-Z_]+$/.test(match) ? match : "<id>"))
-  .replace(/\b\d{6,8}\b/g, "<digits>");
-
-// A refused response, for the report: its error code and a scrubbed body.
-// Values under token, secret or authorization keys are dropped before scrubbing.
-const SENSITIVE_KEY = /token|secret|password|otp|signature|delegation|authorization|cookie|jwt|session/i;
-function refusal(text) {
-  let body;
-  try { body = JSON.parse(text); } catch { return { body: scrub(text).slice(0, 300) }; }
-  const strip = (value, depth = 0) => {
-    if (depth > 6 || value === null || typeof value !== "object") return value;
-    if (Array.isArray(value)) return value.map((item) => strip(item, depth + 1));
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? "<redacted>" : strip(item, depth + 1)]));
-  };
-  const code = [body?.code, body?.error?.code, typeof body?.error === "string" ? body.error : undefined].find((item) => typeof item === "string");
-  return { ...(code ? { code: scrub(code).slice(0, 80) } : {}), body: scrub(JSON.stringify(strip(body))).slice(0, 300) };
-}
 
 const EXPECTED_VIEW_GRANT = [
   "agents/capabilities tinycloud.capabilities/read",
@@ -88,42 +66,70 @@ let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
 
-async function mailTm(path, { method = "GET", body, token } = {}) {
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const response = await fetch(`${MAIL_TM}${path}`, {
+/** One mail.tm call; retries a timeout, a transport error, 429 and 5xx. Resolves to the last response, or undefined. */
+async function mailTm(path, { method = "GET", body, token, attempts = 4 } = {}) {
+  let response;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    response = await fetch(`${MAIL_TM}${path}`, {
       method,
+      signal: AbortSignal.timeout(15_000),
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     }).catch(() => undefined);
     if (response && response.status !== 429 && response.status < 500) return response;
-    await sleep(3_000 * attempt);
+    if (attempt < attempts) await sleep(3_000 * attempt);
   }
-  throw new Error(`mail.tm ${method} ${path.split("/")[1]} kept failing`);
+  return response;
+}
+/** A mail.tm call's JSON, or undefined (a refused, failed or non-JSON reply). */
+const mailTmJson = async (path, options) => {
+  const response = await mailTm(path, options);
+  if (!response?.ok) return undefined;
+  return response.json().catch(() => undefined);
+};
+
+async function inboxToken(entry) {
+  for (let attempt = 1; attempt <= 4 && !entry.token; attempt++) {
+    entry.token = (await mailTmJson("/token", { method: "POST", body: { address: entry.address, password: entry.password } }))?.token ?? "";
+    if (!entry.token && attempt < 4) await sleep(3_000 * attempt);
+  }
+  return entry.token;
 }
 
 /** A new private mail.tm inbox ("qa" in the name) for the next identity; its password stays in memory. */
 async function newMailbox() {
-  const domains = await (await mailTm("/domains")).json();
-  const domain = (domains["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
+  const domains = await mailTmJson("/domains");
+  const domain = (domains?.["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
   if (!domain) throw new Error("mail.tm offered no active domain");
   const next = { address: `qa-courier-smoke-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "" };
-  const created = await mailTm("/accounts", { method: "POST", body: { address: next.address, password: next.password } });
-  if (created.status !== 201) throw new Error(`mail.tm refused the inbox (HTTP ${created.status})`);
-  next.id = (await created.json()).id;
   mailboxes.push(next);
-  next.token = (await (await mailTm("/token", { method: "POST", body: { address: next.address, password: next.password } })).json()).token;
-  if (!next.token) throw new Error("mail.tm gave no inbox token");
+  const created = await mailTm("/accounts", { method: "POST", body: { address: next.address, password: next.password } });
+  if (created?.status === 201) next.id = (await created.json().catch(() => ({}))).id ?? "";
+  // A retried create whose first reply was lost answers 422 (the address exists): it is still ours, with our password.
+  else if (created?.status !== 422) throw new Error(`mail.tm refused the inbox (HTTP ${created?.status ?? "no reply"})`);
+  if (!(await inboxToken(next))) throw new Error("mail.tm gave no inbox token");
+  if (!next.id) next.id = (await mailTmJson("/me", { token: next.token }))?.id ?? "";
+  if (!next.id) throw new Error("mail.tm did not say which inbox was created");
   mailbox = next;
 }
 
-async function deleteMailboxes() {
-  const results = [];
-  for (const entry of mailboxes) {
-    if (!entry.token) { results.push(false); continue; }
-    const response = await mailTm(`/accounts/${entry.id}`, { method: "DELETE", token: entry.token }).catch(() => undefined);
-    results.push(response?.status === 204);
-  }
-  report.inboxesDeleted = `${results.filter(Boolean).length}/${mailboxes.length}`;
+let deleting;
+function deleteMailboxes() {
+  deleting ??= (async () => {
+    const results = [];
+    for (const entry of mailboxes) {
+      if (!entry.token) await inboxToken(entry).catch(() => "");
+      if (!entry.id && entry.token) entry.id = (await mailTmJson("/me", { token: entry.token }))?.id ?? "";
+      const response = entry.id && entry.token ? await mailTm(`/accounts/${entry.id}`, { method: "DELETE", token: entry.token }) : undefined;
+      results.push(response?.status === 204);
+    }
+    report.inboxesDeleted = `${results.filter(Boolean).length}/${mailboxes.length}`;
+  })().catch(() => { report.inboxesDeleted = `unknown/${mailboxes.length}`; });
+  return deleting;
+}
+// A stopped run (Ctrl-C, kill) does not reach `finally`: still delete the inboxes.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.once(signal, () => { void deleteMailboxes().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
 }
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
@@ -131,11 +137,13 @@ const usedMail = new Set();
 async function openKeyOtp(timeout = 150_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const list = await (await mailTm("/messages", { token: mailbox.token })).json();
-    const codeMail = (list["hydra:member"] ?? []).filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id))
+    // A failed or unreadable poll is retried until the deadline.
+    const list = await mailTmJson("/messages", { token: mailbox.token, attempts: 2 });
+    const codeMail = (list?.["hydra:member"] ?? []).filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id))
       .sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
     for (const message of codeMail) {
-      const full = await (await mailTm(`/messages/${message.id}`, { token: mailbox.token })).json();
+      const full = await mailTmJson(`/messages/${message.id}`, { token: mailbox.token, attempts: 2 });
+      if (!full) continue;
       const body = `${full.text ?? ""} ${[].concat(full.html ?? []).join(" ")}`.replace(/<[^>]+>/g, " ");
       const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
       if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
@@ -170,16 +178,19 @@ async function clickHandle(handle) {
 const clickButton = async (frame, label) => clickHandle(await frame.evaluateHandle((text) =>
   [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null, label));
 // The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
-// first), found by role and position so its label ("Approve", "Approve exact bytes", ...) is not
-// pinned. Without a dialog, the button named "Approve" or "Approve exact bytes".
-const clickApprove = async (frame) => clickHandle(await frame.evaluateHandle(() => {
+// first), found by role and position, and only if its name is one of the approval's labels
+// (APPROVE_NAME: ready or signing). Anything else (Cancel, a copy button, an extra button) is "not
+// found", so the smoke keeps polling instead of clicking it. Without a dialog: the button named
+// Approve or Approve exact bytes. The lookup is one in-page read; the click is real browser input.
+const clickApprove = async (frame) => clickHandle(await frame.evaluateHandle((approveName) => {
+  const named = new RegExp(approveName);
   const visible = (element) => element.getClientRects().length > 0;
   const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
   const button = dialog
     ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
     : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
-  return button && !button.disabled ? button : null;
-}));
+  return button && named.test(button.innerText.trim()) && !button.disabled ? button : null;
+}, APPROVE_NAME.source));
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
