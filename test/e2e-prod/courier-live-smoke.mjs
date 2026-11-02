@@ -29,6 +29,11 @@
  * keys and message text never leave process memory. Refused TinyCloud/OpenKey
  * responses are reported with their status, error code and a scrubbed body.
  * COURIER_SMOKE_SHOT_DIR keeps screenshots.
+ *
+ * COURIER_SMOKE_DID_FILE (off by default) appends the run's throwaway owners, one
+ * "<owner DID> <inbox email>" line each, to a 0600 file under /var/tmp for the QA
+ * exclusion list; the path is checked before the run starts. Its contents are never
+ * printed or reported: the report says only `didFile: written n/m` or `refused`.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -39,6 +44,7 @@ import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
 import { APPROVE_NAME, refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
@@ -257,7 +263,12 @@ async function drive(page, done, counter, timeout = 240_000) {
     const sign = frameAt(page, "/widget/embed/sign");
     if (sign !== undefined) {
       const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
-      for (const message of messages) if (!signedMessages.includes(message)) signedMessages.push(message);
+      for (const message of messages) {
+        if (signedMessages.includes(message)) continue;
+        signedMessages.push(message);
+        // The identity's owner, for the opt-in DID file only (never printed or reported).
+        if (mailbox !== undefined && mailbox.did === undefined) mailbox.did = didFromSiwe(message);
+      }
       if (await clickApprove(sign).catch(() => false)) {
         report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
         const message = messages.at(-1) ?? "";
@@ -286,8 +297,11 @@ const shot = async (page, name) => { if (shotDir !== undefined) await page.scree
 const panelText = (page) => page.evaluate(() => (document.querySelector(".cr-panel")?.textContent ?? "").replace(/\s+/g, " ").trim());
 
 const temporary = mkdtempSync(join(tmpdir(), "courier-smoke-"));
-let browser; let server;
+let browser; let server; let didFile;
 try {
+  // Checked before anything touches production: a bad path stops the run here.
+  setStage("options");
+  didFile = didFileTarget();
   if (shotDir !== undefined) mkdirSync(shotDir, { recursive: true });
   setStage("build");
   const dist = join(temporary, "dist");
@@ -451,6 +465,11 @@ try {
   if (shotDir !== undefined && last !== undefined) await last.screenshot({ path: join(shotDir, "failure.png") }).catch(() => undefined);
 } finally {
   report.timingsMs.total = since();
+  // The owners go only to the opt-in 0600 file; the report says just whether it was written.
+  if (didFile !== undefined) {
+    try { report.didFile = `written ${writeDidFile(didFile, mailboxes.map((entry) => ({ did: entry.did, email: entry.address })))}/${mailboxes.length}`; }
+    catch { report.didFile = "refused"; }
+  }
   await deleteMailboxes();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
