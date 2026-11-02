@@ -1,8 +1,8 @@
 import { copyWithFallback } from "./clipboard.js";
 import { importSenderHistoryRecord, SenderHistoryRepository, type SenderHistoryItem } from "./sender-history.js";
 import { takeWalletApprovalFailure, type OpenKeyShareSession, type ShareTinyCloud } from "./openkey-session.js";
-import { revokeShare, type SenderShareRecord } from "@tinycloud/share-sdk";
-import { getPolicyRootStatusV3, revokePolicyRootV3 } from "@tinycloud/sdk-core";
+import { revokeShare, ShareRevocationIncompleteError, type SenderShareRecord, type ShareRevocationResult } from "@tinycloud/share-sdk";
+import { revokePolicyRootV3 } from "@tinycloud/sdk-core";
 import { httpStatusOf, revokeFailureMessage, revokeOutcomeIsNeutral } from "./sender-failure.js";
 import { activeFlight, APPROVAL_WINDOW_MS, flightKey, RevokeFlight, withWalletApproval } from "./revoke-flight.js";
 import { verifyShareRootOnNode, type ShareRootKind } from "./owner-revoke.js";
@@ -293,49 +293,61 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     // The row holds display fields only; read the full record (with delivery material) when the owner confirms.
     const current = await options.history.records.get(shareId);
     if (current === undefined) throw new Error("share-not-found");
-    const result = await revokeShare({
-      record: current,
-      records: options.history.records,
-      adapter: {
-        revokeDelegation: async ({ delegationCid, record }) => {
-          await revokeWithOwnerWallet(record, delegationCid, "bearer", await options.tinycloud.activeNodeIdentity());
+    let result: ShareRevocationResult;
+    try {
+      result = await revokeShare({
+        record: current,
+        records: options.history.records,
+        adapter: {
+          revokeDelegation: async ({ delegationCid, record }) => {
+            await revokeWithOwnerWallet(record, delegationCid, "bearer", await options.tinycloud.activeNodeIdentity());
+          },
+          revokePolicyRoot: async (request) => {
+            const activeNode = await options.tinycloud.activeNodeIdentity();
+            // Sender history is encrypted client state, not authority. Bind
+            // its root identifiers to the currently authenticated owner node
+            // before signing a generic Policy/v3 revocation.
+            if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid) throw new Error("revoke-unbound-policy-root");
+            // Signed by an earlier session key of this sign-in's account: only the owner's wallet can revoke it now.
+            if (request.ownerDid !== options.tinycloud.credentialHolderDid) {
+              // One approval per Revoke. Every recipient request needs both
+              // roots, so revoking the enforcement root ends access; the
+              // policy root's audience is a keyless policy DID, so it stays
+              // live until it expires rather than cost a second approval.
+              if (request.targetRole === "policy-authority") return "left-live";
+              // The enforcement root has the policy root's delegator, resources and empty parents, so the node check is the same.
+              await revokeWithOwnerWallet(current, request.rootCid, "policy-root", activeNode);
+              return;
+            }
+            try {
+              await revokePolicyRootV3({
+                nodeOrigin: activeNode.origin,
+                rootCid: request.rootCid,
+                targetRole: request.targetRole,
+                ownerDid: options.tinycloud.credentialHolderDid,
+                issuerDid: options.tinycloud.credentialHolderDid,
+                nodeAudience: activeNode.nodeDid,
+                reason: "share revoked",
+                now: nodeReproducibleRevocationTime(),
+                sign: (digest) => options.tinycloud.signSessionBytes(digest),
+              });
+            } catch (caught) {
+              // TC-657. A retry after a lost response signs a new
+              // `revokedAt`; the Node answers 409 root-revocation-irreversible
+              // only when it already holds a revocation for this root.
+              if (httpStatusOf(caught) === 409 && caught instanceof Error && caught.message.endsWith(" - root-revocation-irreversible")) return;
+              throw caught;
+            }
+          },
         },
-        revokePolicyRoot: async (request) => {
-          const activeNode = await options.tinycloud.activeNodeIdentity();
-          // Sender history is encrypted client state, not authority. Bind
-          // its root identifiers to the currently authenticated owner node
-          // before signing a generic Policy/v3 revocation.
-          if (request.nodeOrigin !== activeNode.origin || request.nodeAudience !== activeNode.nodeDid) throw new Error("revoke-unbound-policy-root");
-          // Signed by an earlier session key of this sign-in's account: only the owner's wallet can revoke it now.
-          if (request.ownerDid !== options.tinycloud.credentialHolderDid) {
-            await revokeWithOwnerWallet(current, current.ownerDelegationCid, "policy-root", activeNode);
-            return;
-          }
-          try {
-            await revokePolicyRootV3({
-              nodeOrigin: activeNode.origin,
-              rootCid: request.rootCid,
-              targetRole: request.targetRole,
-              ownerDid: options.tinycloud.credentialHolderDid,
-              issuerDid: options.tinycloud.credentialHolderDid,
-              nodeAudience: activeNode.nodeDid,
-              reason: "share revoked",
-              now: nodeReproducibleRevocationTime(),
-              sign: (digest) => options.tinycloud.signSessionBytes(digest),
-            });
-          } catch (caught) {
-            // TC-657. A retry after a lost response signs a new
-            // `revokedAt`, and the Node, already holding the first
-            // revocation, answers 409 root-revocation-irreversible.
-            // Ask the Node whether the root is revoked before calling
-            // the revoke a failure.
-            if (httpStatusOf(caught) !== 409) throw caught;
-            const state = await getPolicyRootStatusV3({ nodeOrigin: activeNode.origin, rootCid: request.rootCid, expectedNodeAudience: activeNode.nodeDid }).catch(() => undefined);
-            if (state?.state !== "revoked") throw caught;
-          }
-        },
-      },
-    });
+      });
+    } catch (caught) {
+      if (!(caught instanceof ShareRevocationIncompleteError)) throw caught;
+      // A root was revoked, so recipient access has ended, but another failed: the record stays unrevoked so Revoke can finish it.
+      if (caught.revoked.length > 0) throw new Error("revoke-incomplete");
+      // Nothing was revoked: the root's own failure names the reason (a cancel, an expired approval, an HTTP status).
+      throw caught.failed[0]?.error ?? caught;
+    }
     if (result.state !== "revoked") throw new Error("revoke-unsupported");
     // Revoking a share does not touch its stored link; the link record expires with its life (contract 6.3).
   };

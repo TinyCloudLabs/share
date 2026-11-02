@@ -153,6 +153,7 @@ export function revokeFailureMessage(error: unknown): string {
     if (text === "revoke-approval-expired") return "The approval took longer than 60 seconds. The share is still active. Try again and approve within a minute.";
     if (text === "revoke-approval-wrong-account") return "The approval came from a different account than the one signed in. The share is still active. Approve with the signed-in account.";
     if (text === "share-not-found") return "This saved share is no longer in your library. Reload the page.";
+    if (text === "revoke-incomplete") return "Access to this share has ended, but Share couldn't finish revoking it. Try again.";
     if (text === "revoke-unsupported") return "This saved link has no revocation authority.";
     if (status === 401 || status === 403) return `TinyCloud refused the request (HTTP ${status}). The share is still active.`;
     if (status === 404) return "TinyCloud could not find this share (HTTP 404). Reload your library to check its status.";
