@@ -1,10 +1,11 @@
 /**
  * Real /courier smoke (TC-712 G7).
  *
- * Signs a brand-new throwaway OpenKey account (email OTP through a public
- * Mailinator inbox) into the candidate /courier view, served at the production
+ * Signs a brand-new throwaway OpenKey account (email OTP through a private
+ * mail.tm inbox made for the run, deleted at its end) into the candidate /courier view, served at the production
  * origin, against production OpenKey and the production owner node. No real
- * person's account or key is involved: every run creates a new inbox.
+ * person's account or key is involved: every run creates a new inbox. Every click
+ * in OpenKey's widget is real browser input, as a person's is.
  *
  *   node test/e2e-prod/courier-live-smoke.mjs
  *
@@ -25,8 +26,9 @@
  *     and reads back.
  *
  * Output: one JSON line (and COURIER_SMOKE_ARTIFACT). The inbox, OTP, address,
- * keys and message text never leave process memory. COURIER_SMOKE_SHOT_DIR
- * keeps screenshots.
+ * keys and message text never leave process memory. Refused TinyCloud/OpenKey
+ * responses are reported with their status, error code and a scrubbed body.
+ * COURIER_SMOKE_SHOT_DIR keeps screenshots.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -40,21 +42,39 @@ import { startCandidateServer } from "./candidate-server.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
+const MAIL_TM = "https://api.mail.tm";
 const shotDir = process.env.COURIER_SMOKE_SHOT_DIR;
 const AGENTS = "agents";
 const PREFIX = "xyz.tinycloud.courier/";
-const newInbox = () => `tc-courier-smoke-${randomBytes(8).toString("hex")}`;
-let inbox = newInbox();
+/** The current identity's private inbox (mail.tm); every inbox made in the run is deleted at its end. */
+const mailboxes = [];
+let mailbox;
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const scrub = (value) => String(value)
   .replace(/#\S*/g, "#<fragment>")
+  .replace(/(https?:\/\/[^\s"'?#]+)\?[^\s"']*/g, "$1<redacted>")
   .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
   .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
   .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
+  .replace(/[A-Za-z0-9_-]{24,}/g, (match) => (/^[A-Z_]+$/.test(match) ? match : "<id>"))
   .replace(/\b\d{6,8}\b/g, "<digits>");
+
+// A refused response, for the report: its error code and a scrubbed body.
+// Values under token, secret or authorization keys are dropped before scrubbing.
+const SENSITIVE_KEY = /token|secret|password|otp|signature|delegation|authorization|cookie|jwt|session/i;
+function refusal(text) {
+  let body;
+  try { body = JSON.parse(text); } catch { return { body: scrub(text).slice(0, 300) }; }
+  const strip = (value, depth = 0) => {
+    if (depth > 6 || value === null || typeof value !== "object") return value;
+    if (Array.isArray(value)) return value.map((item) => strip(item, depth + 1));
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? "<redacted>" : strip(item, depth + 1)]));
+  };
+  const code = [body?.code, body?.error?.code, typeof body?.error === "string" ? body.error : undefined].find((item) => typeof item === "string");
+  return { ...(code ? { code: scrub(code).slice(0, 80) } : {}), body: scrub(JSON.stringify(strip(body))).slice(0, 300) };
+}
 
 const EXPECTED_VIEW_GRANT = [
   "agents/capabilities tinycloud.capabilities/read",
@@ -68,13 +88,42 @@ let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
 
-async function mailinator(path) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(`${MAILINATOR}/${inbox}${path}`, { headers: { "user-agent": "tinycloud-courier-smoke" } }).catch(() => undefined);
-    if (response?.ok) { const text = await response.text(); if (text.trim()) return JSON.parse(text); }
-    await sleep(2_000 * attempt);
+async function mailTm(path, { method = "GET", body, token } = {}) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const response = await fetch(`${MAIL_TM}${path}`, {
+      method,
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }).catch(() => undefined);
+    if (response && response.status !== 429 && response.status < 500) return response;
+    await sleep(3_000 * attempt);
   }
-  return {};
+  throw new Error(`mail.tm ${method} ${path.split("/")[1]} kept failing`);
+}
+
+/** A new private mail.tm inbox ("qa" in the name) for the next identity; its password stays in memory. */
+async function newMailbox() {
+  const domains = await (await mailTm("/domains")).json();
+  const domain = (domains["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
+  if (!domain) throw new Error("mail.tm offered no active domain");
+  const next = { address: `qa-courier-smoke-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "" };
+  const created = await mailTm("/accounts", { method: "POST", body: { address: next.address, password: next.password } });
+  if (created.status !== 201) throw new Error(`mail.tm refused the inbox (HTTP ${created.status})`);
+  next.id = (await created.json()).id;
+  mailboxes.push(next);
+  next.token = (await (await mailTm("/token", { method: "POST", body: { address: next.address, password: next.password } })).json()).token;
+  if (!next.token) throw new Error("mail.tm gave no inbox token");
+  mailbox = next;
+}
+
+async function deleteMailboxes() {
+  const results = [];
+  for (const entry of mailboxes) {
+    if (!entry.token) { results.push(false); continue; }
+    const response = await mailTm(`/accounts/${entry.id}`, { method: "DELETE", token: entry.token }).catch(() => undefined);
+    results.push(response?.status === 204);
+  }
+  report.inboxesDeleted = `${results.filter(Boolean).length}/${mailboxes.length}`;
 }
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
@@ -82,16 +131,18 @@ const usedMail = new Set();
 async function openKeyOtp(timeout = 150_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id)).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
+    const list = await (await mailTm("/messages", { token: mailbox.token })).json();
+    const codeMail = (list["hydra:member"] ?? []).filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id))
+      .sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
     for (const message of codeMail) {
-      const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
+      const full = await (await mailTm(`/messages/${message.id}`, { token: mailbox.token })).json();
+      const body = `${full.text ?? ""} ${[].concat(full.html ?? []).join(" ")}`.replace(/<[^>]+>/g, " ");
       const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
       if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
     }
     await sleep(4_000);
   }
-  throw new Error("no OpenKey code arrived in the Mailinator inbox");
+  throw new Error("no OpenKey code arrived in the test inbox");
 }
 
 const frameAt = (page, path) => page.frames().find((frame) => frame.url().startsWith(`${OPENKEY}${path}`));
@@ -104,11 +155,31 @@ async function until(probe, timeout, what) {
   }
   throw new Error(`timed out waiting for ${what}`);
 }
-const clickButton = (frame, label) => frame.evaluate((text) => {
-  const button = [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled);
-  button?.click();
-  return button !== undefined;
-}, label);
+// Every click in an OpenKey frame is real browser input (Puppeteer's element click), never a
+// script-made click: OpenKey ignores script-made clicks on a framed approval.
+async function clickHandle(handle) {
+  try {
+    const button = handle.asElement();
+    if (!button) return false;
+    await button.click();
+    return true;
+  } finally {
+    await handle.dispose();
+  }
+}
+const clickButton = async (frame, label) => clickHandle(await frame.evaluateHandle((text) =>
+  [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null, label));
+// The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
+// first), found by role and position so its label ("Approve", "Approve exact bytes", ...) is not
+// pinned. Without a dialog, the button named "Approve" or "Approve exact bytes".
+const clickApprove = async (frame) => clickHandle(await frame.evaluateHandle(() => {
+  const visible = (element) => element.getClientRects().length > 0;
+  const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+  const button = dialog
+    ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
+    : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
+  return button && !button.disabled ? button : null;
+}));
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -149,7 +220,7 @@ async function drive(page, done, counter, timeout = 240_000) {
     if (connect !== undefined && await clickButton(connect, "Continue with email").catch(() => false)) {
       setStage("openkey-email");
       const field = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
-      await field.type(`${inbox}@mailinator.com`);
+      await field.type(mailbox.address);
       await until(() => clickButton(connect, "Send code"), 10_000, "Send code");
       setStage("openkey-otp");
       const otp = await openKeyOtp();
@@ -164,7 +235,7 @@ async function drive(page, done, counter, timeout = 240_000) {
     if (sign !== undefined) {
       const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
       for (const message of messages) if (!signedMessages.includes(message)) signedMessages.push(message);
-      if (await clickButton(sign, "Approve").catch(() => false)) {
+      if (await clickApprove(sign).catch(() => false)) {
         report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
         const message = messages.at(-1) ?? "";
         let kind;
@@ -217,11 +288,13 @@ try {
     await installSignCapture(page);
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
-    page.on("response", (response) => {
+    page.on("response", async (response) => {
       const url = new URL(response.url());
       if (response.status() >= 400 && /tinycloud|openkey/.test(url.origin)) {
         const path = url.pathname.startsWith("/v1/locations/") ? "/v1/locations/<owner-did>" : scrub(url.pathname).slice(0, 100);
-        (report.failedResponses ??= []).push({ method: response.request().method(), host: url.host, path, status: response.status() });
+        const entry = { method: response.request().method(), host: url.host, path, status: response.status() };
+        (report.failedResponses ??= []).push(entry);
+        Object.assign(entry, refusal(await response.text().catch(() => "")));
       }
     });
     await page.goto(`${SHARE}${path}`, { waitUntil: "domcontentloaded", timeout: 90_000 });
@@ -244,6 +317,8 @@ try {
   };
 
   // Fresh identity: signing in reads an absent space, and must not create it.
+  setStage("inbox");
+  await newMailbox();
   setStage("view-fresh");
   const freshStart = Date.now();
   const { page: fresh, grant: freshGrant } = await signInView("freshViewSignIn");
@@ -257,7 +332,8 @@ try {
   await context.close();
 
   // Separate identity/context: test tooling creates an existing mailbox before the view signs in.
-  inbox = newInbox();
+  setStage("inbox");
+  await newMailbox();
   usedMail.clear();
   context = await browser.createBrowserContext();
 
@@ -352,6 +428,7 @@ try {
   if (shotDir !== undefined && last !== undefined) await last.screenshot({ path: join(shotDir, "failure.png") }).catch(() => undefined);
 } finally {
   report.timingsMs.total = since();
+  await deleteMailboxes();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });
