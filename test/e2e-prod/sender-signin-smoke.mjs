@@ -27,6 +27,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { approvalTaken, boxMoved, clickPointHit } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { scrub } from "./smoke-redact.mjs";
@@ -125,14 +126,51 @@ async function clickButton(frame, label) {
   }
 }
 
+/** When each OpenKey review frame first appeared (for a dropped click's timing). */
+const reviewSeen = new WeakMap();
+
+/**
+ * Clicks OpenKey's Approve (real browser input) and reports whether the review took the click:
+ * it closed, or its Approve went disabled or "Signing…", within 5 s. A click that wasn't taken is
+ * not counted as a prompt; it is reported (`approveClicksNotTaken`, one `approveClicksDropped`
+ * line each: stage, timing, whether the button moved and what the click point hit) and clicked again.
+ */
+async function clickApprove(page, sign, counter) {
+  const handle = await sign.evaluateHandle(() => [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith("Approve") && !candidate.disabled) ?? null);
+  const button = handle.asElement();
+  if (!button) { await handle.dispose(); return false; }
+  try {
+    const boxBefore = await button.boundingBox().catch(() => null);
+    const hit = await button.evaluate(clickPointHit).catch(() => null);
+    const clickedAt = since();
+    // DOM .click() is untrusted; OpenKey refuses it inside an iframe.
+    await button.click();
+    const taken = await until(async () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached() || await sign.evaluate(approvalTaken).catch(() => false), 5_000, "the review to take the click").catch(() => false);
+    if (taken) return true;
+    await sleep(150);
+    const boxAfter = await button.boundingBox().catch(() => null);
+    report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
+    (report.approveClicksDropped ??= []).push({
+      during: counter, stage, atMs: clickedAt,
+      msSinceReview: reviewSeen.has(sign) ? clickedAt - reviewSeen.get(sign) : null,
+      buttonMovedPx: boxMoved(boxBefore, boxAfter),
+      clickPointOnButton: hit?.onButton ?? null, clickPointTag: hit?.tag ?? null, clickPointClasses: hit?.classes ?? null,
+    });
+    return false;
+  } finally {
+    await handle.dispose();
+  }
+}
+
 /** Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait. */
 async function approveUntil(page, done, counter, timeout) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const sign = frameAt(page, "/widget/embed/sign");
+    if (sign !== undefined && !reviewSeen.has(sign)) reviewSeen.set(sign, since());
     // What the sender was asked to grant, as OpenKey's review words it.
     const review = await sign?.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "") ?? "";
-    if (sign !== undefined && await clickButton(sign, "Approve").catch(() => false)) {
+    if (sign !== undefined && await clickApprove(page, sign, counter).catch(() => false)) {
       report.prompts[counter] += 1;
       (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
       await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);

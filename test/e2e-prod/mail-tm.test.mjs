@@ -64,6 +64,23 @@ test("seenMail lists the mail already there, and fails closed when the inbox can
   await assert.rejects(seenMail(adoptInbox({ address: "qa-unknown-000000000000@mail.example", password: "p" })), /could not be read/);
 });
 
+test("a 401 never marks an inbox made in this process as gone", async () => {
+  const inbox = await createInbox("share-smoke");
+  inbox.token = "";
+  fake.tokenRefusals = 1;
+  await assert.rejects(seenMail(inbox), /could not be read/);
+  assert.notEqual(inbox.gone, true);
+  assert.equal(fake.tokenRefusals, 0, "a refused token for an inbox made here is not retried as if transient");
+});
+
+test("an adopted inbox is gone only after two consecutive 401s; one refusal then a token is not gone", async () => {
+  const address = [...fake.accounts.keys()][0];
+  const inbox = adoptInbox({ address, password: fake.accounts.get(address).password });
+  fake.tokenRefusals = 1;
+  assert.ok((await seenMail(inbox)).size > 0);
+  assert.notEqual(inbox.gone, true);
+});
+
 test("deleteInboxes deletes every inbox made or adopted, once; an inbox mail.tm no longer knows counts as gone", async () => {
   adoptInbox({ address: "qa-deleted-earlier-000000000000@mail.example", password: "p" });
   const first = await deleteInboxes();
