@@ -159,3 +159,15 @@ test("an inbox file with looser permissions or other content is refused", () => 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("an aborted wait for mail stops polling and takes nothing", async () => {
+  const address = [...fake.accounts.keys()][0];
+  const inbox = adoptInbox({ address, password: fake.accounts.get(address).password });
+  fake.messages = [{ id: "m9", subject: "OpenKey code", createdAt: "2026-01-01T00:09:00Z", text: "verification code 999999" }];
+  const used = new Set();
+  const stop = new AbortController();
+  stop.abort(new Error("the wait for the code ended"));
+  await assert.rejects(waitForMail(inbox, { subject: /openkey/i, extract: openKeyCodeIn, used, timeout: 1_000, signal: stop.signal }), /the wait for the code ended/);
+  assert.equal(used.size, 0, "an aborted wait marks no mail used");
+  assert.equal(await waitForMail(inbox, { subject: /openkey/i, extract: openKeyCodeIn, used, timeout: 1_000 }), "999999", "the code is still there for the next wait");
+});
