@@ -1,7 +1,7 @@
 name: Sender sign-in smoke (real OpenKey)
 
-# TC-994. A brand-new throwaway OpenKey account (email OTP through a public
-# Mailinator inbox, generated per run) signs in to Share, creates a link-only
+# TC-994. A brand-new throwaway OpenKey account (email OTP through a private
+# mail.tm inbox, made per run and deleted at its end) signs in to Share, creates a link-only
 # share and opens it as a recipient, against production OpenKey and Node.
 # The joined gate fakes OpenKey; this check does not.
 #

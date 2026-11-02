@@ -1,8 +1,9 @@
 /**
  * Real sender sign-in smoke (TC-994).
  *
- * Signs a brand-new throwaway OpenKey account (email OTP through a public
- * Mailinator inbox) into Share, creates a link-only share and opens it as a
+ * Signs a brand-new throwaway OpenKey account (email OTP through a private
+ * mail.tm inbox made for the run and deleted at its end, also when the run is
+ * stopped) into Share, creates a link-only share and opens it as a
  * recipient. Everything is production: OpenKey, the owner Node, the registry.
  * Unlike the joined gate, nothing about OpenKey is faked.
  *
@@ -26,31 +27,29 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
+import { scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.SHARE_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
 const MAX_SIGNIN_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SIGNIN_PROMPTS ?? 2);
 const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1);
 // Share's failure copy (src/share/sender-failure.ts) ends a sign-in or a share.
 const FAILURE_COPY = /temporarily unavailable|couldn't reach tinycloud|could not be completed|went wrong|session expired|isn't set up|storage isn't ready|didn't go through|couldn't create/i;
 
-const inbox = `tc-share-smoke-${randomBytes(8).toString("hex")}`;
+let inbox;
 const nonce = `tc-share-smoke-${randomBytes(6).toString("hex")}`;
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-const scrub = (value) => String(value)
-  .replace(/#\S*/g, "#<fragment>")
-  .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
-  .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
-  .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
-  .replace(/[A-Za-z0-9_-]{20,}/g, "<id>")
-  .replace(/\b\d{6,8}\b/g, "<digits>");
+// Deletes the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
+const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
+deleteInboxesOnStop();
 
-const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, timingsMs: {} };
+const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
@@ -60,15 +59,16 @@ const setStage = (next) => { stage = next; report.stage = next; };
 const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
 
 function track(page, phase) {
+  // Each request keeps the stage it STARTED in, so a late-settling sign call counts for its own step.
   const open = new Map();
-  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, Date.now()); });
+  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, { started: Date.now(), stage }); });
   const record = (request, outcome) => {
-    const started = open.get(request);
-    if (started === undefined) return undefined;
+    const opened = open.get(request);
+    if (opened === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
     if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
-    const entry = { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome };
+    const entry = { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, durationMs: Date.now() - opened.started, ...outcome };
     requests.push(entry);
     return entry;
   };
@@ -85,36 +85,17 @@ function track(page, phase) {
   page.on("requestfailed", (request) => record(request, { error: request.failure()?.errorText ?? "failed" }));
   page.on("console", (message) => { if (message.type() === "error") requests.push({ phase, stage, console: scrub(message.text()).slice(0, 240), atMs: since() }); });
   page.on("pageerror", (error) => requests.push({ phase, stage, pageerror: scrub(error.message).slice(0, 240), atMs: since() }));
-  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, start]) => {
+  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, opened]) => {
     const url = new URL(request.url());
-    return { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: start - t0, pendingMs: Date.now() - start };
+    return { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, pendingMs: Date.now() - opened.started };
   });
 }
 
-async function mailinator(path) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(`${MAILINATOR}/${inbox}${path}`, { headers: { "user-agent": "tinycloud-share-smoke" } }).catch(() => undefined);
-    if (response?.ok) { const text = await response.text(); if (text.trim()) return JSON.parse(text); }
-    await sleep(2_000 * attempt);
-  }
-  return {};
-}
-
-async function openKeyOtp(timeout = 150_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "")).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
-    for (const message of codeMail) {
-      const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
-      // The mail repeats the code; a second six-digit run elsewhere is not it.
-      const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
-      report.otp = { messages: codeMail.length, codesInMessage: codes.size, mailAgeSeconds: message.seconds_ago, afterMs: since() };
-      if (codes.size === 1) return [...codes][0];
-    }
-    await sleep(4_000);
-  }
-  throw new Error("no OpenKey code arrived in the Mailinator inbox");
+async function openKeyOtp() {
+  const code = await openKeyCode(inbox, {
+    onMessage: (message, value) => { report.otp = { messages: (report.otp?.messages ?? 0) + 1, codeFound: value !== undefined, mailAgeSeconds: Math.round((Date.now() - Date.parse(message.createdAt ?? 0)) / 1000), afterMs: since() }; },
+  });
+  return code;
 }
 
 function frameAt(page, path) {
@@ -146,14 +127,24 @@ async function clickButton(frame, label) {
   }
 }
 
+/** When each OpenKey review frame first appeared (for a dropped click's timing). */
+const reviewSeen = new WeakMap();
+
 /** Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait. */
 async function approveUntil(page, done, counter, timeout) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const sign = frameAt(page, "/widget/embed/sign");
+    if (sign !== undefined && !reviewSeen.has(sign)) reviewSeen.set(sign, since());
     // What the sender was asked to grant, as OpenKey's review words it.
     const review = await sign?.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "") ?? "";
-    if (sign !== undefined && await clickButton(sign, "Approve").catch(() => false)) {
+    // A click counts only once OpenKey took it (review closed, "Signing…", or a sign call after the
+    // click); a disabled button alone is not taken. A dropped one is reported and clicked again.
+    if (sign !== undefined && await clickApprove({
+      sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
+      closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
+      signedSince: (fromMs) => requests.some((entry) => isSignature(entry) && entry.atMs >= fromMs),
+    }).catch(() => false)) {
       report.prompts[counter] += 1;
       (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
       await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
@@ -193,6 +184,9 @@ try {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { window.__smokeClipboard.push(value); } } });
   });
 
+  setStage("inbox");
+  inbox = await createInbox("share-smoke");
+
   setStage("share-load");
   await sender.goto(`${SHARE}/share#/new`, { waitUntil: "domcontentloaded", timeout: 90_000 });
   await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
@@ -202,7 +196,7 @@ try {
   const connect = await until(() => frameAt(sender, "/widget/embed/connect"), 60_000, "the OpenKey sign-in widget");
   await until(() => clickButton(connect, "Continue with email"), 30_000, "OpenKey's email option");
   const email = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
-  await email.type(`${inbox}@mailinator.com`);
+  await email.type(inbox.address);
   await until(() => clickButton(connect, "Send code"), 10_000, "OpenKey's Send code button");
 
   setStage("openkey-otp");
@@ -223,6 +217,11 @@ try {
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
   report.timingsMs.signIn = since(signInStart);
+  // Counted approvals must equal OpenKey's signatures for the step (approval-click.mjs, signatureMismatch):
+  // more signatures = a hidden review; fewer = a counted click OpenKey never signed for.
+  report.signatures = { signIn: signaturesIn(requests, "share-sign-in"), share: 0 };
+  const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
+  assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
   assert(report.prompts.signIn <= MAX_SIGNIN_PROMPTS, `sign-in needed ${report.prompts.signIn} OpenKey approvals (max ${MAX_SIGNIN_PROMPTS})`);
 
   setStage("share-create");
@@ -233,6 +232,9 @@ try {
   await sender.click("button.create-link-button");
   await approveUntil(sender, () => document.querySelector(".composer-status")?.dataset.state === "created", "share", 180_000);
   report.timingsMs.share = since(shareStart);
+  report.signatures.share = signaturesIn(requests, "share-create");
+  const shareMismatch = signatureMismatch(report.prompts.share, report.signatures.share);
+  assert(shareMismatch === null, `creating a share: ${shareMismatch}`);
   assert(report.prompts.share <= MAX_SHARE_PROMPTS, `creating a share needed ${report.prompts.share} OpenKey approvals (max ${MAX_SHARE_PROMPTS})`);
 
   setStage("recipient-open");
@@ -268,6 +270,7 @@ try {
   report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.pageerror !== undefined).slice(-25);
   if (report.result !== "passed") report.classification = classify(report);
   report.timingsMs.total = since();
+  await deleteInbox();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });
@@ -277,7 +280,8 @@ try {
 function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert, shareCopy }) {
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
-  if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached Mailinator";
+  if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
+  if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
   if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
   // The SDK aborts its own account-registry sync after 4 s (net::ERR_ABORTED)
   // and carries on; only server errors, real transport errors or long hangs
