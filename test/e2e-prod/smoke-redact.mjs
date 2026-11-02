@@ -7,10 +7,11 @@ export const APPROVE_NAME = /^(Approve( exact bytes)?|Signing…)$/;
 // Origins whose URL paths are kept (with queries and fragments removed); any other origin keeps only its host.
 const APP_HOSTS = new Set(["share.tinycloud.xyz", "openkey.so", "api.openkey.so", "node.tinycloud.xyz", "tee.node.tinycloud.xyz", "registry.tinycloud.xyz"]);
 
-/** A path segment that looks like an identifier, token or code rather than a route word (route words: lowercase and hyphens). */
+/** A path segment that looks like an identifier, token or code rather than a route word (route words: lowercase and hyphens, short). */
 const tokenLike = (segment) =>
   !/^[A-Z_]+$/.test(segment) && (
     segment.length >= 32
+    || (segment.length >= 20 && /^[a-z0-9]+$/.test(segment))
     || (segment.length >= 8 && /\d/.test(segment) && /[A-Za-z]/.test(segment))
     || (segment.length >= 6 && /[a-z]/.test(segment) && /[A-Z]/.test(segment) && (/\d/.test(segment) || segment.length >= 16)));
 

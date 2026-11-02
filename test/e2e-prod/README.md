@@ -1,9 +1,9 @@
 # TC-500 production-origin gate
 
 This directory is intentionally separate from the regular test command. The
-gate creates real owner data and mails only a disposable `@mailinator.com`
-recipient, so it must be explicitly enabled after the Node and OpenCredentials
-production deployments are green.
+gate creates real owner data and mails only a private per-run test inbox
+(`mail-tm.mjs`), so it must be explicitly enabled after the Node and
+OpenCredentials production deployments are green.
 
 `candidate-server.mjs` serves the current `dist/` over local TLS. A dedicated
 Chrome instance maps only `share.tinycloud.xyz` to that local listener. The URL
@@ -33,22 +33,44 @@ Credential acquisition is pinned exactly to `https://witness.credentials.org`.
 Browser message text and request bodies are never emitted: the report contains
 only fixed route labels, origin bindings, counts, and the expected byte digest.
 
-Run only with a disposable Mailinator inbox and an explicitly provisioned
-owner account. Never point this at a real recipient or alter system DNS; use
+Run only with a private test inbox and an explicitly provisioned owner
+account. Never point this at a real recipient or alter system DNS; use
 Chrome's per-process host resolver rule and dispose of the browser profile and
 temporary certificate after the run.
 
 `recipient-gate.mjs` is the executable recipient half. It is deliberately
-opt-in and requires the actual mailed invitation, its Mailinator OTP, and the
-sender's original non-UTF-8 file. It verifies the downloaded local bytes and
-the required OpenCredentials/Policy-v3/delegate/invoke trace, while refusing
-OpenKey or legacy Share traffic. It does not create an invitation itself.
+opt-in and requires a private test inbox and the sender's original non-UTF-8
+file. The gate reads the mailed invitation and, after its click, the mailed
+code from that inbox itself, so neither is ever shown; it verifies the
+downloaded local bytes and the required OpenCredentials/Policy-v3/delegate/
+invoke trace, while refusing OpenKey or legacy Share traffic. It does not
+create an invitation itself. The operator steps:
+
+1. `node test/e2e-prod/mail-tm.mjs create /var/tmp/<dir>/inbox.json` makes a
+   private mail.tm inbox ("qa" in its name) and writes only its address and
+   password to that new 0600 file (the path must be under `/var/tmp`; an
+   existing file, a symlink or a FIFO is refused). It prints no address.
+2. The sender addresses the invitation to the file's `address`. That sender
+   command or form carries the address, so keep it off shared terminals,
+   recordings and logs (read it from the file, e.g. into a variable, rather
+   than echoing it).
+3. `TC500_E2E_RUN=1 TC500_E2E_RECIPIENT_INBOX=/var/tmp/<dir>/inbox.json
+   TC500_E2E_EXPECTED_FILE=<file> node test/e2e-prod/recipient-gate.mjs`.
+   `TC500_E2E_SHARE_URL` still overrides the invitation read from the inbox.
+   The gate reads the inbox file right after its run check, so every later
+   failure deletes the inbox and then the file, as does its end and
+   SIGINT/SIGTERM; if mail.tm does not confirm the delete, it keeps the file
+   and says so.
+4. Recovery (the gate never ran, stopped before reading the file, or kept it):
+   `node test/e2e-prod/mail-tm.mjs delete /var/tmp/<dir>/inbox.json` deletes
+   the inbox (one mail.tm no longer knows counts as deleted), then the file.
 
 `joined-gate.mjs` is the hermetic release gate. It boots the released Node
 v1.21.0 tree, the reviewed OpenCredentials candidate tree (8-digit mailbox codes), and the current
 Location Registry tree, while serving only the candidate static Share build
 at the production origin. It creates the sender share through the real browser
-UI, captures mail through a loopback Resend-compatible sink, and opens the
+UI, captures mail through a loopback Resend-compatible sink (every recipient is
+a reserved `@tinycloud.test` address, so nothing is ever delivered), and opens the
 invitation in a fresh browser context. Request interception changes only
 transport: browser URLs, Origin headers, CSP, Trusted Types, policy audiences,
 and signed discovery records retain their production values. The stack has no
@@ -142,10 +164,12 @@ in process memory and are never serialized.
 ## Real sender sign-in smoke
 
 `sender-signin-smoke.mjs` is the release check that does not fake OpenKey
-(TC-994). Each run makes a new throwaway OpenKey account with a random public
-`@mailinator.com` inbox and email OTP, signs it in to Share, approves each
-OpenKey review, creates a link-only share and opens it in a fresh browser
-context. OpenKey, the owner Node and the registry are all production.
+(TC-994). Each run makes a new throwaway OpenKey account with a private
+per-run mail.tm inbox (`mail-tm.mjs`, "qa" in its name, password in memory)
+and email OTP, signs it in to Share, approves each OpenKey review, creates a
+link-only share and opens it in a fresh browser context. OpenKey, the owner
+Node and the registry are all production. The inbox is deleted at the end,
+also when the run is stopped (`inboxDeleted` in the report).
 
 ```bash
 npm run test:e2e:sender-signin                                  # live share.tinycloud.xyz
@@ -155,7 +179,8 @@ npm run build && SHARE_SMOKE_CANDIDATE=dist npm run test:e2e:sender-signin  # th
 It prints one JSON line (also written to `SHARE_SMOKE_ARTIFACT`): approval
 prompts for sign-in and for the share, timings, and on failure the stage, the
 copy Share showed, and each failed or pending request with its status or
-network error and timing. The inbox, code, address and link stay in memory.
+network error and timing, passed through the shared redaction
+(`smoke-redact.mjs`). The inbox, code, address and link stay in memory.
 `SHARE_SMOKE_MAX_SIGNIN_PROMPTS` (default 2) and
 `SHARE_SMOKE_MAX_SHARE_PROMPTS` (default 1) fail a run that asks the sender
 for more approvals. `.github/workflows/sender-signin-smoke.yml` runs it on

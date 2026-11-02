@@ -39,7 +39,6 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -47,15 +46,15 @@ import puppeteer from "puppeteer";
 import { build } from "vite";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { APPROVE_NAME, refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAIL_TM = "https://api.mail.tm";
 const shotDir = process.env.COURIER_SMOKE_SHOT_DIR;
 const AGENTS = "agents";
 const PREFIX = "xyz.tinycloud.courier/";
-/** The current identity's private inbox (mail.tm); every inbox made in the run is deleted at its end. */
+/** The current identity's private inbox (mail-tm.mjs); every inbox made in the run is deleted at its end. */
 const mailboxes = [];
 let mailbox;
 /** The opt-in owner record (COURIER_SMOKE_DID_FILE), checked at start; undefined when off. */
@@ -84,93 +83,23 @@ let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
 
-/** One mail.tm call; retries a timeout, a transport error, 429 and 5xx. Resolves to the last response, or undefined. */
-async function mailTm(path, { method = "GET", body, token, attempts = 4 } = {}) {
-  let response;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    response = await fetch(`${MAIL_TM}${path}`, {
-      method,
-      signal: AbortSignal.timeout(15_000),
-      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    }).catch(() => undefined);
-    if (response && response.status !== 429 && response.status < 500) return response;
-    if (attempt < attempts) await sleep(3_000 * attempt);
-  }
-  return response;
-}
-/** A mail.tm call's JSON, or undefined (a refused, failed or non-JSON reply). */
-const mailTmJson = async (path, options) => {
-  const response = await mailTm(path, options);
-  if (!response?.ok) return undefined;
-  return response.json().catch(() => undefined);
-};
-
-async function inboxToken(entry) {
-  for (let attempt = 1; attempt <= 4 && !entry.token; attempt++) {
-    entry.token = (await mailTmJson("/token", { method: "POST", body: { address: entry.address, password: entry.password } }))?.token ?? "";
-    if (!entry.token && attempt < 4) await sleep(3_000 * attempt);
-  }
-  return entry.token;
-}
-
-/** A new private mail.tm inbox ("qa" in the name) for the next identity; its password stays in memory. */
+/** A new private inbox ("qa" in the name) for the next identity; its password stays in memory. */
 async function newMailbox() {
-  const domains = await mailTmJson("/domains");
-  const domain = (domains?.["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
-  if (!domain) throw new Error("mail.tm offered no active domain");
-  const next = { address: `qa-courier-smoke-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "" };
-  mailboxes.push(next);
-  const created = await mailTm("/accounts", { method: "POST", body: { address: next.address, password: next.password } });
-  if (created?.status === 201) next.id = (await created.json().catch(() => ({}))).id ?? "";
-  // A retried create whose first reply was lost answers 422 (the address exists): it is still ours, with our password.
-  else if (created?.status !== 422) throw new Error(`mail.tm refused the inbox (HTTP ${created?.status ?? "no reply"})`);
-  if (!(await inboxToken(next))) throw new Error("mail.tm gave no inbox token");
-  if (!next.id) next.id = (await mailTmJson("/me", { token: next.token }))?.id ?? "";
-  if (!next.id) throw new Error("mail.tm did not say which inbox was created");
-  mailbox = next;
+  mailbox = await createInbox("courier-smoke");
+  mailboxes.push(mailbox);
 }
 
-let deleting;
-function deleteMailboxes() {
-  deleting ??= (async () => {
-    const results = [];
-    for (const entry of mailboxes) {
-      if (!entry.token) await inboxToken(entry).catch(() => "");
-      if (!entry.id && entry.token) entry.id = (await mailTmJson("/me", { token: entry.token }))?.id ?? "";
-      const response = entry.id && entry.token ? await mailTm(`/accounts/${entry.id}`, { method: "DELETE", token: entry.token }) : undefined;
-      results.push(response?.status === 204);
-    }
-    report.inboxesDeleted = `${results.filter(Boolean).length}/${mailboxes.length}`;
-  })().catch(() => { report.inboxesDeleted = `unknown/${mailboxes.length}`; });
-  return deleting;
+async function deleteMailboxes() {
+  const { deleted, total } = await deleteInboxes();
+  report.inboxesDeleted = `${deleted}/${total}`;
 }
 // A stopped run (Ctrl-C, kill) does not reach `finally`: still record the owners (first, while the
 // accounts are known), then delete the inboxes.
-for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, () => { recordOwners(); void deleteMailboxes().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
-}
+deleteInboxesOnStop({ before: recordOwners });
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
 const usedMail = new Set();
-async function openKeyOtp(timeout = 150_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    // A failed or unreadable poll is retried until the deadline.
-    const list = await mailTmJson("/messages", { token: mailbox.token, attempts: 2 });
-    const codeMail = (list?.["hydra:member"] ?? []).filter((entry) => /openkey/i.test(entry.subject ?? "") && !usedMail.has(entry.id))
-      .sort((a, b) => Date.parse(b.createdAt ?? 0) - Date.parse(a.createdAt ?? 0));
-    for (const message of codeMail) {
-      const full = await mailTmJson(`/messages/${message.id}`, { token: mailbox.token, attempts: 2 });
-      if (!full) continue;
-      const body = `${full.text ?? ""} ${[].concat(full.html ?? []).join(" ")}`.replace(/<[^>]+>/g, " ");
-      const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
-      if (codes.size === 1) { usedMail.add(message.id); return [...codes][0]; }
-    }
-    await sleep(4_000);
-  }
-  throw new Error("no OpenKey code arrived in the test inbox");
-}
+const openKeyOtp = () => openKeyCode(mailbox, { used: usedMail });
 
 const frameAt = (page, path) => page.frames().find((frame) => frame.url().startsWith(`${OPENKEY}${path}`));
 async function until(probe, timeout, what) {

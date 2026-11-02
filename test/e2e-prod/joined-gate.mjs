@@ -943,7 +943,8 @@ async function verifyCliSenderJourney({ browser, stack, temporary }) {
   await writeFile(join(profileDir, "profile.json"), JSON.stringify({ name: "owner", host: stack.canonical.node, chainId: 1, spaceName: "default", authMethod: "local", posture: "local-owner-key", privateKey: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() }), { mode: 0o600 });
   const inputPath = join(temporary, "cli-fixture.md"); await writeFile(inputPath, cliFixture, { flag: "wx", mode: 0o600 });
   const routeLog = join(temporary, "cli-routes.jsonl");
-  const recipient = `tc500-cli-${Date.now()}@mailinator.com`;
+  // A reserved .test address, like the other recipients: the loopback mail sink captures the invitation; nothing is delivered.
+  const recipient = `tc500-cli-${Date.now()}@tinycloud.test`;
   const mailBefore = stack.mail.length;
   const cli = await new Promise((resolveCli) => {
     // Asynchronous on purpose: the mail sink runs in this process.
@@ -1122,7 +1123,7 @@ try {
   await sender.waitForSelector("form.composer-form", { timeout: 180_000 });
   journeyStage = "sender-composition";
   await sender.$eval('input[name="recipient"][value="exactEmail"]', (input) => input.click());
-  recipientEmail = `tc500-native-${Date.now()}@mailinator.com`;
+  recipientEmail = `tc500-native-${Date.now()}@tinycloud.test`;
   await sender.type('input[name="recipient-value"]', recipientEmail);
   const upload = await sender.$('input[name="document"]'); assert(upload); await upload.uploadFile(fixturePath);
   journeyStage = "sender-publication";
