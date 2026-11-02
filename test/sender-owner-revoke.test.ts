@@ -6,13 +6,12 @@ import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import { ObservedOpenKeyProvider, ownerEncryptionNetwork, registerWalletApprovalObserver, type OpenKeyShareSession, type ShareTinyCloud } from "../src/share/openkey-session.js";
 import type { SenderShareRecord } from "@tinycloud/share-sdk";
 
-const { getPolicyRootStatusV3, revokePolicyRootV3 } = vi.hoisted(() => ({
-  getPolicyRootStatusV3: vi.fn(async (): Promise<{ readonly state: "active" | "revoked" }> => ({ state: "active" })),
+const { revokePolicyRootV3 } = vi.hoisted(() => ({
   revokePolicyRootV3: vi.fn(async () => ({})),
 }));
-vi.mock("@tinycloud/sdk-core", () => ({ getPolicyRootStatusV3, revokePolicyRootV3, verifyEip191MessageSignature: async () => true }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3, verifyEip191MessageSignature: async () => true }));
 
-afterEach(() => { resetRevokeFlights(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); revokePolicyRootV3.mockClear(); getPolicyRootStatusV3.mockClear(); });
+afterEach(() => { resetRevokeFlights(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); revokePolicyRootV3.mockClear(); });
 
 /**
  * The share app makes a new session key on every sign-in. A share is signed by
@@ -87,6 +86,8 @@ const policyRootRow = (over: Row = {}): Row => ({
   ],
   parents: [], issuedAt: null, notBefore: null, expiresAt: null, status: "active", ...over,
 });
+/** The share's enforcement root: the policy root's delegator, resources and empty parents under its own CID. The wallet revokes this one. */
+const enforcementRootRow = (over: Row = {}): Row => policyRootRow({ cid: "enforcement-root", ...over });
 const bearerRow = (over: Row = {}): Row => ({
   cid: "bearer-delegation", direction: "granted", delegatorDid: K1, delegateDid: "did:key:z6MkShareKey",
   resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/b1/qa.txt`, actions: ["tinycloud.kv/get"], caveats: [] }],
@@ -134,7 +135,7 @@ async function mountAs(options: HarnessOptions = {}): Promise<Harness> {
   const history = new SenderHistoryRepository(store, () => Date.parse("2026-10-20T04:00:00.000Z"));
   await history.save(record);
   for (const more of options.extra ?? []) await history.save(more);
-  const rows = options.rows ?? [policyRootRow()];
+  const rows = options.rows ?? [enforcementRootRow()];
   const pageSize = options.pageSize ?? 100;
   let queries = 0;
   const tinycloud = {
@@ -172,7 +173,7 @@ const OLD_COPY = "different account or TinyCloud node";
 const EARLIER = "This share was created in an earlier sign-in, and Share can't revoke it from this one yet. The share is still active.";
 
 describe("revoking a share made in an earlier sign-in (same account, new session key)", () => {
-  it("the creating session still revokes through the session-signed route, with no wallet approval", async () => {
+  it("the creating session revokes the enforcement root and then the policy root through the session-signed route, with no wallet approval", async () => {
     const root = document.createElement("div"); document.body.append(root);
     const history = new SenderHistoryRepository(vault(), () => Date.parse("2026-10-20T04:00:00.000Z"));
     await history.save(addressedRecord());
@@ -181,16 +182,16 @@ describe("revoking a share made in an earlier sign-in (same account, new session
     await vi.waitFor(() => expect(revokeButton(root)).not.toBeNull());
     await revoke(root); await settled(root);
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
-    expect(revokePolicyRootV3).toHaveBeenCalledTimes(1);
+    expect((revokePolicyRootV3.mock.calls as unknown as [{ rootCid: string; targetRole: string }][]).map(([call]) => [call.rootCid, call.targetRole])).toEqual([["enforcement-root", "policy-enforcement"], ["policy-root", "policy-authority"]]);
     expect(revokeDelegation).not.toHaveBeenCalled();
   });
 
-  it("a new session of the same address revokes the policy root with one owner-wallet revocation, and shows Revoked", async () => {
-    const { root, history, tinycloud } = await mountAs();
+  it("a new session of the same address revokes the enforcement root with one owner-wallet revocation, never the policy root, and shows Revoked", async () => {
+    const { root, history, tinycloud } = await mountAs({ rows: [enforcementRootRow(), policyRootRow()] });
     await revoke(root); await settled(root);
     expect(errorText(root)).toBeNull();
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
-    expect(tinycloud.revokeDelegation).toHaveBeenCalledWith("policy-root");
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledWith("enforcement-root");
     expect(revokePolicyRootV3).not.toHaveBeenCalled();
     expect(root.querySelector(".sender-status-text.revoked .status-label")?.textContent).toBe("Revoked");
     expect(revokeButton(root)).toBeNull();
@@ -209,10 +210,10 @@ describe("revoking a share made in an earlier sign-in (same account, new session
 
   it("finds the root on a later page of the node's listing", async () => {
     const filler = Array.from({ length: 4 }, (_, index) => sessionDelegationRow({ cid: `other-${index}` }));
-    const { root, tinycloud } = await mountAs({ rows: [...filler, policyRootRow()], pageSize: 2 });
+    const { root, tinycloud } = await mountAs({ rows: [...filler, enforcementRootRow()], pageSize: 2 });
     await revoke(root); await settled(root);
     expect(tinycloud.delegations.query.mock.calls.length).toBeGreaterThan(1);
-    expect(tinycloud.revokeDelegation).toHaveBeenCalledWith("policy-root");
+    expect(tinycloud.revokeDelegation).toHaveBeenCalledWith("enforcement-root");
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
   });
 
@@ -227,7 +228,7 @@ describe("revoking a share made in an earlier sign-in (same account, new session
     expect(root.querySelector(".sender-announce")?.className).toContain("sr-only");
     expect(root.querySelector(".sender-live")?.textContent).not.toContain("OpenKey");
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Revoking…");
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await settled(root);
     expect(root.querySelector(".sender-row-hint")).toBeNull();
   });
@@ -261,16 +262,17 @@ describe("a forged or stale saved record never reaches the wallet", () => {
     expect(revokeButton(root)?.disabled).toBe(false);
   };
 
-  it("a CID that is not in this account's delegations (someone else's delegation)", () => refuses({ record: addressedRecord({ ownerDelegationCid: "someone-elses-cid" }) }));
-  it("the CID of the owner's own session delegation (a wallet-signed delegation, not a share)", () => refuses({ record: addressedRecord({ ownerDelegationCid: "session-delegation", ownerDid: `did:pkh:eip155:1:${ADDRESS}`, resource: { kind: "prefix", path: "xyz.tinycloud.share/shares/" } }), rows: [sessionDelegationRow(), policyRootRow()] }));
-  it("a CID whose delegator is not the key the record names", () => refuses({ rows: [policyRootRow({ delegatorDid: "did:key:z6MkSomebodyElse" })] }));
-  it("a delegation for another path than the record's", () => refuses({ rows: [policyRootRow({ resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/other/qa.txt`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
-  it("a delegation that also grants something outside the share's own object", () => refuses({ rows: [policyRootRow({ resources: [{ resource: `${SPACE}/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: `${SPACE}/kv/documents/`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
-  it("a delegation in another space", () => refuses({ rows: [policyRootRow({ resources: [{ resource: `tinycloud:pkh:eip155:1:${ADDRESS}:account/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
-  it("a record path outside the share app's own folder", () => refuses({ record: addressedRecord({ resource: { kind: "exact", path: "documents/secret.txt" } }), rows: [policyRootRow({ resources: [{ resource: `${SPACE}/kv/documents/secret.txt`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
-  it("a received delegation (somebody else granted it to this account)", () => refuses({ rows: [policyRootRow({ direction: "received" })] }));
-  it("a root that has a parent (shares' roots have none)", () => refuses({ rows: [policyRootRow({ parents: ["session-delegation"] })] }));
-  it("a record with no policy root CID", () => refuses({ record: ({ ...addressedRecord(), ownerDelegationCid: undefined } as unknown as SenderShareRecord) }));
+  it("a CID that is not in this account's delegations (someone else's delegation)", () => refuses({ record: addressedRecord({ enforcementDelegationCid: "someone-elses-cid" }) }));
+  it("the CID of the owner's own session delegation (a wallet-signed delegation, not a share)", () => refuses({ record: addressedRecord({ enforcementDelegationCid: "session-delegation", ownerDid: `did:pkh:eip155:1:${ADDRESS}`, resource: { kind: "prefix", path: "xyz.tinycloud.share/shares/" } }), rows: [sessionDelegationRow(), enforcementRootRow()] }));
+  it("a CID whose delegator is not the key the record names", () => refuses({ rows: [enforcementRootRow({ delegatorDid: "did:key:z6MkSomebodyElse" })] }));
+  it("a delegation for another path than the record's", () => refuses({ rows: [enforcementRootRow({ resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/other/qa.txt`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
+  it("a delegation that also grants something outside the share's own object", () => refuses({ rows: [enforcementRootRow({ resources: [{ resource: `${SPACE}/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: `${SPACE}/kv/documents/`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
+  it("a delegation in another space", () => refuses({ rows: [enforcementRootRow({ resources: [{ resource: `tinycloud:pkh:eip155:1:${ADDRESS}:account/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
+  it("a record path outside the share app's own folder", () => refuses({ record: addressedRecord({ resource: { kind: "exact", path: "documents/secret.txt" } }), rows: [enforcementRootRow({ resources: [{ resource: `${SPACE}/kv/documents/secret.txt`, actions: ["tinycloud.kv/get"], caveats: [] }] })] }));
+  it("a received delegation (somebody else granted it to this account)", () => refuses({ rows: [enforcementRootRow({ direction: "received" })] }));
+  it("a root that has a parent (shares' roots have none)", () => refuses({ rows: [enforcementRootRow({ parents: ["session-delegation"] })] }));
+  // Only the keyless policy root is left, and leaving it live revokes nothing: the share stays active.
+  it("a record with no enforcement root CID", () => refuses({ record: ({ ...addressedRecord(), enforcementDelegationCid: undefined } as unknown as SenderShareRecord), rows: [policyRootRow()] }, "The share is still active."));
   it("a node that cannot answer the listing", () => refuses({ queryOk: false }));
   it("a listing that never contains the CID", () => refuses({ rows: [sessionDelegationRow()] }));
 });
@@ -280,7 +282,7 @@ describe("the node check cannot be satisfied by a different space name, or by th
     const other = `tinycloud:pkh:eip155:1:${ADDRESS}:documents`;
     const { root, tinycloud } = await mountAs({
       record: addressedRecord({ target: { origin: NODE.origin, nodeAudience: NODE.nodeDid, spaceId: other } }),
-      rows: [policyRootRow({ resources: [{ resource: `${other}/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })],
+      rows: [enforcementRootRow({ resources: [{ resource: `${other}/kv/${PATH}`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })],
     });
     await revoke(root); await settled(root);
     expect(errorText(root)).toContain(EARLIER);
@@ -289,7 +291,7 @@ describe("the node check cannot be satisfied by a different space name, or by th
   });
 
   it("a delegation that grants only the account's encryption network, and none of the share's object, is refused", async () => {
-    const { root, tinycloud } = await mountAs({ rows: [policyRootRow({ resources: [{ resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })] });
+    const { root, tinycloud } = await mountAs({ rows: [enforcementRootRow({ resources: [{ resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] })] });
     await revoke(root); await settled(root);
     expect(errorText(root)).toContain(EARLIER);
     expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
@@ -297,7 +299,7 @@ describe("the node check cannot be satisfied by a different space name, or by th
 
   it("a listing longer than the pages read says Share could not read the whole permissions list, not that the share is from an earlier sign-in", async () => {
     // 25 pages of one row each: more than the pages the page will read.
-    const rows = [...Array.from({ length: 24 }, (_, index) => sessionDelegationRow({ cid: `filler-${index}` })), policyRootRow()];
+    const rows = [...Array.from({ length: 24 }, (_, index) => sessionDelegationRow({ cid: `filler-${index}` })), enforcementRootRow()];
     const { root, tinycloud } = await mountAs({ rows, pageSize: 1 });
     await revoke(root); await settled(root);
     expect(errorText(root)).toBe("Could not revoke: Share couldn't read your whole permissions list, so it can't find this share. Try again or contact support. The share is still active.");
@@ -309,7 +311,7 @@ describe("the node check cannot be satisfied by a different space name, or by th
 
 describe("what happens around the wallet approval", () => {
   it("an already revoked root (node status) is a success and asks for no approval", async () => {
-    const { root, tinycloud } = await mountAs({ rows: [policyRootRow({ status: "revoked" })] });
+    const { root, tinycloud } = await mountAs({ rows: [enforcementRootRow({ status: "revoked" })] });
     await revoke(root); await settled(root);
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
     expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
@@ -317,7 +319,7 @@ describe("what happens around the wallet approval", () => {
   });
 
   it("a root revoked through its ancestor counts as revoked too", async () => {
-    const { root, tinycloud } = await mountAs({ rows: [policyRootRow({ status: "ancestor_revoked" })] });
+    const { root, tinycloud } = await mountAs({ rows: [enforcementRootRow({ status: "ancestor_revoked" })] });
     await revoke(root); await settled(root);
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
     expect(tinycloud.revokeDelegation).not.toHaveBeenCalled();
@@ -330,7 +332,7 @@ describe("what happens around the wallet approval", () => {
     });
     await revoke(root); await settled(root);
     expect(root.querySelector(".sender-status-text.revoked")).not.toBeNull();
-    expect(tinycloud.delegations.status).toHaveBeenCalledWith("policy-root");
+    expect(tinycloud.delegations.status).toHaveBeenCalledWith("enforcement-root");
     expect(root.textContent).not.toContain("hidden-body");
   });
 
@@ -370,7 +372,7 @@ async function mountWithWallet(outcome: { reject?: unknown; signer?: string }): 
   const provider = new ObservedOpenKeyProvider(openkey as never, { address: ADDRESS, keyId: "key-1", keyType: "MANAGED" } as never, ADDRESS, async (_message, _signature, address) => address.toLowerCase() === (outcome.signer ?? ADDRESS).toLowerCase());
   const harness = await mountAs({
     revokeDelegation: async () => {
-      try { await provider.request({ method: "personal_sign", params: ["0x70726f6f66", ADDRESS] }); return { ok: true, data: { revoked: true, cid: "policy-root" } }; } catch (caught) { return { ok: false, error: { code: "NETWORK_ERROR", message: `Network error during delegation revocation: ${String(caught)}` } }; }
+      try { await provider.request({ method: "personal_sign", params: ["0x70726f6f66", ADDRESS] }); return { ok: true, data: { revoked: true, cid: "enforcement-root" } }; } catch (caught) { return { ok: false, error: { code: "NETWORK_ERROR", message: `Network error during delegation revocation: ${String(caught)}` } }; }
     },
   });
   registerWalletApprovalObserver(harness.tinycloud as unknown as ShareTinyCloud, provider);
@@ -433,7 +435,7 @@ describe("one revoke in flight per share", () => {
     button.click();
     expect(root.querySelector(".sender-confirm-dialog")).toBeNull();
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await settled(root);
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
     expect(revokeButton(root)).toBeNull();
@@ -482,7 +484,7 @@ describe("the in-flight guard outlives the library view", () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(root.querySelector(".sender-confirm-dialog")).toBeNull();
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1);
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     // The row of the new view follows the same revoke to its end.
     await vi.waitFor(() => expect(root.querySelector(".sender-status-text.revoked .status-label")?.textContent).toBe("Revoked"));
     expect(revokeButton(root)).toBeNull();
@@ -503,7 +505,7 @@ describe("the in-flight guard outlives the library view", () => {
 
 describe("one wallet approval at a time, and a cancel belongs to the share that asked", () => {
   const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
-  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const secondRow = (): Row => enforcementRootRow({ cid: "enforcement-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
   const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
 
   it("a second share's Revoke during an open approval asks for no second approval, and the cancel lands on the first share only", async () => {
@@ -511,7 +513,7 @@ describe("one wallet approval at a time, and a cancel belongs to the share that 
     const openkey = { signMessage: vi.fn(async () => { await gate.promise; throw { code: "USER_CANCELLED", message: "cancelled" }; }) };
     const provider = new ObservedOpenKeyProvider(openkey as never, { address: ADDRESS, keyId: "key-1", keyType: "MANAGED" } as never, ADDRESS, async () => true);
     const harness = await mountAs({
-      extra: [second()], rows: [policyRootRow(), secondRow()],
+      extra: [second()], rows: [enforcementRootRow(), secondRow()],
       revokeDelegation: async () => {
         try { await provider.request({ method: "personal_sign", params: ["0x70726f6f66", ADDRESS] }); return { ok: true, data: {} }; } catch (caught) { return { ok: false, error: { code: "NETWORK_ERROR", message: `Network error during delegation revocation: ${String(caught)}` } }; }
       },
@@ -557,7 +559,7 @@ describe("link-only (bearer) shares from a new session", () => {
 
 describe("an approval that is never answered cannot hold the page", () => {
   const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
-  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const secondRow = (): Row => enforcementRootRow({ cid: "enforcement-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
   const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
   const pressRevoke = (root: HTMLElement, name: string) => { rowOf(root, name).querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root); };
   const GIVE_UP = "The approval wasn't completed. The share is still active. Try again.";
@@ -568,8 +570,8 @@ describe("an approval that is never answered cannot hold the page", () => {
     const neverAnswered = deferred<unknown>();
     let firstAsked = false;
     const { root, tinycloud } = await mountAs({
-      extra: [second()], rows: [policyRootRow(), secondRow()],
-      revokeDelegation: (cid) => { if (cid === "policy-root" && !firstAsked) { firstAsked = true; return neverAnswered.promise; } return { ok: true, data: { revoked: true, cid } }; },
+      extra: [second()], rows: [enforcementRootRow(), secondRow()],
+      revokeDelegation: (cid) => { if (cid === "enforcement-root" && !firstAsked) { firstAsked = true; return neverAnswered.promise; } return { ok: true, data: { revoked: true, cid } }; },
     });
     pressRevoke(root, "qa.txt");
     await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
@@ -587,13 +589,13 @@ describe("an approval that is never answered cannot hold the page", () => {
     // The lock is free: the other share's Revoke is a new request and goes through.
     pressRevoke(root, "second.txt");
     await vi.waitFor(() => expect(rowOf(root, "second.txt").querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(tinycloud.revokeDelegation).toHaveBeenLastCalledWith("policy-root-2");
+    expect(tinycloud.revokeDelegation).toHaveBeenLastCalledWith("enforcement-root-2");
     // The first share can be tried again: a new attempt is a new request, once.
     pressRevoke(root, "qa.txt");
     await vi.waitFor(() => expect(rowOf(root, "qa.txt").querySelector(".sender-status-text.revoked")).not.toBeNull());
-    expect(tinycloud.revokeDelegation.mock.calls.filter(([cid]) => cid === "policy-root")).toHaveLength(2);
+    expect(tinycloud.revokeDelegation.mock.calls.filter(([cid]) => cid === "enforcement-root")).toHaveLength(2);
     // The first attempt answers very late: nothing about the revoked row changes and nothing is asked again.
-    neverAnswered.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    neverAnswered.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(3);
     expect(rowOf(root, "qa.txt").querySelector(".sender-row-error, .sender-row-note")).toBeNull();
@@ -602,15 +604,15 @@ describe("an approval that is never answered cannot hold the page", () => {
   it("a late answer after Share gave up never turns the row Revoked by itself; the next attempt asks the node and finishes without a new approval", async () => {
     fakeClock();
     const late = deferred<unknown>();
-    const rows: Row[] = [policyRootRow()];
+    const rows: Row[] = [enforcementRootRow()];
     const { root, tinycloud } = await mountAs({ rows, revokeDelegation: () => late.promise });
     revokeButton(root)!.click(); confirm(root);
     await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
     await vi.advanceTimersByTimeAsync(60_500);
     expect(root.querySelector(".sender-row-note")?.textContent).toBe(GIVE_UP);
     // The request did revoke the share after all, and answers late.
-    rows[0] = policyRootRow({ status: "revoked" });
-    late.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    rows[0] = enforcementRootRow({ status: "revoked" });
+    late.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(root.querySelector(".sender-status-text.revoked")).toBeNull();
     expect(root.querySelector(".sender-status-text .status-label")?.textContent).toBe("Ready");
@@ -654,7 +656,7 @@ describe("an approval that is never answered cannot hold the page", () => {
   it("a wallet call that throws frees the lock for the other share", async () => {
     let first = true;
     const { root, tinycloud } = await mountAs({
-      extra: [second()], rows: [policyRootRow(), secondRow()],
+      extra: [second()], rows: [enforcementRootRow(), secondRow()],
       revokeDelegation: (cid) => { if (first) { first = false; throw new Error("provider exploded"); } return { ok: true, data: { revoked: true, cid } }; },
     });
     pressRevoke(root, "qa.txt");
@@ -684,16 +686,16 @@ describe("the provider reads the answer of the approval that is current", () => 
 
 describe("each wallet request carries the CID of the row that was clicked, whatever order the node checks answer in", () => {
   const second = (): SenderShareRecord => addressedRecord({ shareId: "s2", filename: "second.txt", ownerDelegationCid: "policy-root-2", enforcementDelegationCid: "enforcement-root-2", resource: { kind: "exact", path: "xyz.tinycloud.share/shares/s2/second.txt" } });
-  const secondRow = (): Row => policyRootRow({ cid: "policy-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
+  const secondRow = (): Row => enforcementRootRow({ cid: "enforcement-root-2", resources: [{ resource: `${SPACE}/kv/xyz.tinycloud.share/shares/s2/second.txt`, actions: ["tinycloud.kv/get"], caveats: [] }, { resource: ownerEncryptionNetwork(ADDRESS), actions: ["tinycloud.encryption/decrypt"], caveats: [] }] });
   const rowOf = (root: HTMLElement, name: string) => [...root.querySelectorAll<HTMLElement>(".sender-history-row")].find((row) => row.textContent?.includes(name))!;
   const pressRevoke = (root: HTMLElement, name: string) => { rowOf(root, name).querySelector<HTMLButtonElement>(".sender-revoke")!.click(); confirm(root); };
-  const A = "policy-root";
-  const B = "policy-root-2";
+  const A = "enforcement-root";
+  const B = "enforcement-root-2";
 
   /** Share A (qa.txt) is clicked first, then share B (second.txt), each node check held until released. */
   async function bothChecksPending(revokeDelegation: (cid: string) => Promise<unknown> | unknown) {
     const checks = [deferred<void>(), deferred<void>()];
-    const harness = await mountAs({ extra: [second()], rows: [policyRootRow(), secondRow()], beforeQuery: (call) => checks[call - 1]?.promise, revokeDelegation });
+    const harness = await mountAs({ extra: [second()], rows: [enforcementRootRow(), secondRow()], beforeQuery: (call) => checks[call - 1]?.promise, revokeDelegation });
     pressRevoke(harness.root, "qa.txt");
     await vi.waitFor(() => expect(harness.tinycloud.delegations.query).toHaveBeenCalledTimes(1));
     pressRevoke(harness.root, "second.txt");
@@ -782,7 +784,7 @@ describe("the spoken status region at every step of a revoke", () => {
     await revoke(root);
     await vi.waitFor(() => expect(tinycloud.revokeDelegation).toHaveBeenCalledTimes(1));
     await waitSpoken(root, APPROVE);
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await waitSpoken(root, "Share revoked.");
     // The row is Revoked and the region agrees; nothing later puts the approval text back.
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -836,7 +838,7 @@ describe("the spoken status region at every step of a revoke", () => {
     // What the sign-out does: the library ends, then the flights are forgotten.
     endSenderLibrary(); resetRevokeFlights();
     expect(spoken(root)).toBe("");
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(spoken(root)).toBe("");
   });
@@ -848,7 +850,7 @@ describe("the spoken status region at every step of a revoke", () => {
     await waitSpoken(root, APPROVE);
     await remount();
     await waitSpoken(root, APPROVE);
-    gate.resolve({ ok: true, data: { revoked: true, cid: "policy-root" } });
+    gate.resolve({ ok: true, data: { revoked: true, cid: "enforcement-root" } });
     await waitSpoken(root, "Share revoked.");
     await remount();
     expect(spoken(root)).toBe("");
