@@ -52,6 +52,7 @@ import { clickApprove, signatureMismatch, signaturesFor, signedSince, watchSigna
 import { bodySandboxOk } from "./body-frame.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
+import { createOtpGate, isOtpSend } from "./otp-gate.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { refusal, scrub } from "./smoke-redact.mjs";
 
@@ -105,7 +106,15 @@ deleteInboxesOnStop({ before: recordOwners });
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
 const usedMail = new Set();
-const openKeyOtp = () => openKeyCode(mailbox, { used: usedMail });
+// OpenKey allows 3 code sends per 60 s per IP: one gate spaces every send of the run ≥ 21 s apart
+// (report.otpSends: when, and the gap to the previous one). A 429 on a send ends the wait for the
+// mail at once, as a rate limit, instead of after 150 s.
+const OTP_RATE_LIMIT = "OpenKey OTP rate limit (per IP): the code send was refused with 429";
+const otpGate = createOtpGate({ minGapMs: 21_000, now: since });
+let otpRateLimited;
+const otpRefused = new Promise((_, reject) => { otpRateLimited = () => reject(new Error(OTP_RATE_LIMIT)); });
+otpRefused.catch(() => undefined);
+const openKeyOtp = () => Promise.race([openKeyCode(mailbox, { used: usedMail }), otpRefused]);
 
 const frameAt = (page, path) => page.frames().find((frame) => frame.url().startsWith(`${OPENKEY}${path}`));
 async function until(probe, timeout, what) {
@@ -187,6 +196,7 @@ async function drive(page, done, counter, timeout = 240_000) {
       setStage("openkey-email");
       const field = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
       await field.type(mailbox.address);
+      await otpGate.wait();
       await until(() => clickButton(connect, "Send code"), 10_000, "Send code");
       setStage("openkey-otp");
       const otp = await openKeyOtp();
@@ -286,10 +296,12 @@ try {
     await page.setViewport({ width, height: 900 });
     await installSignCapture(page);
     watchSignatures(page, { calls: signCalls, step: () => currentStep, at: since });
+    page.on("request", (request) => { if (isOtpSend(request.method(), request.url())) (report.otpSends ??= []).push(otpGate.record(since())); });
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
     page.on("response", async (response) => {
       const url = new URL(response.url());
+      if (response.status() === 429 && isOtpSend(response.request().method(), response.url())) otpRateLimited();
       if (response.status() >= 400 && /tinycloud|openkey/.test(url.origin)) {
         const path = url.pathname.startsWith("/v1/locations/") ? "/v1/locations/<owner-did>" : scrub(url.pathname).slice(0, 100);
         const entry = { method: response.request().method(), host: url.host, path, status: response.status() };
@@ -441,6 +453,7 @@ try {
   setStage("done");
 } catch (error) {
   report.error = scrub(error instanceof Error ? error.message : String(error)).slice(0, 500);
+  if (report.error.startsWith("OpenKey OTP rate limit")) report.classification = "openkey-otp-rate-limit (per IP)";
   report.consoleErrors = consoleErrors.slice(-10);
   const pages = await browser?.pages().catch(() => []) ?? [];
   const last = pages.at(-1);
