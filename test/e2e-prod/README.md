@@ -187,13 +187,15 @@ for more approvals. The smoke clicks OpenKey's Approve found by role and
 position (the review dialog's last button), only if its name is one of the
 approval's labels; any other label is never clicked and is listed in
 `approveLabelsRejected`. An approval counts once OpenKey took the click: the
-review closed, or the clicked button left, went disabled or reads "Signing…"
-within 5 s. A click it did not take is not counted; the smoke clicks again and
+review closed, the clicked button reads "Signing…", or an OpenKey sign call
+started after the click, within 5 s (a button that is only disabled is not
+taken: OpenKey also disables Approve briefly after each resize of the review).
+A click it did not take is not counted; the smoke clicks again and
 reports it: `approveClicksNotTaken` and one `approveClicksDropped` entry per
 click (when, how long after the review appeared, whether the button moved, and
 the tag and classes of what the click point hit). `signatures` counts OpenKey's
-completed sign calls per step (by the step the call started in); a step with
-more signatures than counted approvals, or counted approvals and no signature,
+completed sign calls per step (by the step the call started in); they must
+equal the counted approvals, or the step
 fails. `.github/workflows/sender-signin-smoke.yml` runs it on
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import puppeteer from "puppeteer";
-import { approvePick, boxMoved, clickApprove, clickTaken, signatureMismatch, signaturesIn } from "./approval-click.mjs";
+import { approvePick, boxMoved, clickApprove, clickState, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { APPROVE_NAME } from "./smoke-redact.mjs";
 
 // jsdom has no layout: an element counts as visible unless it (or an ancestor) is `hidden`.
@@ -31,13 +31,11 @@ test("without a dialog only a button named exactly Approve (or Approve exact byt
   assert.deepEqual(pick(`<button>Approve all later</button>`), { button: null, rejected: "" });
 });
 
-test("the clicked button took the click when it left the page, went disabled or reads Signing…", () => {
-  const page = doc(`<button id=a>Approve</button><button id=b disabled>Approve</button><button id=c>Signing…</button>`);
-  assert.equal(clickTaken(page.getElementById("a")), false);
-  assert.equal(clickTaken(page.getElementById("b")), true);
-  assert.equal(clickTaken(page.getElementById("c")), true);
-  const gone = page.getElementById("a"); gone.remove();
-  assert.equal(clickTaken(gone), true);
+test("only Signing… marks the clicked button as signing; disabled alone is not", () => {
+  const page = doc(`<button id=a>Approve</button><button id=b disabled>Approve</button><button id=c disabled>Signing…</button>`);
+  assert.deepEqual(clickState(page.getElementById("a")), { connected: true, disabled: false, signing: false });
+  assert.deepEqual(clickState(page.getElementById("b")), { connected: true, disabled: true, signing: false });
+  assert.deepEqual(clickState(page.getElementById("c")), { connected: true, disabled: true, signing: true });
 });
 
 test("signatures are the completed OpenKey sign calls of one stage", () => {
@@ -55,12 +53,12 @@ test("signatures are the completed OpenKey sign calls of one stage", () => {
   assert.equal(signaturesIn(trail, "share-sign-in"), 1);
 });
 
-test("a step fails when signatures exceed approvals, or when approvals produced no signature at all", () => {
+test("a step's counted approvals must equal its OpenKey signatures", () => {
   assert.equal(signatureMismatch(1, 1), null);
   assert.equal(signatureMismatch(0, 0), null);
-  assert.equal(signatureMismatch(2, 1), null, "an Approve exact bytes flow: a preview click, then one signature");
   assert.match(signatureMismatch(1, 2), /2 OpenKey signatures for 1 counted approvals/);
-  assert.match(signatureMismatch(1, 0), /no OpenKey signature/);
+  assert.match(signatureMismatch(1, 0), /0 OpenKey signatures for 1 counted approvals/);
+  assert.match(signatureMismatch(2, 1), /1 OpenKey signatures for 2 counted approvals/);
 });
 
 test("boxMoved reports the larger shift, and null without both boxes", () => {
@@ -68,34 +66,50 @@ test("boxMoved reports the larger shift, and null without both boxes", () => {
   assert.equal(boxMoved(null, { x: 0, y: 0, height: 1 }), null);
 });
 
-test("clickApprove on a real page: a taken click counts, a swallowed one is reported, a renamed label is never clicked", async () => {
+test("clickApprove on a real page: taken only by Signing… or a sign call; a swallowed or layout-blocked click is a drop", async () => {
   const browser = await puppeteer.launch({ args: process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [] });
   try {
     const page = await browser.newPage();
-    const review = (approve) => `<div role="dialog"><button>Cancel</button><button onclick="document.body.dataset.clicks=Number(document.body.dataset.clicks||0)+1;this.disabled=true;this.textContent='Signing…'">${approve}</button></div>`;
+    const button = (label, onclick) => `<div role="dialog"><button>Cancel</button><button onclick="document.body.dataset.clicks=Number(document.body.dataset.clicks||0)+1;${onclick}">${label}</button></div>`;
+    const signing = "this.disabled=true;this.textContent='Signing…'";
+    // OpenKey's layout block (TC-2320): disabled for 300 ms after a resize, then enabled again, no signing.
+    const layoutBlock = "this.disabled=true;setTimeout(()=>{this.disabled=false},300)";
+    let signed = false;
+    page.on("console", (message) => { if (message.text() === "signed") signed = true; });
     const report = {};
     let clock = 0;
-    const options = { sign: page.mainFrame(), during: "share", report, closed: () => false, at: () => ++clock, stage: () => "share-create", reviewSeenAt: 0, takenMs: 1_000 };
+    const options = { sign: page.mainFrame(), during: "share", report, closed: () => false, signedSince: () => signed, at: () => ++clock, stage: () => "share-create", reviewSeenAt: 0, takenMs: 1_000 };
 
-    await page.setContent(review("Approve"));
-    assert.equal(await clickApprove(options), true);
+    await page.setContent(button("Approve", signing));
+    assert.equal(await clickApprove(options), true, "Signing… is taken");
     assert.equal(report.approveClicksNotTaken, undefined);
 
-    await page.setContent(review("Approve") + `<div class="overlay-x" style="position:fixed;inset:0;z-index:9"></div>`);
-    assert.equal(await clickApprove(options), false);
+    await page.setContent(button("Approve", "console.log('signed')"));
+    assert.equal(await clickApprove(options), true, "a sign call after the click is taken, even with no Signing…");
+    signed = false;
+
+    await page.setContent(button("Approve", layoutBlock));
+    const started = Date.now();
+    assert.equal(await clickApprove(options), false, "disabled then enabled again without signing is NOT taken");
+    assert.ok(Date.now() - started < 1_000, "the re-enable ends the wait without running out the clock");
     assert.equal(report.approveClicksNotTaken, 1);
-    assert.deepEqual(report.approveClicksDropped, [{
-      during: "share", stage: "share-create", atMs: 2, msSinceReview: 2, buttonMovedPx: 0,
+    assert.equal(report.approveClicksDropped[0].disabledWithoutSigning, true);
+
+    await page.setContent(button("Approve", signing) + `<div class="overlay-x" style="position:fixed;inset:0;z-index:9"></div>`);
+    assert.equal(await clickApprove(options), false);
+    assert.equal(report.approveClicksNotTaken, 2);
+    assert.deepEqual(report.approveClicksDropped[1], {
+      during: "share", stage: "share-create", atMs: 4, msSinceReview: 4, disabledWithoutSigning: false, buttonMovedPx: 0,
       clickPointOnButton: false, clickPointTag: "div", clickPointClasses: "overlay-x",
-    }]);
+    });
     await page.evaluate(() => document.querySelector(".overlay-x").remove());
     assert.equal(await clickApprove(options), true, "the retry is taken once nothing covers the button");
 
-    await page.setContent(review("Approve &amp; sign for qa-x@mail.example"));
+    await page.setContent(button("Approve &amp; sign for qa-x@mail.example", signing));
     assert.equal(await clickApprove(options), false);
     assert.equal(await page.evaluate(() => Number(document.body.dataset.clicks ?? 0)), 0, "a renamed label was clicked");
     assert.deepEqual(report.approveLabelsRejected, ["Approve & sign for <email>"], "the rejected label is scrubbed");
-    assert.equal(report.approveClicksNotTaken, 1, "a refused pick is not a dropped click");
+    assert.equal(report.approveClicksNotTaken, 2, "a refused pick is not a dropped click");
   } finally {
     await browser.close();
   }

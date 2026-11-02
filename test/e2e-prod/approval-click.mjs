@@ -22,9 +22,14 @@ export function approvePick(approveName, doc = document) {
   return { button: button.disabled ? null : button, rejected: "" };
 }
 
-/** Whether the clicked Approve took the click: it left the page, went disabled, or reads "Signing…". */
-export function clickTaken(element) {
-  return !element.isConnected || element.disabled || (element.textContent ?? "").trim() === "Signing…";
+/**
+ * The clicked Approve's state. "Signing…" means OpenKey took the click. Disabled alone does NOT:
+ * OpenKey also disables Approve for a moment after every resize of the review (TC-2320), so a missed
+ * click can be followed by a disabled button that re-enables.
+ */
+export function clickState(element) {
+  const label = (element.textContent ?? "").trim();
+  return { connected: element.isConnected, disabled: element.disabled, signing: label === "Signing…" };
 }
 
 /** What a click at the centre of `element` would hit in its own document (no text is read). */
@@ -48,13 +53,15 @@ const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /**
  * Clicks OpenKey's Approve in frame `sign` with real browser input and resolves whether the review
- * took the click (the frame closed or detached, or the clicked button left, went disabled or reads
- * "Signing…", within `takenMs`). A click that wasn't taken is reported in `report`
- * (`approveClicksNotTaken`, one `approveClicksDropped` entry: `during`, stage, timing, whether the
- * button moved and what the click point hit); a rejected label goes to `approveLabelsRejected`.
- * `closed()` says whether the review frame is gone; `at()` is the run clock; `stage()` the stage.
+ * took the click within `takenMs`: the review closed or detached (`closed()`), a completed OpenKey
+ * sign call started after the click (`signedSince(atMs)`), or the clicked button reads "Signing…".
+ * A button that is only disabled is not taken yet; if it re-enables without any of those, or time
+ * runs out, the click is a drop: reported in `report` (`approveClicksNotTaken`, one
+ * `approveClicksDropped` entry: `during`, stage, timing, whether it was disabled without signing,
+ * whether the button moved and what the click point hit) and the caller clicks again. A rejected
+ * label goes to `approveLabelsRejected`. `at()` is the run clock; `stage()` the stage.
  */
-export async function clickApprove({ sign, during, report, closed, at, stage, reviewSeenAt, takenMs = 5_000 }) {
+export async function clickApprove({ sign, during, report, closed, signedSince = () => false, at, stage, reviewSeenAt, takenMs = 5_000 }) {
   const picked = await sign.evaluateHandle(approvePick, APPROVE_NAME.source);
   try {
     const rejected = await (await picked.getProperty("rejected")).jsonValue();
@@ -70,16 +77,24 @@ export async function clickApprove({ sign, during, report, closed, at, stage, re
     // DOM .click() is untrusted; OpenKey refuses it inside an iframe.
     await button.click();
     const deadline = Date.now() + takenMs;
+    let disabledWithoutSigning = false;
     while (Date.now() < deadline) {
-      if (closed() || await button.evaluate(clickTaken).catch(() => closed())) return true;
-      await pause(100);
+      if (closed() || signedSince(clickedAt)) return true;
+      const state = await button.evaluate(clickState).catch(() => null);
+      if (state?.signing) return true;
+      if (state?.connected && state.disabled) disabledWithoutSigning = true;
+      // Re-enabled with no sign call and no "Signing…": the click missed (the disable was a layout block).
+      else if (state?.connected && disabledWithoutSigning) break;
+      await pause(50);
     }
+    if (closed() || signedSince(clickedAt)) return true;
     await pause(150);
     const boxAfter = await button.boundingBox().catch(() => null);
     report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
     (report.approveClicksDropped ??= []).push({
       during, stage: stage(), atMs: clickedAt,
       msSinceReview: reviewSeenAt === undefined ? null : clickedAt - reviewSeenAt,
+      disabledWithoutSigning,
       buttonMovedPx: boxMoved(boxBefore, boxAfter),
       clickPointOnButton: hit?.onButton ?? null, clickPointTag: hit?.tag ?? null, clickPointClasses: hit?.classes ?? null,
     });
@@ -89,19 +104,21 @@ export async function clickApprove({ sign, during, report, closed, at, stage, re
   }
 }
 
-/** OpenKey signature calls (a completed sign) in `requests` (the smoke's trail) that started in `stage`. */
-export const signaturesIn = (requests, stage) => requests.filter((entry) => entry.stage === stage
-  && /^https:\/\/(api\.)?openkey\.so$/.test(entry.origin ?? "") && entry.method === "POST"
+/** A completed OpenKey sign call in the smoke's trail (`/api/keys/<id>/sign` or `/api/delegate/authorize-sign`, 2xx). */
+export const isSignature = (entry) => /^https:\/\/(api\.)?openkey\.so$/.test(entry.origin ?? "") && entry.method === "POST"
   && /^\/api\/(keys\/[^/]+\/sign|delegate\/authorize-sign)$/.test(entry.path ?? "")
-  && entry.status >= 200 && entry.status < 300).length;
+  && entry.status >= 200 && entry.status < 300;
+
+/** OpenKey signature calls in `requests` (the smoke's trail) that started in `stage`. */
+export const signaturesIn = (requests, stage) => requests.filter((entry) => entry.stage === stage && isSignature(entry)).length;
 
 /**
- * Why a step's counted approvals and OpenKey's signatures disagree, or null: more signatures than
- * approvals (a review hidden behind a click reported as dropped), or approvals with no signature at
- * all (a click wrongly counted as taken, or a sign call the trail no longer recognises).
+ * Why a step's counted approvals and OpenKey's signatures differ, or null. They must be equal: more
+ * signatures means a review hid behind a click reported as dropped; fewer means a click was counted
+ * that OpenKey never signed for (a missed click that looked taken). Holds for the exact-bytes
+ * approval Share uses today: one Approve, one signature. (A preview flow, a preview click and then
+ * "Approve exact bytes", would count two approvals for one signature and fail here.)
  */
 export function signatureMismatch(prompts, signatures) {
-  if (signatures > prompts) return `${signatures} OpenKey signatures for ${prompts} counted approvals`;
-  if (prompts > 0 && signatures === 0) return `${prompts} counted approvals but no OpenKey signature`;
-  return null;
+  return signatures === prompts ? null : `${signatures} OpenKey signatures for ${prompts} counted approvals`;
 }

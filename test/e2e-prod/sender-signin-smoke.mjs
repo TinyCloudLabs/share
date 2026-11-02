@@ -27,7 +27,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
-import { clickApprove, signatureMismatch, signaturesIn } from "./approval-click.mjs";
+import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { scrub } from "./smoke-redact.mjs";
@@ -138,10 +138,12 @@ async function approveUntil(page, done, counter, timeout) {
     if (sign !== undefined && !reviewSeen.has(sign)) reviewSeen.set(sign, since());
     // What the sender was asked to grant, as OpenKey's review words it.
     const review = await sign?.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "") ?? "";
-    // A click counts only once OpenKey took it; a dropped one is reported and clicked again (approval-click.mjs).
+    // A click counts only once OpenKey took it (review closed, "Signing…", or a sign call after the
+    // click); a disabled button alone is not taken. A dropped one is reported and clicked again.
     if (sign !== undefined && await clickApprove({
       sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
       closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
+      signedSince: (fromMs) => requests.some((entry) => isSignature(entry) && entry.atMs >= fromMs),
     }).catch(() => false)) {
       report.prompts[counter] += 1;
       (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
@@ -215,8 +217,8 @@ try {
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
   report.timingsMs.signIn = since(signInStart);
-  // Every OpenKey signature is a review the sender approved, and every counted approval signed:
-  // either bound broken fails the step (approval-click.mjs, signatureMismatch).
+  // Counted approvals must equal OpenKey's signatures for the step (approval-click.mjs, signatureMismatch):
+  // more signatures = a hidden review; fewer = a counted click OpenKey never signed for.
   report.signatures = { signIn: signaturesIn(requests, "share-sign-in"), share: 0 };
   const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
   assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
