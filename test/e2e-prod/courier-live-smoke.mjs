@@ -32,8 +32,10 @@
  *
  * COURIER_SMOKE_DID_FILE (off by default) appends the run's throwaway owners, one
  * "<owner DID> <inbox email>" line each, to a 0600 file under /var/tmp for the QA
- * exclusion list; the path is checked before the run starts. Its contents are never
- * printed or reported: the report says only `didFile: written n/m` or `refused`.
+ * exclusion list; the path is checked before the run starts and again before the
+ * write, which also happens when the run is stopped (before its inboxes are deleted).
+ * Its contents are never printed or reported: the report says only
+ * `didFile: written n/m` or `refused`.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -56,6 +58,16 @@ const PREFIX = "xyz.tinycloud.courier/";
 /** The current identity's private inbox (mail.tm); every inbox made in the run is deleted at its end. */
 const mailboxes = [];
 let mailbox;
+/** The opt-in owner record (COURIER_SMOKE_DID_FILE), checked at start; undefined when off. */
+let didFile;
+let ownersRecorded = false;
+// Synchronous, once: the owners go only to the opt-in 0600 file; the report says just whether it was written.
+function recordOwners() {
+  if (didFile === undefined || ownersRecorded) return;
+  ownersRecorded = true;
+  try { report.didFile = `written ${writeDidFile(didFile, mailboxes.map((entry) => ({ did: entry.did, email: entry.address })))}/${mailboxes.length}`; }
+  catch { report.didFile = "refused"; }
+}
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -133,9 +145,10 @@ function deleteMailboxes() {
   })().catch(() => { report.inboxesDeleted = `unknown/${mailboxes.length}`; });
   return deleting;
 }
-// A stopped run (Ctrl-C, kill) does not reach `finally`: still delete the inboxes.
+// A stopped run (Ctrl-C, kill) does not reach `finally`: still record the owners (first, while the
+// accounts are known), then delete the inboxes.
 for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, () => { void deleteMailboxes().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
+  process.once(signal, () => { recordOwners(); void deleteMailboxes().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)); });
 }
 
 /** Mails whose code was already typed: a later sign-in in the same inbox needs the newer one. */
@@ -213,14 +226,17 @@ const clickApprove = async (frame) => {
     await result.dispose();
   }
 };
-// A click counts only once the approval took it: the review is gone, or its primary button is
-// disabled or signing. A click at the button's coordinates that something else swallowed does not.
+// A click counts only once the approval took it: the review is gone, or its primary button (the
+// dialog's last button, or without a dialog the button named Approve) is gone, disabled or signing.
+// A click at the button's coordinates that something else swallowed does not; nor does a failed read.
 const approvalTaken = (frame) => frame.evaluate(() => {
   const visible = (element) => element.getClientRects().length > 0;
   const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
-  const button = dialog ? [...dialog.querySelectorAll("button")].filter(visible).at(-1) : undefined;
+  const button = dialog
+    ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
+    : [...document.querySelectorAll("button")].filter(visible).find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
   return !button || button.disabled || button.innerText.trim() === "Signing…";
-}).catch(() => true);
+}).catch(() => false);
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -315,7 +331,7 @@ const shot = async (page, name) => { if (shotDir !== undefined) await page.scree
 const panelText = (page) => page.evaluate(() => (document.querySelector(".cr-panel")?.textContent ?? "").replace(/\s+/g, " ").trim());
 
 const temporary = mkdtempSync(join(tmpdir(), "courier-smoke-"));
-let browser; let server; let didFile;
+let browser; let server;
 try {
   // Checked before anything touches production: a bad path stops the run here.
   setStage("options");
@@ -484,11 +500,7 @@ try {
   if (shotDir !== undefined && last !== undefined) await last.screenshot({ path: join(shotDir, "failure.png") }).catch(() => undefined);
 } finally {
   report.timingsMs.total = since();
-  // The owners go only to the opt-in 0600 file; the report says just whether it was written.
-  if (didFile !== undefined) {
-    try { report.didFile = `written ${writeDidFile(didFile, mailboxes.map((entry) => ({ did: entry.did, email: entry.address })))}/${mailboxes.length}`; }
-    catch { report.didFile = "refused"; }
-  }
+  recordOwners();
   await deleteMailboxes();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
