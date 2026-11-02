@@ -477,7 +477,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     if (queued) { queued = false; void checkStatus(); }
   };
   const load = async (append: boolean): Promise<void> => {
-    if (loading) return;
+    if (loading || (append && cursor === undefined)) return;
     loading = true; error.hidden = true; table.setAttribute("aria-busy", "true"); if (!append) { cursor = undefined; pageRows.length = 0; table.hidden = false; empty.hidden = true; more.hidden = true; renderSkeleton(); }
     // True while an automatic retry is scheduled: the load is still pending, so the busy state must not drop in between.
     let retryScheduled = false;
@@ -498,7 +498,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
       // A failed first load leaves nothing to show: drop the loading placeholders and the table so the error stands alone.
       if (!append) { body.replaceChildren(); table.hidden = true; more.hidden = true; }
       live.textContent = "";
-      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { live.textContent = "Loading your shares…"; void load(false); }); error.append(retry);
+      error.hidden = false; error.replaceChildren(node(doc, "strong", "sender-status-title", "Could not load shares"), node(doc, "span", "sender-status-detail", "Couldn't load your shares. Try again.")); const retry = node(doc, "button", "button button-secondary", "Retry") as HTMLButtonElement; retry.type = "button"; retry.addEventListener("click", () => { live.textContent = "Loading your shares…"; void load(append); }); error.append(retry);
     } finally { if (!retryScheduled) table.removeAttribute("aria-busy"); loading = false; }
   };
   newShare.addEventListener("click", () => options.onNavigate("#/new"));
