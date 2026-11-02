@@ -98,11 +98,14 @@ async function messageText(inbox, id) {
 /**
  * Polls `inbox` until a message not in `used`, whose subject matches `subject`, yields a value from
  * `extract(text, message)`; marks it used and returns the value. Failed or unreadable polls are
- * retried until the deadline. `onMessage(message, value)` sees each message read.
+ * retried until the deadline. `onMessage(message, value)` sees each message read. An aborted
+ * `signal` stops the polling (rejects with its reason) and marks nothing used.
  */
-export async function waitForMail(inbox, { subject = /./, extract, used = new Set(), timeout = 150_000, onMessage, failure = "the expected mail did not arrive in the test inbox" }) {
+export async function waitForMail(inbox, { subject = /./, extract, used = new Set(), timeout = 150_000, onMessage, signal, failure = "the expected mail did not arrive in the test inbox" }) {
   const deadline = Date.now() + timeout;
+  const stopped = () => { if (signal?.aborted) throw signal.reason ?? new Error("stopped"); };
   while (Date.now() < deadline) {
+    stopped();
     if (inbox.token || await inboxToken(inbox)) {
       const list = await mailTmJson("/messages", { token: inbox.token, attempts: 2 });
       const fresh = (list?.["hydra:member"] ?? []).filter((entry) => subject.test(entry.subject ?? "") && !used.has(entry.id))
@@ -112,10 +115,11 @@ export async function waitForMail(inbox, { subject = /./, extract, used = new Se
         if (text === undefined) continue;
         const value = extract(text, message);
         onMessage?.(message, value);
-        if (value !== undefined) { used.add(message.id); return value; }
+        if (value !== undefined) { stopped(); used.add(message.id); return value; }
       }
     }
     await sleep(4_000);
+    stopped();
   }
   throw new Error(failure);
 }
