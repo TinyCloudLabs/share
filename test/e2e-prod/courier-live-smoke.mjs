@@ -148,6 +148,14 @@ const installSignCapture = (page) => page.evaluateOnNewDocument(() => {
   });
 });
 
+/** A signed SIWE's "Issued At" and "Expiration Time" and the lifetime between them; nothing else of the message. */
+function siweTimes(message) {
+  const at = (label) => { const value = new RegExp(`^${label}: (\\S+)$`, "m").exec(String(message))?.[1]; return value !== undefined && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null; };
+  const issuedAt = at("Issued At");
+  const expirationTime = at("Expiration Time");
+  return { issuedAt, expirationTime, lifetimeMinutes: issuedAt && expirationTime ? Math.round((Date.parse(expirationTime) - Date.parse(issuedAt)) / 60_000) : null };
+}
+
 /** `<space>/<service>/<path> <ability>` for every capability in a signed session message's ReCap. */
 function recapList(message) {
   const match = /urn:recap:([A-Za-z0-9_-]+)/.exec(message);
@@ -218,6 +226,8 @@ async function drive(page, done, counter, timeout = 240_000) {
           kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
         }
         (report.approvalClicks[counter] ??= []).push(kind);
+        // The signed message's own times, so a grant's real lifetime is in the report (times only).
+        (report.signedTimes ??= {})[counter] = [...(report.signedTimes[counter] ?? []), { kind, ...siweTimes(message) }];
         await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
