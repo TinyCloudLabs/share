@@ -106,13 +106,43 @@ export async function clickApprove({ sign, during, report, closed, signedSince =
   }
 }
 
+const SIGN_ORIGIN = /^https:\/\/(api\.)?openkey\.so$/;
+const SIGN_PATH = /^\/api\/(keys\/[^/]+\/sign|delegate\/authorize-sign)$/;
+
 /** A completed OpenKey sign call in the smoke's trail (`/api/keys/<id>/sign` or `/api/delegate/authorize-sign`, 2xx). */
-export const isSignature = (entry) => /^https:\/\/(api\.)?openkey\.so$/.test(entry.origin ?? "") && entry.method === "POST"
-  && /^\/api\/(keys\/[^/]+\/sign|delegate\/authorize-sign)$/.test(entry.path ?? "")
-  && entry.status >= 200 && entry.status < 300;
+export const isSignature = (entry) => SIGN_ORIGIN.test(entry.origin ?? "") && entry.method === "POST"
+  && SIGN_PATH.test(entry.path ?? "") && entry.status >= 200 && entry.status < 300;
 
 /** OpenKey signature calls in `requests` (the smoke's trail) that started in `stage`. */
 export const signaturesIn = (requests, stage) => requests.filter((entry) => entry.stage === stage && isSignature(entry)).length;
+
+/**
+ * For a smoke without a request trail: records each OpenKey sign call `page` makes into `calls`
+ * (shared across pages), with the step it STARTED in (`step()`) and its start time (`at()`). A call
+ * that completes 2xx is pushed to `calls.signed`; calls still open are in `calls.open`.
+ */
+export function watchSignatures(page, { calls, step, at }) {
+  calls.signed ??= [];
+  calls.open ??= new Map();
+  page.on("request", (request) => {
+    let url;
+    try { url = new URL(request.url()); } catch { return; }
+    if (request.method() === "POST" && SIGN_ORIGIN.test(url.origin) && SIGN_PATH.test(url.pathname)) calls.open.set(request, { step: step(), atMs: at() });
+  });
+  const settle = (request, status) => {
+    const call = calls.open.get(request);
+    if (call === undefined) return;
+    calls.open.delete(request);
+    if (status >= 200 && status < 300) calls.signed.push(call);
+  };
+  page.on("requestfinished", (request) => settle(request, request.response()?.status() ?? 0));
+  page.on("requestfailed", (request) => settle(request, 0));
+  return calls;
+}
+/** Completed sign calls in `calls` for one step. */
+export const signaturesFor = (calls, step) => (calls.signed ?? []).filter((call) => call.step === step).length;
+/** Whether a sign call that started at or after `fromMs` has completed. */
+export const signedSince = (calls, fromMs) => (calls.signed ?? []).some((call) => call.atMs >= fromMs);
 
 /**
  * Why a step's counted approvals and OpenKey's signatures differ, or null. They must be equal: more

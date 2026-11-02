@@ -5,7 +5,11 @@
  * mail.tm inbox made for the run, deleted at its end) into the candidate /courier view, served at the production
  * origin, against production OpenKey and the production owner node. No real
  * person's account or key is involved: every run creates a new inbox. Every click
- * in OpenKey's widget is real browser input, as a person's is.
+ * in OpenKey's widget is real browser input, as a person's is. An Approve click
+ * counts only once OpenKey took it (a sign call after the click, "Signing…", or
+ * the review closing; a button that is only disabled is not taken); a dropped
+ * click is reported (approveClicksNotTaken, approveClicksDropped) and retried.
+ * Each step's OpenKey signatures must equal its counted approvals.
  *
  *   node test/e2e-prod/courier-live-smoke.mjs
  *
@@ -44,10 +48,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { build } from "vite";
+import { clickApprove, signatureMismatch, signaturesFor, signedSince, watchSignatures } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { didFileTarget, didFromSiwe, writeDidFile } from "./did-file.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
-import { APPROVE_NAME, refusal, scrub } from "./smoke-redact.mjs";
+import { refusal, scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.COURIER_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
@@ -78,7 +83,7 @@ const EXPECTED_VIEW_GRANT = [
   "agents/kv/xyz.tinycloud.courier/me/approvals/ tinycloud.kv/put",
   "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
 ].sort();
-const report = { type: "tinycloud.share/courier-live-smoke/v2", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, approvalClicks: {}, approvalCountUnit: "OpenKey Approve-button clicks; no passkey ceremony measured", timingsMs: {} };
+const report = { type: "tinycloud.share/courier-live-smoke/v2", openkey: OPENKEY, result: "failed", stage: "start", approvals: {}, approvalClicks: {}, signatures: {}, approveClicksNotTaken: 0, approvalCountUnit: "OpenKey Approve clicks OpenKey took (a sign call, Signing…, or the review closing); signatures must equal them per step", timingsMs: {} };
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
 const consoleErrors = [];
@@ -125,47 +130,12 @@ async function clickHandle(handle) {
 }
 const clickButton = async (frame, label) => clickHandle(await frame.evaluateHandle((text) =>
   [...document.querySelectorAll("button")].find((candidate) => candidate.innerText.trim().startsWith(text) && !candidate.disabled) ?? null, label));
-// The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
-// first), found by role and position, and only if its name is one of the approval's labels
-// (APPROVE_NAME: ready or signing). Anything else (Cancel, a copy button, an extra button) is "not
-// found", so the smoke keeps polling instead of clicking it, and the report lists each rejected
-// label once. Without a dialog: the button named Approve or Approve exact bytes. The pick and its
-// name check are one in-page read, and the element clicked (real browser input) is the one checked.
-const rejectedLabels = new Set();
-const clickApprove = async (frame) => {
-  const result = await frame.evaluateHandle((approveName) => {
-    const named = new RegExp(approveName);
-    const visible = (element) => element.getClientRects().length > 0;
-    const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
-    const button = dialog
-      ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
-      : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
-    const name = button?.innerText.trim() ?? "";
-    if (button && !named.test(name)) return { button: null, rejected: name };
-    return { button: button && !button.disabled ? button : null, rejected: "" };
-  }, APPROVE_NAME.source);
-  try {
-    const rejected = await (await result.getProperty("rejected")).jsonValue();
-    if (rejected && rejectedLabels.size < 5) {
-      rejectedLabels.add(scrub(rejected).slice(0, 40));
-      report.approveLabelsRejected = [...rejectedLabels];
-    }
-    return await clickHandle(await result.getProperty("button"));
-  } finally {
-    await result.dispose();
-  }
-};
-// A click counts only once the approval took it: the review is gone, or its primary button (the
-// dialog's last button, or without a dialog the button named Approve) is gone, disabled or signing.
-// A click at the button's coordinates that something else swallowed does not; nor does a failed read.
-const approvalTaken = (frame) => frame.evaluate(() => {
-  const visible = (element) => element.getClientRects().length > 0;
-  const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
-  const button = dialog
-    ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
-    : [...document.querySelectorAll("button")].filter(visible).find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
-  return !button || button.disabled || button.innerText.trim() === "Signing…";
-}).catch(() => false);
+/** OpenKey sign calls of every page, with the step each started in (approval-click.mjs). */
+const signCalls = {};
+/** The drive step under way (the counter), for attributing sign calls. */
+let currentStep = "none";
+/** When each OpenKey review frame first appeared (for a dropped click's timing). */
+const reviewSeen = new WeakMap();
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -188,6 +158,7 @@ function recapList(message) {
 let emailDone = false;
 /** Drives OpenKey (email sign-in the first time, every sign review) until `done` holds in the page. */
 async function drive(page, done, counter, timeout = 240_000) {
+  currentStep = counter;
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (Date.now() - (deadline - timeout) > 100_000 && report.stuck === undefined) {
@@ -219,6 +190,7 @@ async function drive(page, done, counter, timeout = 240_000) {
     }
     const sign = frameAt(page, "/widget/embed/sign");
     if (sign !== undefined) {
+      if (!reviewSeen.has(sign)) reviewSeen.set(sign, since());
       const messages = await sign.evaluate(() => window.__tcSigned ?? []).catch(() => []);
       for (const message of messages) {
         if (signedMessages.includes(message)) continue;
@@ -226,27 +198,36 @@ async function drive(page, done, counter, timeout = 240_000) {
         // The identity's owner, for the opt-in DID file only (never printed or reported).
         if (mailbox !== undefined && mailbox.did === undefined) mailbox.did = didFromSiwe(message);
       }
-      if (await clickApprove(sign).catch(() => false)) {
-        const taken = await until(async () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached() || await approvalTaken(sign), 5_000, "the approval to take the click").catch(() => false);
-        if (!taken) {
-          // Not counted: the next pass clicks again.
-          report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
+      // Approve by role, position and name (approval-click.mjs). A click counts only once OpenKey took
+      // it: a sign call after the click, "Signing…", or the review closing; a button that is only
+      // disabled is not taken. A dropped click is reported (approveClicksNotTaken/Dropped) and retried.
+      const taken = await clickApprove({
+        sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
+        closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
+        signedSince: (fromMs) => signedSince(signCalls, fromMs),
+      }).catch(() => false);
+      if (taken) {
+        report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
+        const message = messages.at(-1) ?? "";
+        let kind;
+        if (counter !== "seedSignIn") {
+          assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
+          kind = "courier-session";
         } else {
-          report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
-          const message = messages.at(-1) ?? "";
-          let kind;
-          if (counter !== "seedSignIn") {
-            assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
-            kind = "courier-session";
-          } else {
-            kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
-          }
-          (report.approvalClicks[counter] ??= []).push(kind);
-          await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
+          kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
         }
+        (report.approvalClicks[counter] ??= []).push(kind);
+        await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
-    if (await page.evaluate(done).catch(() => false)) return;
+    if (await page.evaluate(done).catch(() => false)) {
+      // Counted approvals must equal OpenKey's signatures for the step, once its sign calls settled.
+      await until(() => [...(signCalls.open?.values() ?? [])].every((call) => call.step !== counter), 5_000, "the step's sign calls to settle").catch(() => undefined);
+      report.signatures[counter] = signaturesFor(signCalls, counter);
+      const mismatch = signatureMismatch(report.approvals[counter] ?? 0, report.signatures[counter]);
+      assert(mismatch === null, `${counter}: ${mismatch}`);
+      return;
+    }
     for (const frame of page.frames().filter((candidate) => candidate.url().startsWith(OPENKEY))) {
       const alert = await frame.evaluate(() => [...document.querySelectorAll("[role=alert]")].map((node) => node.textContent ?? "").join(" ").trim()).catch(() => "");
       if (alert) { report.openKeyAlert = scrub(alert).replace(/\s+/g, " ").slice(0, 200); throw new Error("OpenKey showed an error"); }
@@ -286,6 +267,7 @@ try {
     const page = await context.newPage();
     await page.setViewport({ width, height: 900 });
     await installSignCapture(page);
+    watchSignatures(page, { calls: signCalls, step: () => currentStep, at: since });
     page.on("pageerror", (error) => consoleErrors.push(`pageerror: ${scrub(error.message).slice(0, 200)}`));
     page.on("console", (message) => { if (message.type() === "error" && !/Failed to load resource/.test(message.text())) consoleErrors.push(scrub(message.text()).slice(0, 200)); });
     page.on("response", async (response) => {

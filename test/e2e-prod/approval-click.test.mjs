@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import puppeteer from "puppeteer";
-import { approvePick, boxMoved, clickApprove, clickState, signatureMismatch, signaturesIn } from "./approval-click.mjs";
+import { approvePick, boxMoved, clickApprove, clickState, signatureMismatch, signaturesFor, signaturesIn, signedSince, watchSignatures } from "./approval-click.mjs";
 import { APPROVE_NAME } from "./smoke-redact.mjs";
 
 // jsdom has no layout: an element counts as visible unless it (or an ancestor) is `hidden`.
@@ -111,6 +111,48 @@ test("clickApprove on a real page: taken only by Signing… or a sign call; a sw
     assert.equal(await page.evaluate(() => Number(document.body.dataset.clicks ?? 0)), 0, "a renamed label was clicked");
     assert.deepEqual(report.approveLabelsRejected, ["Approve & sign for <email>"], "the rejected label is scrubbed");
     assert.equal(report.approveClicksNotTaken, 2, "a refused pick is not a dropped click");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("watchSignatures counts completed OpenKey sign calls by the step they started in", async () => {
+  const browser = await puppeteer.launch({ args: process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [] });
+  try {
+    const page = await browser.newPage();
+    // A stand-in OpenKey API: answered in the browser, never on the network. One sign call is slow.
+    await page.setRequestInterception(true);
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.origin === "https://example.test") return request.respond({ status: 200, contentType: "text/html", body: "<p>page</p>" });
+      const headers = { "access-control-allow-origin": "*", "access-control-allow-headers": "*", "access-control-allow-methods": "*" };
+      if (request.method() === "OPTIONS") return request.respond({ status: 204, headers });
+      const status = url.pathname.endsWith("/fail/sign") ? 500 : 200;
+      const reply = () => request.respond({ status, headers, contentType: "application/json", body: "{}" });
+      return url.pathname.includes("/slow/") ? setTimeout(reply, 400) : reply();
+    });
+    let step = "first"; let clock = 0;
+    const calls = watchSignatures(page, { calls: {}, step: () => step, at: () => ++clock });
+    await page.goto("https://example.test/");
+    const call = (url, method = "POST") => page.evaluate((u, m) => fetch(u, { method: m, headers: { "content-type": "text/plain" }, body: m === "POST" ? "{}" : undefined }).then(() => true, () => false), url, method);
+
+    await call("https://api.openkey.so/api/keys/k1/sign");
+    await call("https://openkey.so/api/delegate/authorize-sign");
+    await call("https://api.openkey.so/api/delegate/authorize-sign-prepare");
+    await call("https://api.openkey.so/api/keys/k1", "GET");
+    await call("https://api.openkey.so/api/keys/fail/sign");
+    const slow = call("https://api.openkey.so/api/keys/slow/sign");
+    await new Promise((done) => setTimeout(done, 100));
+    step = "second"; // the slow call started in "first" and finishes after the step changed
+    await slow;
+    await call("https://api.openkey.so/api/keys/k2/sign");
+    await new Promise((done) => setTimeout(done, 200));
+
+    assert.equal(signaturesFor(calls, "first"), 3, "two sign calls plus the slow one, attributed to the step it started in");
+    assert.equal(signaturesFor(calls, "second"), 1);
+    assert.equal(calls.open.size, 0);
+    assert.equal(signedSince(calls, 1_000), false);
+    assert.equal(signedSince(calls, 1), true);
   } finally {
     await browser.close();
   }
