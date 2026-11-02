@@ -81,6 +81,8 @@ export async function clickApprove({ sign, during, report, closed, signedSince =
     while (Date.now() < deadline) {
       if (closed() || signedSince(clickedAt)) return true;
       const state = await button.evaluate(clickState).catch(() => null);
+      // Known limit: a reworded signing label plus a sign call slower than takenMs reads as a drop;
+      // the retry finds no enabled Approve, so nothing is clicked twice, and the signature check holds.
       if (state?.signing) return true;
       if (state?.connected && state.disabled) disabledWithoutSigning = true;
       // Re-enabled with no sign call and no "Signing…": the click missed (the disable was a layout block).

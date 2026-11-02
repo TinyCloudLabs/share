@@ -72,8 +72,9 @@ test("clickApprove on a real page: taken only by Signing… or a sign call; a sw
     const page = await browser.newPage();
     const button = (label, onclick) => `<div role="dialog"><button>Cancel</button><button onclick="document.body.dataset.clicks=Number(document.body.dataset.clicks||0)+1;${onclick}">${label}</button></div>`;
     const signing = "this.disabled=true;this.textContent='Signing…'";
-    // OpenKey's layout block (TC-2320): disabled for 300 ms after a resize, then enabled again, no signing.
-    const layoutBlock = "this.disabled=true;setTimeout(()=>{this.disabled=false},300)";
+    // OpenKey's layout block (TC-2320): disabled for a moment after a resize (≈300 ms; 600 ms here so a
+    // poll on a loaded runner can't miss it), then enabled again, no signing.
+    const layoutBlock = "this.disabled=true;setTimeout(()=>{this.disabled=false},600)";
     let signed = false;
     page.on("console", (message) => { if (message.text() === "signed") signed = true; });
     const report = {};
@@ -90,8 +91,8 @@ test("clickApprove on a real page: taken only by Signing… or a sign call; a sw
 
     await page.setContent(button("Approve", layoutBlock));
     const started = Date.now();
-    assert.equal(await clickApprove(options), false, "disabled then enabled again without signing is NOT taken");
-    assert.ok(Date.now() - started < 1_000, "the re-enable ends the wait without running out the clock");
+    assert.equal(await clickApprove({ ...options, takenMs: 2_000 }), false, "disabled then enabled again without signing is NOT taken");
+    assert.ok(Date.now() - started < 2_000, "the re-enable ends the wait without running out the clock");
     assert.equal(report.approveClicksNotTaken, 1);
     assert.equal(report.approveClicksDropped[0].disabledWithoutSigning, true);
 

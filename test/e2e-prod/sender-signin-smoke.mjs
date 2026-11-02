@@ -49,7 +49,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
-const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, timingsMs: {} };
+const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
