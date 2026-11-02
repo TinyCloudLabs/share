@@ -180,17 +180,29 @@ const clickButton = async (frame, label) => clickHandle(await frame.evaluateHand
 // The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
 // first), found by role and position, and only if its name is one of the approval's labels
 // (APPROVE_NAME: ready or signing). Anything else (Cancel, a copy button, an extra button) is "not
-// found", so the smoke keeps polling instead of clicking it. Without a dialog: the button named
-// Approve or Approve exact bytes. The lookup is one in-page read; the click is real browser input.
-const clickApprove = async (frame) => clickHandle(await frame.evaluateHandle((approveName) => {
-  const named = new RegExp(approveName);
-  const visible = (element) => element.getClientRects().length > 0;
-  const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
-  const button = dialog
-    ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
-    : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
-  return button && named.test(button.innerText.trim()) && !button.disabled ? button : null;
-}, APPROVE_NAME.source));
+// found", so the smoke keeps polling instead of clicking it, and the report records the rejected
+// label. Without a dialog: the button named Approve or Approve exact bytes. The pick and its name
+// check are one in-page read, and the element clicked (real browser input) is the one checked.
+const clickApprove = async (frame) => {
+  const result = await frame.evaluateHandle((approveName) => {
+    const named = new RegExp(approveName);
+    const visible = (element) => element.getClientRects().length > 0;
+    const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+    const button = dialog
+      ? [...dialog.querySelectorAll("button")].filter(visible).at(-1)
+      : [...document.querySelectorAll("button")].find((candidate) => /^Approve( exact bytes)?$/.test(candidate.innerText.trim()));
+    const name = button?.innerText.trim() ?? "";
+    if (button && !named.test(name)) return { button: null, rejected: name };
+    return { button: button && !button.disabled ? button : null, rejected: "" };
+  }, APPROVE_NAME.source);
+  try {
+    const rejected = await (await result.getProperty("rejected")).jsonValue();
+    if (rejected) report.approveLabelRejected = scrub(rejected).slice(0, 40);
+    return await clickHandle(await result.getProperty("button"));
+  } finally {
+    await result.dispose();
+  }
+};
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
