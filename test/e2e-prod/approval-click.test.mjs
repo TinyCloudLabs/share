@@ -157,3 +157,53 @@ test("watchSignatures counts completed OpenKey sign calls by the step they start
     await browser.close();
   }
 });
+
+test("watchSignatures sees sign calls from a cross-origin iframe and a popup, drops failed ones, and never counts twice", async () => {
+  const browser = await puppeteer.launch({ args: process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [] });
+  try {
+    const calls = {};
+    let clock = 0;
+    const watch = (page) => watchSignatures(page, { calls, step: () => "review", at: () => ++clock });
+    // Stand-ins answered in the browser, never on the network: a host page, an OpenKey frame, the API.
+    const serve = async (page) => {
+      await page.setRequestInterception(true);
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        const cors = { "access-control-allow-origin": "*" };
+        if (url.origin === "https://host.test") return request.respond({ status: 200, contentType: "text/html", body: `<iframe src="https://frame.test/"></iframe>` });
+        if (url.origin === "https://frame.test") return request.respond({ status: 200, contentType: "text/html", body: "<p>review</p>" });
+        if (url.pathname.endsWith("/abort/sign")) return request.abort("connectionfailed");
+        return request.respond({ status: 200, headers: cors, contentType: "application/json", body: "{}" });
+      });
+    };
+    const page = await browser.newPage();
+    // A popup (window.open) is a new page target: watch it as the smoke does.
+    browser.on("targetcreated", async (target) => {
+      if (target.type() !== "page") return;
+      const popup = await target.page().catch(() => null);
+      if (popup && popup !== page) { await serve(popup); watch(popup); }
+    });
+    await serve(page);
+    watch(page);
+    watch(page); // a second watch of the same page is a no-op
+    await page.goto("https://host.test/");
+    const frame = await (async () => { for (let i = 0; i < 50; i++) { const found = page.frames().find((f) => f.url().startsWith("https://frame.test")); if (found) return found; await new Promise((done) => setTimeout(done, 50)); } return null; })();
+    assert.ok(frame, "the cross-origin frame loaded");
+    const post = (target, url) => target.evaluate((u) => fetch(u, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" }).then(() => true, () => false), url);
+
+    assert.equal(await post(frame, "https://api.openkey.so/api/keys/k1/sign"), true);
+    assert.equal(await post(frame, "https://api.openkey.so/api/keys/abort/sign"), false);
+    const popupOpened = new Promise((done) => browser.once("targetcreated", (target) => done(target)));
+    await page.evaluate(() => { window.open("https://frame.test/popup", "_blank"); });
+    const popup = await (await popupOpened).page();
+    await new Promise((done) => setTimeout(done, 300));
+    await popup.waitForFunction(() => document.readyState === "complete");
+    assert.equal(await post(popup, "https://api.openkey.so/api/keys/k2/sign"), true);
+    await new Promise((done) => setTimeout(done, 200));
+
+    assert.equal(signaturesFor(calls, "review"), 2, "the iframe's and the popup's sign calls, each once; the aborted one not at all");
+    assert.equal(calls.open.size, 0, "a failed call does not stay open");
+  } finally {
+    await browser.close();
+  }
+});

@@ -261,6 +261,13 @@ try {
     args: ["--disable-quic", "--no-proxy-server", `--host-resolver-rules=MAP share.tinycloud.xyz 127.0.0.1:${server.port}`, `--ignore-certificate-errors-spki-list=${spki}`, ...(process.env.GITHUB_ACTIONS === "true" ? ["--no-sandbox"] : [])],
     userDataDir: join(temporary, "profile"),
   });
+  // Every page target is watched for OpenKey sign calls, popups included (OpenKey's "continue in a
+  // new window" path), so no signature can come from an unwatched page.
+  browser.on("targetcreated", async (target) => {
+    if (target.type() !== "page") return;
+    const page = await target.page().catch(() => null);
+    if (page) watchSignatures(page, { calls: signCalls, step: () => currentStep, at: since });
+  });
 
   let context = await browser.createBrowserContext();
   const open = async (path, width = 1280) => {

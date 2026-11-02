@@ -119,11 +119,15 @@ export const signaturesIn = (requests, stage) => requests.filter((entry) => entr
 /**
  * For a smoke without a request trail: records each OpenKey sign call `page` makes into `calls`
  * (shared across pages), with the step it STARTED in (`step()`) and its start time (`at()`). A call
- * that completes 2xx is pushed to `calls.signed`; calls still open are in `calls.open`.
+ * that completes 2xx is pushed to `calls.signed`; calls still open are in `calls.open`. Requests of
+ * the page's frames, cross-origin ones included, arrive on the page. Watching a page twice is a no-op.
  */
+const watched = new WeakSet();
 export function watchSignatures(page, { calls, step, at }) {
   calls.signed ??= [];
   calls.open ??= new Map();
+  if (watched.has(page)) return calls;
+  watched.add(page);
   page.on("request", (request) => {
     let url;
     try { url = new URL(request.url()); } catch { return; }
