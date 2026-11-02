@@ -5,8 +5,13 @@
 
 const ALLOWED = new Set(["allow-popups", "allow-popups-to-escape-sandbox"]);
 
-/** Whether a frame's `sandbox` attribute value (null when absent) keeps a message body inert. */
+/**
+ * Whether a frame's `sandbox` attribute value (null when absent) keeps a message body inert. Tokens
+ * are split on ASCII whitespace and compared case-insensitively, as the browser does, so
+ * `ALLOW-SCRIPTS` is allow-scripts; anything else that isn't a popup token (a comma list, a
+ * non-breaking space) fails.
+ */
 export function bodySandboxOk(value) {
   if (typeof value !== "string") return false;
-  return value.trim().split(/\s+/).filter((token) => token !== "").every((token) => ALLOWED.has(token.toLowerCase()));
+  return value.split(/[\t\n\f\r ]+/).filter((token) => token !== "").every((token) => ALLOWED.has(token.toLowerCase()));
 }

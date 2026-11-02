@@ -356,13 +356,28 @@ try {
   await view.waitForSelector(".cr-message--peer", { timeout: 60_000 });
   await view.waitForSelector(".cr-body iframe", { timeout: 30_000 });
   await sleep(800);
-  const thread = await view.evaluate(() => ({ messages: document.querySelectorAll(".cr-message").length, tasks: document.querySelectorAll(".cr-task").length, state: document.querySelector(".cr-state")?.textContent, sandbox: [...document.querySelectorAll(".cr-body iframe")].map((frame) => frame.getAttribute("sandbox")) }));
-  assert.deepEqual({ messages: thread.messages, tasks: thread.tasks, state: thread.state }, { messages: 2, tasks: 1, state: "Waiting for you to approve" });
+  const thread = await view.evaluate(() => ({ messages: document.querySelectorAll(".cr-message").length, tasks: document.querySelectorAll(".cr-task").length, state: document.querySelector(".cr-state")?.textContent }));
+  assert.deepEqual(thread, { messages: 2, tasks: 1, state: "Waiting for you to approve" });
+  // Bodies render lazily (when near the viewport) and asynchronously: bring each into view and wait
+  // until it has its frame, or the plain-text fallback (pre.viewer-source) a failed render leaves.
+  const bodyCount = await view.evaluate(() => document.querySelectorAll(".cr-body").length);
+  for (let index = 0; index < bodyCount; index++) {
+    await view.evaluate((i) => document.querySelectorAll(".cr-body")[i]?.scrollIntoView({ block: "center" }), index);
+    await view.waitForFunction((i) => { const host = document.querySelectorAll(".cr-body")[i]; return host !== undefined && (host.querySelector("iframe") !== null || host.querySelector("pre.viewer-source") !== null); }, { timeout: 30_000 }, index);
+  }
+  const bodies = await view.evaluate(() => {
+    const hosts = [...document.querySelectorAll(".cr-body")];
+    return { bodies: hosts.length, frames: hosts.filter((host) => host.querySelector("iframe") !== null).length, fallbacks: hosts.filter((host) => host.querySelector("pre.viewer-source") !== null).length, sandbox: hosts.flatMap((host) => [...host.querySelectorAll("iframe")].map((frame) => frame.getAttribute("sandbox"))) };
+  });
   // Every body frame keeps the body inert: a sandbox attribute present, granting at most link popups
   // (no scripts, no same origin; popups are intended since 50d96ed). body-frame.mjs, unit tested.
-  report.bodySandboxes = thread.sandbox.map((value) => (value === null ? null : String(value).slice(0, 80)));
-  assert.ok(thread.sandbox.length >= 1, "at least one message body frame was checked");
-  assert.ok(thread.sandbox.every(bodySandboxOk), `every body frame is sandboxed with at most popups (got ${JSON.stringify(report.bodySandboxes)})`);
+  report.bodyFrames = { bodies: bodies.bodies, frames: bodies.frames, fallbacks: bodies.fallbacks };
+  report.bodySandboxes = bodies.sandbox.map((value) => (value === null ? null : String(value).slice(0, 80)));
+  assert.ok(bodies.bodies >= 1, "at least one message body was checked");
+  assert.equal(bodies.fallbacks, 0, "no message body fell back to plain text");
+  assert.equal(bodies.frames, bodies.bodies, "every message body rendered in a frame");
+  assert.equal(bodies.sandbox.length, bodies.bodies, "one frame per message body");
+  assert.ok(bodies.sandbox.every(bodySandboxOk), `every body frame is sandboxed with at most popups (got ${JSON.stringify(report.bodySandboxes)})`);
   await shot(view, "03-thread");
 
   setStage("approve");
