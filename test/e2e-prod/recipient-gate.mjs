@@ -1,27 +1,43 @@
 /**
  * Recipient half of the TC-500 production-origin gate.
  *
- * The sender creates an addressed invitation through the candidate build, then
- * this script opens the mailed URL in a fresh profile. It deliberately accepts
- * the invitation and expected original file as explicit inputs so it cannot
- * accidentally create authority or deliver mail while a dependent deployment
- * is not ready.
+ * The sender creates an addressed invitation through the candidate build to a
+ * private test inbox made beforehand (`node test/e2e-prod/mail-tm.mjs create
+ * <file>`), then this script reads the mailed invitation and, after its click,
+ * the mailed code from that inbox and opens the invitation in a fresh profile.
+ * It never prints the address, the link or the code, and deletes the inbox and
+ * its file at the end, also when stopped. It deliberately takes the inbox and
+ * the expected original file as explicit inputs so it cannot accidentally
+ * create authority or deliver mail while a dependent deployment is not ready.
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createInterface } from "node:readline";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { inspectShare } from "@tinycloud/share-sdk";
 import { verifyOwnerNodeBinding } from "@tinycloud/sdk-core";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { deleteInboxes, deleteInboxesOnStop, readInboxFile, removeInboxFile, seenMail, waitForMail } from "./mail-tm.mjs";
 import {
   auditRecipientTrace,
   PRODUCTION_CREDENTIALS_ORIGIN,
   PRODUCTION_LOCATION_REGISTRY_ORIGIN,
 } from "./recipient-trace.mjs";
+
+// Deletes the adopted inbox, then its file (kept if mail.tm did not confirm, for `mail-tm.mjs delete`).
+let inbox;
+let cleaning;
+function removeFileIfDeleted({ deleted, total }) {
+  if (deleted !== total) { console.error("[tc500] the test inbox was not deleted; run `node test/e2e-prod/mail-tm.mjs delete` on its file"); return; }
+  try { removeInboxFile(inboxFile); } catch { console.error("[tc500] the test inbox was deleted but its file was not removed"); }
+}
+function cleanUp() {
+  if (inbox === undefined) return Promise.resolve();
+  return (cleaning ??= deleteInboxes().then(removeFileIfDeleted));
+}
+deleteInboxesOnStop({ after: (result) => { if (inbox !== undefined) removeFileIfDeleted(result); } });
 
 let failureReported = false;
 function reportRedactedFailure() {
@@ -31,24 +47,35 @@ function reportRedactedFailure() {
   // invitation fragment, while acquisition errors can include mailbox input.
   console.error("[tc500] production recipient gate failed; sensitive details withheld");
   process.exitCode = 1;
+  void cleanUp();
 }
 process.on("uncaughtException", reportRedactedFailure);
 process.on("unhandledRejection", reportRedactedFailure);
 
 const RUN = process.env.TC500_E2E_RUN;
-const invitation = process.env.TC500_E2E_SHARE_URL;
-const recipientEmail = process.env.TC500_E2E_RECIPIENT_EMAIL;
+const inboxFile = process.env.TC500_E2E_RECIPIENT_INBOX;
 const expectedFile = process.env.TC500_E2E_EXPECTED_FILE;
 
 if (RUN !== "1") throw new Error("refusing live production-origin run: set TC500_E2E_RUN=1");
-if (invitation === undefined || recipientEmail === undefined || expectedFile === undefined) {
-  throw new Error("TC500_E2E_SHARE_URL, TC500_E2E_RECIPIENT_EMAIL, and TC500_E2E_EXPECTED_FILE are required");
+if (inboxFile === undefined || expectedFile === undefined) {
+  throw new Error("TC500_E2E_RECIPIENT_INBOX and TC500_E2E_EXPECTED_FILE are required");
 }
-if (!recipientEmail.endsWith("@mailinator.com")) throw new Error("recipient must be a disposable @mailinator.com inbox");
 const expected = readFileSync(resolve(expectedFile));
 if (expected.length === 0 || ![...expected].some((byte) => byte === 0 || byte > 0x7f)) {
   throw new Error("expected file must contain non-UTF-8 bytes (the byte-exact gate would otherwise be meaningless)");
 }
+// The private test inbox the invitation was mailed to (address and password, 0600 under /var/tmp).
+inbox = readInboxFile(inboxFile);
+
+// The invitation mailed to the inbox (TC500_E2E_SHARE_URL overrides it); held in memory only.
+const INVITATION = /https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=[^\s"'<>]+/;
+const invitationMail = new Set();
+const invitation = process.env.TC500_E2E_SHARE_URL ?? await waitForMail(inbox, {
+  extract: (text) => INVITATION.exec(text)?.[0],
+  used: invitationMail,
+  timeout: 300_000,
+  failure: "no invitation arrived in the test inbox",
+});
 
 const parsedInvitation = new URL(invitation);
 if (parsedInvitation.origin !== "https://share.tinycloud.xyz" || !/^\/s\/[a-z2-7]{26}$/.test(parsedInvitation.pathname) || !parsedInvitation.hash.startsWith("#v=4&k=")) {
@@ -164,18 +191,20 @@ try {
   });
   await page.goto(invitation, { waitUntil: "domcontentloaded" });
 
-  // The page requests a code only when the recipient clicks, so the operator
-  // reads the code from the Mailinator message that this click produced. The
-  // invitation already binds the mailbox, so the fresh recipient types only
-  // the code and never creates an OpenKey identity. Keeping mailbox access
-  // outside this helper avoids committing a mail API token or a simulated
-  // credential path.
+  // The page requests a code only when the recipient clicks, so the gate reads
+  // the code from the message that this click produced (mail already in the
+  // inbox is skipped). The invitation already binds the mailbox, so the fresh
+  // recipient types only the code and never creates an OpenKey identity.
   await page.waitForSelector(".claim-request-code", { timeout: 180_000 });
+  const earlierMail = await seenMail(inbox);
   await page.click(".claim-request-code");
-  process.stderr.write("[tc500] code requested; enter the 8-digit code from the delivered message: ");
-  const prompt = createInterface({ input: process.stdin });
-  const otp = (await prompt[Symbol.asyncIterator]().next()).value?.trim();
-  prompt.close();
+  const otp = await waitForMail(inbox, {
+    subject: /code/i,
+    extract: (text) => { const codes = new Set([...text.matchAll(/(?<!\d)(\d{8})(?!\d)/g)].map((match) => match[1])); return codes.size === 1 ? [...codes][0] : undefined; },
+    used: earlierMail,
+    timeout: 180_000,
+    failure: "no code arrived in the test inbox",
+  });
   if (otp === undefined || !/^\d{8}$/.test(otp)) throw new Error("the entered code must be the 8-digit code from the delivered message");
   if (!await submitOtp(page, otp)) throw new Error("SDK credential acquisition control did not accept the mailbox OTP");
 
@@ -210,6 +239,7 @@ try {
 } finally {
   await browser?.close();
   await server.close();
+  await cleanUp();
   // Deliberately leave the short-lived directory for the invoking runner to
   // trash after it has collected artifacts; never recursively delete a broad path.
   console.log(`[tc500] temporary artifacts: ${temporary}`);

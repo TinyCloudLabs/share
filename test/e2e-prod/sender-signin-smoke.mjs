@@ -1,8 +1,9 @@
 /**
  * Real sender sign-in smoke (TC-994).
  *
- * Signs a brand-new throwaway OpenKey account (email OTP through a public
- * Mailinator inbox) into Share, creates a link-only share and opens it as a
+ * Signs a brand-new throwaway OpenKey account (email OTP through a private
+ * mail.tm inbox made for the run and deleted at its end, also when the run is
+ * stopped) into Share, creates a link-only share and opens it as a
  * recipient. Everything is production: OpenKey, the owner Node, the registry.
  * Unlike the joined gate, nothing about OpenKey is faked.
  *
@@ -27,28 +28,25 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
 import { startCandidateServer } from "./candidate-server.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
+import { scrub } from "./smoke-redact.mjs";
 
 const SHARE = "https://share.tinycloud.xyz";
 const OPENKEY = process.env.SHARE_SMOKE_OPENKEY_ORIGIN ?? "https://openkey.so";
-const MAILINATOR = "https://www.mailinator.com/api/v2/domains/public/inboxes";
 const MAX_SIGNIN_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SIGNIN_PROMPTS ?? 2);
 const MAX_SHARE_PROMPTS = Number(process.env.SHARE_SMOKE_MAX_SHARE_PROMPTS ?? 1);
 // Share's failure copy (src/share/sender-failure.ts) ends a sign-in or a share.
 const FAILURE_COPY = /temporarily unavailable|couldn't reach tinycloud|could not be completed|went wrong|session expired|isn't set up|storage isn't ready|didn't go through|couldn't create/i;
 
-const inbox = `tc-share-smoke-${randomBytes(8).toString("hex")}`;
+let inbox;
 const nonce = `tc-share-smoke-${randomBytes(6).toString("hex")}`;
 const t0 = Date.now();
 const since = (start = t0) => Date.now() - start;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-const scrub = (value) => String(value)
-  .replace(/#\S*/g, "#<fragment>")
-  .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>")
-  .replace(/0x[0-9a-fA-F]{40}/g, "0x<address>")
-  .replace(/did(:|%3A)(key|pkh)[\w:.%-]{8,}/gi, "did:$2:<id>")
-  .replace(/[A-Za-z0-9_-]{20,}/g, "<id>")
-  .replace(/\b\d{6,8}\b/g, "<digits>");
+// Deletes the run's inbox once; a stopped run (Ctrl-C, kill) does not reach `finally`.
+const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
+deleteInboxesOnStop();
 
 const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, timingsMs: {} };
 const requests = [];
@@ -91,30 +89,11 @@ function track(page, phase) {
   });
 }
 
-async function mailinator(path) {
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    const response = await fetch(`${MAILINATOR}/${inbox}${path}`, { headers: { "user-agent": "tinycloud-share-smoke" } }).catch(() => undefined);
-    if (response?.ok) { const text = await response.text(); if (text.trim()) return JSON.parse(text); }
-    await sleep(2_000 * attempt);
-  }
-  return {};
-}
-
-async function openKeyOtp(timeout = 150_000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const { msgs = [] } = await mailinator("");
-    const codeMail = msgs.filter((entry) => /openkey/i.test(entry.subject ?? "")).sort((a, b) => (a.seconds_ago ?? 0) - (b.seconds_ago ?? 0));
-    for (const message of codeMail) {
-      const body = JSON.stringify(await mailinator(`/messages/${message.id}`)).replace(/<[^>]+>/g, " ");
-      // The mail repeats the code; a second six-digit run elsewhere is not it.
-      const codes = new Set([...body.matchAll(/verification code[^0-9]{0,80}(\d{6})(?!\d)/gi)].map((match) => match[1]));
-      report.otp = { messages: codeMail.length, codesInMessage: codes.size, mailAgeSeconds: message.seconds_ago, afterMs: since() };
-      if (codes.size === 1) return [...codes][0];
-    }
-    await sleep(4_000);
-  }
-  throw new Error("no OpenKey code arrived in the Mailinator inbox");
+async function openKeyOtp() {
+  const code = await openKeyCode(inbox, {
+    onMessage: (message, value) => { report.otp = { messages: (report.otp?.messages ?? 0) + 1, codeFound: value !== undefined, mailAgeSeconds: Math.round((Date.now() - Date.parse(message.createdAt ?? 0)) / 1000), afterMs: since() }; },
+  });
+  return code;
 }
 
 function frameAt(page, path) {
@@ -193,6 +172,9 @@ try {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value) => { window.__smokeClipboard.push(value); } } });
   });
 
+  setStage("inbox");
+  inbox = await createInbox("share-smoke");
+
   setStage("share-load");
   await sender.goto(`${SHARE}/share#/new`, { waitUntil: "domcontentloaded", timeout: 90_000 });
   await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
@@ -202,7 +184,7 @@ try {
   const connect = await until(() => frameAt(sender, "/widget/embed/connect"), 60_000, "the OpenKey sign-in widget");
   await until(() => clickButton(connect, "Continue with email"), 30_000, "OpenKey's email option");
   const email = await until(() => connect.$("input[type=email]"), 30_000, "OpenKey's email field");
-  await email.type(`${inbox}@mailinator.com`);
+  await email.type(inbox.address);
   await until(() => clickButton(connect, "Send code"), 10_000, "OpenKey's Send code button");
 
   setStage("openkey-otp");
@@ -268,6 +250,7 @@ try {
   report.failedRequests = requests.filter((entry) => entry.error !== undefined || entry.status >= 400 || entry.pageerror !== undefined).slice(-25);
   if (report.result !== "passed") report.classification = classify(report);
   report.timingsMs.total = since();
+  await deleteInbox();
   await browser?.close().catch(() => undefined);
   await server?.close().catch(() => undefined);
   rmSync(temporary, { recursive: true, force: true });
@@ -277,7 +260,8 @@ try {
 function classify({ stage: failedStage, error, failedRequests = [], pendingRequests = [], openKeyAlert, shareCopy }) {
   const changed = failedRequests.find((entry) => entry.error === "net::ERR_NETWORK_CHANGED");
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
-  if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached Mailinator";
+  if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
+  if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
   if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
   // The SDK aborts its own account-registry sync after 4 s (net::ERR_ABORTED)
   // and carries on; only server errors, real transport errors or long hangs
