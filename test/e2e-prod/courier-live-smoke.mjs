@@ -186,9 +186,10 @@ const clickButton = async (frame, label) => clickHandle(await frame.evaluateHand
 // The approval's primary action: the last visible button of OpenKey's approval dialog (Cancel comes
 // first), found by role and position, and only if its name is one of the approval's labels
 // (APPROVE_NAME: ready or signing). Anything else (Cancel, a copy button, an extra button) is "not
-// found", so the smoke keeps polling instead of clicking it, and the report records the rejected
-// label. Without a dialog: the button named Approve or Approve exact bytes. The pick and its name
-// check are one in-page read, and the element clicked (real browser input) is the one checked.
+// found", so the smoke keeps polling instead of clicking it, and the report lists each rejected
+// label once. Without a dialog: the button named Approve or Approve exact bytes. The pick and its
+// name check are one in-page read, and the element clicked (real browser input) is the one checked.
+const rejectedLabels = new Set();
 const clickApprove = async (frame) => {
   const result = await frame.evaluateHandle((approveName) => {
     const named = new RegExp(approveName);
@@ -203,12 +204,23 @@ const clickApprove = async (frame) => {
   }, APPROVE_NAME.source);
   try {
     const rejected = await (await result.getProperty("rejected")).jsonValue();
-    if (rejected) report.approveLabelRejected = scrub(rejected).slice(0, 40);
+    if (rejected && rejectedLabels.size < 5) {
+      rejectedLabels.add(scrub(rejected).slice(0, 40));
+      report.approveLabelsRejected = [...rejectedLabels];
+    }
     return await clickHandle(await result.getProperty("button"));
   } finally {
     await result.dispose();
   }
 };
+// A click counts only once the approval took it: the review is gone, or its primary button is
+// disabled or signing. A click at the button's coordinates that something else swallowed does not.
+const approvalTaken = (frame) => frame.evaluate(() => {
+  const visible = (element) => element.getClientRects().length > 0;
+  const dialog = [...document.querySelectorAll("[role=dialog]")].filter(visible).at(-1);
+  const button = dialog ? [...dialog.querySelectorAll("button")].filter(visible).at(-1) : undefined;
+  return !button || button.disabled || button.innerText.trim() === "Signing…";
+}).catch(() => true);
 
 /** The SIWE messages OpenKey was asked to sign: held in memory, only their capability lists are reported. */
 const signedMessages = [];
@@ -270,17 +282,23 @@ async function drive(page, done, counter, timeout = 240_000) {
         if (mailbox !== undefined && mailbox.did === undefined) mailbox.did = didFromSiwe(message);
       }
       if (await clickApprove(sign).catch(() => false)) {
-        report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
-        const message = messages.at(-1) ?? "";
-        let kind;
-        if (counter !== "seedSignIn") {
-          assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
-          kind = "courier-session";
+        const taken = await until(async () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached() || await approvalTaken(sign), 5_000, "the approval to take the click").catch(() => false);
+        if (!taken) {
+          // Not counted: the next pass clicks again.
+          report.approveClicksNotTaken = (report.approveClicksNotTaken ?? 0) + 1;
         } else {
-          kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
+          report.approvals[counter] = (report.approvals[counter] ?? 0) + 1;
+          const message = messages.at(-1) ?? "";
+          let kind;
+          if (counter !== "seedSignIn") {
+            assert.deepEqual(recapList(message), EXPECTED_VIEW_GRANT, "every view signature is only the exact Courier session, never a host grant");
+            kind = "courier-session";
+          } else {
+            kind = recapList(message)?.includes(`agents/kv/${PREFIX} tinycloud.kv/put`) ? "seed-session" : message.includes(":agents") ? "host-agents" : message.includes(":account") ? "host-account" : "seed-other";
+          }
+          (report.approvalClicks[counter] ??= []).push(kind);
+          await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
         }
-        (report.approvalClicks[counter] ??= []).push(kind);
-        await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
       }
     }
     if (await page.evaluate(done).catch(() => false)) return;
@@ -361,7 +379,8 @@ try {
   const { page: fresh, grant: freshGrant } = await signInView("freshViewSignIn");
   report.timingsMs.firstSignIn = since(freshStart);
   report.recap = freshGrant;
-  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null) };
+  const freshFailure = await fresh.evaluate(() => document.querySelector(".auth-status .tc-status")?.textContent ?? null);
+  report.fresh = { panel: scrub(await panelText(fresh)).slice(0, 400), signInFailure: freshFailure === null ? null : scrub(freshFailure).slice(0, 200) };
   assert.equal(report.fresh.signInFailure, null);
   assert.match(report.fresh.panel, /No Courier space yet\./);
   assert.ok(report.fresh.panel.includes("Run tc courier init once on your machine, then reload this page."));
