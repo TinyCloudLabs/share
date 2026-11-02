@@ -1,36 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { adoptInbox, createInbox, deleteInboxes, openKeyCodeIn, readInboxFile, removeInboxFile, waitForMail, writeInboxFile } from "./mail-tm.mjs";
+import { fake } from "./mail-tm-fake.mjs";
+import { adoptInbox, createInbox, deleteInboxes, openKeyCodeIn, readInboxFile, removeInboxFile, seenMail, waitForMail, writeInboxFile } from "./mail-tm.mjs";
 
-// A stand-in for api.mail.tm: one domain, accounts, tokens, messages, deletes.
-const fake = { accounts: new Map(), messages: [], deleted: [], createStatus: 201, calls: [] };
-globalThis.fetch = async (url, { method = "GET", body, headers = {} } = {}) => {
-  const { pathname } = new URL(url);
-  fake.calls.push(`${method} ${pathname}`);
-  const json = (status, value) => new Response(value === undefined ? null : JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
-  const sent = body ? JSON.parse(body) : {};
-  const token = headers.authorization?.replace("Bearer ", "");
-  if (pathname === "/domains") return json(200, { "hydra:member": [{ domain: "mail.example", isActive: true }] });
-  if (pathname === "/accounts" && method === "POST") {
-    if (fake.accounts.has(sent.address)) return json(422, { violations: [] });
-    fake.accounts.set(sent.address, { id: `id-${fake.accounts.size + 1}`, password: sent.password });
-    return json(fake.createStatus, fake.createStatus === 201 ? { id: fake.accounts.get(sent.address).id } : undefined);
-  }
-  if (pathname === "/token") {
-    const account = fake.accounts.get(sent.address);
-    return account?.password === sent.password ? json(200, { token: `t-${account.id}` }) : json(401, {});
-  }
-  const account = [...fake.accounts.values()].find((entry) => `t-${entry.id}` === token);
-  if (account === undefined) return json(401, {});
-  if (pathname === "/me") return json(200, { id: account.id });
-  if (pathname === "/messages") return json(200, { "hydra:member": fake.messages.map(({ id, subject, createdAt }) => ({ id, subject, createdAt })) });
-  if (pathname.startsWith("/messages/")) { const message = fake.messages.find((entry) => entry.id === pathname.slice(10)); return message ? json(200, message) : json(404, {}); }
-  if (pathname.startsWith("/accounts/") && method === "DELETE") { fake.deleted.push(pathname.slice(10)); return json(204); }
-  return json(404, {});
-};
-
+const FAKE = new URL("./mail-tm-fake.mjs", import.meta.url).href;
+const CLI = new URL("./mail-tm.mjs", import.meta.url).pathname;
+/** The helper's command line in a child process whose fetch is the fake (no network). */
+const cli = (...args) => spawnSync(process.execPath, ["--import", FAKE, CLI, ...args], { encoding: "utf8" });
 test("a new inbox is private: qa in its name, a random password, and an id", async () => {
   const inbox = await createInbox("share-smoke");
   assert.match(inbox.address, /^qa-share-smoke-[0-9a-f]{12}@mail\.example$/);
@@ -72,12 +51,49 @@ test("an adopted inbox must be a qa test inbox", () => {
   assert.throws(() => adoptInbox({ address: "qa-x@mail.example", password: "" }), /not a test inbox/);
 });
 
-test("deleteInboxes deletes every inbox made or adopted, once", async () => {
+test("seenMail lists the mail already there, and fails closed when the inbox can't be read", async () => {
+  const address = [...fake.accounts.keys()][0];
+  const inbox = adoptInbox({ address, password: fake.accounts.get(address).password });
+  assert.deepEqual([...await seenMail(inbox)].sort(), ["m1", "m2", "m3"]);
+  fake.listStatus = 500;
+  try {
+    await assert.rejects(seenMail(inbox), /could not be read/);
+  } finally {
+    fake.listStatus = 200;
+  }
+  await assert.rejects(seenMail(adoptInbox({ address: "qa-unknown-000000000000@mail.example", password: "p" })), /could not be read/);
+});
+
+test("deleteInboxes deletes every inbox made or adopted, once; an inbox mail.tm no longer knows counts as gone", async () => {
+  adoptInbox({ address: "qa-deleted-earlier-000000000000@mail.example", password: "p" });
   const first = await deleteInboxes();
   const again = await deleteInboxes();
   assert.equal(first, again);
   assert.equal(first.deleted, first.total);
   assert.equal(new Set(fake.deleted).size, fake.accounts.size);
+});
+
+test("the command line creates an inbox file without printing the address, and deletes inbox and file", () => {
+  const directory = mkdtempSync("/var/tmp/mail-tm-test-");
+  try {
+    const path = join(directory, "inbox.json");
+    const created = cli("create", path);
+    assert.equal(created.status, 0);
+    assert.deepEqual(JSON.parse(created.stdout), { created: true });
+    const { address } = JSON.parse(readFileSync(path, "utf8"));
+    assert.match(address, /^qa-recipient-gate-[0-9a-f]{12}@mail\.example$/);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.ok(!`${created.stdout}${created.stderr}`.includes(address));
+    assert.match(cli("create", path).stdout, /must be a new file/);
+    // A fresh process: the fake knows no such inbox (401), as for one deleted earlier; the file goes.
+    const deleted = cli("delete", path);
+    assert.equal(deleted.status, 0);
+    assert.deepEqual(JSON.parse(deleted.stdout), { inboxDeleted: true, fileRemoved: true });
+    assert.equal(existsSync(path), false);
+    assert.match(cli("create", "/tmp/inbox.json").stdout, /under \/var\/tmp/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("the inbox file is a new 0600 file under /var/tmp with only the address and password", () => {

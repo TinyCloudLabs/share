@@ -29,7 +29,10 @@ import {
 // Deletes the adopted inbox, then its file (kept if mail.tm did not confirm, for `mail-tm.mjs delete`).
 let inbox;
 let cleaning;
+let fileHandled = false;
 function removeFileIfDeleted({ deleted, total }) {
+  if (fileHandled) return; // the end of the run and a late signal both get here; act once
+  fileHandled = true;
   if (deleted !== total) { console.error("[tc500] the test inbox was not deleted; run `node test/e2e-prod/mail-tm.mjs delete` on its file"); return; }
   try { removeInboxFile(inboxFile); } catch { console.error("[tc500] the test inbox was deleted but its file was not removed"); }
 }
@@ -57,15 +60,15 @@ const inboxFile = process.env.TC500_E2E_RECIPIENT_INBOX;
 const expectedFile = process.env.TC500_E2E_EXPECTED_FILE;
 
 if (RUN !== "1") throw new Error("refusing live production-origin run: set TC500_E2E_RUN=1");
-if (inboxFile === undefined || expectedFile === undefined) {
-  throw new Error("TC500_E2E_RECIPIENT_INBOX and TC500_E2E_EXPECTED_FILE are required");
-}
+if (inboxFile === undefined) throw new Error("TC500_E2E_RECIPIENT_INBOX is required");
+// The private test inbox the invitation was mailed to (address and password, 0600 under /var/tmp).
+// Adopted first, so every later failure deletes it and its file.
+inbox = readInboxFile(inboxFile);
+if (expectedFile === undefined) throw new Error("TC500_E2E_EXPECTED_FILE is required");
 const expected = readFileSync(resolve(expectedFile));
 if (expected.length === 0 || ![...expected].some((byte) => byte === 0 || byte > 0x7f)) {
   throw new Error("expected file must contain non-UTF-8 bytes (the byte-exact gate would otherwise be meaningless)");
 }
-// The private test inbox the invitation was mailed to (address and password, 0600 under /var/tmp).
-inbox = readInboxFile(inboxFile);
 
 // The invitation mailed to the inbox (TC500_E2E_SHARE_URL overrides it); held in memory only.
 const INVITATION = /https:\/\/share\.tinycloud\.xyz\/s\/[a-z2-7]{26}#v=4&k=[^\s"'<>]+/;

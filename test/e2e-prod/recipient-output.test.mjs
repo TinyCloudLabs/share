@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-test("recipient gate never prints invitation or mailbox when a dependency fails", () => {
+test("recipient gate never prints invitation or mailbox when a dependency fails, and still deletes its inbox", () => {
   const secrets = ["TOPSECRETFRAGMENT", "qa-recipient-gate-5ec7e75ec7e7@mail.example", "TOPSECRETPASSWORD"];
   const directory = mkdtempSync("/var/tmp/tc500-recipient-output-");
   try {
     const inboxFile = join(directory, "inbox.json");
     writeFileSync(inboxFile, JSON.stringify({ address: secrets[1], password: secrets[2] }), { mode: 0o600 });
-    const result = spawnSync(process.execPath, [new URL("./recipient-gate.mjs", import.meta.url).pathname], {
+    // The fake mail.tm (no network) knows no such inbox, so the gate's cleanup finds it gone and removes the file.
+    const result = spawnSync(process.execPath, ["--import", new URL("./mail-tm-fake.mjs", import.meta.url).href, new URL("./recipient-gate.mjs", import.meta.url).pathname], {
       cwd: process.cwd(),
       encoding: "utf8",
       env: {
@@ -25,6 +26,7 @@ test("recipient gate never prints invitation or mailbox when a dependency fails"
     const output = `${result.stdout}${result.stderr}`;
     assert.match(output, /sensitive details withheld/);
     for (const secret of secrets) assert.doesNotMatch(output, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(existsSync(inboxFile), false, "a failure after the inbox was adopted left its file");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

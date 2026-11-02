@@ -38,9 +38,12 @@ export async function mailTmJson(path, options) {
   return response.json().catch(() => undefined);
 }
 
+// A 401 means mail.tm knows no such inbox (or password): an inbox deleted earlier answers so.
 async function inboxToken(inbox) {
-  for (let attempt = 1; attempt <= 4 && !inbox.token; attempt++) {
-    inbox.token = (await mailTmJson("/token", { method: "POST", body: { address: inbox.address, password: inbox.password } }))?.token ?? "";
+  for (let attempt = 1; attempt <= 4 && !inbox.token && !inbox.gone; attempt++) {
+    const response = await mailTm("/token", { method: "POST", body: { address: inbox.address, password: inbox.password } });
+    if (response?.status === 401) { inbox.gone = true; break; }
+    inbox.token = (response?.ok ? (await response.json().catch(() => undefined))?.token : undefined) ?? "";
     if (!inbox.token && attempt < 4) await sleep(3_000 * attempt);
   }
   return inbox.token;
@@ -108,11 +111,12 @@ export async function waitForMail(inbox, { subject = /./, extract, used = new Se
   throw new Error(failure);
 }
 
-/** The ids of the messages already in `inbox` (so a later wait takes only newer mail). */
+/** The ids of the messages already in `inbox` (so a later wait takes only newer mail). Throws if the list can't be read. */
 export async function seenMail(inbox) {
   if (!inbox.token) await inboxToken(inbox);
-  const list = await mailTmJson("/messages", { token: inbox.token, attempts: 2 });
-  return new Set((list?.["hydra:member"] ?? []).map((entry) => entry.id));
+  const list = inbox.token ? await mailTmJson("/messages", { token: inbox.token, attempts: 2 }) : undefined;
+  if (!Array.isArray(list?.["hydra:member"])) throw new Error("the test inbox could not be read");
+  return new Set(list["hydra:member"].map((entry) => entry.id));
 }
 
 /** The single six-digit code in an OpenKey code mail (the mail repeats it; another six-digit run is not it). */
@@ -133,9 +137,10 @@ export function deleteInboxes() {
     for (const inbox of inboxes) {
       try {
         if (!inbox.token) await inboxToken(inbox);
+        if (inbox.gone) { deleted++; continue; }
         if (!inbox.id && inbox.token) inbox.id = (await mailTmJson("/me", { token: inbox.token }))?.id ?? "";
         const response = inbox.id && inbox.token ? await mailTm(`/accounts/${inbox.id}`, { method: "DELETE", token: inbox.token }) : undefined;
-        // 404: already gone (deleted by an earlier run of the same file).
+        // 404: already gone.
         if (response?.status === 204 || response?.status === 404) deleted++;
       } catch {}
     }

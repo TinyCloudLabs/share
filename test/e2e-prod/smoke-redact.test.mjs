@@ -56,6 +56,9 @@ test("scrub keeps route words and error codes readable", () => {
   assert.equal(scrub("/api/delegate/authorize-sign-prepare"), "/api/delegate/authorize-sign-prepare");
   assert.equal(scrub("NEW_ACCOUNT_CONFIRMATION_REQUIRED"), "NEW_ACCOUNT_CONFIRMATION_REQUIRED");
   assert.equal(scrub("/api/keys/cmvyfu5yt005001o2rrw4kjzp/sign"), "/api/keys/<id>/sign");
+  // A long lowercase run with no hyphen is an id, even without digits; hyphenated route words stay.
+  assert.equal(scrub("/s/abcdefghijklmnopqrstuvwx/view"), "/s/<id>/view");
+  assert.equal(scrub("/policy/v3/delegations/authorize-sign-prepare-now"), "/policy/v3/delegations/authorize-sign-prepare-now");
 });
 
 test("known limit: a short bare token in free text passes the scrub; the key allowlist is the control", () => {

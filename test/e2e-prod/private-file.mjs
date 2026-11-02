@@ -42,10 +42,12 @@ export function openPrivateFile(path, name, mode) {
   if (mode !== "read") {
     try {
       fd = openSync(path, BASE | access | constants.O_CREAT | constants.O_EXCL, 0o600);
-      fchmodSync(fd, 0o600); // a restrictive umask must not leave it 0400
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       if (mode === "create") throw new Error(`${name} already exists; it must be a new file`);
+    }
+    if (fd !== undefined) {
+      try { fchmodSync(fd, 0o600); } catch (error) { closeSync(fd); throw error; } // a restrictive umask must not leave it 0400
     }
   }
   fd ??= openSync(path, BASE | access); // a FIFO without a writer/reader fails instead of blocking

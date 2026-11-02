@@ -50,15 +50,20 @@ create an invitation itself. The operator steps:
    private mail.tm inbox ("qa" in its name) and writes only its address and
    password to that new 0600 file (the path must be under `/var/tmp`; an
    existing file, a symlink or a FIFO is refused). It prints no address.
-2. The sender addresses the invitation to the file's `address`.
+2. The sender addresses the invitation to the file's `address`. That sender
+   command or form carries the address, so keep it off shared terminals,
+   recordings and logs (read it from the file, e.g. into a variable, rather
+   than echoing it).
 3. `TC500_E2E_RUN=1 TC500_E2E_RECIPIENT_INBOX=/var/tmp/<dir>/inbox.json
    TC500_E2E_EXPECTED_FILE=<file> node test/e2e-prod/recipient-gate.mjs`.
    `TC500_E2E_SHARE_URL` still overrides the invitation read from the inbox.
-   The gate deletes the inbox and then the file when it ends, also on
+   The gate reads the inbox file right after its run check, so every later
+   failure deletes the inbox and then the file, as does its end and
    SIGINT/SIGTERM; if mail.tm does not confirm the delete, it keeps the file
    and says so.
-4. If the gate never ran: `node test/e2e-prod/mail-tm.mjs delete
-   /var/tmp/<dir>/inbox.json` deletes the inbox, then the file.
+4. Recovery (the gate never ran, stopped before reading the file, or kept it):
+   `node test/e2e-prod/mail-tm.mjs delete /var/tmp/<dir>/inbox.json` deletes
+   the inbox (one mail.tm no longer knows counts as deleted), then the file.
 
 `joined-gate.mjs` is the hermetic release gate. It boots the released Node
 v1.21.0 tree, the reviewed OpenCredentials candidate tree (8-digit mailbox codes), and the current
