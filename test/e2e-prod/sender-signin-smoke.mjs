@@ -27,6 +27,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
+import { clickApprove, isSignature, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { scrub } from "./smoke-redact.mjs";
@@ -48,7 +49,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
-const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, timingsMs: {} };
+const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
@@ -58,15 +59,16 @@ const setStage = (next) => { stage = next; report.stage = next; };
 const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
 
 function track(page, phase) {
+  // Each request keeps the stage it STARTED in, so a late-settling sign call counts for its own step.
   const open = new Map();
-  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, Date.now()); });
+  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, { started: Date.now(), stage }); });
   const record = (request, outcome) => {
-    const started = open.get(request);
-    if (started === undefined) return undefined;
+    const opened = open.get(request);
+    if (opened === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
     if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
-    const entry = { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome };
+    const entry = { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, durationMs: Date.now() - opened.started, ...outcome };
     requests.push(entry);
     return entry;
   };
@@ -83,9 +85,9 @@ function track(page, phase) {
   page.on("requestfailed", (request) => record(request, { error: request.failure()?.errorText ?? "failed" }));
   page.on("console", (message) => { if (message.type() === "error") requests.push({ phase, stage, console: scrub(message.text()).slice(0, 240), atMs: since() }); });
   page.on("pageerror", (error) => requests.push({ phase, stage, pageerror: scrub(error.message).slice(0, 240), atMs: since() }));
-  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, start]) => {
+  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, opened]) => {
     const url = new URL(request.url());
-    return { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: start - t0, pendingMs: Date.now() - start };
+    return { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, pendingMs: Date.now() - opened.started };
   });
 }
 
@@ -125,14 +127,24 @@ async function clickButton(frame, label) {
   }
 }
 
+/** When each OpenKey review frame first appeared (for a dropped click's timing). */
+const reviewSeen = new WeakMap();
+
 /** Approve every OpenKey sign review until `done` holds; Share's failure copy ends the wait. */
 async function approveUntil(page, done, counter, timeout) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const sign = frameAt(page, "/widget/embed/sign");
+    if (sign !== undefined && !reviewSeen.has(sign)) reviewSeen.set(sign, since());
     // What the sender was asked to grant, as OpenKey's review words it.
     const review = await sign?.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "") ?? "";
-    if (sign !== undefined && await clickButton(sign, "Approve").catch(() => false)) {
+    // A click counts only once OpenKey took it (review closed, "Signing…", or a sign call after the
+    // click); a disabled button alone is not taken. A dropped one is reported and clicked again.
+    if (sign !== undefined && await clickApprove({
+      sign, during: counter, report, at: since, stage: () => stage, reviewSeenAt: reviewSeen.get(sign),
+      closed: () => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(),
+      signedSince: (fromMs) => requests.some((entry) => isSignature(entry) && entry.atMs >= fromMs),
+    }).catch(() => false)) {
       report.prompts[counter] += 1;
       (report.reviews ??= []).push({ during: counter, atMs: since(), grants: scrub(review.replace(/^.*?(do not want to grant\.|grant\.)\s*/i, "").replace(/\s*Advanced details.*$/i, "")).slice(0, 240) });
       await until(() => frameAt(page, "/widget/embed/sign") !== sign || sign.isDetached(), 30_000, "the OpenKey review to close").catch(() => undefined);
@@ -205,6 +217,11 @@ try {
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
   report.timingsMs.signIn = since(signInStart);
+  // Counted approvals must equal OpenKey's signatures for the step (approval-click.mjs, signatureMismatch):
+  // more signatures = a hidden review; fewer = a counted click OpenKey never signed for.
+  report.signatures = { signIn: signaturesIn(requests, "share-sign-in"), share: 0 };
+  const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
+  assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
   assert(report.prompts.signIn <= MAX_SIGNIN_PROMPTS, `sign-in needed ${report.prompts.signIn} OpenKey approvals (max ${MAX_SIGNIN_PROMPTS})`);
 
   setStage("share-create");
@@ -215,6 +232,9 @@ try {
   await sender.click("button.create-link-button");
   await approveUntil(sender, () => document.querySelector(".composer-status")?.dataset.state === "created", "share", 180_000);
   report.timingsMs.share = since(shareStart);
+  report.signatures.share = signaturesIn(requests, "share-create");
+  const shareMismatch = signatureMismatch(report.prompts.share, report.signatures.share);
+  assert(shareMismatch === null, `creating a share: ${shareMismatch}`);
   assert(report.prompts.share <= MAX_SHARE_PROMPTS, `creating a share needed ${report.prompts.share} OpenKey approvals (max ${MAX_SHARE_PROMPTS})`);
 
   setStage("recipient-open");

@@ -1,7 +1,8 @@
 // A stand-in for api.mail.tm for unit tests: importing it replaces fetch in this process (also as
 // `node --import ./mail-tm-fake.mjs`, so a child process never reaches the network). One domain,
 // accounts, tokens, messages and deletes; an unknown address or password gets 401, like mail.tm.
-export const fake = { accounts: new Map(), messages: [], deleted: [], createStatus: 201, listStatus: 200, calls: [] };
+// `tokenRefusals: n` refuses the next n token requests with 401 even for a known inbox (a wrong password).
+export const fake = { accounts: new Map(), messages: [], deleted: [], createStatus: 201, listStatus: 200, tokenRefusals: 0, calls: [] };
 
 globalThis.fetch = async (url, { method = "GET", body, headers = {} } = {}) => {
   const { pathname } = new URL(url);
@@ -16,6 +17,7 @@ globalThis.fetch = async (url, { method = "GET", body, headers = {} } = {}) => {
     return json(fake.createStatus, fake.createStatus === 201 ? { id: fake.accounts.get(sent.address).id } : undefined);
   }
   if (pathname === "/token") {
+    if (fake.tokenRefusals > 0) { fake.tokenRefusals--; return json(401, {}); }
     const account = fake.accounts.get(sent.address);
     return account?.password === sent.password ? json(200, { token: `t-${account.id}` }) : json(401, {});
   }

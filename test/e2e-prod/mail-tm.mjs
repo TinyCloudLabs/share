@@ -38,12 +38,21 @@ export async function mailTmJson(path, options) {
   return response.json().catch(() => undefined);
 }
 
-// A 401 means mail.tm knows no such inbox (or password): an inbox deleted earlier answers so.
+// A 401 means mail.tm refuses the address and password: an inbox deleted earlier answers so, but so
+// would a wrong password. An inbox made in this process (`madeHere`, set before its create call, so
+// also when a lost create reply leaves it without an id) is never taken as gone; it just gets no
+// token. An adopted inbox (an inbox file's) is gone only after two consecutive 401s.
 async function inboxToken(inbox) {
+  let refusals = 0;
   for (let attempt = 1; attempt <= 4 && !inbox.token && !inbox.gone; attempt++) {
     const response = await mailTm("/token", { method: "POST", body: { address: inbox.address, password: inbox.password } });
-    if (response?.status === 401) { inbox.gone = true; break; }
-    inbox.token = (response?.ok ? (await response.json().catch(() => undefined))?.token : undefined) ?? "";
+    if (response?.status === 401) {
+      if (inbox.madeHere) break;
+      if (++refusals >= 2) { inbox.gone = true; break; }
+    } else {
+      refusals = 0;
+      inbox.token = (response?.ok ? (await response.json().catch(() => undefined))?.token : undefined) ?? "";
+    }
     if (!inbox.token && attempt < 4) await sleep(3_000 * attempt);
   }
   return inbox.token;
@@ -57,7 +66,7 @@ export async function createInbox(label) {
   const domains = await mailTmJson("/domains");
   const domain = (domains?.["hydra:member"] ?? []).find((entry) => entry.isActive)?.domain;
   if (!domain) throw new Error("mail.tm offered no active domain");
-  const inbox = { address: `qa-${label}-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "" };
+  const inbox = { address: `qa-${label}-${randomBytes(6).toString("hex")}@${domain}`, password: randomBytes(18).toString("base64url"), id: "", token: "", madeHere: true };
   inboxes.push(inbox);
   const created = await mailTm("/accounts", { method: "POST", body: { address: inbox.address, password: inbox.password } });
   if (created?.status === 201) inbox.id = (await created.json().catch(() => ({}))).id ?? "";

@@ -183,6 +183,24 @@ network error and timing, passed through the shared redaction
 (`smoke-redact.mjs`). The inbox, code, address and link stay in memory.
 `SHARE_SMOKE_MAX_SIGNIN_PROMPTS` (default 2) and
 `SHARE_SMOKE_MAX_SHARE_PROMPTS` (default 1) fail a run that asks the sender
-for more approvals. `.github/workflows/sender-signin-smoke.yml` runs it on
+for more approvals. The smoke clicks OpenKey's Approve found by role and
+position (the review dialog's last button), only if its name is one of the
+approval's labels; any other label is never clicked and is listed in
+`approveLabelsRejected`. An approval counts once OpenKey took the click: the
+review closed, the clicked button reads "Signing…", or an OpenKey sign call
+started after the click, within 5 s (a button that is only disabled is not
+taken: OpenKey also disables Approve briefly after each resize of the review).
+A click it did not take is not counted; the smoke clicks again and
+reports it: `approveClicksNotTaken` and one `approveClicksDropped` entry per
+click (when, how long after the review appeared, whether the button moved, and
+the tag and classes of what the click point hit). `signatures` counts OpenKey's
+completed sign calls per step (by the step the call started in); they must
+equal the counted approvals, or the step
+fails. `.github/workflows/sender-signin-smoke.yml` runs it on
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.
+
+The click logic (`approval-click.mjs`) is unit tested by
+`npm run test:e2e:production-origin-contract`, partly on a real page, so that
+command needs Puppeteer's Chrome (`npm ci` downloads it unless
+`PUPPETEER_SKIP_DOWNLOAD` is set).
