@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import puppeteer from "puppeteer";
-import { approvePick, boxMoved, clickApprove, clickTaken, signaturesIn } from "./approval-click.mjs";
+import { approvePick, boxMoved, clickApprove, clickTaken, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { APPROVE_NAME } from "./smoke-redact.mjs";
 
 // jsdom has no layout: an element counts as visible unless it (or an ancestor) is `hidden`.
@@ -48,9 +48,19 @@ test("signatures are the completed OpenKey sign calls of one stage", () => {
     { stage: "share-create", method: "POST", origin: "https://api.openkey.so", path: "/api/keys/<id>/sign", status: 500 },
     { stage: "share-sign-in", method: "POST", origin: "https://api.openkey.so", path: "/api/keys/<id>/sign", status: 200 },
     { stage: "share-create", method: "GET", origin: "https://api.openkey.so", path: "/api/keys/<id>", status: 200 },
+    { stage: "share-create", method: "POST", origin: "https://openkey.so", path: "/api/keys/<id>/sign", status: 200 },
+    { stage: "share-create", method: "POST", origin: "https://evil-openkey.so", path: "/api/keys/<id>/sign", status: 200 },
   ];
-  assert.equal(signaturesIn(trail, "share-create"), 2);
+  assert.equal(signaturesIn(trail, "share-create"), 3);
   assert.equal(signaturesIn(trail, "share-sign-in"), 1);
+});
+
+test("a step fails when signatures exceed approvals, or when approvals produced no signature at all", () => {
+  assert.equal(signatureMismatch(1, 1), null);
+  assert.equal(signatureMismatch(0, 0), null);
+  assert.equal(signatureMismatch(2, 1), null, "an Approve exact bytes flow: a preview click, then one signature");
+  assert.match(signatureMismatch(1, 2), /2 OpenKey signatures for 1 counted approvals/);
+  assert.match(signatureMismatch(1, 0), /no OpenKey signature/);
 });
 
 test("boxMoved reports the larger shift, and null without both boxes", () => {
@@ -81,10 +91,10 @@ test("clickApprove on a real page: a taken click counts, a swallowed one is repo
     await page.evaluate(() => document.querySelector(".overlay-x").remove());
     assert.equal(await clickApprove(options), true, "the retry is taken once nothing covers the button");
 
-    await page.setContent(review("Approve &amp; sign"));
+    await page.setContent(review("Approve &amp; sign for qa-x@mail.example"));
     assert.equal(await clickApprove(options), false);
     assert.equal(await page.evaluate(() => Number(document.body.dataset.clicks ?? 0)), 0, "a renamed label was clicked");
-    assert.deepEqual(report.approveLabelsRejected, ["Approve & sign"]);
+    assert.deepEqual(report.approveLabelsRejected, ["Approve & sign for <email>"], "the rejected label is scrubbed");
     assert.equal(report.approveClicksNotTaken, 1, "a refused pick is not a dropped click");
   } finally {
     await browser.close();

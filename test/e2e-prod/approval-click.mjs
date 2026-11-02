@@ -1,7 +1,7 @@
 // Clicking and counting OpenKey approvals in the sender sign-in smoke (TC-2310). The in-page
 // functions are self-contained (Puppeteer serializes them into the frame) and take the document or
 // element, so they can be unit tested.
-import { APPROVE_NAME } from "./smoke-redact.mjs";
+import { APPROVE_NAME, scrub } from "./smoke-redact.mjs";
 
 /**
  * OpenKey's primary action: the last visible button of the last visible approval dialog (Cancel
@@ -60,7 +60,7 @@ export async function clickApprove({ sign, during, report, closed, at, stage, re
     const rejected = await (await picked.getProperty("rejected")).jsonValue();
     if (rejected) {
       const labels = new Set(report.approveLabelsRejected ?? []);
-      if (labels.size < 5) report.approveLabelsRejected = [...labels.add(rejected.slice(0, 40))];
+      if (labels.size < 5) report.approveLabelsRejected = [...labels.add(scrub(rejected).slice(0, 40))];
     }
     const button = (await picked.getProperty("button")).asElement();
     if (!button) return false;
@@ -89,8 +89,19 @@ export async function clickApprove({ sign, during, report, closed, at, stage, re
   }
 }
 
-/** OpenKey signature calls (a completed sign) in `requests` (the smoke's trail) for one stage. */
+/** OpenKey signature calls (a completed sign) in `requests` (the smoke's trail) that started in `stage`. */
 export const signaturesIn = (requests, stage) => requests.filter((entry) => entry.stage === stage
-  && /^https:\/\/api\.openkey\.so$/.test(entry.origin ?? "") && entry.method === "POST"
+  && /^https:\/\/(api\.)?openkey\.so$/.test(entry.origin ?? "") && entry.method === "POST"
   && /^\/api\/(keys\/[^/]+\/sign|delegate\/authorize-sign)$/.test(entry.path ?? "")
   && entry.status >= 200 && entry.status < 300).length;
+
+/**
+ * Why a step's counted approvals and OpenKey's signatures disagree, or null: more signatures than
+ * approvals (a review hidden behind a click reported as dropped), or approvals with no signature at
+ * all (a click wrongly counted as taken, or a sign call the trail no longer recognises).
+ */
+export function signatureMismatch(prompts, signatures) {
+  if (signatures > prompts) return `${signatures} OpenKey signatures for ${prompts} counted approvals`;
+  if (prompts > 0 && signatures === 0) return `${prompts} counted approvals but no OpenKey signature`;
+  return null;
+}

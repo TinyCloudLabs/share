@@ -192,7 +192,13 @@ within 5 s. A click it did not take is not counted; the smoke clicks again and
 reports it: `approveClicksNotTaken` and one `approveClicksDropped` entry per
 click (when, how long after the review appeared, whether the button moved, and
 the tag and classes of what the click point hit). `signatures` counts OpenKey's
-completed sign calls per step; a step with more signatures than counted
-approvals fails. `.github/workflows/sender-signin-smoke.yml` runs it on
+completed sign calls per step (by the step the call started in); a step with
+more signatures than counted approvals, or counted approvals and no signature,
+fails. `.github/workflows/sender-signin-smoke.yml` runs it on
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.
+
+The click logic (`approval-click.mjs`) is unit tested by
+`npm run test:e2e:production-origin-contract`, partly on a real page, so that
+command needs Puppeteer's Chrome (`npm ci` downloads it unless
+`PUPPETEER_SKIP_DOWNLOAD` is set).

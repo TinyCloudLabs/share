@@ -27,7 +27,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import puppeteer from "puppeteer";
-import { clickApprove, signaturesIn } from "./approval-click.mjs";
+import { clickApprove, signatureMismatch, signaturesIn } from "./approval-click.mjs";
 import { startCandidateServer } from "./candidate-server.mjs";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./mail-tm.mjs";
 import { scrub } from "./smoke-redact.mjs";
@@ -59,15 +59,16 @@ const setStage = (next) => { stage = next; report.stage = next; };
 const isStatic = (url) => /\.(js|mjs|css|woff2?|png|svg|ico|wasm|webp|jpg)$/.test(url.pathname);
 
 function track(page, phase) {
+  // Each request keeps the stage it STARTED in, so a late-settling sign call counts for its own step.
   const open = new Map();
-  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, Date.now()); });
+  page.on("request", (request) => { if (new URL(request.url()).protocol.startsWith("http")) open.set(request, { started: Date.now(), stage }); });
   const record = (request, outcome) => {
-    const started = open.get(request);
-    if (started === undefined) return undefined;
+    const opened = open.get(request);
+    if (opened === undefined) return undefined;
     open.delete(request);
     const url = new URL(request.url());
     if (isStatic(url) && outcome.error === undefined && outcome.status < 400) return undefined;
-    const entry = { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: started - t0, durationMs: Date.now() - started, ...outcome };
+    const entry = { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, durationMs: Date.now() - opened.started, ...outcome };
     requests.push(entry);
     return entry;
   };
@@ -84,9 +85,9 @@ function track(page, phase) {
   page.on("requestfailed", (request) => record(request, { error: request.failure()?.errorText ?? "failed" }));
   page.on("console", (message) => { if (message.type() === "error") requests.push({ phase, stage, console: scrub(message.text()).slice(0, 240), atMs: since() }); });
   page.on("pageerror", (error) => requests.push({ phase, stage, pageerror: scrub(error.message).slice(0, 240), atMs: since() }));
-  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, start]) => {
+  return () => [...open].filter(([request]) => !isStatic(new URL(request.url()))).map(([request, opened]) => {
     const url = new URL(request.url());
-    return { phase, stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: start - t0, pendingMs: Date.now() - start };
+    return { phase, stage: opened.stage, method: request.method(), origin: url.origin, path: scrub(url.pathname), atMs: opened.started - t0, pendingMs: Date.now() - opened.started };
   });
 }
 
@@ -214,10 +215,11 @@ try {
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
   report.timingsMs.signIn = since(signInStart);
-  // Every OpenKey signature is a review the sender approved: more signatures than counted prompts
-  // would mean a click reported as dropped was taken late and hid a review.
+  // Every OpenKey signature is a review the sender approved, and every counted approval signed:
+  // either bound broken fails the step (approval-click.mjs, signatureMismatch).
   report.signatures = { signIn: signaturesIn(requests, "share-sign-in"), share: 0 };
-  assert(report.signatures.signIn <= report.prompts.signIn, `sign-in made ${report.signatures.signIn} OpenKey signatures for ${report.prompts.signIn} counted approvals`);
+  const signInMismatch = signatureMismatch(report.prompts.signIn, report.signatures.signIn);
+  assert(signInMismatch === null, `sign-in: ${signInMismatch}`);
   assert(report.prompts.signIn <= MAX_SIGNIN_PROMPTS, `sign-in needed ${report.prompts.signIn} OpenKey approvals (max ${MAX_SIGNIN_PROMPTS})`);
 
   setStage("share-create");
@@ -229,7 +231,8 @@ try {
   await approveUntil(sender, () => document.querySelector(".composer-status")?.dataset.state === "created", "share", 180_000);
   report.timingsMs.share = since(shareStart);
   report.signatures.share = signaturesIn(requests, "share-create");
-  assert(report.signatures.share <= report.prompts.share, `creating a share made ${report.signatures.share} OpenKey signatures for ${report.prompts.share} counted approvals`);
+  const shareMismatch = signatureMismatch(report.prompts.share, report.signatures.share);
+  assert(shareMismatch === null, `creating a share: ${shareMismatch}`);
   assert(report.prompts.share <= MAX_SHARE_PROMPTS, `creating a share needed ${report.prompts.share} OpenKey approvals (max ${MAX_SHARE_PROMPTS})`);
 
   setStage("recipient-open");
