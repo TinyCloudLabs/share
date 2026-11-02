@@ -73,6 +73,21 @@ test("a 401 never marks an inbox made in this process as gone", async () => {
   assert.equal(fake.tokenRefusals, 0, "a refused token for an inbox made here is not retried as if transient");
 });
 
+test("an inbox made here whose create reply was lost (no id) is never reported deleted on 401s", () => {
+  // A fresh process (deleteInboxes runs once per process), on the fake: the create's first reply is
+  // lost (5xx, then 422 on the retry), every token request is refused, and the inbox must count as
+  // not deleted, with no delete call.
+  const script = `
+    import { fake } from ${JSON.stringify(FAKE)};
+    import { createInbox, deleteInboxes } from ${JSON.stringify(new URL("./mail-tm.mjs", import.meta.url).href)};
+    fake.createStatus = 500; fake.tokenRefusals = 99;
+    await createInbox("share-smoke").catch(() => undefined);
+    console.log(JSON.stringify({ ...(await deleteInboxes()), deleteCalls: fake.deleted.length }));`;
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { deleted: 0, total: 1, deleteCalls: 0 });
+});
+
 test("an adopted inbox is gone only after two consecutive 401s; one refusal then a token is not gone", async () => {
   const address = [...fake.accounts.keys()][0];
   const inbox = adoptInbox({ address, password: fake.accounts.get(address).password });

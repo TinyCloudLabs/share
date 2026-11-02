@@ -183,11 +183,16 @@ network error and timing, passed through the shared redaction
 (`smoke-redact.mjs`). The inbox, code, address and link stay in memory.
 `SHARE_SMOKE_MAX_SIGNIN_PROMPTS` (default 2) and
 `SHARE_SMOKE_MAX_SHARE_PROMPTS` (default 1) fail a run that asks the sender
-for more approvals. An approval counts once OpenKey took the click: the review
-closed, or its Approve went disabled or "Signing…" within 5 s. A click it did
-not take is not counted; the smoke clicks again and reports it:
-`approveClicksNotTaken` and one `approveClicksDropped` entry per click (when,
-how long after the review appeared, whether the button moved, and the tag and
-classes of what the click point hit). `.github/workflows/sender-signin-smoke.yml` runs it on
+for more approvals. The smoke clicks OpenKey's Approve found by role and
+position (the review dialog's last button), only if its name is one of the
+approval's labels; any other label is never clicked and is listed in
+`approveLabelsRejected`. An approval counts once OpenKey took the click: the
+review closed, or the clicked button left, went disabled or reads "Signing…"
+within 5 s. A click it did not take is not counted; the smoke clicks again and
+reports it: `approveClicksNotTaken` and one `approveClicksDropped` entry per
+click (when, how long after the review appeared, whether the button moved, and
+the tag and classes of what the click point hit). `signatures` counts OpenKey's
+completed sign calls per step; a step with more signatures than counted
+approvals fails. `.github/workflows/sender-signin-smoke.yml` runs it on
 pull requests (candidate), after each production deploy, and daily. OpenKey's
 release checks run the same script against production Share.
