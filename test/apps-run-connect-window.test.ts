@@ -109,7 +109,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 
 // TC-2285. A brand-new account's first open spends minutes in OpenKey's own login or sign-up window, which is a connect, not a
 // signed revocation. The 60 s approval window belongs to a revocation signature; connecting waits as long as the OpenKey SDK itself does.
-// TC-2416. The runner's own signatures (its first authorization) wait the same five minutes; revocation keeps 60 s (see sender-library-s4 / openkey-session tests).
+// TC-2416. The runner's own signatures (its first authorization) wait the same five minutes; revocation keeps 60 s (see openkey-session / sender-owner-revoke tests).
 const SIXTY_SECONDS = 60_000;
 const NINETY_SECONDS = 90_000;
 const FIVE_MINUTES = 300_000;
