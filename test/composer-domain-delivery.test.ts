@@ -65,7 +65,7 @@ function owner() {
     credentialHolderDid: ISSUER_DID,
     activeNodeIdentity: async () => ({ origin: "https://node.example", nodeDid: "did:key:z6MkOwnerNode" }),
     publishActiveNodeLocation: async () => undefined,
-    keys: { createKey: pathBoundKeys().createKey, encrypt },
+    keys: { encrypt },
     kvForSpace: () => ({ put }),
     signSessionBytes: signWithIssuer,
     createUnifiedOwnerRoot: vi.fn(),
