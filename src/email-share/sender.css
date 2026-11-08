@@ -52,6 +52,7 @@ button, input, select, textarea { touch-action: manipulation; }
 .auth-form h2 { margin: 32px 0 10px; font-size: 1.55rem; font-weight: 550; letter-spacing: -0.025em; }
 .auth-copy { max-width: 52ch; margin: 0 0 26px; color: var(--tc-color-text-muted); }
 .auth-button { min-width: 210px; }
+.auth-button[hidden] { display: none; }
 .auth-status { min-height: 1.5rem; margin: 18px 0 0; color: var(--tc-color-text-muted); font-size: 0.86rem; }
 .openkey-mark { display: grid; place-items: center; width: 64px; height: 64px; margin-top: 30px; border: 1px solid var(--tc-color-accent); border-radius: 10px; background: var(--tc-color-surface-active); color: var(--tc-color-accent); font: 750 0.76rem/1 var(--tc-font-mono); letter-spacing: -0.04em; }
 

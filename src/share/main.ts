@@ -42,12 +42,13 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
   }
   const badge = document.createElement("div"); badge.className = "openkey-mark"; badge.setAttribute("aria-hidden", "true"); badge.textContent = "OK";
   const heading = document.createElement("h2"); heading.textContent = resumable ? "Welcome back" : "One key, your files";
-  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "Your sharing session on this device is still active. Continue to pick up where you left off." : "Sign in with Face ID or Touch ID. No password.";
+  const copy = document.createElement("p"); copy.className = "auth-copy"; copy.textContent = resumable ? "You're still signed in on this device." : "Sign in with Face ID or Touch ID. No password.";
   const submit = document.createElement("button"); submit.type = "submit"; submit.className = "button button-primary auth-button"; submit.textContent = resumable ? "Continue" : "Continue with OpenKey";
   const status = document.createElement("p"); status.className = "auth-status"; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   form.append(steps, badge, heading, copy, submit, status); shell.append(header, form); root.append(shell);
   if (notice !== undefined) status.textContent = notice;
-  if (resumable) submit.focus();
+  // A saved session resumes on its own (below), so there is nothing to press unless that fails.
+  submit.hidden = resumable;
   form.addEventListener("submit", (event) => {
     event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
     void import("./openkey-session.js")
@@ -63,9 +64,14 @@ function mountAuthentication(root: HTMLElement, resumable: boolean, proceed: (se
         console.debug("tinycloud share: sign-in failed");
         if (import.meta.env.VITE_SHARE_HERMETIC === "true") (window as Window & { __tinycloudAuthError?: unknown }).__tinycloudAuthError = error;
         status.textContent = authFailureMessage(error);
+        submit.hidden = false;
         submit.disabled = false;
+        if (resumable) submit.focus();
       });
   });
+  // No tap: OpenKey's frame reconnects the account by itself (in a new tab it asks for the OpenKey sign-in in its own
+  // frame), and the SDK restores the session without an approval. Continue appears only if that fails.
+  if (resumable) form.requestSubmit();
 }
 
 const root = document.getElementById("share-app");

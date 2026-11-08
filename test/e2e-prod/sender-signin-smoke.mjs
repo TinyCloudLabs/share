@@ -255,15 +255,12 @@ try {
   }, 120_000, "the shared text to render");
   report.timingsMs.open = since(openStart);
 
-  // The library session is saved on the device: a reload opens on "Welcome back", and Continue
-  // resumes it with no OpenKey approval. Any review that does appear is approved and counted.
+  // The library session is saved on the device: a reload resumes it by itself, with no click and no
+  // OpenKey approval. Any review that does appear is approved and counted.
   setStage("share-resume");
   const wallHeading = () => document.querySelector(".auth-form h2")?.textContent ?? "";
-  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
-  await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
-  assert.equal(await sender.evaluate(wallHeading), "Welcome back", "a reload did not offer to resume the saved session");
   const resumeStart = Date.now();
-  await sender.click("button.auth-button");
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
   await approveUntil(sender, () => document.querySelector(".sender-chrome") !== null, "resume", 180_000);
   report.timingsMs.resume = since(resumeStart);
   assert.equal(report.prompts.resume, 0, `resuming the saved session needed ${report.prompts.resume} OpenKey approvals`);

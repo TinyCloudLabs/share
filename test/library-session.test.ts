@@ -1,15 +1,19 @@
 /**
- * Principle 17 (security-friction row 41). Share's library session is saved on the device by the web SDK, and the
- * sign-in wall opens on "Welcome back" when one is there. The wall decides before the SDK loads, so it reads the
+ * Principle 17 (security-friction row 41). Share's library session is saved on the device by the web SDK, and a
+ * reload with one there resumes it by itself, with no tap. The page decides before the SDK loads, so it reads the
  * SDK's storage layout itself; these tests write records with the SDK's own BrowserSessionStorage, so a change to
- * that layout fails here instead of silently showing the wrong wall.
+ * that layout fails here instead of silently showing the wrong screen.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserSessionStorage } from "@tinycloud/web-sdk";
 import { hasSavedLibrarySession, LIBRARY_SESSION_PREFIX } from "../src/share/library-session.js";
 
+const connect = vi.hoisted(() => ({ failures: 0 }));
 vi.mock("../src/share/openkey-session.js", () => ({
-  authenticateWithOpenKey: async () => ({ address: ADDRESS, openkey: { signOut: async () => ({ requestId: "r", revoked: true }), disconnect: () => undefined }, auth: {} }),
+  authenticateWithOpenKey: async () => {
+    if (connect.failures > 0) { connect.failures -= 1; throw Object.assign(new Error("closed"), { code: "USER_CANCELLED" }); }
+    return { address: ADDRESS, openkey: { signOut: async () => ({ requestId: "r", revoked: true }), disconnect: () => undefined }, auth: {} };
+  },
   createTinyCloudClient: async () => ({ vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: async () => undefined, spaceId: "applications" }),
   MAX_SHARE_FILE_BYTES: 100 * 1024 * 1024,
   SHARE_APPLICATION_PREFIX: "xyz.tinycloud.share/",
@@ -88,14 +92,28 @@ describe("the sender sign-in wall (booting the real app)", () => {
     await import("../src/share/main.js");
     return document.getElementById("share-app")!;
   }
-  const words = (root: HTMLElement) => [root.querySelector(".auth-form h2")?.textContent, root.querySelector("button.auth-button")?.textContent];
+  const continueButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>("button.auth-button")!;
+  const words = (root: HTMLElement) => [root.querySelector(".auth-form h2")?.textContent, continueButton(root).textContent];
 
-  it("opens on Welcome back after a reload with a saved session, and Continue resumes it", async () => {
+  it("resumes a saved session by itself after a reload: no tap, and nothing to press while it runs", async () => {
     await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
     const root = await boot();
+    expect(root.querySelector(".auth-form h2")?.textContent).toBe("Welcome back");
+    expect(root.querySelector(".auth-copy")?.textContent).toBe("You're still signed in on this device.");
+    expect(continueButton(root).hidden).toBe(true);
+    await vi.waitFor(() => expect(root.querySelector(".sender-home")).not.toBeNull());
+  });
+
+  it("shows Continue when resuming fails (OpenKey's window closed), and Continue resumes", async () => {
+    await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
+    connect.failures = 1;
+    const root = await boot();
+    await vi.waitFor(() => expect(continueButton(root).hidden).toBe(false));
     expect(words(root)).toEqual(["Welcome back", "Continue"]);
-    expect(document.activeElement).toBe(root.querySelector("button.auth-button"));
-    root.querySelector<HTMLFormElement>("form.auth-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(continueButton(root).disabled).toBe(false);
+    expect(document.activeElement).toBe(continueButton(root));
+    expect(root.querySelector(".sender-home")).toBeNull();
+    continueButton(root).click();
     await vi.waitFor(() => expect(root.querySelector(".sender-home")).not.toBeNull());
   });
 
@@ -110,7 +128,6 @@ describe("the sender sign-in wall (booting the real app)", () => {
   it("returns to the plain sign-in after Sign out, not to Welcome back", async () => {
     await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
     const root = await boot();
-    root.querySelector<HTMLFormElement>("form.auth-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(root.querySelector(".sender-signout")).not.toBeNull());
     root.querySelector<HTMLButtonElement>(".sender-signout")!.click();
     root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
