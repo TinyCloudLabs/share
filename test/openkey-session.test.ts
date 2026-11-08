@@ -882,4 +882,13 @@ describe("ObservedOpenKeyProvider guards the wallet route too", () => {
     await provider.request({ method: "eth_chainId" });
     expect(waits).toEqual(["guarded"]);
   });
+
+  it.each([["plain text", "hello"], ["odd hex", "0xabc"], ["empty hex", "0x"], ["not a string", 42]])("refuses a personal_sign whose message is %s, without asking OpenKey to sign", async (_label, param) => {
+    const ask = vi.spyOn(Object.getPrototypeOf(ObservedOpenKeyProvider.prototype) as { request(args: unknown): Promise<unknown> }, "request");
+    state.providerSignature = await SENDER.signMessage({ message: "hello" });
+    const provider = new ObservedOpenKeyProvider({} as never, {} as never, SENDER.address);
+    await expect(provider.request({ method: "personal_sign", params: [param, SENDER.address] })).rejects.toThrow("wallet-approval-unreadable-message");
+    expect(ask).not.toHaveBeenCalled();
+    ask.mockRestore();
+  });
 });

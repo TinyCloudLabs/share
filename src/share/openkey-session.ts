@@ -143,6 +143,10 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
   private async signObserved(args: { method: string; params?: unknown[] }): Promise<unknown> {
     this.failure = undefined;
     const mine = ++this.asked;
+    // Fail closed: a message that is not hex-encoded text cannot be checked against the signed-in account
+    // afterwards, so OpenKey is never asked to sign it. The SDK always sends hex.
+    const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
+    if (message === undefined) throw new Error("wallet-approval-unreadable-message");
     let signature: unknown;
     try {
       signature = await trackWalletApproval(() => super.request(args));
@@ -150,8 +154,7 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
       if (mine === this.asked) this.failure = approvalFailureOf(caught);
       throw caught;
     }
-    const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
-    if (message !== undefined && (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress)))) {
+    if (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress))) {
       if (mine === this.asked) this.failure = "wrong-account";
       throw new Error("wallet-approval-wrong-account");
     }
