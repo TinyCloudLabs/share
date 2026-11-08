@@ -40,6 +40,16 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
   return { address: auth.address, openkey, auth };
 }
 
+/**
+ * The OpenKey session of an account the library session was saved for, without opening OpenKey: nothing is shown,
+ * and the restored session needs no signature. A signature asked for later (a revoke, a fresh sign-in) opens OpenKey's
+ * own window as usual and must still recover to `account.address`. Managed keys only: an external wallet signs
+ * through `connect()`'s routing.
+ */
+export function reopenOpenKey(account: AuthResult, appName = DEFAULT_APP_NAME): OpenKeyShareSession {
+  return { address: account.address, openkey: new OpenKey({ host: OPENKEY_ORIGIN, appName, mode: "iframe" }), auth: account };
+}
+
 /*
  * Every signature — the manifest-bearing sign-in, account bootstrap and
  * owned-space hosting — needs the sender's approval: OpenKey's own sign
