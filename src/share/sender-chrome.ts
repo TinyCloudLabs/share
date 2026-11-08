@@ -34,16 +34,20 @@ export interface SenderChromeOptions {
 
 /**
  * Ends this tab's session: the TinyCloud client's session key first (local, no
- * network the page waits on), then, only when this tab holds an OpenKey sign-in
- * (`openKeySignedInHere`), OpenKey's own sign-in through its confirm window.
- * `openkey-ended` when OpenKey confirmed it; `openkey-unconfirmed` when it could
- * not (no window, no answer in time, or it said it could not verify);
- * `share-only` when the tab held none, so OpenKey is not asked. The local
- * session is cleared either way.
+ * network the page waits on), then, only when this tab holds an OpenKey sign-in,
+ * OpenKey's own sign-in through its confirm window. Whether it holds one is
+ * `connectedHere` when the caller knows (Courier always connects here), else the
+ * tab's mark (`openKeySignedInHere`). `openkey-ended` when OpenKey confirmed it;
+ * `openkey-unconfirmed` when it could not (no window, no answer in time, or it
+ * said it could not verify); `share-only` when the tab held none, so OpenKey is
+ * not asked. The local session is cleared either way.
  */
-export async function endSenderSession(options: Pick<SenderChromeOptions, "session" | "tinycloud">, waitMs: number = OPENKEY_SIGN_OUT_WAIT_MS): Promise<SignOutOutcome> {
+export async function endSenderSession(
+  options: Pick<SenderChromeOptions, "session" | "tinycloud">,
+  { connectedHere = openKeySignedInHere(), waitMs = OPENKEY_SIGN_OUT_WAIT_MS }: { readonly connectedHere?: boolean; readonly waitMs?: number } = {},
+): Promise<SignOutOutcome> {
   try { await options.tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, even when ending the session throws. */ }
-  if (!openKeySignedInHere()) return "share-only";
+  if (!connectedHere) return "share-only";
   let timer: ReturnType<typeof setTimeout> | undefined;
   const silent = new Promise<false>((resolve) => { timer = setTimeout(() => { options.session.openkey.disconnect(); resolve(false); }, waitMs); });
   try {

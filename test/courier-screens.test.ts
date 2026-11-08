@@ -57,8 +57,8 @@ const baseFiles = (req: Record<string, unknown> = request()): Record<string, unk
 let root: HTMLElement;
 const rendered: string[] = [];
 
-async function open(fake: Fake): Promise<void> {
-  const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store: fake.store, dispose: async () => undefined, signOut: async () => true };
+async function open(fake: Fake, signOut: CourierSession["signOut"] = async () => "openkey-ended"): Promise<void> {
+  const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store: fake.store, dispose: async () => undefined, signOut };
   mountCourier(root, { signIn: async () => session, renderBody: (host, text) => { rendered.push(text); host.textContent = text; }, now: () => NOW });
   root.querySelector<HTMLButtonElement>(".auth-button")!.click();
   await vi.waitFor(() => expect(root.querySelector(".cr-tabs")).not.toBeNull());
@@ -619,10 +619,34 @@ describe("what the page keeps and opens", () => {
 describe("a mailbox that isn't there", () => {
   it("says how to set it up", async () => {
     const store: CourierStore = { ...fakeStore({}).store, async list() { throw new StoreError("no-space"); } };
-    const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store, dispose: async () => undefined, signOut: async () => true };
+    const session: CourierSession = { address: "0x1234567890abcdef1234567890abcdef12345678", store, dispose: async () => undefined, signOut: async () => "openkey-ended" };
     mountCourier(root, { signIn: async () => session, renderBody: () => undefined, now: () => NOW });
     root.querySelector<HTMLButtonElement>(".auth-button")!.click();
     await vi.waitFor(() => expect(root.querySelector(".tc-status--danger")?.textContent).toBe("No Courier space yet."));
     expect(root.querySelector(".cr-panel")?.textContent).toContain("Run tc courier init once on your machine, then reload this page.");
+  });
+});
+
+describe("signing out of Courier says what was ended", () => {
+  const signOutWith = async (outcome: Awaited<ReturnType<CourierSession["signOut"]>>): Promise<string> => {
+    await open(fakeStore(baseFiles()), async () => outcome);
+    root.querySelector<HTMLButtonElement>(".sender-signout")!.click();
+    root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
+    await vi.waitFor(() => expect(root.querySelector(".auth-status")?.textContent).not.toBe(""));
+    return root.querySelector(".auth-status")!.textContent ?? "";
+  };
+
+  it("OpenKey confirmed: Courier's session and the OpenKey sign-in were cleared", async () => {
+    expect(await signOutWith("openkey-ended")).toBe("Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.");
+  });
+
+  it("no OpenKey sign-in in this tab: says so plainly, never that OpenKey failed to confirm", async () => {
+    const notice = await signOutWith("share-only");
+    expect(notice).toBe("Signed out of Courier. To sign out of OpenKey too, use openkey.so.");
+    expect(notice).not.toContain("didn't confirm");
+  });
+
+  it("OpenKey asked but did not confirm: the partial notice", async () => {
+    expect(await signOutWith("openkey-unconfirmed")).toContain("OpenKey didn't confirm");
   });
 });

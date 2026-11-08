@@ -30,7 +30,7 @@ const state = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
   clients: [] as Array<{ config: Record<string, unknown>; hosted: string[]; order: string[]; signedOut: number }>,
   // OpenKey instances made, their app names, how many times each flow was closed, and whether connect fails.
-  openKeys: [] as Array<{ appName: unknown; disconnects: number }>,
+  openKeys: [] as Array<{ appName: unknown; disconnects: number; signOuts?: number }>,
   connectError: undefined as unknown,
   onConnect: undefined as undefined | (() => void),
   constructorError: undefined as unknown,
@@ -60,9 +60,10 @@ state.sender = SENDER.address;
 // reports the connected address, whoever signed.
 vi.mock("@openkey/sdk", () => ({
   OpenKey: class {
-    private readonly record: { appName: unknown; disconnects: number };
+    private readonly record: { appName: unknown; disconnects: number; signOuts?: number };
     constructor(config?: { appName?: unknown }) { this.record = { appName: config?.appName, disconnects: 0 }; state.openKeys.push(this.record); }
     disconnect() { this.record.disconnects += 1; }
+    async signOut() { this.record.signOuts = (this.record.signOuts ?? 0) + 1; return { requestId: "r", revoked: true }; }
     async connect() { state.onConnect?.(); if (state.connectError !== undefined) throw state.connectError; return { address: state.sender, keyId: "key-1", keyType: "MANAGED" }; }
     getSessionToken() { return null; }
     tinycloudSigningOptions() { return { endpoint: "https://api.openkey.so/api/delegate/sign", token: null }; }
@@ -234,6 +235,14 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
       "agents/kv/xyz.tinycloud.courier/me/orders/ tinycloud.kv/put",
     ].sort());
     expect(request.registryRecords).toEqual([]);
+  });
+
+  it("Courier's sign-out asks OpenKey to sign out, because Courier connected OpenKey in this tab, even with no tab mark", async () => {
+    sessionStorage.clear();
+    const courier = await signInToCourier(CONFIG, { approval: () => undefined, status: () => undefined });
+    expect(sessionStorage.length).toBe(0);
+    expect(await courier.signOut()).toBe("openkey-ended");
+    expect(state.openKeys[0]!.signOuts).toBe(1);
   });
 
   it("the library and Save register under different app ids, so an account using both never has one overwrite the other's registry record", async () => {

@@ -8,7 +8,7 @@
  * shown as no-space, with setup left to `tc courier init` on the user's machine.
  */
 import type { SharePublicConfig } from "../email-share/config.js";
-import { endSenderSession } from "../share/sender-chrome.js";
+import { endSenderSession, type SignOutOutcome } from "../share/sender-chrome.js";
 import type { ApprovalGuard, ManifestSignIn, ShareTinyCloud, WalletApprovalFailure } from "../share/openkey-session.js";
 import { withWalletApproval } from "../share/revoke-flight.js";
 import { COURIER_APP_NAME, COURIER_MANIFEST_SCOPE, COURIER_SESSION_MS, COURIER_SPACE, assertCourierPermissions, courierManifest } from "./scope.js";
@@ -19,8 +19,8 @@ export interface CourierSession {
   readonly store: CourierStore;
   /** Closes the OpenKey flow and clears the SDK session. Safe to call twice; never rejects. */
   dispose(): Promise<void>;
-  /** Ends the SDK session, then OpenKey's own sign-in. True when OpenKey confirmed it ended its sign-in. */
-  signOut(): Promise<boolean>;
+  /** Ends the SDK session, then OpenKey's own sign-in when this tab holds one (see `endSenderSession`). */
+  signOut(): Promise<SignOutOutcome>;
 }
 
 export interface SignInProgress {
@@ -100,7 +100,9 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
       address: connected.session.address,
       store: createKvStore(kv),
       dispose: connected.dispose,
-      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }).then((outcome) => outcome === "openkey-ended"),
+      // Courier always connects OpenKey in this tab (it keeps nothing, so it never resumes without it), so OpenKey holds
+      // a sign-in here; said directly rather than marked in storage, which Courier keeps empty.
+      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }, { connectedHere: true }),
     };
   } catch (error) {
     await signedIn?.dispose();
