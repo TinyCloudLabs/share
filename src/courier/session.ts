@@ -100,7 +100,7 @@ export async function signInToCourier(config: SharePublicConfig, progress: SignI
       address: connected.session.address,
       store: createKvStore(kv),
       dispose: connected.dispose,
-      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }),
+      signOut: () => endSenderSession({ session: connected.session, tinycloud: connected.tinycloud }).then((outcome) => outcome === "openkey-ended"),
     };
   } catch (error) {
     await signedIn?.dispose();

@@ -196,14 +196,16 @@ describe("the sender sign-in wall (booting the real app)", () => {
     expect(calls.reopens).toBe(0);
   });
 
-  it("forgets the account at Sign out and returns to the plain sign-in", async () => {
+  it("forgets the account at Sign out, and a resumed tab with no OpenKey sign-in says Share alone signed out", async () => {
     await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
+    sessionStorage.clear();
     const root = await boot();
     await vi.waitFor(() => expect(root.querySelector(".sender-signout")).not.toBeNull());
     root.querySelector<HTMLButtonElement>(".sender-signout")!.click();
     root.querySelector<HTMLButtonElement>(".sender-confirm-dialog .sender-confirm-revoke")!.click();
     await vi.waitFor(() => expect(root.querySelector(".auth-shell")).not.toBeNull());
     expect(words(root)).toEqual(["One key, your files", "Continue with OpenKey"]);
+    expect(root.querySelector(".auth-status")?.textContent).toBe("Signed out of Share. To sign out of OpenKey too, use openkey.so.");
     expect(localStorage.getItem(`${LIBRARY_SESSION_PREFIX}openkey-account`)).toBeNull();
   });
 });

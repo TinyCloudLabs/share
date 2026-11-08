@@ -3,8 +3,9 @@
  * with a session (only the OpenKey ceremony, the TinyCloud client and the two
  * views are replaced) and drives the real chrome, dialog and sign-in wall.
  */
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { endSenderSession, OPENKEY_SIGN_OUT_WAIT_MS, SIGNED_OUT_NOTICE, SIGNED_OUT_PARTIAL_NOTICE, SIGN_OUT_BODY } from "../src/share/sender-chrome.js";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { endSenderSession, OPENKEY_SIGN_OUT_WAIT_MS, SIGNED_OUT_NOTICE, SIGNED_OUT_PARTIAL_NOTICE, SIGNED_OUT_SHARE_ONLY_NOTICE, SIGN_OUT_BODY } from "../src/share/sender-chrome.js";
+import { forgetOpenKeySignedInHere, markOpenKeySignedInHere, openKeySignedInHere } from "../src/share/library-session.js";
 import { activeFlight, RevokeFlight, withWalletApproval } from "../src/share/revoke-flight.js";
 import { trackWalletApproval, walletApprovalOpen } from "../src/share/wallet-approval.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
@@ -85,6 +86,7 @@ describe("sender sign-out (booting the real app)", () => {
     expect(calls.tinycloudSignOut).toHaveBeenCalledTimes(1);
     expect(calls.openkeySignOut).toHaveBeenCalledTimes(1);
     expect(document.querySelector(".auth-status")?.textContent).toBe(SIGNED_OUT_NOTICE);
+    expect(openKeySignedInHere()).toBe(false);
     expect(document.querySelector(".sender-home")).toBeNull();
     expect(document.querySelector(".sender-chrome")).toBeNull();
     expect(window.location.hash).toBe("");
@@ -107,22 +109,35 @@ describe("sender sign-out (booting the real app)", () => {
 
 describe("endSenderSession", () => {
   const fake = (openkey: Record<string, unknown>, tinycloud: Record<string, unknown> = { signOut: vi.fn(async () => undefined) }) => ({ session: { openkey } as unknown as OpenKeyShareSession, tinycloud: tinycloud as unknown as ShareTinyCloud });
+  beforeEach(() => { markOpenKeySignedInHere(); });
 
-  it("reports true only when OpenKey confirms it ended its own sign-in", async () => {
-    expect(await endSenderSession(fake({ signOut: async () => ({ requestId: "r", revoked: true }), disconnect: vi.fn() }))).toBe(true);
-    expect(await endSenderSession(fake({ signOut: async () => ({ requestId: "r", revoked: false }), disconnect: vi.fn() }))).toBe(false);
+  it("reports the OpenKey sign-in ended only when OpenKey confirms it", async () => {
+    expect(await endSenderSession(fake({ signOut: async () => ({ requestId: "r", revoked: true }), disconnect: vi.fn() }))).toBe("openkey-ended");
+    markOpenKeySignedInHere();
+    expect(await endSenderSession(fake({ signOut: async () => ({ requestId: "r", revoked: false }), disconnect: vi.fn() }))).toBe("openkey-unconfirmed");
+  });
+
+  it("does not ask OpenKey in a tab that holds no OpenKey sign-in (a resumed tab): Share's session alone ends, and that is expected", async () => {
+    forgetOpenKeySignedInHere();
+    const tinycloud = { signOut: vi.fn(async () => undefined) };
+    const signOut = vi.fn(async () => ({ requestId: "r", revoked: true }));
+    expect(await endSenderSession(fake({ signOut, disconnect: vi.fn() }, tinycloud))).toBe("share-only");
+    expect(tinycloud.signOut).toHaveBeenCalledTimes(1);
+    expect(signOut).not.toHaveBeenCalled();
+    expect(SIGNED_OUT_SHARE_ONLY_NOTICE).toBe("Signed out of Share. To sign out of OpenKey too, use openkey.so.");
   });
 
   it("still clears the local session when OpenKey cannot be reached", async () => {
     const tinycloud = { signOut: vi.fn(async () => undefined) };
     const result = await endSenderSession(fake({ signOut: async () => { throw { code: "POPUP_BLOCKED" }; }, disconnect: vi.fn() }, tinycloud));
-    expect(result).toBe(false);
+    expect(result).toBe("openkey-unconfirmed");
     expect(tinycloud.signOut).toHaveBeenCalledTimes(1);
+    expect(openKeySignedInHere()).toBe(true);
   });
 
   it("still asks OpenKey when the local sign-out throws", async () => {
     const signOut = vi.fn(async () => ({ requestId: "r", revoked: true }));
-    expect(await endSenderSession(fake({ signOut, disconnect: vi.fn() }, { signOut: async () => { throw new Error("boom"); } }))).toBe(true);
+    expect(await endSenderSession(fake({ signOut, disconnect: vi.fn() }, { signOut: async () => { throw new Error("boom"); } }))).toBe("openkey-ended");
     expect(signOut).toHaveBeenCalledTimes(1);
   });
 
@@ -131,7 +146,7 @@ describe("endSenderSession", () => {
     const disconnect = vi.fn();
     const pending = endSenderSession(fake({ signOut: () => new Promise(() => undefined), disconnect }));
     await vi.advanceTimersByTimeAsync(OPENKEY_SIGN_OUT_WAIT_MS);
-    expect(await pending).toBe(false);
+    expect(await pending).toBe("openkey-unconfirmed");
     expect(disconnect).toHaveBeenCalledTimes(1);
     expect(SIGNED_OUT_PARTIAL_NOTICE).toContain("didn't confirm");
   });

@@ -7,7 +7,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
-import { forgetLibraryAccount, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
+import { forgetLibraryAccount, markOpenKeySignedInHere, saveLibraryAccount, savedLibraryAccount } from "./library-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -61,7 +61,11 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
     // A resume opens no OpenKey window: what it does first is reach the encrypted TinyCloud.
     status.textContent = account !== undefined ? "Connecting to your encrypted TinyCloud…" : "Loading secure sign-in…";
     void import("./openkey-session.js")
-      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }))
+      .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }).then((session) => {
+        // OpenKey connected in this tab, so it now holds a sign-in here that Sign out can end.
+        markOpenKeySignedInHere();
+        return session;
+      }))
       .then((session) => proceed(session, status))
       .catch((error) => {
         // TC-335: `error.message` used to be rendered here verbatim. Everything

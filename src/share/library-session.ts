@@ -48,3 +48,23 @@ export function saveLibraryAccount(auth: AuthResult): void {
 export function forgetLibraryAccount(): void {
   try { window.localStorage.removeItem(ACCOUNT_KEY); } catch { /* Blocked storage holds nothing to forget. */ }
 }
+
+/**
+ * Whether OpenKey holds a sign-in in this tab. OpenKey's embedded window keeps its sign-in per tab, and since a
+ * saved session resumes without opening OpenKey, a resumed tab often holds none. Share marks the tab when OpenKey
+ * connects or signs in it (both need OpenKey's sign-in there) and asks OpenKey to sign out only when marked.
+ * sessionStorage, like OpenKey's own: a reload keeps it, a new tab starts without it.
+ */
+const OPENKEY_TAB_KEY = "tinycloud-share-openkey-signed-in";
+
+export function markOpenKeySignedInHere(): void {
+  try { window.sessionStorage.setItem(OPENKEY_TAB_KEY, "1"); } catch { /* Unmarked: sign-out then leaves OpenKey alone and says so. */ }
+}
+
+export function openKeySignedInHere(): boolean {
+  try { return window.sessionStorage.getItem(OPENKEY_TAB_KEY) === "1"; } catch { return false; }
+}
+
+export function forgetOpenKeySignedInHere(): void {
+  try { window.sessionStorage.removeItem(OPENKEY_TAB_KEY); } catch { /* Nothing stored. */ }
+}

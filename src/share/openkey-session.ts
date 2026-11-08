@@ -7,7 +7,7 @@ import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
-import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
+import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -580,7 +580,9 @@ export async function createTinyCloudClient(
   // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
   // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
   // replaced by a fresh sign-in.
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
+  // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
+  const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }
