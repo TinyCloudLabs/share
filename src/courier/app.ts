@@ -34,7 +34,7 @@ const TABS: readonly { id: Screen; label: string }[] = [
 
 export const NO_SPACE_COPY = "No Courier space yet.";
 export const NO_SPACE_HINT = "Run tc courier init once on your machine, then reload this page.";
-const SIGNED_OUT_NOTICE = "Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.";
+const SIGNED_OUT_NOTICE = "Signed out of Courier and of OpenKey in this tab. Your threads and approvals are unchanged.";
 const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Courier, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device.";
 /** OpenKey was not asked: this tab held no OpenKey sign-in to end. */
 const SIGNED_OUT_COURIER_ONLY_NOTICE = "Signed out of Courier. To sign out of OpenKey too, use openkey.so.";

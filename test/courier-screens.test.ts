@@ -636,8 +636,8 @@ describe("signing out of Courier says what was ended", () => {
     return root.querySelector(".auth-status")!.textContent ?? "";
   };
 
-  it("OpenKey confirmed: Courier's session and the OpenKey sign-in were cleared", async () => {
-    expect(await signOutWith("openkey-ended")).toBe("Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.");
+  it("OpenKey confirmed: signed out of Courier and of OpenKey in this tab", async () => {
+    expect(await signOutWith("openkey-ended")).toBe("Signed out of Courier and of OpenKey in this tab. Your threads and approvals are unchanged.");
   });
 
   it("no OpenKey sign-in in this tab: says so plainly, never that OpenKey failed to confirm", async () => {
