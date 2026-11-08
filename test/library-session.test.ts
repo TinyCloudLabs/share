@@ -95,11 +95,13 @@ describe("the sender sign-in wall (booting the real app)", () => {
   const continueButton = (root: HTMLElement) => root.querySelector<HTMLButtonElement>("button.auth-button")!;
   const words = (root: HTMLElement) => [root.querySelector(".auth-form h2")?.textContent, continueButton(root).textContent];
 
-  it("resumes a saved session by itself after a reload: no tap, and nothing to press while it runs", async () => {
+  it("resumes a saved session by itself after a reload: no tap, nothing to press, and no claim while it runs", async () => {
     await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
     const root = await boot();
     expect(root.querySelector(".auth-form h2")?.textContent).toBe("Welcome back");
-    expect(root.querySelector(".auth-copy")?.textContent).toBe("You're still signed in on this device.");
+    // In a new tab OpenKey may still ask the owner to sign in, so the screen does not say they are signed in.
+    expect(root.querySelector<HTMLElement>(".auth-copy")!.hidden).toBe(true);
+    expect(root.querySelector(".auth-status")?.textContent).not.toBe("");
     expect(continueButton(root).hidden).toBe(true);
     await vi.waitFor(() => expect(root.querySelector(".sender-home")).not.toBeNull());
   });
@@ -110,6 +112,8 @@ describe("the sender sign-in wall (booting the real app)", () => {
     const root = await boot();
     await vi.waitFor(() => expect(continueButton(root).hidden).toBe(false));
     expect(words(root)).toEqual(["Welcome back", "Continue"]);
+    expect(root.querySelector<HTMLElement>(".auth-copy")!.hidden).toBe(false);
+    expect(root.querySelector(".auth-copy")?.textContent).toBe("Sign in with OpenKey to continue.");
     expect(continueButton(root).disabled).toBe(false);
     expect(document.activeElement).toBe(continueButton(root));
     expect(root.querySelector(".sender-home")).toBeNull();
