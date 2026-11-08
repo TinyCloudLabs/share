@@ -8,7 +8,7 @@ import { resetWalletApproval, trackWalletApproval, walletApprovalOpen } from "..
 import { SenderHistoryRepository } from "../src/share/sender-history.js";
 import type { OpenKeyShareSession, ShareTinyCloud } from "../src/share/openkey-session.js";
 
-vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3: vi.fn(async () => ({})), verifyEip191MessageSignature: async () => true }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3: vi.fn(async () => ({})), verifyEip191MessageSignature: async () => true, EXPIRY: { SESSION_MS: 30 * 24 * 60 * 60 * 1000 } }));
 
 afterEach(() => { endSenderLibrary(); resetRevokeFlights(); resetWalletApproval(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 

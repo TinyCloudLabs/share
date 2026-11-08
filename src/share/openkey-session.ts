@@ -1,5 +1,5 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { authorizationVerdictOf, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
@@ -190,8 +190,13 @@ export interface ApprovalInfo {
   readonly purpose?: string | undefined;
 }
 
-/** The longest a session may last. Also the default. */
+/** The longest a session may last, and the default, apart from the sign-in session tier below. */
 export const MAX_SESSION_MS = 60 * 60 * 1000;
+/**
+ * The SDK's sign-in session tier (`EXPIRY.SESSION_MS`, 30 days: OpenKey's own sign-in limit). Share's library
+ * session lasts this long, saved on the device; it is the one value above the hour `expiry` accepts.
+ */
+export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
 const REGISTRY_SYNC_WAIT_MS = 15_000;
@@ -242,7 +247,7 @@ export interface SignInWithManifestOptions extends ManifestScope {
    * caller picks, and `dispose()` still signs out (clearing what was persisted).
    */
   readonly persistSession?: boolean;
-  /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000). Default one hour. */
+  /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000), or exactly `SIGN_IN_SESSION_MS`. Default one hour. */
   readonly expiry?: number;
   /**
    * Waits, after sign-in and space hosting, for the SDK's background sync of the
@@ -290,8 +295,8 @@ async function settleAccountRegistrySync(tinycloud: ShareTinyCloud, timeoutMs: n
 
 function checkOptions(options: SignInWithManifestOptions): void {
   const { expiry, domain, appName, sessionPrefix } = options;
-  if (expiry !== undefined && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
-    throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds`);
+  if (expiry !== undefined && expiry !== SIGN_IN_SESSION_MS && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
+    throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds, or exactly ${SIGN_IN_SESSION_MS}`);
   }
   if (domain !== undefined && (domain.length > 253 || !HOST_NAME.test(domain))) throw new SignInOptionError("domain", "the domain must be an ASCII host name");
   if (appName !== undefined) checkLabel("appName", appName);
@@ -559,9 +564,10 @@ export async function createTinyCloudClient(
   config: SharePublicConfig,
   onStatus: (message: string) => void,
 ): Promise<ShareTinyCloud> {
-  // Persisted under the library's own prefix: a reload restores it, with no new approval, until the signed session
-  // expires or the sender signs out (which clears it). A revoked one is refused and replaced by a fresh sign-in.
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true });
+  // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
+  // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
+  // replaced by a fresh sign-in.
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

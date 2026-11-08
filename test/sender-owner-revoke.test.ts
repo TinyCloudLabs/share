@@ -9,7 +9,7 @@ import type { SenderShareRecord } from "@tinycloud/share-sdk";
 const { revokePolicyRootV3 } = vi.hoisted(() => ({
   revokePolicyRootV3: vi.fn(async () => ({})),
 }));
-vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3, verifyEip191MessageSignature: async () => true }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3, verifyEip191MessageSignature: async () => true, EXPIRY: { SESSION_MS: 30 * 24 * 60 * 60 * 1000 } }));
 
 afterEach(() => { resetRevokeFlights(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); revokePolicyRootV3.mockClear(); });
 

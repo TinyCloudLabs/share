@@ -8,6 +8,7 @@ import {
   createTinyCloudClient,
   filesForYouPermissions,
   MAX_SESSION_MS,
+  SIGN_IN_SESSION_MS,
   ObservedOpenKeyProvider,
   ownerEncryptionNetwork,
   SAVE_COPY_APP_ID,
@@ -805,12 +806,14 @@ describe("signInWithManifest options for an app-install flow", () => {
     expect(state.openKeys).toEqual([]);
   });
 
-  it("expiry shortens the session and can never lengthen it past one hour", async () => {
+  it("expiry shortens the session and never lengthens it past one hour, except to exactly the sign-in session tier", async () => {
     await signInWithManifest({ ...base, expiry: 15 * 60 * 1000 });
     expect(state.clients[0]!.config.sessionExpirationMs).toBe(900_000);
     await signInWithManifest({ ...base, expiry: MAX_SESSION_MS });
     expect(state.clients[1]!.config.sessionExpirationMs).toBe(3_600_000);
-    for (const expiry of [MAX_SESSION_MS + 1, 24 * 60 * 60 * 1000, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await signInWithManifest({ ...base, expiry: SIGN_IN_SESSION_MS });
+    expect(state.clients[2]!.config.sessionExpirationMs).toBe(30 * 24 * 60 * 60 * 1000);
+    for (const expiry of [MAX_SESSION_MS + 1, 24 * 60 * 60 * 1000, SIGN_IN_SESSION_MS - 1, SIGN_IN_SESSION_MS + 1, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       state.openKeys.length = 0;
       await expect(signInWithManifest({ ...base, expiry }), String(expiry)).rejects.toBeInstanceOf(SignInOptionError);
       expect(state.openKeys, `OpenKey must not open for expiry ${expiry}`).toEqual([]);

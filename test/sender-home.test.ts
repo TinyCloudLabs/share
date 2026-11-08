@@ -10,7 +10,7 @@ import { API_ORIGIN, ISSUER_DID, mockLinks, SHARE_ORIGIN, signWithIssuer } from 
 const { revokePolicyRootV3 } = vi.hoisted(() => ({
   revokePolicyRootV3: vi.fn(async () => ({})),
 }));
-vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3 }));
+vi.mock("@tinycloud/sdk-core", () => ({ revokePolicyRootV3, EXPIRY: { SESSION_MS: 30 * 24 * 60 * 60 * 1000 } }));
 
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
