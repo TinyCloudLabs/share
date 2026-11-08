@@ -1,5 +1,5 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
@@ -7,6 +7,7 @@ import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
+import { LIBRARY_SESSION_PREFIX } from "./library-session.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -418,7 +419,19 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     // calls only as that address, so the SDK can only ever sign in as this connection's owner;
     // a persisted session is address-keyed and validated before any network work. No owner
     // check is needed here: the binding was made when the provider was built above.
-    const signedSession = await tinycloud.signIn();
+    let signedSession: ClientSession | undefined;
+    try {
+      signedSession = await tinycloud.signIn();
+    } catch (error) {
+      // The SDK restored a saved session and then refused to use it (for example a manifest it cannot check against a
+      // restored session): handled below like a session the node refuses. Any other failure is the sign-in's own.
+      if (tinycloud.sessionRestoreStatus !== "restored") throw error;
+    }
+    if (signedSession === undefined || await restoredSessionRefused(tinycloud, includeAccountRegistryPermissions)) {
+      // A saved session that cannot be used: clear it and sign in afresh, as on a first visit.
+      await tinycloud.signOut();
+      signedSession = await tinycloud.signIn();
+    }
     const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
@@ -449,6 +462,19 @@ function signedSessionExpiry(siwe: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : undefined;
+}
+
+/**
+ * True when `signIn()` restored a saved session that the node now refuses (HTTP 401: the owner revoked it, or the
+ * node no longer knows it). The SDK restores a saved session locally without asking the node, so a refused one would
+ * otherwise fail only at the first read, after space hosting had already asked for a signature. One read the
+ * account-registry grants cover settles it; a network failure or any other answer is not a refusal and keeps the session.
+ */
+async function restoredSessionRefused(tinycloud: ShareTinyCloud, registryGrants: boolean): Promise<boolean> {
+  const spaceId = tinycloud.spaceId;
+  if (tinycloud.sessionRestoreStatus !== "restored" || !registryGrants || spaceId === undefined) return false;
+  const read = await tinycloud.account.spaces.get(spaceId).catch((error: unknown) => ({ ok: false as const, error }));
+  return !read.ok && authorizationVerdictOf(read.error) === "unauthenticated";
 }
 
 const runUnguarded: ApprovalGuard = (wait) => wait();
@@ -533,7 +559,9 @@ export async function createTinyCloudClient(
   config: SharePublicConfig,
   onStatus: (message: string) => void,
 ): Promise<ShareTinyCloud> {
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus });
+  // Persisted under the library's own prefix: a reload restores it, with no new approval, until the signed session
+  // expires or the sender signs out (which clears it). A revoked one is refused and replaced by a fresh sign-in.
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

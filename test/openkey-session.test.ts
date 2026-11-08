@@ -39,6 +39,9 @@ const state = vi.hoisted(() => ({
   // The SIWE the client's signIn() reports back.
   signInSiwe: undefined as string | undefined,
   registrySync: undefined as undefined | { promise: Promise<unknown> },
+  // A session saved on the device, restored by the first signIn(): one the node accepts, refuses (401, revoked),
+  // cannot be reached for, or one the SDK restores and then refuses to use (it throws).
+  saved: undefined as undefined | "accepted" | "revoked" | "unreachable" | "unusable",
   signed: [] as Array<{ message: string; keyId?: string }>,
   // Who actually signs, and whether the widget answers with a signature at all.
   signer: undefined as { signMessage(input: { message: string }): Promise<string> } | undefined,
@@ -83,8 +86,23 @@ vi.mock("@tinycloud/web-sdk", () => ({
       state.clients.push(this.record);
     }
     space() { return { kv: {} }; }
-    async signIn(): Promise<{ address: string; siwe: string | undefined }> { this.record.order.push("signIn"); if (state.signInError !== undefined) throw state.signInError; return { address: state.sender, siwe: state.signInSiwe }; }
-    async signOut(): Promise<void> { this.record.signedOut += 1; }
+    private restoreStatus = "idle";
+    get sessionRestoreStatus() { return this.restoreStatus; }
+    get spaceId() { return "applications-space"; }
+    readonly account = { spaces: { get: async () => {
+      if (state.saved === "revoked") return { ok: false, error: { code: "AUTH_DELEGATION_REVOKED", meta: { status: 401 } } };
+      if (state.saved === "unreachable") return { ok: false, error: { code: "NETWORK_ERROR", message: "Failed to fetch" } };
+      return { ok: true, data: {} };
+    } } };
+    async signIn(): Promise<{ address: string; siwe: string | undefined }> {
+      this.record.order.push("signIn");
+      if (state.signInError !== undefined) throw state.signInError;
+      // Only the first sign-in finds the saved session: a sign-out clears it.
+      this.restoreStatus = state.saved !== undefined && this.record.signedOut === 0 ? "restored" : "logging-in";
+      if (this.restoreStatus === "restored" && state.saved === "unusable") throw new Error("Manifest validation failed");
+      return { address: state.sender, siwe: state.signInSiwe };
+    }
+    async signOut(): Promise<void> { this.record.signedOut += 1; this.record.order.push("signOut"); this.restoreStatus = "idle"; }
     async ensureOwnedSpaceHosted(name: string): Promise<string> { if (state.hostError !== undefined) throw state.hostError; this.record.hosted.push(name); this.record.order.push(`host:${name}`); return name === "account" ? "account" : `space-of-${name}`; }
   },
 }));
@@ -156,6 +174,7 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     state.signed = [];
     state.signer = SENDER;
     state.omitSignature = false;
+    state.saved = undefined;
     localStorage.clear();
     sessionStorage.clear();
   });
@@ -344,6 +363,41 @@ describe("signInWithManifest: one sign-in, any manifest inside its scope", () =>
     let stepsWhenHandedOut: string[] | undefined;
     await signInWithManifest({ manifest: saveCopyManifest(), ...SAVE_COPY_MANIFEST_SCOPE, config: CONFIG, onClient: () => { stepsWhenHandedOut = [...state.clients[0]!.order]; } });
     expect(stepsWhenHandedOut).toEqual([]);
+  });
+
+  describe("a session saved on the device (persistSession)", () => {
+    const library = () => signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config: CONFIG, persistSession: true, sessionPrefix: "tinycloud-share-library-" });
+
+    it("resumes a saved session the node still accepts: no sign-out and no second sign-in", async () => {
+      state.saved = "accepted";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "host:account"]);
+    });
+
+    it("clears a saved session the node refuses (revoked) and signs in afresh before anything is hosted", async () => {
+      state.saved = "revoked";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut", "signIn", "host:account"]);
+    });
+
+    it("clears a saved session the SDK restores but cannot use, and signs in afresh", async () => {
+      state.saved = "unusable";
+      const signedIn = await library();
+      expect(signedIn.session.address).toBe(SENDER.address);
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut", "signIn", "host:account"]);
+    });
+
+    it("keeps a saved session when the node cannot be reached: that says nothing about the session", async () => {
+      state.saved = "unreachable";
+      await library();
+      expect(state.clients[0]!.order).toEqual(["signIn", "host:account"]);
+    });
+
+    it("a fresh sign-in that fails is the sign-in's own failure: nothing is retried", async () => {
+      state.signInError = new Error("approval-cancelled");
+      await expect(library()).rejects.toThrow("approval-cancelled");
+      expect(state.clients[0]!.order).toEqual(["signIn", "signOut"]);
+    });
   });
 });
 

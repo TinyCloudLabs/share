@@ -3,14 +3,14 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 
 /**
  * TC-1583. The signed-in bar above every sender screen: who is signed in, and a
- * way out. Share keeps no session on the device (the signing key lives in this
- * tab's memory), so what Sign out ends is that key and OpenKey's own sign-in.
+ * way out. Share saves its session on this device so a reload resumes it, so
+ * what Sign out ends is that saved session and OpenKey's own sign-in.
  * Nothing the account owns changes: shares stay active and nothing is revoked
  * or deleted.
  */
 
 export const SIGN_OUT_TITLE = "Sign out of Share?";
-export const SIGN_OUT_BODY = "This ends your OpenKey sign-in on this device and clears Share's session in this tab. Your shares stay active; nothing is revoked or deleted.";
+export const SIGN_OUT_BODY = "This ends your OpenKey sign-in on this device and clears Share's saved session. Your shares stay active; nothing is revoked or deleted.";
 export const SIGN_OUT_NEXT = "To come back you'll sign in with OpenKey again.";
 export const SIGNED_OUT_NOTICE = "Signed out. Share's session and your OpenKey sign-in on this device were cleared. Your shares are unchanged.";
 export const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Share, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device. Your shares are unchanged.";
@@ -32,7 +32,7 @@ export interface SenderChromeOptions {
  * cleared either way.
  */
 export async function endSenderSession(options: Pick<SenderChromeOptions, "session" | "tinycloud">, waitMs: number = OPENKEY_SIGN_OUT_WAIT_MS): Promise<boolean> {
-  try { await options.tinycloud.signOut(); } catch { /* The key lives only in this tab; the page drops it next. */ }
+  try { await options.tinycloud.signOut(); } catch { /* The SDK clears the saved session in its own `finally`, even when ending the session throws. */ }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const silent = new Promise<false>((resolve) => { timer = setTimeout(() => { options.session.openkey.disconnect(); resolve(false); }, waitMs); });
   try {

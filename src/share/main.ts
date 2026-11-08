@@ -6,6 +6,7 @@ import { resetRevokeFlights } from "./revoke-flight.js";
 import { resetWalletApproval } from "./wallet-approval.js";
 import { authFailureMessage, fail } from "./sender-failure.js";
 import { purgeLegacyReceiverStorage } from "../email-share/receiver-storage.js";
+import { hasSavedLibrarySession } from "./library-session.js";
 
 // Every page on this origin drops receiver records an earlier build left in the tab.
 purgeLegacyReceiverStorage();
@@ -165,4 +166,5 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   render();
 }
 
-mountAuthentication(root, false, bootstrap);
+// A library session saved on this device opens on "Welcome back"; Continue restores it without a new approval.
+mountAuthentication(root, hasSavedLibrarySession(), bootstrap);
