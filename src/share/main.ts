@@ -56,8 +56,10 @@ function mountAuthentication(root: HTMLElement, resume: AuthResult | undefined, 
   submit.hidden = resumable;
   copy.hidden = resumable;
   form.addEventListener("submit", (event) => {
-    event.preventDefault(); submit.disabled = true; status.textContent = "Loading secure sign-in…";
+    event.preventDefault(); submit.disabled = true;
     const account = reopen; reopen = undefined;
+    // A resume opens no OpenKey window: what it does first is reach the encrypted TinyCloud.
+    status.textContent = account !== undefined ? "Connecting to your encrypted TinyCloud…" : "Loading secure sign-in…";
     void import("./openkey-session.js")
       .then((openkey) => account !== undefined ? openkey.reopenOpenKey(account) : openkey.authenticateWithOpenKey((message) => { status.textContent = message; }))
       .then((session) => proceed(session, status))
@@ -148,7 +150,7 @@ function render(): void {
 window.addEventListener("hashchange", render);
 
 async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Promise<void> {
-  status.textContent = "Signed in. Loading your shares…";
+  status.textContent = "Connecting to your encrypted TinyCloud…";
   const [{ loadSharePublicConfig }, { createTinyCloudClient }, { SenderHistoryRepository }] = await Promise.all([
     import("../email-share/config.js"),
     import("./openkey-session.js"),
@@ -156,6 +158,8 @@ async function bootstrap(session: OpenKeyShareSession, status: HTMLElement): Pro
   ]);
   const config = await loadSharePublicConfig();
   const tinycloud = await createTinyCloudClient(session, config, (message) => { status.textContent = message; });
+  // Signed in only now: the session is restored and the node has accepted it, or a fresh sign-in was approved.
+  status.textContent = "Signed in. Loading your shares…";
   // The SDK has saved the session; remember whose it is, so the next load resumes without opening OpenKey.
   saveLibraryAccount(session.auth);
   const unlocked = await tinycloud.vault.unlock();

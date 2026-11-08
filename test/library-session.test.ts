@@ -6,17 +6,21 @@
  * silently showing the wrong screen.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserSessionStorage } from "@tinycloud/web-sdk";
+import { BrowserSessionStorage, TinyCloudWeb } from "@tinycloud/web-sdk";
 import type { AuthResult } from "@openkey/sdk";
 import { forgetLibraryAccount, LIBRARY_SESSION_PREFIX, saveLibraryAccount, savedLibraryAccount } from "../src/share/library-session.js";
+import { endSenderSession } from "../src/share/sender-chrome.js";
+import type { OpenKeyShareSession } from "../src/share/openkey-session.js";
 
-const calls = vi.hoisted(() => ({ connects: 0, reopens: 0, clientFailures: 0 }));
+const calls = vi.hoisted(() => ({ connects: 0, reopens: 0, clientFailures: 0, clientGate: undefined as Promise<void> | undefined, clientWaiting: false }));
 vi.mock("../src/share/openkey-session.js", () => {
   const session = (auth: AuthResult) => ({ address: auth.address, openkey: { signOut: async () => ({ requestId: "r", revoked: true }), disconnect: () => undefined }, auth });
   return {
     authenticateWithOpenKey: async () => { calls.connects += 1; return session({ address: ADDRESS, keyId: "key-1", keyType: "MANAGED" }); },
     reopenOpenKey: (auth: AuthResult) => { calls.reopens += 1; return session(auth); },
     createTinyCloudClient: async () => {
+      calls.clientWaiting = calls.clientGate !== undefined;
+      await calls.clientGate;
       // A restore that fails and a fresh approval that is cancelled, as one failure.
       if (calls.clientFailures > 0) { calls.clientFailures -= 1; throw Object.assign(new Error("closed"), { code: "USER_CANCELLED" }); }
       return { vault: { unlock: async () => ({ ok: true, data: undefined }) }, signOut: async () => undefined, spaceId: "applications" };
@@ -103,6 +107,22 @@ describe("savedLibraryAccount reads what the web SDK saved", () => {
   });
 });
 
+describe("Sign out removes the saved session from storage", () => {
+  it("Share's sign-out, on a real web SDK client set up as the library's, deletes the saved record", async () => {
+    await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
+    const sessionKey = `${LIBRARY_SESSION_PREFIX}${ADDRESS.toLowerCase()}`;
+    expect(localStorage.getItem(sessionKey)).not.toBeNull();
+    // As signInWithManifest builds it for the library: persisted under the library prefix, the provider answering as the owner.
+    const provider = { request: async ({ method }: { method: string }) => (method === "eth_accounts" ? [ADDRESS] : "0x1") };
+    const tinycloud = new TinyCloudWeb({ provider, persistSession: true, sessionStorageKeyPrefix: LIBRARY_SESSION_PREFIX, ui: false });
+    const openkey = { signOut: async () => ({ requestId: "r", revoked: true }), disconnect: () => undefined };
+    await endSenderSession({ session: { address: ADDRESS, openkey, auth: MANAGED } as unknown as OpenKeyShareSession, tinycloud });
+    expect(localStorage.getItem(sessionKey)).toBeNull();
+    expect(localStorage.getItem(`${LIBRARY_SESSION_PREFIX}active-address`)).toBeNull();
+    expect(savedLibraryAccount(localStorage)).toBeUndefined();
+  });
+});
+
 describe("the sender sign-in wall (booting the real app)", () => {
   async function boot(): Promise<HTMLElement> {
     vi.resetModules();
@@ -120,10 +140,28 @@ describe("the sender sign-in wall (booting the real app)", () => {
     const root = await boot();
     expect(root.querySelector(".auth-form h2")?.textContent).toBe("Welcome back");
     expect(root.querySelector<HTMLElement>(".auth-copy")!.hidden).toBe(true);
-    expect(root.querySelector(".auth-status")?.textContent).not.toBe("");
     expect(continueButton(root).hidden).toBe(true);
     await vi.waitFor(() => expect(root.querySelector(".sender-home")).not.toBeNull());
     expect([calls.reopens, calls.connects]).toEqual([1, 0]);
+  });
+
+  it("says Connecting from the start of a resume, and Signed in only once the session is back", async () => {
+    await saveSession(LIBRARY_SESSION_PREFIX, HOUR);
+    let release: () => void = () => undefined;
+    // Executor form: the Node 20 test runtime has no Promise.withResolvers.
+    calls.clientGate = new Promise((resolve) => { release = resolve; });
+    const statuses: string[] = [];
+    const root = await boot();
+    const status = root.querySelector(".auth-status")!;
+    statuses.push(status.textContent ?? "");
+    new MutationObserver(() => statuses.push(status.textContent ?? "")).observe(status, { childList: true, characterData: true, subtree: true });
+    // Held where the session is being restored: nothing may have said "Signed in" yet.
+    await vi.waitFor(() => expect(calls.clientWaiting).toBe(true));
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.every((text) => text === "Connecting to your encrypted TinyCloud…")).toBe(true);
+    release(); calls.clientGate = undefined;
+    await vi.waitFor(() => expect(root.querySelector(".sender-home")).not.toBeNull());
+    expect(statuses.at(-1)).toBe("Signed in. Loading your shares…");
   });
 
   it("opens OpenKey to resume an external wallet's session: its signatures route through connect", async () => {

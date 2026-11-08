@@ -423,17 +423,17 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     dispose = (): Promise<void> => {
       disposing ??= (async () => {
         if (opened) closeOpenKeyFlows(session.openkey);
-        try { await tinycloud.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
+        try { await tinycloud.signOut(); } catch { /* The SDK clears a saved session in its own `finally`; one in memory goes with the page. */ }
       })();
       return disposing;
     };
     registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
-    // The provider is constructed from this connection's auth and answers account and signing
-    // calls only as that address, so the SDK can only ever sign in as this connection's owner;
-    // a persisted session is address-keyed and validated before any network work. No owner
-    // check is needed here: the binding was made when the provider was built above.
+    // The provider answers account calls only with this connection's address (for a reopened session, the saved
+    // account's), so a fresh sign-in can only sign in as that owner. A saved session is looked up under that same
+    // address: the SDK restores the record stored for it, checking its shape and expiry but not comparing the record's
+    // own address field, and without asking the node. `restoredSessionRefused` below is what asks the node.
     let signedSession: ClientSession | undefined;
     try {
       signedSession = await tinycloud.signIn();
