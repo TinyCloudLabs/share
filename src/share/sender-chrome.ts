@@ -14,7 +14,7 @@ export const SIGN_OUT_TITLE = "Sign out of Share?";
 export const SIGN_OUT_BODY = "This signs you out of Share on this device. Your shares stay active; nothing is revoked or deleted.";
 export const SIGN_OUT_NEXT = "To come back you'll sign in with OpenKey again.";
 /** This tab held an OpenKey sign-in and OpenKey confirmed it ended it. */
-export const SIGNED_OUT_NOTICE = "Signed out. Share's session and your OpenKey sign-in in this tab were cleared.";
+export const SIGNED_OUT_NOTICE = "Signed out of Share and of OpenKey in this tab.";
 /** This tab held no OpenKey sign-in (a resumed tab, usually): there was nothing of OpenKey's to end here. */
 export const SIGNED_OUT_SHARE_ONLY_NOTICE = "Signed out of Share. To sign out of OpenKey too, use openkey.so.";
 /** This tab held an OpenKey sign-in, and OpenKey did not confirm it ended it. */
