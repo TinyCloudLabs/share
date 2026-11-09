@@ -65,7 +65,6 @@ export const REVOKE_CONFIRM_BODY = "Everyone who has the link loses access right
 export const REVOKE_CONFIRM_BODY_ADDRESSED = "The people you shared it with lose access right away. This can't be undone.";
 /** The app's session cannot delete (`del` is not in its grant), so a stored copy outlives a revoke. */
 export const REVOKE_CONFIRM_STORED = "Revoking stops access. The encrypted copy stays in your TinyCloud until you delete it, and Share can't delete it yet. Anyone who already downloaded or copied the content keeps their copy.";
-export const REVOKE_CONFIRM_CAVEAT = "Anyone holding a share link can also revoke it.";
 export const REVOKE_APPROVAL_TIMEOUT_COPY = "OpenKey is still waiting for you. The share is still active. Cancel and try again.";
 
 export const FRESHNESS_CHECKING = "Checking each share with TinyCloud…";
@@ -368,7 +367,7 @@ export function mountSenderHome(root: HTMLElement, options: SenderHomeOptions): 
     const bearer = item.record.recipientMatcher.kind === "bearer";
     const confirmed = await confirmDialog(root, {
       title: REVOKE_CONFIRM_TITLE, subject: safeName(item.record), confirmLabel: "Revoke share", danger: true, opener: revoke,
-      paragraphs: bearer ? [REVOKE_CONFIRM_BODY, REVOKE_CONFIRM_STORED, REVOKE_CONFIRM_CAVEAT] : [REVOKE_CONFIRM_BODY_ADDRESSED, REVOKE_CONFIRM_STORED],
+      paragraphs: bearer ? [REVOKE_CONFIRM_BODY, REVOKE_CONFIRM_STORED] : [REVOKE_CONFIRM_BODY_ADDRESSED, REVOKE_CONFIRM_STORED],
       onConfirm: () => { started.flight = new RevokeFlight(key, (flight) => performRevoke(shareId, flight)); },
     });
     if (confirmed && started.flight !== undefined) followFlight(started.flight, revoke, status, controls);
