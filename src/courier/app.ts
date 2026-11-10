@@ -16,6 +16,7 @@ import { renderOrders } from "./screen-orders.js";
 import { renderThread, renderThreads } from "./screen-threads.js";
 import { loadOverview, type Overview } from "./service.js";
 import { signInFailureMessage, type CourierSession, type SignInProgress } from "./session.js";
+import type { SignOutOutcome } from "../share/sender-chrome.js";
 import { StoreError } from "./store.js";
 
 export interface CourierDeps {
@@ -33,8 +34,15 @@ const TABS: readonly { id: Screen; label: string }[] = [
 
 export const NO_SPACE_COPY = "No Courier space yet.";
 export const NO_SPACE_HINT = "Run tc courier init once on your machine, then reload this page.";
-const SIGNED_OUT_NOTICE = "Signed out. Courier's session and your OpenKey sign-in on this device were cleared. Your threads and approvals are unchanged.";
+const SIGNED_OUT_NOTICE = "Signed out of Courier and of OpenKey in this tab. Your threads and approvals are unchanged.";
 const SIGNED_OUT_PARTIAL_NOTICE = "Signed out of Courier, and its session was cleared. OpenKey didn't confirm that it ended its own sign-in, so sign out there too if this is a shared device.";
+/** OpenKey was not asked: this tab held no OpenKey sign-in to end. */
+const SIGNED_OUT_COURIER_ONLY_NOTICE = "Signed out of Courier. To sign out of OpenKey too, use openkey.so.";
+const SIGNED_OUT_NOTICES: Readonly<Record<SignOutOutcome, string>> = {
+  "openkey-ended": SIGNED_OUT_NOTICE,
+  "openkey-unconfirmed": SIGNED_OUT_PARTIAL_NOTICE,
+  "share-only": SIGNED_OUT_COURIER_ONLY_NOTICE,
+};
 const REFRESH_AFTER_HIDDEN_MS = 30_000;
 
 function loadFailure(error: unknown): string {
@@ -212,9 +220,9 @@ export function mountCourier(root: HTMLElement, deps: CourierDeps): void {
         onConfirm: () => {
           signOut.disabled = true; signOut.textContent = "Signing out…";
           announcer.say("Signing out…");
-          void signedIn.signOut().then((remoteEnded) => {
+          void signedIn.signOut().then((outcome) => {
             session = undefined;
-            showSignedOut(remoteEnded ? SIGNED_OUT_NOTICE : SIGNED_OUT_PARTIAL_NOTICE);
+            showSignedOut(SIGNED_OUT_NOTICES[outcome]);
           });
         },
       });

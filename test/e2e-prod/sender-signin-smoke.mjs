@@ -4,7 +4,9 @@
  * Signs a brand-new throwaway OpenKey account (email OTP through a private
  * mail.tm inbox made for the run and deleted at its end, also when the run is
  * stopped) into Share, creates a link-only share and opens it as a
- * recipient. Everything is production: OpenKey, the owner Node, the registry.
+ * recipient, then reloads Share (the saved session resumes with no approval)
+ * and signs out (the saved session is gone). Everything is production:
+ * OpenKey, the owner Node, the registry.
  * Unlike the joined gate, nothing about OpenKey is faked.
  *
  *   node test/e2e-prod/sender-signin-smoke.mjs                 # live https://share.tinycloud.xyz
@@ -49,7 +51,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
-const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
+const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0, resume: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
@@ -252,6 +254,29 @@ try {
     return false;
   }, 120_000, "the shared text to render");
   report.timingsMs.open = since(openStart);
+
+  // The library session is saved on the device: a reload resumes it by itself, with no click and no
+  // OpenKey approval. Any review that does appear is approved and counted.
+  setStage("share-resume");
+  const wallHeading = () => document.querySelector(".auth-form h2")?.textContent ?? "";
+  const resumeStart = Date.now();
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
+  await approveUntil(sender, () => document.querySelector(".sender-chrome") !== null, "resume", 180_000);
+  report.timingsMs.resume = since(resumeStart);
+  assert.equal(report.prompts.resume, 0, `resuming the saved session needed ${report.prompts.resume} OpenKey approvals`);
+  assert.equal(signaturesIn(requests, "share-resume"), 0, "resuming the saved session asked OpenKey for a signature");
+
+  // Sign-out clears the saved session: nothing is left under the library's prefix, and a reload is a plain sign-in.
+  setStage("share-sign-out");
+  await sender.click(".sender-signout");
+  await sender.waitForSelector(".sender-confirm-dialog .sender-confirm-revoke", { timeout: 10_000 });
+  await sender.click(".sender-confirm-dialog .sender-confirm-revoke");
+  await sender.waitForSelector("form.auth-form", { timeout: 30_000 });
+  const saved = () => Object.keys(localStorage).filter((key) => key.startsWith("tinycloud-share-library-")).length;
+  assert.equal(await sender.evaluate(saved), 0, "sign-out left the library session saved");
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
+  await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
+  assert.equal(await sender.evaluate(wallHeading), "One key, your files", "a reload after sign-out still offered to resume");
   report.result = "passed";
   setStage("done");
 } catch (error) {
