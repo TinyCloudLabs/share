@@ -19,7 +19,6 @@ async function loadViewerStyles(): Promise<void> {
 }
 
 function captureLaunch(): CapturedLaunch | undefined {
-  // This is intentionally the first recipient-side operation on each launch.
   // The complete fragment is captured and the current history entry is
   // scrubbed before any dynamic import, hydration, configuration load, or
   // network request.
@@ -31,11 +30,18 @@ function captureLaunch(): CapturedLaunch | undefined {
   return captured;
 }
 
+// Every boot supersedes the previous one. A superseded launch must never
+// render or receive: if share B's link arrives while share A is still
+// loading, boot A could otherwise finish last and show A under B's URL.
+// `let` has a temporal dead zone, so this precedes the first boot call.
+let launchGeneration = 0;
+
 if (viewerRoot !== null) {
+  const captured = captureLaunch();
   // Drop a receiver key record an earlier build left in this tab before anything else can read it.
   purgeLegacyReceiverStorage();
   void loadViewerStyles();
-  void bootRecipient(viewerRoot, captureLaunch());
+  void bootRecipient(viewerRoot, captured);
   // A second share opened by hash-only navigation doesn't reload this module:
   // re-capture, re-scrub and boot the new link, or the viewer would keep
   // showing the first share's content.
@@ -45,8 +51,11 @@ if (viewerRoot !== null) {
 }
 
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined, confirmed = false): Promise<void> {
+  const generation = ++launchGeneration;
+  const superseded = () => generation !== launchGeneration;
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   if (launch === undefined) {
+    if (superseded()) return;
     renderRecipientLoading(root);
     const { renderLinkNeeded } = await import("./viewer/ui.js");
     renderLinkNeeded(root);
@@ -57,10 +66,8 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     const { renderOpenConfirm } = await import("./short-links/views.js");
     await renderOpenConfirm(root);
   }
+  if (superseded()) return;
   renderRecipientLoading(root);
-
-  // The launch URL is scrubbed from the address bar and kept in memory only, so
-  // "Try again" must re-run the receive from this copy rather than reload the page.
   let retryHref: string | undefined;
   try {
     const [config, { presentShare }, { createSaveToTinyCloud }] = await Promise.all([
@@ -79,6 +86,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
       // The fragment was already captured and scrubbed before config or this
       // SDK construction. Receiving the capability is the first network work.
       const access = await receiveNativeBearerAccess(shareHref);
+      if (superseded()) return;
       const { presentationEnvelope } = await import("./viewer/resolve.js");
       await presentShare(root, {
         state: "ok",
@@ -102,6 +110,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // The link reader checks the record; a share is then received from the same link.
     const { resolveLink } = await import("./short-links/resolve.js");
     const link = await resolveLink(shareHref, { trustedOrigins: [shareConfig.shareOrigin], apiOrigin: linksApiOrigin() });
+    if (superseded()) return;
     if (link.type === "courier") {
       const { renderCourierRecord } = await import("./short-links/views.js");
       renderCourierRecord(root);
@@ -109,6 +118,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     }
     const { resolveShare } = await import("./viewer/resolve.js");
     const resolved: ResolveResult = await resolveShare(shareHref, { expectedOrigin: shareConfig.shareOrigin, apiOrigin: linksApiOrigin() });
+    if (superseded()) return;
     // Accountless receive is an SDK contract.  Share hosts only its inline UI
     // and renders the locally decrypted result; the SDK performs embedded Node
     // policy admission followed by generic /delegate and /invoke.
@@ -127,6 +137,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
           actions: accountlessEnvelope.actions,
         },
         onComplete: async (content) => {
+          if (superseded()) return;
           await presentShare(root, {
             state: "ok",
             access: "policy",
@@ -140,6 +151,7 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     }
     await presentShare(root, resolved, { shareUrl: shareHref, saveToTinyCloud });
   } catch (error) {
+    if (superseded()) return;
     console.debug("tinycloud share: recipient request failed");
     // Bearer links fail with a typed reason; revoked, expired and unavailable
     // each get their own screen, and nothing from the share is ever shown.
