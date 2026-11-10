@@ -87,4 +87,23 @@ describe("Try again on the unavailable screen", () => {
     expect(document.title).not.toContain(SECRET);
     expect(document.documentElement.outerHTML).not.toContain(SECRET);
   });
+
+  it("opens a second link navigated by hash change, scrubbing it like the first", { timeout: 60_000 }, async () => {
+    const replaceState = vi.spyOn(window.history, "replaceState");
+
+    await import("../src/main.js");
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(1), WAIT);
+
+    const secondSecret = "FAKE-LINK-SECRET-bb2c";
+    window.history.replaceState(null, "", `/viewer#tc1=${secondSecret}`);
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+
+    await vi.waitFor(() => expect(state.receive).toHaveBeenCalledTimes(2), WAIT);
+    const secondHref = state.receive.mock.calls[1]![0] as string;
+    expect(secondHref).toContain(secondSecret);
+    expect(secondHref).not.toContain(SECRET);
+    // The second launch scrubs the address bar exactly like arrival did.
+    expect(replaceState).toHaveBeenLastCalledWith(null, "", "/viewer");
+    expect(window.location.hash).toBe("");
+  });
 });

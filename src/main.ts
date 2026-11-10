@@ -18,19 +18,30 @@ async function loadViewerStyles(): Promise<void> {
   documentElement.classList.remove("viewer-first-paint");
 }
 
-if (viewerRoot !== null) {
-  // This is intentionally the first recipient-side operation. The complete
-  // fragment is captured and the current history entry is scrubbed before
-  // any dynamic import, hydration, configuration load, or network request.
+function captureLaunch(): CapturedLaunch | undefined {
+  // This is intentionally the first recipient-side operation on each launch.
+  // The complete fragment is captured and the current history entry is
+  // scrubbed before any dynamic import, hydration, configuration load, or
+  // network request.
   const captured = captureAndScrubLaunch(window.location, window.history);
-  // Drop a receiver key record an earlier build left in this tab before anything else can read it.
-  purgeLegacyReceiverStorage();
   if (captured !== undefined && import.meta.env.VITE_SHARE_VIEWER_HERMETIC === "true" && window.location.hostname === "127.0.0.1") {
     const capturedUrl = new URL(captured.shareHref);
     captured.shareHref = `https://share.tinycloud.xyz${capturedUrl.pathname}${capturedUrl.search}${capturedUrl.hash}`;
   }
+  return captured;
+}
+
+if (viewerRoot !== null) {
+  // Drop a receiver key record an earlier build left in this tab before anything else can read it.
+  purgeLegacyReceiverStorage();
   void loadViewerStyles();
-  void bootRecipient(viewerRoot, captured);
+  void bootRecipient(viewerRoot, captureLaunch());
+  // A second share opened by hash-only navigation doesn't reload this module:
+  // re-capture, re-scrub and boot the new link, or the viewer would keep
+  // showing the first share's content.
+  window.addEventListener("hashchange", () => {
+    void bootRecipient(viewerRoot, captureLaunch());
+  });
 }
 
 async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined, confirmed = false): Promise<void> {
