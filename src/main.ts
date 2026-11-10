@@ -44,14 +44,14 @@ if (viewerRoot !== null) {
   void bootRecipient(viewerRoot, captured);
   // A second share opened by hash-only navigation doesn't reload this module:
   // re-capture, re-scrub and boot the new link, or the viewer would keep
-  // showing the first share's content.
-  window.addEventListener("hashchange", () => {
+  // showing the first share's content. `onhashchange` (not addEventListener)
+  // keeps exactly one handler if this module is ever evaluated again.
+  window.onhashchange = () => {
     void bootRecipient(viewerRoot, captureLaunch());
-  });
+  };
 }
 
-async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined, confirmed = false): Promise<void> {
-  const generation = ++launchGeneration;
+async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefined, confirmed = false, generation = ++launchGeneration): Promise<void> {
   const superseded = () => generation !== launchGeneration;
   const { renderRecipientInvalid, renderRecipientLoading } = await import("./email-share/view.js");
   if (launch === undefined) {
@@ -156,7 +156,9 @@ async function bootRecipient(root: HTMLElement, launch: CapturedLaunch | undefin
     // Bearer links fail with a typed reason; revoked, expired and unavailable
     // each get their own screen, and nothing from the share is ever shown.
     const href = retryHref;
-    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }, true); };
+    // A retry re-runs the SAME launch's generation: a newer link supersedes
+    // it too, so a stale Try-again can never revive an older share.
+    const retry = href === undefined ? undefined : (): void => { void bootRecipient(root, { ...launch, shareHref: href }, true, generation); };
     const { NativeBearerError } = await import("./viewer/native-bearer.js");
     if (error instanceof NativeBearerError && error.reason !== "unverified") {
       const { renderShareUnavailable } = await import("./viewer/ui.js");
