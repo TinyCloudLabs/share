@@ -207,14 +207,33 @@ try {
   await codeField.type(otp);
   const signInStart = Date.now();
   await until(() => clickButton(connect, "Verify"), 10_000, "OpenKey's Verify button");
+  setStage("openkey-confirm");
   // OpenKey asks before creating an account for an email it doesn't know
-  // (TC-1114). The inbox is new on every run, so the smoke creates it. Older
-  // OpenKey created the account silently; then sign-in simply moves on.
-  await until(
-    async () => connect.isDetached() || frameAt(sender, "/widget/embed/sign") !== undefined || await clickButton(connect, "Create a new account"),
-    30_000,
-    "OpenKey's new-account choice or the next step",
-  ).catch(() => undefined);
+  // (TC-1114): /sign-in/email-otp answers 403 NEW_ACCOUNT_CONFIRMATION_REQUIRED
+  // and the widget shows "Create a new account". The inbox is new on every
+  // run, so this click is part of the smoke, not an error path. Older OpenKey
+  // created the account silently; then the screen never appears and the wait
+  // ends on the first tick.
+  report.newAccount = { screen: false, clicks: 0 };
+  {
+    const confirmDeadline = Date.now() + 90_000;
+    let confirmed = false;
+    while (Date.now() < confirmDeadline) {
+      if (connect.isDetached() || frameAt(sender, "/widget/embed/sign") !== undefined) { confirmed = true; break; }
+      // The button re-enables if the POST failed; up to 3 clicks, then the
+      // deadline's "never resolved" error reports the screen state.
+      const ready = await connect.evaluate(() => [...document.querySelectorAll("button")].some((candidate) => candidate.innerText.trim().startsWith("Create a new account") && !candidate.disabled)).catch(() => false);
+      if (ready && report.newAccount.clicks < 3 && await clickButton(connect, "Create a new account").catch(() => false)) {
+        report.newAccount.clicks += 1;
+      }
+      await sleep(250);
+    }
+    if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
+      const shown = await connect.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "");
+      report.newAccount.screen = /new account/i.test(shown);
+      throw new Error(`OpenKey's new-account confirmation never resolved (screen shown: ${report.newAccount.screen})`);
+    }
+  }
 
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
@@ -307,10 +326,16 @@ function classify({ stage: failedStage, error, failedRequests = [], pendingReque
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
-  if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
+  if (openKeyAlert !== undefined) return "openkey: OpenKey refused a step";
+  // A fresh inbox always draws NEW_ACCOUNT_CONFIRMATION_REQUIRED: OpenKey's
+  // designed confirmation (TC-1114), not a refusal.
+  const openkeyRefusal = failedRequests.find((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400 && entry.errorCode !== "NEW_ACCOUNT_CONFIRMATION_REQUIRED");
+  if (openkeyRefusal !== undefined) return `openkey: OpenKey refused a step (${openkeyRefusal.method} ${openkeyRefusal.path} ${openkeyRefusal.status}${openkeyRefusal.errorCode ? ` ${openkeyRefusal.errorCode}` : ""})`;
   // The SDK aborts its own account-registry sync after 4 s (net::ERR_ABORTED)
   // and carries on; only server errors, real transport errors or long hangs
-  // are TinyCloud's.
+  // are TinyCloud's. A 409 on POST /encryption/networks is NOT counted: the SDK
+  // treats it as "already created" (the new-account TEE view lags the insert)
+  // and heals itself — counting it would misattribute any later failure.
   const tinycloud = [...pendingRequests, ...failedRequests.toReversed()].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "")
     && (entry.status >= 500 || entry.pendingMs > 30_000 || (entry.error !== undefined && entry.error !== "net::ERR_ABORTED")));
   if (tinycloud !== undefined) return `tinycloud: ${tinycloud.method} ${tinycloud.origin}${tinycloud.path} ${tinycloud.status ?? tinycloud.error ?? `pending ${tinycloud.pendingMs} ms`} after ${tinycloud.durationMs ?? tinycloud.pendingMs} ms`;
