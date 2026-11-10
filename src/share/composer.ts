@@ -4,7 +4,7 @@ import type { OpenKeyShareSession, ShareTinyCloud } from "./openkey-session.js";
 import { MAX_SHARE_FILE_BYTES, SHARE_APPLICATION_PREFIX, takeWalletApprovalFailure } from "./openkey-session.js";
 import { fail, SENDER_FAILURE, senderFailureMessage } from "./sender-failure.js";
 import type { ShareEnvelopeV3 } from "@tinycloud/share-envelope";
-import { AddressedContentSourceError, assertAddressedShareFits, bindPathBoundContentSource, defaultEncryptionNetworkForOwner, encryptAddressedShareContent, historyRecordForPublishedShare, planPathBoundShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type EncryptedAddressedContent, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
+import { assertAddressedShareFits, bindPathBoundContentSource, defaultEncryptionNetworkForOwner, encryptAddressedShareContent, historyRecordForPublishedShare, planPathBoundShare, prepareAddressedShare, publishAddressedShare, SharePublishError, type EncryptedAddressedContent, type PublishedShareDeliveryMaterial, type SenderShareRecord } from "@tinycloud/share-sdk";
 import { requestAddressedDelivery } from "./delivery.js";
 import { composeNativeBearer, nativeBearerHistoryRecord } from "./native-bearer.js";
 import { failIfSpaceNotReady } from "./space-not-ready.js";
@@ -416,12 +416,11 @@ async function createOwnerPolicyShareCanonical(files: readonly File[], model: Sh
   // It is published after the size check, so a refused share writes nothing, and before content
   // storage, so a registry failure cannot leave an orphaned object.
   await tinycloud.publishActiveNodeLocation(config.registryOrigin, options.fetchFn);
-  // The share's own key (`share/<shareId>`): the SDK creates it (the sign-in grant covers it, no prompt), encrypts under it and returns the exact bytes to store.
+  // The share's own key (`share/<shareId>`): the SDK encrypts to its public key and returns the exact bytes to store; the node records the key when the policy is registered.
   let encrypted: EncryptedAddressedContent;
   try {
     encrypted = await encryptAddressedShareContent({ plan, keys: tinycloud.keys, plaintext, metadata: { contentType: plaintextType } });
-  } catch (error) {
-    if (error instanceof AddressedContentSourceError && error.code === "key-not-authorized") throw fail("shareKey", "owner share key was not authorized");
+  } catch {
     throw fail("upload", "owner file encryption was rejected");
   } finally {
     plaintext.fill(0);

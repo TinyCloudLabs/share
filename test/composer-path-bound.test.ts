@@ -43,9 +43,8 @@ function owner(seen: Registered): ShareTinyCloud {
     activeNodeIdentity: async () => ({ origin: "https://node.example.invalid", nodeDid: NODE_DID }),
     publishActiveNodeLocation: async () => undefined,
     signSessionBytes: signWithIssuer,
-    // The named-key client the SDK helper drives: createKey, then a v2 envelope wrapped to that key.
+    // The named-key client the SDK helper drives: a v2 envelope wrapped to the share key's public key. It has no createKey: publishing never creates the key.
     keys: {
-      createKey: async (keyPath: string, createOptions: { networkId: string }) => ({ networkId: createOptions.networkId, keyPath, state: "active", keyVersion: 1 }),
       encrypt: async (keyPath: string, _plaintext: Uint8Array, encryptOptions: { networkId: string; metadata?: Record<string, string> }) => {
         seen.encryptCalls.push({ network: encryptOptions.networkId, options: { keyPath } });
         return {
@@ -112,30 +111,6 @@ async function publishEmailShare(tinycloud: ShareTinyCloud): Promise<HTMLElement
   }, { timeout: 10_000 });
   return root;
 }
-
-describe("a sign-in that cannot create the share's key", () => {
-  it("tells the sender to sign in again, not to retry", async () => {
-    const seen: Registered = { encryptCalls: [], stored: [] };
-    const tinycloud = owner(seen);
-    (tinycloud as unknown as { keys: { createKey: () => Promise<never> } }).keys.createKey = async () => { throw Object.assign(new Error("Unauthorized Action: key.create"), { status: 401 }); };
-    const root = document.createElement("div");
-    document.body.append(root);
-    mountShareComposer(root, { openKeyAddress: ADDRESS, origin: SHARE_ORIGIN, onBack: () => undefined, session: {} as OpenKeyShareSession, tinycloud, fetchFn: mockLinks(() => Date.now()).fetchFn, copyText: async () => undefined, persistShare: async () => undefined });
-    const choice = root.querySelector<HTMLInputElement>("input[name=recipient][value=exactEmail]")!;
-    choice.checked = true;
-    choice.dispatchEvent(new Event("change", { bubbles: true }));
-    const value = root.querySelector<HTMLInputElement>("input[name=recipient-value]")!;
-    value.value = "reader@example.com";
-    value.dispatchEvent(new Event("input", { bubbles: true }));
-    const file = root.querySelector<HTMLInputElement>("input[type=file]")!;
-    Object.defineProperty(file, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
-    file.dispatchEvent(new Event("change", { bubbles: true }));
-    root.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(root.querySelector(".composer-status")?.textContent).toContain("Sign out, sign in again"), { timeout: 10_000 });
-    expect(root.querySelector(".composer-status")?.textContent).not.toContain("try again");
-    expect(seen.stored).toHaveLength(0);
-  });
-});
 
 describe("an email share is bound to its own key path", () => {
   it("registers the source with share/<shareId> and the digest of the raw wrapped-key bytes", async () => {
