@@ -53,12 +53,19 @@ function delegationExpiry(token: string): string | undefined {
 
 /**
  * A `tc1` fragment value the SDK's receive accepts. Correct links carry
- * `tc1:<base64url>`; a short window of builds wrote the same share data
- * without the `tc1:` prefix inside the `tc1=` fragment. A bare payload is
- * wrapped back; anything already prefixed passes through.
+ * `tc1:<base64url>` (URL-encoded once for the fragment). Stranded links seen
+ * tonight carry the token percent-encoded a second time or without the inner
+ * `tc1:` prefix at all. Decode while encoded (bounded; a real payload is
+ * base64url and never contains '%'), then wrap a bare payload back.
  */
 function normalizeNativeToken(token: string): string {
-  return token.startsWith("tc1:") ? token : `tc1:${token}`;
+  let decoded = token;
+  for (let i = 0; i < 3 && decoded.includes("%"); i += 1) {
+    const next = decodeURIComponent(decoded);
+    if (next === decoded) break;
+    decoded = next;
+  }
+  return decoded.startsWith("tc1:") ? decoded : `tc1:${decoded}`;
 }
 
 

@@ -47,6 +47,19 @@ describe("TinyCloud-native bearer happy path", () => {
     expect(tokens).toEqual(["tc1:already"]);
   });
 
+  it("un-encodes a percent-encoded tc1 value before the SDK receive", async () => {
+    // A fragment like #tc1=tc1%3AeyJ… arrives double-encoded if the writer
+    // encoded the already-encoded fragment again; decode until the payload
+    // is a plain tc1: token (base64url never contains '%').
+    const bytes = new Uint8Array([3]);
+    const tokens: string[] = [];
+    await receiveNativeBearer("https://viewer.example/viewer#tc1=tc1%253Aencoded", async (token) => {
+      tokens.push(token);
+      return { ok: true as const, data: { data: bytes, path: "p", spaceId: "s", host: "h", delegation: { expiry: new Date("2030-01-01T00:00:00.000Z") } } };
+    });
+    expect(tokens).toEqual(["tc1:encoded"]);
+  });
+
   it("surfaces revocation as a denied bearer read", async () => {
     const revoked = {
       receive: async () => ({ ok: false as const, error: { message: "Sharing link has been revoked" } }),
