@@ -40,7 +40,7 @@
     "@tinycloud/share-envelope": "1.5.0",
     "@tinycloud/share-sdk": "1.5.0-beta.0",
     "@tinycloud/styles": "git+https://github.com/TinyCloudLabs/styles.git#767b808c01967eec77f9bd31f201defdb1be2bc4",
-    "@tinycloud/web-sdk": "3.10.0",
+    "@tinycloud/web-sdk": "3.11.2",
     "@tinycloud/web-sdk-wasm": "1.7.7",
     "d3": "7.9.0",
     "dompurify": "3.4.15",
