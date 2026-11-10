@@ -18,7 +18,7 @@
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { loadSharePublicConfig } from "../email-share/config.js";
-import { withWalletApproval } from "../share/revoke-flight.js";
+import { CONNECT_WINDOW_MS, withWalletApproval } from "../share/revoke-flight.js";
 import type { ApprovalGuard, ManifestSignIn } from "../share/openkey-session.js";
 import { createAppData } from "./app-data.ts";
 import { INSTALL_SPACE } from "./install-plan.ts";
@@ -58,7 +58,11 @@ export async function runnerSessionPrefix(appId: string): Promise<string> {
   return `tinycloud-share-runner-${hex}`;
 }
 
-/** Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. */
+/**
+ * Signing guard: one approval at a time (the install flow's pattern), and a lock that ends signing for good. The runner's
+ * authorization is interactive (a first open can spend minutes in OpenKey's modal), so a signature waits as long as a
+ * connect does, five minutes, not the 60 s a revocation request lives.
+ */
 function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; observed(): RunFailure | undefined } {
   let locked = false;
   let failure: RunFailure | undefined;
@@ -66,7 +70,7 @@ function approvalGuard(hooks: RunHooks): { guard: ApprovalGuard; lock(): void; o
     guard: async (wait, info) => {
       if (locked) throw new Error("runner-signing-closed");
       try {
-        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info);
+        return await withWalletApproval({ setApproval: (open) => hooks.approval(open) }, () => wait(), info, CONNECT_WINDOW_MS);
       } catch (error) {
         if (error instanceof Error && error.message === "revoke-approval-abandoned") failure ??= "timeout";
         else if (error instanceof Error && error.message === "revoke-another-approval") failure ??= "busy";

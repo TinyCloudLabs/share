@@ -108,7 +108,8 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 // TC-2285. A brand-new account's first open spends minutes in OpenKey's own login or sign-up window, which is a connect, not a
-// signed revocation. The 60 s approval window belongs to a signature; connecting waits as long as the OpenKey SDK itself does.
+// signed revocation. The 60 s approval window belongs to a revocation signature; connecting waits as long as the OpenKey SDK itself does.
+// TC-2416. The runner's own signatures (its first authorization) wait the same five minutes; revocation keeps 60 s (see openkey-session / sender-owner-revoke tests).
 const SIXTY_SECONDS = 60_000;
 const NINETY_SECONDS = 90_000;
 const FIVE_MINUTES = 300_000;
@@ -147,19 +148,38 @@ describe("the approval window a first sign-in waits for", () => {
     expect(await outcome).toMatchObject({ reason: "timeout" });
   });
 
-  it("keeps a signature to 60 s: a signature that answers after 61 s times out", async () => {
-    signInBehaviour = (_n, options) => guardOf(options)(() => answersAfter(SIXTY_SECONDS + 1_000), { kind: "sign" }).then(() => undefined);
-    const outcome = open().then(() => "opened", (error: unknown) => error);
+  it("lets an app-run signature take longer than 60 s (a first authorization) and the open succeeds", async () => {
+    let signing: Promise<unknown> | undefined;
+    signInBehaviour = (_n, options) => { signing = guardOf(options)(() => answersAfter(SIXTY_SECONDS + 1_000), { kind: "sign" }); return signing.then(() => undefined); };
+    const outcome = open().then((app) => ({ app }), (error: unknown) => ({ error }));
     await signInStarted();
     await vi.advanceTimersByTimeAsync(SIXTY_SECONDS + 1_000);
-    expect(await outcome).toMatchObject({ reason: "timeout" });
+    const result = await outcome;
+    if ("error" in result) throw result.error;
+    await expect(signing).resolves.toBe("answered");
   });
 
-  it("treats a wait with no kind as a signature", async () => {
-    signInBehaviour = (_n, options) => guardOf(options)(() => answersAfter(SIXTY_SECONDS + 1_000)).then(() => undefined);
-    const outcome = open().then(() => "opened", (error: unknown) => error);
+  it("treats a wait with no kind as a signature, with the same window", async () => {
+    let signing: Promise<unknown> | undefined;
+    signInBehaviour = (_n, options) => { signing = guardOf(options)(() => answersAfter(SIXTY_SECONDS + 1_000)); return signing.then(() => undefined); };
+    const outcome = open().then((app) => ({ app }), (error: unknown) => ({ error }));
     await signInStarted();
     await vi.advanceTimersByTimeAsync(SIXTY_SECONDS + 1_000);
+    const result = await outcome;
+    if ("error" in result) throw result.error;
+    await expect(signing).resolves.toBe("answered");
+  });
+
+  it("still gives up on an app-run signature that never answers, at five minutes", async () => {
+    signInBehaviour = (_n, options) => guardOf(options)(() => answersAfter(FIVE_MINUTES * 2), { kind: "sign" }).then(() => undefined);
+    const outcome = open().then(() => "opened", (error: unknown) => error);
+    await signInStarted();
+    await vi.advanceTimersByTimeAsync(FIVE_MINUTES - 1_000);
+    let settled = false;
+    void outcome.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(await outcome).toMatchObject({ reason: "timeout" });
   });
 });

@@ -88,8 +88,11 @@ export function isApprovalAbandoned(error: unknown): boolean {
  * state of a newer attempt; the row never turns Revoked from it. If it did
  * revoke the share, the next attempt's node check sees that and finishes with
  * no new approval.
+ *
+ * `signWindowMs` is the wait for a signature (`kind: "sign"` or no kind). It defaults to the 60-second approval window
+ * that revocation depends on; only app-run's interactive authorization passes a longer one.
  */
-export async function withWalletApproval<T>(flight: WalletApprovalSubject, task: (current: () => boolean) => Promise<T>, info?: { readonly kind: "connect" | "sign" }): Promise<T> {
+export async function withWalletApproval<T>(flight: WalletApprovalSubject, task: (current: () => boolean) => Promise<T>, info?: { readonly kind: "connect" | "sign" }, signWindowMs: number = APPROVAL_WINDOW_MS): Promise<T> {
   // A revoke that outlived its sign-in never reaches the wallet. (A caller that is not a revoke has no sign-in of its own to outlive.)
   if (flight.session !== undefined && flight.session !== session) throw new Error("revoke-session-ended");
   if (walletRequestOpen) throw new Error("revoke-another-approval");
@@ -99,7 +102,7 @@ export async function withWalletApproval<T>(flight: WalletApprovalSubject, task:
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abandon: () => void = () => undefined;
   const expiry = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, info?.kind === "connect" ? CONNECT_WINDOW_MS : APPROVAL_WINDOW_MS);
+    timer = setTimeout(() => { abandoned = true; reject(new Error("revoke-approval-abandoned")); }, info?.kind === "connect" ? CONNECT_WINDOW_MS : signWindowMs);
     abandon = () => { abandoned = true; reject(new Error("revoke-session-ended")); };
   });
   openRequests.add(abandon);
