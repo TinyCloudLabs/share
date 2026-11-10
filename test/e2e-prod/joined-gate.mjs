@@ -481,13 +481,17 @@ async function verifyNegativeEnforcement({ sender, recipient, stack, recipientPh
 }
 
 /**
- * A new sign-in of the same account. The share app keeps no session across a
- * load (`persistSession: false`), so a reload and a fresh OpenKey approval
- * make a new session key: the key that signed every earlier share is gone.
+ * A new sign-in of the same account. The share app saves its session on the
+ * device so a reload resumes it; dropping the saved library session first
+ * makes the reload a fresh OpenKey approval with a new session key: the key
+ * that signed every earlier share is gone.
  */
 async function signInAgain(sender) {
   phase = "sender-relogin";
-  await sender.evaluate(() => { window.location.hash = "#/library"; });
+  await sender.evaluate(() => {
+    for (const key of Object.keys(localStorage)) if (key.startsWith("tinycloud-share-library-")) localStorage.removeItem(key);
+    window.location.hash = "#/library";
+  });
   await sender.reload({ waitUntil: "domcontentloaded", timeout: 180_000 });
   await sender.waitForSelector("button.auth-button", { timeout: 60_000 }); await sender.click("button.auth-button");
   await sender.waitForSelector(".sender-history-row", { timeout: 180_000 });

@@ -1,5 +1,5 @@
 import { OpenKey, OpenKeyProvider, type AuthResult } from "@openkey/sdk";
-import { verifyEip191MessageSignature, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
+import { authorizationVerdictOf, EXPIRY, verifyEip191MessageSignature, type ClientSession, type SignRequest, type SignResponse } from "@tinycloud/sdk-core";
 import { TinyCloudWeb, type Manifest, type PermissionEntry } from "@tinycloud/web-sdk";
 import type { SharePublicConfig } from "../email-share/config.js";
 import { defaultEncryptionNetworkForOwner, pathBoundSessionPermissions } from "@tinycloud/share-sdk";
@@ -7,6 +7,7 @@ import { checkLabel, SignInOptionError } from "./sign-in-label.js";
 import { assertManifestInScope, ManifestRejectedError, MANIFEST_CHECK_ADDRESS, type ManifestScope } from "./manifest-policy.js";
 import { trackWalletApproval } from "./wallet-approval.js";
 import { OPENKEY_ORIGIN } from "./openkey-origin.js";
+import { LIBRARY_SESSION_PREFIX, markOpenKeySignedInHere } from "./library-session.js";
 
 export { SignInOptionError } from "./sign-in-label.js";
 
@@ -37,6 +38,16 @@ export async function authenticateWithOpenKey(onStatus: (message: string) => voi
   }
   onStatus("OpenKey connected.");
   return { address: auth.address, openkey, auth };
+}
+
+/**
+ * The OpenKey session of an account the library session was saved for, without opening OpenKey: nothing is shown,
+ * and the restored session needs no signature. A signature asked for later (a revoke, a fresh sign-in) opens OpenKey's
+ * own window as usual and must still recover to `account.address`. Managed keys only: an external wallet signs
+ * through `connect()`'s routing.
+ */
+export function reopenOpenKey(account: AuthResult, appName = DEFAULT_APP_NAME): OpenKeyShareSession {
+  return { address: account.address, openkey: new OpenKey({ host: OPENKEY_ORIGIN, appName, mode: "iframe" }), auth: account };
 }
 
 /*
@@ -132,6 +143,10 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
   private async signObserved(args: { method: string; params?: unknown[] }): Promise<unknown> {
     this.failure = undefined;
     const mine = ++this.asked;
+    // Fail closed: a message that is not hex-encoded text cannot be checked against the signed-in account
+    // afterwards, so OpenKey is never asked to sign it. The SDK always sends hex.
+    const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
+    if (message === undefined) throw new Error("wallet-approval-unreadable-message");
     let signature: unknown;
     try {
       signature = await trackWalletApproval(() => super.request(args));
@@ -139,8 +154,7 @@ export class ObservedOpenKeyProvider extends OpenKeyProvider {
       if (mine === this.asked) this.failure = approvalFailureOf(caught);
       throw caught;
     }
-    const message = typeof args.params?.[0] === "string" ? hexToText(args.params[0]) : undefined;
-    if (message !== undefined && (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress)))) {
+    if (typeof signature !== "string" || !(await this.verify(message, signature, this.signedInAddress))) {
       if (mine === this.asked) this.failure = "wrong-account";
       throw new Error("wallet-approval-wrong-account");
     }
@@ -189,8 +203,13 @@ export interface ApprovalInfo {
   readonly purpose?: string | undefined;
 }
 
-/** The longest a session may last. Also the default. */
+/** The longest a session may last, and the default, apart from the sign-in session tier below. */
 export const MAX_SESSION_MS = 60 * 60 * 1000;
+/**
+ * The SDK's sign-in session tier (`EXPIRY.SESSION_MS`, 30 days: OpenKey's own sign-in limit). Share's library
+ * session lasts this long, saved on the device; it is the one value above the hour `expiry` accepts.
+ */
+export const SIGN_IN_SESSION_MS = EXPIRY.SESSION_MS;
 const DEFAULT_APP_NAME = "TinyCloud Share";
 const DEFAULT_SESSION_PREFIX = "tinycloud-share";
 const REGISTRY_SYNC_WAIT_MS = 15_000;
@@ -241,7 +260,7 @@ export interface SignInWithManifestOptions extends ManifestScope {
    * caller picks, and `dispose()` still signs out (clearing what was persisted).
    */
   readonly persistSession?: boolean;
-  /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000). Default one hour. */
+  /** How long the session lasts, in milliseconds: a whole number from 1 to one hour (3 600 000), or exactly `SIGN_IN_SESSION_MS`. Default one hour. */
   readonly expiry?: number;
   /**
    * Waits, after sign-in and space hosting, for the SDK's background sync of the
@@ -289,8 +308,8 @@ async function settleAccountRegistrySync(tinycloud: ShareTinyCloud, timeoutMs: n
 
 function checkOptions(options: SignInWithManifestOptions): void {
   const { expiry, domain, appName, sessionPrefix } = options;
-  if (expiry !== undefined && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
-    throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds`);
+  if (expiry !== undefined && expiry !== SIGN_IN_SESSION_MS && !(Number.isInteger(expiry) && expiry >= 1 && expiry <= MAX_SESSION_MS)) {
+    throw new SignInOptionError("expiry", `a session lasts 1 to ${MAX_SESSION_MS} milliseconds, or exactly ${SIGN_IN_SESSION_MS}`);
   }
   if (domain !== undefined && (domain.length > 253 || !HOST_NAME.test(domain))) throw new SignInOptionError("domain", "the domain must be an ASCII host name");
   if (appName !== undefined) checkLabel("appName", appName);
@@ -407,18 +426,30 @@ export async function signInWithManifest(options: SignInWithManifestOptions): Pr
     dispose = (): Promise<void> => {
       disposing ??= (async () => {
         if (opened) closeOpenKeyFlows(session.openkey);
-        try { await tinycloud.signOut(); } catch { /* The session lives only in this tab; it is dropped with the page. */ }
+        try { await tinycloud.signOut(); } catch { /* The SDK clears a saved session in its own `finally`; one in memory goes with the page. */ }
       })();
       return disposing;
     };
     registerWalletApprovalObserver(tinycloud, provider);
     options.onClient?.(tinycloud);
     onStatus("Connecting to your encrypted TinyCloud…");
-    // The provider is constructed from this connection's auth and answers account and signing
-    // calls only as that address, so the SDK can only ever sign in as this connection's owner;
-    // a persisted session is address-keyed and validated before any network work. No owner
-    // check is needed here: the binding was made when the provider was built above.
-    const signedSession = await tinycloud.signIn();
+    // The provider answers account calls only with this connection's address (for a reopened session, the saved
+    // account's), so a fresh sign-in can only sign in as that owner. A saved session is looked up under that same
+    // address: the SDK restores the record stored for it, checking its shape and expiry but not comparing the record's
+    // own address field, and without asking the node. `restoredSessionRefused` below is what asks the node.
+    let signedSession: ClientSession | undefined;
+    try {
+      signedSession = await tinycloud.signIn();
+    } catch (error) {
+      // The SDK restored a saved session and then refused to use it (for example a manifest it cannot check against a
+      // restored session): handled below like a session the node refuses. Any other failure is the sign-in's own.
+      if (tinycloud.sessionRestoreStatus !== "restored") throw error;
+    }
+    if (signedSession === undefined || await restoredSessionRefused(tinycloud, includeAccountRegistryPermissions)) {
+      // A saved session that cannot be used: clear it and sign in afresh, as on a first visit.
+      await tinycloud.signOut();
+      signedSession = await tinycloud.signIn();
+    }
     const sessionExpiresAt = signedSessionExpiry(signedSession.siwe) ?? Date.now() + (options.expiry ?? MAX_SESSION_MS);
     const spaces: Record<string, string> = {};
     for (const name of new Set([...(includeAccountRegistryPermissions ? ["account"] : []), ...hostSpaces])) {
@@ -451,6 +482,19 @@ function signedSessionExpiry(siwe: string | undefined): number | undefined {
   return Number.isFinite(time) ? time : undefined;
 }
 
+/**
+ * True when `signIn()` restored a saved session that the node now refuses (HTTP 401: the owner revoked it, or the
+ * node no longer knows it). The SDK restores a saved session locally without asking the node, so a refused one would
+ * otherwise fail only at the first read, after space hosting had already asked for a signature. One read the
+ * account-registry grants cover settles it; a network failure or any other answer is not a refusal and keeps the session.
+ */
+async function restoredSessionRefused(tinycloud: ShareTinyCloud, registryGrants: boolean): Promise<boolean> {
+  const spaceId = tinycloud.spaceId;
+  if (tinycloud.sessionRestoreStatus !== "restored" || !registryGrants || spaceId === undefined) return false;
+  const read = await tinycloud.account.spaces.get(spaceId).catch((error: unknown) => ({ ok: false as const, error }));
+  return !read.ok && authorizationVerdictOf(read.error) === "unauthenticated";
+}
+
 const runUnguarded: ApprovalGuard = (wait) => wait();
 
 function closeOpenKeyFlows(openkey: OpenKey): void {
@@ -474,7 +518,7 @@ export function shareManifest(address: string): Manifest {
       ...credentialSpacePermissions(),
       ...filesForYouPermissions(),
       { service: "tinycloud.encryption", path: ownerEncryptionNetwork(address), actions: ["decrypt", "network.create"], skipPrefix: true },
-      // Option M: one sign-in grant to create the keys of the shares this account publishes (decrypt + key.create on the share/ prefix), built by the SDK.
+      // Decrypt on the share/ prefix, built by the SDK: the node registers a share's policy only for an owner holding decrypt on the share's key.
       ...pathBoundSessionPermissions({ encryptionNetwork: defaultEncryptionNetworkForOwner({ address }) }),
     ],
   };
@@ -484,8 +528,7 @@ export function shareManifest(address: string): Manifest {
 export const SHARE_MANIFEST_SCOPE: ManifestScope = {
   allowedSpaces: [SHARE_APPLICATION_SPACE, FILES_FOR_YOU_SPACE],
   allowedServices: ["kv", "vault", "encryption"],
-  // key.create is service-qualified. On the whole network it is refused earlier, by sdk-core's manifest resolution (invalid-manifest), not by this scope; test/share-manifest-key-path.test.ts pins that.
-  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create", "tinycloud.encryption/key.create"],
+  allowedActions: ["get", "put", "list", "metadata", "del", "decrypt", "network.create"],
   allowedPathPrefixes: [
     { space: SHARE_APPLICATION_SPACE, prefix: SHARE_APPLICATION_PREFIX },
     { space: SHARE_APPLICATION_SPACE, prefix: "vault/sender-history/v2/records/" },
@@ -533,7 +576,12 @@ export async function createTinyCloudClient(
   config: SharePublicConfig,
   onStatus: (message: string) => void,
 ): Promise<ShareTinyCloud> {
-  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus });
+  // Persisted under the library's own prefix for the SDK's sign-in session tier: a reload restores it, with no new
+  // approval, until its signed expiry or until the sender signs out (which clears it). A revoked one is refused and
+  // replaced by a fresh sign-in.
+  // Every OpenKey approval that completes here needed OpenKey's sign-in in this tab, so Share's Sign out may end it.
+  const guardApproval: ApprovalGuard = async (wait) => { const result = await wait(); markOpenKeySignedInHere(); return result; };
+  const { tinycloud } = await signInWithManifest({ manifest: shareManifest, ...SHARE_MANIFEST_SCOPE, config, session, onStatus, guardApproval, sessionPrefix: LIBRARY_SESSION_PREFIX, persistSession: true, expiry: SIGN_IN_SESSION_MS });
   onStatus("Your encrypted share library is ready.");
   return tinycloud;
 }

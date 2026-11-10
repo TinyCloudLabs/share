@@ -4,7 +4,9 @@
  * Signs a brand-new throwaway OpenKey account (email OTP through a private
  * mail.tm inbox made for the run and deleted at its end, also when the run is
  * stopped) into Share, creates a link-only share and opens it as a
- * recipient. Everything is production: OpenKey, the owner Node, the registry.
+ * recipient, then reloads Share (the saved session resumes with no approval)
+ * and signs out (the saved session is gone). Everything is production:
+ * OpenKey, the owner Node, the registry.
  * Unlike the joined gate, nothing about OpenKey is faked.
  *
  *   node test/e2e-prod/sender-signin-smoke.mjs                 # live https://share.tinycloud.xyz
@@ -49,7 +51,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const deleteInbox = async () => { const { deleted, total } = await deleteInboxes(); report.inboxDeleted = deleted === total; };
 deleteInboxesOnStop();
 
-const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
+const report = { type: "tinycloud.share/sender-signin-smoke/v1", target: process.env.SHARE_SMOKE_CANDIDATE ? "candidate" : "production", openkey: OPENKEY, result: "failed", stage: "start", prompts: { signIn: 0, share: 0, resume: 0 }, approveClicksNotTaken: 0, timingsMs: {} };
 const requests = [];
 let stage = "start";
 const setStage = (next) => { stage = next; report.stage = next; };
@@ -205,14 +207,33 @@ try {
   await codeField.type(otp);
   const signInStart = Date.now();
   await until(() => clickButton(connect, "Verify"), 10_000, "OpenKey's Verify button");
+  setStage("openkey-confirm");
   // OpenKey asks before creating an account for an email it doesn't know
-  // (TC-1114). The inbox is new on every run, so the smoke creates it. Older
-  // OpenKey created the account silently; then sign-in simply moves on.
-  await until(
-    async () => connect.isDetached() || frameAt(sender, "/widget/embed/sign") !== undefined || await clickButton(connect, "Create a new account"),
-    30_000,
-    "OpenKey's new-account choice or the next step",
-  ).catch(() => undefined);
+  // (TC-1114): /sign-in/email-otp answers 403 NEW_ACCOUNT_CONFIRMATION_REQUIRED
+  // and the widget shows "Create a new account". The inbox is new on every
+  // run, so this click is part of the smoke, not an error path. Older OpenKey
+  // created the account silently; then the screen never appears and the wait
+  // ends on the first tick.
+  report.newAccount = { screen: false, clicks: 0 };
+  {
+    const confirmDeadline = Date.now() + 90_000;
+    let confirmed = false;
+    while (Date.now() < confirmDeadline) {
+      if (connect.isDetached() || frameAt(sender, "/widget/embed/sign") !== undefined) { confirmed = true; break; }
+      // The button re-enables if the POST failed; up to 3 clicks, then the
+      // deadline's "never resolved" error reports the screen state.
+      const ready = await connect.evaluate(() => [...document.querySelectorAll("button")].some((candidate) => candidate.innerText.trim().startsWith("Create a new account") && !candidate.disabled)).catch(() => false);
+      if (ready && report.newAccount.clicks < 3 && await clickButton(connect, "Create a new account").catch(() => false)) {
+        report.newAccount.clicks += 1;
+      }
+      await sleep(250);
+    }
+    if (!confirmed && !connect.isDetached() && frameAt(sender, "/widget/embed/sign") === undefined) {
+      const shown = await connect.evaluate(() => document.body.innerText.replace(/\s+/g, " ")).catch(() => "");
+      report.newAccount.screen = /new account/i.test(shown);
+      throw new Error(`OpenKey's new-account confirmation never resolved (screen shown: ${report.newAccount.screen})`);
+    }
+  }
 
   setStage("share-sign-in");
   await approveUntil(sender, () => document.querySelector("form.composer-form") !== null, "signIn", 240_000);
@@ -252,6 +273,29 @@ try {
     return false;
   }, 120_000, "the shared text to render");
   report.timingsMs.open = since(openStart);
+
+  // The library session is saved on the device: a reload resumes it by itself, with no click and no
+  // OpenKey approval. Any review that does appear is approved and counted.
+  setStage("share-resume");
+  const wallHeading = () => document.querySelector(".auth-form h2")?.textContent ?? "";
+  const resumeStart = Date.now();
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
+  await approveUntil(sender, () => document.querySelector(".sender-chrome") !== null, "resume", 180_000);
+  report.timingsMs.resume = since(resumeStart);
+  assert.equal(report.prompts.resume, 0, `resuming the saved session needed ${report.prompts.resume} OpenKey approvals`);
+  assert.equal(signaturesIn(requests, "share-resume"), 0, "resuming the saved session asked OpenKey for a signature");
+
+  // Sign-out clears the saved session: nothing is left under the library's prefix, and a reload is a plain sign-in.
+  setStage("share-sign-out");
+  await sender.click(".sender-signout");
+  await sender.waitForSelector(".sender-confirm-dialog .sender-confirm-revoke", { timeout: 10_000 });
+  await sender.click(".sender-confirm-dialog .sender-confirm-revoke");
+  await sender.waitForSelector("form.auth-form", { timeout: 30_000 });
+  const saved = () => Object.keys(localStorage).filter((key) => key.startsWith("tinycloud-share-library-")).length;
+  assert.equal(await sender.evaluate(saved), 0, "sign-out left the library session saved");
+  await sender.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
+  await sender.waitForSelector("button.auth-button", { timeout: 60_000 });
+  assert.equal(await sender.evaluate(wallHeading), "One key, your files", "a reload after sign-out still offered to resume");
   report.result = "passed";
   setStage("done");
 } catch (error) {
@@ -282,10 +326,16 @@ function classify({ stage: failedStage, error, failedRequests = [], pendingReque
   if (changed !== undefined) return `runner-network-changed: ${changed.method} ${changed.origin}${changed.path}`;
   if (failedStage === "inbox") return "mail-delivery: the test inbox could not be made";
   if (failedStage === "openkey-otp" && /no OpenKey code/.test(error ?? "")) return "mail-delivery: no OpenKey code reached the test inbox";
-  if (openKeyAlert !== undefined || failedRequests.some((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400)) return "openkey: OpenKey refused a step";
+  if (openKeyAlert !== undefined) return "openkey: OpenKey refused a step";
+  // A fresh inbox always draws NEW_ACCOUNT_CONFIRMATION_REQUIRED: OpenKey's
+  // designed confirmation (TC-1114), not a refusal.
+  const openkeyRefusal = failedRequests.find((entry) => /openkey/.test(entry.origin ?? "") && entry.status >= 400 && entry.errorCode !== "NEW_ACCOUNT_CONFIRMATION_REQUIRED");
+  if (openkeyRefusal !== undefined) return `openkey: OpenKey refused a step (${openkeyRefusal.method} ${openkeyRefusal.path} ${openkeyRefusal.status}${openkeyRefusal.errorCode ? ` ${openkeyRefusal.errorCode}` : ""})`;
   // The SDK aborts its own account-registry sync after 4 s (net::ERR_ABORTED)
   // and carries on; only server errors, real transport errors or long hangs
-  // are TinyCloud's.
+  // are TinyCloud's. A 409 on POST /encryption/networks is NOT counted: the SDK
+  // treats it as "already created" (the new-account TEE view lags the insert)
+  // and heals itself — counting it would misattribute any later failure.
   const tinycloud = [...pendingRequests, ...failedRequests.toReversed()].find((entry) => /node\.tinycloud|registry\.tinycloud/.test(entry.origin ?? "")
     && (entry.status >= 500 || entry.pendingMs > 30_000 || (entry.error !== undefined && entry.error !== "net::ERR_ABORTED")));
   if (tinycloud !== undefined) return `tinycloud: ${tinycloud.method} ${tinycloud.origin}${tinycloud.path} ${tinycloud.status ?? tinycloud.error ?? `pending ${tinycloud.pendingMs} ms`} after ${tinycloud.durationMs ?? tinycloud.pendingMs} ms`;
