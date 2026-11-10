@@ -61,7 +61,12 @@ function delegationExpiry(token: string): string | undefined {
 function normalizeNativeToken(token: string): string {
   let decoded = token;
   for (let i = 0; i < 3 && decoded.includes("%"); i += 1) {
-    const next = decodeURIComponent(decoded);
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      break; // malformed escape: hand the raw value to the SDK's own error path
+    }
     if (next === decoded) break;
     decoded = next;
   }
