@@ -23,6 +23,30 @@ describe("TinyCloud-native bearer happy path", () => {
     expect(calls).toEqual(["put:tinycloud:pkh:eip155:1:0xabc:applications:xyz.tinycloud.share/shares/a.bin:0,1,2,255", "delegate:xyz.tinycloud.share/shares/a.bin:tinycloud.kv/get", "receive:tc1:bearer"]);
   });
 
+  it("normalizes a bare tc1 payload (no inner prefix) before the SDK receive", async () => {
+    // Links written ~04:50-05:48Z on the post-#194 line carry the share data
+    // without the inner 'tc1:' prefix; the receiver must hand web-sdk a
+    // prefixed token or the decode fails with 'Expected prefix tc1:'.
+    const bytes = new Uint8Array([9, 8, 7]);
+    const tokens: string[] = [];
+    const received = await receiveNativeBearer("https://viewer.example/viewer#tc1=bearerpayload", async (token) => {
+      tokens.push(token);
+      return { ok: true as const, data: { data: bytes, path: "xyz.tinycloud.share/shares/b.bin", spaceId: "spc", host: "https://owner-node.example", delegation: { expiry: new Date("2030-01-01T00:00:00.000Z") } } };
+    });
+    expect(received).toEqual(bytes);
+    expect(tokens).toEqual(["tc1:bearerpayload"]);
+  });
+
+  it("round-trips a correctly prefixed link unchanged", async () => {
+    const bytes = new Uint8Array([5]);
+    const tokens: string[] = [];
+    await receiveNativeBearer("https://viewer.example/viewer#tc1=tc1%3Aalready", async (token) => {
+      tokens.push(token);
+      return { ok: true as const, data: { data: bytes, path: "p", spaceId: "s", host: "h", delegation: { expiry: new Date("2030-01-01T00:00:00.000Z") } } };
+    });
+    expect(tokens).toEqual(["tc1:already"]);
+  });
+
   it("surfaces revocation as a denied bearer read", async () => {
     const revoked = {
       receive: async () => ({ ok: false as const, error: { message: "Sharing link has been revoked" } }),
